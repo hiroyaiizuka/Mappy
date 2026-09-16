@@ -30,7 +30,12 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/core/list-conversion.ts` | 旧見出し形式から H2＋箇条書きへの明示変換 | 純粋 TypeScript |
 | `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムラインの座標と線 | 純粋 TypeScript |
 | `src/interaction/viewport.ts` | パン・ズーム・Fit の座標計算 | 純粋 TypeScript |
+| `src/core/attachments.ts` / `plain-text.ts` | 本文からのリンク・画像抽出、タイトルの平文化 | `@lezer/markdown` |
+| `src/export/excalidraw-scene.ts` / `src/layout/path-points.ts` | tree＋計測 → 描画 API 非依存のシーン（ブロック・折れ線） | 純粋 TypeScript |
 | `src/obsidian/document-store.ts` | Editor/Vault の一本化、原文照合、キュー、履歴 | Obsidian の公開 API |
+| `src/obsidian/frontmatter.ts` | `mappy-layout` の読み取りと明示コマンドによる書き込み | metadataCache、FileManager |
+| `src/obsidian/view-routing.ts` / `patch.ts` | frontmatter を持つノートを map view へ導く `setViewState` の差し替え | WorkspaceLeaf.prototype |
+| `src/obsidian/excalidraw-bridge.ts` / `src/types/excalidraw-automate.ts` | Excalidraw の `ExcalidrawAutomate` へのドロップフック連結と要素生成 | `window.ExcalidrawAutomate`（任意） |
 | `src/ui/mindmap-view.ts` | ファイル・表示状態、描画更新、編集経路の接続 | Obsidian ItemView |
 | `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命 | Obsidian MarkdownRenderer |
 | `src/ui/map-events.ts` / `map-viewport.ts` | キー・リンク・ドラッグ・画像貼付・DOM のパン／ズーム | Obsidian Component、DOM |
@@ -59,7 +64,7 @@ mappy-layout: mindmap
     この本文もノードと一緒に保持する。
 ```
 
-`mappy-layout` は将来の任意プロパティで、現在は読み書きしない。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。閲覧だけでノートを書き換えない。
+`mappy-layout` は任意プロパティで、存在すればそのノートを既定でマップとして開き、値（`mindmap` / `timeline`）を view state に `layout` がないときの初期レイアウトにする。書き込みはコマンド「このノートを既定でマップとして開く」「既定でマップとして開く設定を解除」だけが `FileManager.processFrontMatter` で行い、閲覧・レイアウト切替・Excalidraw への挿入では書かない。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
 
 - ATX 見出し、Setext、frontmatter、フェンス、空行、CRLF、末尾改行、引用、コメントを fixture で扱う。初期に編集未対応の構文は表示または source 編集へ誘導し、推測で変更しない。
 - 不明な記法は原文の範囲として保存する。本文を AST 全体から再生成しない。
@@ -139,7 +144,31 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 
 保存順序・ノード ID・編集コマンドは通常マップと共通。日時比例や工数を扱うものではなく、講座の章立てを表す配置である。レイアウト変更で本文を書き換えない。
 
-## 8. 最初に検証する順序
+## 8. 表裏切替とビューのルーティング
+
+コマンド「マップと Markdown を切り替え」は、map view なら同じ leaf で `showSource(false)`（選択ノードの原文位置へカーソル）、Markdown view なら同じ leaf を map view にする。frontmatter は不要で、任意の `.md` を往復できる。既定ホットキーは登録しない。
+
+`mappy-layout` を持つノートは、Excalidraw（`excalidraw-plugin`）や Kanban（`kanban-plugin`）と同じ方法で map view に導く。`WorkspaceLeaf.prototype.setViewState` を `patchMethod` で包み、`type: "markdown"` かつ `state.file` が該当ノートなら `type` を `mappy-map` に置き換える。`patchMethod` は `monkey-around` と同じ意味論（別プラグインが後から包んでいても、解除後は素通しになり原本を取り違えない）を依存なしで持つ。
+
+- leaf ごとの選択を `WeakMap<WorkspaceLeaf, path>` に持つ。トグルで Markdown にした leaf は、同じノートを開き直しても Markdown のまま。別のノートを開くか map に戻すと記録を捨てる。
+- `map → Markdown` の分割（`showSource(true)`）で作る新しい leaf も同じ経路で Markdown を維持する。
+- 判定は `metadataCache` の frontmatter で行い、`excalidraw-plugin` を持つ図面は対象外にする。起動時の復元で cache が未準備なら保存済みの view type のまま開く。
+- 公開 API だけの代替（`file-open` / `layout-change` 後に差し替える）は一瞬 Markdown が見えるうえ、他プラグインが内部で作る非アクティブな leaf（Excalidraw の対話フレームなど）に届かないため採用しない。`setViewState` は公開型の公開メソッドだが prototype の差し替え自体は非公開の慣習であり、解除と素通しをテストで固定する。
+
+## 9. Excalidraw 連携
+
+Excalidraw プラグインが有効なら、`window.ExcalidrawAutomate` の公開 API だけを使って二つの経路を提供する。npm の型パッケージは 2023 年で止まっているため、使うメンバーだけを `src/types/excalidraw-automate.ts` に写す。
+
+1. **対話フレーム（ライブ）**: Excalidraw の「Insert interactive frame」は内部で `leaf.openFile` した後に `getViewType()` を見て、`markdown` 以外の専用ビューをそのまま表示する。8 節のルーティングにより、`mappy-layout` を持つノートは Mappy のビューとして生きたまま埋め込まれる。Mappy 側に Excalidraw 依存のコードはない。
+2. **ネイティブ要素（スナップショット）**: Option/Alt を押しながら `.md` をキャンバスへドロップすると、`onDropHook` が `type: "file"` の内部ドラッグを受け取り、マップを Excalidraw の要素として挿入する。修飾なし（リンク）・Shift（画像）・Ctrl（embeddable）など Excalidraw 既定の割り当ては変えない。コマンド「現在のマップを Excalidraw の図面に挿入」は、直前にアクティブだった図面へ現在の表示（レイアウト・折りたたみ）を挿入する。
+
+`onDropHook` は代入式の 1 スロットなので、既存のフックを退避して連結し、扱わないドロップは既存へ渡す。unload 時は自分が最前なら復元し、他が上に包んでいれば素通しにする。`onLayoutReady` と `layout-change` で冪等に再確認し、Excalidraw の後読み・再読込に追従する。判定は同期で `true` を返し、挿入は非同期に行う（Excalidraw 自身と同じ）。
+
+要素の対応は map view の見た目に合わせる: 表示ルートは塗り矩形＋白文字、第一階層は枠付き矩形、下位は平文。線は `layoutTree` の `M/H/V` パスを折れ線にし、`![[画像]]` はラベル下に 240×140 以内で並べ、タイトル・本文の最初のリンクを要素の `link` に、ルートには元ノートへの `link` を付ける。1 回の挿入を 1 グループにする。サイズは DOM ではなく Excalidraw 自身の計測に従う: 全要素を原点に作成 → 実寸を読む → `buildScene` で配置 → 座標を書き戻す。フォントは図面の `currentItemFontFamily` を使う。挿入後の図面と元ノートは同期しない。
+
+対話フレーム内では Excalidraw が `--text-normal` を空にするため、線の色は `--mappy-line: currentColor` にしている。`var()` が空文字を展開すると `stroke` は無効値になり、`border` の省略形だけが生き残る。
+
+## 10. 最初に検証する順序
 
 1. 原文範囲付きの parse と、変更しない部分のバイト保全。
 2. 分割エディタで保存前入力の追従と、map からの 1 transaction・Undo。
@@ -147,5 +176,6 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 4. リンク・画像描画と component の廃棄。
 5. 500 ノードの差分更新、viewport 維持、トラックパッド。
 6. 通常配置とタイムラインを同じコマンドで編集できること。
+7. frontmatter ルーティング（通常 leaf・Excalidraw の埋め込み leaf）と、Option ドロップ／コマンドによる Excalidraw への挿入。
 
 この順序で、保存方式の欠陥をノード装飾や高度なレイアウトより先に見つける。

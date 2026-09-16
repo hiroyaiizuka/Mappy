@@ -1,7 +1,7 @@
 import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
-import { GFM, parser } from "@lezer/markdown";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
+import { attachmentMarkdown } from "../core/attachments";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type PositionedNode } from "../layout/layout";
 
 interface NodeEntry {
@@ -170,55 +170,4 @@ function countDescendants(root: MindNode): Map<string, number> {
     counts.set(node.id, count);
   }
   return counts;
-}
-
-const attachmentParser = parser.configure(GFM);
-
-/** Extract only link/image syntax; never render body code blocks or rewrite it. */
-function attachmentMarkdown(body: string): string {
-  if (!body.includes("[") && !body.includes("<") && !/(?:https?:\/\/|www\.)/u.test(body)) return "";
-  const protectedRanges: { from: number; to: number }[] = [];
-  const attachments: { from: number; to: number }[] = [];
-  const references: string[] = [];
-  const literalNodes = new Set(["InlineCode", "FencedCode", "CodeBlock", "HTMLBlock", "HTMLTag", "CommentBlock", "Escape"]);
-  attachmentParser.parse(body).iterate({
-    enter(node) {
-      if (literalNodes.has(node.name) || node.name === "LinkReference") {
-        protectedRanges.push({ from: node.from, to: node.to });
-        if (node.name === "LinkReference") references.push(body.slice(node.from, node.to));
-        return false;
-      }
-      if (["Link", "Image", "Autolink", "URL"].includes(node.name)) {
-        attachments.push({ from: node.from, to: node.to });
-        return false;
-      }
-      return true;
-    },
-  });
-  for (let position = 0; position < body.length;) {
-    const from = body.indexOf("%%", position);
-    if (from === -1) break;
-    const literal = protectedRanges.find(range => range.from <= from && from < range.to);
-    if (literal) { position = literal.to; continue; }
-    const close = body.indexOf("%%", from + 2);
-    const to = close === -1 ? body.length : close + 2;
-    protectedRanges.push({ from, to });
-    position = to;
-  }
-  for (const match of body.matchAll(/!?\[\[[^\r\n]+?\]\]/gu)) {
-    attachments.push({ from: match.index, to: match.index + match[0].length });
-  }
-  const snippets: string[] = [];
-  let lastEnd = -1;
-  for (const range of attachments.sort((left, right) => left.from - right.from || right.to - left.to)) {
-    if (range.from < lastEnd || protectedRanges.some(literal => range.from < literal.to && range.to > literal.from)) continue;
-    let snippet = body.slice(range.from, range.to);
-    // Note/PDF transclusions stay links; only image embeds become previews.
-    if (snippet.startsWith("![[") && !/\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[|#][^\]]*)?\]\]$/iu.test(snippet)) {
-      snippet = snippet.slice(1);
-    }
-    snippets.push(snippet);
-    lastEnd = range.to;
-  }
-  return snippets.length > 0 ? [...snippets, ...references].join("\n\n") : "";
 }

@@ -1,7 +1,9 @@
 .mappy-view {
   --mappy-accent: var(--interactive-accent);
-  --mappy-line: var(--text-normal);
+  /* currentColor survives hosts that blank --text-normal, e.g. Excalidraw's embedded note containers. */
+  --mappy-line: currentColor;
   --mappy-selection: var(--color-blue);
+  color: var(--text-normal);
   position: relative;
   height: 100%;
   padding: 0 !important;

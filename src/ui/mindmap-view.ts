@@ -5,6 +5,8 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { layoutTree, type LayoutResult } from "../layout/layout";
 import { DocumentStore } from "../obsidian/document-store";
+import { readMapLayout } from "../obsidian/frontmatter";
+import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
@@ -38,7 +40,13 @@ export class MindmapView extends ItemView {
   private revealId: string | null = null;
   private inlineEditor: InlineEditor | undefined;
 
-  constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore) { super(leaf); }
+  constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
+
+  /** Current presentation, for exports that mirror what the user sees. */
+  snapshot(): { file: TFile; mode: "mindmap" | "timeline"; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
+    if (!this.file) return null;
+    return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
+  }
 
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
@@ -54,6 +62,7 @@ export class MindmapView extends ItemView {
     const changed = this.file !== file;
     this.file = file instanceof TFile && file.extension === "md" ? file : null;
     if (value.layout === "timeline" || value.layout === "mindmap") this.mode = value.layout;
+    else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
     if (changed) {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.document = undefined; this.selectedId = null; this.collapsed.clear(); this.needsFit = true;
@@ -392,8 +401,8 @@ export class MindmapView extends ItemView {
     const leaf = split
       ? this.app.workspace.createLeafBySplit(this.leaf, "vertical", true)
       : this.leaf;
-    // ItemView cannot open a file without first selecting the Markdown view type.
-    await leaf.setViewState({ type: "markdown", state: { file: file.path }, active: true });
+    // The router keeps this leaf on Markdown even when the note opens as a map by default.
+    await this.router.openMarkdown(leaf, file);
     if (leaf.view instanceof MarkdownView) {
       const pos = leaf.view.editor.offsetToPos(offset);
       leaf.view.editor.setCursor(pos);
