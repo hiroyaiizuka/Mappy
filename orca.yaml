@@ -1,0 +1,7 @@
+# Orca (https://www.onorca.dev) のリポジトリ設定。
+# worktree.sharedDirectories: primary checkout の gitignore 済みディレクトリを
+# 新しいワークツリーへ共有する（macOS では APFS clone、それ以外は symlink）。
+# 依存の更新は primary checkout（orca/projects/Mappy）で npm install して反映する。
+worktree:
+  sharedDirectories:
+    - node_modules
