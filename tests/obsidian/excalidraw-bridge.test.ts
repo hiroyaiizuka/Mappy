@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import { parseMarkdown } from '../../src/core/markdown';
 import { ExcalidrawBridge, isMappyDrop } from '../../src/obsidian/excalidraw-bridge';
+import { MAPPY_KEY } from '../../src/obsidian/frontmatter';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import type {
   ExcalidrawAutomate, ExcalidrawDropData, ExcalidrawDropHook, ExcalidrawElement, ExcalidrawStyle, ExcalidrawTextFormatting,
@@ -145,8 +146,11 @@ function harness(options: {
   const app = {
     metadataCache: {
       getFileCache: (target: TFile) => {
-        const frontmatter = options.frontmatter?.[target.path];
-        return frontmatter ? { frontmatter } : null;
+        const configured = options.frontmatter;
+        const properties = configured && Object.prototype.hasOwnProperty.call(configured, target.path)
+          ? configured[target.path]
+          : { [MAPPY_KEY]: true };
+        return properties ? { frontmatter: properties } : null;
       },
       getFirstLinkpathDest: (target: string) => files.get(target) ?? files.get(`${target}.md`) ?? null,
       fileToLinktext: (target: TFile) => target.basename,
@@ -293,7 +297,10 @@ describe('ExcalidrawBridge.handleDrop', () => {
   it('stacks several dropped notes vertically and uses frontmatter layouts', async () => {
     const { bridge, automate } = harness({
       sources: { 'A.md': '## A\n- a1\n- a2\n', 'B.md': '## B\n- b1\n' },
-      frontmatter: { 'B.md': { 'mappy-layout': 'timeline' } },
+      frontmatter: {
+        'A.md': { [MAPPY_KEY]: true },
+        'B.md': { [MAPPY_KEY]: true, 'mappy-layout': 'timeline' },
+      },
     });
     expect(bridge.handleDrop(drop({ payload: { files: [file('A.md'), file('B.md')], text: null } }))).toBe(true);
     await flush();
@@ -309,6 +316,12 @@ describe('ExcalidrawBridge.handleDrop', () => {
     const root = second.find(element => element.text === 'B');
     const stage = second.find(element => element.text === 'b1');
     expect(Math.round((root?.y ?? 0) + (root?.height ?? 0) / 2)).toBe(Math.round((stage?.y ?? 0) + (stage?.height ?? 0) / 2));
+  });
+
+  it('does not claim an ordinary Markdown drop until the note is explicitly map-enabled', () => {
+    const { bridge, automate } = harness({ frontmatter: { 'Note.md': {} } });
+    expect(bridge.handleDrop(drop())).toBe(false);
+    expect(automate?.instances).toHaveLength(0);
   });
 
   it('reports failures and still destroys the automate instance', async () => {

@@ -25,6 +25,10 @@ export class Notice {
   constructor(message: string) { Notice.messages.push(message); }
 }
 
+export function normalizePath(path: string): string {
+  return path.replace(/\\/gu, '/').replace(/\/{2,}/gu, '/').replace(/^\.\//u, '').replace(/\/$/u, '');
+}
+
 export class MarkdownView {
   constructor(
     public file: ObsidianFile | null,

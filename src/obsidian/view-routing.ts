@@ -1,4 +1,5 @@
 import { WorkspaceLeaf, type TFile, type ViewState } from 'obsidian';
+import type { MapLayout } from './frontmatter';
 import { patchMethod } from './patch';
 
 export interface ViewRouterOptions {
@@ -16,6 +17,7 @@ export interface ViewRouterOptions {
  */
 export class ViewRouter {
   private readonly markdownLeaves = new WeakMap<WorkspaceLeaf, string>();
+  private readonly explicitMapLeaves = new WeakMap<WorkspaceLeaf, string>();
   private uninstall: (() => void) | null = null;
 
   constructor(private readonly options: ViewRouterOptions) {}
@@ -36,6 +38,16 @@ export class ViewRouter {
   /** Decide the view state a leaf should really receive. */
   route(leaf: WorkspaceLeaf, state: ViewState): ViewState {
     const path = typeof state.state?.file === 'string' ? state.state.file : null;
+    if (state.type === this.options.mapViewType && path) {
+      const explicit = this.explicitMapLeaves.get(leaf) === path;
+      this.explicitMapLeaves.delete(leaf);
+      if (!explicit && !this.options.isMapFile(path)) {
+        this.markdownLeaves.set(leaf, path);
+        return { ...state, type: 'markdown' };
+      }
+      this.markdownLeaves.delete(leaf);
+      return state;
+    }
     if (state.type !== 'markdown' || !path) {
       if (state.type !== 'markdown') this.markdownLeaves.delete(leaf);
       return state;
@@ -51,8 +63,16 @@ export class ViewRouter {
     return leaf.setViewState({ type: 'markdown', state: { file: file.path }, active });
   }
 
-  openMap(leaf: WorkspaceLeaf, file: TFile, active = true): Promise<void> {
+  openMap(leaf: WorkspaceLeaf, file: TFile, active = true, layout?: MapLayout): Promise<void> {
     this.markdownLeaves.delete(leaf);
-    return leaf.setViewState({ type: this.options.mapViewType, state: { file: file.path }, active });
+    this.explicitMapLeaves.set(leaf, file.path);
+    const opened = leaf.setViewState({
+      type: this.options.mapViewType,
+      state: { file: file.path, ...(layout ? { layout } : {}) },
+      active,
+    });
+    return opened.finally(() => {
+      if (this.explicitMapLeaves.get(leaf) === file.path) this.explicitMapLeaves.delete(leaf);
+    });
   }
 }

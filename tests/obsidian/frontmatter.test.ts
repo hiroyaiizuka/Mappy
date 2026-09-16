@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
-import { LAYOUT_KEY, layoutFromFrontmatter, readMapLayout, writeMapLayout } from '../../src/obsidian/frontmatter';
+import {
+  LAYOUT_KEY, MAPPY_KEY, isMappyCandidate, layoutFromFrontmatter, readMapLayout,
+  readPreferredMapLayout, writeMapLayout,
+} from '../../src/obsidian/frontmatter';
 
 function file(path = 'Note.md'): TFile {
   const result = new TFile();
@@ -22,34 +25,58 @@ function app(frontmatter: Record<string, unknown> | undefined) {
 }
 
 describe('layoutFromFrontmatter', () => {
-  it('maps values to layouts and treats absent or negative values as none', () => {
-    expect(layoutFromFrontmatter('mindmap')).toBe('mindmap');
+  it('uses timeline only for its explicit value and otherwise defaults to mindmap', () => {
     expect(layoutFromFrontmatter('Timeline ')).toBe('timeline');
-    expect(layoutFromFrontmatter(true)).toBe('mindmap');
-    expect(layoutFromFrontmatter('yes')).toBe('mindmap');
-    for (const value of [undefined, null, false, '', 'false', 'off', 'no', 0]) expect(layoutFromFrontmatter(value)).toBeNull();
+    for (const value of [undefined, null, false, '', 'mindmap', 'unknown', true]) {
+      expect(layoutFromFrontmatter(value)).toBe('mindmap');
+    }
   });
 });
 
 describe('readMapLayout', () => {
-  it('reads the reserved key from the metadata cache', () => {
-    expect(readMapLayout(app({ [LAYOUT_KEY]: 'timeline' }).instance, file())).toBe('timeline');
+  it('requires the boolean mappy marker and treats layout as optional', () => {
+    expect(readMapLayout(app({ [MAPPY_KEY]: true }).instance, file())).toBe('mindmap');
+    expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' }).instance, file())).toBe('timeline');
+    expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'unknown' }).instance, file())).toBe('mindmap');
+  });
+
+  it('does not claim ordinary, disabled, malformed, or legacy layout-only notes', () => {
     expect(readMapLayout(app({ other: 1 }).instance, file())).toBeNull();
+    expect(readMapLayout(app({ [MAPPY_KEY]: false, [LAYOUT_KEY]: 'timeline' }).instance, file())).toBeNull();
+    expect(readMapLayout(app({ [MAPPY_KEY]: 'true' }).instance, file())).toBeNull();
+    expect(readMapLayout(app({ [LAYOUT_KEY]: 'timeline' }).instance, file())).toBeNull();
     expect(readMapLayout(app(undefined).instance, file())).toBeNull();
   });
 
-  it('never claims Excalidraw drawings, even with the key present', () => {
-    expect(readMapLayout(app({ [LAYOUT_KEY]: 'mindmap', 'excalidraw-plugin': 'parsed' }).instance, file())).toBeNull();
+  it('keeps a legacy layout as the preference for an explicit migration', () => {
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'timeline' }).instance, file())).toBe('timeline');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'mindmap' }).instance, file())).toBe('mindmap');
+  });
+
+  it('never claims Excalidraw drawings and excludes them from map conversion', () => {
+    const instance = app({ [MAPPY_KEY]: true, 'excalidraw-plugin': 'parsed' }).instance;
+    expect(readMapLayout(instance, file())).toBeNull();
+    expect(isMappyCandidate(instance, file('Drawing.excalidraw.md'))).toBe(false);
   });
 });
 
 describe('writeMapLayout', () => {
-  it('sets and removes the key through processFrontMatter only', async () => {
-    const { instance, store, processFrontMatter } = app({ tags: ['a'] });
+  it('enables a mindmap with mappy true and omits the default layout property', async () => {
+    const { instance, store, processFrontMatter } = app({ tags: ['a'], [LAYOUT_KEY]: 'mindmap' });
+    await writeMapLayout(instance, file(), 'mindmap');
+    expect(store).toEqual({ tags: ['a'], [MAPPY_KEY]: true });
+    expect(processFrontMatter).toHaveBeenCalledOnce();
+  });
+
+  it('stores timeline as the optional initial layout', async () => {
+    const { instance, store } = app({ tags: ['a'] });
     await writeMapLayout(instance, file(), 'timeline');
-    expect(store).toEqual({ tags: ['a'], [LAYOUT_KEY]: 'timeline' });
+    expect(store).toEqual({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' });
+  });
+
+  it('removes both Mappy properties without changing unrelated frontmatter', async () => {
+    const { instance, store } = app({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' });
     await writeMapLayout(instance, file(), null);
     expect(store).toEqual({ tags: ['a'] });
-    expect(processFrontMatter).toHaveBeenCalledTimes(2);
   });
 });

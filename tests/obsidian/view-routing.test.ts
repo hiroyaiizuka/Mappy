@@ -41,6 +41,13 @@ describe('ViewRouter.route', () => {
     ]) expect(router().route(leaf, state)).toBe(state);
   });
 
+  it('downgrades a persisted map view when its note no longer has the map marker', () => {
+    const leaf = makeLeaf();
+    const state = { type: MAP, state: { file: 'Plain.md', layout: 'timeline' } };
+    expect(router().route(leaf, state)).toEqual({ ...state, type: 'markdown' });
+    expect(router().route(leaf, { type: 'markdown', state: { file: 'Plain.md' } }).type).toBe('markdown');
+  });
+
   it('keeps a leaf on Markdown after openMarkdown until it shows another file', async () => {
     const instance = router();
     const leaf = makeLeaf();
@@ -59,6 +66,15 @@ describe('ViewRouter.route', () => {
     await instance.openMap(leaf, file('Map.md'), false);
     expect(statesOf(leaf).at(-1)).toEqual({ type: MAP, state: { file: 'Map.md' }, active: false });
     expect(instance.route(leaf, { type: 'markdown', state: { file: 'Map.md' } }).type).toBe(MAP);
+  });
+
+  it('can carry an explicit initial layout while metadata catches up', async () => {
+    const instance = router();
+    const leaf = makeLeaf();
+    await instance.openMap(leaf, file('Map.md'), true, 'timeline');
+    expect(statesOf(leaf).at(-1)).toEqual({
+      type: MAP, state: { file: 'Map.md', layout: 'timeline' }, active: true,
+    });
   });
 
   it('other leaves are unaffected by one leaf choosing Markdown', async () => {

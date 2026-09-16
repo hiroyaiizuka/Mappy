@@ -1,7 +1,10 @@
 import { MarkdownView, Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidian";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge } from "./obsidian/excalidraw-bridge";
-import { readMapLayout, writeMapLayout } from "./obsidian/frontmatter";
+import {
+  isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout, type MapLayout,
+} from "./obsidian/frontmatter";
+import { createMindmapFile } from "./obsidian/map-files";
 import { ViewRouter } from "./obsidian/view-routing";
 import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
 
@@ -27,11 +30,31 @@ export default class MappyPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE, leaf => new MindmapView(leaf, store, this.router));
     this.addCommand({
+      id: "create-mindmap", name: "新しいマインドマップを作成",
+      callback: () => {
+        this.run(async () => {
+          const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+          const file = await createMindmapFile(this.app, sourcePath);
+          await this.open(file, false, "mindmap");
+        }, "マインドマップを作成できませんでした。");
+      },
+    });
+    this.addCommand({
+      id: "convert-note-to-mindmap", name: "このノートをマインドマップ化",
+      checkCallback: checking => {
+        const file = this.activeFile();
+        if (!file || !isMappyCandidate(this.app, file) || readMapLayout(this.app, file) !== null) return false;
+        if (!checking) this.enableMap(file);
+        return true;
+      },
+    });
+    this.addCommand({
       id: "open-mindmap", name: "マインドマップを開く",
       checkCallback: checking => {
         const file = this.activeFile();
-        if (!file) return false;
-        if (!checking) this.open(file, false);
+        const layout = file ? readMapLayout(this.app, file) : null;
+        if (!file || !layout) return false;
+        if (!checking) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
         return true;
       },
     });
@@ -39,8 +62,9 @@ export default class MappyPlugin extends Plugin {
       id: "open-mindmap-split", name: "マインドマップと Markdown を並べる",
       checkCallback: checking => {
         const file = this.activeFile();
-        if (!file) return false;
-        if (!checking) this.open(file, true);
+        const layout = file ? readMapLayout(this.app, file) : null;
+        if (!file || !layout) return false;
+        if (!checking) this.run(() => this.open(file, true, layout), "マップを開けませんでした。");
         return true;
       },
     });
@@ -53,29 +77,27 @@ export default class MappyPlugin extends Plugin {
           return true;
         }
         const file = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
-        if (file?.extension !== "md") return false;
-        if (!checking) this.open(file, false);
+        const layout = file ? readMapLayout(this.app, file) : null;
+        if (!file || !layout) return false;
+        if (!checking) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
         return true;
       },
     });
     this.addCommand({
-      id: "set-default-map", name: "このノートを既定でマップとして開く",
+      id: "save-map-layout", name: "現在のレイアウトを初期表示に設定",
       checkCallback: checking => {
-        const file = this.activeFile();
-        if (!file) return false;
-        if (!checking) {
-          const layout = this.app.workspace.getActiveViewOfType(MindmapView)?.snapshot()?.mode ?? "mindmap";
-          this.run(() => writeMapLayout(this.app, file, layout), "設定を書き込めませんでした。");
-        }
+        const snapshot = this.app.workspace.getActiveViewOfType(MindmapView)?.snapshot();
+        if (!snapshot) return false;
+        if (!checking) this.run(() => writeMapLayout(this.app, snapshot.file, snapshot.mode), "設定を書き込めませんでした。");
         return true;
       },
     });
     this.addCommand({
-      id: "unset-default-map", name: "既定でマップとして開く設定を解除",
+      id: "remove-mindmap", name: "このノートのマインドマップ化を解除",
       checkCallback: checking => {
         const file = this.activeFile();
         if (!file || readMapLayout(this.app, file) === null) return false;
-        if (!checking) this.run(() => writeMapLayout(this.app, file, null), "設定を書き込めませんでした。");
+        if (!checking) this.run(() => this.disableMap(file), "マインドマップ化を解除できませんでした。");
         return true;
       },
     });
@@ -100,15 +122,23 @@ export default class MappyPlugin extends Plugin {
     });
     this.addRibbonIcon("git-fork", "マインドマップを開く", () => {
       const file = this.activeFile();
-      if (file) this.open(file, false); else new Notice("Markdown ノートを開いてください。");
+      const layout = file ? readMapLayout(this.app, file) : null;
+      if (file && layout) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
+      else if (file && isMappyCandidate(this.app, file)) new Notice("先に「このノートをマインドマップ化」を実行してください。");
+      else new Notice("Markdown ノートを開いてください。");
     });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
-      if (!(file instanceof TFile) || file.extension !== "md") return;
+      if (!(file instanceof TFile) || !isMappyCandidate(this.app, file)) return;
+      const layout = readMapLayout(this.app, file);
+      if (!layout) {
+        menu.addItem(item => item.setTitle("このノートをマインドマップ化").setIcon("git-fork")
+          .onClick(() => { this.enableMap(file); }));
+        return;
+      }
       menu.addItem(item => item.setTitle("マインドマップを開く").setIcon("git-fork")
-        .onClick(() => { this.open(file, false); }));
-      const current = readMapLayout(this.app, file);
-      menu.addItem(item => item.setTitle(current ? "既定でマップとして開く設定を解除" : "既定でマップとして開く").setIcon("git-fork")
-        .onClick(() => { this.run(() => writeMapLayout(this.app, file, current ? null : "mindmap"), "設定を書き込めませんでした。"); }));
+        .onClick(() => { this.run(() => this.open(file, false, layout), "マップを開けませんでした。"); }));
+      menu.addItem(item => item.setTitle("マインドマップ化を解除").setIcon("file-text")
+        .onClick(() => { this.run(() => this.disableMap(file), "マインドマップ化を解除できませんでした。"); }));
     }));
   }
 
@@ -121,23 +151,37 @@ export default class MappyPlugin extends Plugin {
   /** A Markdown note is exported as it would open: frontmatter layout, nothing collapsed. */
   private markdownSnapshot(): { file: TFile; mode: "mindmap" | "timeline"; collapsed: ReadonlySet<string> } | null {
     const file = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
-    if (file?.extension !== "md") return null;
-    return { file, mode: readMapLayout(this.app, file) ?? "mindmap", collapsed: new Set() };
+    const mode = file ? readMapLayout(this.app, file) : null;
+    if (!file || !mode) return null;
+    return { file, mode, collapsed: new Set() };
   }
 
   private run(action: () => Promise<void>, fallback: string): void {
     void action().catch((error: unknown) => { new Notice(error instanceof Error ? error.message : fallback); });
   }
 
-  private open(file: TFile, split: boolean): void {
+  private enableMap(file: TFile): void {
+    const layout = readPreferredMapLayout(this.app, file);
+    this.run(async () => {
+      await writeMapLayout(this.app, file, layout);
+      await this.open(file, false, layout);
+    }, "ノートをマインドマップ化できませんでした。");
+  }
+
+  private async disableMap(file: TFile): Promise<void> {
+    await writeMapLayout(this.app, file, null);
+    const map = this.app.workspace.getActiveViewOfType(MindmapView);
+    if (map?.file === file) await map.showSource(false);
+  }
+
+  private open(file: TFile, split: boolean, layout: MapLayout): Promise<void> {
     const workspace = this.app.workspace;
     const map = workspace.getActiveViewOfType(MindmapView);
     if (split && map?.file === file) {
-      this.run(() => map.showSource(true), "Markdown を開けませんでした。");
-      return;
+      return map.showSource(true);
     }
     const current: WorkspaceLeaf = workspace.getActiveViewOfType(MarkdownView)?.leaf ?? workspace.getLeaf(false);
     const leaf = split ? workspace.createLeafBySplit(current, "vertical", true) : current;
-    this.run(() => this.router.openMap(leaf, file), "マップを開けませんでした。");
+    return this.router.openMap(leaf, file, true, layout);
   }
 }

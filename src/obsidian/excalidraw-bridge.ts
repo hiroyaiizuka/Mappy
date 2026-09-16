@@ -95,7 +95,7 @@ export class ExcalidrawBridge {
   /** Synchronous decision for Excalidraw; the import itself runs afterwards. */
   handleDrop(data: ExcalidrawDropData): boolean {
     if (data.type !== 'file' || !isMappyDrop(data.event)) return false;
-    const files = (data.payload.files ?? []).filter(file => file.extension === 'md' && !this.isExcalidrawFile(file));
+    const files = (data.payload.files ?? []).filter(file => readMapLayout(this.app, file) !== null);
     if (files.length === 0) return false;
     void this.importFiles(files, data.view, [data.pointerPosition.x, data.pointerPosition.y]).catch((error: unknown) => {
       this.report(error instanceof Error ? error.message : 'Excalidraw への挿入に失敗しました。');
@@ -130,10 +130,6 @@ export class ExcalidrawBridge {
     } finally {
       ea.destroy?.();
     }
-  }
-
-  private isExcalidrawFile(file: TFile): boolean {
-    return this.app.metadataCache.getFileCache(file)?.frontmatter?.['excalidraw-plugin'] !== undefined;
   }
 
   /** Create at the origin, measure, lay out, then move: sizes come from Excalidraw itself. */
