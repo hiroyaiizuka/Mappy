@@ -103,7 +103,7 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 80px;
-  max-width: 404px;
+  max-width: 303px;
   min-height: 22px;
   margin: 0;
   padding: 0;
@@ -118,7 +118,7 @@
   resize: none;
 }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
-.mappy-view .mappy-inline-error { max-width: 404px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
+.mappy-view .mappy-inline-error { max-width: 303px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
 .mappy-view .mappy-inline-error:empty { display: none; }
 .mappy-view .mappy-node-toggle {
   position: absolute;

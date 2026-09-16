@@ -34,7 +34,7 @@ export function readPreferredMapLayout(app: App, file: TFile): MapLayout {
   return layoutFromFrontmatter(frontmatter(app, file)?.[LAYOUT_KEY]);
 }
 
-/** Explicit command only; viewing never writes. Obsidian's atomic frontmatter path handles open editors. */
+/** Explicit conversion, removal, or layout selection. Obsidian's atomic frontmatter path handles open editors. */
 export function writeMapLayout(app: App, file: TFile, layout: MapLayout | null): Promise<void> {
   return app.fileManager.processFrontMatter(file, (properties: Record<string, unknown>) => {
     if (layout) {

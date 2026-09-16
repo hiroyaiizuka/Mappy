@@ -64,7 +64,7 @@ mappy: true
     この本文もノードと一緒に保持する。
 ```
 
-`mappy: true` はマップの必須識別子である。文字列 `"true"`、`false`、`mappy-layout` だけのノートは対象にしない。`mappy-layout` は任意の初期表示設定で、`timeline` のときだけタイムライン、それ以外と省略時は通常マップにする。新規作成・マインドマップ化・解除・初期表示設定だけが frontmatter を書き、閲覧・一時的なレイアウト切替・Excalidraw への挿入では書かない。旧 `mappy-layout` 単独ノートは自動で取得せず、明示的なマインドマップ化で旧レイアウトを引き継いで `mappy: true` を追加する。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
+`mappy: true` はマップの必須識別子である。文字列 `"true"`、`false`、`mappy-layout` だけのノートは対象にしない。`mappy-layout` は任意の初期表示設定で、`timeline` のときだけタイムライン、それ以外と省略時は通常マップにする。新規作成・マインドマップ化・解除と、レイアウトボタンによる明示選択だけが frontmatter を書く。タイムライン選択は `mappy-layout: timeline` を保存し、通常マップ選択はキーを削除する。閲覧・折りたたみ・ズーム・Excalidraw への挿入では書かない。旧 `mappy-layout` 単独ノートは自動で取得せず、明示的なマインドマップ化で旧レイアウトを引き継いで `mappy: true` を追加する。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
 
 - ATX 見出し、Setext、frontmatter、フェンス、空行、CRLF、末尾改行、引用、コメントを fixture で扱う。初期に編集未対応の構文は表示または source 編集へ誘導し、推測で変更しない。
 - 不明な記法は原文の範囲として保存する。本文を AST 全体から再生成しない。
@@ -142,7 +142,7 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 
 同じ側の枝は包絡矩形を使って間隔を確保し、反対側は横幅を共有する。計測と配置は明示的なスタックで処理し、深い木で再帰スタックに依存しない。長文・画像が混在する実機表示と性能は別途記録する。
 
-保存順序・ノード ID・編集コマンドは通常マップと共通。日時比例や工数を扱うものではなく、講座の章立てを表す配置である。レイアウト変更で本文を書き換えない。
+保存順序・ノード ID・編集コマンドは通常マップと共通。日時比例や工数を扱うものではなく、講座の章立てを表す配置である。レイアウト変更では初期表示用の frontmatter だけを更新し、本文を書き換えない。
 
 ## 8. 表裏切替とビューのルーティング
 
@@ -160,7 +160,7 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 Excalidraw プラグインが有効なら、`window.ExcalidrawAutomate` の公開 API だけを使って二つの経路を提供する。npm の型パッケージは 2023 年で止まっているため、使うメンバーだけを `src/types/excalidraw-automate.ts` に写す。
 
 1. **対話フレーム（ライブ）**: Excalidraw の「Insert interactive frame」は内部で `leaf.openFile` した後に `getViewType()` を見て、`markdown` 以外の専用ビューをそのまま表示する。8 節のルーティングにより、`mappy: true` を持つノートは Mappy のビューとして生きたまま埋め込まれる。Mappy 側に Excalidraw 依存のコードはない。
-2. **ネイティブ要素（スナップショット）**: Option/Alt を押しながら `mappy: true` の `.md` をキャンバスへドロップすると、`onDropHook` が `type: "file"` の内部ドラッグを受け取り、マップを Excalidraw の要素として挿入する。通常 Markdown は扱わず、修飾なし（リンク）・Shift（画像）・Ctrl（embeddable）など Excalidraw 既定の割り当ては変えない。コマンド「現在のマップを Excalidraw の図面に挿入」は、直前にアクティブだった図面へ現在の表示（レイアウト・折りたたみ）を挿入する。
+2. **ネイティブ要素（スナップショット）**: Option/Alt を押しながら `mappy: true` の `.md` をキャンバスへドロップすると、`onDropHook` が `type: "file"` の内部ドラッグを受け取り、マップを Excalidraw の要素として挿入する。通常 Markdown は扱わず、Excalidraw 既定の挿入ダイアログも維持する。既定経路で Mappy ノートから新しい embeddable／Markdown image が作られた場合は、Excalidraw Automate の identity-preserving edit でその要素の `strokeColor` だけを `transparent` にして外枠を消す。コマンド「現在のマップを Excalidraw の図面に挿入」は、直前にアクティブだった図面へ現在の表示（レイアウト・折りたたみ）を挿入する。
 
 `onDropHook` は代入式の 1 スロットなので、既存のフックを退避して連結し、扱わないドロップは既存へ渡す。unload 時は自分が最前なら復元し、他が上に包んでいれば素通しにする。`onLayoutReady` と `layout-change` で冪等に再確認し、Excalidraw の後読み・再読込に追従する。判定は同期で `true` を返し、挿入は非同期に行う（Excalidraw 自身と同じ）。
 

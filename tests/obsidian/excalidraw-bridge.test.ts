@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import { parseMarkdown } from '../../src/core/markdown';
-import { ExcalidrawBridge, isMappyDrop } from '../../src/obsidian/excalidraw-bridge';
+import { ExcalidrawBridge, findBorderedMappyEmbeddables, isMappyDrop } from '../../src/obsidian/excalidraw-bridge';
 import { MAPPY_KEY } from '../../src/obsidian/frontmatter';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import type {
@@ -63,6 +64,12 @@ class FakeAutomate implements ExcalidrawAutomate {
 
   getExcalidrawAPI(): { getAppState(): Record<string, unknown> } | null {
     return { getAppState: () => ({ currentItemFontFamily: 5 }) };
+  }
+
+  getViewElements(): ExcalidrawElement[] { return this.getElements(); }
+  copyViewElementsToEAforEditing(elements: ExcalidrawElement[]): void {
+    this.elements.clear();
+    for (const element of elements) this.elements.set(element.id, { ...element, style: {} });
   }
 
   reset(): void { this.calls.push('reset'); this.elements.clear(); this.style = FakeAutomate.defaultStyle(); }
@@ -184,12 +191,37 @@ function drop(overrides: Partial<ExcalidrawDropData> = {}): ExcalidrawDropData {
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
+afterEach(() => { vi.useRealTimers(); });
+
 describe('isMappyDrop', () => {
   it('accepts Option/Alt alone', () => {
     expect(isMappyDrop({ altKey: true, shiftKey: false, ctrlKey: false, metaKey: false })).toBe(true);
     expect(isMappyDrop({ altKey: false, shiftKey: false, ctrlKey: false, metaKey: false })).toBe(false);
     expect(isMappyDrop({ altKey: true, shiftKey: true, ctrlKey: false, metaKey: false })).toBe(false);
     expect(isMappyDrop({ altKey: true, shiftKey: false, ctrlKey: true, metaKey: false })).toBe(false);
+  });
+});
+
+describe('findBorderedMappyEmbeddables', () => {
+  it('finds only bordered Excalidraw embeds whose links resolve to Mappy notes', () => {
+    const { files } = harness({
+      sources: { 'Map.md': SOURCE, 'Plain.md': '# Plain\n' },
+      frontmatter: { 'Map.md': { [MAPPY_KEY]: true }, 'Plain.md': {} },
+    });
+    const app = {
+      metadataCache: {
+        getFileCache: (target: TFile) => target.path === 'Map.md' ? { frontmatter: { [MAPPY_KEY]: true } } : { frontmatter: {} },
+        getFirstLinkpathDest: (target: string) => files.get(target.replace(/\.md$/u, '')) ?? files.get(target) ?? null,
+      },
+    } as unknown as App;
+    const elements = [
+      { id: 'map', type: 'embeddable', link: '[[Map.md]]', strokeColor: '#000000' },
+      { id: 'plain', type: 'embeddable', link: '[[Plain.md]]', strokeColor: '#000000' },
+      { id: 'clear', type: 'embeddable', link: '[[Map.md]]', strokeColor: 'transparent' },
+      { id: 'text', type: 'text', link: '[[Map.md]]', strokeColor: '#000000' },
+    ] as ExcalidrawElement[];
+
+    expect(findBorderedMappyEmbeddables(app, file('Drawing.excalidraw.md'), elements).map(element => element.id)).toEqual(['map']);
   });
 });
 
@@ -239,6 +271,26 @@ describe('ExcalidrawBridge.ensureHook', () => {
     expect(bridge.ensureHook()).toBe(true);
     expect(current.onDropHook).not.toBe(first);
     expect(typeof current.onDropHook).toBe('function');
+  });
+
+  it('makes a newly-created built-in Mappy embeddable borderless after the drop dialog', async () => {
+    vi.useFakeTimers();
+    const { bridge, automate } = harness();
+    bridge.ensureHook();
+    const ordinary = drop({ event: { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false } });
+    expect(automate?.onDropHook?.(ordinary)).toBe(false);
+    const ea = automate?.instances[0];
+    expect(ea).toBeDefined();
+    ea?.elements.set('embed-1', {
+      id: 'embed-1', type: 'embeddable', x: 0, y: 0, width: 500, height: 300,
+      link: '[[Note.md]]', strokeColor: '#000000', style: {},
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(ea?.added).toHaveLength(1);
+    expect(ea?.added[0]?.elements[0]?.strokeColor).toBe('transparent');
+    expect(ea?.calls.at(-1)).toBe('destroy');
   });
 });
 

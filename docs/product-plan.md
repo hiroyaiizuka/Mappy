@@ -173,8 +173,8 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 ### M6: 表裏切替と Excalidraw 連携
 
 - 「マップと Markdown を切り替え」を 1 コマンドで往復させ、ユーザーがホットキーを割り当てられるようにする。既定ホットキーは登録しない。
-- frontmatter に YAML 真偽値 `mappy: true` を持つノートだけをマップとして開く。`mappy-layout: timeline` は任意の初期表示設定とし、省略時は通常マップにする。書き込みは新規作成・マインドマップ化・解除・初期表示設定の明示コマンドだけで行う。Excalidraw の対話フレームなど他プラグインが内部で開く leaf でも同じ識別規則を使う。
-- Option/Alt を押したドロップで Excalidraw のネイティブ要素として挿入する。Excalidraw 既定の修飾キーの動作は変えない。コマンドからは現在のレイアウトと折りたたみを反映する。
+- frontmatter に YAML 真偽値 `mappy: true` を持つノートだけをマップとして開く。`mappy-layout: timeline` は任意の初期表示設定とし、省略時は通常マップにする。レイアウトボタンの明示操作でこの設定を更新し、次回も選んだ表示へ戻す。Excalidraw の対話フレームなど他プラグインが内部で開く leaf でも同じ識別規則を使う。
+- Option/Alt を押したドロップで Excalidraw のネイティブ要素として挿入する。Excalidraw 既定の挿入ダイアログは維持し、Mappy ノートから新しく作られた embeddable／Markdown image の外枠だけを透明にする。コマンドからは現在のレイアウトと折りたたみを反映する。
 - 挿入後の図面は元ノートと同期しない。ルート要素の `link` で元ノートへ戻れる。
 
 **受入条件:** 新規マップには `mappy: true` と H2 ルートが入る。通常ノートは明示的にマインドマップ化するまでマップ表示・トグル・Excalidraw 挿入の対象にならない。解除では Mappy のプロパティだけを消して本文と他の frontmatter を保つ。トグルで未保存内容を失わず、同じ leaf で往復できる。トグルで Markdown にした leaf は開き直しても Markdown のまま。Excalidraw が無効でも Mappy は通常どおり動き、Excalidraw を後から有効化・再読込してもドロップが効く。挿入した要素は 1 グループで、ルート・第一階層・下位の見た目と線の接続が map view と対応する。Mappy を無効化するとフックと `setViewState` の差し替えが外れる。
@@ -214,7 +214,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 | 描画方式 | HTML ノード＋SVG の線を第一候補にする | 計測で応答性を満たせず、差分更新や画面外の省略でも改善しない場合 |
 | 外部製品コード | まず自前実装し、機能と操作を参考にする | MIT 等のコードを取り込む具体的な必要が生じ、表示義務とライセンスを確認した場合 |
 | 公開用ライセンス | 未選択。ローカルでは権利を留保する扱い | 公開前にユーザーが選択する。Light の MIT を Mappy に自動適用しない |
-| マップ識別子 | YAML 真偽値 `mappy: true` を必須識別子にする。`mappy-layout` は任意の初期レイアウトに分離し、明示コマンドだけが書く | ファイル種別を扱う Obsidian の公開 API が提供された場合 |
+| マップ識別子 | YAML 真偽値 `mappy: true` を必須識別子にする。`mappy-layout` は任意の初期レイアウトに分離し、レイアウト選択時に書く | ファイル種別を扱う Obsidian の公開 API が提供された場合 |
 | ビューの切替方法 | Excalidraw・Kanban と同じ `setViewState` の差し替え。依存なしの `patchMethod` で解除と素通しを保証 | Obsidian が公開 API でファイル種別ごとの既定ビューを提供した場合 |
 | Excalidraw 連携 | 公開 API `ExcalidrawAutomate` のみ。Option ドロップとコマンドでネイティブ要素、対話フレームでライブ表示 | Excalidraw がフックを複数登録できる API に変えた場合、または双方向同期の要望が明確になった場合 |
 

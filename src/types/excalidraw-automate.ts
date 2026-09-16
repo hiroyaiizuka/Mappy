@@ -12,7 +12,9 @@ export interface ExcalidrawElement {
   y: number;
   width: number;
   height: number;
+  strokeColor?: string;
   link?: string | null;
+  customData?: Record<string, unknown> | null;
   groupIds?: string[];
   containerId?: string | null;
   boundElements?: { type: string; id: string }[] | null;
@@ -68,6 +70,8 @@ export interface ExcalidrawAutomate {
   getAPI(view?: ExcalidrawViewLike): ExcalidrawAutomate;
   setView(view?: ExcalidrawViewLike | 'active' | 'first' | 'auto' | null): ExcalidrawViewLike | null;
   getExcalidrawAPI(): { getAppState(): Record<string, unknown> } | null;
+  getViewElements(): ExcalidrawElement[];
+  copyViewElementsToEAforEditing(elements: ExcalidrawElement[], copyImages?: boolean): void;
   reset(): void;
   clear(): void;
   destroy?(): void;

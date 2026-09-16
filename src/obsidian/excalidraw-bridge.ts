@@ -6,7 +6,7 @@ import {
 import type { NodeSize } from '../layout/layout';
 import type { Point } from '../layout/path-points';
 import type {
-  ExcalidrawAutomate, ExcalidrawDropData, ExcalidrawDropHook, ExcalidrawStyle, ExcalidrawViewLike,
+  ExcalidrawAutomate, ExcalidrawDropData, ExcalidrawDropHook, ExcalidrawElement, ExcalidrawStyle, ExcalidrawViewLike,
 } from '../types/excalidraw-automate';
 import type { DocumentStore } from './document-store';
 import { readMapLayout } from './frontmatter';
@@ -24,6 +24,8 @@ const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'jpg', 'jpeg', 'png', 's
 const MAX_IMAGE = { width: 240, height: 140 };
 const FILE_GAP = 40;
 const ROUNDED = { type: 3 };
+const DEFAULT_DROP_POLL_MS = 200;
+const DEFAULT_DROP_TIMEOUT_MS = 60_000;
 
 const BASE_STYLE: Partial<ExcalidrawStyle> = {
   strokeColor: '#1e1e1e', backgroundColor: 'transparent', fillStyle: 'solid', strokeWidth: 1, strokeStyle: 'solid',
@@ -42,6 +44,28 @@ interface CreatedNode { label: CreatedBlock; images: CreatedBlock[] }
 /** Only the modifier that Excalidraw's own internal-drag defaults leave unused on both platforms. */
 export function isMappyDrop(event: ExcalidrawDropData['event']): boolean {
   return event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;
+}
+
+function wikiLinkPath(link: string | null | undefined): string | null {
+  if (!link) return null;
+  const value = /^\[\[([\s\S]+)\]\]$/u.exec(link.trim())?.[1] ?? link.trim();
+  const path = value.split('|', 1)[0]?.split('#', 1)[0]?.split('^', 1)[0]?.trim();
+  return path || null;
+}
+
+function mappyTarget(app: App, drawing: TFile, element: ExcalidrawElement): TFile | null {
+  if (element.type !== 'embeddable') return null;
+  const path = wikiLinkPath(element.link);
+  if (!path) return null;
+  const target = app.metadataCache.getFirstLinkpathDest(path, drawing.path);
+  return target && readMapLayout(app, target) !== null ? target : null;
+}
+
+/** Excalidraw stores the visible outer frame as the embeddable element's stroke. */
+export function findBorderedMappyEmbeddables(
+  app: App, drawing: TFile, elements: readonly ExcalidrawElement[],
+): ExcalidrawElement[] {
+  return elements.filter(element => element.strokeColor !== 'transparent' && mappyTarget(app, drawing, element) !== null);
 }
 
 /**
@@ -75,6 +99,7 @@ export class ExcalidrawBridge {
     const hook: ExcalidrawDropHook = data => {
       if (this.disposed || this.hook !== hook) return previous?.(data) ?? false;
       if (this.handleDrop(data)) return true;
+      this.watchDefaultDrop(data);
       return previous?.(data) ?? false;
     };
     ea.onDropHook = hook;
@@ -101,6 +126,54 @@ export class ExcalidrawBridge {
       this.report(error instanceof Error ? error.message : 'Excalidraw への挿入に失敗しました。');
     });
     return true;
+  }
+
+  /**
+   * Excalidraw's built-in "as embeddable / as image" flow completes after its
+   * modal closes. Observe only the newly-created element, then persist a
+   * transparent stroke through EA's identity-preserving edit workflow.
+   */
+  private watchDefaultDrop(data: ExcalidrawDropData): void {
+    if (data.type !== 'file' || isMappyDrop(data.event)) return;
+    if (!(data.payload.files ?? []).some(file => readMapLayout(this.app, file) !== null)) return;
+    const host = this.automate();
+    if (!host) return;
+    const ea = host.getAPI(data.view);
+    if (typeof ea.getViewElements !== 'function' || typeof ea.copyViewElementsToEAforEditing !== 'function') {
+      ea.destroy?.();
+      return;
+    }
+    const before = new Set(ea.getViewElements().map(element => element.id));
+    void this.removeDefaultDropBorder(ea, data.excalidrawFile, before).catch((error: unknown) => {
+      this.report(error instanceof Error ? error.message : 'Excalidraw の埋め込み枠を消せませんでした。');
+    });
+  }
+
+  private async removeDefaultDropBorder(
+    ea: ExcalidrawAutomate, drawing: TFile, before: ReadonlySet<string>,
+  ): Promise<void> {
+    const started = Date.now();
+    try {
+      while (!this.disposed && Date.now() - started < DEFAULT_DROP_TIMEOUT_MS) {
+        await new Promise<void>(resolve => { window.setTimeout(resolve, DEFAULT_DROP_POLL_MS); });
+        const created = ea.getViewElements().filter(element => !before.has(element.id));
+        const mappy = created.filter(element => mappyTarget(this.app, drawing, element) !== null);
+        if (mappy.length === 0) continue;
+        const bordered = findBorderedMappyEmbeddables(this.app, drawing, mappy);
+        if (bordered.length === 0) return;
+        ea.clear();
+        ea.copyViewElementsToEAforEditing(bordered);
+        for (const element of bordered) {
+          const copy = ea.getElement(element.id);
+          if (copy) copy.strokeColor = 'transparent';
+        }
+        await ea.addElementsToView(false, true, false);
+        return;
+      }
+    } finally {
+      ea.clear();
+      ea.destroy?.();
+    }
   }
 
   async importFiles(files: TFile[], view: ExcalidrawViewLike, origin: Point): Promise<void> {

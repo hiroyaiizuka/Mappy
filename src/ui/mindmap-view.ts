@@ -5,7 +5,7 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { layoutTree, type LayoutResult } from "../layout/layout";
 import { DocumentStore } from "../obsidian/document-store";
-import { readMapLayout } from "../obsidian/frontmatter";
+import { readMapLayout, writeMapLayout, type MapLayout } from "../obsidian/frontmatter";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
@@ -21,7 +21,7 @@ export class MindmapView extends ItemView {
   private document: MindDocument | undefined;
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
-  private mode: "mindmap" | "timeline" = "mindmap";
+  private mode: MapLayout = "mindmap";
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -39,6 +39,7 @@ export class MindmapView extends ItemView {
   private saving = false;
   private revealId: string | null = null;
   private inlineEditor: InlineEditor | undefined;
+  private layoutWrite: Promise<void> = Promise.resolve();
 
   constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
 
@@ -88,7 +89,7 @@ export class MindmapView extends ItemView {
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
     for (const [mode, label, icon] of [["mindmap", "マップ", "git-fork"], ["timeline", "タイムライン", "git-commit-horizontal"]] as const) {
       const button = this.button(modes, label, icon, () => {
-        this.mode = mode; this.needsFit = true; this.draw(); this.app.workspace.requestSaveLayout();
+        this.selectMode(mode);
       });
       this.modeButtons.set(mode, button);
     }
@@ -186,6 +187,20 @@ export class MindmapView extends ItemView {
 
   private run(action: () => Promise<void>): void {
     void action().catch(error => { new Notice(error instanceof Error ? error.message : "操作を完了できませんでした。"); });
+  }
+
+  /** A deliberate layout switch is the note's next-open preference. */
+  private selectMode(mode: MapLayout): void {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    this.needsFit = true;
+    this.draw();
+    this.app.workspace.requestSaveLayout();
+    const file = this.file;
+    if (!file) return;
+    const write = this.layoutWrite.catch(() => undefined).then(() => writeMapLayout(this.app, file, mode));
+    this.layoutWrite = write;
+    this.run(() => write);
   }
 
   private scheduleRefresh(): void {

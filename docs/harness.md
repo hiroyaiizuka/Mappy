@@ -113,6 +113,9 @@ npm run harness:preflight
 | E23 | Excalidraw で Option を押して `.md` をドロップ／修飾なし／Shift | Option だけがマップ要素を挿入し、他は Excalidraw 既定（リンク・画像）のまま |
 | E24 | Excalidraw の対話フレームに `mappy: true` のノートを挿入 | Mappy のビューがライブ表示され、線・枠・リンクが見える。通常ノートは Markdown のまま |
 | E25 | Mappy 無効化→Excalidraw 再読込→Mappy 有効化 | 無効時はフックと差し替えが外れ、有効化後にドロップが再び効く |
+| E26 | タイムラインを選択→Markdown へ切替→マップへ戻る | `mappy-layout: timeline` が保存され、再度タイムラインで開く。通常マップ選択では任意キーだけを削除する |
+| E27 | Mappy ノートを Excalidraw の「as embeddable」「as image」で挿入 | 新しく作られた Mappy 埋め込みの外枠が透明。通常ノート・既存要素・内容・リンクは変えない |
+| E28 | Enter／Tab で空ノードを追加し、長い文字列を入力 | 入力欄は旧幅の約 75% を上限にし、入力・補完・保存は従来どおり動く |
 
 記録テンプレート:
 

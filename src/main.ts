@@ -84,15 +84,6 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "save-map-layout", name: "現在のレイアウトを初期表示に設定",
-      checkCallback: checking => {
-        const snapshot = this.app.workspace.getActiveViewOfType(MindmapView)?.snapshot();
-        if (!snapshot) return false;
-        if (!checking) this.run(() => writeMapLayout(this.app, snapshot.file, snapshot.mode), "設定を書き込めませんでした。");
-        return true;
-      },
-    });
-    this.addCommand({
       id: "remove-mindmap", name: "このノートのマインドマップ化を解除",
       checkCallback: checking => {
         const file = this.activeFile();
