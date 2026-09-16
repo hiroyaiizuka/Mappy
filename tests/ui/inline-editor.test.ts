@@ -1,0 +1,306 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { InlineEditor, type InlineEditorOptions } from '../../src/ui/inline-editor';
+
+const editors = new Set<InlineEditor>();
+
+afterEach(() => {
+  for (const editor of editors) editor.dispose();
+  editors.clear();
+  document.body.replaceChildren();
+});
+
+/** Supply only the Obsidian DOM conveniences used by the actual editor. */
+function createHost(): HTMLDivElement {
+  const host = document.createElement('div');
+  host.addClass = (...classes) => { host.classList.add(...classes); };
+  host.removeClass = (...classes) => { host.classList.remove(...classes); };
+  host.createEl = <K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    options?: DomElementInfo | string,
+    callback?: (element: HTMLElementTagNameMap[K]) => void,
+  ): HTMLElementTagNameMap[K] => {
+    const element = document.createElement(tag);
+    element.setText = (value) => { element.replaceChildren(value); };
+    const info = typeof options === 'string' ? { cls: options } : options;
+    if (info?.cls) element.classList.add(...(Array.isArray(info.cls) ? info.cls : info.cls.split(' ')));
+    if (info?.text !== undefined) element.setText(info.text);
+    for (const [name, value] of Object.entries(info?.attr ?? {})) {
+      if (value !== null) element.setAttribute(name, String(value));
+    }
+    host.append(element);
+    callback?.(element);
+    return element;
+  };
+  host.createDiv = (options, callback) => host.createEl('div', options, callback);
+  document.body.append(host);
+  return host;
+}
+
+function fixture(initial = '元の名前', suggest?: InlineEditorOptions['suggest']) {
+  const host = createHost();
+  const options = {
+    initial,
+    save: vi.fn<InlineEditorOptions['save']>().mockResolvedValue(undefined),
+    finish: vi.fn<InlineEditorOptions['finish']>(),
+    resize: vi.fn<InlineEditorOptions['resize']>(),
+    restore: vi.fn<InlineEditorOptions['restore']>(),
+    ...(suggest ? { suggest } : {}),
+  } satisfies InlineEditorOptions;
+  const editor = new InlineEditor(host, options);
+  editors.add(editor);
+  const input = host.querySelector('textarea');
+  const error = host.querySelector<HTMLDivElement>('[role="alert"]');
+  if (!input || !error) throw new Error('Editor did not create its input and error UI');
+  return { host, options, editor, input, error };
+}
+
+function key(target: EventTarget, value: string, init: KeyboardEventInit = {}): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+}
+
+function pendingSave() {
+  let resolve: () => void = () => undefined;
+  let reject: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<void>((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
+}
+
+describe('InlineEditor DOM interactions', () => {
+  it('focuses the real textarea at the node and resizes on input', () => {
+    const { host, options, input } = fixture('日本語');
+    expect(host.classList.contains('is-editing')).toBe(true);
+    expect(input.value).toBe('日本語');
+    expect(input.getAttribute('aria-label')).toBe('ノードのテキスト');
+    expect(input.hasAttribute('placeholder')).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(input.value.length);
+    const calls = options.resize.mock.calls.length;
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '追加' }));
+    expect(options.resize).toHaveBeenCalledTimes(calls + 1);
+    expect(options.save).not.toHaveBeenCalled();
+  });
+
+  it.each(['Enter', 'Tab', 'Escape'])('lets suggestions consume %s without finishing the node', value => {
+    const suggestion = { handleKey: vi.fn(() => true), dispose: vi.fn() };
+    const { options, editor, input } = fixture('[[', () => suggestion);
+    key(input, value);
+    expect(suggestion.handleKey).toHaveBeenCalledTimes(1);
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+    editor.dispose();
+    expect(suggestion.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('never lets suggestions consume composition confirmation', () => {
+    const suggestion = { handleKey: vi.fn(() => true), dispose: vi.fn() };
+    const { options, input } = fixture('[[', () => suggestion);
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    key(input, 'Enter');
+    expect(suggestion.handleKey).not.toHaveBeenCalled();
+    expect(options.save).not.toHaveBeenCalled();
+  });
+
+  it.each(['新しい日本語の名前', ''])('saves %j on Enter and finishes only after save succeeds', async (draft) => {
+    const { host, options, input } = fixture();
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    input.value = draft;
+    expect(key(input, 'Enter').defaultPrevented).toBe(true);
+    expect(options.save).toHaveBeenCalledExactlyOnceWith(draft);
+    expect(input.readOnly).toBe(true);
+    expect(options.finish).not.toHaveBeenCalled();
+    expect(options.restore).not.toHaveBeenCalled();
+    pending.resolve();
+    await pending.promise;
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.restore).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('textarea')).toBeNull();
+    expect(host.classList.contains('is-editing')).toBe(false);
+  });
+
+  it('saves on Tab before requesting a child node', async () => {
+    const { options, input } = fixture('親ノード');
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    expect(key(input, 'Tab').defaultPrevented).toBe(true);
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('親ノード');
+    expect(options.finish).not.toHaveBeenCalled();
+    pending.resolve();
+    await pending.promise;
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('child', false);
+    expect(options.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels on Escape without saving and restores the host only once', () => {
+    const { host, options, editor, input } = fixture();
+    input.value = '保存しない下書き';
+    expect(key(input, 'Escape').defaultPrevented).toBe(true);
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true);
+    expect(options.restore).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('textarea')).toBeNull();
+    editor.dispose();
+    expect(options.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses Enter during composition and saves after compositionend', async () => {
+    const { options, input } = fixture();
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = '変換中';
+    expect(key(input, 'Enter').defaultPrevented).toBe(false);
+    expect(options.save).not.toHaveBeenCalled();
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+    input.value = '日本語';
+    expect(key(input, 'Enter').defaultPrevented).toBe(true);
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('日本語');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+  });
+
+  it('waits for compositionend and the final input before saving after blur', async () => {
+    const { options, input } = fixture();
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    input.value = '変換とちゅう';
+    input.blur();
+    expect(options.save).not.toHaveBeenCalled();
+    input.dispatchEvent(new CompositionEvent('compositionend', { data: '途中' }));
+    input.value = '変換途中';
+    input.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText' }));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('変換途中');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+  });
+
+  it('does not save a composition blur if focus returns before completion', async () => {
+    const { options, input } = fixture();
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    input.blur();
+    input.focus();
+    input.dispatchEvent(new CompositionEvent('compositionend'));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
+  it('does not save after disposal during a pending composition blur', async () => {
+    const { options, editor, input } = fixture();
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    input.blur();
+    input.dispatchEvent(new CompositionEvent('compositionend'));
+    editor.dispose();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
+  it.each([{ key: 'Enter', isComposing: true }, { key: 'Process', isComposing: false }])(
+    'does not commit an IME keyboard event %j', (event) => {
+      const { options, input } = fixture();
+      expect(key(input, event.key, { isComposing: event.isComposing }).defaultPrevented).toBe(false);
+      expect(options.save).not.toHaveBeenCalled();
+      expect(options.finish).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a rejected draft editable and visible, avoids blur retries, and allows an explicit retry', async () => {
+    const { host, options, input, error } = fixture();
+    options.save.mockRejectedValueOnce(new Error('外部変更との競合')).mockResolvedValueOnce(undefined);
+    input.value = '消してはいけない下書き';
+    key(input, 'Enter');
+    await Promise.resolve();
+    expect(input.value).toBe('消してはいけない下書き');
+    expect(error.textContent).toBe('外部変更との競合');
+    expect(input.readOnly).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(host.classList.contains('is-editing')).toBe(true);
+    expect(options.finish).not.toHaveBeenCalled();
+    expect(options.restore).not.toHaveBeenCalled();
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledTimes(1);
+    input.value = '修正して再試行';
+    key(input, 'Enter');
+    await Promise.resolve();
+    expect(options.save).toHaveBeenNthCalledWith(2, '修正して再試行');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.restore).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('textarea')).toBeNull();
+  });
+
+  it('prevents duplicate saves from Enter, Tab, and blur while a save is pending', async () => {
+    const { options, input } = fixture();
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    key(input, 'Enter');
+    key(input, 'Tab');
+    input.dispatchEvent(new FocusEvent('blur'));
+    expect(options.save).toHaveBeenCalledTimes(1);
+    pending.resolve();
+    await pending.promise;
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits once when the input loses focus without a previous error', async () => {
+    const { options, input } = fixture('フォーカス移動');
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('フォーカス移動');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+  });
+
+  it('does not emit finish when a disposed editor later completes a pending save', async () => {
+    const { host, options, editor, input } = fixture();
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    key(input, 'Tab');
+    editor.dispose();
+    editor.dispose();
+    expect(options.restore).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('textarea')).toBeNull();
+    pending.resolve();
+    await pending.promise;
+    expect(options.finish).not.toHaveBeenCalled();
+    expect(options.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restore a disposed draft or steal focus when its pending save fails', async () => {
+    const { host, options, editor, input, error } = fixture();
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    key(input, 'Enter');
+    editor.dispose();
+    const nextInput = document.createElement('input');
+    document.body.append(nextInput);
+    nextInput.focus();
+    pending.reject(new Error('遅れて発生したエラー'));
+    await pending.promise.catch(() => undefined);
+    expect(document.activeElement).toBe(nextInput);
+    expect(error.textContent).toBe('');
+    expect(host.querySelector('textarea')).toBeNull();
+    expect(options.finish).not.toHaveBeenCalled();
+    expect(options.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps node-level keyboard and pointer handlers from firing during text editing', () => {
+    const { host, input } = fixture();
+    const onKey = vi.fn();
+    const onPointer = vi.fn();
+    const onClick = vi.fn();
+    host.addEventListener('keydown', onKey);
+    host.addEventListener('pointerdown', onPointer);
+    host.addEventListener('click', onClick);
+    host.addEventListener('dblclick', onClick);
+    key(input, 'ArrowLeft');
+    input.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    expect(onKey).not.toHaveBeenCalled();
+    expect(onPointer).not.toHaveBeenCalled();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});

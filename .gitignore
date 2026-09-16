@@ -1,0 +1,11 @@
+node_modules/
+main.js
+main.js.map
+build-meta.json
+dist/
+coverage/
+artifacts/
+test-vault/
+.vitest/
+.DS_Store
+*.tsbuildinfo

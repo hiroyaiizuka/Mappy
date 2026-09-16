@@ -1,0 +1,99 @@
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import {
+  assertGeneratedVault,
+  assertSafePath,
+  getHarnessPaths,
+  markerContents,
+  readHarnessBuild,
+  readSafeFile,
+  runPreflight,
+} from './preflight.mjs';
+
+function ensureDirectory(paths, directory) {
+  assertSafePath(paths.root, directory, 'directory', { optional: true });
+  mkdirSync(directory, { recursive: true });
+  assertSafePath(paths.root, directory, 'directory');
+}
+
+function writeGeneratedFile(paths, filename, contents) {
+  assertGeneratedVault(paths);
+  assertSafePath(paths.root, dirname(filename), 'directory');
+  assertSafePath(paths.root, filename, 'file', { optional: true });
+  const temporary = `${filename}.${randomUUID()}.tmp`;
+  let pending = false;
+  try {
+    writeFileSync(temporary, contents, { flag: 'wx', mode: 0o600 });
+    pending = true;
+    assertSafePath(paths.root, filename, 'file', { optional: true });
+    renameSync(temporary, filename);
+    pending = false;
+  } finally {
+    if (pending) unlinkSync(temporary);
+  }
+}
+
+function makePerformanceFixture(nodeCount) {
+  const headings = [`# 講座（${nodeCount}ノード）`];
+  for (let index = 1; index < nodeCount; index += 1) {
+    headings.push((index - 1) % 20 === 0
+      ? `## 第${Math.floor((index - 1) / 20) + 1}節`
+      : `### 子ノード ${index}`);
+  }
+  return [`performance-${nodeCount}.md`, `${headings.join('\n\n')}\n`];
+}
+
+try {
+  if (process.argv.length !== 2) {
+    throw new Error('Usage: node scripts/prepare-test-vault.mjs (no arguments).');
+  }
+  const paths = getHarnessPaths();
+  const build = readHarnessBuild(paths);
+  assertSafePath(paths.root, paths.fixtureSource, 'directory');
+  const fixtures = readdirSync(paths.fixtureSource)
+    .filter((filename) => filename.endsWith('.md') || filename.endsWith('.svg'))
+    .sort()
+    .map((filename) => [filename, readSafeFile(paths.root, join(paths.fixtureSource, filename))]);
+  if (!fixtures.some(([filename]) => filename.endsWith('.md'))) {
+    throw new Error('No Markdown fixtures found in tests/fixtures.');
+  }
+  const performanceFixtures = [10, 100, 500, 2000].map(makePerformanceFixture);
+  const reservedNames = new Set(performanceFixtures.map(([filename]) => filename));
+  if (fixtures.some(([filename]) => reservedNames.has(filename))) {
+    throw new Error('performance-N.md fixture names are reserved for generated performance documents.');
+  }
+
+  const vaultExists = assertSafePath(paths.root, paths.vault, 'directory', { optional: true });
+  if (vaultExists) assertGeneratedVault(paths);
+
+  const outputs = [
+    ...Array.from(build.files, ([filename, contents]) => [join(paths.installed, filename), contents]),
+    ...fixtures.map(([filename, contents]) => [join(paths.fixtureTarget, filename), contents]),
+    ...performanceFixtures.map(([filename, contents]) => [join(paths.fixtureTarget, filename), contents]),
+    [paths.communityPlugins, `${JSON.stringify(['mappy'], null, 2)}\n`],
+  ];
+  // Check all existing destination parents and files before changing any content.
+  for (const [filename] of outputs) {
+    assertSafePath(paths.root, filename, 'file', { optional: true });
+  }
+
+  if (!vaultExists) {
+    mkdirSync(paths.vault);
+    assertSafePath(paths.root, paths.vault, 'directory');
+    writeFileSync(paths.marker, markerContents, { flag: 'wx', mode: 0o600 });
+  }
+  assertGeneratedVault(paths);
+  ensureDirectory(paths, paths.installed);
+  ensureDirectory(paths, paths.fixtureTarget);
+  for (const [filename, contents] of outputs) {
+    writeGeneratedFile(paths, filename, contents);
+  }
+  const result = runPreflight(paths);
+  console.info(`Prepared ${relative(paths.root, paths.vault)} with ${result.id} ${result.version}.`);
+  console.info(`Copied ${fixtures.length} fixtures and generated ${performanceFixtures.length} performance documents in test-vault/Fixtures.`);
+  console.info('Obsidian was not started. Open test-vault as a separate vault for manual checks.');
+} catch (error) {
+  console.error(`Harness preparation failed: ${error.message}`);
+  process.exitCode = 1;
+}
