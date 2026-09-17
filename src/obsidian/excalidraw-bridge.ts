@@ -1,4 +1,5 @@
 import type { App, TFile } from 'obsidian';
+import { IMAGE_EXTENSIONS } from '../core/attachments';
 import { parseMarkdown, type MindDocument } from '../core/markdown';
 import {
   buildScene, sceneContents, type MapMode, type NodeMeasure, type NodeRole, type SceneNodeContent,
@@ -19,7 +20,15 @@ export interface ImportRequest {
   document?: MindDocument;
 }
 
-const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'jpg', 'jpeg', 'png', 'svg', 'webp']);
+const IMAGE_EXTENSIONS_SET = new Set<string>(IMAGE_EXTENSIONS);
+const EXTERNAL_LINK_SCHEMES = new Set(['http', 'https', 'mailto', 'obsidian']);
+
+export function externalLink(link: string): string | null {
+  const scheme = /^([a-z][a-z0-9+.-]*):/iu.exec(link)?.[1]?.toLowerCase();
+  if (!scheme) return null;
+  return EXTERNAL_LINK_SCHEMES.has(scheme) ? link : null;
+}
+
 /** The map view caps attachment previews; the drawing keeps the same proportions. */
 const MAX_IMAGE = { width: 240, height: 140 };
 const FILE_GAP = 40;
@@ -273,7 +282,7 @@ export class ExcalidrawBridge {
 
   private async addImage(ea: ExcalidrawAutomate, target: string, source: TFile): Promise<CreatedBlock | null> {
     const file = this.app.metadataCache.getFirstLinkpathDest(target, source.path);
-    if (!file || !IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) return null;
+    if (!file || !IMAGE_EXTENSIONS_SET.has(file.extension.toLowerCase())) return null;
     const id = await ea.addImage(0, 0, file, true);
     const element = id ? ea.getElement(id) : null;
     if (!id || !element) return null;
@@ -286,7 +295,7 @@ export class ExcalidrawBridge {
   /** Root boxes link back to the note; other nodes carry their first link, resolved from the note. */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile): string | null {
     if (node.link) {
-      if (/^[a-z][a-z0-9+.-]*:/iu.test(node.link)) return node.link;
+      if (/^[a-z][a-z0-9+.-]*:/iu.test(node.link)) return externalLink(node.link);
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, source.path);
       return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
     }

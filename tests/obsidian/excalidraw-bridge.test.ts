@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import { parseMarkdown } from '../../src/core/markdown';
-import { ExcalidrawBridge, findBorderedMappyEmbeddables, isMappyDrop } from '../../src/obsidian/excalidraw-bridge';
+import { ExcalidrawBridge, externalLink, findBorderedMappyEmbeddables, isMappyDrop } from '../../src/obsidian/excalidraw-bridge';
 import { MAPPY_KEY } from '../../src/obsidian/frontmatter';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import type {
@@ -199,6 +199,17 @@ describe('isMappyDrop', () => {
     expect(isMappyDrop({ altKey: false, shiftKey: false, ctrlKey: false, metaKey: false })).toBe(false);
     expect(isMappyDrop({ altKey: true, shiftKey: true, ctrlKey: false, metaKey: false })).toBe(false);
     expect(isMappyDrop({ altKey: true, shiftKey: false, ctrlKey: true, metaKey: false })).toBe(false);
+  });
+});
+
+describe('externalLink', () => {
+  it.each([
+    ['https://example.com', 'https://example.com'],
+    ['HTTPS://example.com', 'HTTPS://example.com'],
+    ['javascript:alert(1)', null],
+    ['data:text/html,<script>alert(1)</script>', null],
+  ])('allows or rejects %s', (link, expected) => {
+    expect(externalLink(link)).toBe(expected);
   });
 });
 

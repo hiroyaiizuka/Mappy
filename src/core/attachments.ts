@@ -2,7 +2,9 @@ import { GFM, parser } from '@lezer/markdown';
 
 const attachmentParser = parser.configure(GFM);
 
-const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/iu;
+export const IMAGE_EXTENSIONS = ['avif', 'bmp', 'gif', 'jpg', 'jpeg', 'png', 'svg', 'webp'] as const;
+const IMAGE_EXTENSION = new RegExp(`\\.(?:${IMAGE_EXTENSIONS.join('|')})$`, 'iu');
+const WIKI_IMAGE_EXTENSION = new RegExp(`\\.(?:${IMAGE_EXTENSIONS.join('|')})(?:[|#][^\\]]*)?\\]\\]$`, 'iu');
 
 export interface AttachmentEntry {
   kind: 'image' | 'link';
@@ -59,7 +61,7 @@ function attachmentSnippets(body: string): AttachmentSnippets {
     if (range.from < lastEnd || protectedRanges.some(literal => range.from < literal.to && range.to > literal.from)) continue;
     let snippet = body.slice(range.from, range.to);
     // Note/PDF transclusions stay links; only image embeds become previews.
-    if (snippet.startsWith('![[') && !/\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[|#][^\]]*)?\]\]$/iu.test(snippet)) {
+    if (snippet.startsWith('![[') && !WIKI_IMAGE_EXTENSION.test(snippet)) {
       snippet = snippet.slice(1);
     }
     snippets.push(snippet);
