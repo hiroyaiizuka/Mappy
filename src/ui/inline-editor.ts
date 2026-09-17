@@ -6,7 +6,7 @@ export interface InlineSuggestion {
 export interface InlineEditorOptions {
   initial: string;
   save: (text: string) => Promise<void>;
-  finish: (next: "none" | "child", cancelled: boolean) => void;
+  finish: (next: 'none' | 'child', cancelled: boolean) => void;
   resize: () => void;
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
@@ -24,15 +24,15 @@ export class InlineEditor {
   private readonly suggestion: InlineSuggestion | undefined;
 
   constructor(private readonly host: HTMLElement, private readonly options: InlineEditorOptions) {
-    host.addClass("is-editing");
-    this.input = host.createEl("textarea", {
-      cls: "mappy-inline-input", attr: { rows: "1", "aria-label": "ノードのテキスト" },
+    host.addClass('is-editing');
+    this.input = host.createEl('textarea', {
+      cls: 'mappy-inline-input', attr: { rows: '1', 'aria-label': 'ノードのテキスト' },
     });
     this.input.value = options.initial;
     this.suggestion = options.suggest?.(this.input);
-    this.error = host.createDiv({ cls: "mappy-inline-error", attr: { role: "alert" } });
-    this.input.addEventListener("compositionstart", () => { this.composing = true; });
-    this.input.addEventListener("compositionend", () => {
+    this.error = host.createDiv({ cls: 'mappy-inline-error', attr: { role: 'alert' } });
+    this.input.addEventListener('compositionstart', () => { this.composing = true; });
+    this.input.addEventListener('compositionend', () => {
       this.composing = false;
       this.resize();
       if (!this.blurAfterComposition) return;
@@ -41,30 +41,30 @@ export class InlineEditor {
       this.compositionBlurTimer = this.input.ownerDocument.defaultView?.setTimeout(() => {
         this.compositionBlurTimer = undefined;
         if (!this.disposed && !this.composing && this.input.ownerDocument.activeElement !== this.input
-          && !this.error.textContent) void this.commit("none");
+          && !this.error.textContent) void this.commit('none');
       }, 0);
     });
-    this.input.addEventListener("input", () => { this.resize(); });
-    this.input.addEventListener("pointerdown", event => { event.stopPropagation(); });
-    this.input.addEventListener("click", event => { event.stopPropagation(); });
-    this.input.addEventListener("dblclick", event => { event.stopPropagation(); });
-    this.input.addEventListener("keydown", event => {
+    this.input.addEventListener('input', () => { this.resize(); });
+    this.input.addEventListener('pointerdown', event => { event.stopPropagation(); });
+    this.input.addEventListener('click', event => { event.stopPropagation(); });
+    this.input.addEventListener('dblclick', event => { event.stopPropagation(); });
+    this.input.addEventListener('keydown', event => {
       event.stopPropagation();
-      if (event.isComposing || this.composing || event.key === "Process") return;
+      if (event.isComposing || this.composing || event.key === 'Process') return;
       if (this.suggestion?.handleKey(event)) return;
-      if (event.key === "Escape") {
+      if (event.key === 'Escape') {
         event.preventDefault();
         this.dispose();
-        this.options.finish("none", true);
-      } else if (event.key === "Enter" || event.key === "Tab") {
+        this.options.finish('none', true);
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault();
-        void this.commit(event.key === "Tab" ? "child" : "none");
+        void this.commit(event.key === 'Tab' ? 'child' : 'none');
       }
     });
-    this.input.addEventListener("blur", () => {
+    this.input.addEventListener('blur', () => {
       if (this.composing) { this.blurAfterComposition = true; return; }
       // Keep an invalid/conflicted draft available instead of repeatedly saving on blur.
-      if (!this.disposed && !this.error.textContent) void this.commit("none");
+      if (!this.disposed && !this.error.textContent) void this.commit('none');
     });
     this.resize();
     this.input.focus({ preventScroll: true });
@@ -72,12 +72,12 @@ export class InlineEditor {
   }
 
   private resize(): void {
-    this.input.style.removeProperty("height");
+    this.input.style.removeProperty('height');
     this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
     this.options.resize();
   }
 
-  private async commit(next: "none" | "child"): Promise<void> {
+  private async commit(next: 'none' | 'child'): Promise<void> {
     if (this.busy || this.disposed) return;
     this.busy = true;
     this.input.readOnly = true;
@@ -88,7 +88,7 @@ export class InlineEditor {
       this.options.finish(next, false);
     } catch (error) {
       if (this.disposed) return;
-      this.error.setText(error instanceof Error ? error.message : "保存できませんでした。");
+      this.error.setText(error instanceof Error ? error.message : '保存できませんでした。');
       this.input.focus({ preventScroll: true });
     } finally {
       this.busy = false;
@@ -103,7 +103,7 @@ export class InlineEditor {
     this.suggestion?.dispose();
     this.input.remove();
     this.error.remove();
-    this.host.removeClass("is-editing");
+    this.host.removeClass('is-editing');
     this.options.restore();
   }
 }

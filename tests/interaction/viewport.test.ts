@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { clampScale, fitToBounds, zoomAt } from "../../src/interaction/viewport";
-import { layoutTree, type LayoutNode } from "../../src/layout/layout";
+import { describe, expect, it } from 'vitest';
+import { clampScale, fitToBounds, zoomAt } from '../../src/interaction/viewport';
+import { layoutTree, type LayoutNode } from '../../src/layout/layout';
 
-describe("viewport", () => {
-  it("keeps the same world point under the pointer when zooming", () => {
+describe('viewport', () => {
+  it('keeps the same world point under the pointer when zooming', () => {
     const view = { x: -215, y: 137, scale: 0.7 };
     const pointer = { x: 440, y: 290 };
     const zoomed = zoomAt(view, pointer, 1.8);
@@ -12,7 +12,7 @@ describe("viewport", () => {
     expect(view).toEqual({ x: -215, y: 137, scale: 0.7 });
   });
 
-  it("clamps zoom input and keeps the anchor at the clamped boundary", () => {
+  it('clamps zoom input and keeps the anchor at the clamped boundary', () => {
     expect(clampScale(-2)).toBe(0.000001);
     expect(clampScale(-Infinity)).toBe(0.000001);
     expect(clampScale(Infinity)).toBe(3);
@@ -21,7 +21,7 @@ describe("viewport", () => {
     expect(zoomed).toEqual({ x: -50, y: -40, scale: 3 });
   });
 
-  it("fits and centers bounds including their negative origin", () => {
+  it('fits and centers bounds including their negative origin', () => {
     const bounds = { x: -100, y: -400, width: 1200, height: 800 };
     const view = fitToBounds(bounds, 900, 700, 50);
     expect(view.scale).toBeCloseTo(2 / 3);
@@ -30,7 +30,7 @@ describe("viewport", () => {
     expect(view.y + (bounds.y + bounds.height / 2) * view.scale).toBeCloseTo(350);
   });
 
-  it("returns finite transforms for an empty document or a hidden viewport", () => {
+  it('returns finite transforms for an empty document or a hidden viewport', () => {
     for (const bounds of [
       { x: 0, y: 0, width: 0, height: 0 },
       { x: -20, y: -40, width: 200, height: 80 },
@@ -41,7 +41,7 @@ describe("viewport", () => {
     }
   });
 
-  it("fits a very large map and zooms smoothly from the fitted scale", () => {
+  it('fits a very large map and zooms smoothly from the fitted scale', () => {
     const view = fitToBounds({ x: 0, y: 0, width: 100_000, height: 100_000 }, 500, 400);
     expect(view.scale).toBeCloseTo(0.0028);
     expect(view.x + 50_000 * view.scale).toBe(250);
@@ -53,7 +53,7 @@ describe("viewport", () => {
     expect((pointer.y - zoomed.y) / zoomed.scale).toBeCloseTo((pointer.y - view.y) / view.scale);
   });
 
-  it.each([500, 2000])("fits all %i nodes in both layouts with the requested padding", (count) => {
+  it.each([500, 2000])('fits all %i nodes in both layouts with the requested padding', (count) => {
     const branches: LayoutNode[] = [];
     let nextId = 1;
     while (nextId < count) {
@@ -64,10 +64,10 @@ describe("viewport", () => {
       }
       branches.push({ id, children });
     }
-    const root = { id: "root", children: branches };
+    const root = { id: 'root', children: branches };
     const allNodes = [root, ...branches, ...branches.flatMap(branch => branch.children)];
     const sizes = new Map(allNodes.map(node => [node.id, { width: 224, height: 54 }]));
-    for (const mode of ["mindmap", "timeline"] as const) {
+    for (const mode of ['mindmap', 'timeline'] as const) {
       const layout = layoutTree(root, sizes, new Set(), mode);
       expect(layout.nodes).toHaveLength(count);
       const view = fitToBounds(layout.bounds, 1000, 700, 60);

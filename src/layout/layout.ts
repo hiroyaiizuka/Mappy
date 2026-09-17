@@ -81,7 +81,7 @@ function measureTree(
   root: LayoutNode,
   sizes: ReadonlyMap<string, NodeSize>,
   collapsed: ReadonlySet<string>,
-  mode: "mindmap" | "timeline",
+  mode: 'mindmap' | 'timeline',
 ): MeasuredNode {
   const nodes: MeasuredNode[] = [];
   const seen = new Set<string>();
@@ -101,8 +101,8 @@ function measureTree(
       descendantCount: 0,
       subtreeWidth: 0,
       subtreeHeight: 0,
-      horizontalGap: mode === "timeline" ? HORIZONTAL_GAP : parent ? MAP_BRANCH_GAP : MAP_ROOT_GAP,
-      verticalGap: mode === "timeline" ? VERTICAL_GAP : MAP_VERTICAL_GAP,
+      horizontalGap: mode === 'timeline' ? HORIZONTAL_GAP : parent ? MAP_BRANCH_GAP : MAP_ROOT_GAP,
+      verticalGap: mode === 'timeline' ? VERTICAL_GAP : MAP_VERTICAL_GAP,
     };
     nodes.push(measured);
     parent?.children.push(measured);
@@ -132,7 +132,7 @@ function measureTree(
     node.subtreeWidth = node.width + Math.max(foldExtent, node.children.length > 0 ? node.horizontalGap + childWidth : 0);
   }
   const measuredRoot = nodes[0];
-  if (!measuredRoot) throw new Error("A layout requires a root node.");
+  if (!measuredRoot) throw new Error('A layout requires a root node.');
   return measuredRoot;
 }
 
@@ -280,14 +280,14 @@ export function layoutTree(
   root: LayoutNode,
   sizes: ReadonlyMap<string, NodeSize>,
   collapsed: ReadonlySet<string>,
-  mode: "mindmap" | "timeline",
+  mode: 'mindmap' | 'timeline',
 ): LayoutResult {
   const measured = measureTree(root, sizes, collapsed, mode);
   const nodes: PositionedNode[] = [];
   const edges: LayoutEdge[] = [];
   const folds: FoldPosition[] = [];
   const foldBounds: LayoutBounds[] = [];
-  if (mode === "timeline") placeTimeline(measured, nodes, edges, folds, foldBounds);
+  if (mode === 'timeline') placeTimeline(measured, nodes, edges, folds, foldBounds);
   else placeRightward(measured, 0, 0, nodes, edges, folds, foldBounds);
   return { nodes, edges, folds, bounds: boundsOf([...nodes, ...foldBounds]) };
 }

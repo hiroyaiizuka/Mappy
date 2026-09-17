@@ -1,27 +1,27 @@
-import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
-import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
-import { planEdit, type EditCommand, type TextEdit } from "../core/commands";
-import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
-import { planListConversion } from "../core/list-conversion";
-import { layoutTree, type LayoutResult } from "../layout/layout";
-import { DocumentStore } from "../obsidian/document-store";
-import { readMapLayout, writeMapLayout, type MapLayout } from "../obsidian/frontmatter";
-import type { ViewRouter } from "../obsidian/view-routing";
-import { EditModal } from "./edit-modal";
-import { NodeRenderer } from "./node-renderer";
-import { MapViewport } from "./map-viewport";
-import { MapEvents } from "./map-events";
-import { InlineEditor } from "./inline-editor";
-import { LinkSuggest } from "./link-suggest";
+import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from 'obsidian';
+import { parseMarkdown, type MindDocument, type MindNode } from '../core/markdown';
+import { planEdit, type EditCommand, type TextEdit } from '../core/commands';
+import { nodeBody, planBodyEdit, planAppendBody } from '../core/body';
+import { planListConversion } from '../core/list-conversion';
+import { layoutTree, type LayoutResult } from '../layout/layout';
+import { DocumentStore } from '../obsidian/document-store';
+import { readMapLayout, writeMapLayout, type MapLayout } from '../obsidian/frontmatter';
+import type { ViewRouter } from '../obsidian/view-routing';
+import { EditModal } from './edit-modal';
+import { NodeRenderer } from './node-renderer';
+import { MapViewport } from './map-viewport';
+import { MapEvents } from './map-events';
+import { InlineEditor } from './inline-editor';
+import { LinkSuggest } from './link-suggest';
 
-export const VIEW_TYPE = "mappy-map";
+export const VIEW_TYPE = 'mappy-map';
 
 export class MindmapView extends ItemView {
   file: TFile | null = null;
   private document: MindDocument | undefined;
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
-  private mode: MapLayout = "mindmap";
+  private mode: MapLayout = 'mindmap';
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -44,36 +44,36 @@ export class MindmapView extends ItemView {
   constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
 
   /** Current presentation, for exports that mirror what the user sees. */
-  snapshot(): { file: TFile; mode: "mindmap" | "timeline"; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
+  snapshot(): { file: TFile; mode: 'mindmap' | 'timeline'; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
     if (!this.file) return null;
     return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
   }
 
   getViewType(): string { return VIEW_TYPE; }
-  getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
-  getIcon(): string { return "git-fork"; }
+  getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : 'マインドマップ'; }
+  getIcon(): string { return 'git-fork'; }
 
   getState(): Record<string, unknown> {
     return { file: this.file?.path, layout: this.mode, viewport: this.viewport?.value };
   }
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
-    const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
-    const file = typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
+    const value = state && typeof state === 'object' ? state as Record<string, unknown> : {};
+    const file = typeof value.file === 'string' ? this.app.vault.getAbstractFileByPath(value.file) : null;
     const changed = this.file !== file;
-    this.file = file instanceof TFile && file.extension === "md" ? file : null;
-    if (value.layout === "timeline" || value.layout === "mindmap") this.mode = value.layout;
-    else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
+    this.file = file instanceof TFile && file.extension === 'md' ? file : null;
+    if (value.layout === 'timeline' || value.layout === 'mindmap') this.mode = value.layout;
+    else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? 'mindmap';
     if (changed) {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.document = undefined; this.selectedId = null; this.collapsed.clear(); this.needsFit = true;
     }
     if (this.ready) {
       const view = value.viewport;
-      if (view && typeof view === "object" && "x" in view && "y" in view && "scale" in view
-        && typeof view.x === "number" && Number.isFinite(view.x)
-        && typeof view.y === "number" && Number.isFinite(view.y)
-        && typeof view.scale === "number" && Number.isFinite(view.scale)) {
+      if (view && typeof view === 'object' && 'x' in view && 'y' in view && 'scale' in view
+        && typeof view.x === 'number' && Number.isFinite(view.x)
+        && typeof view.y === 'number' && Number.isFinite(view.y)
+        && typeof view.scale === 'number' && Number.isFinite(view.scale)) {
         this.viewport.set({ x: view.x, y: view.y, scale: view.scale });
         this.needsFit = false;
       }
@@ -85,30 +85,30 @@ export class MindmapView extends ItemView {
   onOpen(): Promise<void> {
     this.closed = false;
     this.contentEl.empty();
-    this.contentEl.addClass("mappy-view");
-    const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
-    for (const [mode, label, icon] of [["mindmap", "マップ", "git-fork"], ["timeline", "タイムライン", "git-commit-horizontal"]] as const) {
+    this.contentEl.addClass('mappy-view');
+    const modes = this.contentEl.createDiv({ cls: 'mappy-modes mappy-floating', attr: { 'aria-label': 'レイアウト' } });
+    for (const [mode, label, icon] of [['mindmap', 'マップ', 'git-fork'], ['timeline', 'タイムライン', 'git-commit-horizontal']] as const) {
       const button = this.button(modes, label, icon, () => {
         this.selectMode(mode);
       });
       this.modeButtons.set(mode, button);
     }
-    const sourceTools = this.contentEl.createDiv({ cls: "mappy-source-tools mappy-floating" });
-    this.button(sourceTools, "Markdown に切り替え", "file-text", () => { this.run(() => this.showSource(false)); });
-    this.button(sourceTools, "左に Markdown を開く", "panel-left", () => { this.run(() => this.showSource(true)); });
-    this.canvas = this.contentEl.createDiv({ cls: "mappy-canvas", attr: {
-      tabindex: "0", role: "tree", "aria-label": "マインドマップ。Enter で兄弟、Tab で子、F2 で編集。",
+    const sourceTools = this.contentEl.createDiv({ cls: 'mappy-source-tools mappy-floating' });
+    this.button(sourceTools, 'Markdown に切り替え', 'file-text', () => { this.run(() => this.showSource(false)); });
+    this.button(sourceTools, '左に Markdown を開く', 'panel-left', () => { this.run(() => this.showSource(true)); });
+    this.canvas = this.contentEl.createDiv({ cls: 'mappy-canvas', attr: {
+      tabindex: '0', role: 'tree', 'aria-label': 'マインドマップ。Enter で兄弟、Tab で子、F2 で編集。',
     } });
-    this.emptyState = this.canvas.createDiv({ cls: "mappy-empty-state", text: "Markdown ノートを選び、コマンドパレットからマインドマップを開いてください。" });
+    this.emptyState = this.canvas.createDiv({ cls: 'mappy-empty-state', text: 'Markdown ノートを選び、コマンドパレットからマインドマップを開いてください。' });
     this.emptyState.hidden = true;
-    const world = this.canvas.createDiv({ cls: "mappy-world" });
-    this.svg = world.createSvg("svg", { cls: "mappy-edges", attr: { "aria-hidden": "true" } });
-    const nodes = world.createDiv({ cls: "mappy-nodes" });
-    const zoom = this.contentEl.createDiv({ cls: "mappy-zoom mappy-floating", attr: { "aria-label": "ズーム" } });
-    this.button(zoom, "縮小", "minus", () => { this.viewport.zoom(1 / 1.2); });
-    this.zoomLabel = this.button(zoom, "100%", undefined, () => { this.viewport.zoom(1 / this.viewport.value.scale); });
-    this.button(zoom, "拡大", "plus", () => { this.viewport.zoom(1.2); });
-    this.button(zoom, "全体表示", "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
+    const world = this.canvas.createDiv({ cls: 'mappy-world' });
+    this.svg = world.createSvg('svg', { cls: 'mappy-edges', attr: { 'aria-hidden': 'true' } });
+    const nodes = world.createDiv({ cls: 'mappy-nodes' });
+    const zoom = this.contentEl.createDiv({ cls: 'mappy-zoom mappy-floating', attr: { 'aria-label': 'ズーム' } });
+    this.button(zoom, '縮小', 'minus', () => { this.viewport.zoom(1 / 1.2); });
+    this.zoomLabel = this.button(zoom, '100%', undefined, () => { this.viewport.zoom(1 / this.viewport.value.scale); });
+    this.button(zoom, '拡大', 'plus', () => { this.viewport.zoom(1.2); });
+    this.button(zoom, '全体表示', 'scan', () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
     this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }));
     this.viewport = this.addChild(new MapViewport(this.canvas, world, view => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
@@ -119,47 +119,47 @@ export class MindmapView extends ItemView {
       fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
-      link: (link, newLeaf) => { if (this.file) this.run(() => this.app.workspace.openLinkText(link, this.file?.path ?? "", newLeaf)); },
+      link: (link, newLeaf) => { if (this.file) this.run(() => this.app.workspace.openLinkText(link, this.file?.path ?? '', newLeaf)); },
     }));
-    this.registerDomEvent(this.canvas, "contextmenu", event => {
+    this.registerDomEvent(this.canvas, 'contextmenu', event => {
       const target = event.targetNode;
       if (!target?.instanceOf(Element)) return;
       if (target.closest("input,textarea,[contenteditable='true']")) return;
-      const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      const id = target.closest<HTMLElement>('[data-node-id]')?.dataset.nodeId;
       if (!id) return;
       event.preventDefault();
       this.select(id);
       const menu = new Menu();
-      menu.addItem(item => item.setTitle("テキストを編集").setIcon("pencil").onClick(() => { this.editTitle(); }));
-      menu.addItem(item => item.setTitle("本文・リンクを編集").setIcon("text").onClick(() => { this.editBody(); }));
-      menu.addItem(item => item.setTitle("画像を追加").setIcon("image-plus").onClick(() => { this.chooseImage(); }));
+      menu.addItem(item => item.setTitle('テキストを編集').setIcon('pencil').onClick(() => { this.editTitle(); }));
+      menu.addItem(item => item.setTitle('本文・リンクを編集').setIcon('text').onClick(() => { this.editBody(); }));
+      menu.addItem(item => item.setTitle('画像を追加').setIcon('image-plus').onClick(() => { this.chooseImage(); }));
       menu.addSeparator();
-      menu.addItem(item => item.setTitle("子を追加").setIcon("plus").onClick(() => { this.executeSelected("add-child"); }));
-      menu.addItem(item => item.setTitle("兄弟を追加").setIcon("corner-down-right").onClick(() => { this.executeSelected("add-sibling"); }));
-      for (const [type, title] of [["move-up", "前へ移動"], ["move-down", "後ろへ移動"], ["delete", "枝を削除"]] as const) {
+      menu.addItem(item => item.setTitle('子を追加').setIcon('plus').onClick(() => { this.executeSelected('add-child'); }));
+      menu.addItem(item => item.setTitle('兄弟を追加').setIcon('corner-down-right').onClick(() => { this.executeSelected('add-sibling'); }));
+      for (const [type, title] of [['move-up', '前へ移動'], ['move-down', '後ろへ移動'], ['delete', '枝を削除']] as const) {
         menu.addItem(item => item.setTitle(title).onClick(() => { this.executeSelected(type); }));
       }
       menu.addSeparator();
-      menu.addItem(item => item.setTitle("元に戻す").setIcon("undo-2")
-        .setDisabled(!this.file || !this.store.canUndo(this.file)).onClick(() => { this.history("undo"); }));
-      menu.addItem(item => item.setTitle("やり直す").setIcon("redo-2")
-        .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history("redo"); }));
-      if (this.document?.format === "headings") {
+      menu.addItem(item => item.setTitle('元に戻す').setIcon('undo-2')
+        .setDisabled(!this.file || !this.store.canUndo(this.file)).onClick(() => { this.history('undo'); }));
+      menu.addItem(item => item.setTitle('やり直す').setIcon('redo-2')
+        .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history('redo'); }));
+      if (this.document?.format === 'headings') {
         menu.addSeparator();
-        menu.addItem(item => item.setTitle("リスト形式に変更").setIcon("list-tree")
+        menu.addItem(item => item.setTitle('リスト形式に変更').setIcon('list-tree')
           .onClick(() => { this.run(() => this.convertToList()); }));
       }
       menu.showAtMouseEvent(event);
     });
-    this.registerDomEvent(nodes, "load", () => { this.scheduleLayout(); }, true);
-    this.registerEvent(this.app.workspace.on("editor-change", (_editor, info) => {
+    this.registerDomEvent(nodes, 'load', () => { this.scheduleLayout(); }, true);
+    this.registerEvent(this.app.workspace.on('editor-change', (_editor, info) => {
       if (info.file?.path === this.file?.path) this.scheduleRefresh();
     }));
-    this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) this.scheduleRefresh(); }));
-    this.registerEvent(this.app.vault.on("rename", file => {
+    this.registerEvent(this.app.vault.on('modify', file => { if (file === this.file) this.scheduleRefresh(); }));
+    this.registerEvent(this.app.vault.on('rename', file => {
       if (file === this.file) { this.scheduleRefresh(); this.app.workspace.requestSaveLayout(); }
     }));
-    this.registerEvent(this.app.vault.on("delete", file => {
+    this.registerEvent(this.app.vault.on('delete', file => {
       if (file === this.file) { this.file = null; this.document = undefined; this.scheduleRefresh(); }
     }));
     this.ready = true;
@@ -178,15 +178,15 @@ export class MindmapView extends ItemView {
   onResize(): void { if (this.ready) this.scheduleLayout(); }
 
   private button(parent: HTMLElement, label: string, icon: string | undefined, action: () => void): HTMLButtonElement {
-    const button = parent.createEl("button", { cls: "mappy-button", attr: { "aria-label": label, title: label, type: "button" } });
-    if (icon) { setIcon(button.createSpan(), icon); button.createSpan({ text: label, cls: "mappy-button-label" }); }
+    const button = parent.createEl('button', { cls: 'mappy-button', attr: { 'aria-label': label, title: label, type: 'button' } });
+    if (icon) { setIcon(button.createSpan(), icon); button.createSpan({ text: label, cls: 'mappy-button-label' }); }
     else button.setText(label);
-    button.addEventListener("click", action);
+    button.addEventListener('click', action);
     return button;
   }
 
   private run(action: () => Promise<void>): void {
-    void action().catch(error => { new Notice(error instanceof Error ? error.message : "操作を完了できませんでした。"); });
+    void action().catch(error => { new Notice(error instanceof Error ? error.message : '操作を完了できませんでした。'); });
   }
 
   /** A deliberate layout switch is the note's next-open preference. */
@@ -216,7 +216,7 @@ export class MindmapView extends ItemView {
     const file = this.file;
     if (!file) {
       this.emptyState.hidden = false;
-      this.renderer.update([], parseMarkdown("", ""), "", this.collapsed, { visualRootId: "root", mode: this.mode });
+      this.renderer.update([], parseMarkdown('', ''), '', this.collapsed, { visualRootId: 'root', mode: this.mode });
       this.svg.empty();
       return;
     }
@@ -253,14 +253,14 @@ export class MindmapView extends ItemView {
   private draw(): void {
     if (!this.document || !this.file) return;
     for (const [mode, button] of this.modeButtons) {
-      button.toggleClass("is-active", mode === this.mode);
-      button.setAttribute("aria-pressed", String(mode === this.mode));
+      button.toggleClass('is-active', mode === this.mode);
+      button.setAttribute('aria-pressed', String(mode === this.mode));
     }
     const nodes = this.visible();
     this.renderer.update(nodes, this.document, this.file.path, this.collapsed, {
       visualRootId: this.visualRoot()?.id ?? this.document.root.id, mode: this.mode,
     });
-    for (const entry of this.renderer.entries.values()) entry.element.draggable = !entry.element.hasClass("is-editing");
+    for (const entry of this.renderer.entries.values()) entry.element.draggable = !entry.element.hasClass('is-editing');
     if (!nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
     this.scheduleLayout();
@@ -275,7 +275,7 @@ export class MindmapView extends ItemView {
       this.layout = layoutTree(root, this.renderer.sizes(), this.collapsed, this.mode);
       this.renderer.place(this.layout.nodes, this.layout.folds);
       this.svg.empty();
-      for (const edge of this.layout.edges) this.svg.createSvg("path", { attr: { d: edge.path } });
+      for (const edge of this.layout.edges) this.svg.createSvg('path', { attr: { d: edge.path } });
       if (this.needsFit && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
         this.viewport.fit(this.layout.bounds); this.needsFit = false;
       }
@@ -285,7 +285,7 @@ export class MindmapView extends ItemView {
 
   private selected(): MindNode | undefined {
     if (!this.document) return undefined;
-    return this.selectedId === "root" ? this.document.root : this.document.nodes.find(node => node.id === this.selectedId);
+    return this.selectedId === 'root' ? this.document.root : this.document.nodes.find(node => node.id === this.selectedId);
   }
 
   private select(id: string, focus = false): void {
@@ -316,7 +316,7 @@ export class MindmapView extends ItemView {
     this.draw();
   }
 
-  private executeSelected(type: "add-child" | "add-sibling" | "delete" | "move-up" | "move-down"): void {
+  private executeSelected(type: 'add-child' | 'add-sibling' | 'delete' | 'move-up' | 'move-down'): void {
     const node = this.selected();
     if (node) this.run(() => this.execute({ type, nodeId: node.id }));
   }
@@ -337,12 +337,12 @@ export class MindmapView extends ItemView {
         created = true;
       }
     }
-    if (created && (command.type === "add-child" || command.type === "add-sibling")) this.editTitle();
+    if (created && (command.type === 'add-child' || command.type === 'add-sibling')) this.editTitle();
   }
 
   private async commit(source: string, edits: TextEdit[], file = this.file): Promise<void> {
-    if (!file || file !== this.file || this.closed) throw new Error("対象のノートが変わりました。元のノートを開いて再実行してください。");
-    if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
+    if (!file || file !== this.file || this.closed) throw new Error('対象のノートが変わりました。元のノートを開いて再実行してください。');
+    if (this.saving) throw new Error('保存処理が終わってから、もう一度実行してください。');
     this.saving = true;
     try { await this.store.apply(file, source, edits); await this.refresh(); }
     finally { this.saving = false; }
@@ -353,7 +353,7 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
-    if (node.kind === "root") { new Notice("このノードはファイル名です。子ノードを追加できます。"); return; }
+    if (node.kind === 'root') { new Notice('このノードはファイル名です。子ノードを追加できます。'); return; }
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
     this.inlineEditor?.dispose();
@@ -363,7 +363,7 @@ export class MindmapView extends ItemView {
       initial: node.title,
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
-        const plan = planEdit(document, { type: "rename", nodeId: node.id, title: text });
+        const plan = planEdit(document, { type: 'rename', nodeId: node.id, title: text });
         await this.commit(document.source, plan.edits, file);
       },
       finish: (next, cancelled) => {
@@ -375,7 +375,7 @@ export class MindmapView extends ItemView {
         const current = this.document?.nodes.find(item => item.id === node.id)
           ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
         if (current) this.select(current.id, true);
-        if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
+        if (!cancelled && next === 'child' && current) this.run(() => this.execute({ type: 'add-child', nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
       restore: () => { entry.content.hidden = false; entry.element.draggable = true; },
@@ -387,7 +387,7 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!node || !document) return;
-    new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
+    new EditModal(this.app, nodeBody(document, node), '本文・リンクを編集', true, async text => {
       await this.commit(document.source, [planBodyEdit(document, node.id, text)], file);
     }).open();
   }
@@ -396,14 +396,14 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!document || !file) return;
-    if (this.inlineEditor) throw new Error("テキストの編集を確定してから、形式を変更してください。");
+    if (this.inlineEditor) throw new Error('テキストの編集を確定してから、形式を変更してください。');
     const edits = planListConversion(document);
     if (!edits.length) return;
     await this.commit(document.source, edits, file);
-    new Notice("H2 とリストの形式に変更しました。元に戻す操作で復元できます。");
+    new Notice('H2 とリストの形式に変更しました。元に戻す操作で復元できます。');
   }
 
-  private history(direction: "undo" | "redo"): void {
+  private history(direction: 'undo' | 'redo'): void {
     const file = this.file;
     if (!file) return;
     this.run(async () => { await this.store[direction](file); await this.refresh(); });
@@ -414,7 +414,7 @@ export class MindmapView extends ItemView {
     if (!file) return;
     const offset = this.selected()?.from ?? 0;
     const leaf = split
-      ? this.app.workspace.createLeafBySplit(this.leaf, "vertical", true)
+      ? this.app.workspace.createLeafBySplit(this.leaf, 'vertical', true)
       : this.leaf;
     // The router keeps this leaf on Markdown even when the note opens as a map by default.
     await this.router.openMarkdown(leaf, file);
@@ -428,12 +428,12 @@ export class MindmapView extends ItemView {
 
   private chooseImage(): void {
     if (!this.selected()) return;
-    const input = this.contentEl.createEl("input", { type: "file", cls: "mappy-file-input", attr: { accept: "image/*" } });
-    input.addEventListener("change", () => {
+    const input = this.contentEl.createEl('input', { type: 'file', cls: 'mappy-file-input', attr: { accept: 'image/*' } });
+    input.addEventListener('change', () => {
       const file = input.files?.[0]; input.remove();
       if (file) this.run(() => this.attachImage(file));
     }, { once: true });
-    input.addEventListener("cancel", () => { input.remove(); }, { once: true });
+    input.addEventListener('cancel', () => { input.remove(); }, { once: true });
     input.click();
   }
 
@@ -442,11 +442,11 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
-    if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
-    if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
+    if (!image.type.startsWith('image/')) throw new Error('画像ファイルを選んでください。');
+    if (image.size > 20 * 1024 * 1024) throw new Error('画像は 20 MB 以下にしてください。');
     const binary = await image.arrayBuffer();
-    if (await this.store.read(file) !== document.source) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
-    const name = image.name.replace(/[\\/:*?"<>|]/gu, "-") || "image.png";
+    if (await this.store.read(file) !== document.source) throw new Error('ノートが更新されました。画像の追加をもう一度実行してください。');
+    const name = image.name.replace(/[\\/:*?"<>|]/gu, '-') || 'image.png';
     const path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
     const attachment = await this.app.vault.createBinary(path, binary);
     const link = `!${this.app.fileManager.generateMarkdownLink(attachment, file.path)}`;

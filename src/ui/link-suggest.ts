@@ -1,6 +1,6 @@
-import type { App, TFile } from "obsidian";
-import { insertWikiLink, wikiLinkContext } from "../core/wiki-link";
-import type { InlineSuggestion } from "./inline-editor";
+import type { App, TFile } from 'obsidian';
+import { insertWikiLink, wikiLinkContext } from '../core/wiki-link';
+import type { InlineSuggestion } from './inline-editor';
 
 interface LinkOption { file: TFile; label: string; alias?: string }
 let suggestionId = 0;
@@ -17,32 +17,32 @@ export class LinkSuggest implements InlineSuggestion {
   constructor(private readonly app: App, private readonly input: HTMLTextAreaElement, private readonly sourcePath: string) {
     this.popup = input.ownerDocument.body.createDiv();
     this.popup.remove();
-    this.popup.className = "mappy-link-suggest";
+    this.popup.className = 'mappy-link-suggest';
     this.popup.id = `mappy-link-suggest-${++suggestionId}`;
-    this.popup.setAttribute("role", "listbox");
-    this.popup.setAttribute("aria-label", "リンク先の候補");
-    input.setAttribute("aria-autocomplete", "list");
-    this.listen(input, "input", () => { this.refresh(); });
-    this.listen(input, "click", () => { this.refresh(); });
-    this.listen(input, "keyup", event => {
-      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) this.refresh();
+    this.popup.setAttribute('role', 'listbox');
+    this.popup.setAttribute('aria-label', 'リンク先の候補');
+    input.setAttribute('aria-autocomplete', 'list');
+    this.listen(input, 'input', () => { this.refresh(); });
+    this.listen(input, 'click', () => { this.refresh(); });
+    this.listen(input, 'keyup', event => {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) this.refresh();
     });
-    this.listen(input, "blur", () => { this.close(); });
-    this.listen(input, "compositionstart", () => { this.composing = true; this.close(); });
-    this.listen(input, "compositionend", () => { this.composing = false; this.refresh(); });
-    this.listen(this.popup, "pointerdown", event => { event.preventDefault(); });
-    this.listen(this.popup, "mousedown", event => { event.preventDefault(); });
+    this.listen(input, 'blur', () => { this.close(); });
+    this.listen(input, 'compositionstart', () => { this.composing = true; this.close(); });
+    this.listen(input, 'compositionend', () => { this.composing = false; this.refresh(); });
+    this.listen(this.popup, 'pointerdown', event => { event.preventDefault(); });
+    this.listen(this.popup, 'mousedown', event => { event.preventDefault(); });
     const doc = input.ownerDocument;
     const onMove = (event: Event): void => {
       if (!event.composedPath().includes(this.popup)) this.close();
     };
-    doc.addEventListener("scroll", onMove, true);
-    doc.addEventListener("wheel", onMove, true);
-    doc.defaultView?.addEventListener("resize", onMove);
+    doc.addEventListener('scroll', onMove, true);
+    doc.addEventListener('wheel', onMove, true);
+    doc.defaultView?.addEventListener('resize', onMove);
     this.cleanup.push(() => {
-      doc.removeEventListener("scroll", onMove, true);
-      doc.removeEventListener("wheel", onMove, true);
-      doc.defaultView?.removeEventListener("resize", onMove);
+      doc.removeEventListener('scroll', onMove, true);
+      doc.removeEventListener('wheel', onMove, true);
+      doc.defaultView?.removeEventListener('resize', onMove);
     });
   }
 
@@ -61,11 +61,11 @@ export class LinkSuggest implements InlineSuggestion {
     const query = context.query.toLocaleLowerCase();
     const options: LinkOption[] = [];
     for (const file of this.app.vault.getFiles()) {
-      const markdown = file.extension.toLocaleLowerCase() === "md";
+      const markdown = file.extension.toLocaleLowerCase() === 'md';
       const frontmatter = markdown ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
       const aliases: unknown = frontmatter?.aliases ?? frontmatter?.alias;
-      const labels = typeof aliases === "string" ? [aliases]
-        : Array.isArray(aliases) ? aliases.filter((value): value is string => typeof value === "string") : [];
+      const labels = typeof aliases === 'string' ? [aliases]
+        : Array.isArray(aliases) ? aliases.filter((value): value is string => typeof value === 'string') : [];
       if (file.path.toLocaleLowerCase().includes(query)) options.push({ file, label: markdown ? file.basename : file.name });
       for (const alias of labels) {
         if (alias.toLocaleLowerCase().includes(query)) options.push({ file, label: alias, alias });
@@ -82,25 +82,25 @@ export class LinkSuggest implements InlineSuggestion {
     this.popup.replaceChildren();
     this.options.forEach((option, index) => {
       const item = this.popup.createDiv();
-      item.className = "mappy-link-option";
+      item.className = 'mappy-link-option';
       item.id = `${this.popup.id}-${index}`;
-      item.setAttribute("role", "option");
+      item.setAttribute('role', 'option');
       const title = item.createSpan();
-      title.className = "mappy-link-title";
+      title.className = 'mappy-link-title';
       title.textContent = option.label;
       const path = item.createSpan();
-      path.className = "mappy-link-path";
+      path.className = 'mappy-link-path';
       path.textContent = option.file.path;
       item.append(title, path);
-      item.addEventListener("pointermove", () => { this.active = index; this.highlight(); });
-      item.addEventListener("click", event => {
+      item.addEventListener('pointermove', () => { this.active = index; this.highlight(); });
+      item.addEventListener('click', event => {
         event.preventDefault(); event.stopPropagation(); this.choose(index);
       });
       this.popup.append(item);
     });
     this.input.ownerDocument.body.append(this.popup);
-    this.input.setAttribute("aria-controls", this.popup.id);
-    this.input.setAttribute("aria-expanded", "true");
+    this.input.setAttribute('aria-controls', this.popup.id);
+    this.input.setAttribute('aria-expanded', 'true');
     this.highlight();
     this.position();
   }
@@ -122,23 +122,23 @@ export class LinkSuggest implements InlineSuggestion {
 
   private highlight(): void {
     Array.from(this.popup.children).forEach((item, index) => {
-      item.classList.toggle("is-selected", index === this.active);
-      item.setAttribute("aria-selected", String(index === this.active));
+      item.classList.toggle('is-selected', index === this.active);
+      item.setAttribute('aria-selected', String(index === this.active));
     });
-    this.input.setAttribute("aria-activedescendant", `${this.popup.id}-${this.active}`);
+    this.input.setAttribute('aria-activedescendant', `${this.popup.id}-${this.active}`);
   }
 
   handleKey(event: KeyboardEvent): boolean {
-    if (event.isComposing || this.composing || event.key === "Process" || !this.popup.isConnected) return false;
-    if (!["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) return false;
+    if (event.isComposing || this.composing || event.key === 'Process' || !this.popup.isConnected) return false;
+    if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) return false;
     event.preventDefault();
     event.stopPropagation();
-    if (event.key === "Escape") this.close();
-    else if (event.key === "Enter" || event.key === "Tab") this.choose(this.active);
+    if (event.key === 'Escape') this.close();
+    else if (event.key === 'Enter' || event.key === 'Tab') this.choose(this.active);
     else {
-      this.active = (this.active + (event.key === "ArrowDown" ? 1 : -1) + this.options.length) % this.options.length;
+      this.active = (this.active + (event.key === 'ArrowDown' ? 1 : -1) + this.options.length) % this.options.length;
       this.highlight();
-      this.popup.children[this.active]?.scrollIntoView({ block: "nearest" });
+      this.popup.children[this.active]?.scrollIntoView({ block: 'nearest' });
     }
     return true;
   }
@@ -149,18 +149,18 @@ export class LinkSuggest implements InlineSuggestion {
     if (!option || !context || this.composing || this.input.readOnly) return;
     const linktext = this.app.metadataCache.fileToLinktext(option.file, this.sourcePath, true);
     const insertion = insertWikiLink(this.input.value, context, linktext, option.alias);
-    this.input.setRangeText(insertion.value.slice(context.from, insertion.cursor), context.from, context.to, "end");
+    this.input.setRangeText(insertion.value.slice(context.from, insertion.cursor), context.from, context.to, 'end');
     this.close();
     this.input.focus({ preventScroll: true });
-    this.input.dispatchEvent(new Event("input", { bubbles: true }));
+    this.input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   private close(): void {
     this.popup.remove();
     this.options = [];
-    this.input.setAttribute("aria-expanded", "false");
-    this.input.removeAttribute("aria-controls");
-    this.input.removeAttribute("aria-activedescendant");
+    this.input.setAttribute('aria-expanded', 'false');
+    this.input.removeAttribute('aria-controls');
+    this.input.removeAttribute('aria-activedescendant');
   }
 
   dispose(): void {
@@ -169,7 +169,7 @@ export class LinkSuggest implements InlineSuggestion {
     this.close();
     for (const cleanup of this.cleanup) cleanup();
     this.cleanup.length = 0;
-    this.input.removeAttribute("aria-autocomplete");
-    this.input.removeAttribute("aria-expanded");
+    this.input.removeAttribute('aria-autocomplete');
+    this.input.removeAttribute('aria-expanded');
   }
 }

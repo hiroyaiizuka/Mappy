@@ -1,6 +1,6 @@
-import { Component } from "obsidian";
-import { clampScale, zoomAt, fitToBounds, type Viewport } from "../interaction/viewport";
-import type { LayoutBounds } from "../layout/layout";
+import { Component } from 'obsidian';
+import { clampScale, zoomAt, fitToBounds, type Viewport } from '../interaction/viewport';
+import type { LayoutBounds } from '../layout/layout';
 
 export class MapViewport extends Component {
   value: Viewport = { x: 60, y: 60, scale: 1 };
@@ -13,7 +13,7 @@ export class MapViewport extends Component {
   ) { super(); }
 
   onload(): void {
-    this.registerDomEvent(this.canvas, "wheel", event => {
+    this.registerDomEvent(this.canvas, 'wheel', event => {
       event.preventDefault();
       const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? this.canvas.clientHeight : 1;
       if (event.ctrlKey || event.metaKey) {
@@ -22,16 +22,16 @@ export class MapViewport extends Component {
           this.value.scale * Math.exp(-event.deltaY * multiplier * 0.005)));
       } else this.set({ ...this.value, x: this.value.x - event.deltaX * multiplier, y: this.value.y - event.deltaY * multiplier });
     }, { passive: false });
-    this.registerDomEvent(this.canvas, "pointerdown", event => {
+    this.registerDomEvent(this.canvas, 'pointerdown', event => {
       if (event.button !== 0 && event.button !== 1) return;
       const target = event.targetNode;
-      if (target?.instanceOf(Element) && target.closest(".mappy-node, button, input, textarea")) return;
+      if (target?.instanceOf(Element) && target.closest('.mappy-node, button, input, textarea')) return;
       this.canvas.focus({ preventScroll: true });
       this.canvas.setPointerCapture(event.pointerId);
       this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-      this.canvas.addClass("is-panning");
+      this.canvas.addClass('is-panning');
     });
-    this.registerDomEvent(this.canvas, "pointermove", event => {
+    this.registerDomEvent(this.canvas, 'pointermove', event => {
       const before = this.pointers.get(event.pointerId);
       if (!before) return;
       const other = Array.from(this.pointers).find(([id]) => id !== event.pointerId)?.[1];
@@ -49,11 +49,11 @@ export class MapViewport extends Component {
     });
     const release = (event: PointerEvent): void => {
       this.pointers.delete(event.pointerId);
-      if (this.pointers.size === 0) this.canvas.removeClass("is-panning");
+      if (this.pointers.size === 0) this.canvas.removeClass('is-panning');
     };
-    this.registerDomEvent(this.canvas, "pointerup", release);
-    this.registerDomEvent(this.canvas, "pointercancel", release);
-    this.registerDomEvent(this.canvas, "lostpointercapture", release);
+    this.registerDomEvent(this.canvas, 'pointerup', release);
+    this.registerDomEvent(this.canvas, 'pointercancel', release);
+    this.registerDomEvent(this.canvas, 'lostpointercapture', release);
   }
 
   set(viewport: Viewport): void {
