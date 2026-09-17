@@ -1,4 +1,5 @@
 import { parser } from '@lezer/markdown';
+import { indentColumns } from './text-edits';
 
 export interface MindNode {
   id: string;
@@ -178,12 +179,6 @@ function headingHierarchy(source: string, root: MindNode, nodes: MindNode[]): vo
     parent.children.push(node);
     stack.push(node);
   });
-}
-
-function indentColumns(text: string): number {
-  let column = 0;
-  for (const char of text) column += char === '\t' ? 4 - column % 4 : 1;
-  return column;
 }
 
 function listNode(source: string, item: SyntaxNode, parent: MindNode): MindNode | undefined {

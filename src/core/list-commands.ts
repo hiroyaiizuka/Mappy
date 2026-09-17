@@ -1,13 +1,8 @@
 import { applyEdits, type EditCommand, type EditPlan, type TextEdit } from './commands';
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
+import { getNode, indentColumns, paragraphGap, trimTrailingNewlinesAtEof } from './text-edits';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' }>;
-
-function getNode(doc: MindDocument, id: string): MindNode {
-  const node = id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
-  return node;
-}
 
 function branchSize(node: MindNode): number {
   const pending = [node];
@@ -37,11 +32,6 @@ function validate(
   return { edits, selectionOffset: selected?.titleFrom ?? null };
 }
 
-function paragraphGap(before: string, eol: string): string {
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
-}
-
 function insertion(source: string, offset: number, body: string, eol: string, paragraph: boolean): { text: string; prefix: string } {
   const before = source.slice(0, offset);
   const after = source.slice(offset);
@@ -59,7 +49,7 @@ function childStyle(doc: MindDocument, parent: MindNode, omittedId?: string): { 
     if (ancestor && parent.list.indent.startsWith(ancestor.indent)) {
       const step = parent.list.indent.slice(ancestor.indent.length);
       const candidate = parent.list.indent + step;
-      if (step && indentationWidth(candidate) >= parent.list.contentIndent.length) indent = candidate;
+      if (step && indentColumns(candidate) >= parent.list.contentIndent.length) indent = candidate;
     }
   }
   return {
@@ -85,25 +75,15 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean): EditPlan {
     offset + insert.prefix.length, { kind: heading ? 'atx' : 'list', level: heading ? 2 : parent.level + 1, title: '' });
 }
 
-function indentationWidth(indent: string): number {
-  let width = 0;
-  for (const character of indent) width += character === '\t' ? 4 - width % 4 : 1;
-  return width;
-}
-
 /** Shift the complete source branch; continuation text, fences, and links travel unchanged. */
-function shiftedBranch(doc: MindDocument, node: MindNode, indent: string): string {
+function reindentListBranch(doc: MindDocument, node: MindNode, indent: string): string {
   const originalIndent = node.list?.indent ?? '';
   if (originalIndent === indent) return doc.source.slice(node.from, node.to);
-  const oldWidth = indentationWidth(originalIndent);
+  const oldWidth = indentColumns(originalIndent);
   return doc.source.slice(node.from, node.to).replace(/^[ \t]*(?=\S)/gmu, whitespace => {
     if (whitespace.startsWith(originalIndent)) return indent + whitespace.slice(originalIndent.length);
-    return indent + ' '.repeat(Math.max(0, indentationWidth(whitespace) - oldWidth));
+    return indent + ' '.repeat(Math.max(0, indentColumns(whitespace) - oldWidth));
   });
-}
-
-function withoutEndNewline(doc: MindDocument, text: string, to: number): string {
-  return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
 }
 
 function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
@@ -115,7 +95,7 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const later = direction < 0 ? node : neighbor;
   const from = earlier.from;
   const to = later.to;
-  const moved = node.kind === 'list' ? shiftedBranch(doc, node, neighbor.list?.indent ?? '') : doc.source.slice(node.from, node.to);
+  const moved = node.kind === 'list' ? reindentListBranch(doc, node, neighbor.list?.indent ?? '') : doc.source.slice(node.from, node.to);
   const other = doc.source.slice(neighbor.from, neighbor.to);
   let first = direction < 0 ? moved : other;
   let second = direction < 0 ? other : moved;
@@ -128,7 +108,7 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
     if (doc.source.slice(from, to).endsWith('\n')) second += doc.eol;
   }
   if (!gap && !first.endsWith('\n')) gap = doc.eol;
-  const text = withoutEndNewline(doc, first + gap + second, to);
+  const text = trimTrailingNewlinesAtEof(doc, first + gap + second, to);
   const selectedFrom = direction < 0 ? from : from + first.length + gap.length;
   return validate(doc, [{ from, to, text }], doc.nodes.length, selectedFrom,
     { kind: node.kind, level: neighbor.level, title: node.title });
@@ -151,7 +131,7 @@ function reparent(doc: MindDocument, node: MindNode, parentId: string): EditPlan
   }
   const target = appendOffset(parent, node.id);
   const removeFrom = removalFrom(doc, node);
-  const moved = shiftedBranch(doc, node, childStyle(doc, parent, node.id).indent);
+  const moved = reindentListBranch(doc, node, childStyle(doc, parent, node.id).indent);
   const remaining = doc.source.slice(0, removeFrom) + doc.source.slice(node.to);
   const offset = target >= node.to ? target - (node.to - removeFrom) : target;
   const insert = insertion(remaining, offset, moved, doc.eol, parent.kind !== 'list' && parent.children.length === 0);

@@ -1,5 +1,6 @@
 import { applyEdits, type TextEdit } from './commands';
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
+import { paragraphGap } from './text-edits';
 
 function bodyNode(doc: MindDocument, nodeId: string): MindNode {
   const node = nodeId === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === nodeId);
@@ -34,11 +35,6 @@ export function nodeBody(doc: MindDocument, node: MindNode): string {
 function indentBody(node: MindNode, text: string): string {
   const indent = node.list?.contentIndent;
   return indent ? text.replace(/^(?=[^\r\n])/gmu, indent) : text;
-}
-
-function paragraphGap(before: string, eol: string): string {
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
 }
 
 function checkedBodyEdit(doc: MindDocument, edit: TextEdit): TextEdit {
