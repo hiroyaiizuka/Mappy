@@ -6,17 +6,17 @@ import {
 } from "./layout";
 
 /**
- * Issue tree (logic tree / organization chart): the root on top, every depth on one
+ * Hierarchy (organization chart, logic tree, WBS): the root on top, every depth on one
  * row, branches spreading downward. Each subtree owns a horizontal extent wide enough
  * for the node, its collapsed badge and its children, so siblings and cousins never
  * overlap however long their titles are. Rows are aligned across the whole tree: a
  * row is as tall as its tallest node and nodes hang from the row's top edge, so the
  * connector bus above a row sits at one height for every parent of that depth.
  */
-const ISSUE_ROOT_GAP = 64;
-const ISSUE_ROW_GAP = 48;
-const ISSUE_SIBLING_GAP = 24;
-const ISSUE_BADGE_OFFSET = 16;
+const HIERARCHY_ROOT_GAP = 64;
+const HIERARCHY_ROW_GAP = 48;
+const HIERARCHY_SIBLING_GAP = 24;
+const HIERARCHY_BADGE_OFFSET = 16;
 
 interface Frame {
   node: MeasuredNode;
@@ -26,17 +26,17 @@ interface Frame {
 }
 
 function rowGap(depth: number): number {
-  return depth === 0 ? ISSUE_ROOT_GAP : ISSUE_ROW_GAP;
+  return depth === 0 ? HIERARCHY_ROOT_GAP : HIERARCHY_ROW_GAP;
 }
 
 function forestWidth(node: MeasuredNode, extents: ReadonlyMap<MeasuredNode, number>): number {
   let width = 0;
   for (const child of node.children) width += extents.get(child) ?? 0;
-  return width + Math.max(0, node.children.length - 1) * ISSUE_SIBLING_GAP;
+  return width + Math.max(0, node.children.length - 1) * HIERARCHY_SIBLING_GAP;
 }
 
 /** Root's top-left at (x, y); rows grow downward from there. */
-export function placeIssueTree(
+export function placeHierarchy(
   root: MeasuredNode, x: number, y: number,
   nodes: PositionedNode[], edges: LayoutEdge[], folds: FoldPosition[], foldBounds: LayoutBounds[],
 ): void {
@@ -103,7 +103,7 @@ export function placeIssueTree(
         const childCenterX = childPosition.x + childPosition.width / 2;
         edges.push(connect(position, childPosition, `M ${centerX} ${bottom} V ${busY} H ${childCenterX} V ${childTop}`));
         children.push({ node: child, depth: depth + 1, left: childLeft });
-        childLeft += childExtent + ISSUE_SIBLING_GAP;
+        childLeft += childExtent + HIERARCHY_SIBLING_GAP;
       }
       for (let index = children.length - 1; index >= 0; index -= 1) {
         const child = children[index];
@@ -112,7 +112,7 @@ export function placeIssueTree(
     } else if (node.descendantCount > 0) {
       // A collapsed branch shows its hidden count right under the node.
       const control = foldControlSize(node.descendantCount);
-      const badgeY = bottom + ISSUE_BADGE_OFFSET;
+      const badgeY = bottom + HIERARCHY_BADGE_OFFSET;
       folds.push({ id: node.id, x: centerX, y: badgeY });
       foldBounds.push({ x: centerX - control.width / 2, y: badgeY - control.height / 2, ...control });
     }

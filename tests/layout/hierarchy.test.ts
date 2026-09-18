@@ -71,13 +71,13 @@ function preorder(root: LayoutNode, collapsed: ReadonlySet<string>): string[] {
 }
 
 /**
- * The issue-tree invariants: nodes and fold controls disjoint and inside the bounds,
+ * The hierarchy invariants: nodes and fold controls disjoint and inside the bounds,
  * one row per depth with the tallest node setting the row height, siblings and cousins
  * in source order from left to right, and every connector made of axis-aligned
  * segments that start at the parent's bottom center, end at the child's top center and
  * never cross a node.
  */
-function expectIssueTree(result: LayoutResult, root: LayoutNode, collapsed: ReadonlySet<string> = new Set()): void {
+function expectHierarchy(result: LayoutResult, root: LayoutNode, collapsed: ReadonlySet<string> = new Set()): void {
   const positions = byId(result);
   const depthOf = depths(root);
   // Fold controls count with their smallest hit area; wider badges are checked where they are collapsed.
@@ -146,7 +146,7 @@ function expectIssueTree(result: LayoutResult, root: LayoutNode, collapsed: Read
   }
 }
 
-describe("issue tree layout", () => {
+describe("hierarchy layout", () => {
   const tree = node("root", node("a", node("a1"), node("a2", node("a21"))), node("b"), node("c", node("c1")));
   const sizes: ReadonlyMap<string, NodeSize> = new Map([
     ["root", { width: 220, height: 70 }],
@@ -158,8 +158,8 @@ describe("issue tree layout", () => {
   ]);
 
   it("puts the root on top, aligns every depth on one row and keeps siblings in source order", () => {
-    const result = layoutTree(tree, sizes, new Set(), "issue-tree");
-    expectIssueTree(result, tree);
+    const result = layoutTree(tree, sizes, new Set(), "hierarchy");
+    expectHierarchy(result, tree);
     const positions = byId(result);
     const root = positions.get("root");
     expect(root).toBeDefined();
@@ -185,7 +185,7 @@ describe("issue tree layout", () => {
       ["wide", { width: 600, height: 30 }],
       ["w1", { width: 50, height: 20 }],
       ["w2", { width: 50, height: 20 }],
-    ]), new Set(), "issue-tree");
+    ]), new Set(), "hierarchy");
     const positions = byId(result);
     const p = positions.get("p");
     const p1 = positions.get("p1");
@@ -206,7 +206,7 @@ describe("issue tree layout", () => {
   });
 
   it("draws each branch as stem, bus and drop, with one bus height per depth and no line under text", () => {
-    const result = layoutTree(tree, sizes, new Set(), "issue-tree");
+    const result = layoutTree(tree, sizes, new Set(), "hierarchy");
     const positions = byId(result);
     const busByDepth = new Map<number, number>();
     const depthOf = depths(tree);
@@ -230,7 +230,7 @@ describe("issue tree layout", () => {
   });
 
   it("puts expanded controls on the junction below the parent and collapsed badges under the node", () => {
-    const expanded = layoutTree(tree, sizes, new Set(), "issue-tree");
+    const expanded = layoutTree(tree, sizes, new Set(), "hierarchy");
     const positions = byId(expanded);
     const folds = new Map(expanded.folds.map(fold => [fold.id, fold]));
     expect([...folds.keys()].sort()).toEqual(["a", "a2", "c", "root"]);
@@ -242,8 +242,8 @@ describe("issue tree layout", () => {
       if (!parent || !target) continue;
       expect(fold).toEqual({ id, x: centerX(parent), y: target.y - (id === "root" ? ROOT_GAP : ROW_GAP) / 2 });
     }
-    const collapsed = layoutTree(tree, sizes, new Set(["a"]), "issue-tree");
-    expectIssueTree(collapsed, tree, new Set(["a"]));
+    const collapsed = layoutTree(tree, sizes, new Set(["a"]), "hierarchy");
+    expectHierarchy(collapsed, tree, new Set(["a"]));
     expect(collapsed.nodes.map(item => item.id)).toEqual(["root", "a", "b", "c", "c1"]);
     const a = byId(collapsed).get("a");
     const badge = collapsed.folds.find(fold => fold.id === "a");
@@ -251,9 +251,9 @@ describe("issue tree layout", () => {
     if (!a || !badge) return;
     expect(badge).toEqual({ id: "a", x: centerX(a), y: a.y + a.height + 16 });
     expect(collapsed.bounds.width * collapsed.bounds.height).toBeLessThan(expanded.bounds.width * expanded.bounds.height);
-    expect(layoutTree(tree, sizes, new Set(["root"]), "issue-tree").nodes).toHaveLength(1);
+    expect(layoutTree(tree, sizes, new Set(["root"]), "hierarchy").nodes).toHaveLength(1);
     // Re-expanding restores exactly the layout from before the fold.
-    expect(layoutTree(tree, sizes, new Set(), "issue-tree")).toEqual(expanded);
+    expect(layoutTree(tree, sizes, new Set(), "hierarchy")).toEqual(expanded);
   });
 
   it("keeps a four-digit badge inside the bounds and clear of neighbouring branches", () => {
@@ -263,8 +263,8 @@ describe("issue tree layout", () => {
       ["closed", { width: 20, height: 24 }],
       ["left", { width: 20, height: 24 }],
       ["right", { width: 20, height: 24 }],
-    ]), new Set(["closed"]), "issue-tree");
-    expectIssueTree(result, root, new Set(["closed"]));
+    ]), new Set(["closed"]), "hierarchy");
+    expectHierarchy(result, root, new Set(["closed"]));
     const closed = byId(result).get("closed");
     const badge = result.folds.find(fold => fold.id === "closed");
     expect(closed && badge).toBeTruthy();
@@ -288,7 +288,7 @@ describe("issue tree layout", () => {
   it("handles a deep chain of 2,000 rows without recursion and 500 mixed sizes without overlap", () => {
     let chain = node("deep-1999");
     for (let index = 1998; index >= 0; index -= 1) chain = node(`deep-${index}`, chain);
-    const deep = layoutTree(chain, new Map(), new Set(), "issue-tree");
+    const deep = layoutTree(chain, new Map(), new Set(), "hierarchy");
     expect(deep.nodes).toHaveLength(2000);
     expect(deep.edges).toHaveLength(1999);
     expect(deep.nodes[1999]?.y).toBeGreaterThan(100_000);
@@ -307,26 +307,26 @@ describe("issue tree layout", () => {
       branches.push(node(`branch-${count++}`, ...children));
     }
     const wide = node("root", ...branches);
-    const result = layoutTree(wide, measurements, new Set(), "issue-tree");
+    const result = layoutTree(wide, measurements, new Set(), "hierarchy");
     expect(result.nodes).toHaveLength(500);
-    expectIssueTree(result, wide);
+    expectHierarchy(result, wide);
   });
 
   it("uses finite defaults, leaves the input untouched and rejects duplicate identities", () => {
     const result = layoutTree(node("root", node("child")), new Map([
       ["root", { width: NaN, height: -20 }],
       ["child", { width: Infinity, height: 0 }],
-    ]), new Set(), "issue-tree");
-    expectIssueTree(result, node("root", node("child")));
+    ]), new Set(), "hierarchy");
+    expectHierarchy(result, node("root", node("child")));
     expect(result.nodes.every(item => item.width > 0 && item.height > 0)).toBe(true);
     const before = JSON.stringify(tree);
-    layoutTree(tree, sizes, new Set(["a"]), "issue-tree");
+    layoutTree(tree, sizes, new Set(["a"]), "hierarchy");
     expect(JSON.stringify(tree)).toBe(before);
-    expect(() => layoutTree(node("root", node("same"), node("same")), new Map(), new Set(), "issue-tree")).toThrow(/duplicate/iu);
+    expect(() => layoutTree(node("root", node("same"), node("same")), new Map(), new Set(), "hierarchy")).toThrow(/duplicate/iu);
   });
 });
 
-describe("issue tree layout of the fixtures", () => {
+describe("hierarchy layout of the fixtures", () => {
   /** Roughly what the DOM measures: 14px per character, wrapped at the node's 360px maximum. */
   function estimateSizes(nodes: readonly MindNode[]): Map<string, NodeSize> {
     const sizes = new Map<string, NodeSize>();
@@ -342,8 +342,8 @@ describe("issue tree layout of the fixtures", () => {
     const source = readFileSync(new URL("../fixtures/uneven-branches.md", import.meta.url), "utf8");
     const doc = parseMarkdown(source, "uneven-branches");
     const { root } = projectMap(doc);
-    const result = layoutTree(root, estimateSizes(doc.nodes), new Set(), "issue-tree");
-    expectIssueTree(result, root);
+    const result = layoutTree(root, estimateSizes(doc.nodes), new Set(), "hierarchy");
+    expectHierarchy(result, root);
     const positions = byId(result);
     const titles = new Map(doc.nodes.map(item => [item.id, item.title]));
     const siblings = result.nodes.filter(item => /^兄弟 \d+$/u.test(titles.get(item.id) ?? ""));
@@ -375,12 +375,12 @@ describe("issue tree layout of the fixtures", () => {
     const [, source] = makePerformanceFixture(count);
     const doc = parseMarkdown(source, `performance-${count}`);
     const { root } = projectMap(doc);
-    const result = layoutTree(root, estimateSizes(doc.nodes), new Set(), "issue-tree");
+    const result = layoutTree(root, estimateSizes(doc.nodes), new Set(), "hierarchy");
     expect(result.nodes).toHaveLength(count);
-    expectIssueTree(result, root);
+    expectHierarchy(result, root);
     const collapsed = new Set(root.children.slice(0, Math.ceil(root.children.length / 2)).map(item => item.id));
-    const folded = layoutTree(root, estimateSizes(doc.nodes), collapsed, "issue-tree");
-    expectIssueTree(folded, root, collapsed);
+    const folded = layoutTree(root, estimateSizes(doc.nodes), collapsed, "hierarchy");
+    expectHierarchy(folded, root, collapsed);
     expect(folded.nodes.length).toBeLessThan(result.nodes.length);
     expect(folded.folds.filter(fold => collapsed.has(fold.id))).toHaveLength(collapsed.size);
   });

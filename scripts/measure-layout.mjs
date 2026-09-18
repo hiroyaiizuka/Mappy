@@ -20,7 +20,7 @@ import { pathToFileURL } from 'node:url';
 import { makePerformanceFixture, performanceNodeCounts } from './performance-fixtures.mjs';
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
-const modes = ['mindmap', 'timeline', 'issue-tree'];
+const modes = ['mindmap', 'timeline', 'hierarchy'];
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -54,7 +54,7 @@ async function loadModules() {
   return { layoutTree: layout.layoutTree, parseMarkdown: markdown.parseMarkdown, projectMap: markdown.projectMap };
 }
 
-/** The same estimate as tests/layout/issue-tree.test.ts: 14px per character, wrapped at the node's 360px maximum. */
+/** The same estimate as tests/layout/hierarchy.test.ts: 14px per character, wrapped at the node's 360px maximum. */
 function estimateSizes(nodes) {
   const sizes = new Map();
   for (const node of nodes) {

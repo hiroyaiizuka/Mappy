@@ -1,4 +1,4 @@
-import { placeIssueTree } from "./issue-tree";
+import { placeHierarchy } from "./hierarchy";
 
 /** The layout depends on tree identity and measurements, never Markdown or DOM. */
 export interface LayoutNode {
@@ -40,10 +40,10 @@ export interface LayoutPoint {
 
 /**
  * mindmap: root on the left, branches to the right. timeline: first level on a
- * horizontal axis, deeper levels alternating above and below. issue-tree: root on
- * top, every depth on one row, branches downward (`./issue-tree`).
+ * horizontal axis, deeper levels alternating above and below. hierarchy: root on
+ * top, every depth on one row, branches downward (`./hierarchy`).
  */
-export type LayoutMode = "mindmap" | "timeline" | "issue-tree";
+export type LayoutMode = "mindmap" | "timeline" | "hierarchy";
 
 /**
  * A free topic: an independent tree placed beside the body. `position` is its root
@@ -325,7 +325,7 @@ function placeTree(tree: MeasuredNode, x: number, y: number, mode: LayoutMode): 
   const folds: FoldPosition[] = [];
   const foldBounds: LayoutBounds[] = [];
   if (mode === "timeline") placeTimeline(tree, x, y, nodes, edges, folds, foldBounds);
-  else if (mode === "issue-tree") placeIssueTree(tree, x, y, nodes, edges, folds, foldBounds);
+  else if (mode === "hierarchy") placeHierarchy(tree, x, y, nodes, edges, folds, foldBounds);
   else placeRightward(tree, x, y - (tree.subtreeHeight - tree.height) / 2, nodes, edges, folds, foldBounds);
   return { nodes, edges, folds, foldBounds, bounds: boundsOf([...nodes, ...foldBounds]) };
 }
@@ -362,8 +362,8 @@ export function layoutTree(
   const seen = new Set<string>();
   const measured = measureTree(root, sizes, collapsed, mode, seen);
   // The map's forest starts at y = 0, the timeline axis runs through y = 0, and the
-  // issue tree's root is centered on x = 0.
-  const origin = mode === "issue-tree"
+  // hierarchy's root is centered on x = 0.
+  const origin = mode === "hierarchy"
     ? { x: -measured.width / 2, y: 0 }
     : { x: 0, y: mode === "timeline" ? -measured.height / 2 : (measured.subtreeHeight - measured.height) / 2 };
   const body = placeTree(measured, origin.x, origin.y, mode);
