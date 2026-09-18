@@ -7,7 +7,7 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
 import { Component, Events, MarkdownRenderer } from '../../harness/browser/obsidian';
-import { performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
+import { performanceFixtureMatrix, performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(() => { document.body.replaceChildren(); });
@@ -19,12 +19,13 @@ function fixtureSource(id: string): string {
 }
 
 describe('browser harness fixtures', () => {
-  it('embeds the generated performance documents with exactly 10/100/500/2,000 nodes', () => {
+  it('embeds the generated performance documents with exactly 10/100/500/2,000 nodes in every shape', () => {
     expect(performanceNodeCounts).toEqual([10, 100, 500, 2000]);
-    for (const count of performanceNodeCounts) {
-      const parsed = parseMarkdown(fixtureSource(`performance-${count}`), `performance-${count}`);
-      expect(parsed.nodes).toHaveLength(count);
-      expect(parsed.root.children).toHaveLength(1);
+    for (const { id, nodeCount, shape } of performanceFixtureMatrix()) {
+      const parsed = parseMarkdown(fixtureSource(id), id);
+      expect(parsed.nodes, id).toHaveLength(nodeCount);
+      expect(parsed.root.children, id).toHaveLength(1);
+      expect(findFixture(id)?.performance, id).toEqual({ nodeCount, shape: shape.id });
     }
   });
 
@@ -56,7 +57,10 @@ describe('browser harness fixtures', () => {
     expect(FIXTURES.map(fixture => fixture.path)).toEqual([
       'Fixtures/heading-document.md', 'Fixtures/roundtrip-edge-cases.md', 'Fixtures/uneven-branches.md', 'Fixtures/free-topics.md',
       'Fixtures/performance-10.md', 'Fixtures/performance-100.md', 'Fixtures/performance-500.md', 'Fixtures/performance-2000.md',
+      ...['list', 'deep', 'wide', 'japanese', 'links'].flatMap(shape => performanceNodeCounts.map(count => `Fixtures/performance-${count}-${shape}.md`)),
     ]);
+    expect(FIXTURES.filter(fixture => !fixture.performance).map(fixture => fixture.id))
+      .toEqual(['heading-document', 'roundtrip-edge-cases', 'uneven-branches', 'free-topics']);
     expect(SAMPLE_IMAGE.url.startsWith('data:image/svg+xml')).toBe(true);
   });
 });

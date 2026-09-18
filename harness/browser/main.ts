@@ -4,12 +4,16 @@
  * shipped modules; only the `obsidian` module is replaced by ./obsidian.ts.
  * Saving, link resolution, themes and IME are Obsidian-only and stay out of scope.
  */
-import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from "obsidian";
+import type { App, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
 import { installObsidianDom } from "./dom";
 import { Notice, WorkspaceLeaf } from "./obsidian";
 import { HarnessApp } from "./app";
 import { FIXTURES, SAMPLE_IMAGE, findFixture, type HarnessFixture } from "./fixtures";
-import { parseMarkdown } from "../../src/core/markdown";
+import {
+  installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
+  type EditSample, type FrameSample, type LoadSample, type MeasureContext,
+} from "./measure";
+import type { LayoutMode } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MindmapView } from "../../src/ui/mindmap-view";
@@ -18,20 +22,11 @@ declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
 
 // Product modules only touch the DOM inside methods, so installing here is early enough.
 installObsidianDom();
+// Frame and timer probes must wrap the window before the view schedules anything.
+const probes = installProbes(window);
 
-export interface HarnessTiming {
-  fixture: string;
-  nodes: number;
-  /** parseMarkdown alone, measured separately from the view's own parse. */
-  parseMs: number;
-  /** setState resolved: read, parse, node DOM created. */
-  stateMs: number;
-  /** First animation frame after setState: layout applied, Fit done. */
-  firstLayoutMs: number;
-  /** Node positions stable for three frames (image loads included). */
-  settledMs: number;
-  at: string;
-}
+/** One fixture load with its stage times (docs/harness.md「時刻の記録」; measure.ts for the stages). */
+export type HarnessTiming = LoadSample;
 
 const PANE_PRESETS: readonly [label: string, width: number, height: number][] = [
   ["1280×800", 1280, 800], ["960×640", 960, 640], ["640×480", 640, 480], ["390×700（スマホ幅）", 390, 700],
@@ -71,9 +66,8 @@ function mustFind<T extends Element>(selector: string): T {
   return element;
 }
 
-function nextFrame(): Promise<number> {
-  return new Promise(resolve => { requestAnimationFrame(resolve); });
-}
+/** The page's own waits use the native frame callback, so they are not counted as product frames. */
+function nextFrame(): Promise<number> { return probes.nextFrame(); }
 
 function nodePositions(): string {
   return Array.from(pane.querySelectorAll<HTMLElement>(".mappy-node"), node => `${node.dataset.nodeId}:${node.style.transform}`).join("|");
@@ -114,7 +108,8 @@ async function closeView(): Promise<void> {
   closing.containerEl.remove();
 }
 
-async function load(id: string): Promise<HarnessTiming> {
+/** `mode` opens the fixture in that layout (the performance runner measures all three); omitted, the note decides. */
+async function load(id: string, mode?: LayoutMode): Promise<HarnessTiming> {
   const fixture = findFixture(id);
   if (!fixture) throw new Error(`Unknown fixture: ${id}`);
   current = fixture;
@@ -124,24 +119,13 @@ async function load(id: string): Promise<HarnessTiming> {
   url.searchParams.set("fixture", fixture.id);
   history.replaceState(null, "", url);
   view ??= await openView();
-  const parseStart = performance.now();
-  const parsed = parseMarkdown(fixture.source, fixture.path.split("/").pop()?.replace(/\.md$/u, "") ?? fixture.id);
-  const parseMs = performance.now() - parseStart;
   performance.mark(`mappy:load:${fixture.id}:start`);
-  const start = performance.now();
-  await view.setState({ file: fixture.path }, { history: false } satisfies ViewStateResult);
-  const stateMs = performance.now() - start;
-  await nextFrame();
-  const firstLayoutMs = performance.now() - start;
-  await settle();
-  const settledMs = performance.now() - start;
+  const timing = await measureLoad(measureContext, view, fixture, mode);
   performance.measure(`mappy:load:${fixture.id}`, `mappy:load:${fixture.id}:start`);
-  const timing: HarnessTiming = {
-    fixture: fixture.id, nodes: parsed.nodes.length, parseMs, stateMs, firstLayoutMs, settledMs, at: new Date().toISOString(),
-  };
   timings.push(timing);
   renderTimings();
-  setStatus(`${fixture.label}: ${parsed.nodes.length} ノード（${parsed.format === "list" ? "H2＋リスト" : "見出し"}形式）、表示 ${openCount} 回目`);
+  const format = view.snapshot()?.document?.format === "list" ? "H2＋リスト" : "見出し";
+  setStatus(`${fixture.label}: ${timing.nodes} ノード（${format}形式、${timing.mode}）、表示 ${openCount} 回目`);
   return timing;
 }
 
@@ -161,6 +145,41 @@ async function reopen(): Promise<HarnessTiming | null> {
 
 function setStatus(text: string): void { statusEl.textContent = text; }
 
+const measureContext: MeasureContext = { probes, pane, vault: app.vault, settle };
+
+function currentFile(): { fixture: HarnessFixture; file: unknown; view: MindmapView } {
+  if (!current || !view) throw new Error("No fixture is loaded");
+  const file = app.vault.getAbstractFileByPath(current.path);
+  if (!file) throw new Error(`Fixture file missing: ${current.path}`);
+  return { fixture: current, file, view };
+}
+
+/**
+ * Timing probes for `scripts/browser-harness-perf.mjs`. Each load opens a fresh
+ * view so repeated samples pay the full cost; edits run on the loaded fixture.
+ */
+const measure = {
+  async load(id: string, mode?: LayoutMode): Promise<LoadSample> {
+    await closeView();
+    view = await openView();
+    return load(id, mode);
+  },
+  markdownEdit(): Promise<EditSample> {
+    const { fixture, file, view: opened } = currentFile();
+    return measureMarkdownEdit(measureContext, opened, fixture, file);
+  },
+  inlineEdit(keystrokes = 20): Promise<EditSample[]> {
+    const { fixture, view: opened } = currentFile();
+    return measureInlineEdit(measureContext, opened, fixture, keystrokes);
+  },
+  frames(kind: "pan" | "zoom", frames = 60): Promise<FrameSample> {
+    const { fixture, view: opened } = currentFile();
+    return measureFrames(measureContext, opened, fixture, kind, frames);
+  },
+  /** Product frames and timers seen so far, for DevTools inspection. */
+  probes,
+};
+
 /** Page controls report failures in the status line instead of an unhandled rejection. */
 function report(action: Promise<unknown>): void {
   action.catch((error: unknown) => { setStatus(error instanceof Error ? error.message : String(error)); });
@@ -171,7 +190,8 @@ function renderTimings(): void {
   for (const timing of timings.slice(-8).reverse()) {
     const row = timingsEl.createEl("li");
     row.createEl("code", { text: timing.fixture });
-    row.append(` ${timing.nodes} ノード: parse ${timing.parseMs.toFixed(1)} ms / setState ${timing.stateMs.toFixed(1)} ms`
+    row.append(` ${timing.nodes} ノード（${timing.mode}）: parse ${timing.parseMs.toFixed(1)} ms / setState ${timing.stateMs.toFixed(1)} ms`
+      + ` / 計測 ${timing.measureMs.toFixed(1)} ms / 配置フレーム ${timing.frameMs.toFixed(1)} ms（layoutTree ${timing.layoutMs.toFixed(1)} ms）`
       + ` / 初回配置 ${timing.firstLayoutMs.toFixed(1)} ms / 安定 ${timing.settledMs.toFixed(1)} ms`);
   }
 }
@@ -215,6 +235,7 @@ const api = {
   reopen,
   resize,
   settle,
+  measure,
   get view() { return view; },
   get openCount() { return openCount; },
   viewport: () => view?.getState().viewport ?? null,
@@ -238,7 +259,13 @@ window.__mappyHarness = api;
 
 function setupPanel(): void {
   buildEl.textContent = `build ${__MAPPY_HARNESS_BUILD__.commit} (${__MAPPY_HARNESS_BUILD__.builtAt})`;
-  for (const fixture of FIXTURES) fixtureSelect.createEl("option", { value: fixture.id, text: fixture.label });
+  const groups = new Map<string, HTMLOptGroupElement>();
+  for (const fixture of FIXTURES) {
+    const label = fixture.performance ? `性能: ${fixture.performance.shape}` : "静的";
+    let group = groups.get(label);
+    if (!group) { group = fixtureSelect.createEl("optgroup", { attr: { label } }); groups.set(label, group); }
+    group.createEl("option", { value: fixture.id, text: fixture.label });
+  }
   fixtureSelect.addEventListener("change", () => { report(load(fixtureSelect.value)); });
   for (const [label, width, height] of PANE_PRESETS) {
     const button = presetsEl.createEl("button", { text: label, attr: { type: "button" } });

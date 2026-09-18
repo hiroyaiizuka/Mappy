@@ -8,179 +8,21 @@
  * and a record.md land in artifacts/browser-harness/<timestamp>/. Chrome is
  * located via --chrome, $MAPPY_CHROME, or the usual install locations; when
  * none exists the script writes a record marking the capture as not executed.
- * No dependency is added: Node's WebSocket talks to Chrome's DevTools protocol.
+ * The CDP client lives in ./browser-harness-cdp.mjs, shared with the
+ * performance runner.
  */
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
+import { CdpClosedError, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
 const PANE = { width: 1280, height: 800 };
 const OPERATION_FIXTURE = 'uneven-branches';
 const TOPIC_FIXTURE = 'free-topics';
-
-const CHROME_CANDIDATES = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-];
-
-function findChrome(explicit) {
-  const candidates = [explicit, process.env.MAPPY_CHROME, ...CHROME_CANDIDATES].filter(Boolean);
-  for (const candidate of candidates) if (existsSync(candidate)) return candidate;
-  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']) {
-    try {
-      return execFileSync('which', [name], { encoding: 'utf8' }).trim();
-    } catch { /* Not on PATH. */ }
-  }
-  return null;
-}
-
-function chromeVersion(chrome) {
-  try {
-    return execFileSync(chrome, ['--version'], { encoding: 'utf8' }).trim();
-  } catch {
-    return 'unknown';
-  }
-}
-
-function launchChrome(chrome, profile) {
-  const child = spawn(chrome, [
-    '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--disable-gpu',
-    '--force-device-scale-factor=1', `--window-size=${WINDOW.width},${WINDOW.height}`, 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  const endpoint = new Promise((resolveEndpoint, reject) => {
-    let output = '';
-    const timer = setTimeout(() => { reject(new Error(`Chrome did not expose DevTools within 20s:\n${output}`)); }, 20000);
-    child.stderr.on('data', chunk => {
-      output += chunk;
-      const match = output.match(/DevTools listening on (ws:\/\/\S+)/u);
-      if (match) { clearTimeout(timer); resolveEndpoint(match[1]); }
-    });
-    child.on('exit', code => { clearTimeout(timer); reject(new Error(`Chrome exited with ${code}:\n${output}`)); });
-  });
-  return { child, endpoint };
-}
-
-/** A protocol call that gets no answer within this time means the browser is wedged; the run then fails fast. */
-const CDP_TIMEOUT_MS = 60000;
-
-/** Minimal flat-session CDP client over the global WebSocket. */
-class Cdp {
-  constructor(socket) {
-    this.socket = socket;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.dead = null;
-    socket.addEventListener('message', event => {
-      const message = JSON.parse(String(event.data));
-      if (message.id === undefined) return;
-      const entry = this.pending.get(message.id);
-      if (!entry) return;
-      this.pending.delete(message.id);
-      clearTimeout(entry.timer);
-      if (message.error) entry.reject(new Error(`${entry.method}: ${message.error.message}`));
-      else entry.resolve(message.result);
-    });
-  }
-
-  static connect(url) {
-    return new Promise((resolveClient, reject) => {
-      const socket = new WebSocket(url);
-      socket.addEventListener('open', () => { resolveClient(new Cdp(socket)); });
-      socket.addEventListener('error', () => { reject(new Error(`Cannot connect to ${url}`)); });
-    });
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = this.nextId++;
-    // MAPPY_CAPTURE_TRACE=1 prints every protocol call, to see where a run stalls.
-    if (process.env.MAPPY_CAPTURE_TRACE) console.error(`cdp ${id} ${method} ${JSON.stringify(params).slice(0, 160)}`);
-    return new Promise((resolveResult, reject) => {
-      if (this.dead) { reject(new Error(`${method}: ${this.dead}`)); return; }
-      const timer = setTimeout(() => {
-        // Headless Chrome has been seen to stop answering with its browser process spinning; do not wait forever.
-        this.dead = `browser unresponsive (${method} unanswered for ${CDP_TIMEOUT_MS / 1000}s)`;
-        for (const entry of this.pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(`${entry.method}: ${this.dead}`)); }
-        this.pending.clear();
-      }, CDP_TIMEOUT_MS);
-      this.pending.set(id, { method, resolve: resolveResult, reject, timer });
-      this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-    });
-  }
-
-  close() { this.socket.close(); }
-}
-
-class Page {
-  constructor(cdp, sessionId) { this.cdp = cdp; this.sessionId = sessionId; }
-  send(method, params) { return this.cdp.send(method, params, this.sessionId); }
-
-  async evaluate(expression) {
-    const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
-    return result.value;
-  }
-
-  harness(expression) { return this.evaluate(`(async () => { const h = window.__mappyHarness; return (${expression}); })()`); }
-
-  async settle() { await this.harness('h.settle()'); }
-
-  async screenshot(file, clip) {
-    const { data } = await this.send('Page.captureScreenshot', {
-      format: 'png', ...(clip ? { clip: { ...clip, scale: 2 } } : {}),
-    });
-    await writeFile(file, Buffer.from(data, 'base64'));
-  }
-
-  async mouse(type, x, y, extra = {}) {
-    await this.send('Input.dispatchMouseEvent', { type, x: Math.round(x), y: Math.round(y), ...extra });
-  }
-
-  async click(x, y, button = 'left') {
-    await this.mouse('mouseMoved', x, y);
-    await this.mouse('mousePressed', x, y, { button, clickCount: 1 });
-    await this.mouse('mouseReleased', x, y, { button, clickCount: 1 });
-  }
-
-  /** Two presses at the same point; Chrome raises the dblclick on the second release. */
-  async dblclick(x, y) {
-    await this.click(x, y);
-    await this.mouse('mousePressed', x, y, { button: 'left', clickCount: 2 });
-    await this.mouse('mouseReleased', x, y, { button: 'left', clickCount: 2 });
-  }
-
-  async drag(fromX, fromY, toX, toY, steps = 8) {
-    await this.mouse('mouseMoved', fromX, fromY);
-    await this.mouse('mousePressed', fromX, fromY, { button: 'left', clickCount: 1 });
-    for (let step = 1; step <= steps; step += 1) {
-      await this.mouse('mouseMoved', fromX + (toX - fromX) * step / steps, fromY + (toY - fromY) * step / steps, { button: 'left' });
-    }
-    await this.mouse('mouseReleased', toX, toY, { button: 'left', clickCount: 1 });
-  }
-
-  async wheel(x, y, deltaX, deltaY, modifiers = 0) {
-    await this.mouse('mouseWheel', x, y, { deltaX, deltaY, modifiers });
-  }
-
-  async key(key, code, keyCode, modifiers = 0) {
-    const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
-    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base });
-    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
-  }
-
-  async type(text) { await this.send('Input.insertText', { text }); }
-}
 
 const center = rect => ({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
 const inside = (rect, outer, margin = 0) => rect.x >= outer.x - margin && rect.y >= outer.y - margin
@@ -202,6 +44,8 @@ class Recorder {
       const detail = await body();
       entry.detail = typeof detail === 'string' ? detail : '';
     } catch (error) {
+      // A dead Chrome cannot record anything more; abort the run instead of failing every remaining case.
+      if (error instanceof CdpClosedError) throw error;
       entry.result = 'FAIL';
       entry.detail = error instanceof Error ? error.message : String(error);
     }
@@ -888,7 +732,7 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
     '- 対象外: 保存、リンク解決、テーマ、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
-    '- 描画時間は「時刻の記録」の生値。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。基準端末・条件・p95 を伴う計測は別チケット（性能計測）で扱う。',
+    '- 描画時間は「時刻の記録」の生値（1 回分）。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。繰り返し計測と p50／p95 は `node scripts/browser-harness-perf.mjs` の記録（`artifacts/performance/`）で扱う。',
     '',
     '## fixture と主要操作',
     '',
@@ -898,9 +742,9 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     '',
     '## 時刻の記録（ms）',
     '',
-    '| fixture | ノード | parse | setState | 初回配置 | 安定 |',
-    '| --- | --- | --- | --- | --- | --- |',
-    ...timings.map(timing => `| ${timing.fixture} | ${timing.nodes} | ${timing.parseMs.toFixed(1)} | ${timing.stateMs.toFixed(1)} | ${timing.firstLayoutMs.toFixed(1)} | ${timing.settledMs.toFixed(1)} |`),
+    '| fixture | ノード | parse | setState | 計測 | 配置フレーム | layoutTree | 初回配置 | 安定 |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...timings.map(timing => `| ${timing.fixture} | ${timing.nodes} | ${timing.parseMs.toFixed(1)} | ${timing.stateMs.toFixed(1)} | ${timing.measureMs.toFixed(1)} | ${timing.frameMs.toFixed(1)} | ${timing.layoutMs.toFixed(1)} | ${timing.firstLayoutMs.toFixed(1)} | ${timing.settledMs.toFixed(1)} |`),
     '',
     '## 未実施',
     '',
@@ -922,7 +766,7 @@ async function main() {
     'Obsidian 実機（③ E01〜E29）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
     'トラックパッドのピンチ・二本指スクロール、ネイティブ IME、モバイル: headless の合成入力では確認できない。',
     '⌘Z／⌘⇧Z の連打: headless Chrome 153 は修飾キー付きのキー入力を CDP で繰り返すと応答しなくなるため、フリートピックの Undo／Redo は右クリックメニューで実行した。キー経由の Undo は edit-inline-memory の 1 回と jsdom のテストで確認する。',
-    '性能計測（基準端末・条件・p95 の記録）: LEV-13 の範囲。ここでは時刻の生値だけを残す。',
+    '性能計測（基準端末・条件・p50／p95）: `node scripts/browser-harness-perf.mjs` が `artifacts/performance/` に記録する。ここでは時刻の生値だけを残す。',
   ];
   const chrome = findChrome(option('--chrome'));
   const output = await buildBrowserHarness();
@@ -938,47 +782,24 @@ async function main() {
     process.exitCode = 2;
     return;
   }
-  const profile = await mkdtemp(join(tmpdir(), 'mappy-harness-'));
-  const { child, endpoint } = launchChrome(chrome, profile);
-  let cdp;
+  const timings = [];
   let recorder;
   let aborted = null;
-  const timings = [];
   try {
-    cdp = await Cdp.connect(await endpoint);
-    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
-    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-    const page = new Page(cdp, sessionId);
-    await page.send('Page.enable');
-    await page.send('Runtime.enable');
-    await page.send('Emulation.setDeviceMetricsOverride', { ...WINDOW, deviceScaleFactor: 1, mobile: false });
-    const url = `${pathToFileURL(join(output, 'index.html')).href}?fixture=${OPERATION_FIXTURE}&width=${PANE.width}&height=${PANE.height}`;
-    await page.send('Page.navigate', { url });
-    const deadline = Date.now() + 15000;
-    while (!(await page.evaluate('typeof window.__mappyHarness === "object"'))) {
-      if (Date.now() > deadline) throw new Error('Harness page did not initialise.');
-      await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
-    }
-    await page.harness('h.ready');
-    recorder = new Recorder(page, directory);
-    await captureFixtures(recorder, page, timings);
-    await captureOperations(recorder, page);
-    await captureTopicOperations(recorder, page);
-    await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
+    // Chrome, its profile and the SIGKILL on a wedged browser live in withHarnessPage.
+    await withHarnessPage(chrome, { output, window: WINDOW, fixture: OPERATION_FIXTURE, pane: PANE }, async page => {
+      recorder = new Recorder(page, directory);
+      await captureFixtures(recorder, page, timings);
+      await captureOperations(recorder, page);
+      await captureTopicOperations(recorder, page);
+      await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
+    });
   } catch (error) {
     // Keep the record of what did run; the exit code still reports the abort.
     aborted = error instanceof Error ? error.message : String(error);
-  } finally {
-    cdp?.close();
-    const exited = new Promise(resolveExit => { child.once('exit', resolveExit); });
-    // A wedged browser ignores SIGTERM and would keep spinning after the run; SIGKILL leaves nothing behind.
-    child.kill('SIGKILL');
-    await exited;
-    await rm(profile, { recursive: true, force: true, maxRetries: 5 });
   }
   const cases = recorder?.cases ?? [];
-  if (cdp?.dead) notExecuted.unshift(`ブラウザが応答しなくなったため、以降のケースは未実施または FAIL（${cdp.dead}）。再実行する。`);
-  if (aborted) notExecuted.unshift(`途中で中断したため、残りのケースは未実施（${aborted}）。`);
+  if (aborted) notExecuted.unshift(`途中で中断したため、残りのケースは未実施（${aborted}）。再実行する。`);
   const record = recordMarkdown({ startedAt: startedAt.toISOString(), chrome, version: chromeVersion(chrome), commit, cases, timings, notExecuted });
   await writeFile(join(directory, 'record.md'), record);
   const failed = cases.filter(entry => entry.result === 'FAIL').length;
@@ -986,4 +807,7 @@ async function main() {
   if (failed > 0 || aborted) process.exitCode = 1;
 }
 
-await main();
+const invokedAsScript = process.argv[1]
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (invokedAsScript) await main();

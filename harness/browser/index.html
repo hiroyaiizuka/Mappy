@@ -14,7 +14,7 @@
       製品の <code>src/ui/mindmap-view.ts</code>・<code>core</code>・<code>layout</code>・<code>interaction</code> をそのまま読み込み、
       <code>obsidian</code> モジュールだけを <code>harness/browser/obsidian.ts</code> のモックに置き換えています。
       <strong>対象外:</strong> 保存（編集はページ内メモリのみ）、リンク解決（クリックは通知のみ）、テーマ（CSS 変数は仮の値）、日本語 IME。
-      これらは <code>docs/harness.md</code> の ③ Obsidian 実機（E01〜E28）で確認します。ここでの成功を実機の成功と呼びません。
+      これらは <code>docs/harness.md</code> の ③ Obsidian 実機（E01〜E29）で確認します。ここでの成功を実機の成功と呼びません。
     </p>
   </header>
   <div class="harness-body">
@@ -40,7 +40,7 @@
       <section>
         <h2>時刻の記録</h2>
         <ul id="harness-timings" class="harness-list"></ul>
-        <p class="harness-muted">fixture 切替ごとの経過時間。計測基盤（条件・基準端末・p95）は別チケットで整備します。<code>window.__mappyHarness.timings</code> と Performance タイムラインの <code>mappy:load:*</code> にも記録します。</p>
+        <p class="harness-muted">fixture 切替ごとの経過時間（1 回分の生値）。繰り返しと p50／p95 は <code>node scripts/browser-harness-perf.mjs</code> が <code>window.__mappyHarness.measure</code> を使って <code>artifacts/performance/</code> に記録します。<code>window.__mappyHarness.timings</code> と Performance タイムラインの <code>mappy:load:*</code> にも残します。</p>
       </section>
       <section>
         <h2>モックが受けた呼び出し</h2>
