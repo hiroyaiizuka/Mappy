@@ -41,6 +41,18 @@ function paragraphGap(before: string, eol: string): string {
   return before.endsWith('\n') ? eol : eol + eol;
 }
 
+/**
+ * Separate the written body from what follows. A leaf list item's body ends
+ * before its own line break, so the source already continues on a new line and
+ * needs nothing; a following heading or child list starts at a line start and
+ * needs a blank line.
+ */
+function closingGap(doc: MindDocument, to: number, written: string): string {
+  if (to >= doc.source.length) return '';
+  if (/^\r?\n/u.test(doc.source.slice(to, to + 2))) return '';
+  return paragraphGap(written, doc.eol);
+}
+
 function checkedBodyEdit(doc: MindDocument, edit: TextEdit): TextEdit {
   const updated = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
   const byStart = new Map(updated.nodes.map((node) => [node.from, node]));
@@ -71,9 +83,8 @@ export function planBodyEdit(doc: MindDocument, nodeId: string, body: string): T
   const before = doc.source.slice(0, node.bodyFrom);
   const normalized = indentBody(node, normalizeNewlines(body, doc.eol));
   const prefix = normalized && before && !before.endsWith('\n') ? doc.eol + doc.eol : '';
-  let text = prefix + normalized;
-  if (node.bodyTo < doc.source.length) text += paragraphGap(before + text, doc.eol);
-  return checkedBodyEdit(doc, { from: node.bodyFrom, to: node.bodyTo, text });
+  const text = prefix + normalized;
+  return checkedBodyEdit(doc, { from: node.bodyFrom, to: node.bodyTo, text: text + closingGap(doc, node.bodyTo, before + text) });
 }
 
 /** Append raw Markdown as its own paragraph without replacing existing bytes. */
@@ -82,7 +93,6 @@ export function planAppendBody(doc: MindDocument, nodeId: string, markdown: stri
   const offset = node.bodyTo;
   if (markdown.length === 0) return { from: offset, to: offset, text: '' };
   const before = doc.source.slice(0, offset);
-  let text = paragraphGap(before, doc.eol) + indentBody(node, normalizeNewlines(markdown, doc.eol));
-  if (offset < doc.source.length) text += paragraphGap(before + text, doc.eol);
-  return checkedBodyEdit(doc, { from: offset, to: offset, text });
+  const text = paragraphGap(before, doc.eol) + indentBody(node, normalizeNewlines(markdown, doc.eol));
+  return checkedBodyEdit(doc, { from: offset, to: offset, text: text + closingGap(doc, offset, before + text) });
 }

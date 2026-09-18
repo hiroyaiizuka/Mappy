@@ -9,6 +9,24 @@ function firstId(doc: MindDocument): string {
   return id;
 }
 
+function idOf(doc: MindDocument, title: string): string {
+  const id = doc.nodes.find((node) => node.title === title)?.id;
+  if (!id) throw new Error(`Missing fixture node ${title}`);
+  return id;
+}
+
+function replaceBody(source: string, title: string, body: string): string {
+  const doc = parseMarkdown(source, 'Note');
+  return applyEdits(source, [planBodyEdit(doc, idOf(doc, title), body)]);
+}
+
+/** Replace the same body twice so whitespace that accumulates per edit shows up. */
+function replaceBodyTwice(source: string, title: string, body: string): string {
+  const once = replaceBody(source, title, body);
+  expect(replaceBody(once, title, body)).toBe(once);
+  return once;
+}
+
 describe('direct body replacement', () => {
   it('does not concatenate a body onto a heading without an EOF newline', () => {
     const doc = parseMarkdown('# Heading', 'Note');
@@ -72,6 +90,25 @@ describe('direct body replacement', () => {
     expect(parseMarkdown(result, 'Note').nodes.map((node) => node.title)).toEqual(['Parent', 'New child', 'Peer']);
   });
 
+  it.each([
+    ['## Root\n- A\n  old\n- B', '## Root\n- A\n  new\n- B'],
+    ['## Root\n- A\n  old\n\n- B', '## Root\n- A\n  new\n\n- B'],
+    ['## Root\n- A\n  old\n', '## Root\n- A\n  new\n'],
+    ['## Root\n- A\n  old\n\nOutside', '## Root\n- A\n  new\n\nOutside'],
+    ['## Root\n- A\n  old\n\n## Other', '## Root\n- A\n  new\n\n## Other'],
+    ['## Root\r\n- A\r\n  old\r\n- B', '## Root\r\n- A\r\n  new\r\n- B'],
+    ['## Root\r\n- A\r\n  old\r\n', '## Root\r\n- A\r\n  new\r\n'],
+  ])('does not pile blank lines onto a leaf list body that already ends at a line break: %j', (source, expected) => {
+    expect(replaceBodyTwice(source, 'A', 'new')).toBe(expected);
+  });
+
+  it('keeps the paragraph gap before a child list, the next heading, and at EOF', () => {
+    expect(replaceBodyTwice('## Root\n- A\n  old\n  - C\n- B', 'A', 'new')).toBe('## Root\n- A\n  new\n\n  - C\n- B');
+    expect(replaceBodyTwice('## Root\n- A\n  old\n\n  - C\n- B', 'A', 'new')).toBe('## Root\n- A\n  new\n\n  - C\n- B');
+    expect(replaceBodyTwice('## Root\n- A\n  old', 'A', 'new')).toBe('## Root\n- A\n  new');
+    expect(replaceBodyTwice('# Parent\nold\n## Child', 'Parent', 'new')).toBe('# Parent\nnew\n\n## Child');
+  });
+
   it('rejects stale IDs and unfinished metadata instead of writing body text inside YAML', () => {
     const doc = parseMarkdown('# Heading', 'Note');
     expect(() => planBodyEdit(doc, 'missing', 'body')).toThrow();
@@ -109,6 +146,16 @@ describe('raw Markdown append', () => {
     const doc = parseMarkdown('# Heading\nbody', 'Note');
     expect(applyEdits(doc.source, [planAppendBody(doc, 'root', '![[image.png]]')]))
       .toBe('![[image.png]]\n\n# Heading\nbody');
+  });
+
+  it.each([
+    ['## Root\n- A\n  old\n- B', '## Root\n- A\n  old\n\n  ![[図.png]]\n- B'],
+    ['## Root\n- A\n  old\n', '## Root\n- A\n  old\n\n  ![[図.png]]\n'],
+    ['## Root\r\n- A\r\n  old\r\n- B', '## Root\r\n- A\r\n  old\r\n\r\n  ![[図.png]]\r\n- B'],
+    ['## Root\n- A\n  old\n  - C\n- B', '## Root\n- A\n  old\n\n  ![[図.png]]\n\n  - C\n- B'],
+  ])('appends to a list body without piling blank lines before the next line: %j', (source, expected) => {
+    const doc = parseMarkdown(source, 'Note');
+    expect(applyEdits(source, [planAppendBody(doc, idOf(doc, 'A'), '![[図.png]]')])).toBe(expected);
   });
 
   it('does not add whitespace for an empty append', () => {
