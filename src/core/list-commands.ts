@@ -1,7 +1,7 @@
 import {
   applyEdits, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
-import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
+import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
 
@@ -173,21 +173,34 @@ function removalRange(doc: MindDocument, node: MindNode): { from: number; to: nu
   return { from, to };
 }
 
-/** Move a list branch to a position among a parent's items; H2 sections move as heading sections. */
+/**
+ * A free topic's section as one list item (§5 M7 合流): the heading text becomes the item's first
+ * line and everything after the heading line moves under the item's content indent, so prose,
+ * images, fences and the nested lists keep their bytes apart from that indent. Blank lines that
+ * open the body are dropped so the item does not start loose; the rest stays as written.
+ */
+function sectionAsBranch(doc: MindDocument, node: MindNode, style: { indent: string; marker: string }): string {
+  const lead = `${style.indent}${style.marker} `;
+  const contentIndent = ' '.repeat(indentationWidth(lead));
+  const body = doc.source.slice(node.bodyFrom, node.to).replace(/^(?:[ \t]*\r?\n)+/u, '').replace(/(?:\r?\n)+$/u, '');
+  const lines = body ? body.split(/\r?\n/u).map(line => line.trim() === '' ? '' : contentIndent + line) : [];
+  return [`${lead}${node.title}`, ...lines].join(doc.eol);
+}
+
+/** Move a list branch to a position among a parent's items; H2 sections move as heading sections or, for a free topic dropped on a node, join that node as a branch. */
 function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: number): EditPlan {
   const { parent, siblings, unchanged } = moveTarget(doc, node, parentId, index);
-  if (node.kind !== 'list') {
-    if (parent.kind !== 'root') throw new Error('H2 のルートは他のノードの下へ移動できません。');
-    return moveHeadingSection(doc, node, parentId, index);
-  }
+  const joining = node.kind !== 'list' && parent.kind !== 'root';
+  if (joining && !projectMap(doc).topics.some(topic => topic.id === node.id)) throw new Error('本体のルートは他のノードの下へ移動できません。');
+  if (node.kind !== 'list' && !joining) return moveHeadingSection(doc, node, parentId, index);
   if (parent.kind === 'root') throw new Error('リストの枝は H2 ルートか別のリスト項目の下へ移動してください。');
   if (unchanged) return { edits: [], selectionOffset: node.titleFrom };
   const before = siblings[index];
   const after = siblings[index - 1];
-  const indent = (before ?? after)?.list?.indent ?? childStyle(doc, parent, node.id).indent;
-  const moved = shiftedBranch(doc, node, indent);
+  const style = (before ?? after)?.list ?? childStyle(doc, parent, node.id);
+  const moved = joining ? sectionAsBranch(doc, node, style) : shiftedBranch(doc, node, style.indent);
   const target = before?.from ?? after?.to ?? (parent.kind === 'list' ? parent.to : lineEndBefore(doc.source, parent.to));
-  const removal = removalRange(doc, node);
+  const removal = joining ? { from: sectionRemovalFrom(doc, node), to: node.to } : removalRange(doc, node);
   const remaining = doc.source.slice(0, removal.from) + doc.source.slice(removal.to);
   // A former ancestor that ended with this branch now ends at the line before it.
   const offset = target > removal.from && target <= removal.to ? lineEndBefore(doc.source, node.from)

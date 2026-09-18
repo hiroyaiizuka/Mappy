@@ -57,6 +57,9 @@ interface Mounted {
   /** ⌘Z / ⌘⇧Z on the canvas: the map's own history, then a refresh. */
   undo: () => Promise<void>;
   redo: () => Promise<void>;
+  /** What hit testing reports under the pointer (jsdom has no geometry): a node element, or the canvas. */
+  hit: (element: Element | null) => void;
+  viewport: () => { x: number; y: number; scale: number };
 }
 
 /** Canvas at (10, 20) of 1200 × 800 screen pixels; jsdom has no geometry of its own. */
@@ -79,6 +82,8 @@ async function mount(source: string, layout: 'mindmap' | 'timeline' = 'mindmap')
   canvas.setPointerCapture = () => undefined;
   canvas.releasePointerCapture = () => undefined;
   canvas.hasPointerCapture = () => false;
+  let hitElement: Element | null = null;
+  document.elementFromPoint = () => hitElement ?? canvas;
   await view.setState({ file: PATH, layout }, { history: false } satisfies ViewStateResult);
   await new Promise(resolve => requestAnimationFrame(resolve));
   const nodes = (): Map<string, HTMLElement> => new Map(Array.from(
@@ -135,6 +140,8 @@ async function mount(source: string, layout: 'mindmap' | 'timeline' = 'mindmap')
       canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
       await settle();
     },
+    hit: element => { hitElement = element; },
+    viewport: () => view.getState().viewport as { x: number; y: number; scale: number },
   };
 }
 
@@ -548,5 +555,114 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(current()).toBe('---\nmappy: true\n---\n## Body\n- Child\n');
     await undo();
     expect(current()).toBe(source);
+  });
+});
+
+describe('MindmapView moves the body against its topics and joins a topic to a node', () => {
+  it.each(['mindmap', 'timeline'] as const)('dragging the body root in %s shifts the viewport and stores every topic\'s new offset; undo restores them', async mode => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, viewport, undo } = await mount(source, mode);
+    const { root, topics } = projectMap(documentOf(view));
+    const origin = layout().origin;
+    const before = new Map(topics.map(topic => [topic.title, transform(topic.id)]));
+    const bodyBefore = transform(root.id);
+    const viewBefore = viewport();
+    const element = nodes().get(root.id);
+    if (!element) throw new Error('No body element');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 600, 450);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    // Live: the body stays at the origin, the viewport follows the pointer and the topics move the other way.
+    expect(transform(root.id)).toEqual(bodyBefore);
+    expect(viewport()).toEqual({ ...viewBefore, x: viewBefore.x + 100, y: viewBefore.y + 50 });
+    for (const topic of topics) expect(transform(topic.id)).toEqual({ x: (before.get(topic.title)?.x ?? 0) - 100, y: (before.get(topic.title)?.y ?? 0) - 50 });
+    expect(canvas.querySelector('.mappy-drag-ghost')).toBeNull();
+    expect(current()).toBe(source);
+    pointer('pointerup', canvas, 600, 450);
+    await settle();
+    const saved = current();
+    const positions = readTopicPositions(saved);
+    for (const topic of topics) {
+      const shown = before.get(topic.title);
+      if (!shown) throw new Error('Missing position');
+      expect(positions.get(topic.title)?.[mode]).toEqual({ x: Math.round(shown.x - origin.x - 100), y: Math.round(shown.y - origin.y - 50) });
+    }
+    const other = mode === 'mindmap' ? 'timeline' : 'mindmap';
+    expect(positions.get('参考資料')?.[other]).toEqual(readTopicPositions(source).get('参考資料')?.[other]);
+    expect(positions.get('消えた見出し')).toEqual({ mindmap: { x: 0, y: 0 } });
+    expect(saved.slice(saved.indexOf('---\n', 4))).toBe(source.slice(source.indexOf('---\n', 4)));
+    expect(viewport()).toEqual({ ...viewBefore, x: viewBefore.x + 100, y: viewBefore.y + 50 });
+    for (const topic of topics) expect(transform(topic.id)).toEqual({ x: (before.get(topic.title)?.x ?? 0) - 100, y: (before.get(topic.title)?.y ?? 0) - 50 });
+    await undo();
+    expect(current()).toBe(source);
+    for (const topic of topics) expect(transform(topic.id)).toEqual(before.get(topic.title));
+  });
+
+  it('Escape during a body drag restores the viewport and the topics without saving', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, transform, source: current, settle, pointer, viewport, key } = await mount(source);
+    const { root, topics } = projectMap(documentOf(view));
+    const before = new Map(topics.map(topic => [topic.id, transform(topic.id)]));
+    const viewBefore = viewport();
+    const element = nodes().get(root.id);
+    if (!element) throw new Error('No body element');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 560, 430);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(viewport()).not.toEqual(viewBefore);
+    key(canvas, 'Escape');
+    await settle();
+    expect(viewport()).toEqual(viewBefore);
+    for (const topic of topics) expect(transform(topic.id)).toEqual(before.get(topic.id));
+    expect(current()).toBe(source);
+  });
+
+  it('a topic held over a node previews the slot and shows as a plain node; releasing joins it as a branch, undo brings the topic back', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, layout, source: current, settle, pointer, topic, hit, undo } = await mount(source);
+    const reference = topic('参考資料');
+    const recover = documentOf(view).nodes.find(node => node.title === '回復する');
+    if (!recover) throw new Error('Missing node');
+    const element = nodes().get(reference.id);
+    const target = nodes().get(recover.id);
+    if (!element || !target) throw new Error('No elements');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(element.classList.contains('is-drag-moving')).toBe(true);
+    expect(nodes().get(reference.children[0]?.id ?? '')?.classList.contains('is-drag-moving')).toBe(true);
+    expect(element.classList.contains('is-merging')).toBe(false);
+    hit(target);
+    pointer('pointermove', canvas, 520, 410);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    // The body makes room: a placeholder under 回復する with a connector, and the topic root drops its dark face.
+    expect(layout().nodes.some(node => node.id === PLACEHOLDER_ID)).toBe(true);
+    expect(layout().edges.some(edge => edge.from === recover.id && edge.to === PLACEHOLDER_ID)).toBe(true);
+    expect(element.classList.contains('is-merging')).toBe(true);
+    expect(current()).toBe(source);
+    pointer('pointerup', canvas, 520, 410);
+    await settle();
+    const joined = current();
+    expect(joined).not.toContain('## 参考資料');
+    expect(readTopicPositions(joined).has('参考資料')).toBe(false);
+    expect(joined).toContain('  - 睡眠\n  - 参考資料\n    位置は frontmatter の `mappy-topics` にあり、本文には何も書かない。\n\n    - [[heading-document|講座ノート]]\n    - ![[sample-image.svg]]\n    - [外部の資料](https://example.com)\n- 記録する\n');
+    expect(joined).toContain('  "補足: 用語": { mindmap: [560, -140] }\n  消えた見出し: { mindmap: [0, 0] }\n---\n');
+    const doc = documentOf(view);
+    expect(projectMap(doc).topics.map(node => node.title)).toEqual(['補足: 用語', '位置のないトピック']);
+    const item = doc.nodes.find(node => node.title === '参考資料');
+    expect(item?.kind).toBe('list');
+    expect(item?.parentId).toBe(doc.nodes.find(node => node.title === '回復する')?.id);
+    expect(nodes().get(item?.id ?? '')?.classList.contains('is-topic')).toBe(false);
+    expect(nodes().get(item?.id ?? '')?.classList.contains('is-root')).toBe(false);
+    // The joined node keeps its element (same id): the moving and merging marks must not survive the drop.
+    expect(nodes().get(item?.id ?? '')?.classList.contains('is-drag-moving')).toBe(false);
+    expect(nodes().get(item?.id ?? '')?.classList.contains('is-merging')).toBe(false);
+    expect(Array.from(nodes().values()).some(node => node.classList.contains('is-drag-moving'))).toBe(false);
+    expect(layout().nodes.some(node => node.id === PLACEHOLDER_ID)).toBe(false);
+    expect(nodes().size).toBe(doc.nodes.length);
+    await undo();
+    expect(current()).toBe(source);
+    expect(projectMap(documentOf(view)).topics.map(node => node.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック']);
   });
 });

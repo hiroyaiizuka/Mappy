@@ -682,6 +682,71 @@ async function captureTopicOperations(recorder, page) {
     return `ノード ${before} → ${count} → ${before}`;
   });
 
+  await recorder.run('topic-join', `「${reference}」を「回復する」の上へドラッグ → 離す`, 'ゴーストではなく木ごと追従し、スロット（仮ノード＋青線）が出て、離すとその子の枝になる。mappy-topics の項目も消える', async () => {
+    const base = await page.harness('h.source()');
+    const before = (await page.harness('h.nodes()')).length;
+    const root = await topicRect(reference);
+    const target = await topicRect('回復する');
+    const from = center(root.rect);
+    const to = center(target.rect);
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    for (let step = 1; step <= 10; step += 1) {
+      await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 10, from.y + (to.y - from.y) * step / 10, { button: 'left' });
+    }
+    await page.settle();
+    const preview = await page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
+      const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === ${JSON.stringify(reference)});
+      return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')),
+        ghost: Boolean(host.querySelector('.mappy-drag-ghost')), moving: root?.classList.contains('is-drag-moving'), merging: root?.classList.contains('is-merging') }; })()`);
+    await page.screenshot(join(recorder.directory, 'topic-join-preview.png'));
+    expect(preview.placeholder && preview.connector && !preview.ghost && preview.moving && preview.merging, `preview state ${JSON.stringify(preview)}`);
+    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const joined = await page.harness('h.source()');
+    expect(!joined.includes('## 参考資料') && !topicEntry(joined, reference), 'the section or its entry is still there');
+    expect(joined.includes('  - 睡眠\n  - 参考資料\n    位置は frontmatter の `mappy-topics` にあり、本文には何も書かない。\n\n    - [[heading-document|講座ノート]]\n'), 'the section did not become a branch under 回復する');
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before, `nodes ${before} → ${count}`);
+    const item = await topicRect(reference);
+    const cls = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-node')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === ${JSON.stringify(reference)})?.className`);
+    expect(item && !cls.includes('is-topic') && !cls.includes('is-root') && !cls.includes('is-drag-moving') && !cls.includes('is-merging'), `joined node classes: ${cls}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
+    return `ノード ${count}、参考資料 → 回復する の子（${cls}）`;
+  });
+
+  await recorder.run('body-drag', '本体「講座の本体」を右下へ 100×50 px ドラッグ', '本体がポインターに付いて動き、トピックは画面上の位置を保つ。frontmatter では全トピックの位置が書き換わる', async () => {
+    const base = await page.harness('h.source()');
+    const body = await topicRect('講座の本体');
+    const topicsBefore = await page.harness('h.nodes()');
+    const view = await page.harness('h.viewport()');
+    const from = center(body.rect);
+    await page.drag(from.x, from.y, from.x + 100, from.y + 50);
+    await page.settle();
+    const after = await topicRect('講座の本体');
+    expect(Math.abs(after.rect.x - body.rect.x - 100) < 1.5 && Math.abs(after.rect.y - body.rect.y - 50) < 1.5, `body moved by ${(after.rect.x - body.rect.x).toFixed(1)}, ${(after.rect.y - body.rect.y).toFixed(1)}`);
+    const nowView = await page.harness('h.viewport()');
+    expect(Math.abs(nowView.x - view.x - 100) < 1.5 && Math.abs(nowView.y - view.y - 50) < 1.5, 'viewport did not follow the pointer');
+    for (const name of ['補足: 用語', '位置のないトピック']) {
+      const was = topicsBefore.find(item => item.title === name);
+      const now = await topicRect(name);
+      expect(was && Math.abs(now.rect.x - was.rect.x) < 1.5 && Math.abs(now.rect.y - was.rect.y) < 1.5, `${name} moved on screen by ${(now.rect.x - (was?.rect.x ?? 0)).toFixed(1)}, ${(now.rect.y - (was?.rect.y ?? 0)).toFixed(1)}`);
+    }
+    const moved = await page.harness('h.source()');
+    expect(bodyOf(moved) === bodyOf(base), 'the body changed');
+    const dx = Math.round(100 / view.scale);
+    const dy = Math.round(50 / view.scale);
+    const was = /mindmap: \[(-?\d+), (-?\d+)\]/u.exec(topicEntry(base, reference) ?? '');
+    expect(was, 'no mindmap entry for 参考資料 before the drag');
+    const expected = `参考資料: { mindmap: [${Number(was[1]) - dx}, ${Number(was[2]) - dy}], timeline: [0, 260] }`;
+    expect(topicEntry(moved, reference) === expected, `expected ${expected}, got ${topicEntry(moved, reference)}`);
+    expect(topicEntry(moved, '位置のないトピック'), 'the unplaced topic got no entry');
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the entries');
+    return `${expected}、位置のないトピック: ${topicEntry(moved, '位置のないトピック')}`;
+  });
+
   await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」を含むメニューが開き、Escape で閉じる', async () => {
     const point = await emptyCanvasPoint(page);
     await page.mouse('mouseMoved', point.x, point.y);
