@@ -751,11 +751,14 @@ export class MindmapView extends ItemView {
       save: async text => {
         // A topic added on the map is placed where it was pressed by the same edit set that names it.
         const pending = this.pendingTopic?.id === node.id ? this.pendingTopic : null;
-        const plan = planEdit(document, {
+        // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
+        // A node whose id did not survive the re-parse (a same-named node, a deleted one) is refused by the plan.
+        const current = this.draftTarget(document, file);
+        const plan = planEdit(current, {
           type: "rename", nodeId: node.id, title: text,
           ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
         });
-        await this.commit(document.source, plan.edits, file);
+        await this.commit(current.source, plan.edits, file);
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
@@ -782,8 +785,14 @@ export class MindmapView extends ItemView {
     const file = this.file;
     if (!node || !document) return;
     new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
-      await this.commit(document.source, [planBodyEdit(document, node.id, text)], file);
+      const current = this.draftTarget(document, file);
+      await this.commit(current.source, [planBodyEdit(current, node.id, text)], file);
     }).open();
+  }
+
+  /** The note a kept draft applies to: the view's current parse, which an external change may have replaced since the draft opened. */
+  private draftTarget(opened: MindDocument, file: TFile | null): MindDocument {
+    return file === this.file && this.document ? this.document : opened;
   }
 
   async convertToList(): Promise<void> {
