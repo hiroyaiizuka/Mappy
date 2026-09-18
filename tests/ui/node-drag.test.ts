@@ -468,6 +468,21 @@ describe('NodeDrag pointer dragging', () => {
       expect(actions.command).not.toHaveBeenCalled();
     });
 
+    it('does not detach when released on a node that refused the drop', () => {
+      const { canvas, actions, node, pointer, center } = fixture();
+      // A dropped inside its own descendant A1 is refused; releasing there must not detach A either.
+      const [x, y] = center('A');
+      pointer('pointerdown', node('A'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      const [ax, ay] = center('A1');
+      pointer('pointermove', canvas, ax, ay);
+      expect(actions.dropTarget).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), 'inside');
+      expect(actions.preview).not.toHaveBeenCalled();
+      pointer('pointerup', canvas, ax, ay);
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.detach).not.toHaveBeenCalled();
+    });
+
     it('keeps a previewed slot over empty canvas only while nearby; far away the slot clears and a release detaches', () => {
       const { canvas, actions, id, pointer, begin, center } = fixture();
       begin('A3');

@@ -164,6 +164,11 @@ export class NodeDrag extends Component {
     return session.last.x >= canvas.left && session.last.x < canvas.right && session.last.y >= canvas.top && session.last.y < canvas.bottom;
   }
 
+  private overNode(point: { x: number; y: number }): boolean {
+    const hit = this.canvas.doc.elementFromPoint(point.x, point.y);
+    return Boolean(hit && this.canvas.contains(hit) && hit.closest("[data-node-id], [data-drop-placeholder]"));
+  }
+
   private near(point: { x: number; y: number }, box: Box, margin: number): boolean {
     return point.x >= box.left - margin && point.x <= box.right + margin && point.y >= box.top - margin && point.y <= box.bottom + margin;
   }
@@ -257,7 +262,8 @@ export class NodeDrag extends Component {
     if (drop && session.target) { this.actions.command(session.target); return; }
     const canvas = this.canvas.getBoundingClientRect();
     if (!session.free) {
-      if (drop && this.insideCanvas(session, canvas) && !this.near(session.last, session.home, SOURCE_MARGIN)) {
+      // Only empty canvas detaches: a release on a node that refused the drop, or back near home, changes nothing.
+      if (drop && this.insideCanvas(session, canvas) && !this.near(session.last, session.home, SOURCE_MARGIN) && !this.overNode(session.last)) {
         this.actions.detach(session.id, { x: session.last.x - canvas.left - session.grab.x, y: session.last.y - canvas.top - session.grab.y });
       }
       return;
