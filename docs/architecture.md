@@ -28,6 +28,7 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/core/markdown.ts` | 構文解析、原文範囲、ノードの対応付け | `@lezer/markdown` |
 | `src/core/commands.ts` / `list-commands.ts` / `body.ts` | rename / add / move / delete / 本文変更 → 原文差分 | 純粋 TypeScript |
 | `src/core/list-conversion.ts` | 旧見出し形式から H2＋箇条書きへの明示変換 | 純粋 TypeScript |
+| `src/core/memo.ts` / `yaml-lite.ts` | 付箋メモの読み取り、追加・文章変更・移動・削除 → 本文と frontmatter の原文差分、`mappy-memos` 用の YAML サブセット | 純粋 TypeScript |
 | `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムラインの座標と線 | 純粋 TypeScript |
 | `src/interaction/viewport.ts` | パン・ズーム・Fit の座標計算 | 純粋 TypeScript |
 | `src/core/attachments.ts` / `plain-text.ts` | 本文からのリンク・画像抽出、タイトルの平文化 | `@lezer/markdown` |
@@ -75,6 +76,8 @@ mappy: true
 リスト項目の `from` はインデントを含む行頭、`headingTo` は最初の行末、`titleFrom/titleTo` は最初の行のテキストを表す。`to` は ListItem の最終行の末尾で、直後の改行は含めない。子リストの後にある親の文章を、子の `to` に含めない。直接本文は初行改行後から最初の子の行頭までとし、子がなければ ListItem の末尾まで。本文がない葉では `bodyFrom/bodyTo` を `to` の空範囲にする。
 
 `node.list` にマーカー前の生のインデント、`-` / `+` / `*` のマーカー、継続本文の必要列数に相当する空白列を保持する。本文画面へ渡す際にはコンテナのインデントだけを除き、保存時に戻す。本文編集・リンクや画像の追記はその原文範囲だけを変更し、周囲のノード構造を再解析して確認する。最初の子より後の親の文章は保持するが、直接本文の編集 UI には含めない。
+
+付箋メモ（M7）は文書末尾に連続する ```` ```mappy-memo <id> ```` フェンスとして保存する。解析は Lezer の木を最後のブロックから遡り、`mappy-memo` の FencedCode が続く範囲を区画にする。区画はその直前の空行（なければ直前行の改行）から末尾までを所有し、区画の手前で全ノードの `to` / `bodyTo` を切り詰める。この規則により、末尾改行の有無どちらの文書でも、メモの有無で各ノードの原文範囲は 1 バイトも変わらない。区画より前にある同名フェンス、リスト・引用・コメント・他のフェンスの中の類似記法はメモにしない。位置は frontmatter `mappy-memos` に `<id>: { <layout>: [x, y] }` で持ち、core は `mappy-memos` キーの行だけを差し替えて他キーのバイトを保つ。読み取りは編集中バッファの原文から行い、Mappy が書く flow 形式と Obsidian の Properties が書き直す block 形式の両方を受け付ける。メモ操作は本文と frontmatter を 1 組の TextEdit にまとめて DocumentStore の通常経路で保存するので、マップ履歴で Undo できる（UI は M7-2）。ID のないフェンスや重複 ID は読み取れるが位置を持たず、次の書き込みで `m<n>` を割り当てる。区画より後ろに文章を書くと区画ではなくなり、マップからメモが消える（原文は残る）。
 
 旧見出し形式からの変換は `planListConversion` で見出しの範囲と本文各行へのインデント挿入だけを計画し、DocumentStore の通常経路から保存する。変換後のタイトル・件数・親子関係を照合する。本文内の箇条書きで余計なノードが増える場合や複数行 Setext など、安全な変換ができない場合は拒否する。閲覧時の変換は行わず、明示操作後は同じマップ履歴で Undo できる。
 

@@ -41,12 +41,33 @@ function paragraphGap(before: string, eol: string): string {
   return before.endsWith('\n') ? eol : eol + eol;
 }
 
+/**
+ * Separate the written body from what follows. Content already on its own line
+ * (a later list item, an existing blank line) needs nothing; a following heading
+ * needs a blank line; trailing memos keep the note's style, ending the body on a
+ * line break only when the replaced range ended on one.
+ */
+function closingGap(doc: MindDocument, to: number, written: string, text: string): string {
+  if (to >= doc.source.length) return '';
+  if (doc.memoRegion && to === doc.memoRegion.from) {
+    return text && !text.endsWith('\n') && doc.source.charAt(to - 1) === '\n' ? doc.eol : '';
+  }
+  if (/^\r?\n/u.test(doc.source.slice(to, to + 2))) return '';
+  return paragraphGap(written, doc.eol);
+}
+
 function checkedBodyEdit(doc: MindDocument, edit: TextEdit): TextEdit {
   const updated = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
   const byStart = new Map(updated.nodes.map((node) => [node.from, node]));
   const originalById = new Map(doc.nodes.map(node => [node.id, node]));
   const updatedById = new Map(updated.nodes.map(node => [node.id, node]));
   const delta = edit.text.length - (edit.to - edit.from);
+  // Memos live after every body; an unfinished fence in the body would swallow them.
+  const memoText = (target: MindDocument, shift: number): string => JSON.stringify(target.memoBlocks
+    .map((memo) => [memo.id, target.source.slice(memo.from, memo.to), memo.from + shift]));
+  if (memoText(doc, delta) !== memoText(updated, 0)) {
+    throw new Error('本文が末尾の付箋メモに影響します。コードやコメントの閉じ忘れを確認してください。');
+  }
   // New Markdown headings in the edited body are allowed, but an unfinished
   // fence/comment must not swallow or mutate an existing surrounding heading.
   for (const node of doc.nodes) {
@@ -71,9 +92,8 @@ export function planBodyEdit(doc: MindDocument, nodeId: string, body: string): T
   const before = doc.source.slice(0, node.bodyFrom);
   const normalized = indentBody(node, normalizeNewlines(body, doc.eol));
   const prefix = normalized && before && !before.endsWith('\n') ? doc.eol + doc.eol : '';
-  let text = prefix + normalized;
-  if (node.bodyTo < doc.source.length) text += paragraphGap(before + text, doc.eol);
-  return checkedBodyEdit(doc, { from: node.bodyFrom, to: node.bodyTo, text });
+  const text = prefix + normalized;
+  return checkedBodyEdit(doc, { from: node.bodyFrom, to: node.bodyTo, text: text + closingGap(doc, node.bodyTo, before + text, normalized) });
 }
 
 /** Append raw Markdown as its own paragraph without replacing existing bytes. */
@@ -82,7 +102,6 @@ export function planAppendBody(doc: MindDocument, nodeId: string, markdown: stri
   const offset = node.bodyTo;
   if (markdown.length === 0) return { from: offset, to: offset, text: '' };
   const before = doc.source.slice(0, offset);
-  let text = paragraphGap(before, doc.eol) + indentBody(node, normalizeNewlines(markdown, doc.eol));
-  if (offset < doc.source.length) text += paragraphGap(before + text, doc.eol);
-  return checkedBodyEdit(doc, { from: offset, to: offset, text });
+  const text = paragraphGap(before, doc.eol) + indentBody(node, normalizeNewlines(markdown, doc.eol));
+  return checkedBodyEdit(doc, { from: offset, to: offset, text: text + closingGap(doc, offset, before + text, text) });
 }

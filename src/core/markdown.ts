@@ -17,13 +17,33 @@ export interface MindNode {
   list?: { indent: string; marker: string; contentIndent: string };
 }
 
+/** One trailing ```mappy-memo <id> fence. Offsets exclude the line's EOL and any trailing CR. */
+export interface MemoBlock {
+  id: string;
+  from: number;
+  to: number;
+  textFrom: number;
+  textTo: number;
+  closeFrom: number;
+  fence: string;
+  closed: boolean;
+}
+
 export interface MindDocument {
   source: string;
   root: MindNode;
   nodes: MindNode[];
   eol: string;
   format: 'headings' | 'list';
+  /** Sticky memos stored as the document's final blocks, in source order. */
+  memoBlocks: MemoBlock[];
+  /** Bytes owned by the memos: their separator line through the end of the file. */
+  memoRegion: { from: number; to: number } | null;
 }
+
+const MEMO_LANGUAGE = 'mappy-memo';
+/** Memo IDs are YAML-safe plain scalars and code-info words. */
+export const MEMO_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/u;
 
 let nextId = 1;
 
@@ -76,20 +96,38 @@ function maskComments(source: string): string {
   return parts.length === 0 ? source : parts.join('') + source.slice(copiedTo);
 }
 
-function frontmatterEnd(source: string): number {
+export interface FrontmatterLayout {
+  /** First YAML body line. */
+  bodyFrom: number;
+  /** Start of the closing delimiter line; the end of the file while unfinished. */
+  closingFrom: number;
+  /** Offset after the closing delimiter line. */
+  end: number;
+  closed: boolean;
+}
+
+/** Locate Obsidian's YAML header without parsing it. */
+export function frontmatterLayout(source: string): FrontmatterLayout | null {
   const opening = /^(?:\uFEFF)?---[ \t]*(?:\r?\n|$)/u.exec(source);
-  if (!opening) return 0;
-  let offset = opening[0].length;
+  if (!opening) return null;
+  const bodyFrom = opening[0].length;
+  let offset = bodyFrom;
   while (offset < source.length) {
     const newline = source.indexOf('\n', offset);
     const end = newline === -1 ? source.length : newline;
     const line = source.slice(offset, end).replace(/\r$/u, '');
-    if (/^(?:---|\.\.\.)[ \t]*$/u.test(line)) return newline === -1 ? end : end + 1;
+    if (/^(?:---|\.\.\.)[ \t]*$/u.test(line)) {
+      return { bodyFrom, closingFrom: offset, end: newline === -1 ? end : end + 1, closed: true };
+    }
     if (newline === -1) break;
     offset = newline + 1;
   }
   // An unfinished YAML header stays opaque until its closing delimiter exists.
-  return source.length;
+  return { bodyFrom, closingFrom: source.length, end: source.length, closed: false };
+}
+
+export function frontmatterEnd(source: string): number {
+  return frontmatterLayout(source)?.end ?? 0;
 }
 
 function trimRange(source: string, from: number, to: number): [number, number] {
@@ -257,6 +295,62 @@ function listHierarchy(source: string, root: MindNode, tree: SyntaxNode, heading
   return nodes;
 }
 
+function memoBlock(source: string, block: SyntaxNode): MemoBlock | undefined {
+  if (block.name !== 'FencedCode') return undefined;
+  const info = block.getChild('CodeInfo');
+  const words = info ? source.slice(info.from, info.to).trim().split(/[ \t]+/u) : [];
+  const [opening, closing] = block.getChildren('CodeMark');
+  if (words[0] !== MEMO_LANGUAGE || !opening) return undefined;
+  const from = source.lastIndexOf('\n', block.from - 1) + 1;
+  const to = source.charAt(block.to - 1) === '\r' ? block.to - 1 : block.to;
+  // Lezer's CodeText is inconsistent about trailing empty lines, so the text is
+  // defined directly: the lines between the fences joined by their own EOLs.
+  const openingEnd = source.indexOf('\n', opening.to);
+  const textFrom = openingEnd === -1 ? source.length : openingEnd + 1;
+  const closeFrom = closing ? source.lastIndexOf('\n', closing.from - 1) + 1 : source.length;
+  const textEnd = closing ? closeFrom : to;
+  const eol = source.charAt(textEnd - 1) === '\n' ? (source.charAt(textEnd - 2) === '\r' ? 2 : 1) : 0;
+  const textTo = Math.max(textFrom, textEnd - eol);
+  const id = words[1] ?? '';
+  return {
+    id: MEMO_ID_PATTERN.test(id) ? id : '', from, to, textFrom, textTo, closeFrom,
+    fence: source.slice(opening.from, opening.to), closed: Boolean(closing),
+  };
+}
+
+/** Only the document's final run of memo fences counts; anything after a non-memo block is ordinary source. */
+function memoBlocks(source: string, tree: SyntaxNode): MemoBlock[] {
+  const blocks: MemoBlock[] = [];
+  for (let block = tree.lastChild; block; block = block.prevSibling) {
+    const memo = memoBlock(source, block);
+    if (!memo) break;
+    blocks.unshift(memo);
+  }
+  const seen = new Set<string>();
+  for (const memo of blocks) {
+    // A duplicate ID keeps its first block; later blocks wait for a fresh ID on the next write.
+    if (seen.has(memo.id)) memo.id = '';
+    else if (memo.id) seen.add(memo.id);
+  }
+  return blocks;
+}
+
+function memoRegion(source: string, yamlEnd: number, blocks: MemoBlock[]): MindDocument['memoRegion'] {
+  const first = blocks[0];
+  if (!first) return null;
+  let from = first.from;
+  if (from > yamlEnd) {
+    // The region owns its separator: one empty line when present, otherwise the
+    // EOL that ends the last content line. Content ranges stay byte-identical
+    // to the same document without memos in both trailing-newline styles.
+    const eol = source.charAt(from - 2) === '\r' ? 2 : 1;
+    const previousLineEnd = from - eol;
+    const previousLineStart = previousLineEnd > 0 ? source.lastIndexOf('\n', previousLineEnd - 1) + 1 : 0;
+    from = Math.max(yamlEnd, previousLineStart === previousLineEnd ? previousLineStart : previousLineEnd);
+  }
+  return { from, to: source.length };
+}
+
 /** Project headings or H2 + real unordered lists, preserving original source ranges. */
 export function parseMarkdown(
   source: string, title: string, previous?: MindDocument, formatOverride?: MindDocument['format'],
@@ -282,5 +376,14 @@ export function parseMarkdown(
     // Identity matching happens after projection; reconnect using the final IDs.
     for (const node of [root, ...nodes]) for (const child of node.children) child.parentId = node.id;
   }
-  return { source, root, nodes, format, eol: source.includes('\r\n') ? '\r\n' : '\n' };
+  const blocks = memoBlocks(source, tree.topNode);
+  const region = memoRegion(source, yamlEnd, blocks);
+  if (region) {
+    for (const node of [root, ...nodes]) {
+      node.to = Math.min(node.to, region.from);
+      node.bodyTo = Math.min(node.bodyTo, region.from);
+      node.bodyFrom = Math.min(node.bodyFrom, node.bodyTo);
+    }
+  }
+  return { source, root, nodes, format, eol: source.includes('\r\n') ? '\r\n' : '\n', memoBlocks: blocks, memoRegion: region };
 }

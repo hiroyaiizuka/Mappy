@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planAppendBody, planBodyEdit } from '../../src/core/body';
+import { nodeBody, planAppendBody, planBodyEdit } from '../../src/core/body';
 import { applyEdits } from '../../src/core/commands';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
 
@@ -114,5 +114,60 @@ describe('raw Markdown append', () => {
   it('does not add whitespace for an empty append', () => {
     const doc = parseMarkdown('# Heading', 'Note');
     expect(applyEdits(doc.source, [planAppendBody(doc, firstId(doc), '')])).toBe(doc.source);
+  });
+});
+
+describe('bodies in front of trailing memos', () => {
+  const memos = '\n```mappy-memo m1\n付箋\n```\n';
+
+  it('keeps the note\'s separator style before the memos and leaves their bytes alone in both formats', () => {
+    const cases: [string, string][] = [
+      [`## Root\nold\n${memos}`, `## Root\nnew\n${memos}`],
+      [`## Root\n${memos}`, `## Root\nnew\n${memos}`],
+      [`## Root${memos}`, `## Root\n\nnew${memos}`],
+      [`# Root\n## Child\nold\n${memos}`, `# Root\n## Child\nnew\n${memos}`],
+      [`## Root\n- A\n  old\n${memos}`, `## Root\n- A\n  new\n${memos}`],
+      [`## Root\n- A\n  old${memos}`, `## Root\n- A\n  new${memos}`],
+    ];
+    for (const [source, expected] of cases) {
+      const doc = parseMarkdown(source, 'Note');
+      const node = doc.nodes[doc.nodes.length - 1];
+      if (!node) throw new Error('Missing fixture node');
+      const result = applyEdits(source, [planBodyEdit(doc, node.id, 'new')]);
+      expect(result).toBe(expected);
+      const updated = parseMarkdown(result, 'Note');
+      expect(result.slice(updated.memoRegion?.from)).toBe(memos);
+      expect(nodeBody(updated, updated.nodes[updated.nodes.length - 1] ?? updated.root).trim()).toBe('new');
+    }
+    const cleared = parseMarkdown(`## Root\nold\n${memos}`, 'Note');
+    expect(applyEdits(cleared.source, [planBodyEdit(cleared, firstId(cleared), '')])).toBe(`## Root\n${memos}`);
+  });
+
+  it('appends before the memos with a single separating blank line', () => {
+    const doc = parseMarkdown(`## Root\nbody\n${memos}`, 'Note');
+    expect(applyEdits(doc.source, [planAppendBody(doc, firstId(doc), '![[image.png]]')])).toBe(`## Root\nbody\n\n![[image.png]]\n${memos}`);
+    const leaf = parseMarkdown(`## Root\n- A\n${memos}`, 'Note');
+    const child = leaf.nodes[1];
+    if (!child) throw new Error('Missing fixture node');
+    expect(applyEdits(leaf.source, [planAppendBody(leaf, child.id, '![[image.png]]')])).toBe(`## Root\n- A\n\n  ![[image.png]]\n${memos}`);
+  });
+
+  it('does not pile blank lines onto a leaf list body that is already followed by its own line break', () => {
+    const cases: [string, string][] = [
+      ['## Root\n- A\n  old\n- B', '## Root\n- A\n  new\n- B'],
+      ['## Root\n- A\n  old\n\n- B', '## Root\n- A\n  new\n\n- B'],
+      ['## Root\n- A\n  old\n', '## Root\n- A\n  new\n'],
+    ];
+    for (const [source, expected] of cases) {
+      const doc = parseMarkdown(source, 'Note');
+      const node = doc.nodes[1];
+      if (!node) throw new Error('Missing fixture node');
+      expect(applyEdits(source, [planBodyEdit(doc, node.id, 'new')])).toBe(expected);
+    }
+  });
+
+  it.each(['```md\nunclosed', '~~~\nunclosed', '%%\nunclosed'])('rejects a body that would swallow the memos: %j', (body) => {
+    const doc = parseMarkdown(`## Root\nold\n${memos}`, 'Note');
+    expect(() => planBodyEdit(doc, firstId(doc), body)).toThrow('付箋メモ');
   });
 });
