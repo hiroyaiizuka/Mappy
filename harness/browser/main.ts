@@ -226,6 +226,11 @@ const api = {
     return element ? nodeInfo(element) : null;
   },
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
+  /** The current fixture's Markdown as the in-memory vault holds it now (edits stay in this page). */
+  source: () => {
+    const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
+    return file ? app.content(file) : null;
+  },
   ready: Promise.resolve(),
 };
 declare global { interface Window { __mappyHarness: typeof api } }

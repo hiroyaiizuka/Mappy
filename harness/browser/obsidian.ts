@@ -243,7 +243,13 @@ export class Menu extends Component {
     this.dom.style.left = `${x}px`;
     this.dom.style.top = `${y}px`;
     const onPointer = (pointer: Event): void => { if (!this.dom.contains(pointer.target as Node)) this.hide(); };
-    const onKey = (key: KeyboardEvent): void => { if (key.key === "Escape") this.hide(); };
+    // Consume Escape like Obsidian's menu does; an unhandled key would go on to the native menu bar.
+    const onKey = (key: KeyboardEvent): void => {
+      if (key.key !== "Escape") return;
+      key.preventDefault();
+      key.stopPropagation();
+      this.hide();
+    };
     window.setTimeout(() => {
       if (!this.dom.isConnected) return;
       document.addEventListener("pointerdown", onPointer, true);

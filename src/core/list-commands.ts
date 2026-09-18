@@ -1,9 +1,9 @@
 import {
-  applyEdits, checkedMove, moveHeadingSection, moveTarget, type EditCommand, type EditPlan, type TextEdit,
+  applyEdits, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
 
-type StructureCommand = Exclude<EditCommand, { type: 'rename' }>;
+type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
 
 function getNode(doc: MindDocument, id: string): MindNode {
   const node = id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
@@ -206,8 +206,8 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'add-sibling': return add(doc, node, true);
     case 'delete': {
       const parent = getNode(doc, node.parentId ?? 'root');
-      return validate(doc, [{ from: removalFrom(doc, node), to: node.to, text: '' }],
-        doc.nodes.length - branchSize(node), parent.kind === 'root' ? null : parent.from);
+      const from = node.kind === 'list' ? removalFrom(doc, node) : sectionRemovalFrom(doc, node);
+      return validate(doc, [{ from, to: node.to, text: '' }], doc.nodes.length - branchSize(node), parent.kind === 'root' ? null : parent.from);
     }
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);

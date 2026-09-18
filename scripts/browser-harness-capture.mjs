@@ -22,6 +22,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
 const PANE = { width: 1280, height: 800 };
 const OPERATION_FIXTURE = 'uneven-branches';
+const TOPIC_FIXTURE = 'free-topics';
 
 const CHROME_CANDIDATES = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -71,18 +72,23 @@ function launchChrome(chrome, profile) {
   return { child, endpoint };
 }
 
+/** A protocol call that gets no answer within this time means the browser is wedged; the run then fails fast. */
+const CDP_TIMEOUT_MS = 60000;
+
 /** Minimal flat-session CDP client over the global WebSocket. */
 class Cdp {
   constructor(socket) {
     this.socket = socket;
     this.nextId = 1;
     this.pending = new Map();
+    this.dead = null;
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data));
       if (message.id === undefined) return;
       const entry = this.pending.get(message.id);
       if (!entry) return;
       this.pending.delete(message.id);
+      clearTimeout(entry.timer);
       if (message.error) entry.reject(new Error(`${entry.method}: ${message.error.message}`));
       else entry.resolve(message.result);
     });
@@ -98,8 +104,17 @@ class Cdp {
 
   send(method, params = {}, sessionId) {
     const id = this.nextId++;
+    // MAPPY_CAPTURE_TRACE=1 prints every protocol call, to see where a run stalls.
+    if (process.env.MAPPY_CAPTURE_TRACE) console.error(`cdp ${id} ${method} ${JSON.stringify(params).slice(0, 160)}`);
     return new Promise((resolveResult, reject) => {
-      this.pending.set(id, { method, resolve: resolveResult, reject });
+      if (this.dead) { reject(new Error(`${method}: ${this.dead}`)); return; }
+      const timer = setTimeout(() => {
+        // Headless Chrome has been seen to stop answering with its browser process spinning; do not wait forever.
+        this.dead = `browser unresponsive (${method} unanswered for ${CDP_TIMEOUT_MS / 1000}s)`;
+        for (const entry of this.pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(`${entry.method}: ${this.dead}`)); }
+        this.pending.clear();
+      }, CDP_TIMEOUT_MS);
+      this.pending.set(id, { method, resolve: resolveResult, reject, timer });
       this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
@@ -136,6 +151,13 @@ class Page {
     await this.mouse('mouseMoved', x, y);
     await this.mouse('mousePressed', x, y, { button, clickCount: 1 });
     await this.mouse('mouseReleased', x, y, { button, clickCount: 1 });
+  }
+
+  /** Two presses at the same point; Chrome raises the dblclick on the second release. */
+  async dblclick(x, y) {
+    await this.click(x, y);
+    await this.mouse('mousePressed', x, y, { button: 'left', clickCount: 2 });
+    await this.mouse('mouseReleased', x, y, { button: 'left', clickCount: 2 });
   }
 
   async drag(fromX, fromY, toX, toY, steps = 8) {
@@ -209,11 +231,11 @@ async function loadFixture(page, id) {
   return timing;
 }
 
-async function emptyCanvasPoint(page) {
+async function emptyCanvasPoint(page, margin = 24) {
   const canvas = await page.harness('h.canvasRect()');
   const nodes = await page.harness('h.nodes()');
-  for (let y = canvas.y + 24; y < canvas.y + canvas.height - 80; y += 40) {
-    for (let x = canvas.x + 24; x < canvas.x + canvas.width - 220; x += 40) {
+  for (let y = canvas.y + margin; y < canvas.y + canvas.height - 80; y += 40) {
+    for (let x = canvas.x + margin; x < canvas.x + canvas.width - 220; x += 40) {
       if (!nodes.some(node => node.rect.x - 8 <= x && x <= node.rect.x + node.rect.width + 8
         && node.rect.y - 8 <= y && y <= node.rect.y + node.rect.height + 8)) return { x, y };
     }
@@ -471,6 +493,209 @@ async function captureOperations(recorder, page) {
   });
 }
 
+/** The note without its frontmatter: what the body and the topic sections say. */
+function bodyOf(source) {
+  const closing = source.indexOf('\n---\n', 4);
+  return closing === -1 ? source : source.slice(closing + 5);
+}
+
+/** The `mappy-topics` line of one heading, or null. */
+function topicEntry(source, title) {
+  const line = source.split('\n').find(candidate => candidate.startsWith(`  ${title}: {`));
+  return line ? line.trim() : null;
+}
+
+/** M7 free topics on the free-topics fixture: add by double-click, drag to a position, delete, and the map's history. */
+async function captureTopicOperations(recorder, page) {
+  await loadFixture(page, TOPIC_FIXTURE);
+  const original = await page.harness('h.source()');
+  const topicRect = async name => {
+    const node = await page.harness(`h.node(${JSON.stringify(name)})`);
+    expect(node, `Topic not found: ${name}`);
+    return node;
+  };
+  // Undo and redo go through the canvas context menu: headless Chrome 153 stops responding after repeated
+  // modifier-key input (⌘Z, ⌘⇧Z) over CDP, and the menu items run the same map history as the keys.
+  const menuAction = async title => {
+    const point = await emptyCanvasPoint(page, 80);
+    await page.mouse('mouseMoved', point.x, point.y);
+    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
+    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
+    const item = await page.evaluate(`(() => {
+      const found = Array.from(document.querySelectorAll('.menu .menu-item'))
+        .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
+      if (!found) return null;
+      const rect = found.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
+    })()`);
+    expect(item, `context menu has no item ${title}`);
+    expect(!item.disabled, `menu item ${title} is disabled`);
+    await page.click(center(item).x, center(item).y);
+    await page.settle();
+  };
+  const undo = () => menuAction('元に戻す');
+  const redo = () => menuAction('やり直す');
+  const title = '追加した話題';
+  let added = null;
+
+  await recorder.run('topic-add-dblclick', '空白をダブルクリック → 入力 → Enter', '文書末尾に `## ` が増えてその場で入力でき、確定で見出しの文と mappy-topics の位置が保存される', async () => {
+    // Away from the edges, so revealing the new node does not pan the viewport under the comparison.
+    const point = await emptyCanvasPoint(page, 80);
+    const canvas = await page.harness('h.canvasRect()');
+    const pressed = worldPoint(await page.harness('h.viewport()'), point, canvas);
+    const before = (await page.harness('h.nodes()')).length;
+    await page.dblclick(point.x, point.y);
+    await page.settle();
+    const blank = await page.harness('h.source()');
+    expect(blank === `${original}\n## \n`, 'the empty section was not appended at the end of the note');
+    const editing = await page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input')`);
+    expect(editing, 'inline editor did not take focus on the new topic');
+    const host = await page.evaluate(`document.activeElement?.closest('.mappy-node')?.classList.contains('is-topic')`);
+    expect(host, 'the edited node is not a topic root');
+    await page.screenshot(join(recorder.directory, 'topic-add-editing.png'));
+    await page.type(title);
+    await page.key('Enter', 'Enter', 13);
+    await page.settle();
+    added = await page.harness('h.source()');
+    expect(added.endsWith(`\n## ${title}\n`), 'the title was not written to the heading');
+    const entry = topicEntry(added, title);
+    expect(entry && /^.+: \{ mindmap: \[-?\d+, -?\d+\] \}$/u.test(entry), `mappy-topics entry: ${entry}`);
+    expect(bodyOf(added).slice(0, bodyOf(original).length) === bodyOf(original), 'the body or the other topics changed');
+    const node = await topicRect(title);
+    const placed = worldPoint(await page.harness('h.viewport()'), node.rect, canvas);
+    expect(Math.abs(placed.x - pressed.x) < 1.5 && Math.abs(placed.y - pressed.y) < 1.5,
+      `topic root at world ${placed.x.toFixed(1)},${placed.y.toFixed(1)}, pressed at ${pressed.x.toFixed(1)},${pressed.y.toFixed(1)}`);
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before + 1, `nodes ${before} → ${count}`);
+    return `${entry}、ノード ${before} → ${count}`;
+  });
+
+  await recorder.run('topic-add-undo', '右クリック「元に戻す」×2 → 「やり直す」×2', '1 回目で名前と位置、2 回目で区画が消え、やり直しで戻る', async () => {
+    expect(added, 'the previous case did not add a topic');
+    await undo();
+    expect((await page.harness('h.source()')) === `${original}\n## \n`, 'first undo did not remove title and position together');
+    await undo();
+    expect((await page.harness('h.source()')) === original, 'second undo did not remove the section');
+    expect(!(await page.harness(`h.node(${JSON.stringify(title)})`)), 'the topic is still shown after undo');
+    await redo();
+    await redo();
+    expect((await page.harness('h.source()')) === added, 'redo did not restore the named topic');
+    expect(await page.harness(`h.node(${JSON.stringify(title)})`), 'the topic is not shown after redo');
+  });
+
+  const reference = '参考資料';
+  let moved = null;
+  await recorder.run('topic-drag', `「${reference}」を右下へ 120×60 px ドラッグ`, 'トピックの木ごと動き、mappy-topics のその見出しの mindmap 位置だけが変わる', async () => {
+    const base = await page.harness('h.source()');
+    const before = await topicRect(reference);
+    const child = await page.harness('h.node("講座ノート")');
+    const view = await page.harness('h.viewport()');
+    const from = center(before.rect);
+    await page.drag(from.x, from.y, from.x + 120, from.y + 60);
+    await page.settle();
+    const after = await topicRect(reference);
+    expect(Math.abs(after.rect.x - before.rect.x - 120) < 1.5 && Math.abs(after.rect.y - before.rect.y - 60) < 1.5,
+      `topic moved by ${(after.rect.x - before.rect.x).toFixed(1)}, ${(after.rect.y - before.rect.y).toFixed(1)}`);
+    const childAfter = await page.harness('h.node("講座ノート")');
+    expect(child && childAfter && Math.abs(childAfter.rect.x - child.rect.x - 120) < 1.5, 'the child of the topic did not move with it');
+    moved = await page.harness('h.source()');
+    expect(bodyOf(moved) === bodyOf(base), 'the body changed while dragging a topic');
+    const dx = Math.round(120 / view.scale);
+    const dy = Math.round(60 / view.scale);
+    const expected = `${reference}: { mindmap: [${-360 + dx}, ${200 + dy}], timeline: [0, 260] }`;
+    expect(topicEntry(moved, reference) === expected, `expected ${expected}, got ${topicEntry(moved, reference)}`);
+    expect(moved.includes('  "補足: 用語": { mindmap: [560, -140] }\n  消えた見出し: { mindmap: [0, 0] }\n'), 'other entries changed');
+    expect(!(await page.evaluate(`document.querySelector('.mappy-drag-ghost')`)), 'a ghost was left behind');
+    return `mindmap: [-360, 200] → [${-360 + dx}, ${200 + dy}]（scale ${view.scale.toFixed(3)}）、timeline は不変`;
+  });
+
+  await recorder.run('topic-drag-undo', '右クリック「元に戻す」→「やり直す」', '位置が戻り、やり直しで再び移動する', async () => {
+    expect(moved, 'the previous case did not move a topic');
+    const movedRect = (await topicRect(reference)).rect;
+    await undo();
+    const restored = await page.harness('h.source()');
+    expect(topicEntry(restored, reference) === `${reference}: { mindmap: [-360, 200], timeline: [0, 260] }`, 'undo did not restore the previous position');
+    expect(bodyOf(restored) === bodyOf(moved), 'undo changed the body');
+    const back = (await topicRect(reference)).rect;
+    expect(Math.abs(back.x - movedRect.x + 120) < 1.5 && Math.abs(back.y - movedRect.y + 60) < 1.5, 'the topic did not move back');
+    await redo();
+    expect((await page.harness('h.source()')) === moved, 'redo did not reapply the move');
+  });
+
+  await recorder.run('topic-drag-escape', `「${reference}」をドラッグ中に Escape`, '木が元の位置へ戻り、frontmatter は変わらない', async () => {
+    const base = await page.harness('h.source()');
+    const before = await topicRect(reference);
+    const from = center(before.rect);
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    await page.mouse('mouseMoved', from.x + 40, from.y + 40, { button: 'left' });
+    await page.mouse('mouseMoved', from.x + 80, from.y + 80, { button: 'left' });
+    await page.settle();
+    const during = await topicRect(reference);
+    expect(Math.abs(during.rect.x - before.rect.x - 80) < 1.5, 'the topic did not follow the pointer');
+    await page.key('Escape', 'Escape', 27);
+    await page.mouse('mouseReleased', from.x + 80, from.y + 80, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const after = await topicRect(reference);
+    expect(Math.abs(after.rect.x - before.rect.x) < 1.5 && Math.abs(after.rect.y - before.rect.y) < 1.5, 'the topic did not return');
+    expect((await page.harness('h.source()')) === base, 'the note changed on a cancelled drag');
+  });
+
+  await recorder.run('topic-unplaced-drag', '「位置のないトピック」を上へ 80 px ドラッグ', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
+    const name = '位置のないトピック';
+    const base = await page.harness('h.source()');
+    const before = await topicRect(name);
+    const view = await page.harness('h.viewport()');
+    const from = center(before.rect);
+    await page.drag(from.x, from.y, from.x, from.y - 80);
+    await page.settle();
+    const source = await page.harness('h.source()');
+    const entry = topicEntry(source, name);
+    expect(entry, 'no entry was created for the unplaced topic');
+    expect(bodyOf(source) === bodyOf(base), 'the body changed');
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not drop the new key');
+    return `${entry}（scale ${view.scale.toFixed(3)}）`;
+  });
+
+  await recorder.run('topic-delete', `「${reference}」を選択 → Delete → 「元に戻す」→「やり直す」`, '区画と mappy-topics の項目が一緒に消え、Undo で両方戻り、Redo で再び消える', async () => {
+    const base = await page.harness('h.source()');
+    const node = await topicRect(reference);
+    await page.click(center(node.rect).x, center(node.rect).y);
+    const before = (await page.harness('h.nodes()')).length;
+    await page.key('Delete', 'Delete', 46);
+    await page.settle();
+    const deleted = await page.harness('h.source()');
+    expect(!deleted.includes(reference), 'the topic heading or its key is still in the note');
+    expect(deleted.includes('mappy-topics:\n  "補足: 用語": { mindmap: [560, -140] }\n'), 'other entries were lost');
+    const body = bodyOf(base);
+    const cut = body.slice(0, body.indexOf('## 参考資料')) + body.slice(body.indexOf('## 補足: 用語'));
+    expect(bodyOf(deleted) === cut, 'more than the topic section changed');
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before - 4, `nodes ${before} → ${count}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore section and position');
+    expect((await page.harness('h.nodes()')).length === before, 'nodes did not come back');
+    await redo();
+    expect((await page.harness('h.source()')) === deleted, 'redo did not delete again');
+    await undo();
+    return `ノード ${before} → ${count} → ${before}`;
+  });
+
+  await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」を含むメニューが開き、Escape で閉じる', async () => {
+    const point = await emptyCanvasPoint(page);
+    await page.mouse('mouseMoved', point.x, point.y);
+    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
+    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
+    const items = await page.evaluate(`Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent)`);
+    expect(items.includes('トピックを追加'), `menu items: ${items.join(' / ')}`);
+    await page.screenshot(join(recorder.directory, 'topic-context-menu-open.png'));
+    await page.key('Escape', 'Escape', 27);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open');
+    return `項目: ${items.join(' / ')}`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -480,7 +705,7 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- ブラウザ: ${version} (${chrome})`,
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
-    '- 対象外: 保存、リンク解決、テーマ、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E28）の PASS ではない。',
+    '- 対象外: 保存、リンク解決、テーマ、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
     '- 描画時間は「時刻の記録」の生値。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。基準端末・条件・p95 を伴う計測は別チケット（性能計測）で扱う。',
     '',
     '## fixture と主要操作',
@@ -512,8 +737,9 @@ async function main() {
   const directory = join(outRoot, stamp);
   await mkdir(directory, { recursive: true });
   const notExecuted = [
-    'Obsidian 実機（③ E01〜E28）: このページは代替ではない。実機は LEV-32 が使用中のため本チケットでは未実施。',
+    'Obsidian 実機（③ E01〜E29）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
     'トラックパッドのピンチ・二本指スクロール、ネイティブ IME、モバイル: headless の合成入力では確認できない。',
+    '⌘Z／⌘⇧Z の連打: headless Chrome 153 は修飾キー付きのキー入力を CDP で繰り返すと応答しなくなるため、フリートピックの Undo／Redo は右クリックメニューで実行した。キー経由の Undo は edit-inline-memory の 1 回と jsdom のテストで確認する。',
     '性能計測（基準端末・条件・p95 の記録）: LEV-13 の範囲。ここでは時刻の生値だけを残す。',
   ];
   const chrome = findChrome(option('--chrome'));
@@ -533,8 +759,9 @@ async function main() {
   const profile = await mkdtemp(join(tmpdir(), 'mappy-harness-'));
   const { child, endpoint } = launchChrome(chrome, profile);
   let cdp;
+  let recorder;
+  let aborted = null;
   const timings = [];
-  let cases = [];
   try {
     cdp = await Cdp.connect(await endpoint);
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
@@ -551,23 +778,30 @@ async function main() {
       await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
     }
     await page.harness('h.ready');
-    const recorder = new Recorder(page, directory);
+    recorder = new Recorder(page, directory);
     await captureFixtures(recorder, page, timings);
     await captureOperations(recorder, page);
-    cases = recorder.cases;
+    await captureTopicOperations(recorder, page);
     await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
+  } catch (error) {
+    // Keep the record of what did run; the exit code still reports the abort.
+    aborted = error instanceof Error ? error.message : String(error);
   } finally {
     cdp?.close();
     const exited = new Promise(resolveExit => { child.once('exit', resolveExit); });
-    child.kill();
+    // A wedged browser ignores SIGTERM and would keep spinning after the run; SIGKILL leaves nothing behind.
+    child.kill('SIGKILL');
     await exited;
     await rm(profile, { recursive: true, force: true, maxRetries: 5 });
   }
+  const cases = recorder?.cases ?? [];
+  if (cdp?.dead) notExecuted.unshift(`ブラウザが応答しなくなったため、以降のケースは未実施または FAIL（${cdp.dead}）。再実行する。`);
+  if (aborted) notExecuted.unshift(`途中で中断したため、残りのケースは未実施（${aborted}）。`);
   const record = recordMarkdown({ startedAt: startedAt.toISOString(), chrome, version: chromeVersion(chrome), commit, cases, timings, notExecuted });
   await writeFile(join(directory, 'record.md'), record);
   const failed = cases.filter(entry => entry.result === 'FAIL').length;
-  console.info(`Wrote ${relative(root, directory)} (${cases.length} cases, ${failed} failed).`);
-  if (failed > 0) process.exitCode = 1;
+  console.info(`Wrote ${relative(root, directory)} (${cases.length} cases, ${failed} failed${aborted ? ', aborted' : ''}).`);
+  if (failed > 0 || aborted) process.exitCode = 1;
 }
 
 await main();

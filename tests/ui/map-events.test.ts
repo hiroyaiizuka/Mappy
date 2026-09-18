@@ -42,6 +42,7 @@ function stubActions(parsed: MindDocument, selected: MindDocument['nodes'][numbe
     history: vi.fn<MapActions['history']>(),
     attach: vi.fn<MapActions['attach']>(),
     link: vi.fn<MapActions['link']>(),
+    addTopic: vi.fn<MapActions['addTopic']>(),
   } satisfies MapActions;
 }
 
@@ -83,6 +84,35 @@ describe('MapEvents DOM interactions', () => {
     click(label);
     expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id, true);
     expect(actions.command).not.toHaveBeenCalled();
+  });
+
+  it('double-clicks a node into editing and empty canvas into a new topic at the canvas-relative point', () => {
+    const { canvas, label, selected, actions } = fixture();
+    canvas.getBoundingClientRect = () => ({ x: 20, y: 30, left: 20, top: 30, width: 800, height: 600, right: 820, bottom: 630, toJSON: () => ({}) });
+    const dblclick = (target: EventTarget, clientX: number, clientY: number): MouseEvent => {
+      const event = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX, clientY });
+      target.dispatchEvent(event);
+      return event;
+    };
+    dblclick(label, 100, 100);
+    expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id);
+    expect(actions.edit).toHaveBeenCalledOnce();
+    expect(actions.addTopic).not.toHaveBeenCalled();
+    const onCanvas = dblclick(canvas, 320, 230);
+    expect(actions.addTopic).toHaveBeenCalledExactlyOnceWith({ x: 300, y: 200 });
+    expect(onCanvas.defaultPrevented).toBe(true);
+    expect(actions.edit).toHaveBeenCalledOnce();
+    // Floating controls and text inputs keep their own double-click.
+    const tools = document.createElement('div');
+    tools.className = 'mappy-floating';
+    const button = document.createElement('button');
+    tools.append(button);
+    canvas.append(tools);
+    dblclick(button, 400, 400);
+    const input = document.createElement('textarea');
+    canvas.append(input);
+    dblclick(input, 400, 400);
+    expect(actions.addTopic).toHaveBeenCalledOnce();
   });
 
   it('selects and folds the owning node when its toggle is clicked', () => {
