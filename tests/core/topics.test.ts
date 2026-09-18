@@ -97,8 +97,8 @@ describe('readTopicPositions', () => {
   });
 
   it('ignores malformed entries and reads nothing from unfinished or missing frontmatter', () => {
-    const source = `---\n${TOPICS_KEY}:\n  A: { timeline: [1], mindmap: [x, 2], issue-tree: { x: 3, y: 4 } }\n  B: nope\n  C: { mindmap: [1, 2, 3] }\n---\n## A\n`;
-    expect([...readTopicPositions(source)]).toEqual([['A', { 'issue-tree': { x: 3, y: 4 } }], ['C', { mindmap: { x: 1, y: 2 } }]]);
+    const source = `---\n${TOPICS_KEY}:\n  A: { timeline: [1], mindmap: [x, 2], hierarchy: { x: 3, y: 4 } }\n  B: nope\n  C: { mindmap: [1, 2, 3] }\n---\n## A\n`;
+    expect([...readTopicPositions(source)]).toEqual([['A', { hierarchy: { x: 3, y: 4 } }], ['C', { mindmap: { x: 1, y: 2 } }]]);
     expect(readTopicPositions(`---\nunfinished: 1\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }`).size).toBe(0);
     expect(readTopicPositions('no frontmatter').size).toBe(0);
     expect(readTopicPositions(`---\n${TOPICS_KEY}: 5\n---\n`).size).toBe(0);
