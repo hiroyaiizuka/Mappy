@@ -1,6 +1,6 @@
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
-import { planTopicRename } from './topics';
+import { planTopicRemoval, planTopicRename, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
 
@@ -8,9 +8,12 @@ export interface TextEdit { from: number; to: number; text: string }
 export interface MoveCommand { type: 'move'; nodeId: string; parentId: string; index: number }
 
 export type EditCommand =
-  | { type: 'rename'; nodeId: string; title: string }
+  /** `position` stores one layout position under the new title in the same edit set (a topic added on the map). */
+  | { type: 'rename'; nodeId: string; title: string; position?: TopicPlacement }
   | { type: 'add-child' | 'add-sibling' | 'delete' | 'move-up' | 'move-down'; nodeId: string }
   | { type: 'reparent'; nodeId: string; parentId: string }
+  /** Append an empty top-level section at the end of the document: a new free topic (§5 M7). */
+  | { type: 'add-topic' }
   | MoveCommand;
 
 export type DropPosition = 'before' | 'after' | 'inside';
@@ -140,7 +143,7 @@ function respectEndOfFile(doc: MindDocument, text: string, to: number): string {
   return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
 }
 
-function rename(doc: MindDocument, node: MindNode, title: string): EditPlan {
+function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicPlacement): EditPlan {
   if (/[\r\n\u2028\u2029]/u.test(title)) {
     throw new Error('ノード名は改行を含まない文字列にしてください。');
   }
@@ -157,7 +160,7 @@ function rename(doc: MindDocument, node: MindNode, title: string): EditPlan {
     throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
   }
   // A free topic's stored position follows its heading text within the same edit set.
-  const key = planTopicRename(doc, node.title, updated.title);
+  const key = planTopicRename(doc, node.title, updated.title, place);
   if (!key) return { edits: [edit], selectionOffset: updated.titleFrom };
   const delta = key.text.length - (key.to - key.from);
   const combined = parseMarkdown(applyEdits(doc.source, [key, edit]), doc.root.title, undefined, doc.format);
@@ -222,12 +225,7 @@ export function moveHeadingSection(doc: MindDocument, node: MindNode, parentId: 
   const level = before?.level ?? siblings[siblings.length - 1]?.level ?? parent.level + 1;
   const moved = shiftedBranch(doc, node, level);
   const target = before?.from ?? parent.to;
-  // Removing the last section leaves the previous section's trailing blank lines at EOF; keep the file's ending as it was.
-  let removalFrom = node.from;
-  if (node.to === doc.source.length && target < node.from) {
-    const trailing = doc.source.slice(0, node.from).match(/(?:\r?\n)+$/u)?.[0].length ?? 0;
-    removalFrom = node.from - trailing + (doc.source.endsWith('\n') && trailing > 0 ? doc.eol.length : 0);
-  }
+  const removalFrom = target < node.from ? sectionRemovalFrom(doc, node) : node.from;
   const remaining = doc.source.slice(0, removalFrom) + doc.source.slice(node.to);
   const offset = target >= node.to ? target - (node.to - removalFrom) : target;
   const prefix = insertionPrefix(remaining, offset, doc.eol);
@@ -237,6 +235,16 @@ export function moveHeadingSection(doc: MindDocument, node: MindNode, parentId: 
     ? [{ from: removalFrom, to: node.to, text }]
     : [{ from: removalFrom, to: node.to, text: '' }, { from: target, to: target, text }];
   return checkedMove(doc, edits, node, parent, index, offset + prefix.length);
+}
+
+/**
+ * Where removing a section starts: a section that ends the file also takes the blank lines that
+ * separated it from the previous one, so the file keeps its ending instead of a dangling blank line.
+ */
+export function sectionRemovalFrom(doc: MindDocument, node: MindNode): number {
+  if (node.to !== doc.source.length) return node.from;
+  const trailing = doc.source.slice(0, node.from).match(/(?:\r?\n)+$/u)?.[0].length ?? 0;
+  return node.from - trailing + (doc.source.endsWith('\n') && trailing > 0 ? doc.eol.length : 0);
 }
 
 function branchDepth(doc: MindDocument, node: MindNode): number {
@@ -264,15 +272,46 @@ export function resolveDrop(doc: MindDocument, draggedId: string, targetId: stri
   return { type: 'move', nodeId: node.id, parentId: parent.id, index };
 }
 
-export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
-  const node = getNode(doc, command.nodeId);
-  if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
-  if (command.type === 'rename') return rename(doc, node, command.title);
-  if (doc.format === 'list') return planListEdit(doc, node, command);
+/**
+ * An empty top-level section at the very end of the document, at the depth of the last one
+ * (`## ` for list documents). It shows as a free topic unless the document had no heading yet.
+ */
+function addTopic(doc: MindDocument): EditPlan {
+  const sections = doc.root.children.filter((child) => child.kind !== 'list');
+  const level = sections[sections.length - 1]?.level ?? (doc.format === 'list' ? 2 : 1);
+  const offset = doc.source.length;
+  const prefix = insertionPrefix(doc.source, offset, doc.eol);
+  const suffix = doc.source.endsWith('\n') ? doc.eol : '';
+  const edits = [{ from: offset, to: offset, text: `${prefix}${'#'.repeat(level)} ${suffix}` }];
+  const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
+  const added = parsed.nodes.find((candidate) => candidate.from === offset + prefix.length);
+  if (parsed.nodes.length !== doc.nodes.length + 1 || added?.kind !== 'atx' || added.level !== level
+    || added.title !== '' || added.parentId !== 'root') {
+    throw new Error('文書末尾にトピックを追加できません。Markdown の構文を確認してください。');
+  }
+  return { edits, selectionOffset: added.titleFrom };
+}
+
+/** A deleted free topic takes its `mappy-topics` entry with it in the same edit set, so Undo restores both. */
+function withTopicRemoval(doc: MindDocument, node: MindNode, plan: EditPlan): EditPlan {
+  const key = planTopicRemoval(doc, node);
+  if (!key) return plan;
+  const expected = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
+  const combined = parseMarkdown(applyEdits(doc.source, [key, ...plan.edits]), doc.root.title, undefined, doc.format);
+  if (combined.nodes.length !== expected.nodes.length
+    || combined.nodes.some((candidate, index) => candidate.title !== expected.nodes[index]?.title)) {
+    throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
+  }
+  const delta = key.text.length - (key.to - key.from);
+  const selectionOffset = plan.selectionOffset !== null && plan.selectionOffset >= key.to ? plan.selectionOffset + delta : plan.selectionOffset;
+  return { edits: [key, ...plan.edits], selectionOffset };
+}
+
+function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {
   switch (command.type) {
     case 'add-child': return add(doc, node, false);
     case 'add-sibling': return add(doc, node, true);
-    case 'delete': return checkedPlan(doc, [{ from: node.from, to: node.to, text: '' }],
+    case 'delete': return checkedPlan(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }],
       getNode(doc, node.parentId ?? 'root').titleFrom, doc.nodes.length - branchNodes(doc, node).length);
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
@@ -280,4 +319,13 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
       getNode(doc, command.parentId).children.filter((child) => child.id !== node.id).length);
     case 'move': return moveHeadingSection(doc, node, command.parentId, command.index);
   }
+}
+
+export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
+  if (command.type === 'add-topic') return addTopic(doc);
+  const node = getNode(doc, command.nodeId);
+  if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
+  if (command.type === 'rename') return rename(doc, node, command.title, command.position);
+  const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
+  return command.type === 'delete' ? withTopicRemoval(doc, node, plan) : plan;
 }

@@ -1,13 +1,22 @@
 import { Component } from "obsidian";
 import type { DropPosition, MoveCommand } from "../core/commands";
 
+/** Pointer travel since the press, in screen pixels. */
+export interface DragDelta { x: number; y: number }
+
 export interface NodeDragActions {
   select: (id: string) => void;
+  /** True for a node that moves freely (a free-topic root): its tree follows the pointer instead of previewing a slot. */
+  free: (id: string) => boolean;
   /** The move a drop on `targetId` would perform, or null when the target must refuse the dragged node. */
   dropTarget: (draggedId: string, targetId: string, position: DropPosition) => MoveCommand | null;
   /** Show the slot a drop would fill (placeholder + connector), or clear it with null. */
   preview: (command: MoveCommand | null) => void;
   command: (command: MoveCommand) => void;
+  /** Live offset of a free node during its drag; null ends the preview and puts the tree back. */
+  shift: (id: string, delta: DragDelta | null) => void;
+  /** A free node released inside the canvas keeps its shifted position. */
+  place: (id: string, delta: DragDelta) => void;
 }
 
 /** Pointer travel before a press on a node becomes a drag, so clicks and double-clicks stay untouched. */
@@ -22,19 +31,25 @@ const SWITCH_DISTANCE = 6;
 interface Press { pointerId: number; id: string; element: HTMLElement; x: number; y: number }
 
 interface Session extends Press {
-  ghost: HTMLElement;
+  /** The tree drag's ghost; a free drag has none, its own tree moves. */
+  ghost: HTMLElement | null;
+  free: boolean;
   /** Pointer offset inside the node at grab time, in screen pixels. */
   grab: { x: number; y: number };
   scale: number;
   target: MoveCommand | null;
   anchor: { id: string; position: DropPosition } | null;
   switched: { x: number; y: number } | null;
+  /** Last pointer position, so a release decides whether the free node stays. */
+  last: { x: number; y: number };
 }
 
 /**
  * Pointer-driven node dragging: a translucent ghost follows the pointer, the source stays faint in
  * place, and the view previews the slot under the pointer. Pointer events (not HTML5 drag and drop)
  * so the ghost, the placeholder, and touch input are under our control; file drops stay separate.
+ * A free node (a free-topic root) drags its whole tree instead: no ghost, no slot, and a release
+ * inside the canvas keeps the new position while Escape, cancel, or a release outside puts it back.
  */
 export class NodeDrag extends Component {
   private press: Press | null = null;
@@ -61,7 +76,10 @@ export class NodeDrag extends Component {
       this.start(press, event);
     });
     this.registerDomEvent(this.canvas, "pointerup", event => {
-      if (this.session?.pointerId === event.pointerId) this.finish(true);
+      if (this.session?.pointerId === event.pointerId) {
+        this.session.last = { x: event.clientX, y: event.clientY };
+        this.finish(true);
+      }
       this.press = null;
     });
     const cancel = (event: PointerEvent): void => {
@@ -89,37 +107,54 @@ export class NodeDrag extends Component {
 
   private start(press: Press, event: PointerEvent): void {
     this.press = null;
+    const free = this.actions.free(press.id);
     const rect = press.element.getBoundingClientRect();
     const scale = press.element.offsetWidth > 0 ? rect.width / press.element.offsetWidth : 1;
-    // A deep clone keeps the rendered label and attachments; standard DOM only, since it may live in a popout window.
-    const ghost = press.element.cloneNode(true) as HTMLElement;
-    ghost.querySelectorAll(".mappy-node-toggle").forEach(toggle => { toggle.remove(); });
-    for (const name of ["data-node-id", "id", "tabindex", "role", "aria-selected", "aria-expanded", "aria-level"]) ghost.removeAttribute(name);
-    ghost.classList.remove("is-selected", "is-drag-source");
-    ghost.classList.add("mappy-drag-ghost");
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.style.width = `${press.element.offsetWidth}px`;
-    ghost.style.height = `${press.element.offsetHeight}px`;
-    this.canvas.append(ghost);
-    press.element.addClass("is-drag-source");
+    const ghost = free ? null : this.ghost(press.element);
+    press.element.addClass(free ? "is-drag-moving" : "is-drag-source");
     this.canvas.addClass("is-dragging-node");
     // A pointer that vanished between the press and this move cannot be captured; the drag still runs on canvas events.
     try { this.canvas.setPointerCapture(press.pointerId); } catch { /* InvalidPointerId */ }
     this.session = {
-      ...press, ghost, scale, grab: { x: press.x - rect.left, y: press.y - rect.top }, target: null, anchor: null, switched: null,
+      ...press, ghost, free, scale, grab: { x: press.x - rect.left, y: press.y - rect.top }, target: null, anchor: null, switched: null,
+      last: { x: press.x, y: press.y },
     };
     this.actions.select(press.id);
     this.move(event);
   }
 
+  /** A deep clone keeps the rendered label and attachments; standard DOM only, since it may live in a popout window. */
+  private ghost(element: HTMLElement): HTMLElement {
+    const ghost = element.cloneNode(true) as HTMLElement;
+    ghost.querySelectorAll(".mappy-node-toggle").forEach(toggle => { toggle.remove(); });
+    for (const name of ["data-node-id", "id", "tabindex", "role", "aria-selected", "aria-expanded", "aria-level"]) ghost.removeAttribute(name);
+    ghost.classList.remove("is-selected", "is-drag-source");
+    ghost.classList.add("mappy-drag-ghost");
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.style.width = `${element.offsetWidth}px`;
+    ghost.style.height = `${element.offsetHeight}px`;
+    this.canvas.append(ghost);
+    return ghost;
+  }
+
+  private delta(session: Session): DragDelta {
+    return { x: session.last.x - session.x, y: session.last.y - session.y };
+  }
+
+  private insideCanvas(session: Session, canvas = this.canvas.getBoundingClientRect()): boolean {
+    return session.last.x >= canvas.left && session.last.x < canvas.right && session.last.y >= canvas.top && session.last.y < canvas.bottom;
+  }
+
   private move(event: PointerEvent): void {
     const session = this.session;
     if (!session) return;
+    session.last = { x: event.clientX, y: event.clientY };
+    if (session.free) { this.actions.shift(session.id, this.delta(session)); return; }
     const canvas = this.canvas.getBoundingClientRect();
     const x = event.clientX - canvas.left - session.grab.x;
     const y = event.clientY - canvas.top - session.grab.y;
-    session.ghost.style.transform = `translate(${x}px, ${y}px) scale(${session.scale})`;
-    if (event.clientX < canvas.left || event.clientX >= canvas.right || event.clientY < canvas.top || event.clientY >= canvas.bottom) {
+    if (session.ghost) session.ghost.style.transform = `translate(${x}px, ${y}px) scale(${session.scale})`;
+    if (!this.insideCanvas(session, canvas)) {
       this.retarget(session, null, null, event);
       return;
     }
@@ -166,10 +201,15 @@ export class NodeDrag extends Component {
     const session = this.session;
     if (!session) return;
     this.session = null;
-    session.ghost.remove();
-    session.element.removeClass("is-drag-source");
+    session.ghost?.remove();
+    session.element.removeClass("is-drag-source", "is-drag-moving");
     this.canvas.removeClass("is-dragging-node");
     if (this.canvas.hasPointerCapture(session.pointerId)) this.canvas.releasePointerCapture(session.pointerId);
+    if (session.free) {
+      if (drop && this.insideCanvas(session)) this.actions.place(session.id, this.delta(session));
+      else this.actions.shift(session.id, null);
+      return;
+    }
     this.actions.preview(null);
     if (drop && session.target) this.actions.command(session.target);
   }

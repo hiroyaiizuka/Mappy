@@ -3,7 +3,7 @@ import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type 
 import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
-import { readTopicPositions, type TopicPositionMap } from "../core/topics";
+import { planTopicMove, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import { layoutTree, type FreeTopicLayout, type LayoutNode, type LayoutResult } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
@@ -13,7 +13,7 @@ import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
 import { MapEvents } from "./map-events";
-import { NodeDrag } from "./node-drag";
+import { NodeDrag, type DragDelta } from "./node-drag";
 import { InlineEditor } from "./inline-editor";
 import { LinkSuggest } from "./link-suggest";
 
@@ -38,6 +38,13 @@ export class MindmapView extends ItemView {
   private placeholder!: HTMLDivElement;
   private edgePaths = new Map<string, SVGPathElement>();
   private dropPreview: MoveCommand | null = null;
+  /** A free topic following the pointer: `from` is where the drag started, `position` where its tree shows now (both origin-relative). */
+  private topicDrag: { id: string; from: TopicPosition; position: TopicPosition } | null = null;
+  /**
+   * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
+   * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
+   */
+  private pendingTopic: { id: string; layout: MapLayout; position: TopicPosition } | null = null;
   private refreshTimer: number | undefined;
   private layoutFrame: number | undefined;
   private epoch = 0;
@@ -75,6 +82,7 @@ export class MindmapView extends ItemView {
     if (changed) {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.document = undefined; this.selectedId = null; this.collapsed.clear(); this.needsFit = true;
+      this.pendingTopic = null; this.topicDrag = null;
     }
     if (this.ready) {
       const view = value.viewport;
@@ -130,37 +138,49 @@ export class MindmapView extends ItemView {
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
       link: (link, newLeaf) => { if (this.file) this.run(() => this.app.workspace.openLinkText(link, this.file?.path ?? "", newLeaf)); },
+      addTopic: point => { this.run(() => this.addTopic(point)); },
     }));
     this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
+      free: id => this.isTopic(id),
       dropTarget: (dragged, target, position) => this.document ? resolveDrop(this.document, dragged, target, position) : null,
       preview: command => { this.previewDrop(command); },
       command: command => { this.run(() => this.execute(command)); },
+      shift: (id, delta) => { this.shiftTopic(id, delta); },
+      place: (id, delta) => { this.run(() => this.placeTopic(id, delta)); },
     }));
     this.registerDomEvent(this.canvas, "contextmenu", event => {
       const target = event.targetNode;
       if (!target?.instanceOf(Element)) return;
-      if (target.closest("input,textarea,[contenteditable='true']")) return;
+      if (target.closest("input,textarea,[contenteditable='true'],button,.mappy-floating")) return;
       const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-      if (!id) return;
+      if (!this.document || !this.file) return;
       event.preventDefault();
-      this.select(id);
       const menu = new Menu();
+      if (!id) {
+        // Empty canvas: the topic goes where the menu was opened.
+        const rect = this.canvas.getBoundingClientRect();
+        const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+        menu.addItem(item => item.setTitle("トピックを追加").setIcon("plus").onClick(() => { this.run(() => this.addTopic(point)); }));
+        menu.addSeparator();
+        this.historyItems(menu);
+        menu.showAtMouseEvent(event);
+        return;
+      }
+      this.select(id);
       menu.addItem(item => item.setTitle("テキストを編集").setIcon("pencil").onClick(() => { this.editTitle(); }));
       menu.addItem(item => item.setTitle("本文・リンクを編集").setIcon("text").onClick(() => { this.editBody(); }));
       menu.addItem(item => item.setTitle("画像を追加").setIcon("image-plus").onClick(() => { this.chooseImage(); }));
       menu.addSeparator();
       menu.addItem(item => item.setTitle("子を追加").setIcon("plus").onClick(() => { this.executeSelected("add-child"); }));
       menu.addItem(item => item.setTitle("兄弟を追加").setIcon("corner-down-right").onClick(() => { this.executeSelected("add-sibling"); }));
-      for (const [type, title] of [["move-up", "前へ移動"], ["move-down", "後ろへ移動"], ["delete", "枝を削除"]] as const) {
+      const remove = this.isTopic(id) ? "トピックを削除" : "枝を削除";
+      for (const [type, title] of [["move-up", "前へ移動"], ["move-down", "後ろへ移動"], ["delete", remove]] as const) {
         menu.addItem(item => item.setTitle(title).onClick(() => { this.executeSelected(type); }));
       }
       menu.addSeparator();
-      menu.addItem(item => item.setTitle("元に戻す").setIcon("undo-2")
-        .setDisabled(!this.file || !this.store.canUndo(this.file)).onClick(() => { this.history("undo"); }));
-      menu.addItem(item => item.setTitle("やり直す").setIcon("redo-2")
-        .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history("redo"); }));
-      if (this.document?.format === "headings") {
+      this.historyItems(menu);
+      if (this.document.format === "headings") {
         menu.addSeparator();
         menu.addItem(item => item.setTitle("リスト形式に変更").setIcon("list-tree")
           .onClick(() => { this.run(() => this.convertToList()); }));
@@ -205,6 +225,13 @@ export class MindmapView extends ItemView {
     void action().catch(error => { new Notice(error instanceof Error ? error.message : "操作を完了できませんでした。"); });
   }
 
+  private historyItems(menu: Menu): void {
+    menu.addItem(item => item.setTitle("元に戻す").setIcon("undo-2")
+      .setDisabled(!this.file || !this.store.canUndo(this.file)).onClick(() => { this.history("undo"); }));
+    menu.addItem(item => item.setTitle("やり直す").setIcon("redo-2")
+      .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history("redo"); }));
+  }
+
   /** A deliberate layout switch is the note's next-open preference. */
   private selectMode(mode: MapLayout): void {
     if (mode === this.mode) return;
@@ -242,6 +269,7 @@ export class MindmapView extends ItemView {
       this.document = parseMarkdown(source, file.basename, this.document);
       const ids = new Set([this.document.root.id, ...this.document.nodes.map(node => node.id)]);
       this.collapsed = new Set(Array.from(this.collapsed).filter(id => ids.has(id)));
+      if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
     }
     this.emptyState.hidden = true;
     this.draw();
@@ -257,7 +285,15 @@ export class MindmapView extends ItemView {
     return this.projected.projection;
   }
 
-  /** Stored positions for this layout. Topics sharing a heading share one entry; only the first uses it. */
+  private isTopic(id: string): boolean {
+    return this.projection()?.topics.some(topic => topic.id === id) ?? false;
+  }
+
+  /**
+   * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
+   * position comes next, then the pressed point of a topic added on the map that no save has
+   * stored yet. Topics sharing a heading share one entry; only the first uses it.
+   */
   private topicLayouts(trees?: readonly LayoutNode[]): FreeTopicLayout[] {
     const projected = this.projected;
     if (!projected) return [];
@@ -265,7 +301,9 @@ export class MindmapView extends ItemView {
     return projected.projection.topics.map((topic, index) => {
       const stored = used.has(topic.title) ? undefined : projected.positions.get(topic.title)?.[this.mode];
       used.add(topic.title);
-      return { tree: trees?.[index + 1] ?? topic, position: stored ? { x: stored.x, y: stored.y } : null };
+      const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
+      const position = this.topicDrag?.id === topic.id ? this.topicDrag.position : stored ?? pending;
+      return { tree: trees?.[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
     });
   }
 
@@ -290,12 +328,16 @@ export class MindmapView extends ItemView {
       button.toggleClass("is-active", mode === this.mode);
       button.setAttribute("aria-pressed", String(mode === this.mode));
     }
+    const active = this.canvas.doc.activeElement;
+    const focused = active?.instanceOf(HTMLElement) && active.classList.contains("mappy-node") ? active : null;
     const nodes = this.visible();
     this.renderer.update(nodes, this.document, this.file.path, this.collapsed, {
       visualRootId: projection.root.id, topicIds: new Set(projection.topics.map(topic => topic.id)), mode: this.mode,
     });
     if (!nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
+    // Undo, delete or an external change can replace the focused node's element; the keyboard stays on the map.
+    if (focused && !focused.isConnected && this.selectedId) this.renderer.focus(this.selectedId);
     this.scheduleLayout();
   }
 
@@ -432,16 +474,80 @@ export class MindmapView extends ItemView {
     const plan = planEdit(document, command);
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
-    let created = false;
-    if (plan.selectionOffset !== null) {
-      const selected = this.document?.nodes.find(node => node.titleFrom === plan.selectionOffset);
-      if (selected) {
-        if (selected.parentId) this.collapsed.delete(selected.parentId);
-        this.draw(); this.select(selected.id, true);
-        created = true;
-      }
+    const selected = this.reveal(plan.selectionOffset);
+    if (selected && (command.type === "add-child" || command.type === "add-sibling")) this.editTitle();
+  }
+
+  /** Select the node a plan points at, unfolding its parent, after the document was re-read. */
+  private reveal(offset: number | null): MindNode | undefined {
+    const selected = offset === null ? undefined : this.document?.nodes.find(node => node.titleFrom === offset);
+    if (!selected) return undefined;
+    if (selected.parentId) this.collapsed.delete(selected.parentId);
+    this.draw(); this.select(selected.id, true);
+    return selected;
+  }
+
+  /** Layout coordinates of a canvas-relative pixel, as an offset from the body root (`LayoutResult.origin`). */
+  private topicPoint(point: { x: number; y: number }): TopicPosition {
+    const view = this.viewport.value;
+    const origin = this.layout?.origin ?? { x: 0, y: 0 };
+    return { x: Math.round((point.x - view.x) / view.scale - origin.x), y: Math.round((point.y - view.y) / view.scale - origin.y) };
+  }
+
+  /**
+   * A new empty top-level section at the end of the note, edited in place where the canvas was
+   * pressed (§5 M7). The position is stored by the edit that names it, so the title and the
+   * `mappy-topics` entry are one step of the history; Escape keeps the section, Undo removes it.
+   */
+  private async addTopic(point: { x: number; y: number }): Promise<void> {
+    const document = this.document;
+    const file = this.file;
+    if (!document || !file || this.saving) return;
+    const position = this.topicPoint(point);
+    const plan = planEdit(document, { type: "add-topic" });
+    await this.commit(document.source, plan.edits, file);
+    if (this.file !== file || this.closed) return;
+    const created = this.document?.nodes.find(node => node.titleFrom === plan.selectionOffset);
+    // The first heading of a note becomes its body root and has no position.
+    if (created && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
+    if (this.reveal(plan.selectionOffset)) this.editTitle();
+  }
+
+  /** Live drag of a free topic: its whole tree follows the pointer through the layout; null puts it back. */
+  private shiftTopic(id: string, delta: DragDelta | null): void {
+    if (!delta) {
+      if (this.topicDrag?.id === id) { this.topicDrag = null; this.scheduleLayout(); }
+      return;
     }
-    if (created && (command.type === "add-child" || command.type === "add-sibling")) this.editTitle();
+    if (this.topicDrag?.id !== id) {
+      const node = this.layout?.nodes.find(item => item.id === id);
+      const origin = this.layout?.origin;
+      if (!node || !origin || !this.isTopic(id)) return;
+      this.topicDrag = { id, from: { x: node.x - origin.x, y: node.y - origin.y }, position: { x: node.x - origin.x, y: node.y - origin.y } };
+    }
+    const scale = this.viewport.value.scale;
+    this.topicDrag.position = { x: this.topicDrag.from.x + delta.x / scale, y: this.topicDrag.from.y + delta.y / scale };
+    this.scheduleLayout();
+  }
+
+  /** A free topic released on the canvas: only its `mappy-topics` entry for this layout changes. */
+  private async placeTopic(id: string, delta: DragDelta): Promise<void> {
+    const document = this.document;
+    const file = this.file;
+    const topic = this.projection()?.topics.find(item => item.id === id);
+    const node = this.layout?.nodes.find(item => item.id === id);
+    const origin = this.layout?.origin;
+    try {
+      if (!document || !file || !topic || !node || !origin) return;
+      const from = this.topicDrag?.id === id ? this.topicDrag.from : { x: node.x - origin.x, y: node.y - origin.y };
+      const scale = this.viewport.value.scale;
+      const position = { x: Math.round(from.x + delta.x / scale), y: Math.round(from.y + delta.y / scale) };
+      const edit = planTopicMove(document, topic.title, this.mode, position);
+      if (edit) await this.commit(document.source, [edit], file);
+      if (this.pendingTopic?.id === id) this.pendingTopic = null;
+    } finally {
+      if (this.topicDrag?.id === id) { this.topicDrag = null; this.scheduleLayout(); }
+    }
   }
 
   private async commit(source: string, edits: TextEdit[], file = this.file): Promise<void> {
@@ -462,20 +568,29 @@ export class MindmapView extends ItemView {
     if (!entry) return;
     this.inlineEditor?.dispose();
     entry.content.hidden = true;
+    let renamedOffset: number | null = null;
     this.inlineEditor = new InlineEditor(entry.element, {
       initial: node.title,
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
-        const plan = planEdit(document, { type: "rename", nodeId: node.id, title: text });
+        // A topic added on the map is placed where it was pressed by the same edit set that names it.
+        const pending = this.pendingTopic?.id === node.id ? this.pendingTopic : null;
+        const plan = planEdit(document, {
+          type: "rename", nodeId: node.id, title: text,
+          ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
+        });
         await this.commit(document.source, plan.edits, file);
+        renamedOffset = plan.selectionOffset;
+        if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
       finish: (next, cancelled) => {
         this.inlineEditor = undefined;
         entry.content.hidden = false;
         if (this.closed || file !== this.file) return;
         this.draw();
+        // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
         const current = this.document?.nodes.find(item => item.id === node.id)
-          ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
+          ?? (!cancelled ? this.document?.nodes.find(item => item.titleFrom === renamedOffset || item.from === node.from) : undefined);
         if (current) this.select(current.id, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },

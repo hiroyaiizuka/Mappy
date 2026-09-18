@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, planEdit } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
 import {
-  TOPICS_KEY, planTopicMove, planTopicPositions, planTopicRename, readTopicPositions, serializeTopicPositions,
+  TOPICS_KEY, planTopicMove, planTopicPositions, planTopicRemoval, planTopicRename, readTopicPositions, serializeTopicPositions,
   topicPositionsFromValue, type TopicPositionMap,
 } from '../../src/core/topics';
 
@@ -244,5 +244,155 @@ describe('rename keeps the topic key in step', () => {
     const doc = parse(applyEdits(bare.source, placed ? [placed] : []));
     const plan = planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'B' });
     expect(applyEdits(doc.source, plan.edits)).toBe(`---\n${TOPICS_KEY}:\n  B: { mindmap: [1, 1] }\n---\n## Root\n\n## B\n`);
+  });
+});
+
+describe('add-topic appends an empty top-level section at the end of the document', () => {
+  it('adds `## ` after the last section of a list document and selects its empty title', () => {
+    const doc = parse(listNote);
+    const plan = planEdit(doc, { type: 'add-topic' });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`${listNote}\n## \n`);
+    const parsed = parse(result);
+    const added = parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset);
+    expect(added).toMatchObject({ title: '', kind: 'atx', level: 2, parentId: 'root' });
+    expect(projectMap(parsed).topics.at(-1)).toBe(added);
+    expect(result.slice(0, listNote.length)).toBe(listNote);
+  });
+
+  it('keeps the ending convention: a file without a trailing newline stays without one, a blank line is not doubled', () => {
+    const trimmed = parse('## Body\n- A\n\n## T\n- B');
+    expect(applyEdits(trimmed.source, planEdit(trimmed, { type: 'add-topic' }).edits)).toBe('## Body\n- A\n\n## T\n- B\n\n## ');
+    const blank = parse('## Body\n- A\n\n');
+    expect(applyEdits(blank.source, planEdit(blank, { type: 'add-topic' }).edits)).toBe('## Body\n- A\n\n## \n');
+    const crlf = parse('## Body\r\n- A\r\n');
+    expect(applyEdits(crlf.source, planEdit(crlf, { type: 'add-topic' }).edits)).toBe('## Body\r\n- A\r\n\r\n## \r\n');
+  });
+
+  it('matches the depth of the last top-level section in a heading document', () => {
+    const doc = parse(headingNote);
+    expect(applyEdits(doc.source, planEdit(doc, { type: 'add-topic' }).edits)).toBe(`${headingNote}\n# \n`);
+    const h2 = parse('## A\n\n### A1\n\n## B\n');
+    expect(h2.format).toBe('headings');
+    const result = applyEdits(h2.source, planEdit(h2, { type: 'add-topic' }).edits);
+    expect(result).toBe('## A\n\n### A1\n\n## B\n\n## \n');
+    expect(projectMap(parse(result)).topics.map((node) => node.title)).toEqual(['B', '']);
+  });
+
+  it('starts the body for a document without headings and lands after trailing prose', () => {
+    const empty = parse('');
+    expect(applyEdits(empty.source, planEdit(empty, { type: 'add-topic' }).edits)).toBe('## ');
+    const header = parse('---\nmappy: true\n---\n');
+    const started = applyEdits(header.source, planEdit(header, { type: 'add-topic' }).edits);
+    expect(started).toBe('---\nmappy: true\n---\n\n## \n');
+    expect(projectMap(parse(started)).topics).toEqual([]);
+    const lists = parse('- A\n- B\n\nProse after the list.\n');
+    const result = applyEdits(lists.source, planEdit(lists, { type: 'add-topic' }).edits);
+    expect(result).toBe('- A\n- B\n\nProse after the list.\n\n## \n');
+    expect(projectMap(parse(result)).topics.map((node) => node.title)).toEqual(['']);
+  });
+
+  it('refuses when the end of the document cannot hold a heading', () => {
+    const fence = parse('## Body\n\n```\ncode');
+    expect(() => planEdit(fence, { type: 'add-topic' })).toThrow('トピックを追加できません');
+  });
+});
+
+describe('rename with a position places a new topic in the same edit set', () => {
+  const note = `---\nmappy: true\n---\n## Root\n- Child\n\n## \n`;
+
+  it('writes the title and the position of the pressed point as two non-overlapping edits', () => {
+    const doc = parse(note);
+    const blank = projectMap(doc).topics[0];
+    if (!blank) throw new Error('Missing blank topic');
+    expect(blank.title).toBe('');
+    const plan = planEdit(doc, { type: 'rename', nodeId: blank.id, title: '新しい話題', position: { layout: 'mindmap', x: 320.6, y: -80.2 } });
+    expect(plan.edits).toHaveLength(2);
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`---\nmappy: true\n${TOPICS_KEY}:\n  新しい話題: { mindmap: [321, -80] }\n---\n## Root\n- Child\n\n## 新しい話題\n`);
+    const parsed = parse(result);
+    expect(parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset)?.title).toBe('新しい話題');
+    expect(readTopicPositions(result).get('新しい話題')).toEqual({ mindmap: { x: 321, y: -80 } });
+  });
+
+  it('keeps the other layout of a topic that already has a position and adds the placed one', () => {
+    const doc = parse(note.replace('---\n## Root', `${TOPICS_KEY}:\n  "": { timeline: [5, 6] }\n---\n## Root`));
+    const blank = projectMap(doc).topics[0];
+    if (!blank) throw new Error('Missing blank topic');
+    const result = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: blank.id, title: 'Named', position: { layout: 'mindmap', x: 1, y: 2 } }).edits);
+    expect(readTopicPositions(result).get('Named')).toEqual({ timeline: { x: 5, y: 6 }, mindmap: { x: 1, y: 2 } });
+    expect(readTopicPositions(result).has('')).toBe(false);
+  });
+
+  it('does not take the entry of another current topic with the new name, and ignores the position for non-topics', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  Other: { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## Other\n\n## \n`);
+    const blank = projectMap(doc).topics[1];
+    if (!blank) throw new Error('Missing blank topic');
+    const result = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: blank.id, title: 'Other', position: { layout: 'mindmap', x: 9, y: 9 } }).edits);
+    expect([...readTopicPositions(result)]).toEqual([['Other', { mindmap: { x: 3, y: 4 } }]]);
+    const child = doc.nodes.find((node) => node.title === 'Child');
+    const body = projectMap(doc).root;
+    for (const node of [child, body]) {
+      if (!node) throw new Error('Missing node');
+      const plan = planEdit(doc, { type: 'rename', nodeId: node.id, title: 'Renamed', position: { layout: 'mindmap', x: 9, y: 9 } });
+      expect(plan.edits).toHaveLength(1);
+    }
+    expect(() => planEdit(doc, { type: 'rename', nodeId: blank.id, title: 'X', position: { layout: 'Bad Layout', x: 0, y: 0 } })).toThrow('レイアウト名');
+    expect(() => planEdit(doc, { type: 'rename', nodeId: blank.id, title: 'X', position: { layout: 'mindmap', x: Number.NaN, y: 0 } })).toThrow('位置が不正');
+  });
+});
+
+describe('delete removes a topic section together with its position', () => {
+  const note = `---\nmappy: true\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  Other: { timeline: [3, 4] }\n  Gone: { mindmap: [7, 7] }\n---\n## Root\n- Child\n\n## A\n- Under A\n  - Deep\n\n## Other\n`;
+
+  function topic(doc: MindDocument, title: string): MindNode {
+    const node = projectMap(doc).topics.find((candidate) => candidate.title === title);
+    if (!node) throw new Error(`Missing topic ${title}`);
+    return node;
+  }
+
+  it('drops only the deleted heading\'s entry, keeps the others and the orphan, and leaves the body untouched', () => {
+    const doc = parse(note);
+    const plan = planEdit(doc, { type: 'delete', nodeId: topic(doc, 'A').id });
+    expect(plan.edits).toHaveLength(2);
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`---\nmappy: true\n${TOPICS_KEY}:\n  Other: { timeline: [3, 4] }\n  Gone: { mindmap: [7, 7] }\n---\n## Root\n- Child\n\n## Other\n`);
+    expect(parse(result).nodes.map((node) => node.title)).toEqual(['Root', 'Child', 'Other']);
+  });
+
+  it('removes the whole key when the last positioned topic goes, in both formats', () => {
+    const list = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- Under A\n`);
+    const listResult = applyEdits(list.source, planEdit(list, { type: 'delete', nodeId: topic(list, 'A').id }).edits);
+    expect(listResult).toBe('---\n---\n## Root\n- Child\n');
+    const headings = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n# Root\n\n## Child\n\n# A\n\n### Deep\n`);
+    const headingResult = applyEdits(headings.source, planEdit(headings, { type: 'delete', nodeId: topic(headings, 'A').id }).edits);
+    expect(headingResult).toBe('---\n---\n# Root\n\n## Child\n');
+    expect(planTopicRemoval(headings, topic(headings, 'A'))).toEqual({ from: 4, to: 4 + `${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n`.length, text: '' });
+  });
+
+  it('takes the separating blank lines of a section at the end of the file, so add-topic then delete round-trips', () => {
+    for (const source of [listNote, headingNote, '## Body\n- A\n\n## T\n- B', '## Body\r\n- A\r\n']) {
+      const doc = parse(source);
+      const added = parse(applyEdits(doc.source, planEdit(doc, { type: 'add-topic' }).edits));
+      const blank = projectMap(added).topics.at(-1);
+      if (!blank) throw new Error('Missing added topic');
+      expect(applyEdits(added.source, planEdit(added, { type: 'delete', nodeId: blank.id }).edits)).toBe(source);
+    }
+    const middle = parse('## Root\n- Child\n\n## A\n- Under A\n\n## Other\n');
+    expect(applyEdits(middle.source, planEdit(middle, { type: 'delete', nodeId: topic(middle, 'A').id }).edits)).toBe('## Root\n- Child\n\n## Other\n');
+  });
+
+  it('keeps the entry while another current topic shares the heading, and for nodes that are not topics', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- First\n\n## A\n- Second\n`);
+    const [first, second] = projectMap(doc).topics;
+    if (!first || !second) throw new Error('Missing topics');
+    const result = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: second.id }).edits);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- First\n`);
+    expect(planTopicRemoval(doc, first)).toBeNull();
+    const child = doc.nodes.find((node) => node.title === 'Child');
+    if (!child) throw new Error('Missing child');
+    expect(planEdit(doc, { type: 'delete', nodeId: child.id }).edits).toHaveLength(1);
+    expect(planTopicRemoval(doc, child)).toBeNull();
+    expect(planTopicRemoval(doc, projectMap(doc).root)).toBeNull();
   });
 });

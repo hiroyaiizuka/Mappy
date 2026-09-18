@@ -6,8 +6,8 @@ import { HarnessApp } from '../../harness/browser/app';
 import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import { planEdit, type MoveCommand } from '../../src/core/commands';
-import { projectMap, type MindDocument } from '../../src/core/markdown';
-import { readTopicPositions } from '../../src/core/topics';
+import { projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
+import { TOPICS_KEY, readTopicPositions } from '../../src/core/topics';
 import { PLACEHOLDER_ID } from '../../src/layout/drop-preview';
 import type { LayoutResult } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
@@ -38,27 +38,59 @@ function documentOf(view: MindmapView): MindDocument {
 interface Mounted {
   app: HarnessApp;
   view: MindmapView;
+  store: DocumentStore;
+  canvas: HTMLElement;
+  file: never;
   layout: () => LayoutResult;
   transform: (id: string) => { x: number; y: number };
   nodes: () => Map<string, HTMLElement>;
+  /** The note as the in-memory vault holds it now. */
+  source: () => string;
+  /** Let queued saves, refreshes and one layout frame run. */
+  settle: () => Promise<void>;
+  topic: (title: string) => MindNode;
+  dblclick: (target: EventTarget, clientX: number, clientY: number) => MouseEvent;
+  pointer: (type: string, target: EventTarget, clientX: number, clientY: number) => PointerEvent;
+  key: (target: EventTarget, key: string, init?: KeyboardEventInit) => KeyboardEvent;
+  contextmenu: (target: EventTarget, clientX: number, clientY: number) => string[];
+  editor: () => HTMLTextAreaElement | null;
+  /** ⌘Z / ⌘⇧Z on the canvas: the map's own history, then a refresh. */
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
 }
+
+/** Canvas at (10, 20) of 1200 × 800 screen pixels; jsdom has no geometry of its own. */
+const CANVAS = { x: 10, y: 20, left: 10, top: 20, width: 1200, height: 800, right: 1210, bottom: 820, toJSON: () => ({}) };
 
 async function mount(source: string, layout: 'mindmap' | 'timeline' = 'mindmap'): Promise<Mounted> {
   const app = new HarnessApp();
   app.put(PATH, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
-  const view = new MindmapView(leaf as unknown as ObsidianLeaf, new DocumentStore(app.asApp<App>()), {} as ViewRouter);
+  const store = new DocumentStore(app.asApp<App>());
+  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   view.load();
   await view.onOpen();
+  const canvas = view.containerEl.querySelector<HTMLElement>('.mappy-canvas');
+  if (!canvas) throw new Error('The view has no canvas');
+  canvas.getBoundingClientRect = () => CANVAS;
+  // jsdom implements neither pointer capture nor hit testing; the drag code tolerates both.
+  canvas.setPointerCapture = () => undefined;
+  canvas.releasePointerCapture = () => undefined;
+  canvas.hasPointerCapture = () => false;
   await view.setState({ file: PATH, layout }, { history: false } satisfies ViewStateResult);
   await new Promise(resolve => requestAnimationFrame(resolve));
   const nodes = (): Map<string, HTMLElement> => new Map(Array.from(
     view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'), node => [node.dataset.nodeId ?? '', node],
   ));
+  const file = app.asApp<App>().vault.getAbstractFileByPath(PATH) as never;
+  const settle = async (): Promise<void> => {
+    for (let round = 0; round < 3; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+  };
   return {
-    app, view, nodes,
+    app, view, store, canvas, file, nodes, settle,
     layout: () => {
       const result = (view as unknown as { layout: LayoutResult | undefined }).layout;
       if (!result) throw new Error('Layout has not run');
@@ -69,7 +101,48 @@ async function mount(source: string, layout: 'mindmap' | 'timeline' = 'mindmap')
       if (!match) throw new Error(`No transform for ${id}`);
       return { x: Number(match[1]), y: Number(match[2]) };
     },
+    source: () => app.content(file),
+    topic: (title) => {
+      const node = projectMap(documentOf(view)).topics.find(candidate => candidate.title === title);
+      if (!node) throw new Error(`Missing topic ${title}`);
+      return node;
+    },
+    dblclick: (target, clientX, clientY) => {
+      const event = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX, clientY });
+      target.dispatchEvent(event);
+      return event;
+    },
+    pointer: (type, target, clientX, clientY) => {
+      const event = new PointerEvent(type, { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX, clientY });
+      target.dispatchEvent(event);
+      return event;
+    },
+    key: (target, value, init = {}) => {
+      const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...init });
+      target.dispatchEvent(event);
+      return event;
+    },
+    contextmenu: (target, clientX, clientY) => {
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX, clientY }));
+      return Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent ?? '');
+    },
+    editor: () => view.containerEl.querySelector<HTMLTextAreaElement>('textarea.mappy-inline-input'),
+    undo: async () => {
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+      await settle();
+    },
+    redo: async () => {
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+      await settle();
+    },
   };
+}
+
+function menuItem(title: string): HTMLElement {
+  const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
+    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
+  if (!item) throw new Error(`Menu item ${title} is not open`);
+  return item;
 }
 
 describe('MindmapView with free topics', () => {
@@ -189,5 +262,291 @@ describe('MindmapView with free topics', () => {
     expect(readTopicPositions(updated).get('資料: 参考')).toEqual({ mindmap: { x: -360, y: 200 }, timeline: { x: 0, y: 260 } });
     await new Promise(resolve => requestAnimationFrame(resolve));
     expect(view.snapshot()?.document?.source).toBe(updated);
+  });
+});
+
+describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
+  it('double-clicking empty canvas appends `## `, edits it in place where pressed, and Enter stores title and position as one step', async () => {
+    const source = fixtureSource();
+    const mounted = await mount(source);
+    const { view, canvas, store, file, layout, transform, nodes, source: current, settle, dblclick, key, editor, undo, redo } = mounted;
+    const before = documentOf(view);
+    const origin = layout().origin;
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    // Press 300 px right of and 500 px below the canvas corner, in screen pixels.
+    dblclick(canvas, CANVAS.left + 300, CANVAS.top + 500);
+    await settle();
+    expect(current()).toBe(`${source}\n## \n`);
+    const added = projectMap(documentOf(view)).topics.at(-1);
+    if (!added) throw new Error('No topic was added');
+    expect(added.title).toBe('');
+    expect(documentOf(view).nodes).toHaveLength(before.nodes.length + 1);
+    expect(nodes().get(added.id)?.classList.contains('is-topic')).toBe(true);
+    const input = editor();
+    expect(input).not.toBeNull();
+    expect(nodes().get(added.id)?.contains(input)).toBe(true);
+    const expected = {
+      x: Math.round((300 - viewport.x) / viewport.scale - origin.x), y: Math.round((500 - viewport.y) / viewport.scale - origin.y),
+    };
+    expect(transform(added.id)).toEqual({ x: origin.x + expected.x, y: origin.y + expected.y });
+    expect(store.canUndo(file)).toBe(true);
+    if (!input) return;
+    input.value = '新しい話題';
+    key(input, 'Enter');
+    await settle();
+    const saved = current();
+    expect(saved.endsWith('\n## 新しい話題\n')).toBe(true);
+    expect(saved).toContain(`\n  新しい話題: { mindmap: [${expected.x}, ${expected.y}] }\n---\n`);
+    expect(readTopicPositions(saved).get('新しい話題')).toEqual({ mindmap: expected });
+    // The body and the other topics keep their bytes; only the frontmatter key and the new section changed.
+    const bodyOf = (text: string): string => text.slice(text.indexOf('## 講座の本体'), text.indexOf('## 位置のないトピック') + '## 位置のないトピック'.length);
+    expect(bodyOf(saved)).toBe(bodyOf(source));
+    expect(editor()).toBeNull();
+    const named = documentOf(view).nodes.find(node => node.title === '新しい話題');
+    if (!named) throw new Error('The named topic is missing');
+    expect(nodes().get(named.id)?.classList.contains('is-selected')).toBe(true);
+    expect(transform(named.id)).toEqual({ x: origin.x + expected.x, y: origin.y + expected.y });
+    // One history step names and places the topic; the previous one added the empty section.
+    await undo();
+    expect(current()).toBe(`${source}\n## \n`);
+    expect(projectMap(documentOf(view)).topics.at(-1)?.title).toBe('');
+    await undo();
+    expect(current()).toBe(source);
+    expect(store.canUndo(file)).toBe(false);
+    expect(nodes().size).toBe(before.nodes.length);
+    await redo();
+    await redo();
+    expect(current()).toBe(saved);
+    expect(view.snapshot()?.document?.source).toBe(saved);
+  });
+
+  it('stores the pressed point under the current layout: a topic added on the timeline gets a timeline entry only', async () => {
+    const source = fixtureSource();
+    const { view, canvas, source: current, settle, dblclick, key, editor } = await mount(source, 'timeline');
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const origin = (view as unknown as { layout: LayoutResult }).layout.origin;
+    dblclick(canvas, CANVAS.left + 900, CANVAS.top + 100);
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    input.value = '時間軸の話題';
+    key(input, 'Enter');
+    await settle();
+    const expected = { x: Math.round((900 - viewport.x) / viewport.scale - origin.x), y: Math.round((100 - viewport.y) / viewport.scale - origin.y) };
+    expect(readTopicPositions(current()).get('時間軸の話題')).toEqual({ timeline: expected });
+    expect(current()).toContain(`\n  時間軸の話題: { timeline: [${expected.x}, ${expected.y}] }\n---\n`);
+  });
+
+  it('handles heading documents the same way: the drag creates the frontmatter, delete removes it again', async () => {
+    const source = '# Body\n\n## Child\n\n# Topic\n\n### Deep\n';
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, key, topic, undo } = await mount(source);
+    const free = topic('Topic');
+    expect(nodes().get(free.id)?.classList.contains('is-topic')).toBe(true);
+    const origin = layout().origin;
+    const before = transform(free.id);
+    const element = nodes().get(free.id);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 300, 300);
+    pointer('pointermove', canvas, 306, 300);
+    pointer('pointermove', canvas, 380, 340);
+    pointer('pointerup', canvas, 380, 340);
+    await settle();
+    const moved = current();
+    const stored = { x: Math.round(before.x - origin.x + 80), y: Math.round(before.y - origin.y + 40) };
+    expect(moved).toBe(`---\n${TOPICS_KEY}:\n  Topic: { mindmap: [${stored.x}, ${stored.y}] }\n---\n${source}`);
+    expect(documentOf(view).format).toBe('headings');
+    nodes().get(topic('Topic').id)?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    key(canvas, 'Delete');
+    await settle();
+    expect(current()).toBe('---\n---\n# Body\n\n## Child\n');
+    await undo();
+    expect(current()).toBe(moved);
+    await undo();
+    expect(current()).toBe(source);
+  });
+
+  it('Escape keeps the empty section where it was pressed; a later drag stores that position under the empty heading', async () => {
+    const source = fixtureSource();
+    const { view, canvas, layout, transform, source: current, settle, dblclick, key, pointer, editor, nodes, undo } = await mount(source);
+    const origin = layout().origin;
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    // World coordinates of the pressed point: the topic root's top-left lands exactly there.
+    const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    key(input, 'Escape');
+    await settle();
+    expect(current()).toBe(`${source}\n## \n`);
+    expect(editor()).toBeNull();
+    const blank = projectMap(documentOf(view)).topics.at(-1);
+    if (!blank) throw new Error('No blank topic');
+    expect(transform(blank.id)).toEqual(pressed);
+    const element = nodes().get(blank.id);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 400, 400);
+    pointer('pointermove', canvas, 410, 400);
+    pointer('pointermove', canvas, 450, 430);
+    pointer('pointerup', canvas, 450, 430);
+    await settle();
+    expect(readTopicPositions(current()).get('')).toEqual({ mindmap: { x: Math.round(pressed.x - origin.x + 50), y: Math.round(pressed.y - origin.y + 30) } });
+    expect(current().endsWith('\n## \n')).toBe(true);
+    expect(transform(blank.id)).toEqual({ x: pressed.x + 50, y: pressed.y + 30 });
+    await undo();
+    await undo();
+    expect(current()).toBe(source);
+  });
+
+  it('the context menu on empty canvas offers トピックを追加 and on a topic トピックを削除', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, source: current, settle, contextmenu, editor, transform } = await mount(source);
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const items = contextmenu(canvas, CANVAS.left + 200, CANVAS.top + 300);
+    expect(items).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
+    menuItem('トピックを追加').click();
+    await settle();
+    expect(current()).toBe(`${source}\n## \n`);
+    expect(editor()).not.toBeNull();
+    const added = projectMap(documentOf(view)).topics.at(-1);
+    if (!added) throw new Error('No topic');
+    expect(transform(added.id)).toEqual({ x: (200 - viewport.x) / viewport.scale, y: (300 - viewport.y) / viewport.scale });
+    editor()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await settle();
+    const reference = documentOf(view).nodes.find(node => node.title === '参考資料');
+    const child = documentOf(view).nodes.find(node => node.title === '回復する');
+    if (!reference || !child) throw new Error('Missing nodes');
+    expect(contextmenu(nodes().get(reference.id) ?? canvas, 300, 300)).toContain('トピックを削除');
+    document.querySelector('.menu')?.remove();
+    expect(contextmenu(nodes().get(child.id) ?? canvas, 300, 300)).toContain('枝を削除');
+    document.querySelector('.menu')?.remove();
+  });
+
+  it.each(['mindmap', 'timeline'] as const)('dragging a topic in %s moves its whole tree live and stores only that layout\'s entry', async mode => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, topic, undo, redo } = await mount(source, mode);
+    const reference = topic('参考資料');
+    const child = reference.children[0];
+    if (!child) throw new Error('Topic has no child');
+    const rootBefore = transform(reference.id);
+    const childBefore = transform(child.id);
+    const edgeBefore = layout().edges.find(edge => edge.from === reference.id && edge.to === child.id)?.path;
+    const element = nodes().get(reference.id);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 600, 450);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    // Live: root, child and their connector moved by the pointer travel; nothing is saved yet.
+    expect(transform(reference.id)).toEqual({ x: rootBefore.x + 100, y: rootBefore.y + 50 });
+    expect(transform(child.id)).toEqual({ x: childBefore.x + 100, y: childBefore.y + 50 });
+    expect(layout().edges.find(edge => edge.from === reference.id && edge.to === child.id)?.path).not.toBe(edgeBefore);
+    expect(canvas.querySelector('.mappy-drag-ghost')).toBeNull();
+    expect(layout().nodes.some(node => node.id === PLACEHOLDER_ID)).toBe(false);
+    expect(current()).toBe(source);
+    pointer('pointerup', canvas, 600, 450);
+    await settle();
+    const saved = current();
+    const stored = readTopicPositions(source).get('参考資料');
+    const other = mode === 'mindmap' ? 'timeline' : 'mindmap';
+    expect(readTopicPositions(saved).get('参考資料')).toEqual({
+      ...stored, [mode]: { x: (stored?.[mode]?.x ?? 0) + 100, y: (stored?.[mode]?.y ?? 0) + 50 },
+    });
+    expect(readTopicPositions(saved).get('参考資料')?.[other]).toEqual(stored?.[other]);
+    expect(saved.slice(saved.indexOf('---\n', 4))).toBe(source.slice(source.indexOf('---\n', 4)));
+    expect(saved).toContain('  "補足: 用語": { mindmap: [560, -140] }\n  消えた見出し: { mindmap: [0, 0] }\n');
+    expect(transform(reference.id)).toEqual({ x: rootBefore.x + 100, y: rootBefore.y + 50 });
+    await undo();
+    expect(current()).toBe(source);
+    expect(transform(reference.id)).toEqual(rootBefore);
+    await redo();
+    expect(current()).toBe(saved);
+    expect(transform(reference.id)).toEqual({ x: rootBefore.x + 100, y: rootBefore.y + 50 });
+    expect(view.snapshot()?.document?.source).toBe(saved);
+  });
+
+  it('Escape during a drag puts the tree back without saving; a release outside the canvas does the same', async () => {
+    const source = fixtureSource();
+    const { canvas, nodes, transform, source: current, settle, pointer, topic, key } = await mount(source);
+    const reference = topic('参考資料');
+    const before = transform(reference.id);
+    const element = nodes().get(reference.id);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 560, 400);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(transform(reference.id)).toEqual({ x: before.x + 60, y: before.y });
+    key(canvas, 'Escape');
+    await settle();
+    expect(transform(reference.id)).toEqual(before);
+    expect(current()).toBe(source);
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 560, 400);
+    pointer('pointermove', canvas, CANVAS.right + 50, 400);
+    pointer('pointerup', canvas, CANVAS.right + 50, 400);
+    await settle();
+    expect(transform(reference.id)).toEqual(before);
+    expect(current()).toBe(source);
+  });
+
+  it('a first move creates the entry of an unpositioned topic, and a Markdown-side rename falls back to the default slot until the next move', async () => {
+    const source = fixtureSource().replace('## 参考資料', '## 参考資料 v2');
+    const { canvas, nodes, layout, transform, source: current, settle, pointer, topic } = await mount(source);
+    // The old key is an orphan now: the renamed heading sits in the default column under the body.
+    const renamed = topic('参考資料 v2');
+    const unplaced = topic('位置のないトピック');
+    const origin = layout().origin;
+    expect(transform(renamed.id).x).toBe(origin.x);
+    expect(transform(renamed.id).y).toBeGreaterThan(origin.y);
+    for (const node of [renamed, unplaced]) {
+      const element = nodes().get(node.id);
+      if (!element) throw new Error('No element');
+      const before = transform(node.id);
+      pointer('pointerdown', element, 300, 300);
+      pointer('pointermove', canvas, 306, 300);
+      pointer('pointermove', canvas, 340, 280);
+      pointer('pointerup', canvas, 340, 280);
+      await settle();
+      expect(readTopicPositions(current()).get(node.title)).toEqual({ mindmap: { x: Math.round(before.x - origin.x + 40), y: Math.round(before.y - origin.y - 20) } });
+    }
+    const positions = readTopicPositions(current());
+    expect(positions.get('参考資料')).toEqual({ mindmap: { x: -360, y: 200 }, timeline: { x: 0, y: 260 } });
+    expect([...positions.keys()]).toEqual(['参考資料', '補足: 用語', '消えた見出し', '参考資料 v2', '位置のないトピック']);
+    expect(current().slice(current().indexOf('---\n', 4))).toBe(source.slice(source.indexOf('---\n', 4)));
+  });
+
+  it('Delete removes the topic section and its entry together; Undo brings both back and Redo removes them again', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, source: current, settle, key, topic, undo, redo } = await mount(source);
+    const reference = topic('参考資料');
+    nodes().get(reference.id)?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    key(canvas, 'Delete');
+    await settle();
+    const deleted = current();
+    expect(deleted).not.toContain('参考資料');
+    expect(deleted).toContain(`${TOPICS_KEY}:\n  "補足: 用語": { mindmap: [560, -140] }\n  消えた見出し: { mindmap: [0, 0] }\n---\n`);
+    expect(deleted.slice(deleted.indexOf('## 講座の本体'), deleted.indexOf('## 補足: 用語'))).toBe(source.slice(source.indexOf('## 講座の本体'), source.indexOf('## 参考資料')));
+    expect(deleted.slice(deleted.indexOf('## 補足: 用語'))).toBe(source.slice(source.indexOf('## 補足: 用語')));
+    expect(projectMap(documentOf(view)).topics.map(node => node.title)).toEqual(['補足: 用語', '位置のないトピック']);
+    expect(nodes().size).toBe(documentOf(view).nodes.length);
+    await undo();
+    expect(current()).toBe(source);
+    expect(projectMap(documentOf(view)).topics.map(node => node.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック']);
+    expect(nodes().size).toBe(documentOf(view).nodes.length);
+    await redo();
+    expect(current()).toBe(deleted);
+    expect(projectMap(documentOf(view)).topics.map(node => node.title)).toEqual(['補足: 用語', '位置のないトピック']);
+  });
+
+  it('deleting the last topic removes the whole key and the separating blank line, so the note reads as one without topics', async () => {
+    const source = '---\nmappy: true\nmappy-topics:\n  Extra: { mindmap: [100, 100] }\n---\n## Body\n- Child\n\n## Extra\n- Under\n';
+    const { canvas, nodes, source: current, settle, key, topic, undo } = await mount(source);
+    const extra = topic('Extra');
+    nodes().get(extra.id)?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    key(canvas, 'Backspace');
+    await settle();
+    expect(current()).toBe('---\nmappy: true\n---\n## Body\n- Child\n');
+    await undo();
+    expect(current()).toBe(source);
   });
 });
