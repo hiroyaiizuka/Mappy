@@ -102,6 +102,8 @@ function environment(chrome, options) {
     cpu,
     cores: os.cpus().length,
     memoryGb: Math.round(os.totalmem() / 1024 ** 3),
+    /** 1/5/15 minute load averages at the start: other work on the machine adds noise. */
+    loadavg: os.loadavg().map(value => Number(value.toFixed(2))),
     node: process.version,
     chrome: chrome ? chromeVersion(chrome) : 'なし',
     chromePath: chrome ?? null,
@@ -154,7 +156,7 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     '# 性能計測（ブラウザ検証ページ②、headless Chrome）',
     '',
     `- 日時: ${env.at}`,
-    `- 基準端末: ${env.cpu}（${env.cores} コア、${env.memoryGb} GB）、${env.os}、${env.arch}`,
+    `- 基準端末: ${env.cpu}（${env.cores} コア、${env.memoryGb} GB）、${env.os}、${env.arch}。開始時の load average ${env.loadavg.join(' / ')}（1／5／15 分。他の作業が同時に動いていればノイズになる）`,
     `- Node: ${env.node}、Chrome: ${env.chrome}（${env.chromePath}）`,
     `- Chrome フラグ: ${env.chromeFlags}、ウィンドウ ${env.window.width}×${env.window.height}、ペイン ${env.pane.width}×${env.pane.height}、devicePixelRatio 1`,
     `- build: ${env.commit}${env.dirty ? '（未コミットの変更あり）' : ''}（\`npm run harness:browser:build\` の \`dist/harness\`。製品の src/ と core / layout / ui をそのまま読み込む）`,

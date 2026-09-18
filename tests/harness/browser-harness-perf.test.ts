@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildSummary, recordMarkdown, selectFixtures, type PerfEnvironment } from '../../scripts/browser-harness-perf.mjs';
 
 const env: PerfEnvironment = {
-  at: '2026-09-18T00:00:00.000Z', os: 'macOS 26.5.1 (25F80)', arch: 'arm64', cpu: 'Apple M4 Max', cores: 16, memoryGb: 128,
+  at: '2026-09-18T00:00:00.000Z', os: 'macOS 26.5.1 (25F80)', arch: 'arm64', cpu: 'Apple M4 Max', cores: 16, memoryGb: 128, loadavg: [1.5, 2, 2.5],
   node: 'v22.22.3', chrome: 'Google Chrome 153', chromePath: '/Applications/Google Chrome.app', chromeFlags: '--headless=new',
   window: { width: 1640, height: 1000 }, pane: { width: 1280, height: 800 }, commit: 'abc1234', dirty: false,
   options: { repeat: 10, keystrokes: 30, frames: 60 },
@@ -44,7 +44,7 @@ describe('browser-harness-perf', () => {
     const fixtures = selectFixtures({ fixtures: ['performance-500', 'performance-500-japanese'] });
     const summary = buildSummary(fixtures, [load('performance-500', 24)]);
     const record = recordMarkdown({ env, fixtures, summary, notExecuted: ['Obsidian 実機での計測（E10）'], failures: ['performance-500 pan 1: boom'] });
-    expect(record).toContain('Apple M4 Max（16 コア、128 GB）、macOS 26.5.1 (25F80)、arm64');
+    expect(record).toContain('Apple M4 Max（16 コア、128 GB）、macOS 26.5.1 (25F80)、arm64。開始時の load average 1.5 / 2 / 2.5');
     expect(record).toContain('Node: v22.22.3、Chrome: Google Chrome 153');
     expect(record).toContain('build: abc1234（');
     expect(record).toContain('## 段階の定義');

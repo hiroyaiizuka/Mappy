@@ -16,7 +16,7 @@ export interface FixtureSummary {
 }
 export function buildSummary(fixtures: PerformanceFixtureEntry[], samples: Record<string, unknown>[]): FixtureSummary[];
 export interface PerfEnvironment {
-  at: string; os: string; arch: string; cpu: string; cores: number; memoryGb: number; node: string; chrome: string;
+  at: string; os: string; arch: string; cpu: string; cores: number; memoryGb: number; loadavg: number[]; node: string; chrome: string;
   chromePath: string | null; chromeFlags: string; window: { width: number; height: number }; pane: { width: number; height: number };
   commit: string; dirty: boolean; options: { repeat: number; keystrokes: number; frames: number };
 }
