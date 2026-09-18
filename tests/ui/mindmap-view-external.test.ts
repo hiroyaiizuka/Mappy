@@ -28,6 +28,9 @@ const SOURCE = [
 /** What a sync tool or another app writes while a draft is open: a branch the draft does not touch. */
 const EXTERNAL = SOURCE.replace('- 記録する\n', '- 記録する（外部）\n');
 const CONFLICT = 'Markdown が変更されています。マップを更新してから再編集してください。';
+const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
+const NODE_CHANGED = '対象のノードが変更されています。再選択してください。';
+const TEXT_CHANGED = '編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。';
 
 function documentOf(view: MindmapView): MindDocument {
   const document = view.snapshot()?.document;
@@ -121,7 +124,7 @@ function menuItem(title: string): HTMLElement {
 }
 
 /** An external text the draft cannot be applied to: the note is not overwritten and the draft stays open until Escape. */
-async function refused(mounted: Mounted, input: HTMLTextAreaElement, text: string): Promise<void> {
+async function refused(mounted: Mounted, input: HTMLTextAreaElement, text: string, message: string): Promise<void> {
   const { source, key, editor, error, refreshed } = mounted;
   const typed = input.value;
   mounted.external(text);
@@ -130,7 +133,7 @@ async function refused(mounted: Mounted, input: HTMLTextAreaElement, text: strin
   key(input, 'Enter');
   await refreshed();
   expect(source()).toBe(text);
-  expect(error()).not.toBe('');
+  expect(error()).toBe(message);
   expect(editor()).toBe(input);
   expect(input.value).toBe(typed);
   key(input, 'Escape');
@@ -153,11 +156,12 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(editor()).toBe(input);
     expect(input.value).toBe('学ぶこと（編集）');
 
-    // The map refreshes on its own; the draft is still open on the same node.
+    // The map refreshes on its own; the draft is still open on the same node and the error line says what to do now.
     await refreshed();
     expect(labels()).toContain('記録する（外部）');
     expect(documentOf(view).source).toBe(EXTERNAL);
     expect(editor()).toBe(input);
+    expect(error()).toBe(REFRESHED);
 
     // Enter again applies the draft on top of the external text instead of failing forever.
     key(input, 'Enter');
@@ -180,13 +184,54 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   it('keeps the draft and refuses it when the external change removed the node', async () => {
     const mounted = await mount(SOURCE);
     const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
-    await refused(mounted, input, SOURCE.replace('  - 学ぶこと\n', ''));
+    await refused(mounted, input, SOURCE.replace('  - 学ぶこと\n', ''), NODE_CHANGED);
   });
 
   it('never guesses which same-named node a draft belongs to after an external change (E04 × E05)', async () => {
     const mounted = await mount(SOURCE);
     const input = await mounted.draft('同じ名前', '同じ名前（編集）', '二つ目');
-    await refused(mounted, input, EXTERNAL);
+    await refused(mounted, input, EXTERNAL, NODE_CHANGED);
+  });
+
+  it('refuses the draft when the external change renamed the very node being edited, even though its id carried over', async () => {
+    const mounted = await mount(SOURCE);
+    const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+    // A title-only edit keeps the node's id (matched by its unchanged surroundings), so the text itself is what must match.
+    await refused(mounted, input, SOURCE.replace('  - 学ぶこと\n', '  - 学ぶこと（外部）\n'), TEXT_CHANGED);
+    expect(mounted.node('学ぶこと（外部）').title).toBe('学ぶこと（外部）');
+  });
+
+  it('applies the draft to a node that only moved, its title and body unchanged', async () => {
+    const mounted = await mount(SOURCE);
+    const { source, key, editor, refreshed, external } = mounted;
+    const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+    const moved = SOURCE.replace('  - 学ぶこと\n', '').replace('  - 毎日のログ\n', '  - 毎日のログ\n  - 学ぶこと\n');
+    external(moved);
+    await refreshed();
+    key(input, 'Enter');
+    await refreshed();
+    expect(source()).toBe(moved.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n'));
+    expect(editor()).toBeNull();
+  });
+
+  it('refuses a body draft when the external change wrote a body under the same node', async () => {
+    const { source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
+    element(node('学ぶこと').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+    menuItem('本文・リンクを編集').click();
+    await settle();
+    const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
+    if (!input) throw new Error('The body modal did not open');
+    expect(input.value).toBe('');
+    input.value = '新しい本文';
+    const withBody = SOURCE.replace('  - 学ぶこと\n', '  - 学ぶこと\n    外部の本文\n');
+    external(withBody);
+    await refreshed();
+    key(input, 'Enter', { metaKey: true });
+    await refreshed();
+    expect(source()).toBe(withBody);
+    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(TEXT_CHANGED);
+    expect(document.contains(input)).toBe(true);
+    expect(input.value).toBe('新しい本文');
   });
 
   it('applies a body draft kept through an external change once the map has refreshed', async () => {

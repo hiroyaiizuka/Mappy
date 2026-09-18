@@ -97,6 +97,12 @@ export class InlineEditor {
     }
   }
 
+  /** The map re-parsed under a kept draft: the stale conflict line would still tell the user to wait for that. */
+  refreshed(): void {
+    if (this.disposed || !this.error.textContent) return;
+    this.error.setText("Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。");
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

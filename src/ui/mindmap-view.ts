@@ -300,6 +300,7 @@ export class MindmapView extends ItemView {
       this.collapsed = new Set(Array.from(this.collapsed).filter(id => ids.has(id)));
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
       if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
+      this.inlineEditor?.refreshed();
     }
     this.emptyState.hidden = true;
     this.draw();
@@ -752,8 +753,7 @@ export class MindmapView extends ItemView {
         // A topic added on the map is placed where it was pressed by the same edit set that names it.
         const pending = this.pendingTopic?.id === node.id ? this.pendingTopic : null;
         // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
-        // A node whose id did not survive the re-parse (a same-named node, a deleted one) is refused by the plan.
-        const current = this.draftTarget(document, file);
+        const current = this.draftTarget(file, node.id, node.title, (_, item) => item.title);
         const plan = planEdit(current, {
           type: "rename", nodeId: node.id, title: text,
           ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
@@ -783,16 +783,29 @@ export class MindmapView extends ItemView {
     const node = this.selected();
     const document = this.document;
     const file = this.file;
-    if (!node || !document) return;
-    new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
-      const current = this.draftTarget(document, file);
+    if (!node || !document || !file) return;
+    const opened = nodeBody(document, node);
+    new EditModal(this.app, opened, "本文・リンクを編集", true, async text => {
+      const current = this.draftTarget(file, node.id, opened, nodeBody);
       await this.commit(current.source, [planBodyEdit(current, node.id, text)], file);
     }).open();
   }
 
-  /** The note a kept draft applies to: the view's current parse, which an external change may have replaced since the draft opened. */
-  private draftTarget(opened: MindDocument, file: TFile | null): MindDocument {
-    return file === this.file && this.document ? this.document : opened;
+  /**
+   * The note a kept draft applies to once the map has refreshed under it (E05): the view's current parse,
+   * provided the node is still there and the text the draft replaces is what the user saw when it opened.
+   * Ids survive a re-parse only for unique titles, so a same-named or vanished node is refused here, and an
+   * external edit to the very title or body being drafted is refused rather than overwritten.
+   */
+  private draftTarget(
+    file: TFile, nodeId: string, opened: string, edited: (document: MindDocument, node: MindNode) => string,
+  ): MindDocument {
+    const document = this.document;
+    if (file !== this.file || !document) throw new Error("対象のノートが変わりました。元のノートを開いて再実行してください。");
+    const node = nodeId === "root" ? document.root : document.nodes.find(item => item.id === nodeId);
+    if (!node) throw new Error("対象のノードが変更されています。再選択してください。");
+    if (edited(document, node) !== opened) throw new Error("編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。");
+    return document;
   }
 
   async convertToList(): Promise<void> {
