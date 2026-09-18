@@ -1,3 +1,5 @@
+import { placeIssueTree } from "./issue-tree";
+
 /** The layout depends on tree identity and measurements, never Markdown or DOM. */
 export interface LayoutNode {
   readonly id: string;
@@ -37,6 +39,13 @@ export interface LayoutPoint {
 }
 
 /**
+ * mindmap: root on the left, branches to the right. timeline: first level on a
+ * horizontal axis, deeper levels alternating above and below. issue-tree: root on
+ * top, every depth on one row, branches downward (`./issue-tree`).
+ */
+export type LayoutMode = "mindmap" | "timeline" | "issue-tree";
+
+/**
  * A free topic: an independent tree placed beside the body. `position` is its root
  * node's top-left relative to the body root's top-left (`LayoutResult.origin`), so a
  * topic follows the body root when the body grows. Null asks for the default slot
@@ -57,7 +66,8 @@ export interface LayoutResult {
   origin: LayoutPoint;
 }
 
-interface MeasuredNode extends NodeSize {
+/** Tree with sizes resolved and collapsed children removed; `descendantCount` still counts the hidden ones. */
+export interface MeasuredNode extends NodeSize {
   id: string;
   children: MeasuredNode[];
   descendantCount: number;
@@ -101,7 +111,7 @@ function measureTree(
   root: LayoutNode,
   sizes: ReadonlyMap<string, NodeSize>,
   collapsed: ReadonlySet<string>,
-  mode: "mindmap" | "timeline",
+  mode: LayoutMode,
   seen: Set<string>,
 ): MeasuredNode {
   const nodes: MeasuredNode[] = [];
@@ -160,7 +170,7 @@ function place(node: MeasuredNode, x: number, top: number): PositionedNode {
   return { id: node.id, x, y: top + (node.subtreeHeight - node.height) / 2, width: node.width, height: node.height };
 }
 
-function connect(parent: PositionedNode, child: PositionedNode, path: string): LayoutEdge {
+export function connect(parent: PositionedNode, child: PositionedNode, path: string): LayoutEdge {
   return { id: JSON.stringify([parent.id, child.id]), from: parent.id, to: child.id, path };
 }
 
@@ -309,12 +319,13 @@ interface PlacedTree {
 }
 
 /** Place one measured tree with its root's top-left at (x, y). */
-function placeTree(tree: MeasuredNode, x: number, y: number, mode: "mindmap" | "timeline"): PlacedTree {
+function placeTree(tree: MeasuredNode, x: number, y: number, mode: LayoutMode): PlacedTree {
   const nodes: PositionedNode[] = [];
   const edges: LayoutEdge[] = [];
   const folds: FoldPosition[] = [];
   const foldBounds: LayoutBounds[] = [];
   if (mode === "timeline") placeTimeline(tree, x, y, nodes, edges, folds, foldBounds);
+  else if (mode === "issue-tree") placeIssueTree(tree, x, y, nodes, edges, folds, foldBounds);
   else placeRightward(tree, x, y - (tree.subtreeHeight - tree.height) / 2, nodes, edges, folds, foldBounds);
   return { nodes, edges, folds, foldBounds, bounds: boundsOf([...nodes, ...foldBounds]) };
 }
@@ -326,7 +337,8 @@ function intersects(first: LayoutBounds, second: LayoutBounds): boolean {
 
 /** The nearest slot in the column under the body's left edge that no placed rectangle touches. */
 function defaultSlot(size: NodeSize, body: LayoutBounds, occupied: readonly LayoutBounds[]): LayoutPoint {
-  const slot = { x: body.x, y: body.y + body.height + TOPIC_GAP, ...size };
+  // Only the probe's extent matters here; its own x/y (nonzero when the root is centered) must not leak into the slot.
+  const slot = { x: body.x, y: body.y + body.height + TOPIC_GAP, width: size.width, height: size.height };
   for (let guard = 0; guard <= occupied.length; guard += 1) {
     const blocker = occupied.find((area) => intersects(slot, area));
     if (!blocker) break;
@@ -344,12 +356,16 @@ export function layoutTree(
   root: LayoutNode,
   sizes: ReadonlyMap<string, NodeSize>,
   collapsed: ReadonlySet<string>,
-  mode: "mindmap" | "timeline",
+  mode: LayoutMode,
   topics: readonly FreeTopicLayout[] = [],
 ): LayoutResult {
   const seen = new Set<string>();
   const measured = measureTree(root, sizes, collapsed, mode, seen);
-  const origin = { x: 0, y: mode === "timeline" ? -measured.height / 2 : (measured.subtreeHeight - measured.height) / 2 };
+  // The map's forest starts at y = 0, the timeline axis runs through y = 0, and the
+  // issue tree's root is centered on x = 0.
+  const origin = mode === "issue-tree"
+    ? { x: -measured.width / 2, y: 0 }
+    : { x: 0, y: mode === "timeline" ? -measured.height / 2 : (measured.subtreeHeight - measured.height) / 2 };
   const body = placeTree(measured, origin.x, origin.y, mode);
   const placed: (PlacedTree | undefined)[] = [];
   const occupied = [body.bounds];

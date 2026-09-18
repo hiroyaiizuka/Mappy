@@ -10,7 +10,7 @@
 flowchart LR
   E[Obsidian 標準 Markdown エディタ] -->|editor-change| S[文書セッション: 原文と revision]
   S --> P[原文範囲付きツリー]
-  P --> L[マップ / タイムライン配置]
+  P --> L[マップ / タイムライン / イシューツリー配置]
   L --> V[HTML ノード + SVG 接続線]
   V -->|ノード編集コマンド| C[revision 検証と部分変更]
   C -->|Editor.transaction| E
@@ -29,7 +29,8 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/core/commands.ts` / `list-commands.ts` / `body.ts` | rename / add / move / delete / 本文変更 → 原文差分 | 純粋 TypeScript |
 | `src/core/list-conversion.ts` | 旧見出し形式から H2＋箇条書きへの明示変換 | 純粋 TypeScript |
 | `src/core/topics.ts` / `yaml-lite.ts` | frontmatter `mappy-topics` の読み取り（YAML サブセット）と、そのキーだけを差し替える書き込み | 純粋 TypeScript |
-| `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムラインの座標と線 | 純粋 TypeScript |
+| `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムライン／イシューツリーの座標と線。モードの振り分けとフリートピックの配置 | 純粋 TypeScript |
+| `src/layout/issue-tree.ts` | イシューツリー（ルートを上、階層ごとに段揃え）の配置本体 | 純粋 TypeScript |
 | `src/interaction/viewport.ts` | パン・ズーム・Fit の座標計算 | 純粋 TypeScript |
 | `src/core/attachments.ts` / `plain-text.ts` | 本文からのリンク・画像抽出、タイトルの平文化 | `@lezer/markdown` |
 | `src/export/excalidraw-scene.ts` / `src/layout/path-points.ts` | tree＋計測 → 描画 API 非依存のシーン（ブロック・折れ線） | 純粋 TypeScript |
@@ -148,9 +149,17 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 
 `layoutTree` の timeline モードで、第一階層を中央の水平線へ並べ、そのサブツリーを上下交互へ配置する。幹はステージの上辺または下辺の中央から伸ばし、子テキストの中央高さで曲げて左端に止める。深い枝も直角線にする。軸上の線は前のノードの右辺から次の左辺までの区間ごとに描く。
 
-同じ側の枝は包絡矩形を使って間隔を確保し、反対側は横幅を共有する。計測と配置は明示的なスタックで処理し、深い木で再帰スタックに依存しない。長文・画像が混在する実機表示と性能は別途記録する。
+同じ側の枝は包絡矩形を使って間隔を確保し、反対側は横幅を共有する。計測と配置は明示的なスタックで処理し、深い木で再帰スタックに依存しない。長文・画像が混在する実機表示と性能は別途記録する。レイアウト単体の配置時間は `node scripts/measure-layout.mjs` が 10／100／500／2,000 ノードの fixture で 3 モードを計測し、`artifacts/layout-timing/` に記録する。
 
 保存順序・ノード ID・編集コマンドは通常マップと共通。日時比例や工数を扱うものではなく、講座の章立てを表す配置である。レイアウト変更では初期表示用の frontmatter だけを更新し、本文を書き換えない。
+
+## 7b. イシューツリー
+
+`layoutTree` の issue-tree モード（`src/layout/issue-tree.ts`）で、ルートを上に置き、同じ深さのノードを同じ段（行）に揃えて下へ広げる。段の高さはその段で最も高いノードに合わせ、ノードは段の上辺に揃える。段の間隔はルート直下 64px、それ以下 48px。各サブツリーは「ノード幅・折りたたみバッジ幅・子の並びの幅」の最大を横の占有幅として持ち、兄弟は占有幅を 24px の間隔で並べる。親はその子の並びの中央に、子の並びが親より狭ければ子を親の中央に置く。占有幅が重ならない構造にしているため、長い日本語や多数の兄弟でもノードが重ならず、原文の順序がそのまま左→右の順序になる。
+
+線は親の下辺中央から段の間の中央（バス）まで下り、子の上辺中央の真上まで水平に走ってから子へ下りる直角線で、ノードの内側や文字の下へは伸びない。同じ深さの親のバスは同じ高さに揃う。開閉ボタンは展開中はバスと幹の交点、閉じた枝ではノードの 16px 下に置き、非表示の子孫数のバッジ幅を占有幅と Fit の bounds に含める。計測と配置は明示的なスタックで処理し、深さ 2,000 の一列の枝でも再帰しない。
+
+本体のルートは x = 0 を中心に置き（`LayoutResult.origin` はルートの左上）、フリートピックは同じモードの独立した木として本体の下に積む。レイアウトボタン、`mappy-layout: issue-tree` の保存、Excalidraw 挿入への反映は M8 の残項目で、M6 のタイムラインと同じ規則にする。
 
 ## 8. 表裏切替とビューのルーティング
 
