@@ -129,16 +129,25 @@ export class NodeRenderer extends Component {
     }]));
   }
 
+  /**
+   * Reads come first, writes after: a layout read (clientLeft) right after a style
+   * write forces a synchronous reflow of every node, once per fold, so a deep
+   * branch of 2,000 nodes took seconds to place (LEV-45).
+   */
   place(nodes: PositionedNode[], folds: FoldPosition[]): void {
-    const foldPositions = new Map(folds.map(fold => [fold.id, fold]));
+    const junctions = new Map<string, { x: number; y: number }>();
+    for (const fold of folds) {
+      const element = this.entries.get(fold.id)?.element;
+      if (element) junctions.set(fold.id, { x: fold.x - element.clientLeft, y: fold.y - element.clientTop });
+    }
     for (const node of nodes) {
       const entry = this.entries.get(node.id);
       if (!entry) continue;
       entry.element.style.transform = `translate(${node.x}px, ${node.y}px)`;
-      const fold = foldPositions.get(node.id);
-      if (fold) {
-        entry.toggle.style.left = `${fold.x - node.x - entry.element.clientLeft}px`;
-        entry.toggle.style.top = `${fold.y - node.y - entry.element.clientTop}px`;
+      const junction = junctions.get(node.id);
+      if (junction) {
+        entry.toggle.style.left = `${junction.x - node.x}px`;
+        entry.toggle.style.top = `${junction.y - node.y}px`;
       }
     }
   }
