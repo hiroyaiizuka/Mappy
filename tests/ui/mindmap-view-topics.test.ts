@@ -741,6 +741,19 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
   const bind = (view: MindmapView) => ({
     shift: (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view),
     snap: (view as unknown as { snapTarget: Snap }).snapTarget.bind(view),
+    preview: (view as unknown as { previewDrop(command: MoveCommand | null): void }).previewDrop.bind(view),
+  });
+  const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
+  /** Three childless stages: on the timeline the first and third hang their forests above the axis, the second below. */
+  const THREE_STAGES = '## 本体\n\n- 回復する\n- 記録する\n- 習慣化する\n\n## 補足\n\n- 用語\n';
+  /**
+   * The first stage's forest reaches past the third stage in its top row only, so giving that stage a child pushes it
+   * right past the forest while the child's landing spot, under the forest's short bottom row, stays clear.
+   */
+  const DEEP_FOREST = '## 本体\n\n- 回復する\n  - 休息\n    - 深い 1\n      - 深い 2\n  - 睡眠\n- 記録する\n- 習慣化する\n\n## 補足\n\n- 用語\n';
+  /** A root of `size` centred over a timeline stage, 30 units clear of it on one side of the axis, as a hand would bring it. */
+  const stageSpot = (stage: Box, side: 'above' | 'below') => ({
+    x: stage.x + (stage.width - size.width) / 2, y: side === 'above' ? stage.y - 30 - size.height : stage.y + stage.height + 30, ...size,
   });
   const size = { width: 120, height: 40 };
   const placed = (view: MindmapView, node: MindNode | undefined): Box => {
@@ -824,7 +837,7 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     shift(glossary.id, null);
   });
 
-  it('on the timeline, centred on the axis it slots in among the stages by horizontal position, and above or below a leaf stage it becomes its child', async () => {
+  it('on the timeline, centred on the axis it slots in among the stages by horizontal position, and over a leaf stage on its forest\'s side it becomes its child', async () => {
     const source = fixtureSource();
     const { view, topic } = await mount(source, 'timeline');
     const doc = documentOf(view);
@@ -845,13 +858,74 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     // Over the right half of the last stage: after it.
     expect(snap(glossary.id, at(view, { x: last.x + last.width / 2, y: axis - size.height / 2, ...size }), null))
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
-    // Above or below the leaf stage 習慣化する, where its forest would hang: its child.
+    // Above the leaf stage 習慣化する (the third stage hangs its forest above the axis): its child. Below it is nothing.
     expect(snap(glossary.id, at(view, { x: last.x, y: last.y - 30 - size.height, ...size }), null))
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
-    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height + 30, ...size }), null))
-      .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height + 30, ...size }), null)).toBeNull();
     // Right of it on the axis is the next stage's place, not a child's, and too far for "after".
     expect(snap(glossary.id, at(view, { x: last.x + last.width + 60, y: axis - size.height / 2, ...size }), null)).toBeNull();
+    shift(glossary.id, null);
+  });
+
+  it('on the timeline a childless stage takes the topic only on the side its forest hangs: above for even stages, below for odd', async () => {
+    const { view, topic } = await mount(THREE_STAGES, 'timeline');
+    const doc = documentOf(view);
+    const glossary = topic('補足');
+    const record = doc.nodes.find(node => node.title === '記録する');
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!record || !habit) throw new Error('Missing nodes');
+    const { shift, snap } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    const lower = placed(view, record);
+    const upper = placed(view, habit);
+    expect(snap(glossary.id, at(view, stageSpot(lower, 'below')), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: record.id, index: 0 });
+    expect(snap(glossary.id, at(view, stageSpot(lower, 'above')), null)).toBeNull();
+    expect(snap(glossary.id, at(view, stageSpot(upper, 'above')), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    expect(snap(glossary.id, at(view, stageSpot(upper, 'below')), null)).toBeNull();
+    shift(glossary.id, null);
+  });
+
+  it('keeps the slot it shows while its own placeholder shifts the hierarchy row under the root', async () => {
+    const source = fixtureSource();
+    const { view, topic } = await mount(source, 'hierarchy');
+    const doc = documentOf(view);
+    const body = projectMap(doc).root;
+    const glossary = topic('補足: 用語');
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!habit) throw new Error('Missing node');
+    const { shift, snap, preview } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    const last = placed(view, habit);
+    const spot = { x: last.x + last.width / 2, y: last.y, ...size };
+    const command = snap(glossary.id, at(view, spot), null);
+    expect(command).toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
+    // The placeholder joins the row, which re-centres under the root: every sibling moves left by half the added width.
+    preview(command);
+    await frame();
+    expect(placed(view, habit).x).toBeLessThan(last.x - 60);
+    expect(snap(glossary.id, at(view, spot), command)).toBe(command);
+    preview(null);
+    shift(glossary.id, null);
+  });
+
+  it('keeps the slot it shows while its own placeholder pushes the timeline stage right past a forest', async () => {
+    const { view, topic } = await mount(DEEP_FOREST, 'timeline');
+    const doc = documentOf(view);
+    const glossary = topic('補足');
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!habit) throw new Error('Missing node');
+    const { shift, snap, preview } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    const stage = placed(view, habit);
+    const spot = stageSpot(stage, 'above');
+    const command = snap(glossary.id, at(view, spot), null);
+    expect(command).toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    // With a child the stage must clear the first stage's forest on its side, so it jumps right, out from under the root.
+    preview(command);
+    await frame();
+    expect(placed(view, habit).x).toBeGreaterThan(stage.x + 100);
+    expect(snap(glossary.id, at(view, spot), command)).toBe(command);
+    preview(null);
     shift(glossary.id, null);
   });
 

@@ -1,5 +1,6 @@
 import type { DropPosition } from "../core/commands";
 import type { LayoutMode } from "../core/layout-mode";
+import { TIMELINE_STEM_GAP } from "./layout";
 import type { LayoutBounds, PositionedNode } from "./primitives";
 
 /**
@@ -16,6 +17,12 @@ const SNAP_LINE = 24;
 /** A slot beside `targetId`; `distance` orders competing slots (the gap plus the offset across). */
 export interface SnapSlot { targetId: string; position: DropPosition; distance: number }
 
+/**
+ * Where a node hangs on the timeline: the root, a stage whose forest goes above or below the axis
+ * (`placeTimeline` alternates by stage index), or a node inside a forest. The other layouts ignore it.
+ */
+export type TimelinePlace = "root" | "upper" | "lower" | "forest";
+
 type Axis = "x" | "y";
 /** A side of a node on which its children hang. */
 type Side = "right" | "below" | "above";
@@ -26,8 +33,12 @@ function span(box: LayoutBounds, axis: Axis): { from: number; to: number; mid: n
   return { from, to: from + size, mid: from + size / 2 };
 }
 
-/** Where a leaf's first child would go: the root's near edge within the gap range, overlapping the node across. */
-function beside(rect: LayoutBounds, node: PositionedNode, side: Side, widen: number): SnapSlot | null {
+/**
+ * Where a leaf's first child would go: the root's near edge within the gap range, overlapping the node
+ * across. Competing slots rank by how far the root sits from the child's landing place across the gap:
+ * centred on the node unless `landing` says where the layout hangs the child's near edge instead.
+ */
+function beside(rect: LayoutBounds, node: PositionedNode, side: Side, widen: number, landing?: (node: PositionedNode) => number): SnapSlot | null {
   const gap = side === "right" ? rect.x - (node.x + node.width)
     : side === "below" ? rect.y - (node.y + node.height)
       : node.y - (rect.y + rect.height);
@@ -37,7 +48,8 @@ function beside(rect: LayoutBounds, node: PositionedNode, side: Side, widen: num
   const other = span(node, across);
   const pad = SNAP_PAD * widen;
   if (own.to < other.from - pad || own.from > other.to + pad) return null;
-  return { targetId: node.id, position: "inside", distance: Math.abs(gap) + Math.abs(own.mid - other.mid) };
+  const offset = landing ? own.from - landing(node) : own.mid - other.mid;
+  return { targetId: node.id, position: "inside", distance: Math.abs(gap) + Math.abs(offset) };
 }
 
 /**
@@ -48,12 +60,15 @@ function beside(rect: LayoutBounds, node: PositionedNode, side: Side, widen: num
 function among(
   rect: LayoutBounds, kids: readonly PositionedNode[], axis: Axis, lineOf: (box: LayoutBounds) => number, widen: number,
 ): SnapSlot | null {
+  const any = kids[0];
+  if (!any) return null;
+  // Every child shares the line, so the cheap test comes before sorting a wide row.
+  const drift = Math.abs(lineOf(rect) - lineOf(any));
+  if (drift > SNAP_LINE * widen) return null;
   const sorted = [...kids].sort((left, right) => span(left, axis).from - span(right, axis).from);
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
   if (!first || !last) return null;
-  const drift = Math.abs(lineOf(rect) - lineOf(first));
-  if (drift > SNAP_LINE * widen) return null;
   const pad = SNAP_PAD * widen;
   const centre = span(rect, axis).mid;
   if (centre < span(first, axis).from - pad || centre > span(last, axis).to + pad) return null;
@@ -62,29 +77,29 @@ function among(
   return next ? { targetId: next.id, position: "before", distance } : { targetId: last.id, position: "after", distance };
 }
 
-function nearer(first: SnapSlot | null, second: SnapSlot | null): SnapSlot | null {
-  if (!first || !second) return first ?? second;
-  return second.distance < first.distance ? second : first;
+/** A stage's forest starts a stem's length right of its centre; the root's left edge is measured against that column. */
+function stageLanding(stage: PositionedNode): number {
+  return stage.x + stage.width / 2 + TIMELINE_STEM_GAP;
 }
 
 /**
  * The slot the root of a dragged tree (`rect`) would take beside `node`, whose visible children are
- * `kids` and whose depth in its own tree is `depth`, or null when the root is not in the node's zone.
- * The zones follow each layout's geometry. With no children, the root joins as the last child when
- * it sits where the first child would go: right of the node in the map and in the timeline's forests,
- * below it in the hierarchy, above or below a timeline stage. With children, it slots in among them
+ * `kids`, or null when the root is not in the node's zone. The zones follow each layout's geometry.
+ * With no children, the root joins as the last child when it sits where the first child would go:
+ * right of the node in the map and in the timeline's forests, below it in the hierarchy, and on the
+ * side of the axis a timeline stage's forest takes (`place`). With children, it slots in among them
  * by position along the line they share (a column, a row, or the timeline axis) when it lines up
  * with them across it. `widen` stretches every zone, so the slot already shown is kept a while.
  */
 export function snapSlot(
-  mode: LayoutMode, rect: LayoutBounds, node: PositionedNode, kids: readonly PositionedNode[], depth: number, widen = 1,
+  mode: LayoutMode, rect: LayoutBounds, node: PositionedNode, kids: readonly PositionedNode[], widen = 1, place: TimelinePlace = "forest",
 ): SnapSlot | null {
   if (kids.length === 0) {
     if (mode === "hierarchy") return beside(rect, node, "below", widen);
-    if (mode === "timeline" && depth === 1) return nearer(beside(rect, node, "above", widen), beside(rect, node, "below", widen));
+    if (mode === "timeline" && (place === "upper" || place === "lower")) return beside(rect, node, place === "upper" ? "above" : "below", widen, stageLanding);
     return beside(rect, node, "right", widen);
   }
   if (mode === "hierarchy") return among(rect, kids, "x", box => box.y, widen);
-  if (mode === "timeline" && depth === 0) return among(rect, kids, "x", box => box.y + box.height / 2, widen);
+  if (mode === "timeline" && place === "root") return among(rect, kids, "x", box => box.y + box.height / 2, widen);
   return among(rect, kids, "y", box => box.x, widen);
 }

@@ -32,49 +32,55 @@ describe("snapSlot zones follow each layout's geometry", () => {
   });
 
   it("widening stretches the gap, the overlap and the slack, which keeps the slot already shown", () => {
-    expect(snapSlot("mindmap", rect(260 + 130, 100), leaf, [], 1, 2)?.position).toBe("inside");
-    expect(snapSlot("mindmap", rect(260 + 145, 100), leaf, [], 1, 2)).toBeNull();
-    expect(snapSlot("mindmap", rect(300, 100 - 40 - 24), leaf, [], 1, 2)?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(260 + 130, 100), leaf, [], 2)?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(260 + 145, 100), leaf, [], 2)).toBeNull();
+    expect(snapSlot("mindmap", rect(300, 100 - 40 - 24), leaf, [], 2)?.position).toBe("inside");
   });
 
   it("among children the root must line up with their shared edge and reach along them", () => {
     const parent = node("parent", 0, 100);
     const column = [node("a", 240, 0), node("b", 240, 66), node("c", 240, 132)];
-    expect(snapSlot("mindmap", rect(240, 44), parent, column, 0)).toEqual({ targetId: "b", position: "before", distance: 2 });
-    expect(snapSlot("mindmap", rect(240 + 24, 44), parent, column, 0)?.targetId).toBe("b");
-    expect(snapSlot("mindmap", rect(240 + 25, 44), parent, column, 0)).toBeNull();
-    expect(snapSlot("mindmap", rect(240, 132 + 22), parent, column, 0)).toEqual({ targetId: "c", position: "after", distance: 2 });
-    expect(snapSlot("mindmap", rect(240, 176 + 12 - 20), parent, column, 0)?.position).toBe("after");
-    expect(snapSlot("mindmap", rect(240, 176 + 13 - 20), parent, column, 0)).toBeNull();
+    expect(snapSlot("mindmap", rect(240, 44), parent, column)).toEqual({ targetId: "b", position: "before", distance: 2 });
+    expect(snapSlot("mindmap", rect(240 + 24, 44), parent, column)?.targetId).toBe("b");
+    expect(snapSlot("mindmap", rect(240 + 25, 44), parent, column)).toBeNull();
+    expect(snapSlot("mindmap", rect(240, 132 + 22), parent, column)).toEqual({ targetId: "c", position: "after", distance: 2 });
+    expect(snapSlot("mindmap", rect(240, 176 + 12 - 20), parent, column)?.position).toBe("after");
+    expect(snapSlot("mindmap", rect(240, 176 + 13 - 20), parent, column)).toBeNull();
     // The hierarchy's row: the same rule with the axes swapped, lined up on the row's top edge.
     const row = [node("a", 0, 200), node("b", 184, 200), node("c", 368, 200)];
-    expect(snapSlot("hierarchy", rect(160 - 60, 200), parent, row, 0)).toEqual({ targetId: "b", position: "before", distance: 24 });
-    expect(snapSlot("hierarchy", rect(100, 200 + 25), parent, row, 0)).toBeNull();
-    expect(snapSlot("hierarchy", rect(368 + 80, 200), parent, row, 0)).toEqual({ targetId: "c", position: "after", distance: 20 });
+    expect(snapSlot("hierarchy", rect(160 - 60, 200), parent, row)).toEqual({ targetId: "b", position: "before", distance: 24 });
+    expect(snapSlot("hierarchy", rect(100, 200 + 25), parent, row)).toBeNull();
+    expect(snapSlot("hierarchy", rect(368 + 80, 200), parent, row)).toEqual({ targetId: "c", position: "after", distance: 20 });
     // Sorted by position, not by the order given.
-    expect(snapSlot("hierarchy", rect(100, 200), parent, [...row].reverse(), 0)?.targetId).toBe("b");
+    expect(snapSlot("hierarchy", rect(100, 200), parent, [...row].reverse())?.targetId).toBe("b");
   });
 
-  it("on the timeline the root's stages line up by centre on the axis and a leaf stage takes a child above or below", () => {
+  it("on the timeline the root's stages line up by centre on the axis, and a childless stage takes a child on its forest's side", () => {
     const root = node("root", 0, -22);
     const stages = [node("s1", 192, -22), node("s2", 384, -30, 160, 60), node("s3", 576, -22)];
-    expect(snapSlot("timeline", rect(368 - 60, -20), root, stages, 0)).toEqual({ targetId: "s2", position: "before", distance: 16 });
-    expect(snapSlot("timeline", rect(368 - 60, -20 + 24), root, stages, 0)?.targetId).toBe("s2");
-    expect(snapSlot("timeline", rect(368 - 60, -20 + 25), root, stages, 0)).toBeNull();
-    // The same row judged as a map node's children is a column and does not match.
-    expect(snapSlot("timeline", rect(368 - 60, -20), root, stages, 2)).toBeNull();
+    expect(snapSlot("timeline", rect(368 - 60, -20), root, stages, 1, "root")).toEqual({ targetId: "s2", position: "before", distance: 16 });
+    expect(snapSlot("timeline", rect(368 - 60, -20 + 24), root, stages, 1, "root")?.targetId).toBe("s2");
+    expect(snapSlot("timeline", rect(368 - 60, -20 + 25), root, stages, 1, "root")).toBeNull();
+    // The same row judged as a forest node's children is a column and does not match.
+    expect(snapSlot("timeline", rect(368 - 60, -20), root, stages, 1, "forest")).toBeNull();
+    // An even stage hangs its forest above the axis, an odd one below; the other side is nothing.
     const stage = node("s3", 576, -22);
-    const above = snapSlot("timeline", rect(576, -22 - 30 - 40), stage, [], 1);
-    const below = snapSlot("timeline", rect(576, 22 + 30), stage, [], 1);
-    expect(above).toEqual({ targetId: "s3", position: "inside", distance: 30 + 20 });
-    expect(below).toEqual(above);
-    expect(snapSlot("timeline", rect(576 + 160 + 30, -22), stage, [], 1)).toBeNull();
+    const above = rect(576, -22 - 30 - 40);
+    const below = rect(576, 22 + 30);
+    expect(snapSlot("timeline", above, stage, [], 1, "upper")?.position).toBe("inside");
+    expect(snapSlot("timeline", below, stage, [], 1, "upper")).toBeNull();
+    expect(snapSlot("timeline", below, stage, [], 1, "lower")?.position).toBe("inside");
+    expect(snapSlot("timeline", above, stage, [], 1, "lower")).toBeNull();
+    // The forest starts a stem's length right of the stage's centre, so the root's left edge is scored against that column.
+    expect(snapSlot("timeline", above, stage, [], 1, "upper")?.distance).toBe(30 + Math.abs(576 - (576 + 80 + 20)));
+    expect(snapSlot("timeline", rect(576 + 80 + 20, -22 - 30 - 40), stage, [], 1, "upper")).toEqual({ targetId: "s3", position: "inside", distance: 30 });
+    expect(snapSlot("timeline", rect(576 + 160 + 30, -22), stage, [], 1, "upper")).toBeNull();
     // A collapsed root has no stage yet: the first goes right of it, like a map child.
-    expect(snapSlot("timeline", rect(160 + 30, -22), root, [], 0)?.position).toBe("inside");
+    expect(snapSlot("timeline", rect(160 + 30, -22), root, [], 1, "root")?.position).toBe("inside");
     // Deeper nodes hang in a rightward forest: right of a leaf, in a column under a parent.
     const branch = node("branch", 292, -158);
-    expect(snapSlot("timeline", rect(292 + 160 + 30, -158), branch, [], 2)?.position).toBe("inside");
-    expect(snapSlot("timeline", rect(508, -100), branch, [node("k1", 508, -158), node("k2", 508, -100)], 2))
+    expect(snapSlot("timeline", rect(292 + 160 + 30, -158), branch, [], 1, "forest")?.position).toBe("inside");
+    expect(snapSlot("timeline", rect(508, -100), branch, [node("k1", 508, -158), node("k2", 508, -100)], 1, "forest"))
       .toEqual({ targetId: "k2", position: "before", distance: 20 });
   });
 });
