@@ -12,6 +12,8 @@ export interface MapActions {
   history: (direction: "undo" | "redo") => void;
   attach: (file: File) => void;
   link: (link: string, newLeaf: boolean) => void;
+  /** Empty canvas double-clicked at this canvas-relative point: add a free topic there (§5 M7). */
+  addTopic: (point: { x: number; y: number }) => void;
 }
 
 export class MapEvents extends Component {
@@ -40,9 +42,12 @@ export class MapEvents extends Component {
     });
     this.registerDomEvent(this.canvas, "dblclick", event => {
       const target = this.element(event.targetNode);
-      if (target?.closest("a,button")) return;
-      const id = target?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-      if (id) { this.actions.select(id); this.actions.edit(); }
+      if (!target || target.closest("a, button, input, textarea, .mappy-floating, [data-drop-placeholder], .mappy-drag-ghost")) return;
+      const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      if (id) { this.actions.select(id); this.actions.edit(); return; }
+      event.preventDefault();
+      const rect = this.canvas.getBoundingClientRect();
+      this.actions.addTopic({ x: event.clientX - rect.left, y: event.clientY - rect.top });
     });
     this.registerDomEvent(this.canvas, "keydown", event => { this.keydown(event); });
     // Node moves use pointer events (NodeDrag); HTML5 drag and drop only brings files in.

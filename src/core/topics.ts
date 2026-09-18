@@ -1,5 +1,5 @@
 import type { TextEdit } from './commands';
-import { frontmatterLayout, projectMap, type MindDocument } from './markdown';
+import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
 
 /**
@@ -105,22 +105,43 @@ export function planTopicMove(doc: MindDocument, title: string, layout: string, 
   return planTopicPositions(doc, positions);
 }
 
+/** One layout's position for a heading, as the rename command receives it from the view. */
+export interface TopicPlacement { layout: string; x: number; y: number }
+
 /**
  * Carry a free topic's positions over to its new heading text, in place, so a rename is
  * one edit set. Another current topic that already owns the new text keeps its entry.
+ * `place` also stores one layout position under the new text: a topic added on the map
+ * is placed where it was pressed by the same edit set that names it.
  */
-export function planTopicRename(doc: MindDocument, from: string, to: string): TextEdit | null {
+export function planTopicRename(doc: MindDocument, from: string, to: string, place?: TopicPlacement): TextEdit | null {
   const { topics } = projectMap(doc);
-  if (from === to || !topics.some((topic) => topic.title === from)) return null;
+  if (!topics.some((topic) => topic.title === from)) return null;
+  if (place && !LAYOUT_PATTERN.test(place.layout)) throw new Error('レイアウト名が不正です。');
+  if (place && (!Number.isFinite(place.x) || !Number.isFinite(place.y))) throw new Error('トピックの位置が不正です。');
   const positions = readTopicPositions(doc.source);
-  const moved = positions.get(from);
-  if (!moved) return null;
-  const taken = positions.has(to) && topics.some((topic) => topic.title === to);
+  if (!positions.has(from) && !place) return null;
+  const taken = from !== to && positions.has(to) && topics.some((topic) => topic.title === to);
   const renamed: TopicPositionMap = new Map();
   for (const [title, layouts] of positions) {
     if (title === from) { if (!taken) renamed.set(to, layouts); continue; }
     if (title === to && !taken) continue;
     renamed.set(title, layouts);
   }
+  if (place && !taken) renamed.set(to, { ...(renamed.get(to) ?? {}), [place.layout]: { x: place.x, y: place.y } });
   return planTopicPositions(doc, renamed);
+}
+
+/**
+ * Drop the entry of a topic that is being deleted, so its section and its position leave in
+ * one edit set and return together on Undo. Another current topic with the same heading keeps
+ * the entry; entries of headings that no longer exist stay as they are read.
+ */
+export function planTopicRemoval(doc: MindDocument, node: MindNode): TextEdit | null {
+  const { topics } = projectMap(doc);
+  if (!topics.some((topic) => topic.id === node.id)) return null;
+  if (topics.some((topic) => topic.id !== node.id && topic.title === node.title)) return null;
+  const positions = readTopicPositions(doc.source);
+  if (!positions.delete(node.title)) return null;
+  return planTopicPositions(doc, positions);
 }

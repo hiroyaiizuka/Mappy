@@ -93,6 +93,8 @@
 .mappy-view .mappy-nodes { user-select: none; -webkit-user-select: none; }
 /* No cursor change while dragging: cursor is inherited, so setting it on the canvas would restyle every node. */
 .mappy-view .mappy-node.is-drag-source { opacity: 0.35; }
+/* A free topic drags its own tree (no ghost); its root is lifted while the pointer holds it. */
+.mappy-view .mappy-node.is-drag-moving { box-shadow: var(--shadow-s); }
 .mappy-view .mappy-drag-ghost {
   position: absolute;
   left: 0;
