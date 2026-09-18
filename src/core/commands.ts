@@ -161,8 +161,9 @@ function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicP
     || updated.level !== node.level || updated.title !== title.trim()) {
     throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
   }
-  // A free topic's stored position follows its heading text within the same edit set.
-  const key = planTopicRename(doc, node.title, updated.title, place);
+  // A free topic's stored position follows its heading text within the same edit set. Only the topic
+  // itself carries its entry: a list item or the body root that happens to share a topic's text does not.
+  const key = projectMap(doc).topics.some((topic) => topic.id === node.id) ? planTopicRename(doc, node.title, updated.title, place) : null;
   if (!key) return { edits: [edit], selectionOffset: updated.titleFrom };
   const delta = key.text.length - (key.to - key.from);
   const combined = parseMarkdown(applyEdits(doc.source, [key, edit]), doc.root.title, undefined, doc.format);

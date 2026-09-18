@@ -227,6 +227,17 @@ describe('rename keeps the topic key in step', () => {
     expect(planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'A' }).edits).toHaveLength(1);
   });
 
+  it('leaves the entry alone when a node that merely shares a topic\'s text is renamed', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- A\n\n## A\n- Under A\n`);
+    const item = doc.nodes.find((node) => node.title === 'A' && node.kind === 'list');
+    if (!item) throw new Error('Missing item');
+    const plan = planEdit(doc, { type: 'rename', nodeId: item.id, title: 'B' });
+    expect(plan.edits).toHaveLength(1);
+    expect(applyEdits(doc.source, plan.edits)).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- B\n\n## A\n- Under A\n`);
+    const placed = planEdit(doc, { type: 'rename', nodeId: item.id, title: 'B', position: { layout: 'mindmap', x: 5, y: 5 } });
+    expect(placed.edits).toHaveLength(1);
+  });
+
   it('never takes the position of another current topic, but replaces an orphan entry under the new name', () => {
     const doc = parse(note);
     const collided = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'Other' }).edits);
