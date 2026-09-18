@@ -22,13 +22,13 @@ describe('pathToPoints', () => {
     expect(() => pathToPoints('H 5')).toThrow(/current point/u);
   });
 
-  it('accepts every edge produced by layoutTree in both modes', () => {
+  it('accepts every edge produced by layoutTree in every mode', () => {
     const tree = { id: 'r', children: [
       { id: 'a', children: [{ id: 'a1', children: [] }, { id: 'a2', children: [] }] },
       { id: 'b', children: [{ id: 'b1', children: [] }] },
     ] };
     const sizes = new Map([['r', { width: 100, height: 40 }], ['a', { width: 80, height: 30 }]]);
-    for (const mode of ['mindmap', 'timeline'] as const) {
+    for (const mode of ['mindmap', 'timeline', 'hierarchy'] as const) {
       const layout = layoutTree(tree, sizes, new Set(), mode);
       for (const edge of layout.edges) expect(pathToPoints(edge.path).length).toBeGreaterThanOrEqual(2);
     }
