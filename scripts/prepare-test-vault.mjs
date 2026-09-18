@@ -10,6 +10,7 @@ import {
   readSafeFile,
   runPreflight,
 } from './preflight.mjs';
+import { makePerformanceFixture, performanceNodeCounts } from './performance-fixtures.mjs';
 
 function ensureDirectory(paths, directory) {
   assertSafePath(paths.root, directory, 'directory', { optional: true });
@@ -34,16 +35,6 @@ function writeGeneratedFile(paths, filename, contents) {
   }
 }
 
-function makePerformanceFixture(nodeCount) {
-  const headings = [`# 講座（${nodeCount}ノード）`];
-  for (let index = 1; index < nodeCount; index += 1) {
-    headings.push((index - 1) % 20 === 0
-      ? `## 第${Math.floor((index - 1) / 20) + 1}節`
-      : `### 子ノード ${index}`);
-  }
-  return [`performance-${nodeCount}.md`, `${headings.join('\n\n')}\n`];
-}
-
 try {
   if (process.argv.length !== 2) {
     throw new Error('Usage: node scripts/prepare-test-vault.mjs (no arguments).');
@@ -58,7 +49,7 @@ try {
   if (!fixtures.some(([filename]) => filename.endsWith('.md'))) {
     throw new Error('No Markdown fixtures found in tests/fixtures.');
   }
-  const performanceFixtures = [10, 100, 500, 2000].map(makePerformanceFixture);
+  const performanceFixtures = performanceNodeCounts.map(makePerformanceFixture);
   const reservedNames = new Set(performanceFixtures.map(([filename]) => filename));
   if (fixtures.some(([filename]) => reservedNames.has(filename))) {
     throw new Error('performance-N.md fixture names are reserved for generated performance documents.');

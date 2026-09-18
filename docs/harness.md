@@ -2,7 +2,7 @@
 
 ## 現在の範囲
 
-AI エージェントと人間が同じ条件で開発・検証するため、自動検査、テスト用データ、専用 Vault、成果物一致の確認、実装時の規約を用意している。製品 UI は試作段階で、Markdown parser・保存・レイアウト・DOM 操作の回帰テストを実装済み。専用 Obsidian 環境での確認を進めている。
+AI エージェントと人間が同じ条件で開発・検証するため、自動検査、テスト用データ、専用 Vault、Obsidian 非依存のブラウザ検証ページ、成果物一致の確認、実装時の規約を用意している。製品 UI は試作段階で、Markdown parser・保存・レイアウト・DOM 操作の回帰テストを実装済み。専用 Obsidian 環境での確認を進めている。
 
 件数・バンドルサイズ・実機の PASS/FAIL をこの文書に固定せず、実行日時とビルドのハッシュを付けた `artifacts/` の記録で追う。GitHub 上の CI、ネイティブ IME、モバイル、性能計測、長時間利用の検証は、個別の証跡が揃うまで未完了として扱う。
 
@@ -16,8 +16,10 @@ AI エージェントと人間が同じ条件で開発・検証するため、�
 | 配布物 | `npm run package` | `dist/mappy/` の必要ファイルと元ビルドとの一致 |
 | Vault 初期準備 | `npm run harness:prepare` | `check` 後、生成専用 Vault に配布物・fixture を配置。既知の fixture を初期化する |
 | 実機前確認 | `npm run harness:preflight` | root / dist / 検証 Vault の SHA256、一致する ID/version、有効プラグイン |
+| ブラウザ検証ページ | `npm run harness:browser` | Obsidian なしで製品の map view を動かす。表示崩れ、ポインター操作、ズーム、ペインサイズ（下記②） |
+| ブラウザ撮影 | `npm run harness:browser:capture` | headless Chrome で fixture 表示と主要操作を実行し、スクリーンショットと時刻を `artifacts/browser-harness/` に記録 |
 
-まとめて実行するコマンドは `npm run check`。ローカルと GitHub Actions で同じコマンドを使う。CI は成果物を artifact に保存するだけで、公開を行わない。Git hook は任意の `npm run hooks:install` で有効にする。
+まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。CI は成果物を artifact に保存するだけで、公開を行わない。Git hook は任意の `npm run hooks:install` で有効にする。
 
 ## lint の対象を明確にする
 
@@ -58,9 +60,20 @@ Vitest の Node 環境で検証する。乱択・property-based test は、保�
 
 ### DOM とブラウザ
 
-jsdom を導入し、製品の DOM 操作・インライン入力・キー操作を検証している。composition イベントを送るテストは変換中のキー制御を検証するもので、OS の日本語 IME で入力した結果ではない。DOM の実測サイズ、フォント、画像遅延、ポインター操作、ズームの見た目は実ブラウザ／Obsidian で確認する。
+jsdom を導入し、製品の DOM 操作・インライン入力・キー操作を検証している。composition イベントを送るテストは変換中のキー制御を検証するもので、OS の日本語 IME で入力した結果ではない。DOM の実測サイズ、フォント、画像遅延、ポインター操作、ズームの見た目は、下記②のブラウザ検証ページと③の Obsidian 実機で確認する。
 
-Obsidian に依存しないブラウザ検証ページは未実装。追加する場合は製品の core / layout / interaction を読み込んで同じ実装を動かし、10／100／500／2,000 ノードの描画・入力反映時間を記録する場とする。モックで成功することを Obsidian の保存・リンク解決・テーマでの成功と呼ばない。Obsidian 実機の確認（下記 E01〜E28）が E2E に相当し、このページはその代替ではない。
+### ② ブラウザ検証ページ（Obsidian 非依存）
+
+`harness/browser/` にあるページで、製品の `src/ui/mindmap-view.ts`・`node-renderer.ts`・`map-viewport.ts`・`map-events.ts`・`inline-editor.ts` と `core` / `layout` / `interaction` / `document-store.ts` をそのまま読み込む。`obsidian` モジュールだけを `harness/browser/obsidian.ts`（`tests/mocks/obsidian.ts` と同系統のモック。Component・ItemView・Menu・Modal・Notice・setIcon・MarkdownRenderer の最小実装）に差し替え、Obsidian が起動時に生やす DOM ヘルパー（`createDiv`、`addClass`、`event.targetNode` など）は `harness/browser/dom.ts` が同じ形で prototype に載せる。Vault・workspace・metadataCache・fileManager は `harness/browser/app.ts` のメモリ内実装で、ファイルへは何も書かない。
+
+- 起動: `npm run harness:browser` で `dist/harness/` をビルド・監視し、`http://127.0.0.1:8765/` で配信する（`--port` で変更）。`npm run harness:browser:build` は一度だけビルドし、`dist/harness/index.html` を `file://` で直接開ける。ビルドは製品と同じ esbuild を使い、ランタイム依存を追加しない。
+- fixture: `tests/fixtures/` の `heading-document`（従来の見出し形式・リンク・画像）、`roundtrip-edge-cases`（同名見出し・コードブロック・欠落画像）、`uneven-branches`（H2＋リスト、8 段の一列の枝、24 兄弟、長い日本語、リンク・画像・コードブロック、同名ノード）と、`scripts/performance-fixtures.mjs` が生成する 10／100／500／2,000 ノード。`harness:prepare` が `test-vault/Fixtures/` に置く文書と同一で、ページ左の select か `?fixture=<id>` で切り替える。
+- 操作: 選択（クリック・矢印キー）、開閉（分岐点の − と Space）、パン（背景ドラッグ・ホイール）、ズーム（Ctrl/⌘＋ホイール、ピンチ、右下の −／倍率／＋／全体表示）、レイアウト切替、右クリックメニュー、ペインのサイズ変更（プリセット、数値、右下の角のドラッグ。変更ごとに製品の `onResize()` を呼ぶ）、「閉じて開き直す」（`onClose`→`unload`→新しい view）。Enter／Tab／F2／Delete と右クリックの編集はメモリ内の文書に対して動くが、保存経路の検証ではない。
+- 時刻の記録: fixture 切替ごとに `parseMarkdown` 単体、`setState` 完了、最初の描画フレーム、位置が 3 フレーム安定するまでの経過 ms をページ左の一覧と `window.__mappyHarness.timings`、Performance タイムラインの `mappy:load:<id>` に残す。基準端末・条件・p95 を伴う計測基盤はこの層の範囲外で、別途整備する。
+- 自動撮影: `npm run harness:browser:capture` は headless Chrome（`--chrome <path>` か `MAPPY_CHROME`、既定はインストール済みの Google Chrome）を DevTools Protocol で操作し、全 fixture の Fit 表示と、`uneven-branches` での選択・矢印キー・開閉・パン・ホイール・Ctrl＋ホイール・ズームボタン・タイムライン・640×480／390×700 のサイズ変更・右クリックメニュー・内部リンククリック・F2 入力→Enter→⌘Z（メモリ内の改名と Undo）・閉じて開き直し、`performance-2000` の開閉を実行する。各ケースの PASS／FAIL、時刻、全画面とペイン 2 倍のスクリーンショットを `artifacts/browser-harness/<日時>/record.md` に書く。Chrome がなければ未実施と書いた record だけを残して終了コード 2 になる。
+- 対象外: 保存（Vault・Editor への書き込み）、リンク解決（クリックは通知と記録だけ）、テーマ（`harness.css` の CSS 変数は仮の値）、日本語 IME（合成イベントは OS の変換ではない）、トラックパッドとモバイルの実入力。これらは③で確認する。
+
+このページでの成功を Obsidian の保存・リンク解決・テーマでの成功と呼ばない。Obsidian 実機の確認（下記 E01〜E28）が E2E に相当し、このページはその代替ではない。
 
 ### Obsidian 実機の初回準備
 
