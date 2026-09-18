@@ -15,6 +15,13 @@ function gapBelow(parentDepth: number): number {
   return parentDepth === 0 ? ROOT_GAP : ROW_GAP;
 }
 
+/** A node's depth in the source tree; an id the tree does not know is a broken test, not a non-root. */
+function depthIn(depths: ReadonlyMap<string, number>, id: string): number {
+  const depth = depths.get(id);
+  if (depth === undefined) throw new Error(`Unknown node ${id}`);
+  return depth;
+}
+
 function node(id: string, ...children: LayoutNode[]): LayoutNode {
   return { id, children };
 }
@@ -126,7 +133,7 @@ function expectHierarchy(result: LayoutResult, root: LayoutNode, collapsed: Read
     }
   }
 
-  // Order: preorder of the visible tree is left-to-right within each row.
+  // Order: preorder of the visible tree is left-to-right among the nodes of one depth.
   const lastXByDepth = new Map<number, number>();
   for (const id of preorder(root, collapsed)) {
     const item = positions.get(id);
@@ -227,7 +234,7 @@ describe("hierarchy layout", () => {
       const child = positions.get(edge.to);
       expect(parent && child).toBeTruthy();
       if (!parent || !child) continue;
-      const gap = gapBelow(depthOf.get(parent.id) ?? -1);
+      const gap = gapBelow(depthIn(depthOf, parent.id));
       const busY = parent.y + parent.height + gap / 2;
       expect(edge.path).toBe(`M ${centerX(parent)} ${parent.y + parent.height} V ${busY} H ${centerX(child)} V ${child.y}`);
       expect(child.y).toBe(busY + gap / 2);
@@ -323,7 +330,7 @@ describe("hierarchy layout", () => {
       const first = points[0];
       const last = points[points.length - 1];
       expect(first && last).toBeTruthy();
-      if (first && last) expect(last[1] - first[1]).toBe(gapBelow(depthOf.get(edge.from) ?? -1));
+      if (first && last) expect(last[1] - first[1]).toBe(gapBelow(depthIn(depthOf, edge.from)));
     }
   });
 
@@ -350,25 +357,40 @@ describe("hierarchy layout", () => {
       { tree: node("t1", node("t1a"), node("t1b")), position: null },
       { tree: node("t2", node("t2a", node("t2aa"))), position: { x: 500, y: 40 } },
     ];
-    const alone = layoutTree(imageTree, imageSizes, new Set(), "hierarchy");
-    const result = layoutTree(imageTree, imageSizes, new Set(), "hierarchy", topics);
-    const bodyIds = new Set(alone.nodes.map(item => item.id));
-    expect(result.nodes.filter(item => bodyIds.has(item.id))).toEqual(alone.nodes);
-    expect(result.origin).toEqual(alone.origin);
-    const positions = byId(result);
-    const t1 = positions.get("t1");
-    const t2 = positions.get("t2");
-    const t2a = positions.get("t2a");
-    expect(t1 && t2 && t2a).toBeTruthy();
-    if (!t1 || !t2 || !t2a) return;
-    // Unplaced: centered under the body root, below everything the body placed (image and fold controls included).
-    expect(centerX(t1)).toBeCloseTo(0, 6);
-    expect(t1.y).toBeGreaterThanOrEqual(alone.bounds.y + alone.bounds.height + 48);
-    // Placed: origin + offset, and its own tree hangs by the same rule.
-    expect({ x: t2.x, y: t2.y }).toEqual({ x: result.origin.x + 500, y: result.origin.y + 40 });
-    expect(["t1a", "t1b"].map(id => positions.get(id)?.y)).toEqual([t1.y + t1.height + ROOT_GAP, t1.y + t1.height + ROOT_GAP]);
-    expect(t2a.y).toBe(t2.y + t2.height + ROOT_GAP);
-    expect(positions.get("t2aa")?.y).toBe(t2a.y + t2a.height + ROW_GAP);
+    // The same body with the image node shrunk back to a line of text.
+    const plainSizes: ReadonlyMap<string, NodeSize> = new Map([...imageSizes, ["figure", { width: 220, height: 30 }]]);
+    const place = (sizes: ReadonlyMap<string, NodeSize>): { bodyBottom: number; t1: PositionedNode; t2: PositionedNode; topicNodes: PositionedNode[] } => {
+      const alone = layoutTree(imageTree, sizes, new Set(), "hierarchy");
+      const result = layoutTree(imageTree, sizes, new Set(), "hierarchy", topics);
+      const bodyIds = new Set(alone.nodes.map(item => item.id));
+      expect(result.nodes.filter(item => bodyIds.has(item.id))).toEqual(alone.nodes);
+      expect(result.origin).toEqual(alone.origin);
+      const positions = byId(result);
+      const t1 = positions.get("t1");
+      const t2 = positions.get("t2");
+      const t2a = positions.get("t2a");
+      if (!t1 || !t2 || !t2a) throw new Error("Topic roots missing");
+      // Unplaced: centered under the body root, below everything the body placed (image and fold controls included).
+      expect(centerX(t1)).toBeCloseTo(0, 6);
+      expect(t1.y).toBeGreaterThanOrEqual(alone.bounds.y + alone.bounds.height + 48);
+      // Placed: origin + offset, and its own tree hangs by the same rule.
+      expect({ x: t2.x, y: t2.y }).toEqual({ x: result.origin.x + 500, y: result.origin.y + 40 });
+      expect(["t1a", "t1b"].map(id => positions.get(id)?.y)).toEqual([t1.y + t1.height + ROOT_GAP, t1.y + t1.height + ROOT_GAP]);
+      expect(t2a.y).toBe(t2.y + t2.height + ROOT_GAP);
+      expect(positions.get("t2aa")?.y).toBe(t2a.y + t2a.height + ROW_GAP);
+      return { bodyBottom: alone.bounds.y + alone.bounds.height, t1, t2, topicNodes: result.nodes.filter(item => !bodyIds.has(item.id)) };
+    };
+    const tall = place(imageSizes);
+    const plain = place(plainSizes);
+    // The image only pushes the body's bottom edge down by its height: the unplaced topic keeps its
+    // column and its distance below that edge, the placed topic does not move, and both trees keep their shape.
+    expect(tall.bodyBottom - plain.bodyBottom).toBe(200);
+    expect(tall.t1.x).toBe(plain.t1.x);
+    expect(tall.t1.y - tall.bodyBottom).toBe(plain.t1.y - plain.bodyBottom);
+    expect(tall.t2).toEqual(plain.t2);
+    const relativeToTopic = (nodes: PositionedNode[], t1: PositionedNode): PositionedNode[] =>
+      nodes.map(item => (item.id.startsWith("t1") ? { ...item, y: item.y - t1.y } : item));
+    expect(relativeToTopic(tall.topicNodes, tall.t1)).toEqual(relativeToTopic(plain.topicNodes, plain.t1));
   });
 
   it("gives the Excalidraw scene the same coordinates as the map, image rows included", () => {
@@ -492,7 +514,7 @@ describe("hierarchy layout", () => {
 
 describe("hierarchy layout of the fixtures", () => {
   // Sizes come from the estimate the layout benchmark uses too (no DOM in this layer).
-  it("lays out uneven-branches: 24 siblings in order, an 8-deep chain in 8 rows and long Japanese without overlap", () => {
+  it("lays out uneven-branches: 24 siblings in order, an 8-deep chain link by link and long Japanese without overlap", () => {
     const source = readFileSync(new URL("../fixtures/uneven-branches.md", import.meta.url), "utf8");
     const doc = parseMarkdown(source, "uneven-branches");
     const { root } = projectMap(doc);

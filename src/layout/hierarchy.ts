@@ -96,8 +96,9 @@ export function placeHierarchy(
       // The children's row hangs one gap under this node, whatever its cousins' parents
       // measure. The bus runs through the middle of that gap; the fold control sits on
       // it where the stem from the parent meets the branches.
-      const childTop = bottom + rowGap(depth);
-      const busY = bottom + rowGap(depth) / 2;
+      const gap = rowGap(depth);
+      const childTop = bottom + gap;
+      const busY = bottom + gap / 2;
       const control = foldControlSize(0);
       folds.push({ id: node.id, x: centerX, y: busY });
       foldBounds.push({ x: centerX - control.width / 2, y: busY - control.height / 2, ...control });

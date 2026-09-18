@@ -104,14 +104,17 @@ async function captureFixtures(recorder, page, timings) {
   }
 }
 
+/** The harness's description of the node with this title (rect, toggle, flags); missing nodes fail the case. */
+async function nodeInfo(page, name) {
+  const node = await page.harness(`h.node(${JSON.stringify(name)})`);
+  expect(node, `Node not found: ${name}`);
+  return node;
+}
+
 async function captureOperations(recorder, page) {
   await loadFixture(page, OPERATION_FIXTURE);
   const title = '多数の兄弟';
-  const nodeRect = async name => {
-    const node = await page.harness(`h.node(${JSON.stringify(name)})`);
-    expect(node, `Node not found: ${name}`);
-    return node;
-  };
+  const nodeRect = name => nodeInfo(page, name);
 
   await recorder.run('select-click', `ノード「${title}」をクリック`, 'そのノードだけが選択される', async () => {
     const node = await nodeRect(title);
@@ -253,6 +256,9 @@ async function captureOperations(recorder, page) {
     })()`);
     expect(rows.below !== null, 'root node missing');
     expect(rows.below === 0, `${rows.below} nodes above the root's bottom edge`);
+    // Every visible non-root node must have been matched to a parent rect; otherwise the checks below would pass on nothing.
+    const measured = rows.parents.reduce((count, entry) => count + entry.gaps.length, 0);
+    expect(measured === hierarchy - 1, `${measured} of ${hierarchy - 1} children matched to a parent (ids of the snapshot and the DOM differ?)`);
     const split = rows.parents.filter(entry => entry.rows !== 1).map(entry => entry.id);
     expect(split.length === 0, `parents whose children sit on more than one row: ${JSON.stringify(split)}`);
     // Node heights are measured as integers (offsetHeight) while the rects are fractional, so allow a pixel of rounding.
@@ -420,11 +426,7 @@ async function captureOperations(recorder, page) {
  * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
  */
 async function captureHierarchyRows(recorder, page) {
-  const nodeRect = async name => {
-    const node = await page.harness(`h.node(${JSON.stringify(name)})`);
-    expect(node, `Node not found: ${name}`);
-    return node.rect;
-  };
+  const nodeRect = async name => (await nodeInfo(page, name)).rect;
   const gapBelow = (parent, child) => child.y - (parent.y + parent.height);
   await recorder.run('hierarchy-rows', 'heading-document を階層図にする', '兄弟は同じ上辺。画像付きの「回復する」「記録する」の子だけが下がり、「はじめに」→「この講座で学ぶこと」の隙間は画像付きの親の子と同じ長さ', async () => {
     await loadFixture(page, 'heading-document');
@@ -444,6 +446,18 @@ async function captureHierarchyRows(recorder, page) {
     expect(Math.max(...gaps) - Math.min(...gaps) <= 1.5, `row gaps differ: ${gaps.map(gap => gap.toFixed(1)).join(', ')}`);
     expect(recoverChild.y > introChild.y + 40 * scale, `休息 (${recoverChild.y.toFixed(1)}) does not hang lower than この講座で学ぶこと (${introChild.y.toFixed(1)})`);
     return `段間 ${gaps.map(gap => gap.toFixed(1)).join(' / ')} px（はじめに / 回復する / 記録する の下、scale ${scale.toFixed(3)}）、休息 は この講座で学ぶこと より ${((recoverChild.y - introChild.y) / scale).toFixed(1)} px 下`;
+  });
+
+  // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
+  await recorder.run('hierarchy-rows-back', '左下の「マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("マップ")');
+    expect(button, 'map button missing');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const remaining = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
+    expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
+    const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
+    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
   });
 }
 
