@@ -316,7 +316,7 @@ describe('NodeDrag pointer dragging', () => {
   describe('free nodes (free-topic roots)', () => {
     const TOPICS = '## Body\n- Child\n\n## Topic\n- Under\n';
 
-    it('moves its own tree: no ghost, no slot preview, live offsets, and a release inside the canvas places it', () => {
+    it('moves its own tree with live offsets and no ghost; a release on empty canvas places it', () => {
       const { canvas, actions, node, id, pointer, center, ghost } = fixture(TOPICS, ['Topic']);
       const [x, y] = center('Topic');
       pointer('pointerdown', node('Topic'), x, y);
@@ -324,23 +324,37 @@ describe('NodeDrag pointer dragging', () => {
       expect(actions.shift).not.toHaveBeenCalled();
       pointer('pointermove', canvas, x + 10, y + 4);
       expect(ghost()).toBeNull();
-      expect(node('Topic').classList.contains('is-drag-moving')).toBe(true);
       expect(node('Topic').classList.contains('is-drag-source')).toBe(false);
       expect(canvas.classList.contains('is-dragging-node')).toBe(true);
       expect(actions.select).toHaveBeenCalledExactlyOnceWith(id('Topic'));
       expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: 10, y: 4 });
-      // Over another node nothing is previewed: a free node lands at a position, not in a slot.
-      const [bx, by] = center('Child');
-      pointer('pointermove', canvas, bx, by);
-      expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: bx - x, y: by - y });
-      expect(actions.dropTarget).not.toHaveBeenCalled();
+      // Empty canvas: no slot, nothing previewed.
+      pointer('pointermove', canvas, 700, 500);
+      expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: 700 - x, y: 500 - y });
       expect(actions.preview).not.toHaveBeenCalled();
       pointer('pointerup', canvas, x + 120, y - 60);
       expect(actions.place).toHaveBeenCalledExactlyOnceWith(id('Topic'), { x: 120, y: -60 });
       expect(actions.command).not.toHaveBeenCalled();
-      expect(node('Topic').classList.contains('is-drag-moving')).toBe(false);
       expect(canvas.classList.contains('is-dragging-node')).toBe(false);
       // The view owns the end of a placed drag; only a cancelled one is put back through shift(null).
+      expect(actions.shift).not.toHaveBeenCalledWith(id('Topic'), null);
+    });
+
+    it('previews the slot under the pointer like a tree drag and joins that node on release', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      const [cx, cy] = center('Child');
+      pointer('pointermove', canvas, cx, cy);
+      const join = { type: 'move', nodeId: id('Topic'), parentId: id('Child'), index: 0 };
+      expect(actions.dropTarget).toHaveBeenLastCalledWith(id('Topic'), id('Child'), 'inside');
+      expect(actions.preview).toHaveBeenLastCalledWith(join);
+      expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: cx - x, y: cy - y });
+      pointer('pointerup', canvas, cx, cy);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      expect(actions.command).toHaveBeenCalledExactlyOnceWith(join);
+      expect(actions.place).not.toHaveBeenCalled();
       expect(actions.shift).not.toHaveBeenCalledWith(id('Topic'), null);
     });
 
@@ -356,7 +370,7 @@ describe('NodeDrag pointer dragging', () => {
         else { pointer('pointermove', canvas, 900, 700); pointer('pointerup', canvas, 900, 700); }
         expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), null);
         expect(actions.place).not.toHaveBeenCalled();
-        expect(node('Topic').classList.contains('is-drag-moving')).toBe(false);
+        expect(actions.command).not.toHaveBeenCalled();
         document.body.replaceChildren();
       }
     });

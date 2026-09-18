@@ -3,7 +3,8 @@ import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type 
 import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
-import { planTopicMove, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import type { Viewport } from "../interaction/viewport";
 import { layoutTree, type FreeTopicLayout, type LayoutNode, type LayoutResult } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
@@ -38,8 +39,16 @@ export class MindmapView extends ItemView {
   private placeholder!: HTMLDivElement;
   private edgePaths = new Map<string, SVGPathElement>();
   private dropPreview: MoveCommand | null = null;
-  /** A free topic following the pointer: `from` is where the drag started, `position` where its tree shows now (both origin-relative). */
-  private topicDrag: { id: string; from: TopicPosition; position: TopicPosition } | null = null;
+  /**
+   * A free tree following the pointer: the dragged root, where each affected topic started and where
+   * it shows now (origin-relative), and, for the body root, the viewport at the press. Dragging the
+   * body moves it against its topics: they keep their place on screen while the viewport follows the pointer.
+   */
+  private topicDrag: {
+    id: string; body: boolean; from: Map<string, TopicPosition>; overrides: Map<string, TopicPosition>; viewport: Viewport | null;
+    /** Node ids marked as moving; cleared by id, since a joined topic keeps its element under a new tree. */
+    marked: string[];
+  } | null = null;
   /**
    * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
    * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
@@ -142,10 +151,10 @@ export class MindmapView extends ItemView {
     }));
     this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
-      free: id => this.isTopic(id),
+      free: id => this.isFree(id),
       dropTarget: (dragged, target, position) => this.document ? resolveDrop(this.document, dragged, target, position) : null,
       preview: command => { this.previewDrop(command); },
-      command: command => { this.run(() => this.execute(command)); },
+      command: command => { this.run(() => this.executeDrop(command)); },
       shift: (id, delta) => { this.shiftTopic(id, delta); },
       place: (id, delta) => { this.run(() => this.placeTopic(id, delta)); },
     }));
@@ -270,6 +279,7 @@ export class MindmapView extends ItemView {
       const ids = new Set([this.document.root.id, ...this.document.nodes.map(node => node.id)]);
       this.collapsed = new Set(Array.from(this.collapsed).filter(id => ids.has(id)));
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
+      if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
     }
     this.emptyState.hidden = true;
     this.draw();
@@ -289,6 +299,11 @@ export class MindmapView extends ItemView {
     return this.projection()?.topics.some(topic => topic.id === id) ?? false;
   }
 
+  /** Roots of the trees on the map move freely: the free topics and the body root itself. */
+  private isFree(id: string): boolean {
+    return this.projection()?.root.id === id || this.isTopic(id);
+  }
+
   /**
    * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
    * position comes next, then the pressed point of a topic added on the map that no save has
@@ -302,7 +317,7 @@ export class MindmapView extends ItemView {
       const stored = used.has(topic.title) ? undefined : projected.positions.get(topic.title)?.[this.mode];
       used.add(topic.title);
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
-      const position = this.topicDrag?.id === topic.id ? this.topicDrag.position : stored ?? pending;
+      const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
       return { tree: trees?.[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
     });
   }
@@ -392,6 +407,9 @@ export class MindmapView extends ItemView {
 
   /** Show or clear the slot a pending drop would fill; the layout makes room for it on the next frame. */
   private previewDrop(command: MoveCommand | null): void {
+    // A topic held over a slot shows as the plain node it becomes when it joins.
+    const drag = this.topicDrag;
+    if (drag && !drag.body) this.renderer.entries.get(drag.id)?.element.toggleClass("is-merging", command?.nodeId === drag.id);
     const current = this.dropPreview;
     if (current === command || (current && command && current.nodeId === command.nodeId
       && current.parentId === command.parentId && current.index === command.index)) return;
@@ -513,41 +531,97 @@ export class MindmapView extends ItemView {
     if (this.reveal(plan.selectionOffset)) this.editTitle();
   }
 
-  /** Live drag of a free topic: its whole tree follows the pointer through the layout; null puts it back. */
-  private shiftTopic(id: string, delta: DragDelta | null): void {
-    if (!delta) {
-      if (this.topicDrag?.id === id) { this.topicDrag = null; this.scheduleLayout(); }
-      return;
+  /** The tree under a root on the map: the body's own subtree, or a topic's. */
+  private treeOf(id: string): MindNode | undefined {
+    const projection = this.projection();
+    if (!projection) return undefined;
+    return projection.root.id === id ? projection.root : projection.topics.find(topic => topic.id === id);
+  }
+
+  /** Hit testing must see through a tree that follows the pointer; its nodes also lift a little. */
+  private markMoving(id: string): string[] {
+    const marked: string[] = [];
+    const pending = [this.treeOf(id)];
+    while (pending.length > 0) {
+      const node = pending.pop();
+      if (!node) continue;
+      this.renderer.entries.get(node.id)?.element.addClass("is-drag-moving");
+      marked.push(node.id);
+      pending.push(...node.children);
     }
-    if (this.topicDrag?.id !== id) {
-      const node = this.layout?.nodes.find(item => item.id === id);
-      const origin = this.layout?.origin;
-      if (!node || !origin || !this.isTopic(id)) return;
-      this.topicDrag = { id, from: { x: node.x - origin.x, y: node.y - origin.y }, position: { x: node.x - origin.x, y: node.y - origin.y } };
+    return marked;
+  }
+
+  /** Remember where every affected topic sits before the pointer moves it. */
+  private startTopicDrag(id: string): NonNullable<MindmapView["topicDrag"]> | null {
+    const projection = this.projection();
+    const layout = this.layout;
+    if (!projection || !layout || !this.isFree(id)) return null;
+    const body = projection.root.id === id;
+    const from = new Map<string, TopicPosition>();
+    for (const topic of body ? projection.topics : projection.topics.filter(topic => topic.id === id)) {
+      const node = layout.nodes.find(item => item.id === topic.id);
+      if (node) from.set(topic.id, { x: node.x - layout.origin.x, y: node.y - layout.origin.y });
     }
-    const scale = this.viewport.value.scale;
-    this.topicDrag.position = { x: this.topicDrag.from.x + delta.x / scale, y: this.topicDrag.from.y + delta.y / scale };
+    this.topicDrag = { id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id) };
+    return this.topicDrag;
+  }
+
+  private endTopicDrag(id: string, restore: boolean): void {
+    const drag = this.topicDrag;
+    if (!drag || drag.id !== id) return;
+    this.topicDrag = null;
+    for (const marked of drag.marked) this.renderer.entries.get(marked)?.element.removeClass("is-drag-moving");
+    this.renderer.entries.get(id)?.element.removeClass("is-merging");
+    if (restore && drag.viewport) this.viewport.set(drag.viewport);
     this.scheduleLayout();
   }
 
-  /** A free topic released on the canvas: only its `mappy-topics` entry for this layout changes. */
+  /**
+   * Live drag of a free tree through the layout; null puts it back. A topic moves by the pointer
+   * travel; the body root stays the origin, so its topics move the other way while the viewport
+   * follows the pointer, which reads as the body moving among topics that stay put.
+   */
+  private shiftTopic(id: string, delta: DragDelta | null): void {
+    if (!delta) { this.endTopicDrag(id, true); return; }
+    const drag = this.topicDrag?.id === id ? this.topicDrag : this.startTopicDrag(id);
+    if (!drag) return;
+    const scale = drag.viewport?.scale ?? this.viewport.value.scale;
+    const sign = drag.body ? -1 : 1;
+    for (const [topicId, start] of drag.from) drag.overrides.set(topicId, { x: start.x + sign * delta.x / scale, y: start.y + sign * delta.y / scale });
+    if (drag.viewport) this.viewport.set({ ...drag.viewport, x: drag.viewport.x + delta.x, y: drag.viewport.y + delta.y });
+    this.scheduleLayout();
+  }
+
+  /** A free tree released on the canvas: only `mappy-topics` entries for this layout change (all of them for the body). */
   private async placeTopic(id: string, delta: DragDelta): Promise<void> {
     const document = this.document;
     const file = this.file;
-    const topic = this.projection()?.topics.find(item => item.id === id);
-    const node = this.layout?.nodes.find(item => item.id === id);
-    const origin = this.layout?.origin;
+    const projection = this.projection();
+    const drag = this.topicDrag?.id === id ? this.topicDrag : this.startTopicDrag(id);
     try {
-      if (!document || !file || !topic || !node || !origin) return;
-      const from = this.topicDrag?.id === id ? this.topicDrag.from : { x: node.x - origin.x, y: node.y - origin.y };
-      const scale = this.viewport.value.scale;
-      const position = { x: Math.round(from.x + delta.x / scale), y: Math.round(from.y + delta.y / scale) };
-      const edit = planTopicMove(document, topic.title, this.mode, position);
+      if (!document || !file || !projection || !drag) return;
+      const scale = drag.viewport?.scale ?? this.viewport.value.scale;
+      const sign = drag.body ? -1 : 1;
+      const moves = new Map<string, TopicPosition>();
+      for (const topic of projection.topics) {
+        const start = drag.from.get(topic.id);
+        // Topics sharing a heading share one entry; the first one owns it.
+        if (!start || moves.has(topic.title)) continue;
+        moves.set(topic.title, { x: Math.round(start.x + sign * delta.x / scale), y: Math.round(start.y + sign * delta.y / scale) });
+      }
+      const edit = planTopicMoves(document, this.mode, moves);
       if (edit) await this.commit(document.source, [edit], file);
-      if (this.pendingTopic?.id === id) this.pendingTopic = null;
+      if (this.pendingTopic && (drag.body || this.pendingTopic.id === id)) this.pendingTopic = null;
     } finally {
-      if (this.topicDrag?.id === id) { this.topicDrag = null; this.scheduleLayout(); }
+      this.endTopicDrag(id, false);
     }
+  }
+
+  /** A drop on a slot: a topic joins the node as a branch; a failed move puts the tree back. */
+  private async executeDrop(command: MoveCommand): Promise<void> {
+    try { await this.execute(command); }
+    finally { this.endTopicDrag(command.nodeId, true); }
   }
 
   private async commit(source: string, edits: TextEdit[], file = this.file): Promise<void> {

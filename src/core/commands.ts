@@ -1,4 +1,4 @@
-import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
+import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
 import { planTopicRemoval, planTopicRename, type TopicPlacement } from './topics';
 
@@ -260,7 +260,11 @@ export function resolveDrop(doc: MindDocument, draggedId: string, targetId: stri
   if (!node || !target || node.id === target.id) return null;
   const parent = position === 'inside' ? target : lookup(target.parentId ?? 'root');
   if (!parent || parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) return null;
-  if (doc.format === 'list' && (node.kind === 'list') === (parent.kind === 'root')) return null;
+  if (doc.format === 'list') {
+    // List items stay under sections; an H2 section moves among sections, or joins a node when it is a free topic (§5 M7).
+    if (node.kind === 'list' && parent.kind === 'root') return null;
+    if (node.kind !== 'list' && parent.kind !== 'root' && !projectMap(doc).topics.some((topic) => topic.id === node.id)) return null;
+  }
   const siblings = parent.children.filter((child) => child.id !== node.id);
   const index = position === 'inside'
     ? siblings.length
@@ -321,11 +325,18 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
   }
 }
 
+/** A topic stops being one when it is deleted or moved under a node; its position leaves with it. */
+function leavesTopics(doc: MindDocument, node: MindNode, command: EditCommand): boolean {
+  if (command.type === 'delete') return true;
+  if (command.type !== 'move' && command.type !== 'reparent') return false;
+  return getNode(doc, command.parentId).kind !== 'root';
+}
+
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   if (command.type === 'add-topic') return addTopic(doc);
   const node = getNode(doc, command.nodeId);
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);
   const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
-  return command.type === 'delete' ? withTopicRemoval(doc, node, plan) : plan;
+  return leavesTopics(doc, node, command) ? withTopicRemoval(doc, node, plan) : plan;
 }
