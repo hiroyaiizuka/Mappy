@@ -31,6 +31,7 @@ vi.mock("obsidian", () => {
 vi.mock("../../src/ui/node-renderer", () => ({ NodeRenderer: class {} }));
 vi.mock("../../src/ui/map-viewport", () => ({ MapViewport: class {} }));
 vi.mock("../../src/ui/map-events", () => ({ MapEvents: class {} }));
+vi.mock("../../src/ui/node-drag", () => ({ NodeDrag: class {} }));
 vi.mock("../../src/ui/edit-modal", () => ({ EditModal: class {} }));
 vi.mock("../../src/ui/inline-editor", () => ({ InlineEditor: class {} }));
 vi.mock("../../src/ui/link-suggest", () => ({ LinkSuggest: class {} }));

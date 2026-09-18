@@ -3,10 +3,16 @@ import { planListEdit } from './list-commands';
 
 export interface TextEdit { from: number; to: number; text: string }
 
+/** Place the node as child number `index` of `parentId`, counted without the node itself. */
+export interface MoveCommand { type: 'move'; nodeId: string; parentId: string; index: number }
+
 export type EditCommand =
   | { type: 'rename'; nodeId: string; title: string }
   | { type: 'add-child' | 'add-sibling' | 'delete' | 'move-up' | 'move-down'; nodeId: string }
-  | { type: 'reparent'; nodeId: string; parentId: string };
+  | { type: 'reparent'; nodeId: string; parentId: string }
+  | MoveCommand;
+
+export type DropPosition = 'before' | 'after' | 'inside';
 
 export interface EditPlan { edits: TextEdit[]; selectionOffset: number | null }
 
@@ -39,6 +45,57 @@ function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: numb
     throw new Error('見出し構造を安全に変更できません。Markdown の構文を確認してください。');
   }
   return { edits, selectionOffset };
+}
+
+interface MoveTarget { parent: MindNode; siblings: MindNode[]; unchanged: boolean }
+
+/** Resolve the destination shared by both formats; `siblings` exclude the moving node. */
+export function moveTarget(doc: MindDocument, node: MindNode, parentId: string, index: number): MoveTarget {
+  const parent = getNode(doc, parentId);
+  if (parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) {
+    throw new Error('ノードを自分自身や子孫の下へ移動できません。');
+  }
+  const siblings = parent.children.filter((child) => child.id !== node.id);
+  if (!Number.isInteger(index) || index < 0 || index > siblings.length) throw new Error('移動先の位置が不正です。');
+  const current = parent.children.findIndex((child) => child.id === node.id);
+  return { parent, siblings, unchanged: current === index };
+}
+
+/** Preorder depth and title of every node; the optional move is simulated on the current tree. */
+function treeShape(root: MindNode, moved?: { node: MindNode; parent: MindNode; index: number }): string[] {
+  const shape: string[] = [];
+  const pending = [{ node: root, depth: 0 }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    shape.push(`${current.depth}:${current.node.title}`);
+    let children = moved ? current.node.children.filter((child) => child.id !== moved.node.id) : current.node.children;
+    if (moved && current.node.id === moved.parent.id) {
+      children = [...children.slice(0, moved.index), moved.node, ...children.slice(moved.index)];
+    }
+    for (let position = children.length - 1; position >= 0; position--) {
+      const child = children[position];
+      if (child) pending.push({ node: child, depth: current.depth + 1 });
+    }
+  }
+  return shape;
+}
+
+/** Accept a move only when the reparsed tree is exactly the current tree with the node relocated. */
+export function checkedMove(
+  doc: MindDocument, edits: TextEdit[], node: MindNode, parent: MindNode, index: number, insertedFrom: number,
+): EditPlan {
+  const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
+  const expected = treeShape(doc.root, { node, parent, index });
+  const actual = treeShape(parsed.root);
+  const moved = parsed.nodes.find((candidate) => candidate.from === insertedFrom);
+  if (!moved || moved.title !== node.title || expected.length !== actual.length
+    || expected.some((entry, position) => entry !== actual[position])) {
+    throw new Error(doc.format === 'list'
+      ? 'リスト構造を安全に変更できません。Markdown の構文を確認してください。'
+      : '見出し構造を安全に変更できません。Markdown の構文を確認してください。');
+  }
+  return { edits, selectionOffset: moved.titleFrom };
 }
 
 function branchNodes(doc: MindDocument, node: MindNode): MindNode[] {
@@ -136,27 +193,65 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   return checkedPlan(doc, [{ from, to, text }], movedFrom + (movedDoc.nodes[0]?.titleFrom ?? 0), doc.nodes.length);
 }
 
-function reparent(doc: MindDocument, node: MindNode, parentId: string): EditPlan {
-  const parent = getNode(doc, parentId);
-  if (parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) {
-    throw new Error('ノードを自分自身や子孫の下へ移動できません。');
+/** Text placed at the very end keeps the document's own EOF convention: one newline or none. */
+function matchEndOfFile(doc: MindDocument, text: string, target: number): string {
+  if (target !== doc.source.length) return text;
+  const trimmed = text.replace(/(?:\r?\n)+$/u, '');
+  return doc.source.endsWith('\n') ? trimmed + doc.eol : trimmed;
+}
+
+/**
+ * Move a heading section (with body and descendants) to a position among a parent's children.
+ * The moved heading adopts the depth of the sibling it lands next to, so skipped depths stay siblings.
+ * Also used for H2 sections of list documents, whose depth never changes.
+ */
+export function moveHeadingSection(doc: MindDocument, node: MindNode, parentId: string, index: number): EditPlan {
+  const { parent, siblings, unchanged } = moveTarget(doc, node, parentId, index);
+  if (unchanged) return { edits: [], selectionOffset: node.titleFrom };
+  const before = siblings[index];
+  const level = before?.level ?? siblings[siblings.length - 1]?.level ?? parent.level + 1;
+  const moved = shiftedBranch(doc, node, level);
+  const target = before?.from ?? parent.to;
+  // Removing the last section leaves the previous section's trailing blank lines at EOF; keep the file's ending as it was.
+  let removalFrom = node.from;
+  if (node.to === doc.source.length && target < node.from) {
+    const trailing = doc.source.slice(0, node.from).match(/(?:\r?\n)+$/u)?.[0].length ?? 0;
+    removalFrom = node.from - trailing + (doc.source.endsWith('\n') && trailing > 0 ? doc.eol.length : 0);
   }
-  if (node.parentId === parent.id) return { edits: [], selectionOffset: node.titleFrom };
-  const moved = shiftedBranch(doc, node, parent.level + 1);
-  const target = parent.to;
-  const trailingSeparator = node.to === doc.source.length && !doc.source.endsWith('\n') && target < node.from
-    ? /(?:\r?\n)+$/u.exec(doc.source.slice(0, node.from))?.[0].length ?? 0 : 0;
-  const removalFrom = node.from - trailingSeparator;
   const remaining = doc.source.slice(0, removalFrom) + doc.source.slice(node.to);
   const offset = target >= node.to ? target - (node.to - removalFrom) : target;
   const prefix = insertionPrefix(remaining, offset, doc.eol);
   const body = offset < remaining.length ? appendBoundary(moved, doc.eol) : moved;
-  const text = respectEndOfFile(doc, prefix + body, target);
-  const edits: TextEdit[] = target === node.from || target === node.to
-    ? [{ from: node.from, to: node.to, text }]
+  const text = matchEndOfFile(doc, prefix + body, target);
+  const edits: TextEdit[] = offset === removalFrom
+    ? [{ from: removalFrom, to: node.to, text }]
     : [{ from: removalFrom, to: node.to, text: '' }, { from: target, to: target, text }];
-  const movedDoc = parseMarkdown(moved, doc.root.title, undefined, doc.format);
-  return checkedPlan(doc, edits, offset + prefix.length + (movedDoc.nodes[0]?.titleFrom ?? 0), doc.nodes.length);
+  return checkedMove(doc, edits, node, parent, index, offset + prefix.length);
+}
+
+function branchDepth(doc: MindDocument, node: MindNode): number {
+  return branchNodes(doc, node).reduce((depth, descendant) => Math.max(depth, descendant.level - node.level), 0);
+}
+
+/** Translate a pointer drop on `targetId` into a move, or null when the drop must be refused. */
+export function resolveDrop(doc: MindDocument, draggedId: string, targetId: string, position: DropPosition): MoveCommand | null {
+  const lookup = (id: string | null): MindNode | undefined =>
+    id === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === id);
+  const node = doc.nodes.find((candidate) => candidate.id === draggedId);
+  const target = lookup(targetId);
+  if (!node || !target || node.id === target.id) return null;
+  const parent = position === 'inside' ? target : lookup(target.parentId ?? 'root');
+  if (!parent || parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) return null;
+  if (doc.format === 'list' && (node.kind === 'list') === (parent.kind === 'root')) return null;
+  const siblings = parent.children.filter((child) => child.id !== node.id);
+  const index = position === 'inside'
+    ? siblings.length
+    : siblings.findIndex((child) => child.id === target.id) + (position === 'after' ? 1 : 0);
+  if (doc.format === 'headings') {
+    const level = siblings[index]?.level ?? siblings[siblings.length - 1]?.level ?? parent.level + 1;
+    if (level + branchDepth(doc, node) > 6) return null;
+  }
+  return { type: 'move', nodeId: node.id, parentId: parent.id, index };
 }
 
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
@@ -171,6 +266,8 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
       getNode(doc, node.parentId ?? 'root').titleFrom, doc.nodes.length - branchNodes(doc, node).length);
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
-    case 'reparent': return reparent(doc, node, command.parentId);
+    case 'reparent': return moveHeadingSection(doc, node, command.parentId,
+      getNode(doc, command.parentId).children.filter((child) => child.id !== node.id).length);
+    case 'move': return moveHeadingSection(doc, node, command.parentId, command.index);
   }
 }

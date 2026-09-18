@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { parseMarkdown } from '../../src/core/markdown';
+import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
 import { MapEvents, type MapActions } from '../../src/ui/map-events';
 
 const originalTargetNode = Object.getOwnPropertyDescriptor(UIEvent.prototype, 'targetNode');
@@ -31,11 +31,8 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function fixture() {
-  const parsed = parseMarkdown('# 講座\n\n## First\n\n### Child\n\n## Second\n', 'Course');
-  const selected = parsed.nodes.find((node) => node.title === 'First');
-  if (!selected) throw new Error('Fixture node missing');
-  const actions = {
+function stubActions(parsed: MindDocument, selected: MindDocument['nodes'][number]) {
+  return {
     selected: vi.fn<MapActions['selected']>(() => selected),
     visible: vi.fn<MapActions['visible']>(() => parsed.nodes),
     select: vi.fn<MapActions['select']>(),
@@ -46,6 +43,13 @@ function fixture() {
     attach: vi.fn<MapActions['attach']>(),
     link: vi.fn<MapActions['link']>(),
   } satisfies MapActions;
+}
+
+function fixture() {
+  const parsed = parseMarkdown('# 講座\n\n## First\n\n### Child\n\n## Second\n', 'Course');
+  const selected = parsed.nodes.find((node) => node.title === 'First');
+  if (!selected) throw new Error('Fixture node missing');
+  const actions = stubActions(parsed, selected);
   const canvas = document.createElement('div');
   canvas.tabIndex = 0;
   const node = document.createElement('div');
@@ -215,5 +219,102 @@ describe('MapEvents DOM interactions', () => {
     events.load();
     click(label);
     expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id, true);
+  });
+});
+
+interface FakeTransfer { types: string[]; files: File[]; effectAllowed: string; dropEffect: string; setData: (type: string, value: string) => void }
+
+function transfer(overrides: Partial<FakeTransfer> = {}): FakeTransfer {
+  return { types: [], files: [], effectAllowed: 'uninitialized', dropEffect: 'none', setData: vi.fn(), ...overrides };
+}
+
+/** jsdom has no DragEvent; a MouseEvent with a dataTransfer property exercises the same handlers. */
+function drag(target: EventTarget, type: string, init: MouseEventInit = {}, data: FakeTransfer = transfer()): MouseEvent & { dataTransfer: FakeTransfer } {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+  Object.defineProperty(event, 'dataTransfer', { value: data });
+  target.dispatchEvent(event);
+  return event as MouseEvent & { dataTransfer: FakeTransfer };
+}
+
+function dragFixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n## B\n') {
+  const parsed = parseMarkdown(source, 'Course');
+  const first = parsed.nodes[0];
+  if (!first) throw new Error('Fixture node missing');
+  const actions = stubActions(parsed, first);
+  const canvas = document.createElement('div');
+  const elements = new Map<string, HTMLDivElement>();
+  for (const node of parsed.nodes) {
+    const element = document.createElement('div');
+    element.className = 'mappy-node';
+    element.dataset.nodeId = node.id;
+    element.addClass = (...classes) => { element.classList.add(...classes); };
+    element.removeClass = (...classes) => { element.classList.remove(...classes); };
+    element.hasClass = value => element.classList.contains(value);
+    const label = document.createElement('span');
+    label.textContent = node.title;
+    element.append(label);
+    canvas.append(element);
+    elements.set(node.title, element);
+  }
+  document.body.append(canvas);
+  const events = new MapEvents(canvas, actions);
+  components.add(events);
+  events.load();
+  const node = (title: string): HTMLDivElement => {
+    const element = elements.get(title);
+    if (!element) throw new Error(`Missing node ${title}`);
+    return element;
+  };
+  const id = (title: string): string => {
+    const found = parsed.nodes.find((candidate) => candidate.title === title);
+    if (!found) throw new Error(`Missing node ${title}`);
+    return found.id;
+  };
+  const highlighted = (): string[] => Array.from(canvas.querySelectorAll<HTMLElement>('.is-drop-target')).map((element) => element.textContent ?? '');
+  return { canvas, actions, node, id, highlighted };
+}
+
+describe('MapEvents file drops next to pointer dragging', () => {
+  it('prevents native drags from starting on a node so the pointer drag owns the gesture', () => {
+    const { node } = dragFixture();
+    expect(drag(node('A1').firstElementChild ?? node('A1'), 'dragstart').defaultPrevented).toBe(true);
+  });
+
+  it('highlights the hovered node for a file drag and attaches a dropped image to it', () => {
+    const { actions, node, id, highlighted } = dragFixture();
+    const image = new File(['png'], 'figure.png', { type: 'image/png' });
+    const over = drag(node('A1'), 'dragover', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'] }));
+    expect(over.defaultPrevented).toBe(true);
+    expect(highlighted()).toEqual(['A1']);
+    drag(node('A2'), 'dragover', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'] }));
+    expect(highlighted()).toEqual(['A2']);
+    const drop = drag(node('A2'), 'drop', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'], files: [image] }));
+    expect(drop.defaultPrevented).toBe(true);
+    expect(actions.select).toHaveBeenCalledWith(id('A2'));
+    expect(actions.attach).toHaveBeenCalledExactlyOnceWith(image);
+    expect(actions.command).not.toHaveBeenCalled();
+    expect(highlighted()).toEqual([]);
+  });
+
+  it('clears the highlight when the file drag leaves the canvas or ends', () => {
+    const { canvas, node, highlighted } = dragFixture();
+    drag(node('A1'), 'dragover', {}, transfer({ types: ['Files'] }));
+    expect(highlighted()).toEqual(['A1']);
+    canvas.dispatchEvent(new MouseEvent('dragleave', { bubbles: true, relatedTarget: document.body }));
+    expect(highlighted()).toEqual([]);
+    drag(node('A1'), 'dragover', {}, transfer({ types: ['Files'] }));
+    drag(canvas, 'dragend');
+    expect(highlighted()).toEqual([]);
+  });
+
+  it('ignores drags that carry neither files nor an image', () => {
+    const { actions, node, highlighted } = dragFixture();
+    const over = drag(node('A1'), 'dragover', {}, transfer({ types: ['text/plain'] }));
+    expect(over.defaultPrevented).toBe(false);
+    expect(highlighted()).toEqual([]);
+    const text = new File(['hi'], 'note.txt', { type: 'text/plain' });
+    expect(drag(node('A1'), 'drop', {}, transfer({ types: ['Files'], files: [text] })).defaultPrevented).toBe(false);
+    expect(actions.attach).not.toHaveBeenCalled();
+    expect(actions.command).not.toHaveBeenCalled();
   });
 });

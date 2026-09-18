@@ -18,7 +18,7 @@ npm ci
 npm run check
 ```
 
-`check` はメタデータ検証 → lint → テスト → 型検査 → production build → 配布物検証を実行します。Markdown の解析・原文差分、保存と競合、レイアウト、ズーム、DOM の操作も自動テスト対象です。Obsidian のモックを使った成功は実機の成功として扱いません。
+`check` はメタデータ検証 → lint → テスト → 型検査 → production build → 配布物検証 → ブラウザ検証ページのビルドを実行します。Markdown の解析・原文差分、保存と競合、レイアウト、ズーム、DOM の操作も自動テスト対象です。Obsidian のモックを使った成功は実機の成功として扱いません。
 
 ```sh
 npm run dev               # ビルド監視
@@ -26,9 +26,11 @@ npm run test:watch        # テスト監視
 npm run test:coverage     # 現在のテスト対象のカバレッジ
 npm run harness:prepare   # 初回専用。既知の fixture を初期化する
 npm run harness:preflight # ビルド成果物と検証 Vault の一致を確認
+npm run harness:browser   # Obsidian なしで map view を動かす検証ページ（http://127.0.0.1:8765/）
+npm run harness:browser:capture # headless Chrome で fixture と主要操作を撮影し artifacts/ に記録
 ```
 
-`dist/mappy/` に `main.js`、`manifest.json`、`styles.css` を生成します。`dist/build-info.json` は検証用のハッシュ記録です。公開や既存 Vault へのインストールは行いません。
+`dist/mappy/` に `main.js`、`manifest.json`、`styles.css` を生成します。`dist/build-info.json` は検証用のハッシュ記録です。公開や既存 Vault へのインストールは行いません。ブラウザ検証ページ（`dist/harness/`）は製品の core / layout / interaction / ui をそのまま読み込み、`obsidian` モジュールだけをモックに置き換えます。保存・リンク解決・テーマ・IME はこのページの対象外で、[検証手順](docs/harness.md)の ③ 実機で確認します。
 
 試用中は `harness:prepare` を再実行せず、[更新手順](docs/harness.md#試用中の更新)で配布物3ファイルだけをコピーします。試用中の Markdown と添付ファイルを上書きしないでください。
 

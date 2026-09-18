@@ -3,6 +3,8 @@
   /* currentColor survives hosts that blank --text-normal, e.g. Excalidraw's embedded note containers. */
   --mappy-line: currentColor;
   --mappy-selection: var(--color-blue);
+  /* Drag preview (connector and slot frame): lighter than the selection blue so the thick line does not dominate. */
+  --mappy-drop: #2cbdff;
   color: var(--text-normal);
   position: relative;
   height: 100%;
@@ -84,7 +86,38 @@
 .mappy-view .mappy-node.is-root .mappy-node-label { font-weight: 700; }
 .mappy-view .mappy-node.is-stage .mappy-node-label { font-weight: 600; }
 .mappy-view .mappy-node.is-selected, .mappy-view .mappy-node:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
+/* Image files dragged in from outside attach to the highlighted node. */
 .mappy-view .mappy-node.is-drop-target { outline: 1px dashed var(--mappy-selection); outline-offset: 3px; }
+/* Node dragging (pointer events): the source stays faint in place, a translucent ghost follows the pointer,
+   an empty frame of the same size marks the slot, and the connector from the destination parent is drawn thick and blue. */
+.mappy-view .mappy-nodes { user-select: none; -webkit-user-select: none; }
+/* No cursor change while dragging: cursor is inherited, so setting it on the canvas would restyle every node. */
+.mappy-view .mappy-node.is-drag-source { opacity: 0.35; }
+.mappy-view .mappy-drag-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  transform-origin: 0 0;
+  will-change: transform;
+  opacity: 0.6;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+  pointer-events: none;
+}
+.mappy-view .mappy-drop-placeholder {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1.5px solid var(--mappy-drop);
+  border-radius: 6px;
+  opacity: 0.7;
+  background: transparent;
+  pointer-events: none;
+}
+.mappy-view .mappy-drop-placeholder[hidden] { display: none; }
+.mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-drop); stroke-width: 4; stroke-linecap: round; }
 .mappy-view .mappy-node-content { min-width: 0; }
 .mappy-view .mappy-node-content[hidden] { display: none; }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
@@ -118,6 +151,7 @@
   resize: none;
 }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
+.mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
 .mappy-view .mappy-inline-error { max-width: 303px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
 .mappy-view .mappy-inline-error:empty { display: none; }
 .mappy-view .mappy-node-toggle {
