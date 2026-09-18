@@ -142,6 +142,7 @@ describe('performance probes', () => {
     expect(pan.kind).toBe('pan');
     expect(pan.intervals).toHaveLength(4);
     expect(pan.intervals.every(finite)).toBe(true);
+    expect(pan.handlerMs).toHaveLength(4);
     const afterPan = view.getState().viewport as { x: number; y: number; scale: number };
     expect(afterPan.scale).toBe(before.scale);
     const zoom = await measureFrames(context, view, fixture('performance-10'), 'zoom', 4);

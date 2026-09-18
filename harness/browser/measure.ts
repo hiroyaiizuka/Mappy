@@ -146,6 +146,8 @@ export interface FrameSample {
   nodes: number;
   /** requestAnimationFrame timestamp deltas while one wheel event is dispatched per frame. */
   intervals: number[];
+  /** Synchronous cost of each wheel dispatch (the product's handler); the rest of the interval is the browser. */
+  handlerMs: number[];
   at: string;
 }
 
@@ -402,17 +404,20 @@ export async function measureFrames(
   const rect = canvas.getBoundingClientRect();
   const point = { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
   const intervals: number[] = [];
+  const handlerMs: number[] = [];
   let last = await probes.nextFrame();
   for (let index = 0; index < frames; index += 1) {
     const direction = index < frames / 2 ? 1 : -1;
+    const dispatched = now();
     canvas.dispatchEvent(new WheelEvent("wheel", {
       ...point, bubbles: true, cancelable: true, deltaMode: 0,
       deltaY: kind === "pan" ? 12 * direction : 20 * direction, ctrlKey: kind === "zoom",
     }));
+    handlerMs.push(now() - dispatched);
     const timestamp = await probes.nextFrame();
     intervals.push(timestamp - last);
     last = timestamp;
   }
   await context.settle();
-  return { kind, fixture: fixture.id, nodes: documentOf(view).nodes.length, intervals, at: stamp() };
+  return { kind, fixture: fixture.id, nodes: documentOf(view).nodes.length, intervals, handlerMs, at: stamp() };
 }

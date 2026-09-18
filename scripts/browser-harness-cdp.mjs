@@ -40,11 +40,17 @@ export function chromeVersion(chrome) {
   }
 }
 
-export function launchChrome(chrome, profile, window) {
+/** Flags for headless Chrome; `gpu: true` keeps GPU rasterisation instead of software rendering. */
+export function chromeFlags(window, { gpu = false } = {}) {
+  return [
+    '--headless=new', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', ...(gpu ? [] : ['--disable-gpu']),
+    '--force-device-scale-factor=1', `--window-size=${window.width},${window.height}`,
+  ];
+}
+
+export function launchChrome(chrome, profile, window, options = {}) {
   const child = spawn(chrome, [
-    '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', '--disable-gpu',
-    '--force-device-scale-factor=1', `--window-size=${window.width},${window.height}`, 'about:blank',
+    '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...chromeFlags(window, options), 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = new Promise((resolveEndpoint, reject) => {
     let output = '';
@@ -152,9 +158,9 @@ export class Page {
  * Launch Chrome, open the built harness page and run `body(page)`; Chrome and its
  * temporary profile are removed afterwards whatever `body` does.
  */
-export async function withHarnessPage(chrome, { output, window, fixture, pane }, body) {
+export async function withHarnessPage(chrome, { output, window, fixture, pane, gpu = false }, body) {
   const profile = await mkdtemp(join(tmpdir(), 'mappy-harness-'));
-  const { child, endpoint } = launchChrome(chrome, profile, window);
+  const { child, endpoint } = launchChrome(chrome, profile, window, { gpu });
   let cdp;
   try {
     cdp = await Cdp.connect(await endpoint);

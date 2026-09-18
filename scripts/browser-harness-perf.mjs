@@ -5,7 +5,10 @@
  *
  *   node scripts/browser-harness-perf.mjs [--chrome <path>] [--out artifacts/performance]
  *       [--repeat 10] [--keystrokes 30] [--frames 60] [--shapes headings,list,...]
- *       [--counts 10,100,500,2000] [--fixtures performance-500,...]
+ *       [--counts 10,100,500,2000] [--fixtures performance-500,...] [--gpu]
+ *
+ * `--gpu` drops --disable-gpu so Chrome rasterises on the GPU like Electron does;
+ * the default software rendering makes raster costs show up as frame delays.
  *
  * Per fixture: one warm-up load, `repeat` loads in a fresh view, `repeat`
  * Markdown-side edits, `repeat` inline edits (`keystrokes` keystrokes in total,
@@ -20,7 +23,7 @@ import os from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
-import { chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { chromeFlags, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 import { performanceFixtureMatrix, performanceShapes } from './performance-fixtures.mjs';
 import { summarize } from './perf-stats.mjs';
 
@@ -63,6 +66,7 @@ function parseArgs(argv) {
     shapes: list('--shapes'),
     counts: list('--counts')?.map(Number),
     fixtures: list('--fixtures'),
+    gpu: args.includes('--gpu'),
   };
 }
 
@@ -107,7 +111,8 @@ function environment(chrome, options) {
     node: process.version,
     chrome: chrome ? chromeVersion(chrome) : 'なし',
     chromePath: chrome ?? null,
-    chromeFlags: '--headless=new --disable-gpu --force-device-scale-factor=1 --hide-scrollbars',
+    chromeFlags: chromeFlags(WINDOW, { gpu: options.gpu }).join(' '),
+    gpu: options.gpu,
     window: WINDOW,
     pane: PANE,
     commit: git('rev-parse', '--short', 'HEAD'),
@@ -126,7 +131,10 @@ function summarizeFields(samples, fields) {
 
 function summarizeFrames(samples) {
   const intervals = samples.flatMap(sample => sample.intervals);
-  return { ...summarize(intervals), over: intervals.filter(value => value > FRAME_BUDGET_MS).length };
+  return {
+    ...summarize(intervals), over: intervals.filter(value => value > FRAME_BUDGET_MS).length,
+    handler: summarize(samples.flatMap(sample => sample.handlerMs ?? [])),
+  };
 }
 
 export function buildSummary(fixtures, samples) {
@@ -169,7 +177,7 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     '- 読み込み（fixture を新しい view で開く）: `parse` = parseMarkdown 単体、`setState` = 読み込み・view の parse・ノード DOM 生成、`計測` = setState 直後にノードの offsetWidth を読んだときのブラウザの style／layout（view は配置フレームの sizes() で同じ計算を払う。段階を分けるために先に読む）、`layoutTree` = 配置アルゴリズム単体（計測済みサイズで）、`配置フレーム` = view の requestAnimationFrame コールバック（sizes・layoutTree・place・線・Fit）、`次フレーム開始` = そのコールバック終了から次のフレーム開始まで（vsync 待ちと style／layout／paint。約 17 ms 以下なら 1 フレーム内に収まった）、`初回配置` = setState 開始〜配置フレーム終了、`安定` = ノード位置が 3 フレーム変わらないまで（3 フレーム分の待ちを含む）。',
     '- Markdown 側の編集（vault の modify → view）: `debounce` = 変更〜45 ms の debounce 発火、`再読込〜DOM` = 発火〜編集ノードの DOM 更新（read・parse・ノード DOM）、`フレーム待ち` = DOM 更新〜配置フレーム開始（ブラウザがフレーム前に行う style／layout を含むことがある）、`配置フレーム`、`次フレーム開始`、`合計` = 変更〜配置後の次フレーム開始（画面に出せる最初のフレーム）。Obsidian のエディタ入力は editor-change → 同じ経路。',
     '- インライン編集（マップ側、実 DOM 経由）: `キー入力` = textarea への 1 文字入力〜配置後の次フレーム開始（`入力ハンドラ` は textarea の高さ再計算）、`確定` = Enter〜改名の適用・再読込・再描画・配置後の次フレーム開始（`適用〜DOM` は apply・read・parse・ノード DOM）。',
-    '- パン／ズーム: 1 フレームに 1 回 wheel（パンは deltaY 12、ズームは Ctrl＋deltaY 20）を送り、requestAnimationFrame のタイムスタンプ間隔を記録。ハンドラは transform の更新だけなので、間隔はブラウザの描画コスト。headless（--disable-gpu）の main thread の値であり、実機の GPU 合成・ラスタは含まない。',
+    '- パン／ズーム: 1 フレームに 1 回 wheel（パンは deltaY 12、ズームは Ctrl＋deltaY 20）を送り、requestAnimationFrame のタイムスタンプ間隔と、wheel ハンドラ（transform の更新）の同期時間を記録。間隔からハンドラを引いた残りはブラウザの合成・ラスタで、既定のソフトウェア描画では GPU 描画より重く出る。',
     '',
     '## 読み込み（ms、p50 / p95）',
     '',
@@ -196,9 +204,10 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     '',
     '## パン／ズーム中のフレーム間隔（ms）',
     '',
-    ...table(['fixture', 'ノード', 'パン p50 / p95', 'パン 最大', `パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'ズーム p50 / p95', 'ズーム 最大', `ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`],
-      summary.map(row => [row.fixture, row.nodes, range(row.pan), ms(row.pan.max), `${row.pan.over} / ${row.pan.n}`,
-        range(row.zoom), ms(row.zoom.max), `${row.zoom.over} / ${row.zoom.n}`])),
+    ...table(['fixture', 'ノード', 'パン p50 / p95', 'パン 最大', `パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'パン ハンドラ p95',
+      'ズーム p50 / p95', 'ズーム 最大', `ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'ズーム ハンドラ p95'],
+      summary.map(row => [row.fixture, row.nodes, range(row.pan), ms(row.pan.max), `${row.pan.over} / ${row.pan.n}`, ms(row.pan.handler.p95),
+        range(row.zoom), ms(row.zoom.max), `${row.zoom.over} / ${row.zoom.n}`, ms(row.zoom.handler.p95)])),
     '',
     '## 失敗',
     '',
@@ -263,7 +272,9 @@ async function main() {
   const notExecuted = [
     'Obsidian 実機での計測（E10）: このページは Obsidian の Editor・Vault・テーマを持たない。実機の入力反映は LEV-33 の計測と突き合わせる。',
     'トラックパッドのピンチ・慣性スクロール、ネイティブ IME、モバイル: headless の合成入力では計測できない。',
-    'GPU 合成・ラスタを含む描画フレーム時間: headless（--disable-gpu）では main thread の間隔だけが取れる。',
+    options.gpu
+      ? 'GPU ラスタ（--gpu）: headless でも GPU を使うが、実機の Electron・ディスプレイ・スケール係数とは異なる。'
+      : 'GPU 合成・ラスタを含む描画フレーム時間: 既定（--disable-gpu）ではソフトウェア描画で、ラスタの重さがフレーム待ちに現れる。--gpu で再実行して比較する。',
   ];
   const chrome = findChrome(options.chrome);
   const env = environment(chrome, options);
@@ -280,7 +291,7 @@ async function main() {
   }
   const samples = [];
   const failures = [];
-  await withHarnessPage(chrome, { output, window: WINDOW, fixture: fixtures[0].id, pane: PANE }, async page => {
+  await withHarnessPage(chrome, { output, window: WINDOW, fixture: fixtures[0].id, pane: PANE, gpu: options.gpu }, async page => {
     for (const entry of fixtures) await runFixture(page, entry, options, samples, failures);
   });
   const summary = buildSummary(fixtures, samples);

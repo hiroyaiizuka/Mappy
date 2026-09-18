@@ -3,7 +3,7 @@ import { buildSummary, recordMarkdown, selectFixtures, type PerfEnvironment } fr
 
 const env: PerfEnvironment = {
   at: '2026-09-18T00:00:00.000Z', os: 'macOS 26.5.1 (25F80)', arch: 'arm64', cpu: 'Apple M4 Max', cores: 16, memoryGb: 128, loadavg: [1.5, 2, 2.5],
-  node: 'v22.22.3', chrome: 'Google Chrome 153', chromePath: '/Applications/Google Chrome.app', chromeFlags: '--headless=new',
+  node: 'v22.22.3', chrome: 'Google Chrome 153', chromePath: '/Applications/Google Chrome.app', chromeFlags: '--headless=new', gpu: false,
   window: { width: 1640, height: 1000 }, pane: { width: 1280, height: 800 }, commit: 'abc1234', dirty: false,
   options: { repeat: 10, keystrokes: 30, frames: 60 },
 };

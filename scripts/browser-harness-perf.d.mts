@@ -11,13 +11,13 @@ export interface FixtureSummary {
   'markdown-edit': Record<string, Summary>;
   'inline-key': Record<string, Summary>;
   'inline-commit': Record<string, Summary>;
-  pan: Summary & { over: number };
-  zoom: Summary & { over: number };
+  pan: Summary & { over: number; handler: Summary };
+  zoom: Summary & { over: number; handler: Summary };
 }
 export function buildSummary(fixtures: PerformanceFixtureEntry[], samples: Record<string, unknown>[]): FixtureSummary[];
 export interface PerfEnvironment {
   at: string; os: string; arch: string; cpu: string; cores: number; memoryGb: number; loadavg: number[]; node: string; chrome: string;
-  chromePath: string | null; chromeFlags: string; window: { width: number; height: number }; pane: { width: number; height: number };
+  chromePath: string | null; chromeFlags: string; gpu: boolean; window: { width: number; height: number }; pane: { width: number; height: number };
   commit: string; dirty: boolean; options: { repeat: number; keystrokes: number; frames: number };
 }
 export function recordMarkdown(input: {
