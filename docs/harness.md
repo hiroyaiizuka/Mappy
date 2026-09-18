@@ -73,7 +73,7 @@ jsdom を導入し、製品の DOM 操作・インライン入力・キー操作
 - 自動撮影: `npm run harness:browser:capture` は headless Chrome（`--chrome <path>` か `MAPPY_CHROME`、既定はインストール済みの Google Chrome）を DevTools Protocol で操作し、全 fixture の Fit 表示と、`uneven-branches` での選択・矢印キー・開閉・パン・ホイール・Ctrl＋ホイール・ズームボタン・タイムライン・640×480／390×700 のサイズ変更・右クリックメニュー・内部リンククリック・F2 入力→Enter→⌘Z（メモリ内の改名と Undo）・閉じて開き直し、`performance-2000` の開閉を実行する。各ケースの PASS／FAIL、時刻、全画面とペイン 2 倍のスクリーンショットを `artifacts/browser-harness/<日時>/record.md` に書く。Chrome がなければ未実施と書いた record だけを残して終了コード 2 になる。
 - 対象外: 保存（Vault・Editor への書き込み）、リンク解決（クリックは通知と記録だけ）、テーマ（`harness.css` の CSS 変数は仮の値）、日本語 IME（合成イベントは OS の変換ではない）、トラックパッドとモバイルの実入力。これらは③で確認する。
 
-このページでの成功を Obsidian の保存・リンク解決・テーマでの成功と呼ばない。Obsidian 実機の確認（下記 E01〜E28）が E2E に相当し、このページはその代替ではない。
+このページでの成功を Obsidian の保存・リンク解決・テーマでの成功と呼ばない。Obsidian 実機の確認（下記 E01〜E29）が E2E に相当し、このページはその代替ではない。
 
 ### Obsidian 実機の初回準備
 
@@ -129,6 +129,7 @@ npm run harness:preflight
 | E26 | タイムラインを選択→Markdown へ切替→マップへ戻る | `mappy-layout: timeline` が保存され、再度タイムラインで開く。通常マップ選択では任意キーだけを削除する |
 | E27 | Mappy ノートを Excalidraw の「as embeddable」「as image」で挿入 | 新しく作られた Mappy 埋め込みの外枠が透明。通常ノート・既存要素・内容・リンクは変えない |
 | E28 | Enter／Tab で空ノードを追加し、長い文字列を入力 | 入力欄は旧幅の約 75% を上限にし、入力・補完・保存は従来どおり動く |
+| E29 | 空白をダブルクリックしてフリートピックを追加→本体のノードへドラッグして合流→Undo→Mappy 以外（通常の Markdown 編集・閲覧モード、Mappy 無効）で開く | 文書末尾に最上位区画が追加され、合流で区画がリストの枝に変わり、Undo で元の区画と位置に戻る。本体のノード・本文・他の frontmatter は変わらず、Mappy 以外では通常の見出しと箇条書きとして読める |
 
 記録テンプレート:
 
