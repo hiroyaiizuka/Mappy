@@ -747,6 +747,34 @@ async function captureTopicOperations(recorder, page) {
     return `${expected}、位置のないトピック: ${topicEntry(moved, '位置のないトピック')}`;
   });
 
+  await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
+    const base = await page.harness('h.source()');
+    const before = (await page.harness('h.nodes()')).length;
+    const branch = await topicRect('記録する');
+    const from = center(branch.rect);
+    const canvas = await page.harness('h.canvasRect()');
+    const point = { x: canvas.x + canvas.width - 260, y: canvas.y + canvas.height - 120 };
+    await page.drag(from.x, from.y, point.x, point.y, 12);
+    await page.settle();
+    const detached = await page.harness('h.source()');
+    expect(detached.endsWith('\n## 記録する\n\n- ふりかえる\n'), `note tail: ${JSON.stringify(detached.slice(-40))}`);
+    expect(!detached.includes('- 記録する\n'), 'the branch is still in the body');
+    const entry = topicEntry(detached, '記録する');
+    expect(entry && /^記録する: \{ mindmap: \[-?\d+, -?\d+\] \}$/u.test(entry), `entry: ${entry}`);
+    expect(bodyOf(detached).startsWith(bodyOf(base).replace('- 記録する\n  - ふりかえる\n', '')), 'the rest of the body changed');
+    const root = await topicRect('記録する');
+    const cls = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-node')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '記録する')?.className`);
+    expect(cls.includes('is-topic') && cls.includes('is-root'), `classes: ${cls}`);
+    // The ghost's top-left becomes the new root's top-left: the release point minus the grab offset inside the node.
+    const grab = { x: from.x - branch.rect.x, y: from.y - branch.rect.y };
+    expect(Math.abs(root.rect.x - (point.x - grab.x)) < 2 && Math.abs(root.rect.y - (point.y - grab.y)) < 2, `root at ${root.rect.x},${root.rect.y}, expected ${point.x - grab.x},${point.y - grab.y}`);
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before, `nodes ${before} → ${count}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the branch');
+    return `${entry}、ノード ${count}`;
+  });
+
   await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」を含むメニューが開き、Escape で閉じる', async () => {
     const point = await emptyCanvasPoint(page);
     await page.mouse('mouseMoved', point.x, point.y);

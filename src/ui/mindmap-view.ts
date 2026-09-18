@@ -1,6 +1,6 @@
 import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
-import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
+import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
@@ -157,6 +157,7 @@ export class MindmapView extends ItemView {
       command: command => { this.run(() => this.executeDrop(command)); },
       shift: (id, delta) => { this.shiftTopic(id, delta); },
       place: (id, delta) => { this.run(() => this.placeTopic(id, delta)); },
+      detach: (id, point) => { this.run(() => this.detachNode(id, point)); },
     }));
     this.registerDomEvent(this.canvas, "contextmenu", event => {
       const target = event.targetNode;
@@ -506,10 +507,14 @@ export class MindmapView extends ItemView {
   }
 
   /** Layout coordinates of a canvas-relative pixel, as an offset from the body root (`LayoutResult.origin`). */
-  private topicPoint(point: { x: number; y: number }): TopicPosition {
+  private topicPoint(point: { x: number; y: number }, origin = this.layout?.origin ?? { x: 0, y: 0 }): TopicPosition {
     const view = this.viewport.value;
-    const origin = this.layout?.origin ?? { x: 0, y: 0 };
     return { x: Math.round((point.x - view.x) / view.scale - origin.x), y: Math.round((point.y - view.y) / view.scale - origin.y) };
+  }
+
+  /** Where the body root will sit once `document` is laid out with the sizes on screen: what topic positions are measured from. */
+  private originFor(document: MindDocument): { x: number; y: number } {
+    return layoutTree(projectMap(document).root, this.renderer.sizes(), this.collapsed, this.mode).origin;
   }
 
   /**
@@ -616,6 +621,23 @@ export class MindmapView extends ItemView {
     } finally {
       this.endTopicDrag(id, false);
     }
+  }
+
+  /**
+   * A branch released on empty canvas becomes its own topic (§5 M7 切り離し): a new section at the
+   * end of the note, placed where the ghost was, both in one edit set so Undo brings the branch back.
+   */
+  private async detachNode(id: string, point: { x: number; y: number }): Promise<void> {
+    const document = this.document;
+    const file = this.file;
+    if (!document || !file || this.saving) return;
+    // Removing the branch re-centres the body root, so the drop point is measured from where the root will be.
+    const detached = parseMarkdown(applyEdits(document.source, planEdit(document, { type: "detach", nodeId: id }).edits), file.basename, document);
+    const position = this.topicPoint(point, this.originFor(detached));
+    const plan = planEdit(document, { type: "detach", nodeId: id, position: { layout: this.mode, x: position.x, y: position.y } });
+    await this.commit(document.source, plan.edits, file);
+    if (this.file !== file || this.closed) return;
+    this.reveal(plan.selectionOffset);
   }
 
   /** A drop on a slot: a topic joins the node as a branch; a failed move puts the tree back. */

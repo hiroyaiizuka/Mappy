@@ -666,3 +666,66 @@ describe('MindmapView moves the body against its topics and joins a topic to a n
     expect(projectMap(documentOf(view)).topics.map(node => node.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック']);
   });
 });
+
+describe('MindmapView detaches a branch into a new topic', () => {
+  it('a body branch released on empty canvas becomes a topic at the ghost position; undo puts the branch back', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, undo } = await mount(source);
+    const recover = documentOf(view).nodes.find(node => node.title === '回復する');
+    if (!recover) throw new Error('Missing node');
+    const element = nodes().get(recover.id);
+    if (!element) throw new Error('No element');
+    const originBefore = layout().origin;
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    // Pressed at (500, 400); jsdom rects are zero, so the grab offset is the press point itself and the ghost's top-left is the release point.
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 900, 700);
+    pointer('pointerup', canvas, 900, 700);
+    await settle();
+    const detached = current();
+    // The body lost a branch, so its root re-centred; the stored offset is measured from the new origin and the topic sits exactly at the drop point.
+    const origin = layout().origin;
+    expect(origin).not.toEqual(originBefore);
+    const world = { x: (900 - CANVAS.left - 500 - viewport.x) / viewport.scale, y: (700 - CANVAS.top - 400 - viewport.y) / viewport.scale };
+    const expected = { x: Math.round(world.x - origin.x), y: Math.round(world.y - origin.y) };
+    expect(detached.endsWith('\n## 回復する\n\n参考: [[heading-document#回復する|回復]]\n- 休息の取り方\n- 睡眠\n')).toBe(true);
+    expect(detached).not.toContain('- 回復する\n');
+    expect(readTopicPositions(detached).get('回復する')).toEqual({ mindmap: expected });
+    const doc = documentOf(view);
+    expect(projectMap(doc).topics.map(node => node.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック', '回復する']);
+    expect(projectMap(doc).root.children.map(node => node.title)).toEqual(['記録する', '習慣化する']);
+    const topic = doc.nodes.find(node => node.title === '回復する');
+    if (!topic) throw new Error('Missing topic');
+    expect(nodes().get(topic.id)?.classList.contains('is-topic')).toBe(true);
+    expect(nodes().get(topic.id)?.classList.contains('is-selected')).toBe(true);
+    expect(transform(topic.id)).toEqual({ x: world.x, y: world.y });
+    expect(nodes().size).toBe(doc.nodes.length);
+    await undo();
+    expect(current()).toBe(source);
+    expect(projectMap(documentOf(view)).root.children.map(node => node.title)).toEqual(['回復する', '記録する', '習慣化する']);
+  });
+
+  it('a release close to where the node was pressed changes nothing', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, source: current, settle, pointer } = await mount(source);
+    const recover = documentOf(view).nodes.find(node => node.title === '回復する');
+    const element = nodes().get(recover?.id ?? '');
+    if (!element) throw new Error('No element');
+    // Give the node a real box (jsdom reports none), so "near its own place" means something.
+    element.getBoundingClientRect = () => ({ x: 480, y: 380, left: 480, top: 380, width: 80, height: 40, right: 560, bottom: 420, toJSON: () => ({}) });
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 508, 404);
+    pointer('pointerup', canvas, 508, 404);
+    await settle();
+    expect(current()).toBe(source);
+    // Just outside the box plus its margin, the same drag detaches.
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 508, 404);
+    pointer('pointermove', canvas, 620, 400);
+    pointer('pointerup', canvas, 620, 400);
+    await settle();
+    expect(current()).not.toBe(source);
+    expect(current().endsWith('\n## 回復する\n\n参考: [[heading-document#回復する|回復]]\n- 休息の取り方\n- 睡眠\n')).toBe(true);
+  });
+});
