@@ -1,6 +1,6 @@
 import type { App, TFile } from 'obsidian';
 import { TOPICS_KEY } from '../core/topics';
-import { isLayoutMode, type LayoutMode } from '../layout/layout';
+import { isLayoutMode, type LayoutMode } from '../core/layout-mode';
 
 /** Canonical identity marker. Only the YAML boolean `true` claims a Markdown note. */
 export const MAPPY_KEY = 'mappy';

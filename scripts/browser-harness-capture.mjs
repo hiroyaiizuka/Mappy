@@ -395,9 +395,11 @@ async function captureOperations(recorder, page) {
         tops.set(level, (tops.get(level) ?? new Set()).add(top));
       }
       const root = nodes.find(node => node.classList.contains('is-root'))?.getBoundingClientRect();
-      const below = nodes.filter(node => !node.classList.contains('is-root') && node.getBoundingClientRect().top < (root?.bottom ?? -Infinity)).length;
+      const below = root ? nodes.filter(node => !node.classList.contains('is-root') && node.getBoundingClientRect().top < root.bottom).length : null;
       return { perLevel: Object.fromEntries([...tops].map(([level, set]) => [level, set.size])), below };
     })()`);
+    // uneven-branches has one H2 and no free topics, so aria-level (the Markdown depth) is the layout depth.
+    expect(rows.below !== null, 'root node missing');
     const misaligned = Object.entries(rows.perLevel).filter(([, count]) => count !== 1);
     expect(misaligned.length === 0, `levels with more than one row: ${JSON.stringify(misaligned)}`);
     expect(rows.below === 0, `${rows.below} nodes above the root's bottom edge`);
@@ -406,24 +408,32 @@ async function captureOperations(recorder, page) {
     return `${hierarchy} nodes, rows per level ${JSON.stringify(rows.perLevel)}`;
   });
 
-  await recorder.run('hierarchy-collapse', '階層図で「多数の兄弟」の開閉ボタン', '24 の件数がノードの下に出て、ノードが減る', async () => {
+  await recorder.run('hierarchy-collapse', `階層図で「${title}」の開閉ボタン`, '24 の件数がノードの下に出て、ノードが減り、再展開で戻る', async () => {
     const before = (await page.harness('h.nodes()')).length;
-    const node = await page.harness('h.node("多数の兄弟")');
-    expect(node?.toggle, 'toggle missing');
+    const node = await nodeRect(title);
+    expect(node.toggle, 'fold control missing');
     await page.click(center(node.toggle).x, center(node.toggle).y);
     await page.settle();
-    const after = await page.harness('h.node("多数の兄弟")');
-    expect(after.collapsed, 'node did not collapse');
-    const badge = await page.evaluate(`document.querySelector('.mappy-node.is-collapsed .mappy-node-toggle-mark')?.textContent`);
-    expect(badge === '24', `badge shows ${badge}`);
-    expect(after.toggle.y > after.rect.y + after.rect.height - 1, 'badge is not below the node');
-    const count = (await page.harness('h.nodes()')).length;
-    expect(count === before - 24, `${count} nodes after collapsing 24`);
-    await page.click(center(after.toggle).x, center(after.toggle).y);
-    await page.settle();
-    const restored = (await page.harness('h.nodes()')).length;
-    expect(restored === before, `${restored} nodes after re-expanding`);
-    return `badge ${badge}, ${before} → ${count} → ${restored} nodes`;
+    try {
+      const after = await nodeRect(title);
+      expect(after.collapsed, 'node did not collapse');
+      const badge = await page.evaluate(`document.querySelector('.mappy-node.is-collapsed .mappy-node-toggle-mark')?.textContent`);
+      expect(badge === '24', `badge shows ${badge}`);
+      // In the hierarchy the badge hangs under the node rather than beside it.
+      expect(after.toggle.y > after.rect.y + after.rect.height - 1, 'badge is not below the node');
+      const count = (await page.harness('h.nodes()')).length;
+      expect(count === before - 24, `${count} nodes after collapsing 24`);
+      return `badge ${badge}, ${before} → ${count} nodes`;
+    } finally {
+      // Re-expand even after a failed check so the later cases start from the full map.
+      const current = await nodeRect(title);
+      if (current.collapsed && current.toggle) {
+        await page.click(center(current.toggle).x, center(current.toggle).y);
+        await page.settle();
+      }
+      const restored = (await page.harness('h.nodes()')).length;
+      expect(restored === before, `${restored} nodes after re-expanding`);
+    }
   });
 
   await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {

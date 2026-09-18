@@ -5,7 +5,7 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { Viewport } from "../interaction/viewport";
-import { isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
@@ -32,6 +32,13 @@ const SNAP_PAD = 12;
 const SNAP_COLUMN = 24;
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
+
+/** One button per layout, in LAYOUT_MODES order; the Record keeps the list and the buttons in step. */
+const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
+  mindmap: { label: "マップ", icon: "git-fork" },
+  timeline: { label: "タイムライン", icon: "git-commit-horizontal" },
+  hierarchy: { label: "階層図", icon: "network" },
+};
 
 export class MindmapView extends ItemView {
   file: TFile | null = null;
@@ -125,9 +132,8 @@ export class MindmapView extends ItemView {
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
-    for (const [mode, label, icon] of [
-      ["mindmap", "マップ", "git-fork"], ["timeline", "タイムライン", "git-commit-horizontal"], ["hierarchy", "階層図", "network"],
-    ] as const) {
+    for (const mode of LAYOUT_MODES) {
+      const { label, icon } = LAYOUT_BUTTONS[mode];
       const button = this.button(modes, label, icon, () => {
         this.selectMode(mode);
       });
