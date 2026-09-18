@@ -15,6 +15,8 @@ interface NodeEntry {
 
 interface NodeAppearance {
   visualRootId: string;
+  /** Free topics are roots of their own trees: dark face, framed first level. */
+  topicIds?: ReadonlySet<string>;
   mode: "mindmap" | "timeline";
 }
 
@@ -57,8 +59,12 @@ export class NodeRenderer extends Component {
         this.entries.set(node.id, entry);
       }
       const isCollapsed = collapsed.has(node.id) && node.children.length > 0;
-      entry.element.toggleClass("is-root", node.id === appearance.visualRootId);
-      entry.element.toggleClass("is-stage", node.parentId === appearance.visualRootId);
+      const isTopic = appearance.topicIds?.has(node.id) ?? false;
+      const isRoot = isTopic || node.id === appearance.visualRootId;
+      const parentIsRoot = node.parentId === appearance.visualRootId || (node.parentId !== null && (appearance.topicIds?.has(node.parentId) ?? false));
+      entry.element.toggleClass("is-root", isRoot);
+      entry.element.toggleClass("is-topic", isTopic);
+      entry.element.toggleClass("is-stage", !isRoot && parentIsRoot);
       entry.element.toggleClass("is-parent", node.children.length > 0);
       entry.element.toggleClass("is-timeline", appearance.mode === "timeline");
       entry.element.toggleClass("is-collapsed", isCollapsed);

@@ -7,7 +7,7 @@
  */
 import type { App, EventRef, TFile as ObsidianFile, ViewState } from "obsidian";
 
-export { TFile, normalizePath } from "../../tests/mocks/obsidian";
+export { TFile, normalizePath } from "../../tests/mocks/obsidian-file";
 
 interface HarnessEventRef extends EventRef {
   events: Events;

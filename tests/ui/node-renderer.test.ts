@@ -88,6 +88,24 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     expect(renderer.entries.get(id(parsed, 'First'))?.element.classList.contains('is-stage')).toBe(true);
   });
 
+  it('styles free topics as roots of their own trees and their children as stages', () => {
+    const { parsed, renderer } = setup('## Body\n- Branch\n\n## Topic\n- Under topic\n  - Deep\n');
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), {
+      visualRootId: id(parsed, 'Body'), topicIds: new Set([id(parsed, 'Topic')]), mode: 'mindmap',
+    });
+    const classes = (title: string): string[] => Array.from(renderer.entries.get(id(parsed, title))?.element.classList ?? []);
+    expect(classes('Body')).toContain('is-root');
+    expect(classes('Body')).not.toContain('is-topic');
+    expect(classes('Topic')).toEqual(expect.arrayContaining(['is-root', 'is-topic']));
+    expect(classes('Topic')).not.toContain('is-stage');
+    expect(classes('Under topic')).toContain('is-stage');
+    expect(classes('Deep')).not.toContain('is-stage');
+    // Without the topic set, later H2 sections fall back to plain nodes, never to stages of the body.
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Body'), mode: 'mindmap' });
+    expect(classes('Topic')).not.toContain('is-root');
+    expect(classes('Topic')).not.toContain('is-stage');
+  });
+
   it('shows every hidden descendant in the collapsed badge, including a nested collapsed branch', () => {
     const { parsed, renderer } = setup('## Course\n### Stage\n#### One\n##### Deep\n#### Two\n##### Deep two\n');
     const stageId = id(parsed, 'Stage');

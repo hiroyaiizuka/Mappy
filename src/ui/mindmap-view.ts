@@ -1,9 +1,10 @@
 import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
-import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
+import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
 import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
-import { layoutTree, type LayoutNode, type LayoutResult } from "../layout/layout";
+import { readTopicPositions, type TopicPositionMap } from "../core/topics";
+import { layoutTree, type FreeTopicLayout, type LayoutNode, type LayoutResult } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout, type MapLayout } from "../obsidian/frontmatter";
@@ -21,6 +22,8 @@ export const VIEW_TYPE = "mappy-map";
 export class MindmapView extends ItemView {
   file: TFile | null = null;
   private document: MindDocument | undefined;
+  /** Body/topic split and stored positions of `document`, derived once per parse. */
+  private projected: { document: MindDocument; projection: MapProjection; positions: TopicPositionMap } | undefined;
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
   private mode: MapLayout = "mindmap";
@@ -244,16 +247,33 @@ export class MindmapView extends ItemView {
     this.draw();
   }
 
-  private visualRoot(): MindNode | undefined {
-    const root = this.document?.root;
-    return root?.children.length === 1 ? root.children[0] : root;
+  /** The body root plus the free topics beside it (§5 M7); documents without headings keep the virtual root. */
+  private projection(): MapProjection | undefined {
+    const document = this.document;
+    if (!document) return undefined;
+    if (this.projected?.document !== document) {
+      this.projected = { document, projection: projectMap(document), positions: readTopicPositions(document.source) };
+    }
+    return this.projected.projection;
+  }
+
+  /** Stored positions for this layout. Topics sharing a heading share one entry; only the first uses it. */
+  private topicLayouts(trees?: readonly LayoutNode[]): FreeTopicLayout[] {
+    const projected = this.projected;
+    if (!projected) return [];
+    const used = new Set<string>();
+    return projected.projection.topics.map((topic, index) => {
+      const stored = used.has(topic.title) ? undefined : projected.positions.get(topic.title)?.[this.mode];
+      used.add(topic.title);
+      return { tree: trees?.[index + 1] ?? topic, position: stored ? { x: stored.x, y: stored.y } : null };
+    });
   }
 
   private visible(): MindNode[] {
-    const root = this.visualRoot();
-    if (!root) return [];
+    const projection = this.projection();
+    if (!projection) return [];
     const result: MindNode[] = [];
-    const pending = [root];
+    const pending = [projection.root, ...projection.topics].reverse();
     while (pending.length > 0) {
       const node = pending.pop();
       if (!node) break;
@@ -264,14 +284,15 @@ export class MindmapView extends ItemView {
   }
 
   private draw(): void {
-    if (!this.document || !this.file) return;
+    const projection = this.projection();
+    if (!this.document || !this.file || !projection) return;
     for (const [mode, button] of this.modeButtons) {
       button.toggleClass("is-active", mode === this.mode);
       button.setAttribute("aria-pressed", String(mode === this.mode));
     }
     const nodes = this.visible();
     this.renderer.update(nodes, this.document, this.file.path, this.collapsed, {
-      visualRootId: this.visualRoot()?.id ?? this.document.root.id, mode: this.mode,
+      visualRootId: projection.root.id, topicIds: new Set(projection.topics.map(topic => topic.id)), mode: this.mode,
     });
     if (!nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
@@ -282,11 +303,12 @@ export class MindmapView extends ItemView {
     if (!this.ready || this.closed || this.layoutFrame !== undefined) return;
     this.layoutFrame = this.contentEl.win.requestAnimationFrame(() => {
       this.layoutFrame = undefined;
-      const root = this.visualRoot();
-      if (!root || this.closed) return;
+      const projection = this.projection();
+      if (!projection || this.closed) return;
       const sizes = this.renderer.sizes();
-      const preview = this.previewLayout(root, sizes);
-      this.layout = layoutTree(preview?.tree ?? root, sizes, preview?.collapsed ?? this.collapsed, this.mode);
+      const preview = this.previewLayout(projection, sizes);
+      this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
+        this.topicLayouts(preview?.trees));
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
       this.placeholder.hidden = !slot;
@@ -336,18 +358,33 @@ export class MindmapView extends ItemView {
     this.scheduleLayout();
   }
 
-  /** Layout input with an empty placeholder in the previewed slot, sized like the moving node. */
-  private previewLayout(root: MindNode, sizes: Map<string, { width: number; height: number }>): { tree: LayoutNode; collapsed: ReadonlySet<string> } | null {
+  /**
+   * Layout input with an empty placeholder in the previewed slot, sized like the moving node.
+   * `trees[0]` is the body and `trees[i + 1]` the i-th free topic; only the destination's tree is rebuilt.
+   */
+  private previewLayout(
+    projection: MapProjection, sizes: Map<string, { width: number; height: number }>,
+  ): { trees: LayoutNode[]; collapsed: ReadonlySet<string> } | null {
     const command = this.dropPreview;
     const size = command ? sizes.get(command.nodeId) : undefined;
-    if (!command || !size || !this.document) return null;
-    const tree = previewTree(this.document, root, command, this.collapsed);
+    const document = this.document;
+    if (!command || !size || !document) return null;
+    const roots: MindNode[] = [projection.root, ...projection.topics];
+    // Topics first: a virtual-root body also parents them, so it would claim their destinations.
+    let previewed = -1;
+    let tree: LayoutNode | null = null;
+    for (let index = roots.length - 1; index >= 0 && !tree; index -= 1) {
+      const root = roots[index];
+      tree = root ? previewTree(document, root, command, this.collapsed) : null;
+      previewed = index;
+    }
     if (!tree) return null;
+    const trees = roots.map((root, index): LayoutNode => index === previewed && tree ? tree : root);
     sizes.set(PLACEHOLDER_ID, size);
     // A collapsed destination reveals only the placeholder, so it must not be measured as collapsed.
     const collapsed = this.collapsed.has(command.parentId)
       ? new Set(Array.from(this.collapsed).filter(id => id !== command.parentId)) : this.collapsed;
-    return { tree, collapsed };
+    return { trees, collapsed };
   }
 
   private selected(): MindNode | undefined {

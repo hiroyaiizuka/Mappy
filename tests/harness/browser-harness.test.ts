@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
-import { parseMarkdown } from '../../src/core/markdown';
+import { parseMarkdown, projectMap } from '../../src/core/markdown';
+import { readTopicPositions } from '../../src/core/topics';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
@@ -43,9 +44,17 @@ describe('browser harness fixtures', () => {
     expect(fixtureSource('heading-document')).toContain('[[roundtrip-edge-cases|別名付きノート]]');
   });
 
+  it('shows the multi-H2 fixture as one body with three free topics instead of a virtual root', () => {
+    const doc = parseMarkdown(fixtureSource('free-topics'), 'free-topics');
+    const { root, topics } = projectMap(doc);
+    expect(root.title).toBe('講座の本体');
+    expect(topics.map(topic => topic.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック']);
+    expect([...readTopicPositions(doc.source).keys()]).toEqual(['参考資料', '補足: 用語', '消えた見出し']);
+  });
+
   it('uses the same vault paths as test-vault/Fixtures', () => {
     expect(FIXTURES.map(fixture => fixture.path)).toEqual([
-      'Fixtures/heading-document.md', 'Fixtures/roundtrip-edge-cases.md', 'Fixtures/uneven-branches.md',
+      'Fixtures/heading-document.md', 'Fixtures/roundtrip-edge-cases.md', 'Fixtures/uneven-branches.md', 'Fixtures/free-topics.md',
       'Fixtures/performance-10.md', 'Fixtures/performance-100.md', 'Fixtures/performance-500.md', 'Fixtures/performance-2000.md',
     ]);
     expect(SAMPLE_IMAGE.url.startsWith('data:image/svg+xml')).toBe(true);

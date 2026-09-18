@@ -1,12 +1,7 @@
 import type { Editor, TFile as ObsidianFile, ViewState } from 'obsidian';
 
 /** Only the public runtime members used by DocumentStore are needed in Node. */
-export class TFile {
-  path = '';
-  get name(): string { return this.path.split('/').pop() ?? ''; }
-  get basename(): string { return this.name.replace(/\.[^.]+$/u, ''); }
-  get extension(): string { return this.name.includes('.') ? this.name.split('.').pop() ?? '' : ''; }
-}
+export { TFile, normalizePath } from './obsidian-file';
 
 /** Records the states a leaf received, so routing tests can inspect the real call. */
 export class WorkspaceLeaf {
@@ -23,10 +18,6 @@ export class WorkspaceLeaf {
 export class Notice {
   static messages: string[] = [];
   constructor(message: string) { Notice.messages.push(message); }
-}
-
-export function normalizePath(path: string): string {
-  return path.replace(/\\/gu, '/').replace(/\/{2,}/gu, '/').replace(/^\.\//u, '').replace(/\/$/u, '');
 }
 
 export class MarkdownView {

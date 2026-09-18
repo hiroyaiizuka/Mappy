@@ -76,20 +76,38 @@ function maskComments(source: string): string {
   return parts.length === 0 ? source : parts.join('') + source.slice(copiedTo);
 }
 
-function frontmatterEnd(source: string): number {
+export interface FrontmatterLayout {
+  /** First YAML body line. */
+  bodyFrom: number;
+  /** Start of the closing delimiter line; the end of the file while unfinished. */
+  closingFrom: number;
+  /** Offset after the closing delimiter line. */
+  end: number;
+  closed: boolean;
+}
+
+/** Locate Obsidian's YAML header without parsing it. */
+export function frontmatterLayout(source: string): FrontmatterLayout | null {
   const opening = /^(?:\uFEFF)?---[ \t]*(?:\r?\n|$)/u.exec(source);
-  if (!opening) return 0;
-  let offset = opening[0].length;
+  if (!opening) return null;
+  const bodyFrom = opening[0].length;
+  let offset = bodyFrom;
   while (offset < source.length) {
     const newline = source.indexOf('\n', offset);
     const end = newline === -1 ? source.length : newline;
     const line = source.slice(offset, end).replace(/\r$/u, '');
-    if (/^(?:---|\.\.\.)[ \t]*$/u.test(line)) return newline === -1 ? end : end + 1;
+    if (/^(?:---|\.\.\.)[ \t]*$/u.test(line)) {
+      return { bodyFrom, closingFrom: offset, end: newline === -1 ? end : end + 1, closed: true };
+    }
     if (newline === -1) break;
     offset = newline + 1;
   }
   // An unfinished YAML header stays opaque until its closing delimiter exists.
-  return source.length;
+  return { bodyFrom, closingFrom: source.length, end: source.length, closed: false };
+}
+
+function frontmatterEnd(source: string): number {
+  return frontmatterLayout(source)?.end ?? 0;
 }
 
 function trimRange(source: string, from: number, to: number): [number, number] {
@@ -255,6 +273,32 @@ function listHierarchy(source: string, root: MindNode, tree: SyntaxNode, heading
     for (const child of node.children) child.parentId = node.id;
   }
   return nodes;
+}
+
+/** What the map shows: the body tree and the free topics placed beside it. */
+export interface MapProjection {
+  /**
+   * Body root: the first top-level heading section. A document that starts with
+   * list items before any H2 keeps the virtual root as its body, shown without
+   * the topics it also parents in the parse tree.
+   */
+  root: MindNode;
+  /** Free topics: the top-level heading sections after the body, in source order. Their positions live in frontmatter. */
+  topics: MindNode[];
+}
+
+/**
+ * Split the parse tree into the body and the free topics without touching a
+ * single range: nodes, parents, and offsets stay those of the plain projection,
+ * so editing commands keep working on `doc.root` whatever the display shows.
+ */
+export function projectMap(doc: MindDocument): MapProjection {
+  const sections = doc.root.children;
+  const first = sections.findIndex((node) => node.kind !== 'list');
+  const body = sections[0];
+  if (first === -1 || !body) return { root: doc.root, topics: [] };
+  if (first === 0) return { root: body, topics: sections.slice(1) };
+  return { root: { ...doc.root, children: sections.slice(0, first) }, topics: sections.slice(first) };
 }
 
 /** Project headings or H2 + real unordered lists, preserving original source ranges. */

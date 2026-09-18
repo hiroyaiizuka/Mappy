@@ -53,7 +53,8 @@ Obsidian API 型は、現在の lint パッケージの peer dependency と初�
 - Markdown: 本文/frontmatter/コメント/リンク/画像/空行/改行コードの保全、同名ノード、コード中の `#` / `-`、Setext、従来形式の深さ飛び、リストの2/4スペース・タブと深い入れ子。
 - コマンド: 改名/挿入/移動/削除で対象範囲だけ変化。子孫と継続本文を含む移動、従来見出しの六段階上限、深いリスト、旧形式の明示変換、原文不一致時の拒否。
 - 保存: 未保存エディタの優先、Vault.process 内の原文照合、外部更新、複数ビュー、Undo/Redo と履歴破棄。
-- レイアウト: 非重複、順序、枝の大きさ、折りたたみ、上下交互タイムライン、線がノード内や下線へ伸びないこと。
+- フリートピック: 両形式で最初の見出し区画が本体・後ろの区画がトピックになり本体の原文範囲が変わらないこと、`mappy-topics` の flow／block 読み取りと引用符付きキー、そのキーだけの差し替えと frontmatter の新規作成、改名時のキー更新、複数 H2 の fixture の表示（jsdom で製品の view を起動）。
+- レイアウト: 非重複、順序、枝の大きさ、折りたたみ、上下交互タイムライン、線がノード内や下線へ伸びないこと。フリートピックの指定位置（本体ルート基準）と既定配置（本体の下、重ならない最初の空き）、Fit の bounds。
 - ズーム: ポインター下のワールド座標が一定、倍率上限、パン、Fit。
 
 Vitest の Node 環境で検証する。乱択・property-based test は、保存と復元の不変条件に効果がある場合に追加する。
@@ -67,7 +68,7 @@ jsdom を導入し、製品の DOM 操作・インライン入力・キー操作
 `harness/browser/` にあるページで、製品の `src/ui/mindmap-view.ts`・`node-renderer.ts`・`map-viewport.ts`・`map-events.ts`・`inline-editor.ts` と `core` / `layout` / `interaction` / `document-store.ts` をそのまま読み込む。`obsidian` モジュールだけを `harness/browser/obsidian.ts`（`tests/mocks/obsidian.ts` と同系統のモック。Component・ItemView・Menu・Modal・Notice・setIcon・MarkdownRenderer の最小実装）に差し替え、Obsidian が起動時に生やす DOM ヘルパー（`createDiv`、`addClass`、`event.targetNode` など）は `harness/browser/dom.ts` が同じ形で prototype に載せる。Vault・workspace・metadataCache・fileManager は `harness/browser/app.ts` のメモリ内実装で、ファイルへは何も書かない。
 
 - 起動: `npm run harness:browser` で `dist/harness/` をビルド・監視し、`http://127.0.0.1:8765/` で配信する（`--port` で変更）。`npm run harness:browser:build` は一度だけビルドし、`dist/harness/index.html` を `file://` で直接開ける。ビルドは製品と同じ esbuild を使い、ランタイム依存を追加しない。
-- fixture: `tests/fixtures/` の `heading-document`（従来の見出し形式・リンク・画像）、`roundtrip-edge-cases`（同名見出し・コードブロック・欠落画像）、`uneven-branches`（H2＋リスト、8 段の一列の枝、24 兄弟、長い日本語、リンク・画像・コードブロック、同名ノード）と、`scripts/performance-fixtures.mjs` が生成する 10／100／500／2,000 ノード。`harness:prepare` が `test-vault/Fixtures/` に置く文書と同一で、ページ左の select か `?fixture=<id>` で切り替える。
+- fixture: `tests/fixtures/` の `heading-document`（従来の見出し形式・リンク・画像）、`roundtrip-edge-cases`（同名見出し・コードブロック・欠落画像）、`uneven-branches`（H2＋リスト、8 段の一列の枝、24 兄弟、長い日本語、リンク・画像・コードブロック、同名ノード）、`free-topics`（複数の H2: 本体＋フリートピック 3 つ、`mappy-topics` のレイアウト別位置・引用符付きキー・孤児キー、位置未設定の既定配置）と、`scripts/performance-fixtures.mjs` が生成する 10／100／500／2,000 ノード。`harness:prepare` が `test-vault/Fixtures/` に置く文書と同一で、ページ左の select か `?fixture=<id>` で切り替える。
 - 操作: 選択（クリック・矢印キー）、開閉（分岐点の − と Space）、パン（背景ドラッグ・ホイール）、ズーム（Ctrl/⌘＋ホイール、ピンチ、右下の −／倍率／＋／全体表示）、レイアウト切替、右クリックメニュー、ペインのサイズ変更（プリセット、数値、右下の角のドラッグ。変更ごとに製品の `onResize()` を呼ぶ）、「閉じて開き直す」（`onClose`→`unload`→新しい view）。Enter／Tab／F2／Delete と右クリックの編集はメモリ内の文書に対して動くが、保存経路の検証ではない。
 - 時刻の記録: fixture 切替ごとに `parseMarkdown` 単体、`setState` 完了、最初の描画フレーム、位置が 3 フレーム安定するまでの経過 ms をページ左の一覧と `window.__mappyHarness.timings`、Performance タイムラインの `mappy:load:<id>` に残す。基準端末・条件・p95 を伴う計測基盤はこの層の範囲外で、別途整備する。
 - 自動撮影: `npm run harness:browser:capture` は headless Chrome（`--chrome <path>` か `MAPPY_CHROME`、既定はインストール済みの Google Chrome）を DevTools Protocol で操作し、全 fixture の Fit 表示と、`uneven-branches` での選択・矢印キー・開閉・パン・ホイール・Ctrl＋ホイール・ズームボタン・タイムライン・640×480／390×700 のサイズ変更・右クリックメニュー・内部リンククリック・F2 入力→Enter→⌘Z（メモリ内の改名と Undo）・閉じて開き直し、`performance-2000` の開閉を実行する。各ケースの PASS／FAIL、時刻、全画面とペイン 2 倍のスクリーンショットを `artifacts/browser-harness/<日時>/record.md` に書く。Chrome がなければ未実施と書いた record だけを残して終了コード 2 になる。
