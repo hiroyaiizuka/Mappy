@@ -112,6 +112,28 @@ describe('buildScene', () => {
     expect(scene.bounds.y).toBe(0);
   });
 
+  it('uses the hierarchy layout when requested: root on top, stages on one row, connectors as polylines', () => {
+    const contents = sceneContents(parseMarkdown(SOURCE, 'Note'));
+    const scene = buildScene(contents, measures(contents), 'hierarchy', new Set(), [10, 20]);
+    const role = (nodeId: string): string | undefined => contents.nodes.find(node => node.id === nodeId)?.role;
+    const root = scene.blocks.find(block => role(block.nodeId) === 'root');
+    const stages = scene.blocks.filter(block => block.kind === 'label' && role(block.nodeId) === 'stage');
+    expect(root && stages.length > 1).toBeTruthy();
+    if (!root) return;
+    expect(new Set(stages.map(stage => stage.y)).size).toBe(1);
+    expect(stages.every(stage => stage.y > root.y + root.height)).toBe(true);
+    expect(scene.bounds).toMatchObject({ x: 10, y: 20 });
+    expect(root.y).toBe(20);
+    for (const line of scene.lines) {
+      expect(line.length).toBeGreaterThanOrEqual(2);
+      for (let index = 1; index < line.length; index += 1) {
+        const [ax, ay] = line[index - 1] ?? [NaN, NaN];
+        const [bx, by] = line[index] ?? [NaN, NaN];
+        expect(ax === bx || ay === by).toBe(true);
+      }
+    }
+  });
+
   it('skips nodes without measurements', () => {
     const contents = sceneContents(parseMarkdown(SOURCE, 'Note'));
     const partial = measures(contents);

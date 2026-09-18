@@ -93,6 +93,16 @@
 .mappy-view .mappy-nodes { user-select: none; -webkit-user-select: none; }
 /* No cursor change while dragging: cursor is inherited, so setting it on the canvas would restyle every node. */
 .mappy-view .mappy-node.is-drag-source { opacity: 0.35; }
+/* A free tree (topic or body) drags itself, no ghost: lifted a little, and out of hit testing so slots beneath it can be previewed. */
+.mappy-view .mappy-node.is-drag-moving { box-shadow: var(--shadow-s); pointer-events: none; }
+/* A topic held over a slot already looks like the plain node it becomes when it joins. */
+.mappy-view .mappy-node.is-topic.is-merging {
+  padding: 8px 14px;
+  border-color: var(--mappy-drop);
+  background: var(--background-primary);
+  font-size: var(--font-text-size);
+}
+.mappy-view .mappy-node.is-topic.is-merging .mappy-node-label { font-weight: 600; }
 .mappy-view .mappy-drag-ghost {
   position: absolute;
   left: 0;
@@ -135,7 +145,7 @@
   display: block;
   box-sizing: border-box;
   width: 100%;
-  min-width: 80px;
+  min-width: 40px;
   max-width: 303px;
   min-height: 22px;
   margin: 0;

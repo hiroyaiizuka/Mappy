@@ -51,8 +51,9 @@ function obsidianDom<T extends HTMLElement>(element: T): T {
 }
 
 /** Nodes are stacked 40px tall with a 20px gap in a column at x 100–300; the canvas is 0–800 × 0–600. */
-function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## B\n') {
+function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## B\n', free: readonly string[] = []) {
   const parsed = parseMarkdown(source, 'Course');
+  const freeIds = new Set(parsed.nodes.filter((node) => free.includes(node.title)).map((node) => node.id));
   const canvas = obsidianDom(document.createElement('div'));
   canvas.getBoundingClientRect = () => rectOf({ left: 0, top: 0, width: 800, height: 600 });
   const capture = { set: vi.fn(), release: vi.fn() };
@@ -94,9 +95,14 @@ function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## 
   document.body.append(canvas);
   const actions = {
     select: vi.fn<NodeDragActions['select']>(),
+    free: vi.fn<NodeDragActions['free']>(id => freeIds.has(id)),
     dropTarget: vi.fn<NodeDragActions['dropTarget']>((dragged, target, position) => resolveDrop(parsed, dragged, target, position)),
     preview: vi.fn<NodeDragActions['preview']>(),
     command: vi.fn<NodeDragActions['command']>(),
+    shift: vi.fn<NodeDragActions['shift']>(),
+    place: vi.fn<NodeDragActions['place']>(),
+    detach: vi.fn<NodeDragActions['detach']>(),
+    snap: vi.fn<NodeDragActions['snap']>(() => null),
   } satisfies NodeDragActions;
   const drag = new NodeDrag(canvas, actions);
   components.add(drag);
@@ -218,14 +224,15 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A3'), index: 0 });
   });
 
-  it('keeps the current slot over the placeholder, the source, and empty canvas', () => {
+  it('keeps the current slot over the placeholder, the source, and nearby empty canvas', () => {
     const { canvas, actions, id, pointer, begin, showPlaceholder } = fixture();
     begin('B');
     pointer('pointermove', canvas, 200, 223);
     const calls = actions.preview.mock.calls.length;
     showPlaceholder({ left: 100, top: 130, width: 200, height: 40 });
     pointer('pointermove', canvas, 200, 150);
-    pointer('pointermove', canvas, 600, 500);
+    // 30 px right of A1's box: empty canvas, but close enough to keep the slot.
+    pointer('pointermove', canvas, 330, 240);
     pointer('pointermove', canvas, 200, 400);
     expect(actions.preview.mock.calls.length).toBe(calls);
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 0 });
@@ -275,6 +282,25 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('Course'), index: 1 });
   });
 
+  it('uses left/right slots on every hierarchy node, stage or not', () => {
+    const { canvas, actions, node, id, pointer, begin } = fixture();
+    for (const title of ['A', 'A2']) node(title).classList.add('is-hierarchy');
+    begin('B');
+    // Left edge of a hierarchy stage: before it among the root's children.
+    pointer('pointermove', canvas, 110, 165);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('Course'), index: 0 });
+    // Middle: appended as the last of A's three children.
+    pointer('pointermove', canvas, 200, 165);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 3 });
+    pointer('pointerup', canvas, 200, 165);
+    // A deeper hierarchy node: still left/right rather than top/bottom.
+    begin('B');
+    pointer('pointermove', canvas, 110, 300);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 1 });
+    pointer('pointermove', canvas, 290, 300);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
+  });
+
   it('starts from links and images but not from controls or non-primary buttons, and cleans up on unload', () => {
     const { canvas, actions, node, pointer, ghost, begin } = fixture();
     for (const tag of ['a', 'img'] as const) {
@@ -307,6 +333,192 @@ describe('NodeDrag pointer dragging', () => {
     expect(canvas.classList.contains('is-dragging-node')).toBe(false);
     expect(actions.preview).toHaveBeenLastCalledWith(null);
     expect(actions.command).not.toHaveBeenCalled();
+  });
+
+  describe('free nodes (free-topic roots)', () => {
+    const TOPICS = '## Body\n- Child\n\n## Topic\n- Under\n';
+
+    it('moves its own tree with live offsets and no ghost; a release on empty canvas places it', () => {
+      const { canvas, actions, node, id, pointer, center, ghost } = fixture(TOPICS, ['Topic']);
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 2, y);
+      expect(actions.shift).not.toHaveBeenCalled();
+      pointer('pointermove', canvas, x + 10, y + 4);
+      expect(ghost()).toBeNull();
+      expect(node('Topic').classList.contains('is-drag-source')).toBe(false);
+      expect(canvas.classList.contains('is-dragging-node')).toBe(true);
+      expect(actions.select).toHaveBeenCalledExactlyOnceWith(id('Topic'));
+      expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: 10, y: 4 });
+      // Empty canvas: no slot, nothing previewed.
+      pointer('pointermove', canvas, 700, 500);
+      expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: 700 - x, y: 500 - y });
+      expect(actions.preview).not.toHaveBeenCalled();
+      pointer('pointerup', canvas, x + 120, y - 60);
+      expect(actions.place).toHaveBeenCalledExactlyOnceWith(id('Topic'), { x: 120, y: -60 });
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(canvas.classList.contains('is-dragging-node')).toBe(false);
+      // The view owns the end of a placed drag; only a cancelled one is put back through shift(null).
+      expect(actions.shift).not.toHaveBeenCalledWith(id('Topic'), null);
+    });
+
+    it('previews the slot under the pointer like a tree drag and joins that node on release', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      const [cx, cy] = center('Child');
+      pointer('pointermove', canvas, cx, cy);
+      const join = { type: 'move', nodeId: id('Topic'), parentId: id('Child'), index: 0 };
+      expect(actions.dropTarget).toHaveBeenLastCalledWith(id('Topic'), id('Child'), 'inside');
+      expect(actions.preview).toHaveBeenLastCalledWith(join);
+      expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: cx - x, y: cy - y });
+      pointer('pointerup', canvas, cx, cy);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      expect(actions.command).toHaveBeenCalledExactlyOnceWith(join);
+      expect(actions.place).not.toHaveBeenCalled();
+      expect(actions.shift).not.toHaveBeenCalledWith(id('Topic'), null);
+    });
+
+    it('asks the view for a snap slot from the root\'s own rect over empty canvas, previews it, and joins on release', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+      const join = { type: 'move', nodeId: id('Topic'), parentId: id('Child'), index: 0 } as const;
+      actions.snap.mockImplementation((_id, root) => (root.x > 400 ? join : null));
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      // Over empty canvas the view is asked with the root's rect as the pointer carries it (canvas pixels), not the pointer itself.
+      pointer('pointermove', canvas, 300, 300);
+      expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 300 - (x - 100), y: 300 - (y - 220), width: 200, height: 40 }, null);
+      expect(actions.preview).not.toHaveBeenCalled();
+      // Carried beside Child: the root's left edge passes 400 and the view offers the slot.
+      pointer('pointermove', canvas, x + 320, 300);
+      expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 420, y: 300 - (y - 220), width: 200, height: 40 }, null);
+      expect(actions.preview).toHaveBeenLastCalledWith(join);
+      pointer('pointermove', canvas, x + 330, 300);
+      expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 430, y: 300 - (y - 220), width: 200, height: 40 }, join);
+      expect(actions.preview).toHaveBeenCalledTimes(1);
+      pointer('pointerup', canvas, x + 330, 300);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      expect(actions.command).toHaveBeenCalledExactlyOnceWith(join);
+      expect(actions.place).not.toHaveBeenCalled();
+    });
+
+    it('clears the slot when the snap says nothing is near', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+      const join = { type: 'move', nodeId: id('Topic'), parentId: id('Child'), index: 0 } as const;
+      actions.snap.mockImplementation((_id, root) => (root.x > 400 ? join : null));
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      pointer('pointermove', canvas, x + 320, 300);
+      expect(actions.preview).toHaveBeenLastCalledWith(join);
+      pointer('pointermove', canvas, x, 520);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      pointer('pointerup', canvas, x, 520);
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.place).toHaveBeenCalledOnce();
+    });
+
+    it('puts the tree back on Escape, pointercancel, or a release outside the canvas', () => {
+      for (const cancel of ['escape', 'pointercancel', 'outside'] as const) {
+        const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+        const [x, y] = center('Topic');
+        pointer('pointerdown', node('Topic'), x, y);
+        pointer('pointermove', canvas, x + 30, y + 30);
+        expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), { x: 30, y: 30 });
+        if (cancel === 'escape') canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        else if (cancel === 'pointercancel') pointer('pointercancel', canvas, x + 30, y + 30);
+        else { pointer('pointermove', canvas, 900, 700); pointer('pointerup', canvas, 900, 700); }
+        expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), null);
+        expect(actions.place).not.toHaveBeenCalled();
+        expect(actions.command).not.toHaveBeenCalled();
+        document.body.replaceChildren();
+      }
+    });
+
+    it('leaves clicks alone and keeps tree drags for the body and its descendants', () => {
+      const { canvas, actions, node, pointer, center, ghost } = fixture(TOPICS, ['Topic']);
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointerup', canvas, x + 1, y);
+      expect(actions.shift).not.toHaveBeenCalled();
+      expect(actions.place).not.toHaveBeenCalled();
+      const [cx, cy] = center('Child');
+      pointer('pointerdown', node('Child'), cx, cy);
+      pointer('pointermove', canvas, cx + 8, cy);
+      expect(ghost()).not.toBeNull();
+      expect(actions.shift).not.toHaveBeenCalled();
+      pointer('pointerup', canvas, cx + 8, cy);
+    });
+  });
+
+  describe('detaching a tree node on empty canvas', () => {
+    it('detaches at the ghost position when released on empty canvas away from where it was pressed', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture();
+      const [x, y] = center('A3');
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      pointer('pointermove', canvas, 600, 500);
+      expect(actions.preview).not.toHaveBeenCalled();
+      pointer('pointerup', canvas, 600, 500);
+      // Grabbed at its centre (100 px in from the left, 20 px from the top); the ghost's top-left is the drop point.
+      expect(actions.detach).toHaveBeenCalledExactlyOnceWith(id('A3'), { x: 600 - (x - 100), y: 500 - (y - 340) });
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.place).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when released back near its own place, outside the canvas, or on Escape', () => {
+      const { canvas, actions, node, pointer, center } = fixture();
+      const [x, y] = center('A3');
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, x + 8, y + 6);
+      pointer('pointerup', canvas, x + 8, y + 6);
+      expect(actions.detach).not.toHaveBeenCalled();
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      pointer('pointermove', canvas, 900, 700);
+      pointer('pointerup', canvas, 900, 700);
+      expect(actions.detach).not.toHaveBeenCalled();
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, 600, 500);
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      expect(actions.detach).not.toHaveBeenCalled();
+      expect(actions.command).not.toHaveBeenCalled();
+    });
+
+    it('does not detach when released on a node that refused the drop', () => {
+      const { canvas, actions, node, pointer, center } = fixture();
+      // A dropped inside its own descendant A1 is refused; releasing there must not detach A either.
+      const [x, y] = center('A');
+      pointer('pointerdown', node('A'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      const [ax, ay] = center('A1');
+      pointer('pointermove', canvas, ax, ay);
+      expect(actions.dropTarget).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), 'inside');
+      expect(actions.preview).not.toHaveBeenCalled();
+      pointer('pointerup', canvas, ax, ay);
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.detach).not.toHaveBeenCalled();
+    });
+
+    it('keeps a previewed slot over empty canvas only while nearby; far away the slot clears and a release detaches', () => {
+      const { canvas, actions, id, pointer, begin, center } = fixture();
+      begin('A3');
+      const [ax, ay] = center('A1');
+      pointer('pointermove', canvas, ax, ay - 12);
+      const slot = { type: 'move', nodeId: id('A3'), parentId: id('A'), index: 0 };
+      expect(actions.preview).toHaveBeenLastCalledWith(slot);
+      // 20 px right of A1's box (right edge at 300): still nearby, the slot stays.
+      pointer('pointermove', canvas, 320, ay);
+      expect(actions.preview).toHaveBeenLastCalledWith(slot);
+      // 200 px away: free again.
+      pointer('pointermove', canvas, 500, ay);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      pointer('pointerup', canvas, 500, ay);
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.detach).toHaveBeenCalledOnce();
+    });
   });
 
   it('exposes the placeholder id the view must mark on its element', () => {

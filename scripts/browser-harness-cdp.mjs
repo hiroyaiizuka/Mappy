@@ -66,7 +66,14 @@ export function launchChrome(chrome, profile, window, options = {}) {
   return { child, endpoint, log };
 }
 
-/** Thrown for every call still pending when Chrome's DevTools socket closes. */
+/** A protocol call that gets no answer within this time means the browser is wedged; the run then fails fast. */
+export const CDP_TIMEOUT_MS = 60000;
+
+/**
+ * Thrown for every call once the DevTools connection is unusable: the socket
+ * closed (Chrome exited or crashed) or a call went unanswered for CDP_TIMEOUT_MS.
+ * Callers treat it as "this Chrome is gone", not as one failed step.
+ */
 export class CdpClosedError extends Error {}
 
 /** Minimal flat-session CDP client over the global WebSocket. */
@@ -75,24 +82,31 @@ export class Cdp {
     this.socket = socket;
     this.nextId = 1;
     this.pending = new Map();
-    this.closed = false;
+    /** Why the connection is unusable, or null while it works. */
+    this.dead = null;
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data));
       if (message.id === undefined) return;
       const entry = this.pending.get(message.id);
       if (!entry) return;
       this.pending.delete(message.id);
+      clearTimeout(entry.timer);
       if (message.error) entry.reject(new Error(`${entry.method}: ${message.error.message}`));
       else entry.resolve(message.result);
     });
     // Without this a crashed Chrome leaves every await hanging and Node exits with an unsettled top-level await.
-    socket.addEventListener('close', () => {
-      this.closed = true;
-      for (const [id, entry] of this.pending) {
-        this.pending.delete(id);
-        entry.reject(new CdpClosedError(`${entry.method}: DevTools connection closed (Chrome exited or crashed)`));
-      }
-    });
+    socket.addEventListener('close', () => { this.abandon('DevTools connection closed (Chrome exited or crashed)'); });
+  }
+
+  /** Mark the connection unusable and reject everything still pending. */
+  abandon(reason) {
+    if (this.dead) return;
+    this.dead = reason;
+    for (const [id, entry] of this.pending) {
+      this.pending.delete(id);
+      clearTimeout(entry.timer);
+      entry.reject(new CdpClosedError(`${entry.method}: ${reason}`));
+    }
   }
 
   static connect(url) {
@@ -104,10 +118,14 @@ export class Cdp {
   }
 
   send(method, params = {}, sessionId) {
-    if (this.closed) return Promise.reject(new CdpClosedError(`${method}: DevTools connection closed`));
+    if (this.dead) return Promise.reject(new CdpClosedError(`${method}: ${this.dead}`));
     const id = this.nextId++;
+    // MAPPY_CAPTURE_TRACE=1 prints every protocol call, to see where a run stalls.
+    if (process.env.MAPPY_CAPTURE_TRACE) console.error(`cdp ${id} ${method} ${JSON.stringify(params).slice(0, 160)}`);
     return new Promise((resolveResult, reject) => {
-      this.pending.set(id, { method, resolve: resolveResult, reject });
+      // Headless Chrome has been seen to stop answering with its browser process spinning; do not wait forever.
+      const timer = setTimeout(() => { this.abandon(`browser unresponsive (${method} unanswered for ${CDP_TIMEOUT_MS / 1000}s)`); }, CDP_TIMEOUT_MS);
+      this.pending.set(id, { method, resolve: resolveResult, reject, timer });
       this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
@@ -144,6 +162,13 @@ export class Page {
     await this.mouse('mouseMoved', x, y);
     await this.mouse('mousePressed', x, y, { button, clickCount: 1 });
     await this.mouse('mouseReleased', x, y, { button, clickCount: 1 });
+  }
+
+  /** Two presses at the same point; Chrome raises the dblclick on the second release. */
+  async dblclick(x, y) {
+    await this.click(x, y);
+    await this.mouse('mousePressed', x, y, { button: 'left', clickCount: 2 });
+    await this.mouse('mouseReleased', x, y, { button: 'left', clickCount: 2 });
   }
 
   async drag(fromX, fromY, toX, toY, steps = 8) {
@@ -202,7 +227,8 @@ ${log.text}`);
   } finally {
     cdp?.close();
     const exited = new Promise(resolveExit => { child.once('exit', resolveExit); });
-    child.kill();
+    // A wedged browser ignores SIGTERM and would keep spinning after the run; SIGKILL leaves nothing behind.
+    child.kill('SIGKILL');
     await exited;
     await rm(profile, { recursive: true, force: true, maxRetries: 5 });
   }

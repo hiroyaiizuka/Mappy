@@ -2,7 +2,7 @@ import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
 import { attachmentMarkdown } from "../core/attachments";
-import { foldBadgeWidth, foldControlSize, type FoldPosition, type PositionedNode } from "../layout/layout";
+import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
 
 interface NodeEntry {
   element: HTMLDivElement;
@@ -17,7 +17,7 @@ interface NodeAppearance {
   visualRootId: string;
   /** Free topics are roots of their own trees: dark face, framed first level. */
   topicIds?: ReadonlySet<string>;
-  mode: "mindmap" | "timeline";
+  mode: LayoutMode;
 }
 
 /** Each Markdown render owns a disposable child component. */
@@ -67,6 +67,7 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-stage", !isRoot && parentIsRoot);
       entry.element.toggleClass("is-parent", node.children.length > 0);
       entry.element.toggleClass("is-timeline", appearance.mode === "timeline");
+      entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       entry.element.setAttribute("aria-label", node.title.trim() || "空のノード");

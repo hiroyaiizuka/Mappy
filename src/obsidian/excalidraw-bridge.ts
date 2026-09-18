@@ -1,9 +1,9 @@
 import type { App, TFile } from 'obsidian';
 import { parseMarkdown, type MindDocument } from '../core/markdown';
 import {
-  buildScene, sceneContents, type MapMode, type NodeMeasure, type NodeRole, type SceneNodeContent,
+  buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
-import type { NodeSize } from '../layout/layout';
+import type { LayoutMode, NodeSize } from '../layout/layout';
 import type { Point } from '../layout/path-points';
 import type {
   ExcalidrawAutomate, ExcalidrawDropData, ExcalidrawDropHook, ExcalidrawElement, ExcalidrawStyle, ExcalidrawViewLike,
@@ -13,7 +13,7 @@ import { readMapLayout } from './frontmatter';
 
 export interface ImportRequest {
   file: TFile;
-  mode: MapMode;
+  mode: LayoutMode;
   /** Node IDs of `document`; a fresh parse assigns new IDs, so pass the document they belong to. */
   collapsed: ReadonlySet<string>;
   document?: MindDocument;

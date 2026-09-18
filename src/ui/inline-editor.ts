@@ -25,8 +25,9 @@ export class InlineEditor {
 
   constructor(private readonly host: HTMLElement, private readonly options: InlineEditorOptions) {
     host.addClass("is-editing");
+    // About ten characters wide; longer text wraps onto more rows instead of widening the node.
     this.input = host.createEl("textarea", {
-      cls: "mappy-inline-input", attr: { rows: "1", "aria-label": "ノードのテキスト" },
+      cls: "mappy-inline-input", attr: { rows: "1", cols: "10", "aria-label": "ノードのテキスト" },
     });
     this.input.value = options.initial;
     this.suggestion = options.suggest?.(this.input);

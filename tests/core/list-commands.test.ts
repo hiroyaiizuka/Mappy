@@ -218,11 +218,14 @@ describe('positioned moves for drag and drop (list format)', () => {
       .toBe('## Root\n- A\n  - B\n');
   });
 
-  it('reorders H2 sections among root children and refuses H2 under list items', () => {
+  it('reorders H2 sections among root children; the body section never goes under a node, a topic section joins it', () => {
     const doc = parse('## A\n- a\n\n## B\n- b\n\n## C\n- c\n');
     expect(execute(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: 'root', index: 0 }).source)
       .toBe('## C\n- c\n\n## A\n- a\n\n## B\n- b\n');
-    expect(() => planEdit(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: find(doc, 'a').id, index: 0 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: find(doc, 'A').id, parentId: find(doc, 'b').id, index: 0 })).toThrow('本体のルート');
+    expect(resolveDrop(doc, find(doc, 'A').id, find(doc, 'b').id, 'inside')).toBeNull();
+    expect(execute(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: find(doc, 'a').id, index: 0 }).source)
+      .toBe('## A\n- a\n  - C\n    - c\n\n## B\n- b\n');
   });
 
   it('rejects list items under the virtual root, self, descendants, and bad positions, and no-ops the same position', () => {

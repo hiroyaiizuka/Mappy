@@ -16,12 +16,13 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
-import { chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { CdpClosedError, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
 const PANE = { width: 1280, height: 800 };
 const OPERATION_FIXTURE = 'uneven-branches';
+const TOPIC_FIXTURE = 'free-topics';
 
 const center = rect => ({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
 const inside = (rect, outer, margin = 0) => rect.x >= outer.x - margin && rect.y >= outer.y - margin
@@ -43,6 +44,8 @@ class Recorder {
       const detail = await body();
       entry.detail = typeof detail === 'string' ? detail : '';
     } catch (error) {
+      // A dead Chrome cannot record anything more; abort the run instead of failing every remaining case.
+      if (error instanceof CdpClosedError) throw error;
       entry.result = 'FAIL';
       entry.detail = error instanceof Error ? error.message : String(error);
     }
@@ -72,11 +75,11 @@ async function loadFixture(page, id) {
   return timing;
 }
 
-async function emptyCanvasPoint(page) {
+async function emptyCanvasPoint(page, margin = 24) {
   const canvas = await page.harness('h.canvasRect()');
   const nodes = await page.harness('h.nodes()');
-  for (let y = canvas.y + 24; y < canvas.y + canvas.height - 80; y += 40) {
-    for (let x = canvas.x + 24; x < canvas.x + canvas.width - 220; x += 40) {
+  for (let y = canvas.y + margin; y < canvas.y + canvas.height - 80; y += 40) {
+    for (let x = canvas.x + margin; x < canvas.x + canvas.width - 220; x += 40) {
       if (!nodes.some(node => node.rect.x - 8 <= x && x <= node.rect.x + node.rect.width + 8
         && node.rect.y - 8 <= y && y <= node.rect.y + node.rect.height + 8)) return { x, y };
     }
@@ -218,12 +221,74 @@ async function captureOperations(recorder, page) {
     expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('timeline')), 'layout preference was not written through processFrontMatter');
   });
 
-  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る', async () => {
+  await recorder.run('hierarchy', '左下の「階層図」', 'ルートが上、同じ深さが同じ段になり、ノード数は変わらない。`mappy-layout: hierarchy` が書かれる', async () => {
+    const before = (await page.harness('h.nodes()')).length;
+    const button = await page.harness('h.button("階層図")');
+    expect(button, 'hierarchy button missing');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const hierarchy = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
+    expect(hierarchy === before, `${hierarchy} hierarchy nodes of ${before}`);
+    // Same aria-level ⇒ same top edge, and the root above every other node.
+    const rows = await page.evaluate(`(() => {
+      const nodes = Array.from(document.querySelectorAll('.mappy-node'));
+      const tops = new Map();
+      for (const node of nodes) {
+        const level = node.getAttribute('aria-level');
+        const top = Math.round(node.getBoundingClientRect().top * 10) / 10;
+        tops.set(level, (tops.get(level) ?? new Set()).add(top));
+      }
+      const root = nodes.find(node => node.classList.contains('is-root'))?.getBoundingClientRect();
+      const below = root ? nodes.filter(node => !node.classList.contains('is-root') && node.getBoundingClientRect().top < root.bottom).length : null;
+      return { perLevel: Object.fromEntries([...tops].map(([level, set]) => [level, set.size])), below };
+    })()`);
+    // uneven-branches has one H2 and no free topics, so aria-level (the Markdown depth) is the layout depth.
+    expect(rows.below !== null, 'root node missing');
+    const misaligned = Object.entries(rows.perLevel).filter(([, count]) => count !== 1);
+    expect(misaligned.length === 0, `levels with more than one row: ${JSON.stringify(misaligned)}`);
+    expect(rows.below === 0, `${rows.below} nodes above the root's bottom edge`);
+    const activity = await page.harness('h.activity');
+    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"hierarchy"')), 'hierarchy preference was not written through processFrontMatter');
+    return `${hierarchy} nodes, rows per level ${JSON.stringify(rows.perLevel)}`;
+  });
+
+  await recorder.run('hierarchy-collapse', `階層図で「${title}」の開閉ボタン`, '24 の件数がノードの下に出て、ノードが減り、再展開で戻る', async () => {
+    const before = (await page.harness('h.nodes()')).length;
+    const node = await nodeRect(title);
+    expect(node.toggle, 'fold control missing');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    try {
+      const after = await nodeRect(title);
+      expect(after.collapsed, 'node did not collapse');
+      const badge = await page.evaluate(`document.querySelector('.mappy-node.is-collapsed .mappy-node-toggle-mark')?.textContent`);
+      expect(badge === '24', `badge shows ${badge}`);
+      // In the hierarchy the badge hangs under the node rather than beside it.
+      expect(after.toggle.y > after.rect.y + after.rect.height - 1, 'badge is not below the node');
+      const count = (await page.harness('h.nodes()')).length;
+      expect(count === before - 24, `${count} nodes after collapsing 24`);
+      return `badge ${badge}, ${before} → ${count} nodes`;
+    } finally {
+      // Re-expand even after a failed check so the later cases start from the full map.
+      const current = await nodeRect(title);
+      if (current.collapsed && current.toggle) {
+        await page.click(center(current.toggle).x, center(current.toggle).y);
+        await page.settle();
+      }
+      const restored = (await page.harness('h.nodes()')).length;
+      expect(restored === before, `${restored} nodes after re-expanding`);
+    }
+  });
+
+  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
     const button = await page.harness('h.button("マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
-    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline').length`);
-    expect(timeline === 0, `${timeline} nodes still in timeline`);
+    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy').length`);
+    expect(timeline === 0, `${timeline} nodes still in timeline or hierarchy`);
+    const activity = await page.harness('h.activity');
+    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
+    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
   });
 
   for (const [width, height] of [[640, 480], [390, 700]]) {
@@ -334,6 +399,329 @@ async function captureOperations(recorder, page) {
   });
 }
 
+/** The note without its frontmatter: what the body and the topic sections say. */
+function bodyOf(source) {
+  const closing = source.indexOf('\n---\n', 4);
+  return closing === -1 ? source : source.slice(closing + 5);
+}
+
+/** The `mappy-topics` line of one heading, or null. */
+function topicEntry(source, title) {
+  const line = source.split('\n').find(candidate => candidate.startsWith(`  ${title}: {`));
+  return line ? line.trim() : null;
+}
+
+/** M7 free topics on the free-topics fixture: add by double-click, drag to a position, delete, and the map's history. */
+async function captureTopicOperations(recorder, page) {
+  await loadFixture(page, TOPIC_FIXTURE);
+  const original = await page.harness('h.source()');
+  const topicRect = async name => {
+    const node = await page.harness(`h.node(${JSON.stringify(name)})`);
+    expect(node, `Topic not found: ${name}`);
+    return node;
+  };
+  // Undo and redo go through the canvas context menu: headless Chrome 153 stops responding after repeated
+  // modifier-key input (⌘Z, ⌘⇧Z) over CDP, and the menu items run the same map history as the keys.
+  const menuAction = async title => {
+    const point = await emptyCanvasPoint(page, 80);
+    await page.mouse('mouseMoved', point.x, point.y);
+    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
+    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
+    const item = await page.evaluate(`(() => {
+      const found = Array.from(document.querySelectorAll('.menu .menu-item'))
+        .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
+      if (!found) return null;
+      const rect = found.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
+    })()`);
+    expect(item, `context menu has no item ${title}`);
+    expect(!item.disabled, `menu item ${title} is disabled`);
+    await page.click(center(item).x, center(item).y);
+    await page.settle();
+  };
+  const undo = () => menuAction('元に戻す');
+  const redo = () => menuAction('やり直す');
+  const title = '追加した話題';
+  let added = null;
+
+  await recorder.run('topic-add-dblclick', '空白をダブルクリック → 入力 → Enter', '文書末尾に `## ` が増えてその場で入力でき、確定で見出しの文と mappy-topics の位置が保存される', async () => {
+    // Away from the edges, so revealing the new node does not pan the viewport under the comparison.
+    const point = await emptyCanvasPoint(page, 80);
+    const canvas = await page.harness('h.canvasRect()');
+    const pressed = worldPoint(await page.harness('h.viewport()'), point, canvas);
+    const before = (await page.harness('h.nodes()')).length;
+    await page.dblclick(point.x, point.y);
+    await page.settle();
+    const blank = await page.harness('h.source()');
+    expect(blank === `${original}\n## \n`, 'the empty section was not appended at the end of the note');
+    const editing = await page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input')`);
+    expect(editing, 'inline editor did not take focus on the new topic');
+    const host = await page.evaluate(`document.activeElement?.closest('.mappy-node')?.classList.contains('is-topic')`);
+    expect(host, 'the edited node is not a topic root');
+    await page.screenshot(join(recorder.directory, 'topic-add-editing.png'));
+    await page.type(title);
+    await page.key('Enter', 'Enter', 13);
+    await page.settle();
+    added = await page.harness('h.source()');
+    expect(added.endsWith(`\n## ${title}\n`), 'the title was not written to the heading');
+    const entry = topicEntry(added, title);
+    expect(entry && /^.+: \{ mindmap: \[-?\d+, -?\d+\] \}$/u.test(entry), `mappy-topics entry: ${entry}`);
+    expect(bodyOf(added).slice(0, bodyOf(original).length) === bodyOf(original), 'the body or the other topics changed');
+    const node = await topicRect(title);
+    const placed = worldPoint(await page.harness('h.viewport()'), node.rect, canvas);
+    expect(Math.abs(placed.x - pressed.x) < 1.5 && Math.abs(placed.y - pressed.y) < 1.5,
+      `topic root at world ${placed.x.toFixed(1)},${placed.y.toFixed(1)}, pressed at ${pressed.x.toFixed(1)},${pressed.y.toFixed(1)}`);
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before + 1, `nodes ${before} → ${count}`);
+    return `${entry}、ノード ${before} → ${count}`;
+  });
+
+  await recorder.run('topic-add-undo', '右クリック「元に戻す」×2 → 「やり直す」×2', '1 回目で名前と位置、2 回目で区画が消え、やり直しで戻る', async () => {
+    expect(added, 'the previous case did not add a topic');
+    await undo();
+    expect((await page.harness('h.source()')) === `${original}\n## \n`, 'first undo did not remove title and position together');
+    await undo();
+    expect((await page.harness('h.source()')) === original, 'second undo did not remove the section');
+    expect(!(await page.harness(`h.node(${JSON.stringify(title)})`)), 'the topic is still shown after undo');
+    await redo();
+    await redo();
+    expect((await page.harness('h.source()')) === added, 'redo did not restore the named topic');
+    expect(await page.harness(`h.node(${JSON.stringify(title)})`), 'the topic is not shown after redo');
+  });
+
+  const reference = '参考資料';
+  let moved = null;
+  await recorder.run('topic-drag', `「${reference}」を右下へ 120×60 px ドラッグ`, 'トピックの木ごと動き、mappy-topics のその見出しの mindmap 位置だけが変わる', async () => {
+    const base = await page.harness('h.source()');
+    const before = await topicRect(reference);
+    const child = await page.harness('h.node("講座ノート")');
+    const view = await page.harness('h.viewport()');
+    const from = center(before.rect);
+    await page.drag(from.x, from.y, from.x + 120, from.y + 60);
+    await page.settle();
+    const after = await topicRect(reference);
+    expect(Math.abs(after.rect.x - before.rect.x - 120) < 1.5 && Math.abs(after.rect.y - before.rect.y - 60) < 1.5,
+      `topic moved by ${(after.rect.x - before.rect.x).toFixed(1)}, ${(after.rect.y - before.rect.y).toFixed(1)}`);
+    const childAfter = await page.harness('h.node("講座ノート")');
+    expect(child && childAfter && Math.abs(childAfter.rect.x - child.rect.x - 120) < 1.5, 'the child of the topic did not move with it');
+    moved = await page.harness('h.source()');
+    expect(bodyOf(moved) === bodyOf(base), 'the body changed while dragging a topic');
+    const dx = Math.round(120 / view.scale);
+    const dy = Math.round(60 / view.scale);
+    const expected = `${reference}: { mindmap: [${-360 + dx}, ${200 + dy}], timeline: [0, 260] }`;
+    expect(topicEntry(moved, reference) === expected, `expected ${expected}, got ${topicEntry(moved, reference)}`);
+    expect(moved.includes('  "補足: 用語": { mindmap: [560, -140] }\n  消えた見出し: { mindmap: [0, 0] }\n'), 'other entries changed');
+    expect(!(await page.evaluate(`document.querySelector('.mappy-drag-ghost')`)), 'a ghost was left behind');
+    return `mindmap: [-360, 200] → [${-360 + dx}, ${200 + dy}]（scale ${view.scale.toFixed(3)}）、timeline は不変`;
+  });
+
+  await recorder.run('topic-drag-undo', '右クリック「元に戻す」→「やり直す」', '位置が戻り、やり直しで再び移動する', async () => {
+    expect(moved, 'the previous case did not move a topic');
+    const movedRect = (await topicRect(reference)).rect;
+    await undo();
+    const restored = await page.harness('h.source()');
+    expect(topicEntry(restored, reference) === `${reference}: { mindmap: [-360, 200], timeline: [0, 260] }`, 'undo did not restore the previous position');
+    expect(bodyOf(restored) === bodyOf(moved), 'undo changed the body');
+    const back = (await topicRect(reference)).rect;
+    expect(Math.abs(back.x - movedRect.x + 120) < 1.5 && Math.abs(back.y - movedRect.y + 60) < 1.5, 'the topic did not move back');
+    await redo();
+    expect((await page.harness('h.source()')) === moved, 'redo did not reapply the move');
+  });
+
+  await recorder.run('topic-drag-escape', `「${reference}」をドラッグ中に Escape`, '木が元の位置へ戻り、frontmatter は変わらない', async () => {
+    const base = await page.harness('h.source()');
+    const before = await topicRect(reference);
+    const from = center(before.rect);
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    await page.mouse('mouseMoved', from.x + 40, from.y + 40, { button: 'left' });
+    await page.mouse('mouseMoved', from.x + 80, from.y + 80, { button: 'left' });
+    await page.settle();
+    const during = await topicRect(reference);
+    expect(Math.abs(during.rect.x - before.rect.x - 80) < 1.5, 'the topic did not follow the pointer');
+    await page.key('Escape', 'Escape', 27);
+    await page.mouse('mouseReleased', from.x + 80, from.y + 80, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const after = await topicRect(reference);
+    expect(Math.abs(after.rect.x - before.rect.x) < 1.5 && Math.abs(after.rect.y - before.rect.y) < 1.5, 'the topic did not return');
+    expect((await page.harness('h.source()')) === base, 'the note changed on a cancelled drag');
+  });
+
+  await recorder.run('topic-unplaced-drag', '「位置のないトピック」を左下へ 60×80 px ドラッグ（他のノードから離れた空白）', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
+    const name = '位置のないトピック';
+    const base = await page.harness('h.source()');
+    const before = await topicRect(name);
+    const view = await page.harness('h.viewport()');
+    const from = center(before.rect);
+    await page.drag(from.x, from.y, from.x - 60, from.y + 80);
+    await page.settle();
+    const source = await page.harness('h.source()');
+    const entry = topicEntry(source, name);
+    expect(entry, 'no entry was created for the unplaced topic');
+    expect(bodyOf(source) === bodyOf(base), 'the body changed');
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not drop the new key');
+    return `${entry}（scale ${view.scale.toFixed(3)}）`;
+  });
+
+  await recorder.run('topic-delete', `「${reference}」を選択 → Delete → 「元に戻す」→「やり直す」`, '区画と mappy-topics の項目が一緒に消え、Undo で両方戻り、Redo で再び消える', async () => {
+    const base = await page.harness('h.source()');
+    const node = await topicRect(reference);
+    await page.click(center(node.rect).x, center(node.rect).y);
+    const before = (await page.harness('h.nodes()')).length;
+    await page.key('Delete', 'Delete', 46);
+    await page.settle();
+    const deleted = await page.harness('h.source()');
+    expect(!deleted.includes(reference), 'the topic heading or its key is still in the note');
+    expect(deleted.includes('mappy-topics:\n  "補足: 用語": { mindmap: [560, -140] }\n'), 'other entries were lost');
+    const body = bodyOf(base);
+    const cut = body.slice(0, body.indexOf('## 参考資料')) + body.slice(body.indexOf('## 補足: 用語'));
+    expect(bodyOf(deleted) === cut, 'more than the topic section changed');
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before - 4, `nodes ${before} → ${count}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore section and position');
+    expect((await page.harness('h.nodes()')).length === before, 'nodes did not come back');
+    await redo();
+    expect((await page.harness('h.source()')) === deleted, 'redo did not delete again');
+    await undo();
+    return `ノード ${before} → ${count} → ${before}`;
+  });
+
+  await recorder.run('topic-join', `「${reference}」を「回復する」の上へドラッグ → 離す`, 'ゴーストではなく木ごと追従し、スロット（仮ノード＋青線）が出て、離すとその子の枝になる。mappy-topics の項目も消える', async () => {
+    const base = await page.harness('h.source()');
+    const before = (await page.harness('h.nodes()')).length;
+    const root = await topicRect(reference);
+    const target = await topicRect('回復する');
+    const from = center(root.rect);
+    const to = center(target.rect);
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    for (let step = 1; step <= 10; step += 1) {
+      await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 10, from.y + (to.y - from.y) * step / 10, { button: 'left' });
+    }
+    await page.settle();
+    const preview = await page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
+      const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === ${JSON.stringify(reference)});
+      return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')),
+        ghost: Boolean(host.querySelector('.mappy-drag-ghost')), moving: root?.classList.contains('is-drag-moving'), merging: root?.classList.contains('is-merging') }; })()`);
+    await page.screenshot(join(recorder.directory, 'topic-join-preview.png'));
+    expect(preview.placeholder && preview.connector && !preview.ghost && preview.moving && preview.merging, `preview state ${JSON.stringify(preview)}`);
+    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const joined = await page.harness('h.source()');
+    expect(!joined.includes('## 参考資料') && !topicEntry(joined, reference), 'the section or its entry is still there');
+    expect(joined.includes('  - 睡眠\n  - 参考資料\n    位置は frontmatter の `mappy-topics` にあり、本文には何も書かない。\n\n    - [[heading-document|講座ノート]]\n'), 'the section did not become a branch under 回復する');
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before, `nodes ${before} → ${count}`);
+    const item = await topicRect(reference);
+    const cls = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-node')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === ${JSON.stringify(reference)})?.className`);
+    expect(item && !cls.includes('is-topic') && !cls.includes('is-root') && !cls.includes('is-drag-moving') && !cls.includes('is-merging'), `joined node classes: ${cls}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
+    return `ノード ${count}、参考資料 → 回復する の子（${cls}）`;
+  });
+
+  await recorder.run('body-drag', '本体「講座の本体」を右下へ 100×50 px ドラッグ', '本体がポインターに付いて動き、トピックは画面上の位置を保つ。frontmatter では全トピックの位置が書き換わる', async () => {
+    const base = await page.harness('h.source()');
+    const body = await topicRect('講座の本体');
+    const topicsBefore = await page.harness('h.nodes()');
+    const view = await page.harness('h.viewport()');
+    const from = center(body.rect);
+    await page.drag(from.x, from.y, from.x + 100, from.y + 50);
+    await page.settle();
+    const after = await topicRect('講座の本体');
+    expect(Math.abs(after.rect.x - body.rect.x - 100) < 1.5 && Math.abs(after.rect.y - body.rect.y - 50) < 1.5, `body moved by ${(after.rect.x - body.rect.x).toFixed(1)}, ${(after.rect.y - body.rect.y).toFixed(1)}`);
+    const nowView = await page.harness('h.viewport()');
+    expect(Math.abs(nowView.x - view.x - 100) < 1.5 && Math.abs(nowView.y - view.y - 50) < 1.5, 'viewport did not follow the pointer');
+    for (const name of ['補足: 用語', '位置のないトピック']) {
+      const was = topicsBefore.find(item => item.title === name);
+      const now = await topicRect(name);
+      expect(was && Math.abs(now.rect.x - was.rect.x) < 1.5 && Math.abs(now.rect.y - was.rect.y) < 1.5, `${name} moved on screen by ${(now.rect.x - (was?.rect.x ?? 0)).toFixed(1)}, ${(now.rect.y - (was?.rect.y ?? 0)).toFixed(1)}`);
+    }
+    const moved = await page.harness('h.source()');
+    expect(bodyOf(moved) === bodyOf(base), 'the body changed');
+    const dx = Math.round(100 / view.scale);
+    const dy = Math.round(50 / view.scale);
+    const was = /mindmap: \[(-?\d+), (-?\d+)\]/u.exec(topicEntry(base, reference) ?? '');
+    expect(was, 'no mindmap entry for 参考資料 before the drag');
+    const expected = `参考資料: { mindmap: [${Number(was[1]) - dx}, ${Number(was[2]) - dy}], timeline: [0, 260] }`;
+    expect(topicEntry(moved, reference) === expected, `expected ${expected}, got ${topicEntry(moved, reference)}`);
+    expect(topicEntry(moved, '位置のないトピック'), 'the unplaced topic got no entry');
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the entries');
+    return `${expected}、位置のないトピック: ${topicEntry(moved, '位置のないトピック')}`;
+  });
+
+  await recorder.run('topic-snap', '「位置のないトピック」を「ふりかえる」の右隣（重ならない位置）へ運ぶ → 離す', 'ポインターが相手に乗らなくても、ルートが隣に来た時点でスロットとゴースト風の表示が出て、離すとその子になる', async () => {
+    const base = await page.harness('h.source()');
+    const topic = await topicRect('位置のないトピック');
+    const target = await topicRect('ふりかえる');
+    const from = center(topic.rect);
+    // Bring the root's left edge 24 px right of the target, vertically level; the pointer stays off the target.
+    const to = { x: target.rect.x + target.rect.width + 24 + (from.x - topic.rect.x), y: target.rect.y + target.rect.height / 2 + (from.y - (topic.rect.y + topic.rect.height / 2)) };
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    for (let step = 1; step <= 12; step += 1) await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 12, from.y + (to.y - from.y) * step / 12, { button: 'left' });
+    await page.settle();
+    const under = await page.evaluate(`document.elementFromPoint(${Math.round(to.x)}, ${Math.round(to.y)})?.closest('[data-node-id]')?.querySelector('.mappy-node-label')?.textContent?.trim() ?? null`);
+    const preview = await page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
+      const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '位置のないトピック');
+      return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')), merging: root?.classList.contains('is-merging') }; })()`);
+    await page.screenshot(join(recorder.directory, 'topic-snap-preview.png'));
+    expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
+    expect(preview.placeholder && preview.connector && preview.merging, `preview state ${JSON.stringify(preview)}`);
+    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const joined = await page.harness('h.source()');
+    expect(joined.includes('  - ふりかえる\n    - 位置のないトピック\n      `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n      - 既定位置\n'), `joined: ${JSON.stringify(joined.slice(joined.indexOf('- 記録する'), joined.indexOf('- 記録する') + 160))}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
+    return `ポインター下: なし、スロット表示あり → ふりかえる の子`;
+  });
+
+  await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
+    const base = await page.harness('h.source()');
+    const before = (await page.harness('h.nodes()')).length;
+    const branch = await topicRect('記録する');
+    const from = center(branch.rect);
+    const canvas = await page.harness('h.canvasRect()');
+    const point = { x: canvas.x + canvas.width - 260, y: canvas.y + canvas.height - 120 };
+    await page.drag(from.x, from.y, point.x, point.y, 12);
+    await page.settle();
+    const detached = await page.harness('h.source()');
+    expect(detached.endsWith('\n## 記録する\n\n- ふりかえる\n'), `note tail: ${JSON.stringify(detached.slice(-40))}`);
+    expect(!detached.includes('- 記録する\n'), 'the branch is still in the body');
+    const entry = topicEntry(detached, '記録する');
+    expect(entry && /^記録する: \{ mindmap: \[-?\d+, -?\d+\] \}$/u.test(entry), `entry: ${entry}`);
+    expect(bodyOf(detached).startsWith(bodyOf(base).replace('- 記録する\n  - ふりかえる\n', '')), 'the rest of the body changed');
+    const root = await topicRect('記録する');
+    const cls = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-node')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '記録する')?.className`);
+    expect(cls.includes('is-topic') && cls.includes('is-root'), `classes: ${cls}`);
+    // The ghost's top-left becomes the new root's top-left: the release point minus the grab offset inside the node.
+    const grab = { x: from.x - branch.rect.x, y: from.y - branch.rect.y };
+    expect(Math.abs(root.rect.x - (point.x - grab.x)) < 2 && Math.abs(root.rect.y - (point.y - grab.y)) < 2, `root at ${root.rect.x},${root.rect.y}, expected ${point.x - grab.x},${point.y - grab.y}`);
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before, `nodes ${before} → ${count}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the branch');
+    return `${entry}、ノード ${count}`;
+  });
+
+  await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」を含むメニューが開き、Escape で閉じる', async () => {
+    const point = await emptyCanvasPoint(page);
+    await page.mouse('mouseMoved', point.x, point.y);
+    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
+    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
+    const items = await page.evaluate(`Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent)`);
+    expect(items.includes('トピックを追加'), `menu items: ${items.join(' / ')}`);
+    await page.screenshot(join(recorder.directory, 'topic-context-menu-open.png'));
+    await page.key('Escape', 'Escape', 27);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open');
+    return `項目: ${items.join(' / ')}`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -375,8 +763,9 @@ async function main() {
   const directory = join(outRoot, stamp);
   await mkdir(directory, { recursive: true });
   const notExecuted = [
-    'Obsidian 実機（③ E01〜E29）: このページは代替ではない。',
+    'Obsidian 実機（③ E01〜E29）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
     'トラックパッドのピンチ・二本指スクロール、ネイティブ IME、モバイル: headless の合成入力では確認できない。',
+    '⌘Z／⌘⇧Z の連打: headless Chrome 153 は修飾キー付きのキー入力を CDP で繰り返すと応答しなくなるため、フリートピックの Undo／Redo は右クリックメニューで実行した。キー経由の Undo は edit-inline-memory の 1 回と jsdom のテストで確認する。',
     '性能計測（基準端末・条件・p50／p95）: `node scripts/browser-harness-perf.mjs` が `artifacts/performance/` に記録する。ここでは時刻の生値だけを残す。',
   ];
   const chrome = findChrome(option('--chrome'));
@@ -394,18 +783,28 @@ async function main() {
     return;
   }
   const timings = [];
-  const cases = await withHarnessPage(chrome, { output, window: WINDOW, fixture: OPERATION_FIXTURE, pane: PANE }, async page => {
-    const recorder = new Recorder(page, directory);
-    await captureFixtures(recorder, page, timings);
-    await captureOperations(recorder, page);
-    await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
-    return recorder.cases;
-  });
+  let recorder;
+  let aborted = null;
+  try {
+    // Chrome, its profile and the SIGKILL on a wedged browser live in withHarnessPage.
+    await withHarnessPage(chrome, { output, window: WINDOW, fixture: OPERATION_FIXTURE, pane: PANE }, async page => {
+      recorder = new Recorder(page, directory);
+      await captureFixtures(recorder, page, timings);
+      await captureOperations(recorder, page);
+      await captureTopicOperations(recorder, page);
+      await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
+    });
+  } catch (error) {
+    // Keep the record of what did run; the exit code still reports the abort.
+    aborted = error instanceof Error ? error.message : String(error);
+  }
+  const cases = recorder?.cases ?? [];
+  if (aborted) notExecuted.unshift(`途中で中断したため、残りのケースは未実施（${aborted}）。再実行する。`);
   const record = recordMarkdown({ startedAt: startedAt.toISOString(), chrome, version: chromeVersion(chrome), commit, cases, timings, notExecuted });
   await writeFile(join(directory, 'record.md'), record);
   const failed = cases.filter(entry => entry.result === 'FAIL').length;
-  console.info(`Wrote ${relative(root, directory)} (${cases.length} cases, ${failed} failed).`);
-  if (failed > 0) process.exitCode = 1;
+  console.info(`Wrote ${relative(root, directory)} (${cases.length} cases, ${failed} failed${aborted ? ', aborted' : ''}).`);
+  if (failed > 0 || aborted) process.exitCode = 1;
 }
 
 const invokedAsScript = process.argv[1]

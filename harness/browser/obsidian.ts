@@ -243,7 +243,13 @@ export class Menu extends Component {
     this.dom.style.left = `${x}px`;
     this.dom.style.top = `${y}px`;
     const onPointer = (pointer: Event): void => { if (!this.dom.contains(pointer.target as Node)) this.hide(); };
-    const onKey = (key: KeyboardEvent): void => { if (key.key === "Escape") this.hide(); };
+    // Consume Escape like Obsidian's menu does; an unhandled key would go on to the native menu bar.
+    const onKey = (key: KeyboardEvent): void => {
+      if (key.key !== "Escape") return;
+      key.preventDefault();
+      key.stopPropagation();
+      this.hide();
+    };
     window.setTimeout(() => {
       if (!this.dom.isConnected) return;
       document.addEventListener("pointerdown", onPointer, true);
@@ -354,6 +360,7 @@ const ICON_PATHS: Record<string, string> = {
   scan: "M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2",
   "git-fork": "M12 15v6M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM12 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9",
   "git-commit-horizontal": "M3 12h6M15 12h6M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+  network: "M9 2h6v6H9zM3 16h6v6H3zM15 16h6v6h-6zM12 8v4M6 16v-4h12v4",
   "file-text": "M14 3v4a1 1 0 0 0 1 1h4M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2zM9 13h6M9 17h6",
   "panel-left": "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 3v18",
   pencil: "M17 3l4 4L8 20H4v-4L17 3z",
