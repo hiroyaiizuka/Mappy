@@ -60,7 +60,8 @@ const MAP_ROOT_GAP = 80;
 const MAP_BRANCH_GAP = 56;
 const MAP_VERTICAL_GAP = 22;
 const TIMELINE_GAP = 44;
-const TIMELINE_STEM_GAP = 20;
+/** How far right of a stage's centre its forest starts; exported so the snap zones can score by the landing column. */
+export const TIMELINE_STEM_GAP = 20;
 const TIMELINE_AXIS_GAP = 34;
 const TIMELINE_FOLD_OFFSET = 12;
 const TOPIC_GAP = 48;

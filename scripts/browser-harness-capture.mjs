@@ -69,8 +69,9 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function loadFixture(page, id) {
-  const timing = await page.harness(`h.load(${JSON.stringify(id)})`);
+/** `mode` opens the fixture in that layout without writing `mappy-layout`; omitted, the note (or the view's current mode) decides. */
+async function loadFixture(page, id, mode) {
+  const timing = await page.harness(`h.load(${JSON.stringify(id)}${mode ? `, ${JSON.stringify(mode)}` : ''})`);
   await page.settle();
   return timing;
 }
@@ -741,6 +742,67 @@ async function captureTopicOperations(recorder, page) {
     expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
     return `ポインター下: なし、スロット表示あり → ふりかえる の子`;
   });
+
+  // The same snap in the other layouts, judged by their own geometry: under a leaf in the hierarchy (children hang
+  // below); on the timeline, where a leaf stage's forest starts (above the axis for the third stage) and centred on the
+  // axis between two stages. The layout is switched through the view state, so the note keeps no `mappy-layout`, and
+  // Fit follows because a view-state switch keeps the viewport.
+  const switchLayout = async mode => {
+    await loadFixture(page, TOPIC_FIXTURE, mode);
+    const fit = await page.harness('h.button("全体表示")');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+  };
+  const snapCase = async (mode, id, name, targets, where, place, joined, outcome) => {
+    await recorder.run(id, `${name}に切り替え、「位置のないトピック」を${where}（重ならない位置）へ運ぶ → 離す`, `${name}でも、ルートがその位置に来た時点でスロットとゴースト風の表示が出て、離すと${outcome}`, async () => {
+      await switchLayout(mode);
+      const base = await page.harness('h.source()');
+      const view = await page.harness('h.viewport()');
+      const topic = await topicRect('位置のないトピック');
+      const goals = [];
+      for (const target of targets) goals.push((await topicRect(target)).rect);
+      const from = center(topic.rect);
+      const to = place(topic.rect, goals, from, view.scale);
+      await page.mouse('mouseMoved', from.x, from.y);
+      await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+      for (let step = 1; step <= 12; step += 1) await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 12, from.y + (to.y - from.y) * step / 12, { button: 'left' });
+      await page.settle();
+      const under = await page.evaluate(`document.elementFromPoint(${Math.round(to.x)}, ${Math.round(to.y)})?.closest('[data-node-id]')?.querySelector('.mappy-node-label')?.textContent?.trim() ?? null`);
+      const preview = await page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
+        const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '位置のないトピック');
+        return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')), merging: root?.classList.contains('is-merging') }; })()`);
+      await page.screenshot(join(recorder.directory, `${id}-preview.png`));
+      expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
+      expect(preview.placeholder && preview.connector && preview.merging, `preview state ${JSON.stringify(preview)}`);
+      await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+      await page.settle();
+      const source = await page.harness('h.source()');
+      expect(source.includes(joined), `joined: ${JSON.stringify(source.slice(source.indexOf('- 記録する'), source.indexOf('- 記録する') + 160))}`);
+      expect(!source.includes('mappy-layout'), 'switching the layout through the view state wrote mappy-layout');
+      await undo();
+      expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
+      return `ポインター下: なし、スロット表示あり → ${outcome}（scale ${view.scale.toFixed(3)}）`;
+    });
+  };
+  const habitJoined = '- 習慣化する\n  - 位置のないトピック\n    `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n    - 既定位置\n';
+  try {
+    // Hierarchy: the root's top edge 24 px under the leaf 習慣化する, horizontally centred on it.
+    await snapCase('hierarchy', 'topic-snap-hierarchy', '階層図', ['習慣化する'], '「習慣化する」の真下', (topic, [goal], from) => ({
+      x: goal.x + goal.width / 2 + (from.x - (topic.x + topic.width / 2)), y: goal.y + goal.height + 24 + (from.y - topic.y),
+    }), habitJoined, '習慣化する の子になる');
+    // Timeline: the root's bottom edge 24 px above the leaf stage 習慣化する (the third stage, whose forest hangs above the
+    // axis), its left edge where the forest would start: a stem's length (20 units) right of the stage's centre.
+    await snapCase('timeline', 'topic-snap-timeline', 'タイムライン', ['習慣化する'], '「習慣化する」の真上（森の始まる位置）', (topic, [goal], from, scale) => ({
+      x: goal.x + goal.width / 2 + 20 * scale + (from.x - topic.x), y: goal.y - 24 - topic.height + (from.y - topic.y),
+    }), habitJoined, '習慣化する の子になる');
+    // Timeline: the root centred on the axis in the gap between the stages 記録する and 習慣化する (the pointer sits on the axis line).
+    await snapCase('timeline', 'topic-snap-timeline-axis', 'タイムライン', ['記録する', '習慣化する'], '軸上の「記録する」と「習慣化する」の間', (topic, [left, right], from) => ({
+      x: (left.x + left.width + right.x) / 2 + (from.x - (topic.x + topic.width / 2)), y: left.y + left.height / 2 + (from.y - (topic.y + topic.height / 2)),
+    }), '- 記録する\n  - ふりかえる\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n- 習慣化する\n', '記録する の後ろのステージになる');
+  } finally {
+    // Back to the map, with its own Fit, for the cases that follow.
+    await switchLayout('mindmap');
+  }
 
   await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
     const base = await page.harness('h.source()');
