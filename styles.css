@@ -3,6 +3,8 @@
   /* currentColor survives hosts that blank --text-normal, e.g. Excalidraw's embedded note containers. */
   --mappy-line: currentColor;
   --mappy-selection: var(--color-blue);
+  /* Drag preview (connector and slot frame): lighter than the selection blue so the thick line does not dominate. */
+  --mappy-drop: #2cbdff;
   color: var(--text-normal);
   position: relative;
   height: 100%;
@@ -108,14 +110,14 @@
   left: 0;
   top: 0;
   box-sizing: border-box;
-  border: 1.5px solid var(--mappy-selection);
+  border: 1.5px solid var(--mappy-drop);
   border-radius: 6px;
-  opacity: 0.55;
+  opacity: 0.7;
   background: transparent;
   pointer-events: none;
 }
 .mappy-view .mappy-drop-placeholder[hidden] { display: none; }
-.mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-selection); stroke-width: 4; stroke-linecap: round; }
+.mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-drop); stroke-width: 4; stroke-linecap: round; }
 .mappy-view .mappy-node-content { min-width: 0; }
 .mappy-view .mappy-node-content[hidden] { display: none; }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
