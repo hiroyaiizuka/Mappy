@@ -100,7 +100,8 @@ export class NodeDrag extends Component {
     this.canvas.append(ghost);
     press.element.addClass("is-drag-source");
     this.canvas.addClass("is-dragging-node");
-    this.canvas.setPointerCapture(press.pointerId);
+    // A pointer that vanished between the press and this move cannot be captured; the drag still runs on canvas events.
+    try { this.canvas.setPointerCapture(press.pointerId); } catch { /* InvalidPointerId */ }
     this.session = {
       ...press, ghost, scale, grab: { x: press.x - rect.left, y: press.y - rect.top }, target: null, anchor: null, switched: null,
     };
