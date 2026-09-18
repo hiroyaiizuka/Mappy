@@ -19,7 +19,7 @@ AI エージェントと人間が同じ条件で開発・検証するため、�
 | ブラウザ検証ページ | `npm run harness:browser` | Obsidian なしで製品の map view を動かす。表示崩れ、ポインター操作、ズーム、ペインサイズ（下記②） |
 | ブラウザ撮影 | `npm run harness:browser:capture` | headless Chrome で fixture 表示と主要操作を実行し、スクリーンショットと時刻を `artifacts/browser-harness/` に記録 |
 
-まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。CI は成果物を artifact に保存するだけで、公開を行わない。Git hook は任意の `npm run hooks:install` で有効にする。
+まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。ブランチと PR の CI（`check.yml`）は成果物を artifact に保存するだけで、公開を行わない。`manifest.version` と同じタグを push したときだけ `release.yml` が同じ check を通し、配布物3ファイルを GitHub release に添付する（[ベータ配布](#ベータ配布brat)）。Git hook は任意の `npm run hooks:install` で有効にする。
 
 ## lint の対象を明確にする
 
@@ -145,6 +145,39 @@ OS / Obsidian version / Vault / build hash:
 ```
 
 `test-vault/Fixtures/` には初回準備時に静的 fixture と 10/100/500/2000 見出しの文書を生成する。CRLF・末尾改行なし・途中 IME のような条件は、対応するテストで明示的に作る。レイアウトの幾何テストは性能測定の代わりにしない。性能は実機の入力から画面反映までを別途測定する。
+
+## ベータ配布（BRAT）
+
+コミュニティ公開の前に、[BRAT](https://github.com/TfTHacker/obsidian42-brat) で自分の Vault にインストールして試す経路。BRAT は GitHub release の添付ファイル `main.js`・`manifest.json`・`styles.css` を読み、release のうち semver で最大のもの（pre-release を含む）を選ぶ。リポジトリ本体の `manifest.json` や `main.js` は使わないので、`main.js` はこれまでどおりコミットしない。BRAT での配布は公開審査ではなく、次節の確認を省略しない。
+
+### リリースの作り方
+
+```sh
+# main で。package.json・package-lock.json・manifest.json・versions.json を更新し、
+# コミットとタグ 0.1.0 を作る（v は付かない: .npmrc の tag-version-prefix）
+npm version 0.1.0 -m "release: %s"
+git push origin main 0.1.0
+```
+
+`npm version` は `version` スクリプト（`scripts/bump-version.mjs`）で `manifest.json` の `version` と `versions.json` の対応行を更新する。`minAppVersion` を上げるときは先に `manifest.json` を直してから実行する。バージョン更新を PR に含める場合は `npm version 0.1.0 --no-git-tag-version` で4ファイルだけ更新し、merge 後に main で `git tag 0.1.0 && git push origin 0.1.0` する。
+
+タグを受けた `.github/workflows/release.yml` は、タグが `manifest.version` と一致することを確認し、`npm run check` を通してから `dist/mappy/` の3ファイルを添付した release を作る。`0.x` は pre-release になる。同じタグの release が既にある場合は失敗する（タグを付け替えない。次の版を切る）。release ができたら `gh release view <version>` で添付3ファイルを確認する。
+
+### インストール（プライベートリポジトリ）
+
+このリポジトリはプライベートなので、BRAT に GitHub のトークンを渡す。BRAT 2.x は Obsidian 1.11.4 以上を要求し、トークンを Obsidian の Secret に保存する。
+
+1. GitHub の Settings → Developer settings → Personal access tokens → Fine-grained tokens で発行する。Repository access はこのリポジトリだけ、Repository permissions は Contents: Read-only。`github_pat_` で始まる文字列を控える。
+2. Obsidian に BRAT を入れ、設定 → BRAT → Add beta plugin。Repository に `hiroyaiizuka/Mappy`（URL でも可）、GitHub token で Secret を新規作成してトークンを保存し、Validate → Add plugin。`.obsidian/plugins/mappy/` に release の3ファイルが入る。
+3. 以後は BRAT の「Check for updates」（または起動時の自動更新）で新しい release を取り込む。
+
+Secret は Vault 単位・端末単位のローカル保存で、BRAT の `data.json` には Secret 名だけが残る。端末ごとに登録する。トークンは失効日を設定し、公開に切り替えたら削除する。
+
+### 注意
+
+- ベータは M2 のデータ喪失に関わる実機検証（ネイティブ IME・複数ビュー・外部変更・Undo／Redo）を終えていない。日常の Vault に入れる場合はバックアップ（git や Sync）を確認してから使い、`artifacts/` の最新の記録で未実施項目を確認する。
+- plugin ID `mappy` は開発用（README）。ID を変えると BRAT 側は別プラグイン扱いになり、入れ直しと `data.json` の移行が要る。
+- 専用テスト Vault は `harness:prepare` と「試用中の更新」でファイルを直接置く経路のままにし、BRAT で同じ Vault を更新しない（`harness:preflight` が root / dist と照合する対象が変わる）。
 
 ## 公開前の追加確認
 

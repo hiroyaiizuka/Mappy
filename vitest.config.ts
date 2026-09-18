@@ -9,7 +9,7 @@ export default defineConfig({
     include: ["tests/**/*.test.{ts,mjs}"],
     coverage: {
       provider: "v8",
-      include: ["src/**/*.ts", "scripts/validate-release.mjs"],
+      include: ["src/**/*.ts", "scripts/validate-release.mjs", "scripts/bump-version.mjs"],
       exclude: ["src/main.ts"],
       reporter: ["text", "html"],
     },

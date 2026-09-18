@@ -2,6 +2,7 @@ name: Quality checks
 
 on:
   push:
+    branches: ["**"] # タグの push は release.yml が同じ check を実行する
   pull_request:
   workflow_dispatch:
 

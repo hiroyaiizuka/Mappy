@@ -30,11 +30,11 @@ npm run harness:browser   # Obsidian なしで map view を動かす検証ペー
 npm run harness:browser:capture # headless Chrome で fixture と主要操作を撮影し artifacts/ に記録
 ```
 
-`dist/mappy/` に `main.js`、`manifest.json`、`styles.css` を生成します。`dist/build-info.json` は検証用のハッシュ記録です。公開や既存 Vault へのインストールは行いません。ブラウザ検証ページ（`dist/harness/`）は製品の core / layout / interaction / ui をそのまま読み込み、`obsidian` モジュールだけをモックに置き換えます。保存・リンク解決・テーマ・IME はこのページの対象外で、[検証手順](docs/harness.md)の ③ 実機で確認します。
+`dist/mappy/` に `main.js`、`manifest.json`、`styles.css` を生成します。`dist/build-info.json` は検証用のハッシュ記録です。`check` は公開や既存 Vault へのインストールを行いません。自分の Vault で試すベータ版は、`manifest.version` と同じタグから GitHub release を作り、[BRAT で入れます](docs/harness.md#ベータ配布brat)。ブラウザ検証ページ（`dist/harness/`）は製品の core / layout / interaction / ui をそのまま読み込み、`obsidian` モジュールだけをモックに置き換えます。保存・リンク解決・テーマ・IME はこのページの対象外で、[検証手順](docs/harness.md)の ③ 実機で確認します。
 
 試用中は `harness:prepare` を再実行せず、[更新手順](docs/harness.md#試用中の更新)で配布物3ファイルだけをコピーします。試用中の Markdown と添付ファイルを上書きしないでください。
 
-任意で `npm run hooks:install` を実行すると、このリポジトリの pre-commit に同じ品質ゲートを設定できます。CI の定義は `.github/workflows/check.yml` にあります。
+任意で `npm run hooks:install` を実行すると、このリポジトリの pre-commit に同じ品質ゲートを設定できます。CI の定義は `.github/workflows/check.yml`、タグからの release 作成は `.github/workflows/release.yml` にあります。
 
 ## 試作版の使い方
 
