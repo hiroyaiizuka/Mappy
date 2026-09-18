@@ -7,6 +7,7 @@ import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPosit
 import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
+import { snapSlot, type SnapSlot } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
 import type { ViewRouter } from "../obsidian/view-routing";
@@ -20,16 +21,6 @@ import { LinkSuggest } from "./link-suggest";
 
 export const VIEW_TYPE = "mappy-map";
 
-/**
- * Snap zones for a free tree, in layout units: how far right of a node its root may sit (a little past
- * the branch gap), how far it may overlap, and vertical slack. Tight on purpose: a topic carried past
- * the body must not catch on it, only one brought up beside a node.
- */
-const SNAP_GAP = 72;
-const SNAP_OVERLAP = 8;
-const SNAP_PAD = 12;
-/** How far from a node's children column the root may sit to slot in among them. */
-const SNAP_COLUMN = 24;
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
 
@@ -663,48 +654,40 @@ export class MindmapView extends ItemView {
   }
 
   /**
-   * The slot a dragged topic would join, from where its root sits: beside a leaf (or a collapsed
-   * node) it becomes the last child; level with a node's children column it slots in among them
-   * by height. The slot shown now is kept while the root stays in a widened zone, so the layout
-   * shifting under the placeholder does not make it flicker. Only topics snap; the body never joins.
+   * The slot a dragged topic would join, from where its root sits (`snapSlot` holds each layout's
+   * zones): beside a leaf (or a collapsed node) it becomes the last child; level with a node's
+   * children it slots in among them. The slot shown now is kept while the root stays in a widened
+   * zone, so the layout shifting under the placeholder does not make it flicker. Only topics snap;
+   * the body never joins.
    */
   private snapTarget(draggedId: string, root: { x: number; y: number; width: number; height: number }, current: MoveCommand | null): MoveCommand | null {
     const document = this.document;
     const layout = this.layout;
     const drag = this.topicDrag;
-    // The zones describe the rightward map; other layouts keep the pointer-based slot only.
-    if (!document || !layout || !drag || drag.body || drag.id !== draggedId || this.mode !== "mindmap") return null;
+    if (!document || !layout || !drag || drag.body || drag.id !== draggedId) return null;
     const view = this.viewport.value;
     const rect = { x: (root.x - view.x) / view.scale, y: (root.y - view.y) / view.scale, width: root.width / view.scale, height: root.height / view.scale };
-    const centre = rect.y + rect.height / 2;
     const moving = new Set(drag.marked);
     const byId = new Map(layout.nodes.map(node => [node.id, node]));
     const children = new Map<string, PositionedNode[]>();
+    const parents = new Map<string, string>();
     for (const edge of layout.edges) {
       const child = byId.get(edge.to);
       if (!child || edge.to === PLACEHOLDER_ID || moving.has(edge.from) || moving.has(edge.to)) continue;
       const list = children.get(edge.from) ?? [];
       list.push(child);
       children.set(edge.from, list);
+      parents.set(edge.to, edge.from);
     }
-    const slotFor = (node: PositionedNode, widen: number): { targetId: string; position: "before" | "after" | "inside"; distance: number } | null => {
-      const kids = (children.get(node.id) ?? []).sort((left, right) => left.y - right.y);
-      const pad = SNAP_PAD * widen;
-      if (kids.length === 0) {
-        const gap = rect.x - (node.x + node.width);
-        if (gap < -SNAP_OVERLAP * widen || gap > SNAP_GAP * widen) return null;
-        if (rect.y + rect.height < node.y - pad || rect.y > node.y + node.height + pad) return null;
-        return { targetId: node.id, position: "inside", distance: Math.abs(gap) + Math.abs(centre - (node.y + node.height / 2)) };
-      }
-      const first = kids[0];
-      const last = kids[kids.length - 1];
-      if (!first || !last || Math.abs(rect.x - first.x) > SNAP_COLUMN * widen) return null;
-      if (centre < first.y - pad || centre > last.y + last.height + pad) return null;
-      const next = kids.find(kid => centre < kid.y + kid.height / 2);
-      const distance = Math.abs(rect.x - first.x) + (next ? Math.abs(centre - next.y) : Math.abs(centre - (last.y + last.height)));
-      return next ? { targetId: next.id, position: "before", distance } : { targetId: last.id, position: "after", distance };
+    // The timeline hangs a node by its depth: stages on the axis, their forests above or below.
+    const depthOf = (id: string): number => {
+      let depth = 0;
+      for (let parent = parents.get(id); parent !== undefined; parent = parents.get(parent)) depth += 1;
+      return depth;
     };
-    const resolve = (slot: { targetId: string; position: "before" | "after" | "inside" } | null): MoveCommand | null =>
+    const slotFor = (node: PositionedNode, widen: number): SnapSlot | null =>
+      snapSlot(this.mode, rect, node, children.get(node.id) ?? [], depthOf(node.id), widen);
+    const resolve = (slot: SnapSlot | null): MoveCommand | null =>
       slot ? resolveDrop(document, draggedId, slot.targetId, slot.position) : null;
     let kept: number | null = null;
     if (current) {

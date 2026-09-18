@@ -733,58 +733,125 @@ describe('MindmapView detaches a branch into a new topic', () => {
 
 describe('MindmapView snaps a dragged topic to the slot beside its root', () => {
   type Snap = (id: string, root: { x: number; y: number; width: number; height: number }, current: MoveCommand | null) => MoveCommand | null;
-  const at = (view: MindmapView, world: { x: number; y: number; width: number; height: number }) => {
+  type Box = { x: number; y: number; width: number; height: number };
+  const at = (view: MindmapView, world: Box) => {
     const viewport = view.getState().viewport as { x: number; y: number; scale: number };
     return { x: world.x * viewport.scale + viewport.x, y: world.y * viewport.scale + viewport.y, width: world.width * viewport.scale, height: world.height * viewport.scale };
   };
+  const bind = (view: MindmapView) => ({
+    shift: (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view),
+    snap: (view as unknown as { snapTarget: Snap }).snapTarget.bind(view),
+  });
+  const size = { width: 120, height: 40 };
+  const placed = (view: MindmapView, node: MindNode | undefined): Box => {
+    const box = (view as unknown as { layout: LayoutResult | undefined }).layout?.nodes.find(item => item.id === node?.id);
+    if (!box) throw new Error(`Missing layout node ${node?.title ?? ''}`);
+    return box;
+  };
+  /**
+   * Where a root of `size` sits for each slot, from the first two children of a node: children grow
+   * rightward in the map and in the timeline's forests (a column), downward in the hierarchy (a row).
+   */
+  const spots = (grow: 'right' | 'down', leaf: Box, second: Box) => grow === 'right' ? {
+    besideLeaf: { x: leaf.x + leaf.width + 30, y: leaf.y, ...size },
+    between: { x: leaf.x, y: (leaf.y + leaf.height + second.y) / 2 - size.height / 2, ...size },
+    afterLast: { x: leaf.x, y: second.y + second.height / 2, ...size },
+    drifted: { x: leaf.x + leaf.width + 130, y: leaf.y, ...size },
+    gone: { x: leaf.x + leaf.width + 400, y: leaf.y, ...size },
+  } : {
+    besideLeaf: { x: leaf.x, y: leaf.y + leaf.height + 30, ...size },
+    between: { x: (leaf.x + leaf.width + second.x) / 2 - size.width / 2, y: leaf.y, ...size },
+    afterLast: { x: second.x + second.width / 2, y: second.y, ...size },
+    drifted: { x: leaf.x, y: leaf.y + leaf.height + 130, ...size },
+    gone: { x: leaf.x, y: leaf.y + leaf.height + 400, ...size },
+  };
 
-  it('beside a leaf it becomes the last child; level with a children column it slots in among them; far away nothing', async () => {
+  it.each([['mindmap', 'right'], ['timeline', 'right'], ['hierarchy', 'down']] as const)(
+    'in %s, beside a leaf it becomes the last child; level with a node\'s children it slots in among them; far away nothing', async (mode, grow) => {
+      const source = fixtureSource();
+      const { view, topic } = await mount(source, mode);
+      const doc = documentOf(view);
+      const glossary = topic('補足: 用語');
+      const rest = doc.nodes.find(node => node.title === '休息の取り方');
+      const sleep = doc.nodes.find(node => node.title === '睡眠');
+      const recover = doc.nodes.find(node => node.title === '回復する');
+      if (!rest || !sleep || !recover) throw new Error('Missing nodes');
+      const { shift, snap } = bind(view);
+      shift(glossary.id, { x: 0, y: 0 });
+      const spot = spots(grow, placed(view, rest), placed(view, sleep));
+      // 30 layout units past the leaf, level with it: join it as its child.
+      expect(snap(glossary.id, at(view, spot.besideLeaf), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: rest.id, index: 0 });
+      // Among the children of 回復する, between 休息の取り方 and 睡眠: before 睡眠.
+      expect(snap(glossary.id, at(view, spot.between), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 1 });
+      // Level with the far half of the last child: after it.
+      expect(snap(glossary.id, at(view, spot.afterLast), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 2 });
+      // Far from everything: nothing.
+      expect(snap(glossary.id, at(view, { x: 2000, y: 2000, ...size }), null)).toBeNull();
+      // The current slot survives a little drift beyond the plain zone, then lets go.
+      const current = { type: 'move' as const, nodeId: glossary.id, parentId: rest.id, index: 0 };
+      expect(snap(glossary.id, at(view, spot.drifted), current)).toBe(current);
+      expect(snap(glossary.id, at(view, spot.drifted), null)).not.toEqual(current);
+      expect(snap(glossary.id, at(view, spot.gone), current)).not.toBe(current);
+      shift(glossary.id, null);
+    },
+  );
+
+  it('in the hierarchy, level with the children row of the body root it slots in by horizontal position, and under a leaf of that row it becomes its child', async () => {
     const source = fixtureSource();
-    const { view, layout, topic } = await mount(source);
+    const { view, topic } = await mount(source, 'hierarchy');
     const doc = documentOf(view);
+    const body = projectMap(doc).root;
     const glossary = topic('補足: 用語');
-    const rest = doc.nodes.find(node => node.title === '休息の取り方');
-    const sleep = doc.nodes.find(node => node.title === '睡眠');
-    const recover = doc.nodes.find(node => node.title === '回復する');
-    if (!rest || !sleep || !recover) throw new Error('Missing nodes');
-    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
-    const snap = (view as unknown as { snapTarget: Snap }).snapTarget.bind(view);
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!habit) throw new Error('Missing node');
+    const { shift, snap } = bind(view);
     shift(glossary.id, { x: 0, y: 0 });
-    const leaf = layout().nodes.find(node => node.id === rest.id);
-    const second = layout().nodes.find(node => node.id === sleep.id);
-    if (!leaf || !second) throw new Error('Missing layout nodes');
-    const size = { width: 120, height: 40 };
-    // 30 layout units right of the leaf, vertically level: join it as its child.
-    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 30, y: leaf.y, ...size }), null))
-      .toEqual({ type: 'move', nodeId: glossary.id, parentId: rest.id, index: 0 });
-    // In the children column of 回復する, between 休息の取り方 and 睡眠: before 睡眠.
-    const between = (leaf.y + leaf.height + second.y) / 2;
-    expect(snap(glossary.id, at(view, { x: leaf.x, y: between - size.height / 2, ...size }), null))
-      .toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 1 });
-    // Level with the lower half of the last child: after it.
-    expect(snap(glossary.id, at(view, { x: leaf.x, y: second.y + second.height / 2, ...size }), null))
-      .toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 2 });
-    // Far from everything: nothing.
-    expect(snap(glossary.id, at(view, { x: 2000, y: 2000, ...size }), null)).toBeNull();
-    // The current slot survives a little drift beyond the plain zone, then lets go.
-    const current = { type: 'move' as const, nodeId: glossary.id, parentId: rest.id, index: 0 };
-    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 130, y: leaf.y, ...size }), current)).toBe(current);
-    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 130, y: leaf.y, ...size }), null)).not.toEqual(current);
-    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 400, y: leaf.y, ...size }), current)).not.toBe(current);
+    const recover = placed(view, doc.nodes.find(node => node.title === '回復する'));
+    const record = placed(view, doc.nodes.find(node => node.title === '記録する'));
+    const last = placed(view, habit);
+    // Top edge on the row, centred in the gap between 回復する and 記録する: before 記録する.
+    const gap = (recover.x + recover.width + record.x) / 2;
+    expect(snap(glossary.id, at(view, { x: gap - size.width / 2, y: last.y, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 1 });
+    // Over the right half of the last sibling: after it.
+    expect(snap(glossary.id, at(view, { x: last.x + last.width / 2, y: last.y, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
+    // Under the leaf 習慣化する, off the row: its child.
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height + 30, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    // Right of it, where the map would put a child, is nothing in the hierarchy.
+    expect(snap(glossary.id, at(view, { x: last.x + last.width + 30, y: last.y + last.height + 30, ...size }), null)).toBeNull();
     shift(glossary.id, null);
   });
 
-  it('does not snap on the timeline, whose geometry is not the rightward map', async () => {
+  it('on the timeline, centred on the axis it slots in among the stages by horizontal position, and above or below a leaf stage it becomes its child', async () => {
     const source = fixtureSource();
-    const { view, layout, topic } = await mount(source, 'timeline');
+    const { view, topic } = await mount(source, 'timeline');
+    const doc = documentOf(view);
+    const body = projectMap(doc).root;
     const glossary = topic('補足: 用語');
-    const rest = documentOf(view).nodes.find(node => node.title === '休息の取り方');
-    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
-    const snap = (view as unknown as { snapTarget: Snap }).snapTarget.bind(view);
-    const leaf = layout().nodes.find(node => node.id === rest?.id);
-    if (!leaf) throw new Error('Missing layout node');
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!habit) throw new Error('Missing node');
+    const { shift, snap } = bind(view);
     shift(glossary.id, { x: 0, y: 0 });
-    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 30, y: leaf.y, width: 120, height: 40 }), null)).toBeNull();
+    const recover = placed(view, doc.nodes.find(node => node.title === '回復する'));
+    const record = placed(view, doc.nodes.find(node => node.title === '記録する'));
+    const last = placed(view, habit);
+    const axis = last.y + last.height / 2;
+    // Centred on the axis in the gap between 回復する and 記録する: before 記録する.
+    const gap = (recover.x + recover.width + record.x) / 2;
+    expect(snap(glossary.id, at(view, { x: gap - size.width / 2, y: axis - size.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 1 });
+    // Over the right half of the last stage: after it.
+    expect(snap(glossary.id, at(view, { x: last.x + last.width / 2, y: axis - size.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
+    // Above or below the leaf stage 習慣化する, where its forest would hang: its child.
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y - 30 - size.height, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height + 30, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    // Right of it on the axis is the next stage's place, not a child's, and too far for "after".
+    expect(snap(glossary.id, at(view, { x: last.x + last.width + 60, y: axis - size.height / 2, ...size }), null)).toBeNull();
     shift(glossary.id, null);
   });
 
