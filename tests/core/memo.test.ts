@@ -211,6 +211,25 @@ describe('planMemoDelete', () => {
 });
 
 describe('memos beside node commands', () => {
+  it('keeps the note\'s separator style when a node is added right before the memos', () => {
+    const memos = `\n${fence('m1', 'one')}\n`;
+    const cases: [string, string][] = [
+      [`## Root\n- A\n${memos}`, `## Root\n- A\n\n## \n${memos}`],
+      [`## Root\n- A${memos}`, `## Root\n- A\n\n## ${memos}`],
+      [`# Root\n## Child\ntext\n${memos}`, `# Root\n## Child\ntext\n\n## \n${memos}`],
+      [`# Root\n## Child\ntext${memos}`, `# Root\n## Child\ntext\n\n## ${memos}`],
+    ];
+    for (const [source, expected] of cases) {
+      const doc = parse(source);
+      const last = doc.nodes[doc.nodes.length - 1];
+      if (!last) throw new Error('Missing fixture node');
+      const heading = doc.format === 'list' ? doc.nodes[0] : last;
+      if (!heading) throw new Error('Missing fixture heading');
+      expect(applyEdits(source, planEdit(doc, { type: 'add-sibling', nodeId: heading.id }).edits)).toBe(expected);
+      expect(applyEdits(source, planEdit(doc, { type: 'add-child', nodeId: last.id }).edits).slice(-memos.length)).toBe(memos);
+    }
+  });
+
   it('survives the explicit legacy-to-list conversion unchanged', () => {
     const region = `\n${fence('m1', 'one')}\n`;
     const doc = parse(`${legacy}${region}`);

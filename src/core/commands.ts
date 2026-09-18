@@ -163,7 +163,9 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean): EditPlan {
   if (level > 6) throw new Error('見出しは 6 階層までです。');
   const offset = node.to;
   const prefix = insertionPrefix(doc.source, offset, doc.eol);
-  const suffix = offset < doc.source.length ? doc.eol + doc.eol : doc.source.endsWith('\n') ? doc.eol : '';
+  // Trailing memos own the line break after the content; keep their blank line when the note had one.
+  const suffix = offset === doc.memoRegion?.from ? (doc.source.charAt(offset - 1) === '\n' ? doc.eol : '')
+    : offset < doc.source.length ? doc.eol + doc.eol : doc.source.endsWith('\n') ? doc.eol : '';
   const text = `${prefix}${'#'.repeat(level)} ${suffix}`;
   const edits = [{ from: offset, to: offset, text }];
   const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);

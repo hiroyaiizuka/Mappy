@@ -44,11 +44,15 @@ function paragraphGap(before: string, eol: string): string {
   return before.endsWith('\n') ? eol : eol + eol;
 }
 
-function insertion(source: string, offset: number, body: string, eol: string, paragraph: boolean): { text: string; prefix: string } {
+function insertion(
+  source: string, offset: number, body: string, eol: string, paragraph: boolean, memoFrom?: number,
+): { text: string; prefix: string } {
   const before = source.slice(0, offset);
   const after = source.slice(offset);
   const prefix = paragraph ? paragraphGap(before, eol) : before && !before.endsWith('\n') ? eol : '';
-  const suffix = after && !/^[\r\n]/u.test(after) ? (paragraph ? eol + eol : eol) : '';
+  // Trailing memos own the line break after the content; keep their blank line when the note had one.
+  const suffix = offset === memoFrom ? (before.endsWith('\n') ? eol : '')
+    : after && !/^[\r\n]/u.test(after) ? (paragraph ? eol + eol : eol) : '';
   return { text: prefix + body + suffix, prefix };
 }
 
@@ -82,7 +86,8 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean): EditPlan {
   const style = sibling && node.list ? node.list : childStyle(doc, parent);
   const offset = sibling || heading ? node.to : appendOffset(node);
   const body = heading ? '## ' : `${style.indent}${style.marker} `;
-  const insert = insertion(doc.source, offset, body, doc.eol, heading || (node.kind !== 'list' && node.children.length === 0));
+  const insert = insertion(doc.source, offset, body, doc.eol, heading || (node.kind !== 'list' && node.children.length === 0),
+    doc.memoRegion?.from);
   return validate(doc, [{ from: offset, to: offset, text: insert.text }], doc.nodes.length + 1,
     offset + insert.prefix.length, { kind: heading ? 'atx' : 'list', level: heading ? 2 : parent.level + 1, title: '' });
 }
