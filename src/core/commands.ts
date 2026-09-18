@@ -263,11 +263,10 @@ export function resolveDrop(doc: MindDocument, draggedId: string, targetId: stri
   if (!node || !target || node.id === target.id) return null;
   const parent = position === 'inside' ? target : lookup(target.parentId ?? 'root');
   if (!parent || parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) return null;
-  if (doc.format === 'list') {
-    // List items stay under sections; an H2 section moves among sections, or joins a node when it is a free topic (§5 M7).
-    if (node.kind === 'list' && parent.kind === 'root') return null;
-    if (node.kind !== 'list' && parent.kind !== 'root' && !projectMap(doc).topics.some((topic) => topic.id === node.id)) return null;
-  }
+  // A top-level section goes under a node only when it is a free topic (§5 M7): the body root never does, in either format.
+  if (node.parentId === 'root' && node.kind !== 'list' && parent.kind !== 'root' && !projectMap(doc).topics.some((topic) => topic.id === node.id)) return null;
+  // List items stay under sections.
+  if (doc.format === 'list' && node.kind === 'list' && parent.kind === 'root') return null;
   const siblings = parent.children.filter((child) => child.id !== node.id);
   const index = position === 'inside'
     ? siblings.length
@@ -328,12 +327,16 @@ function withTopicPlacement(doc: MindDocument, plan: EditPlan, title: string, pl
   const key = planTopicMove(doc, title, place.layout, { x: place.x, y: place.y });
   if (!key) return plan;
   const delta = key.text.length - (key.to - key.from);
-  const combined = parseMarkdown(applyEdits(doc.source, [key, ...plan.edits]), doc.root.title, undefined, doc.format);
+  // A header created at offset 0 lands where a branch removal at the top of the note starts: one edit, not two overlapping ones.
+  const edits = plan.edits.some((edit) => edit.from === key.from && key.from === key.to)
+    ? plan.edits.map((edit) => edit.from === key.from ? { ...edit, text: key.text + edit.text } : edit)
+    : [key, ...plan.edits];
+  const combined = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
   const placed = combined.nodes.find((candidate) => candidate.titleFrom === offset + delta);
   if (combined.nodes.length !== parsed.nodes.length || placed?.title !== title) {
     throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
   }
-  return { edits: [key, ...plan.edits], selectionOffset: offset + delta };
+  return { edits, selectionOffset: offset + delta };
 }
 
 function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {

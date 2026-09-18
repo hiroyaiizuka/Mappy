@@ -183,7 +183,8 @@ function sectionAsBranch(doc: MindDocument, node: MindNode, style: { indent: str
   const lead = `${style.indent}${style.marker} `;
   const contentIndent = ' '.repeat(indentationWidth(lead));
   const body = doc.source.slice(node.bodyFrom, node.to).replace(/^(?:[ \t]*\r?\n)+/u, '').replace(/(?:\r?\n)+$/u, '');
-  const lines = body ? body.split(/\r?\n/u).map(line => line.trim() === '' ? '' : contentIndent + line) : [];
+  // Empty lines stay empty; every other line, whitespace-only ones included (their bytes matter inside a fence), moves under the indent.
+  const lines = body ? body.split(/\r?\n/u).map(line => line === '' ? '' : contentIndent + line) : [];
   return [`${lead}${node.title}`, ...lines].join(doc.eol);
 }
 
@@ -209,7 +210,7 @@ function dedent(line: string, width: number): string {
 function branchAsSection(doc: MindDocument, node: MindNode): string {
   const width = indentationWidth(node.list?.contentIndent ?? '');
   const body = doc.source.slice(node.bodyFrom, node.to).replace(/^(?:[ \t]*\r?\n)+/u, '').replace(/(?:\r?\n)+$/u, '');
-  const lines = body ? body.split(/\r?\n/u).map(line => line.trim() === '' ? '' : dedent(line, width)) : [];
+  const lines = body ? body.split(/\r?\n/u).map(line => dedent(line, width)) : [];
   return [`## ${node.title}`, ...(lines.length > 0 ? ['', ...lines] : [])].join(doc.eol);
 }
 

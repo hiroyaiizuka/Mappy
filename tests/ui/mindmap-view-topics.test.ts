@@ -365,7 +365,8 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     nodes().get(topic('Topic').id)?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     key(canvas, 'Delete');
     await settle();
-    expect(current()).toBe('---\n---\n# Body\n\n## Child\n');
+    // The header existed only for the topic, so its removal leaves the note exactly as it was.
+    expect(current()).toBe('# Body\n\n## Child\n');
     await undo();
     expect(current()).toBe(moved);
     await undo();
@@ -770,6 +771,20 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 130, y: leaf.y, ...size }), current)).toBe(current);
     expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 130, y: leaf.y, ...size }), null)).not.toEqual(current);
     expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 400, y: leaf.y, ...size }), current)).not.toBe(current);
+    shift(glossary.id, null);
+  });
+
+  it('does not snap on the timeline, whose geometry is not the rightward map', async () => {
+    const source = fixtureSource();
+    const { view, layout, topic } = await mount(source, 'timeline');
+    const glossary = topic('補足: 用語');
+    const rest = documentOf(view).nodes.find(node => node.title === '休息の取り方');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    const snap = (view as unknown as { snapTarget: Snap }).snapTarget.bind(view);
+    const leaf = layout().nodes.find(node => node.id === rest?.id);
+    if (!leaf) throw new Error('Missing layout node');
+    shift(glossary.id, { x: 0, y: 0 });
+    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 30, y: leaf.y, width: 120, height: 40 }), null)).toBeNull();
     shift(glossary.id, null);
   });
 

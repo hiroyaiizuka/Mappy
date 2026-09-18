@@ -167,7 +167,7 @@ export class MindmapView extends ItemView {
     this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
       free: id => this.isFree(id),
-      dropTarget: (dragged, target, position) => this.document ? resolveDrop(this.document, dragged, target, position) : null,
+      dropTarget: (dragged, target, position) => this.document && !this.topicDrag?.body ? resolveDrop(this.document, dragged, target, position) : null,
       preview: command => { this.previewDrop(command); },
       command: command => { this.run(() => this.executeDrop(command)); },
       shift: (id, delta) => { this.shiftTopic(id, delta); },
@@ -666,7 +666,8 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const layout = this.layout;
     const drag = this.topicDrag;
-    if (!document || !layout || !drag || drag.body || drag.id !== draggedId) return null;
+    // The zones describe the rightward map; other layouts keep the pointer-based slot only.
+    if (!document || !layout || !drag || drag.body || drag.id !== draggedId || this.mode !== "mindmap") return null;
     const view = this.viewport.value;
     const rect = { x: (root.x - view.x) / view.scale, y: (root.y - view.y) / view.scale, width: root.width / view.scale, height: root.height / view.scale };
     const centre = rect.y + rect.height / 2;
@@ -764,7 +765,8 @@ export class MindmapView extends ItemView {
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
         const current = this.document?.nodes.find(item => item.id === node.id)
-          ?? (!cancelled ? this.document?.nodes.find(item => item.titleFrom === renamedOffset || item.from === node.from) : undefined);
+          ?? (!cancelled && renamedOffset !== null ? this.document?.nodes.find(item => item.titleFrom === renamedOffset) : undefined)
+          ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
         if (current) this.select(current.id, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },

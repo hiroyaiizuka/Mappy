@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { applyEdits, planEdit } from '../../src/core/commands';
+import { applyEdits, planEdit, resolveDrop } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
 import {
   TOPICS_KEY, planTopicMove, planTopicMoves, planTopicPositions, planTopicRemoval, planTopicRename, readTopicPositions,
@@ -374,11 +374,12 @@ describe('delete removes a topic section together with its position', () => {
   it('removes the whole key when the last positioned topic goes, in both formats', () => {
     const list = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- Under A\n`);
     const listResult = applyEdits(list.source, planEdit(list, { type: 'delete', nodeId: topic(list, 'A').id }).edits);
-    expect(listResult).toBe('---\n---\n## Root\n- Child\n');
+    expect(listResult).toBe('## Root\n- Child\n');
     const headings = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n# Root\n\n## Child\n\n# A\n\n### Deep\n`);
     const headingResult = applyEdits(headings.source, planEdit(headings, { type: 'delete', nodeId: topic(headings, 'A').id }).edits);
-    expect(headingResult).toBe('---\n---\n# Root\n\n## Child\n');
-    expect(planTopicRemoval(headings, topic(headings, 'A'))).toEqual({ from: 4, to: 4 + `${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n`.length, text: '' });
+    expect(headingResult).toBe('# Root\n\n## Child\n');
+    // The header held nothing else, so it goes as a whole rather than leaving an empty `---` pair.
+    expect(planTopicRemoval(headings, topic(headings, 'A'))).toEqual({ from: 0, to: `---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n`.length, text: '' });
   });
 
   it('takes the separating blank lines of a section at the end of the file, so add-topic then delete round-trips', () => {
@@ -466,7 +467,7 @@ describe('a topic dropped on a node joins it as a branch (合流)', () => {
   it('moves a topic section under a heading in heading documents through the existing section move and drops its entry too', () => {
     const doc = parse(`---\n${TOPICS_KEY}:\n  Topic: { mindmap: [1, 2] }\n---\n# Body\n\n## Child\n\n# Topic\n\n### Deep\n`);
     const result = applyEdits(doc.source, planEdit(doc, { type: 'move', nodeId: topic(doc, 'Topic').id, parentId: node(doc, 'Child').id, index: 0 }).edits);
-    expect(result).toBe('---\n---\n# Body\n\n## Child\n\n### Topic\n\n##### Deep\n');
+    expect(result).toBe('# Body\n\n## Child\n\n### Topic\n\n##### Deep\n');
   });
 
   it('planTopicMoves stores several headings at once and refuses bad input', () => {
@@ -548,5 +549,50 @@ describe('a branch dropped on empty canvas detaches into a new topic (切り離�
     const moved = applyEdits(headings.source, plan.edits);
     expect(moved).toBe('---\nmappy-topics:\n  Child: { mindmap: [5, 6] }\n---\n# Body\n\n## Other\n\n# Child\n\n## Deep\n');
     expect(parse(moved).nodes.find((item) => item.titleFrom === plan.selectionOffset)?.title).toBe('Child');
+  });
+});
+
+describe('review follow-ups: body guard, header birth at the top of the note, fence whitespace', () => {
+  function node(doc: MindDocument, title: string): MindNode {
+    const found = doc.nodes.find((candidate) => candidate.title === title);
+    if (!found) throw new Error(`Missing node ${title}`);
+    return found;
+  }
+
+  it('never lets the body root join a node, in heading documents too, while ordinary heading branches still move', () => {
+    const headings = parse('# Body\n\n## Child\n\n# T\n\n## Under T\n');
+    const body = projectMap(headings).root;
+    expect(resolveDrop(headings, body.id, node(headings, 'T').id, 'inside')).toBeNull();
+    expect(resolveDrop(headings, body.id, node(headings, 'Under T').id, 'after')).toBeNull();
+    expect(resolveDrop(headings, node(headings, 'Child').id, node(headings, 'Under T').id, 'after'))
+      .toEqual({ type: 'move', nodeId: node(headings, 'Child').id, parentId: node(headings, 'T').id, index: 1 });
+    expect(resolveDrop(headings, node(headings, 'T').id, node(headings, 'Child').id, 'inside'))
+      .toEqual({ type: 'move', nodeId: node(headings, 'T').id, parentId: node(headings, 'Child').id, index: 0 });
+    const list = parse('## Body\n- a\n\n## T\n- t\n');
+    expect(resolveDrop(list, projectMap(list).root.id, node(list, 't').id, 'inside')).toBeNull();
+  });
+
+  it('detaching the first line of a note without a header creates the header in the same edit as the removal', () => {
+    const doc = parse('- a\n  - b\n- c\n\n## T\n- t\n');
+    const plan = planEdit(doc, { type: 'detach', nodeId: node(doc, 'a').id, position: { layout: 'mindmap', x: 3, y: 4 } });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  a: { mindmap: [3, 4] }\n---\n- c\n\n## T\n- t\n\n## a\n\n- b\n`);
+    expect(parse(result).nodes.find((item) => item.titleFrom === plan.selectionOffset)?.title).toBe('a');
+  });
+
+  it('keeps whitespace-only lines inside fences byte for byte through join and detach', () => {
+    const list = parse('## Body\n- a\n\n## T\n\n```\nx\n  \ny\n```\n');
+    const joined = applyEdits(list.source, planEdit(list, { type: 'move', nodeId: node(list, 'T').id, parentId: node(list, 'a').id, index: 0 }).edits);
+    expect(joined).toBe('## Body\n- a\n  - T\n    ```\n    x\n      \n    y\n    ```\n');
+    const back = parse(joined);
+    const detached = applyEdits(back.source, planEdit(back, { type: 'detach', nodeId: node(back, 'T').id }).edits);
+    expect(detached).toBe('## Body\n- a\n\n## T\n\n```\nx\n  \ny\n```\n');
+  });
+
+  it('removes an emptied header entirely but keeps one that holds other keys', () => {
+    const only = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n---\n## Root\n\n## A\n`);
+    expect(applyEdits(only.source, planEdit(only, { type: 'delete', nodeId: projectMap(only).topics[0]?.id ?? '' }).edits)).toBe('## Root\n');
+    const withKey = parse(`---\nmappy: true\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n---\n## Root\n\n## A\n`);
+    expect(applyEdits(withKey.source, planEdit(withKey, { type: 'delete', nodeId: projectMap(withKey).topics[0]?.id ?? '' }).edits)).toBe('---\nmappy: true\n---\n## Root\n');
   });
 });
