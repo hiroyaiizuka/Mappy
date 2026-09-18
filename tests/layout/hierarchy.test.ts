@@ -1,13 +1,26 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseMarkdown, projectMap } from "../../src/core/markdown";
+import { buildScene, nodeExtent, sceneContents, type NodeMeasure } from "../../src/export/excalidraw-scene";
 import { foldBadgeWidth, foldControlSize, layoutTree, type LayoutNode, type LayoutResult, type NodeSize, type PositionedNode } from "../../src/layout/layout";
 import { pathToPoints } from "../../src/layout/path-points";
 import { estimateNodeSizes, makePerformanceFixture, performanceNodeCounts } from "../../scripts/performance-fixtures.mjs";
 
-const ROOT_GAP = 64;
-const ROW_GAP = 48;
+const ROOT_GAP = 48;
+const ROW_GAP = 32;
 const SIBLING_GAP = 24;
+
+/** The gap under a parent at this depth: the root's children hang a little lower than the rest. */
+function gapBelow(parentDepth: number): number {
+  return parentDepth === 0 ? ROOT_GAP : ROW_GAP;
+}
+
+/** A node's depth in the source tree; an id the tree does not know is a broken test, not a non-root. */
+function depthIn(depths: ReadonlyMap<string, number>, id: string): number {
+  const depth = depths.get(id);
+  if (depth === undefined) throw new Error(`Unknown node ${id}`);
+  return depth;
+}
 
 function node(id: string, ...children: LayoutNode[]): LayoutNode {
   return { id, children };
@@ -40,19 +53,23 @@ function segments(result: LayoutResult): { edge: LayoutResult["edges"][number]; 
   });
 }
 
-/** Depth and descendant count of every node in the source tree, so rows and badges can be checked against the tree rather than the layout. */
-function describeTree(root: LayoutNode): { depths: Map<string, number>; descendants: Map<string, number> } {
+/** Depth, parent and descendant count of every node in the source tree, so rows and badges can be checked against the tree rather than the layout. */
+function describeTree(root: LayoutNode): { depths: Map<string, number>; parents: Map<string, string>; descendants: Map<string, number> } {
   const depths = new Map<string, number>();
+  const parents = new Map<string, string>();
   const descendants = new Map<string, number>();
   const count = (node: LayoutNode, depth: number): number => {
     depths.set(node.id, depth);
     let total = 0;
-    for (const child of node.children) total += 1 + count(child, depth + 1);
+    for (const child of node.children) {
+      parents.set(child.id, node.id);
+      total += 1 + count(child, depth + 1);
+    }
     descendants.set(node.id, total);
     return total;
   };
   count(root, 0);
-  return { depths, descendants };
+  return { depths, parents, descendants };
 }
 
 /** Preorder ids of the visible tree: what a reader sees top-down, left-to-right. */
@@ -74,14 +91,15 @@ function preorder(root: LayoutNode, collapsed: ReadonlySet<string>): string[] {
 
 /**
  * The hierarchy invariants: nodes and fold controls disjoint and inside the bounds,
- * one row per depth with the tallest node setting the row height, siblings and cousins
- * in source order from left to right, and every connector made of axis-aligned
- * segments that start at the parent's bottom center, end at the child's top center and
- * never cross a node.
+ * every child's top edge exactly one gap below its own parent's bottom edge (so siblings
+ * share a row while a tall parent lowers only its own children), siblings and cousins in
+ * source order from left to right, and every connector made of axis-aligned segments
+ * that start at the parent's bottom center, end at the child's top center and never
+ * cross a node.
  */
 function expectHierarchy(result: LayoutResult, root: LayoutNode, collapsed: ReadonlySet<string> = new Set()): void {
   const positions = byId(result);
-  const { depths: depthOf, descendants } = describeTree(root);
+  const { depths: depthOf, parents: parentOf, descendants } = describeTree(root);
   // Fold controls count with their real hit area: a collapsed badge grows with its hidden count.
   const rects = [...result.nodes, ...result.folds.map(fold => {
     const control = foldControlSize(collapsed.has(fold.id) ? descendants.get(fold.id) ?? 0 : 0);
@@ -101,26 +119,21 @@ function expectHierarchy(result: LayoutResult, root: LayoutNode, collapsed: Read
     }
   }
 
-  // Rows: same y per depth, each row below the previous one by at least the gap.
-  const rowTop = new Map<number, number>();
-  const rowBottom = new Map<number, number>();
+  // Rows hang from each parent: a child's top edge is its parent's bottom edge plus the
+  // gap for the parent's depth, whatever the cousins' parents measure.
   for (const item of result.nodes) {
     const depth = depthOf.get(item.id);
     expect(depth).toBeDefined();
-    if (depth === undefined) continue;
-    const top = rowTop.get(depth);
-    if (top === undefined) rowTop.set(depth, item.y);
-    else if (top !== item.y) throw new Error(`Node ${item.id} at depth ${depth} sits at y=${item.y} instead of the row's y=${top}`);
-    rowBottom.set(depth, Math.max(rowBottom.get(depth) ?? -Infinity, item.y + item.height));
-  }
-  for (const [depth, top] of rowTop) {
-    if (depth === 0) continue;
-    const above = rowBottom.get(depth - 1);
-    expect(above).toBeDefined();
-    if (above !== undefined) expect(top - above).toBeCloseTo(depth === 1 ? ROOT_GAP : ROW_GAP, 6);
+    if (depth === undefined || item.id === root.id) continue;
+    const parent = positions.get(parentOf.get(item.id) ?? "");
+    if (!parent) throw new Error(`Node ${item.id} is placed without its parent`);
+    const gap = item.y - (parent.y + parent.height);
+    if (Math.abs(gap - gapBelow(depth - 1)) > 1e-6) {
+      throw new Error(`Node ${item.id} hangs ${gap} below ${parent.id} instead of ${gapBelow(depth - 1)}`);
+    }
   }
 
-  // Order: preorder of the visible tree is left-to-right within each row.
+  // Order: preorder of the visible tree is left-to-right among the nodes of one depth.
   const lastXByDepth = new Map<number, number>();
   for (const id of preorder(root, collapsed)) {
     const item = positions.get(id);
@@ -162,7 +175,7 @@ describe("hierarchy layout", () => {
     ["c1", { width: 290, height: 30 }],
   ]);
 
-  it("puts the root on top, aligns every depth on one row and keeps siblings in source order", () => {
+  it("puts the root on top, hangs each parent's children one gap below it and keeps siblings in source order", () => {
     const result = layoutTree(tree, sizes, new Set(), "hierarchy");
     expectHierarchy(result, tree);
     const positions = byId(result);
@@ -172,12 +185,13 @@ describe("hierarchy layout", () => {
     expect(root.y).toBe(0);
     expect(centerX(root)).toBe(0);
     expect(result.origin).toEqual({ x: root.x, y: root.y });
-    // Rows take the tallest node: `a` (260) sets the first row, `a21` (300) the second.
+    // Siblings share a top edge; cousins hang from their own parent, so the tall `a` (260)
+    // lowers only `a1`/`a2`, while `c1` stays one gap under the default-height `c` (44).
     const first = ["a", "b", "c"].map(id => positions.get(id));
-    const second = ["a1", "a2", "c1"].map(id => positions.get(id));
     expect(first.every(item => item?.y === 70 + ROOT_GAP)).toBe(true);
-    expect(second.every(item => item?.y === 70 + ROOT_GAP + 260 + ROW_GAP)).toBe(true);
-    expect(positions.get("a21")?.y).toBe(70 + ROOT_GAP + 260 + ROW_GAP + 55 + ROW_GAP);
+    expect(["a1", "a2"].every(id => positions.get(id)?.y === 70 + ROOT_GAP + 260 + ROW_GAP)).toBe(true);
+    expect(positions.get("c1")?.y).toBe(70 + ROOT_GAP + 44 + ROW_GAP);
+    expect(positions.get("a21")?.y).toBe(70 + ROOT_GAP + 260 + ROW_GAP + 44 + ROW_GAP);
     expect(positions.get("a")?.x).toBeLessThan(positions.get("b")?.x ?? -Infinity);
     expect(positions.get("b")?.x).toBeLessThan(positions.get("c")?.x ?? -Infinity);
     expect(positions.get("a2")?.x).toBeLessThan(positions.get("c1")?.x ?? -Infinity);
@@ -210,28 +224,33 @@ describe("hierarchy layout", () => {
     expect(centerX(root)).toBeCloseTo((p1.x + wide.x + wide.width) / 2, 6);
   });
 
-  it("draws each branch as stem, bus and drop, with one bus height per depth and no line under text", () => {
+  it("draws each branch as stem, bus and drop, with the bus halfway through the gap under its parent and no line under text", () => {
     const result = layoutTree(tree, sizes, new Set(), "hierarchy");
     const positions = byId(result);
-    const busByDepth = new Map<number, number>();
+    const busByParent = new Map<string, number>();
     const depthOf = describeTree(tree).depths;
     for (const edge of result.edges) {
       const parent = positions.get(edge.from);
       const child = positions.get(edge.to);
       expect(parent && child).toBeTruthy();
       if (!parent || !child) continue;
-      const depth = depthOf.get(parent.id) ?? -1;
-      const busY = child.y - (depth === 0 ? ROOT_GAP : ROW_GAP) / 2;
+      const gap = gapBelow(depthIn(depthOf, parent.id));
+      const busY = parent.y + parent.height + gap / 2;
       expect(edge.path).toBe(`M ${centerX(parent)} ${parent.y + parent.height} V ${busY} H ${centerX(child)} V ${child.y}`);
-      expect(busByDepth.get(depth) ?? busY).toBe(busY);
-      busByDepth.set(depth, busY);
-      expect(busY).toBeGreaterThan(parent.y + parent.height);
+      expect(child.y).toBe(busY + gap / 2);
+      expect(busByParent.get(parent.id) ?? busY).toBe(busY);
+      busByParent.set(parent.id, busY);
       expect(edge.path).not.toMatch(/[CQ]/u);
     }
-    // `a` is the tallest of its row: the bus above the next row still clears it.
+    // The stem plus drop of every connector is the gap, whatever the parent's height: the
+    // tall `a` (260) and the default `c` (44) both reach their children in ROW_GAP.
     const a = positions.get("a");
-    expect(a).toBeDefined();
-    if (a) expect(busByDepth.get(1)).toBe(a.y + a.height + ROW_GAP / 2);
+    const c = positions.get("c");
+    expect(a && c).toBeTruthy();
+    if (!a || !c) return;
+    expect(busByParent.get("a")).toBe(a.y + a.height + ROW_GAP / 2);
+    expect(busByParent.get("c")).toBe(c.y + c.height + ROW_GAP / 2);
+    expect((busByParent.get("a") ?? 0) - (busByParent.get("c") ?? 0)).toBe(260 - 44);
   });
 
   it("puts expanded controls on the junction below the parent and collapsed badges under the node", () => {
@@ -259,6 +278,151 @@ describe("hierarchy layout", () => {
     expect(layoutTree(tree, sizes, new Set(["root"]), "hierarchy").nodes).toHaveLength(1);
     // Re-expanding restores exactly the layout from before the fold.
     expect(layoutTree(tree, sizes, new Set(), "hierarchy")).toEqual(expanded);
+  });
+
+  // The feedback case (LEV-46): three siblings at depth 2, one of them carrying a 200 px
+  // image; the text-only siblings and a cousin branch have children of their own.
+  const imageTree = node("root",
+    node("chapter", node("figure", node("figure-child")), node("text", node("text-child")), node("other", node("other-child"))),
+    node("cousin", node("cousin-child")));
+  const imageSizes: ReadonlyMap<string, NodeSize> = new Map([
+    ["root", { width: 120, height: 54 }],
+    ["chapter", { width: 200, height: 44 }],
+    ["cousin", { width: 80, height: 44 }],
+    ["figure", { width: 220, height: 30 + 200 }],
+    ["figure-child", { width: 60, height: 30 }],
+    ["text", { width: 60, height: 30 }],
+    ["text-child", { width: 60, height: 30 }],
+    ["other", { width: 60, height: 30 }],
+    ["other-child", { width: 60, height: 30 }],
+    ["cousin-child", { width: 60, height: 30 }],
+  ]);
+
+  it("lowers only the children of the node with the image and keeps every other connector one gap long", () => {
+    const result = layoutTree(imageTree, imageSizes, new Set(), "hierarchy");
+    expectHierarchy(result, imageTree);
+    const positions = byId(result);
+    const at = (id: string): PositionedNode => {
+      const item = positions.get(id);
+      if (!item) throw new Error(`Missing ${id}`);
+      return item;
+    };
+    const bottom = (item: PositionedNode): number => item.y + item.height;
+    // (1) Siblings share a top edge, under their own parent.
+    expect(at("chapter").y).toBe(bottom(at("root")) + ROOT_GAP);
+    expect(at("cousin").y).toBe(at("chapter").y);
+    expect([at("figure").y, at("text").y, at("other").y]).toEqual(Array(3).fill(bottom(at("chapter")) + ROW_GAP));
+    // (2) Cousins hang from their own parent: the text-only branches stay one gap long, the
+    // image's child alone drops by the image height.
+    expect(at("text-child").y).toBe(bottom(at("text")) + ROW_GAP);
+    expect(at("other-child").y).toBe(bottom(at("other")) + ROW_GAP);
+    expect(at("cousin-child").y).toBe(bottom(at("cousin")) + ROW_GAP);
+    expect(at("figure-child").y).toBe(bottom(at("figure")) + ROW_GAP);
+    expect(at("figure-child").y - at("text-child").y).toBe(200);
+    // (3) The image reaches past the row of its nieces yet never overlaps them: the branch
+    // keeps its own horizontal extent.
+    expect(bottom(at("figure"))).toBeGreaterThan(at("text-child").y);
+    for (const id of ["text-child", "other-child", "cousin-child"]) expect(overlaps(at("figure"), at(id))).toBe(false);
+    // The stem plus drop of every connector is exactly the gap under its parent.
+    const depthOf = describeTree(imageTree).depths;
+    for (const edge of result.edges) {
+      const points = pathToPoints(edge.path);
+      const first = points[0];
+      const last = points[points.length - 1];
+      expect(first && last).toBeTruthy();
+      if (first && last) expect(last[1] - first[1]).toBe(gapBelow(depthIn(depthOf, edge.from)));
+    }
+  });
+
+  it("keeps the rule after collapsing and leaves the other branches' rows where they were", () => {
+    const expanded = layoutTree(imageTree, imageSizes, new Set(), "hierarchy");
+    const before = byId(expanded);
+    for (const id of ["figure", "text", "chapter"]) {
+      const collapsed = new Set([id]);
+      const result = layoutTree(imageTree, imageSizes, collapsed, "hierarchy");
+      expectHierarchy(result, imageTree, collapsed);
+      const positions = byId(result);
+      const node = positions.get(id);
+      expect(node).toBeDefined();
+      if (!node) continue;
+      expect(result.folds.find(fold => fold.id === id)).toEqual({ id, x: centerX(node), y: node.y + node.height + 16 });
+      // Folding one branch changes horizontal room only; no remaining node moves up or down.
+      for (const item of result.nodes) expect(item.y, item.id).toBe(before.get(item.id)?.y);
+    }
+    expect(layoutTree(imageTree, imageSizes, new Set(), "hierarchy")).toEqual(expanded);
+  });
+
+  it("places free topics the same way whether or not the body has a tall node", () => {
+    const topics = [
+      { tree: node("t1", node("t1a"), node("t1b")), position: null },
+      { tree: node("t2", node("t2a", node("t2aa"))), position: { x: 500, y: 40 } },
+    ];
+    // The same body with the image node shrunk back to a line of text.
+    const plainSizes: ReadonlyMap<string, NodeSize> = new Map([...imageSizes, ["figure", { width: 220, height: 30 }]]);
+    const place = (sizes: ReadonlyMap<string, NodeSize>): { bodyBottom: number; t1: PositionedNode; t2: PositionedNode; topicNodes: PositionedNode[] } => {
+      const alone = layoutTree(imageTree, sizes, new Set(), "hierarchy");
+      const result = layoutTree(imageTree, sizes, new Set(), "hierarchy", topics);
+      const bodyIds = new Set(alone.nodes.map(item => item.id));
+      expect(result.nodes.filter(item => bodyIds.has(item.id))).toEqual(alone.nodes);
+      expect(result.origin).toEqual(alone.origin);
+      const positions = byId(result);
+      const t1 = positions.get("t1");
+      const t2 = positions.get("t2");
+      const t2a = positions.get("t2a");
+      if (!t1 || !t2 || !t2a) throw new Error("Topic roots missing");
+      // Unplaced: centered under the body root, below everything the body placed (image and fold controls included).
+      expect(centerX(t1)).toBeCloseTo(0, 6);
+      expect(t1.y).toBeGreaterThanOrEqual(alone.bounds.y + alone.bounds.height + 48);
+      // Placed: origin + offset, and its own tree hangs by the same rule.
+      expect({ x: t2.x, y: t2.y }).toEqual({ x: result.origin.x + 500, y: result.origin.y + 40 });
+      expect(["t1a", "t1b"].map(id => positions.get(id)?.y)).toEqual([t1.y + t1.height + ROOT_GAP, t1.y + t1.height + ROOT_GAP]);
+      expect(t2a.y).toBe(t2.y + t2.height + ROOT_GAP);
+      expect(positions.get("t2aa")?.y).toBe(t2a.y + t2a.height + ROW_GAP);
+      return { bodyBottom: alone.bounds.y + alone.bounds.height, t1, t2, topicNodes: result.nodes.filter(item => !bodyIds.has(item.id)) };
+    };
+    const tall = place(imageSizes);
+    const plain = place(plainSizes);
+    // The image only pushes the body's bottom edge down by its height: the unplaced topic keeps its
+    // column and its distance below that edge, the placed topic does not move, and both trees keep their shape.
+    expect(tall.bodyBottom - plain.bodyBottom).toBe(200);
+    expect(tall.t1.x).toBe(plain.t1.x);
+    expect(tall.t1.y - tall.bodyBottom).toBe(plain.t1.y - plain.bodyBottom);
+    expect(tall.t2).toEqual(plain.t2);
+    const relativeToTopic = (nodes: PositionedNode[], t1: PositionedNode): PositionedNode[] =>
+      nodes.map(item => (item.id.startsWith("t1") ? { ...item, y: item.y - t1.y } : item));
+    expect(relativeToTopic(tall.topicNodes, tall.t1)).toEqual(relativeToTopic(plain.topicNodes, plain.t1));
+  });
+
+  it("gives the Excalidraw scene the same coordinates as the map, image rows included", () => {
+    const source = "## 講座\n- 章\n  - 項目\n    ![[図.png]]\n    - 項目の子\n  - c\n    - xx\n  - aaaa\n    - 子\n- 別の章\n  - 別の子\n";
+    const contents = sceneContents(parseMarkdown(source, "Note"));
+    const measures = new Map<string, NodeMeasure>(contents.nodes.map(item => [item.id, {
+      label: item.role === "root" ? { width: 140, height: 54 } : item.role === "stage" ? { width: 100, height: 44 } : { width: 80, height: 30 },
+      images: item.images.map(() => ({ width: 200, height: 200 })),
+    }]));
+    const scene = buildScene(contents, measures, "hierarchy", new Set(), [10, 20]);
+    const sizes = new Map([...measures].map(([id, measure]) => [id, nodeExtent(measure)]));
+    const layout = layoutTree(contents.tree, sizes, new Set(), "hierarchy");
+    expectHierarchy(layout, contents.tree);
+    const dx = 10 - layout.bounds.x;
+    const dy = 20 - layout.bounds.y;
+    for (const item of layout.nodes) {
+      expect(scene.blocks.find(block => block.nodeId === item.id && block.kind === "label")).toMatchObject({ x: item.x + dx, y: item.y + dy });
+    }
+    expect(scene.lines).toEqual(layout.edges.map(edge => pathToPoints(edge.path).map(([x, y]) => [x + dx, y + dy])));
+    const byText = new Map(contents.nodes.map(item => [item.text, item.id]));
+    const labelOf = (text: string): { y: number; height: number } => {
+      const block = scene.blocks.find(candidate => candidate.nodeId === byText.get(text) && candidate.kind === "label");
+      if (!block) throw new Error(`Missing block for ${text}`);
+      return block;
+    };
+    const image = scene.blocks.find(block => block.kind === "image");
+    expect(image).toBeDefined();
+    if (!image) return;
+    // In the scene too, only the image's child drops: `xx` sits one gap under `c`, `項目の子` one gap under the image.
+    expect(labelOf("xx").y).toBe(labelOf("c").y + labelOf("c").height + ROW_GAP);
+    expect(labelOf("項目の子").y).toBe(image.y + image.height + ROW_GAP);
+    expect(labelOf("項目の子").y - labelOf("xx").y).toBe(200 + 6);
   });
 
   it("retains a collapsed root control under the root and fits its four-digit count", () => {
@@ -350,7 +514,7 @@ describe("hierarchy layout", () => {
 
 describe("hierarchy layout of the fixtures", () => {
   // Sizes come from the estimate the layout benchmark uses too (no DOM in this layer).
-  it("lays out uneven-branches: 24 siblings in order, an 8-deep chain in 8 rows and long Japanese without overlap", () => {
+  it("lays out uneven-branches: 24 siblings in order, an 8-deep chain link by link and long Japanese without overlap", () => {
     const source = readFileSync(new URL("../fixtures/uneven-branches.md", import.meta.url), "utf8");
     const doc = parseMarkdown(source, "uneven-branches");
     const { root } = projectMap(doc);
@@ -363,11 +527,16 @@ describe("hierarchy layout of the fixtures", () => {
     const ordered = [...siblings].sort((first, second) => first.x - second.x).map(item => titles.get(item.id));
     expect(ordered).toEqual(Array.from({ length: 24 }, (_, index) => `兄弟 ${index + 1}`));
     expect(new Set(siblings.map(item => item.y)).size).toBe(1);
-    const eighth = result.nodes.find(item => titles.get(item.id) === "八段目");
-    const rows = new Set(result.nodes.map(item => item.y));
-    expect(eighth).toBeDefined();
-    expect(rows.size).toBe(9);
-    if (eighth) expect(eighth.y).toBe(Math.max(...rows));
+    // The 8-deep chain hangs link by link: each row one gap under the previous node, and the last one lowest of all.
+    const chain = ["深い一列の枝", "二段目", "三段目", "四段目", "五段目", "六段目", "七段目（従来の見出し形式では作れない深さ）", "八段目"]
+      .map(title => result.nodes.find(item => titles.get(item.id) === title));
+    expect(chain.every(item => item !== undefined)).toBe(true);
+    chain.forEach((item, index) => {
+      const above = index === 0 ? positions.get(root.id) : chain[index - 1];
+      if (item && above) expect(item.y).toBe(above.y + above.height + gapBelow(index));
+    });
+    const eighth = chain[chain.length - 1];
+    if (eighth) expect(eighth.y).toBe(Math.max(...result.nodes.map(item => item.y)));
     const long = result.nodes.filter(item => (titles.get(item.id)?.length ?? 0) > 40);
     expect(long.length).toBeGreaterThanOrEqual(2);
     expect(long.every(item => item.width === 360)).toBe(true);

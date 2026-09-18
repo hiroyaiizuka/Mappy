@@ -161,6 +161,44 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     expect(entry.toggle.getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('reads every node border before its first style write, so a deep branch never forces a layout per fold', () => {
+    // A 40-level single chain: every node but the leaf carries a fold control (LEV-45's performance-2000-deep shape).
+    const chain = Array.from({ length: 40 }, (_, index) => `${'  '.repeat(index)}- Level ${index}`);
+    const { parsed, renderer } = setup(['## Course', ...chain].join('\n'));
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), {
+      visualRootId: id(parsed, 'Course'), mode: 'mindmap',
+    });
+    // Log layout reads and inline style writes in order; jsdom has no layout, so every layout read is the spy itself.
+    const log: string[] = [];
+    const layoutRead = vi.fn(() => { log.push('read'); return 1; });
+    const layoutProperties = ['clientLeft', 'clientTop', 'clientWidth', 'clientHeight', 'offsetLeft', 'offsetTop',
+      'offsetWidth', 'offsetHeight', 'scrollWidth', 'scrollHeight'];
+    for (const entry of renderer.entries.values()) {
+      for (const element of [entry.element, entry.toggle]) {
+        for (const name of layoutProperties) Object.defineProperty(element, name, { get: layoutRead });
+        Object.defineProperty(element, 'getBoundingClientRect', { value: layoutRead });
+        const style = element.style;
+        Object.defineProperty(element, 'style', { get: () => new Proxy(style, {
+          set(target, property, value) { log.push(`write ${String(property)}`); return Reflect.set(target, property, value); },
+        }) });
+      }
+    }
+    const positioned = parsed.nodes.map((node, index) => ({ id: node.id, x: index * 10, y: index * 20, width: 100, height: 30 }));
+    const folds = parsed.nodes.flatMap((node, index) => (node.children.length > 0 ? [{ id: node.id, x: index * 10 + 100, y: index * 20 + 15 }] : []));
+    expect(folds).toHaveLength(40);
+    renderer.place(positioned, folds);
+    // At most one clientLeft and one clientTop per fold, all before the first transform / left / top write.
+    expect(layoutRead.mock.calls.length).toBeGreaterThan(0);
+    expect(layoutRead.mock.calls.length).toBeLessThanOrEqual(folds.length * 2);
+    expect(log.lastIndexOf('read')).toBeLessThan(log.findIndex(item => item.startsWith('write')));
+    expect(log.filter(item => item === 'write transform')).toHaveLength(positioned.length);
+    const stage = renderer.entries.get(id(parsed, 'Level 0'));
+    expect(stage?.element.style.transform).toBe('translate(10px, 20px)');
+    expect(stage?.toggle.style.left).toBe('99px');
+    expect(stage?.toggle.style.top).toBe('14px');
+    expect(renderer.entries.get(id(parsed, 'Level 39'))?.toggle.style.left).toBe('');
+  });
+
   it('uses provided timeline stem coordinates rather than a fixed node-side offset', () => {
     const { parsed, renderer } = setup('## Course\n### Stage\n#### Detail\n');
     const stageId = id(parsed, 'Stage');

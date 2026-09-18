@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { layoutTree, type LayoutNode } from "../../src/layout/layout";
 import { snapSlot } from "../../src/layout/snap";
 import type { PositionedNode } from "../../src/layout/primitives";
 
@@ -82,5 +83,45 @@ describe("snapSlot zones follow each layout's geometry", () => {
     expect(snapSlot("timeline", rect(292 + 160 + 30, -158), branch, [], 1, "forest")?.position).toBe("inside");
     expect(snapSlot("timeline", rect(508, -100), branch, [node("k1", 508, -158), node("k2", 508, -100)], 1, "forest"))
       .toEqual({ targetId: "k2", position: "before", distance: 20 });
+  });
+});
+
+describe("snapSlot on the hierarchy's per-parent rows", () => {
+  // Root → A (100 tall, like a node with an image) with A1, A2; B with B1; the leaf C. Rows hang from each parent
+  // (LEV-46), so A's children sit lower than B's, and C's first child would land one gap under C itself.
+  const tree: LayoutNode = {
+    id: "root",
+    children: [
+      { id: "A", children: [{ id: "A1", children: [] }, { id: "A2", children: [] }] },
+      { id: "B", children: [{ id: "B1", children: [] }] },
+      { id: "C", children: [] },
+    ],
+  };
+  const placed = layoutTree(tree, new Map([["A", { width: 160, height: 100 }]]), new Set(), "hierarchy");
+  const byId = new Map(placed.nodes.map(item => [item.id, item]));
+  const of = (id: string): PositionedNode => {
+    const found = byId.get(id);
+    if (!found) throw new Error(`Missing ${id}`);
+    return found;
+  };
+  const kids = (id: string): PositionedNode[] => placed.edges.filter(edge => edge.from === id).map(edge => of(edge.to));
+
+  it("follows each parent's own row: level with B's children it slots among them, 56 lower it slots among A's", () => {
+    const [a, b, a1, a2, b1] = [of("A"), of("B"), of("A1"), of("A2"), of("B1")];
+    expect(a1.y).toBe(a.y + a.height + 32);
+    expect(b1.y).toBe(b.y + b.height + 32);
+    expect(a1.y - b1.y).toBe(56);
+    expect(snapSlot("hierarchy", rect(b1.x + b1.width / 2, b1.y), b, kids("B"))).toEqual({ targetId: "B1", position: "after", distance: 20 });
+    expect(snapSlot("hierarchy", rect(b1.x + b1.width / 2, b1.y), a, kids("A"))).toBeNull();
+    const between = (a1.x + a1.width + a2.x) / 2;
+    expect(snapSlot("hierarchy", rect(between - 60, a1.y), a, kids("A"))).toEqual({ targetId: "A2", position: "before", distance: 12 });
+    expect(snapSlot("hierarchy", rect(between - 60, a1.y), b, kids("B"))).toBeNull();
+  });
+
+  it("a leaf beside the tall parent takes its child one gap under itself, where the layout will put it", () => {
+    const c = of("C");
+    expect(snapSlot("hierarchy", rect(c.x, c.y + c.height + 32), c, [])).toEqual({ targetId: "C", position: "inside", distance: 32 + 20 });
+    // The tall sibling's children row is 88 under C: no longer where C's child would land, and outside the plain zone.
+    expect(snapSlot("hierarchy", rect(c.x, c.y + c.height + 88), c, [])).toBeNull();
   });
 });
