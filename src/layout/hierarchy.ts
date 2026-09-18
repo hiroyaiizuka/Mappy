@@ -5,15 +5,17 @@ import {
 } from "./primitives";
 
 /**
- * Hierarchy (organization chart, logic tree, WBS): the root on top, every depth on one
- * row, branches spreading downward. Each subtree owns a horizontal extent wide enough
- * for the node, its collapsed badge and its children, so siblings and cousins never
- * overlap however long their titles are. Rows are aligned across the whole tree: a
- * row is as tall as its tallest node and nodes hang from the row's top edge, so the
- * connector bus above a row sits at one height for every parent of that depth.
+ * Hierarchy (organization chart, logic tree, WBS): the root on top, branches spreading
+ * downward. Each subtree owns a horizontal extent wide enough for the node, its
+ * collapsed badge and its children, so siblings and cousins never overlap however long
+ * their titles are. Rows hang from each parent, as in XMind's organization chart: a
+ * parent's children share a top edge one gap below the parent's bottom edge, so every
+ * connector is stem plus drop of the gap's length, and a parent made tall by an image
+ * or body text lowers only its own children while the other branches keep their rows.
+ * The gaps are about one node's height (a boxed stage under the root, plain text below).
  */
-const HIERARCHY_ROOT_GAP = 64;
-const HIERARCHY_ROW_GAP = 48;
+const HIERARCHY_ROOT_GAP = 48;
+const HIERARCHY_ROW_GAP = 32;
 const HIERARCHY_SIBLING_GAP = 24;
 const HIERARCHY_BADGE_OFFSET = 16;
 
@@ -32,6 +34,8 @@ interface Extent {
 interface Slot extends Visit {
   /** Left edge of the extent reserved for this subtree. */
   left: number;
+  /** Top edge of the node: one gap under its parent's bottom edge. */
+  top: number;
 }
 
 function rowGap(depth: number): number {
@@ -61,14 +65,6 @@ export function placeHierarchy(
 ): void {
   const order = preorder(root);
 
-  // Rows take the height of their tallest visible node.
-  const rowHeights: number[] = [];
-  for (const { node, depth } of order) rowHeights[depth] = Math.max(rowHeights[depth] ?? 0, node.height);
-  const rowTops: number[] = [y];
-  for (let depth = 1; depth < rowHeights.length; depth += 1) {
-    rowTops[depth] = (rowTops[depth - 1] ?? y) + (rowHeights[depth - 1] ?? 0) + rowGap(depth - 1);
-  }
-
   // Reverse preorder: every child's extent is known before its parent's.
   const extents = new Map<MeasuredNode, Extent>();
   for (let index = order.length - 1; index >= 0; index -= 1) {
@@ -84,23 +80,24 @@ export function placeHierarchy(
   // Preorder again, now with each subtree's extent placed: nodes and forests are
   // centered inside their extent, so a parent sits over the middle of its children
   // and narrow children sit under the middle of a wide parent.
-  const stack: Slot[] = [{ node: root, depth: 0, left: x - (extentOf(root).width - root.width) / 2 }];
+  const stack: Slot[] = [{ node: root, depth: 0, left: x - (extentOf(root).width - root.width) / 2, top: y }];
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) break;
-    const { node, depth, left } = current;
+    const { node, depth, left, top } = current;
     const extent = extentOf(node);
     const position: PositionedNode = {
-      id: node.id, x: left + (extent.width - node.width) / 2, y: rowTops[depth] ?? y, width: node.width, height: node.height,
+      id: node.id, x: left + (extent.width - node.width) / 2, y: top, width: node.width, height: node.height,
     };
     nodes.push(position);
     const centerX = position.x + position.width / 2;
     const bottom = position.y + position.height;
     if (node.children.length > 0) {
-      const childTop = rowTops[depth + 1] ?? bottom + rowGap(depth);
-      // The bus runs through the middle of the gap above the children's row; the
-      // fold control sits on it where the stem from the parent meets the branches.
-      const busY = childTop - rowGap(depth) / 2;
+      // The children's row hangs one gap under this node, whatever its cousins' parents
+      // measure. The bus runs through the middle of that gap; the fold control sits on
+      // it where the stem from the parent meets the branches.
+      const childTop = bottom + rowGap(depth);
+      const busY = bottom + rowGap(depth) / 2;
       const control = foldControlSize(0);
       folds.push({ id: node.id, x: centerX, y: busY });
       foldBounds.push({ x: centerX - control.width / 2, y: busY - control.height / 2, ...control });
@@ -113,7 +110,7 @@ export function placeHierarchy(
         };
         const childCenterX = childPosition.x + childPosition.width / 2;
         edges.push(connect(position, childPosition, `M ${centerX} ${bottom} V ${busY} H ${childCenterX} V ${childTop}`));
-        children.push({ node: child, depth: depth + 1, left: childLeft });
+        children.push({ node: child, depth: depth + 1, left: childLeft, top: childTop });
         childLeft += childExtent + HIERARCHY_SIBLING_GAP;
       }
       for (let index = children.length - 1; index >= 0; index -= 1) {
