@@ -14,3 +14,18 @@ export function makePerformanceFixture(nodeCount) {
   }
   return [`performance-${nodeCount}.md`, `${headings.join('\n\n')}\n`];
 }
+
+/**
+ * Rough stand-in for DOM measurement where there is no DOM (geometry tests, the
+ * layout benchmark): 14px per character plus padding, wrapped at the node's 360px
+ * maximum width, 22px per line.
+ */
+export function estimateNodeSizes(nodes) {
+  const sizes = new Map();
+  for (const node of nodes) {
+    const text = Math.max(1, node.title.length) * 14 + 16;
+    const lines = Math.ceil(text / 344);
+    sizes.set(node.id, { width: Math.min(360, text), height: 22 * lines + 8 });
+  }
+  return sizes;
+}

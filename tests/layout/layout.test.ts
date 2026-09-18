@@ -389,8 +389,12 @@ describe("free topics", () => {
       // Source order becomes vertical order: each topic sits below the body and below the previous topic.
       expect(topic.y).toBeGreaterThanOrEqual(previousBottom + 48);
       const subtree = result.nodes.filter(item => item.id.startsWith(id));
-      // The topic's tree is flush with the body's left edge (its root, except in the hierarchy where the root is centered).
-      expect(Math.min(...subtree.map(item => item.x))).toBe(alone.bounds.x);
+      // The topic's tree is flush with the body's left edge; in the hierarchy, whose left edge may be a far-off
+      // leaf of its widest row, it is centered under the body root instead.
+      const left = Math.min(...subtree.map(item => item.x));
+      const right = Math.max(...subtree.map(item => item.x + item.width));
+      if (mode === "hierarchy") expect((left + right) / 2).toBeCloseTo(alone.origin.x + (byId(alone).get("root")?.width ?? 0) / 2, 6);
+      else expect(left).toBe(alone.bounds.x);
       previousBottom = Math.max(...subtree.map(item => item.y + item.height));
       for (const item of subtree) {
         expect(item.x).toBeGreaterThanOrEqual(result.bounds.x);

@@ -1,36 +1,16 @@
 import { placeHierarchy } from "./hierarchy";
+import {
+  connect, foldBadgeWidth, foldControlFor, foldControlSize,
+  type FoldPosition, type LayoutBounds, type LayoutEdge, type NodeSize, type PositionedNode,
+} from "./primitives";
+
+export { foldBadgeWidth, foldControlSize } from "./primitives";
+export type { FoldPosition, LayoutBounds, LayoutEdge, NodeSize, PositionedNode } from "./primitives";
 
 /** The layout depends on tree identity and measurements, never Markdown or DOM. */
 export interface LayoutNode {
   readonly id: string;
   readonly children: readonly LayoutNode[];
-}
-
-export interface NodeSize {
-  width: number;
-  height: number;
-}
-
-export interface LayoutBounds extends NodeSize {
-  x: number;
-  y: number;
-}
-
-export interface PositionedNode extends LayoutBounds {
-  id: string;
-}
-
-export interface LayoutEdge {
-  id: string;
-  from: string;
-  to: string;
-  path: string;
-}
-
-export interface FoldPosition {
-  id: string;
-  x: number;
-  y: number;
 }
 
 export interface LayoutPoint {
@@ -90,15 +70,6 @@ const TOPIC_GAP = 48;
 const DEFAULT_WIDTH = 160;
 const DEFAULT_HEIGHT = 44;
 
-/** Shared with the renderer, so numeric badges and their hit areas fit the layout. */
-export function foldBadgeWidth(count = 0): number {
-  return count > 0 ? Math.max(18, 8 + String(count).length * 7) : 18;
-}
-
-export function foldControlSize(count = 0): NodeSize {
-  return { width: Math.max(28, foldBadgeWidth(count)), height: 28 };
-}
-
 function foldOffset(node: MeasuredNode): number {
   return node.children.length > 0 ? node.horizontalGap / 2 : Math.max(14, foldBadgeWidth(node.descendantCount) / 2 + 4);
 }
@@ -156,7 +127,7 @@ function measureTree(
       childHeight += child.subtreeHeight;
     }
     if (node.children.length > 1) childHeight += (node.children.length - 1) * node.verticalGap;
-    const foldSize = node.descendantCount > 0 ? foldControlSize(node.children.length === 0 ? node.descendantCount : 0) : null;
+    const foldSize = foldControlFor(node);
     const foldExtent = foldSize ? foldOffset(node) + foldSize.width / 2 : 0;
     node.subtreeHeight = Math.max(node.height, childHeight, foldSize?.height ?? 0);
     node.subtreeWidth = node.width + Math.max(foldExtent, node.children.length > 0 ? node.horizontalGap + childWidth : 0);
@@ -168,10 +139,6 @@ function measureTree(
 
 function place(node: MeasuredNode, x: number, top: number): PositionedNode {
   return { id: node.id, x, y: top + (node.subtreeHeight - node.height) / 2, width: node.width, height: node.height };
-}
-
-export function connect(parent: PositionedNode, child: PositionedNode, path: string): LayoutEdge {
-  return { id: JSON.stringify([parent.id, child.id]), from: parent.id, to: child.id, path };
 }
 
 function addFold(
@@ -335,10 +302,10 @@ function intersects(first: LayoutBounds, second: LayoutBounds): boolean {
     && first.y < second.y + second.height && first.y + first.height > second.y;
 }
 
-/** The nearest slot in the column under the body's left edge that no placed rectangle touches. */
-function defaultSlot(size: NodeSize, body: LayoutBounds, occupied: readonly LayoutBounds[]): LayoutPoint {
+/** The nearest slot below the body, in the column starting at `x`, that no placed rectangle touches. */
+function defaultSlot(size: NodeSize, x: number, body: LayoutBounds, occupied: readonly LayoutBounds[]): LayoutPoint {
   // Only the probe's extent matters here; its own x/y (nonzero when the root is centered) must not leak into the slot.
-  const slot = { x: body.x, y: body.y + body.height + TOPIC_GAP, width: size.width, height: size.height };
+  const slot = { x, y: body.y + body.height + TOPIC_GAP, width: size.width, height: size.height };
   for (let guard = 0; guard <= occupied.length; guard += 1) {
     const blocker = occupied.find((area) => intersects(slot, area));
     if (!blocker) break;
@@ -350,7 +317,9 @@ function defaultSlot(size: NodeSize, body: LayoutBounds, occupied: readonly Layo
 /**
  * Lay out the body at the origin and each free topic as its own tree of the same mode.
  * Positioned topics land where asked, even over other nodes; the rest stack under the
- * body in source order, each in the first slot clear of everything placed before it.
+ * body in source order, each in the first slot clear of everything placed before it:
+ * flush with the body's left edge, or centered under the root in the hierarchy, whose
+ * left edge can be a far-off leaf of its widest row.
  */
 export function layoutTree(
   root: LayoutNode,
@@ -381,7 +350,8 @@ export function layoutTree(
     if (placed[index]) return;
     // Measure once at the origin, then move the whole extent (fold controls included) into the slot.
     const probe = placeTree(tree, 0, 0, mode);
-    const slot = defaultSlot(probe.bounds, body.bounds, occupied);
+    const column = mode === "hierarchy" ? origin.x + (measured.width - probe.bounds.width) / 2 : body.bounds.x;
+    const slot = defaultSlot(probe.bounds, column, body.bounds, occupied);
     const result = placeTree(tree, slot.x - probe.bounds.x, slot.y - probe.bounds.y, mode);
     placed[index] = result;
     occupied.push(result.bounds);

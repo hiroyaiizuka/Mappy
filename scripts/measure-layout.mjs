@@ -16,20 +16,24 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { arch, cpus, platform, release, totalmem } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { pathToFileURL } from 'node:url';
-import { makePerformanceFixture, performanceNodeCounts } from './performance-fixtures.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { estimateNodeSizes, makePerformanceFixture, performanceNodeCounts } from './performance-fixtures.mjs';
 
-const root = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const modes = ['mindmap', 'timeline', 'hierarchy'];
+const WARMUP = 5;
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
 }
 
+/** Short hash, with `-dirty` when the working tree differs from it, so a record never claims a commit it did not measure. */
 function commitHash() {
   try {
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    const hash = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() !== '';
+    return dirty ? `${hash}-dirty` : hash;
   } catch {
     return 'unknown';
   }
@@ -54,17 +58,6 @@ async function loadModules() {
   return { layoutTree: layout.layoutTree, parseMarkdown: markdown.parseMarkdown, projectMap: markdown.projectMap };
 }
 
-/** The same estimate as tests/layout/hierarchy.test.ts: 14px per character, wrapped at the node's 360px maximum. */
-function estimateSizes(nodes) {
-  const sizes = new Map();
-  for (const node of nodes) {
-    const text = Math.max(1, node.title.length) * 14 + 16;
-    const lines = Math.ceil(text / 344);
-    sizes.set(node.id, { width: Math.min(360, text), height: 22 * lines + 8 });
-  }
-  return sizes;
-}
-
 function percentile(samples, fraction) {
   const sorted = [...samples].sort((first, second) => first - second);
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
@@ -80,8 +73,8 @@ function summarize(samples) {
   };
 }
 
-function time(task, runs, warmup = 5) {
-  for (let index = 0; index < warmup; index += 1) task();
+function time(task, runs) {
+  for (let index = 0; index < WARMUP; index += 1) task();
   const samples = [];
   for (let index = 0; index < runs; index += 1) {
     const start = performance.now();
@@ -97,6 +90,11 @@ function format(value) {
 
 async function main() {
   const runs = Number(option('--runs', '50'));
+  if (!Number.isInteger(runs) || runs < 1) {
+    console.error('Usage: node scripts/measure-layout.mjs [--runs <positive integer>] [--out <directory>]');
+    process.exitCode = 1;
+    return;
+  }
   const outRoot = resolve(root, option('--out', join('artifacts', 'layout-timing')));
   const { layoutTree, parseMarkdown, projectMap } = await loadModules();
   const startedAt = new Date();
@@ -106,7 +104,7 @@ async function main() {
     const parse = time(() => parseMarkdown(source, name), runs);
     const doc = parseMarkdown(source, name);
     const { root: tree } = projectMap(doc);
-    const sizes = estimateSizes(doc.nodes);
+    const sizes = estimateNodeSizes(doc.nodes);
     const expanded = new Set();
     const collapsed = new Set(tree.children.slice(0, Math.ceil(tree.children.length / 2)).map(node => node.id));
     const entry = { count, name, parse, layout: {} };
@@ -130,7 +128,7 @@ async function main() {
     memoryGiB: Math.round(totalmem() / 2 ** 30),
     startedAt: startedAt.toISOString(),
     runs,
-    warmup: 5,
+    warmup: WARMUP,
     sizes: 'estimated from title length (14px/char, max 360px), no DOM',
   };
   const directory = join(outRoot, startedAt.toISOString().replace(/[:.]/gu, '-'));

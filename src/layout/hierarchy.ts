@@ -1,9 +1,8 @@
-// `layoutTree` dispatches here; fold sizing and edge identity stay in layout.ts so the
-// renderer and every mode share them (functions only, so the import cycle is harmless).
+import type { MeasuredNode } from "./layout";
 import {
-  connect, foldControlSize,
-  type FoldPosition, type LayoutBounds, type LayoutEdge, type MeasuredNode, type PositionedNode,
-} from "./layout";
+  connect, foldControlFor, foldControlSize,
+  type FoldPosition, type LayoutBounds, type LayoutEdge, type PositionedNode,
+} from "./primitives";
 
 /**
  * Hierarchy (organization chart, logic tree, WBS): the root on top, every depth on one
@@ -18,10 +17,20 @@ const HIERARCHY_ROW_GAP = 48;
 const HIERARCHY_SIBLING_GAP = 24;
 const HIERARCHY_BADGE_OFFSET = 16;
 
-interface Frame {
+interface Visit {
   node: MeasuredNode;
   depth: number;
-  /** Left edge of the horizontal extent reserved for this subtree. */
+}
+
+interface Extent {
+  /** Width reserved for the whole subtree. */
+  width: number;
+  /** Width of the children's row inside it (0 for a leaf). */
+  forest: number;
+}
+
+interface Slot extends Visit {
+  /** Left edge of the extent reserved for this subtree. */
   left: number;
 }
 
@@ -29,10 +38,20 @@ function rowGap(depth: number): number {
   return depth === 0 ? HIERARCHY_ROOT_GAP : HIERARCHY_ROW_GAP;
 }
 
-function forestWidth(node: MeasuredNode, extents: ReadonlyMap<MeasuredNode, number>): number {
-  let width = 0;
-  for (const child of node.children) width += extents.get(child) ?? 0;
-  return width + Math.max(0, node.children.length - 1) * HIERARCHY_SIBLING_GAP;
+/** Preorder with depth; children are pushed in reverse so they come out in source order. */
+function preorder(root: MeasuredNode): Visit[] {
+  const order: Visit[] = [];
+  const pending: Visit[] = [{ node: root, depth: 0 }];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    order.push(current);
+    for (let index = current.node.children.length - 1; index >= 0; index -= 1) {
+      const child = current.node.children[index];
+      if (child) pending.push({ node: child, depth: current.depth + 1 });
+    }
+  }
+  return order;
 }
 
 /** Root's top-left at (x, y); rows grow downward from there. */
@@ -40,47 +59,39 @@ export function placeHierarchy(
   root: MeasuredNode, x: number, y: number,
   nodes: PositionedNode[], edges: LayoutEdge[], folds: FoldPosition[], foldBounds: LayoutBounds[],
 ): void {
-  // Preorder with depth; rows take the height of their tallest visible node.
-  const order: Frame[] = [];
+  const order = preorder(root);
+
+  // Rows take the height of their tallest visible node.
   const rowHeights: number[] = [];
-  const pending: Frame[] = [{ node: root, depth: 0, left: 0 }];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) break;
-    order.push(current);
-    rowHeights[current.depth] = Math.max(rowHeights[current.depth] ?? 0, current.node.height);
-    for (let index = current.node.children.length - 1; index >= 0; index -= 1) {
-      const child = current.node.children[index];
-      if (child) pending.push({ node: child, depth: current.depth + 1, left: 0 });
-    }
-  }
-
-  // Reverse preorder: every child's extent is known before its parent's.
-  const extents = new Map<MeasuredNode, number>();
-  for (let index = order.length - 1; index >= 0; index -= 1) {
-    const frame = order[index];
-    if (!frame) continue;
-    const { node } = frame;
-    const badge = node.descendantCount > 0 ? foldControlSize(node.children.length === 0 ? node.descendantCount : 0).width : 0;
-    extents.set(node, Math.max(node.width, badge, forestWidth(node, extents)));
-  }
-
+  for (const { node, depth } of order) rowHeights[depth] = Math.max(rowHeights[depth] ?? 0, node.height);
   const rowTops: number[] = [y];
   for (let depth = 1; depth < rowHeights.length; depth += 1) {
     rowTops[depth] = (rowTops[depth - 1] ?? y) + (rowHeights[depth - 1] ?? 0) + rowGap(depth - 1);
   }
 
+  // Reverse preorder: every child's extent is known before its parent's.
+  const extents = new Map<MeasuredNode, Extent>();
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const node = order[index]?.node;
+    if (!node) continue;
+    let forest = 0;
+    for (const child of node.children) forest += extents.get(child)?.width ?? child.width;
+    forest += Math.max(0, node.children.length - 1) * HIERARCHY_SIBLING_GAP;
+    extents.set(node, { width: Math.max(node.width, foldControlFor(node)?.width ?? 0, forest), forest });
+  }
+  const extentOf = (node: MeasuredNode): Extent => extents.get(node) ?? { width: node.width, forest: 0 };
+
   // Preorder again, now with each subtree's extent placed: nodes and forests are
   // centered inside their extent, so a parent sits over the middle of its children
   // and narrow children sit under the middle of a wide parent.
-  const stack: Frame[] = [{ node: root, depth: 0, left: x - ((extents.get(root) ?? root.width) - root.width) / 2 }];
+  const stack: Slot[] = [{ node: root, depth: 0, left: x - (extentOf(root).width - root.width) / 2 }];
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) break;
     const { node, depth, left } = current;
-    const extent = extents.get(node) ?? node.width;
+    const extent = extentOf(node);
     const position: PositionedNode = {
-      id: node.id, x: left + (extent - node.width) / 2, y: rowTops[depth] ?? y, width: node.width, height: node.height,
+      id: node.id, x: left + (extent.width - node.width) / 2, y: rowTops[depth] ?? y, width: node.width, height: node.height,
     };
     nodes.push(position);
     const centerX = position.x + position.width / 2;
@@ -93,10 +104,10 @@ export function placeHierarchy(
       const control = foldControlSize(0);
       folds.push({ id: node.id, x: centerX, y: busY });
       foldBounds.push({ x: centerX - control.width / 2, y: busY - control.height / 2, ...control });
-      let childLeft = left + (extent - forestWidth(node, extents)) / 2;
-      const children: Frame[] = [];
+      let childLeft = left + (extent.width - extent.forest) / 2;
+      const children: Slot[] = [];
       for (const child of node.children) {
-        const childExtent = extents.get(child) ?? child.width;
+        const childExtent = extentOf(child).width;
         const childPosition: PositionedNode = {
           id: child.id, x: childLeft + (childExtent - child.width) / 2, y: childTop, width: child.width, height: child.height,
         };
@@ -109,9 +120,10 @@ export function placeHierarchy(
         const child = children[index];
         if (child) stack.push(child);
       }
-    } else if (node.descendantCount > 0) {
+    } else {
       // A collapsed branch shows its hidden count right under the node.
-      const control = foldControlSize(node.descendantCount);
+      const control = foldControlFor(node);
+      if (!control) continue;
       const badgeY = bottom + HIERARCHY_BADGE_OFFSET;
       folds.push({ id: node.id, x: centerX, y: badgeY });
       foldBounds.push({ x: centerX - control.width / 2, y: badgeY - control.height / 2, ...control });

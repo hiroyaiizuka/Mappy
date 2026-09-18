@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseMarkdown, projectMap, type MindNode } from "../../src/core/markdown";
-import { foldBadgeWidth, layoutTree, type LayoutNode, type LayoutResult, type NodeSize, type PositionedNode } from "../../src/layout/layout";
+import { parseMarkdown, projectMap } from "../../src/core/markdown";
+import { foldBadgeWidth, foldControlSize, layoutTree, type LayoutNode, type LayoutResult, type NodeSize, type PositionedNode } from "../../src/layout/layout";
 import { pathToPoints } from "../../src/layout/path-points";
-import { makePerformanceFixture, performanceNodeCounts } from "../../scripts/performance-fixtures.mjs";
+import { estimateNodeSizes, makePerformanceFixture, performanceNodeCounts } from "../../scripts/performance-fixtures.mjs";
 
 const ROOT_GAP = 64;
 const ROW_GAP = 48;
@@ -40,17 +40,19 @@ function segments(result: LayoutResult): { edge: LayoutResult["edges"][number]; 
   });
 }
 
-/** Depth of every node in the source tree, so rows can be checked against the tree rather than the layout. */
-function depths(root: LayoutNode): Map<string, number> {
-  const result = new Map<string, number>();
-  const pending: { node: LayoutNode; depth: number }[] = [{ node: root, depth: 0 }];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) break;
-    result.set(current.node.id, current.depth);
-    for (const child of current.node.children) pending.push({ node: child, depth: current.depth + 1 });
-  }
-  return result;
+/** Depth and descendant count of every node in the source tree, so rows and badges can be checked against the tree rather than the layout. */
+function describeTree(root: LayoutNode): { depths: Map<string, number>; descendants: Map<string, number> } {
+  const depths = new Map<string, number>();
+  const descendants = new Map<string, number>();
+  const count = (node: LayoutNode, depth: number): number => {
+    depths.set(node.id, depth);
+    let total = 0;
+    for (const child of node.children) total += 1 + count(child, depth + 1);
+    descendants.set(node.id, total);
+    return total;
+  };
+  count(root, 0);
+  return { depths, descendants };
 }
 
 /** Preorder ids of the visible tree: what a reader sees top-down, left-to-right. */
@@ -79,9 +81,12 @@ function preorder(root: LayoutNode, collapsed: ReadonlySet<string>): string[] {
  */
 function expectHierarchy(result: LayoutResult, root: LayoutNode, collapsed: ReadonlySet<string> = new Set()): void {
   const positions = byId(result);
-  const depthOf = depths(root);
-  // Fold controls count with their smallest hit area; wider badges are checked where they are collapsed.
-  const rects = [...result.nodes, ...result.folds.map(fold => ({ id: `fold:${fold.id}`, x: fold.x - 14, y: fold.y - 14, width: 28, height: 28 }))];
+  const { depths: depthOf, descendants } = describeTree(root);
+  // Fold controls count with their real hit area: a collapsed badge grows with its hidden count.
+  const rects = [...result.nodes, ...result.folds.map(fold => {
+    const control = foldControlSize(collapsed.has(fold.id) ? descendants.get(fold.id) ?? 0 : 0);
+    return { id: `fold:${fold.id}`, x: fold.x - control.width / 2, y: fold.y - control.height / 2, ...control };
+  })];
   for (let index = 0; index < rects.length; index += 1) {
     const first = rects[index];
     if (!first) continue;
@@ -209,7 +214,7 @@ describe("hierarchy layout", () => {
     const result = layoutTree(tree, sizes, new Set(), "hierarchy");
     const positions = byId(result);
     const busByDepth = new Map<number, number>();
-    const depthOf = depths(tree);
+    const depthOf = describeTree(tree).depths;
     for (const edge of result.edges) {
       const parent = positions.get(edge.from);
       const child = positions.get(edge.to);
@@ -254,6 +259,23 @@ describe("hierarchy layout", () => {
     expect(layoutTree(tree, sizes, new Set(["root"]), "hierarchy").nodes).toHaveLength(1);
     // Re-expanding restores exactly the layout from before the fold.
     expect(layoutTree(tree, sizes, new Set(), "hierarchy")).toEqual(expanded);
+  });
+
+  it("retains a collapsed root control under the root and fits its four-digit count", () => {
+    const wide = node("root", ...Array.from({ length: 1000 }, (_, index) => node(`hidden-${index}`)));
+    const result = layoutTree(wide, new Map([["root", { width: 100, height: 20 }]]), new Set(["root"]), "hierarchy");
+    expect(result.nodes).toHaveLength(1);
+    expect(result.edges).toEqual([]);
+    const root = result.nodes[0];
+    const fold = result.folds[0];
+    expect(root && fold).toBeTruthy();
+    if (!root || !fold) return;
+    expect(result.folds).toEqual([{ id: "root", x: centerX(root), y: root.y + root.height + 16 }]);
+    const halfWidth = foldBadgeWidth(1000) / 2;
+    expect(result.bounds.x).toBeLessThanOrEqual(fold.x - halfWidth);
+    expect(result.bounds.x + result.bounds.width).toBeGreaterThanOrEqual(fold.x + halfWidth);
+    expect(result.bounds.y + result.bounds.height).toBeGreaterThanOrEqual(fold.y + 14);
+    expect(fold.y - 14).toBeGreaterThanOrEqual(root.y + root.height);
   });
 
   it("keeps a four-digit badge inside the bounds and clear of neighbouring branches", () => {
@@ -327,22 +349,12 @@ describe("hierarchy layout", () => {
 });
 
 describe("hierarchy layout of the fixtures", () => {
-  /** Roughly what the DOM measures: 14px per character, wrapped at the node's 360px maximum. */
-  function estimateSizes(nodes: readonly MindNode[]): Map<string, NodeSize> {
-    const sizes = new Map<string, NodeSize>();
-    for (const item of nodes) {
-      const text = Math.max(1, item.title.length) * 14 + 16;
-      const lines = Math.ceil(text / 344);
-      sizes.set(item.id, { width: Math.min(360, text), height: 22 * lines + 8 });
-    }
-    return sizes;
-  }
-
+  // Sizes come from the estimate the layout benchmark uses too (no DOM in this layer).
   it("lays out uneven-branches: 24 siblings in order, an 8-deep chain in 8 rows and long Japanese without overlap", () => {
     const source = readFileSync(new URL("../fixtures/uneven-branches.md", import.meta.url), "utf8");
     const doc = parseMarkdown(source, "uneven-branches");
     const { root } = projectMap(doc);
-    const result = layoutTree(root, estimateSizes(doc.nodes), new Set(), "hierarchy");
+    const result = layoutTree(root, estimateNodeSizes(doc.nodes), new Set(), "hierarchy");
     expectHierarchy(result, root);
     const positions = byId(result);
     const titles = new Map(doc.nodes.map(item => [item.id, item.title]));
@@ -375,11 +387,11 @@ describe("hierarchy layout of the fixtures", () => {
     const [, source] = makePerformanceFixture(count);
     const doc = parseMarkdown(source, `performance-${count}`);
     const { root } = projectMap(doc);
-    const result = layoutTree(root, estimateSizes(doc.nodes), new Set(), "hierarchy");
+    const result = layoutTree(root, estimateNodeSizes(doc.nodes), new Set(), "hierarchy");
     expect(result.nodes).toHaveLength(count);
     expectHierarchy(result, root);
     const collapsed = new Set(root.children.slice(0, Math.ceil(root.children.length / 2)).map(item => item.id));
-    const folded = layoutTree(root, estimateSizes(doc.nodes), collapsed, "hierarchy");
+    const folded = layoutTree(root, estimateNodeSizes(doc.nodes), collapsed, "hierarchy");
     expectHierarchy(folded, root, collapsed);
     expect(folded.nodes.length).toBeLessThan(result.nodes.length);
     expect(folded.folds.filter(fold => collapsed.has(fold.id))).toHaveLength(collapsed.size);
