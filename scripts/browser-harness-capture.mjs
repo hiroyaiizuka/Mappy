@@ -104,14 +104,17 @@ async function captureFixtures(recorder, page, timings) {
   }
 }
 
+/** The harness's description of the node with this title (rect, toggle, flags); missing nodes fail the case. */
+async function nodeInfo(page, name) {
+  const node = await page.harness(`h.node(${JSON.stringify(name)})`);
+  expect(node, `Node not found: ${name}`);
+  return node;
+}
+
 async function captureOperations(recorder, page) {
   await loadFixture(page, OPERATION_FIXTURE);
   const title = '多数の兄弟';
-  const nodeRect = async name => {
-    const node = await page.harness(`h.node(${JSON.stringify(name)})`);
-    expect(node, `Node not found: ${name}`);
-    return node;
-  };
+  const nodeRect = name => nodeInfo(page, name);
 
   await recorder.run('select-click', `ノード「${title}」をクリック`, 'そのノードだけが選択される', async () => {
     const node = await nodeRect(title);
@@ -221,7 +224,7 @@ async function captureOperations(recorder, page) {
     expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('timeline')), 'layout preference was not written through processFrontMatter');
   });
 
-  await recorder.run('hierarchy', '左下の「階層図」', 'ルートが上、同じ深さが同じ段になり、ノード数は変わらない。`mappy-layout: hierarchy` が書かれる', async () => {
+  await recorder.run('hierarchy', '左下の「階層図」', 'ルートが上、同じ親の子が同じ段、親の下辺から子までの隙間が深さごとに一定で、ノード数は変わらない。`mappy-layout: hierarchy` が書かれる', async () => {
     const before = (await page.harness('h.nodes()')).length;
     const button = await page.harness('h.button("階層図")');
     expect(button, 'hierarchy button missing');
@@ -229,27 +232,45 @@ async function captureOperations(recorder, page) {
     await page.settle();
     const hierarchy = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
     expect(hierarchy === before, `${hierarchy} hierarchy nodes of ${before}`);
-    // Same aria-level ⇒ same top edge, and the root above every other node.
+    // Same parent ⇒ same top edge, every child one gap under its own parent (the same gap for
+    // every parent of a depth, whatever the parents measure), and the root above every other node.
     const rows = await page.evaluate(`(() => {
       const nodes = Array.from(document.querySelectorAll('.mappy-node'));
-      const tops = new Map();
+      const rects = new Map(nodes.map(node => [node.dataset.nodeId, node.getBoundingClientRect()]));
+      const parents = new Map(window.__mappyHarness.view.snapshot().document.nodes.map(node => [node.id, node.parentId]));
+      const rootEl = nodes.find(node => node.classList.contains('is-root'));
+      const root = rootEl?.getBoundingClientRect();
+      const below = root ? nodes.filter(node => node !== rootEl && node.getBoundingClientRect().top < root.bottom).length : null;
+      const byParent = new Map();
       for (const node of nodes) {
-        const level = node.getAttribute('aria-level');
-        const top = Math.round(node.getBoundingClientRect().top * 10) / 10;
-        tops.set(level, (tops.get(level) ?? new Set()).add(top));
+        const parentId = parents.get(node.dataset.nodeId);
+        const parent = rects.get(parentId);
+        if (!parent) continue;
+        const rect = node.getBoundingClientRect();
+        const entry = byParent.get(parentId) ?? { level: node.getAttribute('aria-level'), tops: new Set(), gaps: [] };
+        entry.tops.add(Math.round(rect.top * 10) / 10);
+        entry.gaps.push(rect.top - parent.bottom);
+        byParent.set(parentId, entry);
       }
-      const root = nodes.find(node => node.classList.contains('is-root'))?.getBoundingClientRect();
-      const below = root ? nodes.filter(node => !node.classList.contains('is-root') && node.getBoundingClientRect().top < root.bottom).length : null;
-      return { perLevel: Object.fromEntries([...tops].map(([level, set]) => [level, set.size])), below };
+      return { below, parents: [...byParent].map(([id, entry]) => ({ id, level: entry.level, rows: entry.tops.size, gaps: entry.gaps })) };
     })()`);
-    // uneven-branches has one H2 and no free topics, so aria-level (the Markdown depth) is the layout depth.
     expect(rows.below !== null, 'root node missing');
-    const misaligned = Object.entries(rows.perLevel).filter(([, count]) => count !== 1);
-    expect(misaligned.length === 0, `levels with more than one row: ${JSON.stringify(misaligned)}`);
     expect(rows.below === 0, `${rows.below} nodes above the root's bottom edge`);
+    // Every visible non-root node must have been matched to a parent rect; otherwise the checks below would pass on nothing.
+    const measured = rows.parents.reduce((count, entry) => count + entry.gaps.length, 0);
+    expect(measured === hierarchy - 1, `${measured} of ${hierarchy - 1} children matched to a parent (ids of the snapshot and the DOM differ?)`);
+    const split = rows.parents.filter(entry => entry.rows !== 1).map(entry => entry.id);
+    expect(split.length === 0, `parents whose children sit on more than one row: ${JSON.stringify(split)}`);
+    // Node heights are measured as integers (offsetHeight) while the rects are fractional, so allow a pixel of rounding.
+    const { scale } = await page.harness('h.viewport()');
+    const gapByLevel = new Map();
+    for (const entry of rows.parents) gapByLevel.set(entry.level, [...(gapByLevel.get(entry.level) ?? []), ...entry.gaps.map(gap => gap / scale)]);
+    const uneven = [...gapByLevel].filter(([, gaps]) => Math.max(...gaps) - Math.min(...gaps) > 1.5).map(([level, gaps]) => `${level}: ${Math.min(...gaps).toFixed(1)}–${Math.max(...gaps).toFixed(1)}`);
+    expect(uneven.length === 0, `gap under the parents differs within a depth: ${uneven.join(', ')}`);
     const activity = await page.harness('h.activity');
     expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"hierarchy"')), 'hierarchy preference was not written through processFrontMatter');
-    return `${hierarchy} nodes, rows per level ${JSON.stringify(rows.perLevel)}`;
+    const gaps = [...gapByLevel].map(([level, values]) => `${level}: ${(values.reduce((sum, gap) => sum + gap, 0) / values.length).toFixed(1)}`).join(', ');
+    return `${hierarchy} nodes, ${rows.parents.length} parents each with one row of children, gap by aria-level (px) ${gaps}`;
   });
 
   await recorder.run('hierarchy-collapse', `階層図で「${title}」の開閉ボタン`, '24 の件数がノードの下に出て、ノードが減り、再展開で戻る', async () => {
@@ -396,6 +417,47 @@ async function captureOperations(recorder, page) {
     const restored = (await page.harness('h.nodes()')).length;
     expect(restored === before, `nodes after expand ${restored}`);
     return `${before} → ${folded} → ${restored}、閉じてから安定まで約 ${foldMs} ms（settle の待ち時間込み）`;
+  });
+}
+
+/**
+ * M8 rows (LEV-46) on heading-document: the stages「回復する」「記録する」carry images, so
+ * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
+ * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
+ */
+async function captureHierarchyRows(recorder, page) {
+  const nodeRect = async name => (await nodeInfo(page, name)).rect;
+  const gapBelow = (parent, child) => child.y - (parent.y + parent.height);
+  await recorder.run('hierarchy-rows', 'heading-document を階層図にする', '兄弟は同じ上辺。画像付きの「回復する」「記録する」の子だけが下がり、「はじめに」→「この講座で学ぶこと」の隙間は画像付きの親の子と同じ長さ', async () => {
+    await loadFixture(page, 'heading-document');
+    const button = await page.harness('h.button("階層図")');
+    expect(button, 'hierarchy button missing');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const { scale } = await page.harness('h.viewport()');
+    const stages = await Promise.all(['はじめに', '回復する', '記録する', '習慣化する'].map(nodeRect));
+    const tops = stages.map(rect => rect.y);
+    expect(Math.max(...tops) - Math.min(...tops) < 1, `stage tops differ: ${tops.map(top => top.toFixed(1)).join(', ')}`);
+    const [intro, recover, record] = stages;
+    const [introChild, recoverChild, recordChild] = await Promise.all(['この講座で学ぶこと', '休息', 'ふりかえる'].map(nodeRect));
+    expect(recover.height > intro.height + 40 * scale, `回復する (${recover.height.toFixed(1)}) is not taller than はじめに (${intro.height.toFixed(1)}) by an image`);
+    // Gaps in layout px; node heights are measured as integers, so a pixel of rounding is allowed.
+    const gaps = [gapBelow(intro, introChild), gapBelow(recover, recoverChild), gapBelow(record, recordChild)].map(gap => gap / scale);
+    expect(Math.max(...gaps) - Math.min(...gaps) <= 1.5, `row gaps differ: ${gaps.map(gap => gap.toFixed(1)).join(', ')}`);
+    expect(recoverChild.y > introChild.y + 40 * scale, `休息 (${recoverChild.y.toFixed(1)}) does not hang lower than この講座で学ぶこと (${introChild.y.toFixed(1)})`);
+    return `段間 ${gaps.map(gap => gap.toFixed(1)).join(' / ')} px（はじめに / 回復する / 記録する の下、scale ${scale.toFixed(3)}）、休息 は この講座で学ぶこと より ${((recoverChild.y - introChild.y) / scale).toFixed(1)} px 下`;
+  });
+
+  // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
+  await recorder.run('hierarchy-rows-back', '左下の「マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("マップ")');
+    expect(button, 'map button missing');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const remaining = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
+    expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
+    const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
+    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
   });
 }
 
@@ -791,6 +853,7 @@ async function main() {
       recorder = new Recorder(page, directory);
       await captureFixtures(recorder, page, timings);
       await captureOperations(recorder, page);
+      await captureHierarchyRows(recorder, page);
       await captureTopicOperations(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
