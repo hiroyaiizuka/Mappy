@@ -65,12 +65,16 @@ export function launchChrome(chrome, profile, window, options = {}) {
   return { child, endpoint };
 }
 
+/** Thrown for every call still pending when Chrome's DevTools socket closes. */
+export class CdpClosedError extends Error {}
+
 /** Minimal flat-session CDP client over the global WebSocket. */
 export class Cdp {
   constructor(socket) {
     this.socket = socket;
     this.nextId = 1;
     this.pending = new Map();
+    this.closed = false;
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data));
       if (message.id === undefined) return;
@@ -79,6 +83,14 @@ export class Cdp {
       this.pending.delete(message.id);
       if (message.error) entry.reject(new Error(`${entry.method}: ${message.error.message}`));
       else entry.resolve(message.result);
+    });
+    // Without this a crashed Chrome leaves every await hanging and Node exits with an unsettled top-level await.
+    socket.addEventListener('close', () => {
+      this.closed = true;
+      for (const [id, entry] of this.pending) {
+        this.pending.delete(id);
+        entry.reject(new CdpClosedError(`${entry.method}: DevTools connection closed (Chrome exited or crashed)`));
+      }
     });
   }
 
@@ -91,6 +103,7 @@ export class Cdp {
   }
 
   send(method, params = {}, sessionId) {
+    if (this.closed) return Promise.reject(new CdpClosedError(`${method}: DevTools connection closed`));
     const id = this.nextId++;
     return new Promise((resolveResult, reject) => {
       this.pending.set(id, { method, resolve: resolveResult, reject });
@@ -160,7 +173,7 @@ export class Page {
  */
 export async function withHarnessPage(chrome, { output, window, fixture, pane, gpu = false }, body) {
   const profile = await mkdtemp(join(tmpdir(), 'mappy-harness-'));
-  const { child, endpoint } = launchChrome(chrome, profile, window, { gpu });
+  const { child, endpoint, log } = launchChrome(chrome, profile, window, { gpu });
   let cdp;
   try {
     cdp = await Cdp.connect(await endpoint);
@@ -178,7 +191,13 @@ export async function withHarnessPage(chrome, { output, window, fixture, pane, g
       await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
     }
     await page.harness('h.ready');
-    return await body(page);
+    try {
+      return await body(page);
+    } catch (error) {
+      if (error instanceof CdpClosedError) throw new Error(`${error.message}. Chrome stderr tail:
+${log.text}`);
+      throw error;
+    }
   } finally {
     cdp?.close();
     const exited = new Promise(resolveExit => { child.once('exit', resolveExit); });

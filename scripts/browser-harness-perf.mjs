@@ -23,7 +23,7 @@ import os from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
-import { chromeFlags, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { CdpClosedError, chromeFlags, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 import { performanceFixtureMatrix, performanceShapes } from './performance-fixtures.mjs';
 import { summarize } from './perf-stats.mjs';
 
@@ -229,6 +229,8 @@ async function runFixture(page, entry, options, samples, failures) {
     try {
       await body();
     } catch (error) {
+      // A dead Chrome cannot record anything more; let the run fail instead of logging every step as a failure.
+      if (error instanceof CdpClosedError) throw error;
       const message = `${entry.id} ${label}: ${error instanceof Error ? error.message : String(error)}`;
       failures.push(message);
       console.error(`FAIL ${message}`);
