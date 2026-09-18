@@ -1,9 +1,10 @@
 import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
-import { planEdit, resolveDrop, type EditCommand, type TextEdit } from "../core/commands";
+import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
-import { layoutTree, type LayoutResult } from "../layout/layout";
+import { layoutTree, type LayoutNode, type LayoutResult } from "../layout/layout";
+import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout, type MapLayout } from "../obsidian/frontmatter";
 import type { ViewRouter } from "../obsidian/view-routing";
@@ -11,6 +12,7 @@ import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
 import { MapEvents } from "./map-events";
+import { NodeDrag } from "./node-drag";
 import { InlineEditor } from "./inline-editor";
 import { LinkSuggest } from "./link-suggest";
 
@@ -30,6 +32,8 @@ export class MindmapView extends ItemView {
   private viewport!: MapViewport;
   private modeButtons = new Map<string, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
+  private placeholder!: HTMLDivElement;
+  private dropPreview: MoveCommand | null = null;
   private refreshTimer: number | undefined;
   private layoutFrame: number | undefined;
   private epoch = 0;
@@ -104,6 +108,8 @@ export class MindmapView extends ItemView {
     const world = this.canvas.createDiv({ cls: "mappy-world" });
     this.svg = world.createSvg("svg", { cls: "mappy-edges", attr: { "aria-hidden": "true" } });
     const nodes = world.createDiv({ cls: "mappy-nodes" });
+    this.placeholder = nodes.createDiv({ cls: "mappy-drop-placeholder", attr: { "data-drop-placeholder": "", "aria-hidden": "true" } });
+    this.placeholder.hidden = true;
     const zoom = this.contentEl.createDiv({ cls: "mappy-zoom mappy-floating", attr: { "aria-label": "ズーム" } });
     this.button(zoom, "縮小", "minus", () => { this.viewport.zoom(1 / 1.2); });
     this.zoomLabel = this.button(zoom, "100%", undefined, () => { this.viewport.zoom(1 / this.viewport.value.scale); });
@@ -120,7 +126,12 @@ export class MindmapView extends ItemView {
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
       link: (link, newLeaf) => { if (this.file) this.run(() => this.app.workspace.openLinkText(link, this.file?.path ?? "", newLeaf)); },
+    }));
+    this.addChild(new NodeDrag(this.canvas, {
+      select: id => { this.select(id); },
       dropTarget: (dragged, target, position) => this.document ? resolveDrop(this.document, dragged, target, position) : null,
+      preview: command => { this.previewDrop(command); },
+      command: command => { this.run(() => this.execute(command)); },
     }));
     this.registerDomEvent(this.canvas, "contextmenu", event => {
       const target = event.targetNode;
@@ -261,7 +272,6 @@ export class MindmapView extends ItemView {
     this.renderer.update(nodes, this.document, this.file.path, this.collapsed, {
       visualRootId: this.visualRoot()?.id ?? this.document.root.id, mode: this.mode,
     });
-    for (const entry of this.renderer.entries.values()) entry.element.draggable = !entry.element.hasClass("is-editing");
     if (!nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
     this.scheduleLayout();
@@ -273,15 +283,50 @@ export class MindmapView extends ItemView {
       this.layoutFrame = undefined;
       const root = this.visualRoot();
       if (!root || this.closed) return;
-      this.layout = layoutTree(root, this.renderer.sizes(), this.collapsed, this.mode);
+      const sizes = this.renderer.sizes();
+      const preview = this.previewLayout(root, sizes);
+      this.layout = layoutTree(preview?.tree ?? root, sizes, preview?.collapsed ?? this.collapsed, this.mode);
       this.renderer.place(this.layout.nodes, this.layout.folds);
+      const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
+      this.placeholder.hidden = !slot;
+      if (slot) {
+        this.placeholder.style.width = `${slot.width}px`;
+        this.placeholder.style.height = `${slot.height}px`;
+        this.placeholder.style.transform = `translate(${slot.x}px, ${slot.y}px)`;
+      }
       this.svg.empty();
-      for (const edge of this.layout.edges) this.svg.createSvg("path", { attr: { d: edge.path } });
+      for (const edge of this.layout.edges) {
+        this.svg.createSvg("path", { attr: { d: edge.path }, ...(edge.to === PLACEHOLDER_ID ? { cls: "is-preview" } : {}) });
+      }
       if (this.needsFit && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
         this.viewport.fit(this.layout.bounds); this.needsFit = false;
       }
       if (this.revealId) { this.ensureVisible(this.revealId); this.revealId = null; }
     });
+  }
+
+  /** Show or clear the slot a pending drop would fill; the layout makes room for it on the next frame. */
+  private previewDrop(command: MoveCommand | null): void {
+    const current = this.dropPreview;
+    if (current === command || (current && command && current.nodeId === command.nodeId
+      && current.parentId === command.parentId && current.index === command.index)) return;
+    this.dropPreview = command;
+    if (!command) this.placeholder.hidden = true;
+    this.scheduleLayout();
+  }
+
+  /** Layout input with an empty placeholder in the previewed slot, sized like the moving node. */
+  private previewLayout(root: MindNode, sizes: Map<string, { width: number; height: number }>): { tree: LayoutNode; collapsed: ReadonlySet<string> } | null {
+    const command = this.dropPreview;
+    const size = command ? sizes.get(command.nodeId) : undefined;
+    if (!command || !size || !this.document) return null;
+    const tree = previewTree(this.document, root, command, this.collapsed);
+    if (!tree) return null;
+    sizes.set(PLACEHOLDER_ID, size);
+    // A collapsed destination reveals only the placeholder, so it must not be measured as collapsed.
+    const collapsed = this.collapsed.has(command.parentId)
+      ? new Set(Array.from(this.collapsed).filter(id => id !== command.parentId)) : this.collapsed;
+    return { tree, collapsed };
   }
 
   private selected(): MindNode | undefined {
@@ -359,7 +404,6 @@ export class MindmapView extends ItemView {
     if (!entry) return;
     this.inlineEditor?.dispose();
     entry.content.hidden = true;
-    entry.element.draggable = false;
     this.inlineEditor = new InlineEditor(entry.element, {
       initial: node.title,
       suggest: input => new LinkSuggest(this.app, input, file.path),
@@ -370,7 +414,6 @@ export class MindmapView extends ItemView {
       finish: (next, cancelled) => {
         this.inlineEditor = undefined;
         entry.content.hidden = false;
-        entry.element.draggable = true;
         if (this.closed || file !== this.file) return;
         this.draw();
         const current = this.document?.nodes.find(item => item.id === node.id)
@@ -379,7 +422,7 @@ export class MindmapView extends ItemView {
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
-      restore: () => { entry.content.hidden = false; entry.element.draggable = true; },
+      restore: () => { entry.content.hidden = false; },
     });
   }
 

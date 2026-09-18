@@ -84,26 +84,38 @@
 .mappy-view .mappy-node.is-root .mappy-node-label { font-weight: 700; }
 .mappy-view .mappy-node.is-stage .mappy-node-label { font-weight: 600; }
 .mappy-view .mappy-node.is-selected, .mappy-view .mappy-node:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
-/* Drop preview: a dashed frame means "last child"; a bar outside an edge marks the sibling slot before/after. */
-.mappy-view .mappy-node.is-drop-target[data-drop="inside"] { outline: 1px dashed var(--mappy-selection); outline-offset: 3px; }
-.mappy-view .mappy-node.is-drop-target[data-drop="before"]::before,
-.mappy-view .mappy-node.is-drop-target[data-drop="after"]::before {
-  content: "";
+/* Image files dragged in from outside attach to the highlighted node. */
+.mappy-view .mappy-node.is-drop-target { outline: 1px dashed var(--mappy-selection); outline-offset: 3px; }
+/* Node dragging (pointer events): the source stays faint in place, a translucent ghost follows the pointer,
+   an empty frame of the same size marks the slot, and the connector from the destination parent is drawn thick and blue. */
+.mappy-view .mappy-nodes { user-select: none; -webkit-user-select: none; }
+.mappy-view .mappy-canvas.is-dragging-node { cursor: grabbing; }
+.mappy-view .mappy-canvas.is-dragging-node .mappy-node { cursor: grabbing; }
+.mappy-view .mappy-node.is-drag-source { opacity: 0.35; }
+.mappy-view .mappy-drag-ghost {
   position: absolute;
   left: 0;
-  right: 0;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--mappy-selection);
+  top: 0;
+  z-index: 3;
+  transform-origin: 0 0;
+  opacity: 0.6;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
   pointer-events: none;
 }
-.mappy-view .mappy-node.is-drop-target[data-drop="before"]::before { top: -8px; }
-.mappy-view .mappy-node.is-drop-target[data-drop="after"]::before { bottom: -8px; }
-/* Timeline stages sit on the horizontal axis, so their sibling slots are to the left and right. */
-.mappy-view .mappy-node.is-timeline.is-stage.is-drop-target[data-drop="before"]::before,
-.mappy-view .mappy-node.is-timeline.is-stage.is-drop-target[data-drop="after"]::before { top: 0; bottom: 0; width: 3px; height: auto; }
-.mappy-view .mappy-node.is-timeline.is-stage.is-drop-target[data-drop="before"]::before { left: -10px; right: auto; }
-.mappy-view .mappy-node.is-timeline.is-stage.is-drop-target[data-drop="after"]::before { left: auto; right: -10px; }
+.mappy-view .mappy-drop-placeholder {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1.5px solid var(--mappy-selection);
+  border-radius: 6px;
+  opacity: 0.55;
+  background: transparent;
+  pointer-events: none;
+}
+.mappy-view .mappy-drop-placeholder[hidden] { display: none; }
+.mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-selection); stroke-width: 4; stroke-linecap: round; }
 .mappy-view .mappy-node-content { min-width: 0; }
 .mappy-view .mappy-node-content[hidden] { display: none; }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
@@ -137,6 +149,7 @@
   resize: none;
 }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
+.mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
 .mappy-view .mappy-inline-error { max-width: 303px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
 .mappy-view .mappy-inline-error:empty { display: none; }
 .mappy-view .mappy-node-toggle {
