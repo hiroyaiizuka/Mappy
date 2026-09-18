@@ -10,7 +10,7 @@ import {
   readSafeFile,
   runPreflight,
 } from './preflight.mjs';
-import { makePerformanceFixture, performanceNodeCounts } from './performance-fixtures.mjs';
+import { makePerformanceFixture, performanceFixtureMatrix } from './performance-fixtures.mjs';
 
 function ensureDirectory(paths, directory) {
   assertSafePath(paths.root, directory, 'directory', { optional: true });
@@ -49,10 +49,10 @@ try {
   if (!fixtures.some(([filename]) => filename.endsWith('.md'))) {
     throw new Error('No Markdown fixtures found in tests/fixtures.');
   }
-  const performanceFixtures = performanceNodeCounts.map(makePerformanceFixture);
+  const performanceFixtures = performanceFixtureMatrix().map(({ nodeCount, shape }) => makePerformanceFixture(nodeCount, shape.id));
   const reservedNames = new Set(performanceFixtures.map(([filename]) => filename));
   if (fixtures.some(([filename]) => reservedNames.has(filename))) {
-    throw new Error('performance-N.md fixture names are reserved for generated performance documents.');
+    throw new Error('performance-N[-shape].md fixture names are reserved for generated performance documents.');
   }
 
   const vaultExists = assertSafePath(paths.root, paths.vault, 'directory', { optional: true });

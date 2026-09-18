@@ -7,7 +7,7 @@ import roundtripEdgeCases from "../../tests/fixtures/roundtrip-edge-cases.md?raw
 import unevenBranches from "../../tests/fixtures/uneven-branches.md?raw";
 import freeTopics from "../../tests/fixtures/free-topics.md?raw";
 import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
-import { makePerformanceFixture, performanceNodeCounts } from "../../scripts/performance-fixtures.mjs";
+import { makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
 
 export interface HarnessFixture {
   /** Stable identifier for the `?fixture=` query and the automation API. */
@@ -18,6 +18,8 @@ export interface HarnessFixture {
   /** What this document exercises; shown on the page. */
   covers: string;
   source: string;
+  /** Generated performance documents carry their node count and shape; static fixtures do not. */
+  performance?: { nodeCount: number; shape: string };
 }
 
 export const FIXTURE_DIRECTORY = "Fixtures";
@@ -58,14 +60,15 @@ const staticFixtures: HarnessFixture[] = [
   },
 ];
 
-const performanceFixtures: HarnessFixture[] = performanceNodeCounts.map(count => {
-  const [filename, source] = makePerformanceFixture(count);
+const performanceFixtures: HarnessFixture[] = performanceFixtureMatrix().map(({ id, nodeCount, shape }) => {
+  const [filename, source] = makePerformanceFixture(nodeCount, shape.id);
   return {
-    id: `performance-${count}`,
+    id,
     path: `${FIXTURE_DIRECTORY}/${filename}`,
-    label: `performance-${count}（${count.toLocaleString("ja-JP")} ノード）`,
-    covers: `H1 ルート＋20 ノードごとの H2 節＋H3 の子。scripts/performance-fixtures.mjs が生成する ${count} ノード`,
+    label: `${id}（${nodeCount.toLocaleString("ja-JP")} ノード、${shape.label}）`,
+    covers: `${shape.covers}。scripts/performance-fixtures.mjs が生成する ${nodeCount} ノード`,
     source,
+    performance: { nodeCount, shape: shape.id },
   };
 });
 
