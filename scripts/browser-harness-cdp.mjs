@@ -52,17 +52,18 @@ export function launchChrome(chrome, profile, window, options = {}) {
   const child = spawn(chrome, [
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...chromeFlags(window, options), 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  // The tail of Chrome's stderr, so a crash mid-run can be explained.
+  const log = { text: '' };
+  child.stderr.on('data', chunk => { log.text = (log.text + String(chunk)).slice(-4000); });
   const endpoint = new Promise((resolveEndpoint, reject) => {
-    let output = '';
-    const timer = setTimeout(() => { reject(new Error(`Chrome did not expose DevTools within 20s:\n${output}`)); }, 20000);
-    child.stderr.on('data', chunk => {
-      output += chunk;
-      const match = output.match(/DevTools listening on (ws:\/\/\S+)/u);
+    const timer = setTimeout(() => { reject(new Error(`Chrome did not expose DevTools within 20s:\n${log.text}`)); }, 20000);
+    child.stderr.on('data', () => {
+      const match = log.text.match(/DevTools listening on (ws:\/\/\S+)/u);
       if (match) { clearTimeout(timer); resolveEndpoint(match[1]); }
     });
-    child.on('exit', code => { clearTimeout(timer); reject(new Error(`Chrome exited with ${code}:\n${output}`)); });
+    child.on('exit', code => { clearTimeout(timer); reject(new Error(`Chrome exited with ${code}:\n${log.text}`)); });
   });
-  return { child, endpoint };
+  return { child, endpoint, log };
 }
 
 /** Thrown for every call still pending when Chrome's DevTools socket closes. */

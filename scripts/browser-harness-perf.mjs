@@ -10,12 +10,13 @@
  * `--gpu` drops --disable-gpu so Chrome rasterises on the GPU like Electron does;
  * the default software rendering makes raster costs show up as frame delays.
  *
- * Per fixture: one warm-up load, `repeat` loads in a fresh view, `repeat`
- * Markdown-side edits, `repeat` inline edits (`keystrokes` keystrokes in total,
- * each followed by Enter), and three pan and zoom runs of `frames` frames. The
- * stages come from harness/browser/measure.ts; this script only drives the page,
- * summarises and writes samples.json, summary.json and record.md. Without Chrome
- * it writes a record marking the run as not executed and exits with 2.
+ * Per fixture, in its own headless Chrome: one warm-up load, `repeat` loads in a
+ * fresh view, `repeat` Markdown-side edits, `repeat` inline edits (`keystrokes`
+ * keystrokes in total, each followed by Enter), and two pan and zoom runs of
+ * `frames` frames. The stages come from harness/browser/measure.ts; this script
+ * only drives the page, summarises and writes samples.json, summary.json and
+ * record.md. Without Chrome it writes a record marking the run as not executed
+ * and exits with 2.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -168,7 +169,7 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     `- Node: ${env.node}、Chrome: ${env.chrome}（${env.chromePath}）`,
     `- Chrome フラグ: ${env.chromeFlags}、ウィンドウ ${env.window.width}×${env.window.height}、ペイン ${env.pane.width}×${env.pane.height}、devicePixelRatio 1`,
     `- build: ${env.commit}${env.dirty ? '（未コミットの変更あり）' : ''}（\`npm run harness:browser:build\` の \`dist/harness\`。製品の src/ と core / layout / ui をそのまま読み込む）`,
-    `- 繰り返し: 読み込み ${env.options.repeat} 回（ウォームアップ 1 回を除く）、Markdown 側の編集 ${env.options.repeat} 回、インライン編集 ${env.options.repeat} 回（キー入力 計 ${env.options.keystrokes} 回）、パン／ズーム各 ${FRAME_RUNS} 回 × ${env.options.frames} フレーム`,
+    `- 繰り返し: fixture ごとに新しい headless Chrome で、読み込み ${env.options.repeat} 回（ウォームアップ 1 回を除く）、Markdown 側の編集 ${env.options.repeat} 回、インライン編集 ${env.options.repeat} 回（キー入力 計 ${env.options.keystrokes} 回）、パン／ズーム各 ${FRAME_RUNS} 回 × ${env.options.frames} フレーム`,
     '- 統計: nearest-rank の p50 / p95（ms）。値は「p50 / p95」。',
     '- テーマ: harness.css の仮の CSS 変数（Obsidian のテーマではない）。画像: `sample-image.svg` の data URL（転送なし。画像の読み込み後の再配置は「安定」に含まれ、転送時間は含まれない）。',
     '',
@@ -293,9 +294,18 @@ async function main() {
   }
   const samples = [];
   const failures = [];
-  await withHarnessPage(chrome, { output, window: WINDOW, fixture: fixtures[0].id, pane: PANE, gpu: options.gpu }, async page => {
-    for (const entry of fixtures) await runFixture(page, entry, options, samples, failures);
-  });
+  // One fresh Chrome per fixture: every fixture starts from the same state, and a
+  // crash (the DevTools socket closing) costs that fixture's remaining steps, not the run.
+  for (const entry of fixtures) {
+    try {
+      await withHarnessPage(chrome, { output, window: WINDOW, fixture: entry.id, pane: PANE, gpu: options.gpu },
+        page => runFixture(page, entry, options, samples, failures));
+    } catch (error) {
+      const message = `${entry.id}: Chrome の接続が切れたため以降の手順を中止 — ${error instanceof Error ? error.message : String(error)}`;
+      failures.push(message);
+      console.error(`FAIL ${message}`);
+    }
+  }
   const summary = buildSummary(fixtures, samples);
   await writeFile(join(directory, 'samples.json'), `${JSON.stringify({ env, samples }, null, 2)}\n`);
   await writeFile(join(directory, 'summary.json'), `${JSON.stringify({ env, summary }, null, 2)}\n`);
