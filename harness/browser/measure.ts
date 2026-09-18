@@ -10,7 +10,7 @@
  */
 import type { ViewStateResult } from "obsidian";
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../../src/core/markdown";
-import { layoutTree, type NodeSize } from "../../src/layout/layout";
+import { layoutTree, type LayoutMode, type NodeSize } from "../../src/layout/layout";
 import type { MindmapView } from "../../src/ui/mindmap-view";
 
 export interface FrameRecord {
@@ -87,6 +87,8 @@ export interface MeasureContext {
 export interface LoadSample {
   kind: "load";
   fixture: string;
+  /** The layout the view placed the map in; product-plan §6 records all three. */
+  mode: LayoutMode;
   nodes: number;
   /** parseMarkdown alone on the same text. */
   parseMs: number;
@@ -116,6 +118,7 @@ export interface LoadSample {
 export interface EditSample {
   kind: "markdown-edit" | "inline-key" | "inline-commit";
   fixture: string;
+  mode: LayoutMode;
   nodes: number;
   /** Edited node title before the change. */
   target: string;
@@ -143,6 +146,7 @@ export interface EditSample {
 export interface FrameSample {
   kind: "pan" | "zoom";
   fixture: string;
+  mode: LayoutMode;
   nodes: number;
   /** requestAnimationFrame timestamp deltas while one wheel event is dispatched per frame. */
   intervals: number[];
@@ -173,6 +177,10 @@ function documentOf(view: MindmapView): MindDocument {
   const document = view.snapshot()?.document;
   if (!document) throw new Error("The view has not parsed its note");
   return document;
+}
+
+function modeOf(view: MindmapView): LayoutMode {
+  return view.snapshot()?.mode ?? "mindmap";
 }
 
 /**
@@ -255,10 +263,12 @@ function stamp(): string { return new Date().toISOString(); }
 /**
  * Open `path` in a fresh view and time each stage. The size read follows setState
  * synchronously, so it precedes the view's layout frame and pays the browser layout
- * the view would otherwise pay inside `sizes()`.
+ * the view would otherwise pay inside `sizes()`. `mode` opens the note in that
+ * layout the way a restored view state does; without it the note's own
+ * `mappy-layout` (or the mind map) applies.
  */
 export async function measureLoad(
-  context: MeasureContext, view: MindmapView, fixture: { id: string; path: string; source: string },
+  context: MeasureContext, view: MindmapView, fixture: { id: string; path: string; source: string }, mode?: LayoutMode,
 ): Promise<LoadSample> {
   const { probes, pane } = context;
   const basename = fixture.path.split("/").pop()?.replace(/\.md$/u, "") ?? fixture.id;
@@ -267,7 +277,7 @@ export async function measureLoad(
   const parseMs = now() - parseStart;
   const frameIndex = probes.frames.length;
   const start = now();
-  await view.setState({ file: fixture.path }, { history: false } satisfies ViewStateResult);
+  await view.setState({ file: fixture.path, ...(mode ? { layout: mode } : {}) }, { history: false } satisfies ViewStateResult);
   const stateMs = now() - start;
   const measureStart = now();
   const sizes = nodeSizes(pane);
@@ -277,12 +287,12 @@ export async function measureLoad(
   await context.settle();
   const settledMs = now() - start;
   const projection = projectMap(parsed);
-  const mode = view.snapshot()?.mode ?? "mindmap";
+  const placed = modeOf(view);
   const layoutStart = now();
-  layoutTree(projection.root, sizes, new Set(), mode, projection.topics.map(topic => ({ tree: topic, position: null })));
+  layoutTree(projection.root, sizes, new Set(), placed, projection.topics.map(topic => ({ tree: topic, position: null })));
   const layoutMs = now() - layoutStart;
   return {
-    kind: "load", fixture: fixture.id, nodes: parsed.nodes.length,
+    kind: "load", fixture: fixture.id, mode: placed, nodes: parsed.nodes.length,
     parseMs, stateMs, measureMs, layoutMs, frameMs: frame.endedAt - frame.startedAt, paintMs: nextFrameAt - frame.endedAt,
     firstLayoutMs, settledMs, frames: probes.frames.length - frameIndex, at: stamp(),
   };
@@ -317,7 +327,7 @@ export async function measureMarkdownEdit(
   await drain(probes, timerIndex);
   await context.settle();
   return {
-    kind: "markdown-edit", fixture: fixture.id, nodes: parsed.nodes.length, target: target.title,
+    kind: "markdown-edit", fixture: fixture.id, mode: modeOf(view), nodes: parsed.nodes.length, target: target.title,
     debounceMs: timer.startedAt - t0, parseMs, refreshMs: t2 - timer.startedAt, waitMs: frame.startedAt - t2,
     frameMs: frame.endedAt - frame.startedAt, paintMs: nextFrameAt - frame.endedAt, totalMs: nextFrameAt - t0,
     settledMs: now() - t0, at: stamp(),
@@ -338,6 +348,7 @@ export async function measureInlineEdit(
 ): Promise<EditSample[]> {
   const { probes, pane } = context;
   const document = documentOf(view);
+  const mode = modeOf(view);
   const target = editTarget(document);
   const canvas = pane.querySelector<HTMLElement>(".mappy-canvas");
   if (!canvas) throw new Error("Canvas missing");
@@ -357,7 +368,7 @@ export async function measureInlineEdit(
     const t2 = now();
     const { frame, nextFrameAt } = await productFrame(probes, frameIndex);
     samples.push({
-      kind: "inline-key", fixture: fixture.id, nodes: document.nodes.length, target: target.title,
+      kind: "inline-key", fixture: fixture.id, mode, nodes: document.nodes.length, target: target.title,
       debounceMs: 0, parseMs: 0, refreshMs: t2 - t0, waitMs: frame.startedAt - t2,
       frameMs: frame.endedAt - frame.startedAt, paintMs: nextFrameAt - frame.endedAt, totalMs: nextFrameAt - t0,
       settledMs: now() - t0, at: stamp(),
@@ -382,7 +393,7 @@ export async function measureInlineEdit(
   await context.settle();
   if (pane.querySelector("textarea.mappy-inline-input")) throw new Error("The inline editor did not close after Enter");
   samples.push({
-    kind: "inline-commit", fixture: fixture.id, nodes: parsed.nodes.length, target: target.title,
+    kind: "inline-commit", fixture: fixture.id, mode, nodes: parsed.nodes.length, target: target.title,
     debounceMs: 0, parseMs, refreshMs: t2 - t0, waitMs: frame.startedAt - t2,
     frameMs: frame.endedAt - frame.startedAt, paintMs: nextFrameAt - frame.endedAt, totalMs: nextFrameAt - t0,
     settledMs: now() - t0, at: stamp(),
@@ -419,5 +430,5 @@ export async function measureFrames(
     last = timestamp;
   }
   await context.settle();
-  return { kind, fixture: fixture.id, nodes: documentOf(view).nodes.length, intervals, handlerMs, at: stamp() };
+  return { kind, fixture: fixture.id, mode: modeOf(view), nodes: documentOf(view).nodes.length, intervals, handlerMs, at: stamp() };
 }

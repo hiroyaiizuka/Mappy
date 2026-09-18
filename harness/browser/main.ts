@@ -13,6 +13,7 @@ import {
   installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
   type EditSample, type FrameSample, type LoadSample, type MeasureContext,
 } from "./measure";
+import type { LayoutMode } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MindmapView } from "../../src/ui/mindmap-view";
@@ -107,7 +108,8 @@ async function closeView(): Promise<void> {
   closing.containerEl.remove();
 }
 
-async function load(id: string): Promise<HarnessTiming> {
+/** `mode` opens the fixture in that layout (the performance runner measures all three); omitted, the note decides. */
+async function load(id: string, mode?: LayoutMode): Promise<HarnessTiming> {
   const fixture = findFixture(id);
   if (!fixture) throw new Error(`Unknown fixture: ${id}`);
   current = fixture;
@@ -118,12 +120,12 @@ async function load(id: string): Promise<HarnessTiming> {
   history.replaceState(null, "", url);
   view ??= await openView();
   performance.mark(`mappy:load:${fixture.id}:start`);
-  const timing = await measureLoad(measureContext, view, fixture);
+  const timing = await measureLoad(measureContext, view, fixture, mode);
   performance.measure(`mappy:load:${fixture.id}`, `mappy:load:${fixture.id}:start`);
   timings.push(timing);
   renderTimings();
   const format = view.snapshot()?.document?.format === "list" ? "H2＋リスト" : "見出し";
-  setStatus(`${fixture.label}: ${timing.nodes} ノード（${format}形式）、表示 ${openCount} 回目`);
+  setStatus(`${fixture.label}: ${timing.nodes} ノード（${format}形式、${timing.mode}）、表示 ${openCount} 回目`);
   return timing;
 }
 
@@ -157,10 +159,10 @@ function currentFile(): { fixture: HarnessFixture; file: unknown; view: MindmapV
  * view so repeated samples pay the full cost; edits run on the loaded fixture.
  */
 const measure = {
-  async load(id: string): Promise<LoadSample> {
+  async load(id: string, mode?: LayoutMode): Promise<LoadSample> {
     await closeView();
     view = await openView();
-    return load(id);
+    return load(id, mode);
   },
   markdownEdit(): Promise<EditSample> {
     const { fixture, file, view: opened } = currentFile();
@@ -188,7 +190,7 @@ function renderTimings(): void {
   for (const timing of timings.slice(-8).reverse()) {
     const row = timingsEl.createEl("li");
     row.createEl("code", { text: timing.fixture });
-    row.append(` ${timing.nodes} ノード: parse ${timing.parseMs.toFixed(1)} ms / setState ${timing.stateMs.toFixed(1)} ms`
+    row.append(` ${timing.nodes} ノード（${timing.mode}）: parse ${timing.parseMs.toFixed(1)} ms / setState ${timing.stateMs.toFixed(1)} ms`
       + ` / 計測 ${timing.measureMs.toFixed(1)} ms / 配置フレーム ${timing.frameMs.toFixed(1)} ms（layoutTree ${timing.layoutMs.toFixed(1)} ms）`
       + ` / 初回配置 ${timing.firstLayoutMs.toFixed(1)} ms / 安定 ${timing.settledMs.toFixed(1)} ms`);
   }

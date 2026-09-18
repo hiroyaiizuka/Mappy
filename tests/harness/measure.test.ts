@@ -97,6 +97,24 @@ describe('performance probes', () => {
     expect(sample.firstLayoutMs).toBeGreaterThanOrEqual(sample.stateMs);
     expect(sample.settledMs).toBeGreaterThanOrEqual(sample.firstLayoutMs);
     expect(sample.frames).toBeGreaterThanOrEqual(1);
+    expect(sample.mode).toBe('mindmap');
+  });
+
+  it('opens the fixture in the requested layout and stamps every sample with it', async () => {
+    const { app, view, pane, context } = await mount('performance-100');
+    const sample = await measureLoad(context, view, fixture('performance-100'), 'hierarchy');
+    expect(sample.mode).toBe('hierarchy');
+    expect(view.snapshot()?.mode).toBe('hierarchy');
+    expect(pane.querySelectorAll('.mappy-node.is-hierarchy')).toHaveLength(100);
+    const file = app.vault.getAbstractFileByPath('Fixtures/performance-100.md');
+    expect((await measureMarkdownEdit(context, view, fixture('performance-100'), file)).mode).toBe('hierarchy');
+    expect((await measureInlineEdit(context, view, fixture('performance-100'), 1)).map(item => item.mode)).toEqual(['hierarchy', 'hierarchy']);
+    expect((await measureFrames(context, view, fixture('performance-100'), 'pan', 2)).mode).toBe('hierarchy');
+    // The layout came from the view state, not a button press: the note keeps its frontmatter.
+    expect(app.content(file!)).not.toContain('mappy-layout');
+    const back = await measureLoad(context, view, fixture('performance-100'), 'timeline');
+    expect(back.mode).toBe('timeline');
+    expect(pane.querySelectorAll('.mappy-node.is-hierarchy')).toHaveLength(0);
   });
 
   it('times a Markdown-side change from modify through the debounce to the layout frame', async () => {

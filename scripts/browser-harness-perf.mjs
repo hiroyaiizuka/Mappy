@@ -5,18 +5,19 @@
  *
  *   node scripts/browser-harness-perf.mjs [--chrome <path>] [--out artifacts/performance]
  *       [--repeat 10] [--keystrokes 30] [--frames 60] [--shapes headings,list,...]
- *       [--counts 10,100,500,2000] [--fixtures performance-500,...] [--gpu]
+ *       [--counts 10,100,500,2000] [--fixtures performance-500,...]
+ *       [--layouts mindmap,timeline,hierarchy] [--gpu]
  *
  * `--gpu` drops --disable-gpu so Chrome rasterises on the GPU like Electron does;
  * the default software rendering makes raster costs show up as frame delays.
  *
- * Per fixture, in its own headless Chrome: one warm-up load, `repeat` loads in a
- * fresh view, `repeat` Markdown-side edits, `repeat` inline edits (`keystrokes`
- * keystrokes in total, each followed by Enter), and two pan and zoom runs of
- * `frames` frames. The stages come from harness/browser/measure.ts; this script
- * only drives the page, summarises and writes samples.json, summary.json and
- * record.md. Without Chrome it writes a record marking the run as not executed
- * and exits with 2.
+ * Per fixture, in its own headless Chrome, and per layout: one warm-up load,
+ * `repeat` loads in a fresh view, `repeat` Markdown-side edits, `repeat` inline
+ * edits (`keystrokes` keystrokes in total, each followed by Enter), and two pan
+ * and zoom runs of `frames` frames. The stages come from harness/browser/measure.ts;
+ * this script only drives the page, summarises and writes samples.json,
+ * summary.json and record.md. Without Chrome it writes a record marking the run
+ * as not executed and exits with 2.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -34,6 +35,9 @@ const PANE = { width: 1280, height: 800 };
 const FRAME_RUNS = 2;
 /** One frame at 60 fps; intervals above it mean a frame was missed. */
 const FRAME_BUDGET_MS = 1000 / 60 + 0.5;
+/** The product's layouts (src/core/layout-mode.ts LAYOUT_MODES), in the order the record lists them. */
+export const LAYOUTS = ['mindmap', 'timeline', 'hierarchy'];
+const LAYOUT_LABELS = { mindmap: 'マップ', timeline: 'タイムライン', hierarchy: '階層図' };
 
 const LOAD_FIELDS = [
   ['parseMs', 'parse'], ['stateMs', 'setState'], ['measureMs', '計測'], ['layoutMs', 'layoutTree'],
@@ -67,6 +71,7 @@ function parseArgs(argv) {
     shapes: list('--shapes'),
     counts: list('--counts')?.map(Number),
     fixtures: list('--fixtures'),
+    layouts: list('--layouts'),
     gpu: args.includes('--gpu'),
   };
 }
@@ -77,6 +82,12 @@ export function selectFixtures(options) {
   return performanceFixtureMatrix().filter(entry => (!options.shapes || options.shapes.includes(entry.shape.id))
     && (!options.counts || options.counts.includes(entry.nodeCount))
     && (!options.fixtures || options.fixtures.includes(entry.id)));
+}
+
+/** The layouts to measure, in LAYOUTS order whatever the option's order. */
+export function selectLayouts(options) {
+  for (const layout of options.layouts ?? []) if (!LAYOUTS.includes(layout)) throw new Error(`Unknown layout: ${layout}`);
+  return LAYOUTS.filter(layout => !options.layouts || options.layouts.includes(layout));
 }
 
 function git(...args) {
@@ -118,7 +129,7 @@ function environment(chrome, options) {
     pane: PANE,
     commit: git('rev-parse', '--short', 'HEAD'),
     dirty: git('status', '--porcelain') !== '',
-    options: { repeat: options.repeat, keystrokes: options.keystrokes, frames: options.frames },
+    options: { repeat: options.repeat, keystrokes: options.keystrokes, frames: options.frames, layouts: selectLayouts(options) },
   };
 }
 
@@ -138,19 +149,58 @@ function summarizeFrames(samples) {
   };
 }
 
-export function buildSummary(fixtures, samples) {
-  const byFixture = id => samples.filter(sample => sample.fixture === id);
-  return fixtures.map(entry => {
-    const own = byFixture(entry.id);
-    const kind = name => own.filter(sample => sample.kind === name);
+/**
+ * One row per fixture × layout, fixtures in matrix order and layouts in LAYOUTS
+ * order, so the record reads count by count within a shape. Samples without a
+ * `mode` (records from before the layout dimension) count as the mind map.
+ */
+export function buildSummary(fixtures, samples, layouts = LAYOUTS) {
+  const rows = [];
+  for (const entry of fixtures) {
+    for (const layout of layouts) {
+      const own = samples.filter(sample => sample.fixture === entry.id && (sample.mode ?? 'mindmap') === layout);
+      const kind = name => own.filter(sample => sample.kind === name);
+      rows.push({
+        fixture: entry.id, nodes: entry.nodeCount, shape: entry.shape.id, layout,
+        load: summarizeFields(kind('load'), LOAD_FIELDS),
+        'markdown-edit': summarizeFields(kind('markdown-edit'), EDIT_FIELDS['markdown-edit']),
+        'inline-key': summarizeFields(kind('inline-key'), EDIT_FIELDS['inline-key']),
+        'inline-commit': summarizeFields(kind('inline-commit'), EDIT_FIELDS['inline-commit']),
+        pan: summarizeFrames(kind('pan')),
+        zoom: summarizeFrames(kind('zoom')),
+      });
+    }
+  }
+  return rows;
+}
+
+/** The worst p95 across the shapes of one node count, so §6's targets can be read off one line per layout. */
+function worst(summary, nodes, layout, pick) {
+  const values = summary.filter(row => row.nodes === nodes && row.layout === layout).map(pick).filter(Number.isFinite);
+  return values.length ? Math.max(...values) : NaN;
+}
+
+/**
+ * Per layout: the stages product-plan §6 asks about, taken as the worst p95 over
+ * every shape at the node count the target names (500 for edits, 2,000 for load
+ * and frames). Frames are counted, not timed: over-budget frames / all frames.
+ */
+export function highlights(summary, layouts = LAYOUTS) {
+  return layouts.map(layout => {
+    const frames = kind => {
+      const rows = summary.filter(row => row.nodes === 2000 && row.layout === layout);
+      return { over: rows.reduce((sum, row) => sum + row[kind].over, 0), n: rows.reduce((sum, row) => sum + row[kind].n, 0) };
+    };
     return {
-      fixture: entry.id, nodes: entry.nodeCount, shape: entry.shape.id,
-      load: summarizeFields(kind('load'), LOAD_FIELDS),
-      'markdown-edit': summarizeFields(kind('markdown-edit'), EDIT_FIELDS['markdown-edit']),
-      'inline-key': summarizeFields(kind('inline-key'), EDIT_FIELDS['inline-key']),
-      'inline-commit': summarizeFields(kind('inline-commit'), EDIT_FIELDS['inline-commit']),
-      pan: summarizeFrames(kind('pan')),
-      zoom: summarizeFrames(kind('zoom')),
+      layout,
+      markdownEdit500: worst(summary, 500, layout, row => row['markdown-edit'].totalMs.p95),
+      inlineKey500: worst(summary, 500, layout, row => row['inline-key'].totalMs.p95),
+      inlineCommit500: worst(summary, 500, layout, row => row['inline-commit'].totalMs.p95),
+      markdownEdit2000: worst(summary, 2000, layout, row => row['markdown-edit'].totalMs.p95),
+      firstLayout2000: worst(summary, 2000, layout, row => row.load.firstLayoutMs.p95),
+      settled2000: worst(summary, 2000, layout, row => row.load.settledMs.p95),
+      pan2000: frames('pan'),
+      zoom2000: frames('zoom'),
     };
   });
 }
@@ -161,6 +211,9 @@ function table(header, rows) {
 
 export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }) {
   const shapeLabel = id => performanceShapes.find(shape => shape.id === id)?.label ?? id;
+  const layoutLabel = id => LAYOUT_LABELS[id] ?? id;
+  const layouts = env.options.layouts ?? LAYOUTS;
+  const frames = ({ over, n }) => (n ? `${over} / ${n}` : '—');
   const lines = [
     '# 性能計測（ブラウザ検証ページ②、headless Chrome）',
     '',
@@ -169,9 +222,16 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     `- Node: ${env.node}、Chrome: ${env.chrome}（${env.chromePath}）`,
     `- Chrome フラグ: ${env.chromeFlags}、ウィンドウ ${env.window.width}×${env.window.height}、ペイン ${env.pane.width}×${env.pane.height}、devicePixelRatio 1`,
     `- build: ${env.commit}${env.dirty ? '（未コミットの変更あり）' : ''}（\`npm run harness:browser:build\` の \`dist/harness\`。製品の src/ と core / layout / ui をそのまま読み込む）`,
-    `- 繰り返し: fixture ごとに新しい headless Chrome で、読み込み ${env.options.repeat} 回（ウォームアップ 1 回を除く）、Markdown 側の編集 ${env.options.repeat} 回、インライン編集 ${env.options.repeat} 回（キー入力 計 ${env.options.keystrokes} 回）、パン／ズーム各 ${FRAME_RUNS} 回 × ${env.options.frames} フレーム`,
+    `- 繰り返し: fixture ごとに新しい headless Chrome で、レイアウト（${layouts.map(layoutLabel).join('・')}）ごとに読み込み ${env.options.repeat} 回（ウォームアップ 1 回を除く）、Markdown 側の編集 ${env.options.repeat} 回、インライン編集 ${env.options.repeat} 回（キー入力 計 ${env.options.keystrokes} 回）、パン／ズーム各 ${FRAME_RUNS} 回 × ${env.options.frames} フレーム`,
     '- 統計: nearest-rank の p50 / p95（ms）。値は「p50 / p95」。',
     '- テーマ: harness.css の仮の CSS 変数（Obsidian のテーマではない）。画像: `sample-image.svg` の data URL（転送なし。画像の読み込み後の再配置は「安定」に含まれ、転送時間は含まれない）。',
+    '',
+    '## 要点（§6 の目標に対応。各ノード数の全ての形のうち最も遅い p95、ms）',
+    '',
+    ...table(['レイアウト', '500: Markdown 編集 合計', '500: キー入力 合計', '500: Enter 確定 合計', '2,000: Markdown 編集 合計', '2,000: 初回配置', '2,000: 安定',
+      `2,000: パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, `2,000: ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`],
+      highlights(summary, layouts).map(row => [layoutLabel(row.layout), ms(row.markdownEdit500), ms(row.inlineKey500), ms(row.inlineCommit500),
+        ms(row.markdownEdit2000), ms(row.firstLayout2000), ms(row.settled2000), frames(row.pan2000), frames(row.zoom2000)])),
     '',
     '## 段階の定義',
     '',
@@ -182,33 +242,34 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     '',
     '## 読み込み（ms、p50 / p95）',
     '',
-    ...table(['fixture', '形', 'ノード', 'n', ...LOAD_FIELDS.map(([, label]) => label)],
-      summary.map(row => [row.fixture, shapeLabel(row.shape), row.nodes, row.load.parseMs.n, ...LOAD_FIELDS.map(([field]) => range(row.load[field]))])),
+    ...table(['fixture', '形', 'ノード', 'レイアウト', 'n', ...LOAD_FIELDS.map(([, label]) => label)],
+      summary.map(row => [row.fixture, shapeLabel(row.shape), row.nodes, layoutLabel(row.layout), row.load.parseMs.n,
+        ...LOAD_FIELDS.map(([field]) => range(row.load[field]))])),
     '',
     '## Markdown 側の編集 → 画面反映（ms、p50 / p95）',
     '',
-    ...table(['fixture', 'ノード', 'n', ...EDIT_FIELDS['markdown-edit'].map(([, label]) => label)],
-      summary.map(row => [row.fixture, row.nodes, row['markdown-edit'].totalMs.n,
+    ...table(['fixture', 'ノード', 'レイアウト', 'n', ...EDIT_FIELDS['markdown-edit'].map(([, label]) => label)],
+      summary.map(row => [row.fixture, row.nodes, layoutLabel(row.layout), row['markdown-edit'].totalMs.n,
         ...EDIT_FIELDS['markdown-edit'].map(([field]) => range(row['markdown-edit'][field]))])),
     '',
     '## インライン編集: キー入力 → 画面反映（ms、p50 / p95）',
     '',
-    ...table(['fixture', 'ノード', 'n', ...EDIT_FIELDS['inline-key'].map(([, label]) => label)],
-      summary.map(row => [row.fixture, row.nodes, row['inline-key'].totalMs.n,
+    ...table(['fixture', 'ノード', 'レイアウト', 'n', ...EDIT_FIELDS['inline-key'].map(([, label]) => label)],
+      summary.map(row => [row.fixture, row.nodes, layoutLabel(row.layout), row['inline-key'].totalMs.n,
         ...EDIT_FIELDS['inline-key'].map(([field]) => range(row['inline-key'][field]))])),
     '',
     '## インライン編集: Enter で確定 → 画面反映（ms、p50 / p95）',
     '',
-    ...table(['fixture', 'ノード', 'n', ...EDIT_FIELDS['inline-commit'].map(([, label]) => label)],
-      summary.map(row => [row.fixture, row.nodes, row['inline-commit'].totalMs.n,
+    ...table(['fixture', 'ノード', 'レイアウト', 'n', ...EDIT_FIELDS['inline-commit'].map(([, label]) => label)],
+      summary.map(row => [row.fixture, row.nodes, layoutLabel(row.layout), row['inline-commit'].totalMs.n,
         ...EDIT_FIELDS['inline-commit'].map(([field]) => range(row['inline-commit'][field]))])),
     '',
     '## パン／ズーム中のフレーム間隔（ms）',
     '',
-    ...table(['fixture', 'ノード', 'パン p50 / p95', 'パン 最大', `パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'パン ハンドラ p95',
+    ...table(['fixture', 'ノード', 'レイアウト', 'パン p50 / p95', 'パン 最大', `パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'パン ハンドラ p95',
       'ズーム p50 / p95', 'ズーム 最大', `ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'ズーム ハンドラ p95'],
-      summary.map(row => [row.fixture, row.nodes, range(row.pan), ms(row.pan.max), `${row.pan.over} / ${row.pan.n}`, ms(row.pan.handler.p95),
-        range(row.zoom), ms(row.zoom.max), `${row.zoom.over} / ${row.zoom.n}`, ms(row.zoom.handler.p95)])),
+      summary.map(row => [row.fixture, row.nodes, layoutLabel(row.layout), range(row.pan), ms(row.pan.max), frames(row.pan), ms(row.pan.handler.p95),
+        range(row.zoom), ms(row.zoom.max), frames(row.zoom), ms(row.zoom.handler.p95)])),
     '',
     '## 失敗',
     '',
@@ -218,31 +279,33 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     '',
     ...notExecuted.map(item => `- ${item}`),
     '',
-    `対象 fixture: ${fixtures.map(entry => entry.id).join(', ')}`,
+    `対象 fixture: ${fixtures.map(entry => entry.id).join(', ')}。レイアウト: ${layouts.join(', ')}`,
     '',
   ];
   return lines.join('\n');
 }
 
-async function runFixture(page, entry, options, samples, failures) {
+/** Every stage of one fixture in one layout; the page's view is opened in that layout for each load. */
+async function runLayout(page, entry, layout, options, samples, failures) {
   const record = sample => { samples.push(sample); };
+  const load = `h.measure.load(${JSON.stringify(entry.id)}, ${JSON.stringify(layout)})`;
   const attempt = async (label, body) => {
     try {
       await body();
     } catch (error) {
       // A dead Chrome cannot record anything more; let the run fail instead of logging every step as a failure.
       if (error instanceof CdpClosedError) throw error;
-      const message = `${entry.id} ${label}: ${error instanceof Error ? error.message : String(error)}`;
+      const message = `${entry.id} ${layout} ${label}: ${error instanceof Error ? error.message : String(error)}`;
       failures.push(message);
       console.error(`FAIL ${message}`);
       // Leave the fixture in a known state for the next step.
-      await page.harness(`h.measure.load(${JSON.stringify(entry.id)})`).catch(() => undefined);
+      await page.harness(load).catch(() => undefined);
     }
   };
   const started = Date.now();
-  await attempt('warm-up', () => page.harness(`h.measure.load(${JSON.stringify(entry.id)})`));
+  await attempt('warm-up', () => page.harness(load));
   for (let index = 0; index < options.repeat; index += 1) {
-    await attempt(`load ${index + 1}`, async () => { record(await page.harness(`h.measure.load(${JSON.stringify(entry.id)})`)); });
+    await attempt(`load ${index + 1}`, async () => { record(await page.harness(load)); });
   }
   for (let index = 0; index < options.repeat; index += 1) {
     await attempt(`markdown-edit ${index + 1}`, async () => { record(await page.harness('h.measure.markdownEdit()')); });
@@ -258,16 +321,22 @@ async function runFixture(page, entry, options, samples, failures) {
       await attempt(`${kind} ${index + 1}`, async () => { record(await page.harness(`h.measure.frames(${JSON.stringify(kind)}, ${options.frames})`)); });
     }
   }
-  const own = samples.filter(sample => sample.fixture === entry.id);
-  const load = summarize(own.filter(sample => sample.kind === 'load').map(sample => sample.firstLayoutMs));
+  const own = samples.filter(sample => sample.fixture === entry.id && sample.mode === layout);
+  const first = summarize(own.filter(sample => sample.kind === 'load').map(sample => sample.firstLayoutMs));
   const edit = summarize(own.filter(sample => sample.kind === 'markdown-edit').map(sample => sample.totalMs));
-  console.info(`${entry.id}: 初回配置 ${ms(load.p50)} / ${ms(load.p95)} ms, Markdown 編集 ${ms(edit.p50)} / ${ms(edit.p95)} ms (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+  console.info(`${entry.id} ${layout}: 初回配置 ${ms(first.p50)} / ${ms(first.p95)} ms, Markdown 編集 ${ms(edit.p50)} / ${ms(edit.p95)} ms (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+}
+
+async function runFixture(page, entry, layouts, options, samples, failures) {
+  for (const layout of layouts) await runLayout(page, entry, layout, options, samples, failures);
 }
 
 async function main() {
   const options = parseArgs(process.argv);
   const fixtures = selectFixtures(options);
   if (fixtures.length === 0) throw new Error('No fixtures selected.');
+  const layouts = selectLayouts(options);
+  if (layouts.length === 0) throw new Error('No layouts selected.');
   const outRoot = resolve(root, options.out);
   const startedAt = new Date();
   const directory = join(outRoot, startedAt.toISOString().replace(/[:.]/gu, '-'));
@@ -284,7 +353,7 @@ async function main() {
   const output = await buildBrowserHarness();
   if (!chrome) {
     const record = recordMarkdown({
-      env, fixtures, summary: buildSummary(fixtures, []), failures: [],
+      env, fixtures, summary: buildSummary(fixtures, [], layouts), failures: [],
       notExecuted: ['headless Chrome が見つからないため計測は未実施。`--chrome <path>` か MAPPY_CHROME を指定して再実行する。', ...notExecuted],
     });
     await writeFile(join(directory, 'record.md'), record);
@@ -299,14 +368,14 @@ async function main() {
   for (const entry of fixtures) {
     try {
       await withHarnessPage(chrome, { output, window: WINDOW, fixture: entry.id, pane: PANE, gpu: options.gpu },
-        page => runFixture(page, entry, options, samples, failures));
+        page => runFixture(page, entry, layouts, options, samples, failures));
     } catch (error) {
       const message = `${entry.id}: Chrome の接続が切れたため以降の手順を中止 — ${error instanceof Error ? error.message : String(error)}`;
       failures.push(message);
       console.error(`FAIL ${message}`);
     }
   }
-  const summary = buildSummary(fixtures, samples);
+  const summary = buildSummary(fixtures, samples, layouts);
   await writeFile(join(directory, 'samples.json'), `${JSON.stringify({ env, samples }, null, 2)}\n`);
   await writeFile(join(directory, 'summary.json'), `${JSON.stringify({ env, summary }, null, 2)}\n`);
   await writeFile(join(directory, 'record.md'), recordMarkdown({ env, fixtures, summary, notExecuted, failures }));
