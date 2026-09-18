@@ -85,8 +85,11 @@ export function planTopicPositions(doc: MindDocument, positions: TopicPositionMa
   if (layout && !layout.closed) throw new Error('先に Markdown 側で frontmatter を閉じてください。');
   const text = serializeTopicPositions(positions, doc.eol);
   const key = layout ? locateFrontmatterKey(doc.source, layout, TOPICS_KEY) : null;
-  if (key) {
+  if (key && layout) {
     if (canonical(readTopicPositions(doc.source)) === canonical(positions)) return null;
+    // Removing the last entry from a header that held nothing else removes the header, not just its key.
+    const rest = doc.source.slice(layout.bodyFrom, key.from) + doc.source.slice(key.to, layout.closingFrom);
+    if (!text && rest.trim() === '') return { from: doc.source.charCodeAt(0) === BOM ? 1 : 0, to: layout.end, text: '' };
     return { from: key.from, to: key.to, text };
   }
   if (!text) return null;
