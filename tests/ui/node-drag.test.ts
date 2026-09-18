@@ -101,6 +101,7 @@ function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## 
     command: vi.fn<NodeDragActions['command']>(),
     shift: vi.fn<NodeDragActions['shift']>(),
     place: vi.fn<NodeDragActions['place']>(),
+    detach: vi.fn<NodeDragActions['detach']>(),
   } satisfies NodeDragActions;
   const drag = new NodeDrag(canvas, actions);
   components.add(drag);
@@ -222,14 +223,15 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A3'), index: 0 });
   });
 
-  it('keeps the current slot over the placeholder, the source, and empty canvas', () => {
+  it('keeps the current slot over the placeholder, the source, and nearby empty canvas', () => {
     const { canvas, actions, id, pointer, begin, showPlaceholder } = fixture();
     begin('B');
     pointer('pointermove', canvas, 200, 223);
     const calls = actions.preview.mock.calls.length;
     showPlaceholder({ left: 100, top: 130, width: 200, height: 40 });
     pointer('pointermove', canvas, 200, 150);
-    pointer('pointermove', canvas, 600, 500);
+    // 30 px right of A1's box: empty canvas, but close enough to keep the slot.
+    pointer('pointermove', canvas, 330, 240);
     pointer('pointermove', canvas, 200, 400);
     expect(actions.preview.mock.calls.length).toBe(calls);
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 0 });
@@ -388,6 +390,59 @@ describe('NodeDrag pointer dragging', () => {
       expect(ghost()).not.toBeNull();
       expect(actions.shift).not.toHaveBeenCalled();
       pointer('pointerup', canvas, cx + 8, cy);
+    });
+  });
+
+  describe('detaching a tree node on empty canvas', () => {
+    it('detaches at the ghost position when released on empty canvas away from where it was pressed', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture();
+      const [x, y] = center('A3');
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      pointer('pointermove', canvas, 600, 500);
+      expect(actions.preview).not.toHaveBeenCalled();
+      pointer('pointerup', canvas, 600, 500);
+      // Grabbed at its centre (100 px in from the left, 20 px from the top); the ghost's top-left is the drop point.
+      expect(actions.detach).toHaveBeenCalledExactlyOnceWith(id('A3'), { x: 600 - (x - 100), y: 500 - (y - 340) });
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.place).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when released back near its own place, outside the canvas, or on Escape', () => {
+      const { canvas, actions, node, pointer, center } = fixture();
+      const [x, y] = center('A3');
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, x + 8, y + 6);
+      pointer('pointerup', canvas, x + 8, y + 6);
+      expect(actions.detach).not.toHaveBeenCalled();
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      pointer('pointermove', canvas, 900, 700);
+      pointer('pointerup', canvas, 900, 700);
+      expect(actions.detach).not.toHaveBeenCalled();
+      pointer('pointerdown', node('A3'), x, y);
+      pointer('pointermove', canvas, 600, 500);
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      expect(actions.detach).not.toHaveBeenCalled();
+      expect(actions.command).not.toHaveBeenCalled();
+    });
+
+    it('keeps a previewed slot over empty canvas only while nearby; far away the slot clears and a release detaches', () => {
+      const { canvas, actions, id, pointer, begin, center } = fixture();
+      begin('A3');
+      const [ax, ay] = center('A1');
+      pointer('pointermove', canvas, ax, ay - 12);
+      const slot = { type: 'move', nodeId: id('A3'), parentId: id('A'), index: 0 };
+      expect(actions.preview).toHaveBeenLastCalledWith(slot);
+      // 20 px right of A1's box (right edge at 300): still nearby, the slot stays.
+      pointer('pointermove', canvas, 320, ay);
+      expect(actions.preview).toHaveBeenLastCalledWith(slot);
+      // 200 px away: free again.
+      pointer('pointermove', canvas, 500, ay);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      pointer('pointerup', canvas, 500, ay);
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.detach).toHaveBeenCalledOnce();
     });
   });
 
