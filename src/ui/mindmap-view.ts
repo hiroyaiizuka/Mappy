@@ -1,6 +1,6 @@
 import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
-import { planEdit, type EditCommand, type TextEdit } from "../core/commands";
+import { planEdit, resolveDrop, type EditCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { layoutTree, type LayoutResult } from "../layout/layout";
@@ -120,6 +120,7 @@ export class MindmapView extends ItemView {
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
       link: (link, newLeaf) => { if (this.file) this.run(() => this.app.workspace.openLinkText(link, this.file?.path ?? "", newLeaf)); },
+      dropTarget: (dragged, target, position) => this.document ? resolveDrop(this.document, dragged, target, position) : null,
     }));
     this.registerDomEvent(this.canvas, "contextmenu", event => {
       const target = event.targetNode;

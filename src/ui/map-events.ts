@@ -1,5 +1,5 @@
 import { Component } from "obsidian";
-import type { EditCommand } from "../core/commands";
+import type { DropPosition, EditCommand, MoveCommand } from "../core/commands";
 import type { MindNode } from "../core/markdown";
 
 export interface MapActions {
@@ -12,10 +12,16 @@ export interface MapActions {
   history: (direction: "undo" | "redo") => void;
   attach: (file: File) => void;
   link: (link: string, newLeaf: boolean) => void;
+  /** The move a drop would perform, or null when the target must refuse the dragged node. */
+  dropTarget: (draggedId: string, targetId: string, position: DropPosition) => MoveCommand | null;
 }
+
+/** Share of the node's extent on each edge that means "sibling before/after"; the rest means "last child". */
+const EDGE_ZONE = 0.3;
 
 export class MapEvents extends Component {
   private dragged: string | null = null;
+  private drop: { element: HTMLElement; position: DropPosition } | null = null;
   private composing = false;
 
   constructor(private readonly canvas: HTMLElement, private readonly actions: MapActions) { super(); }
@@ -58,15 +64,35 @@ export class MapEvents extends Component {
     });
     this.registerDomEvent(this.canvas, "dragover", event => {
       const node = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]");
-      if (!node || (!this.dragged && !event.dataTransfer?.types.includes("Files"))) return;
+      const id = node?.dataset.nodeId;
+      if (!node || !id) { this.clearDrop(); return; }
+      if (!this.dragged) {
+        // Image files attach to the hovered node; anything else is not ours.
+        if (!event.dataTransfer?.types.includes("Files")) return;
+        event.preventDefault();
+        this.showDrop(node, "inside");
+        return;
+      }
+      const position = this.dropPosition(node, event);
+      if (!this.actions.dropTarget(this.dragged, id, position)) {
+        this.clearDrop();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+        return;
+      }
       event.preventDefault();
-      this.clearDrop();
-      node.addClass("is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      this.showDrop(node, position);
+    });
+    this.registerDomEvent(this.canvas, "dragleave", event => {
+      const entered = this.element(event.relatedTarget as Node | null);
+      if (!entered || !this.canvas.contains(entered)) this.clearDrop();
     });
     this.registerDomEvent(this.canvas, "drop", event => {
-      const id = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      const node = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]");
+      const id = node?.dataset.nodeId;
+      const previewed = this.drop;
       this.clearDrop();
-      if (!id) return;
+      if (!node || !id) return;
       const file = event.dataTransfer?.files[0];
       if (file?.type.startsWith("image/")) {
         event.preventDefault();
@@ -76,7 +102,10 @@ export class MapEvents extends Component {
         event.preventDefault();
         const from = this.dragged;
         this.dragged = null;
-        if (from !== id) this.actions.command({ type: "reparent", nodeId: from, parentId: id });
+        // Perform exactly what the preview promised for this node.
+        const position = previewed?.element === node ? previewed.position : this.dropPosition(node, event);
+        const command = this.actions.dropTarget(from, id, position);
+        if (command) this.actions.command(command);
       }
     });
     this.registerDomEvent(this.canvas, "dragend", () => { this.dragged = null; this.clearDrop(); });
@@ -93,8 +122,31 @@ export class MapEvents extends Component {
     return target?.instanceOf(Element) ? target : null;
   }
 
+  /** Edge zones select a sibling slot; timeline stages line up horizontally, so their edges are left and right. */
+  private dropPosition(node: HTMLElement, event: MouseEvent): DropPosition {
+    if (node.hasClass("is-root")) return "inside";
+    const rect = node.getBoundingClientRect();
+    const ratio = node.hasClass("is-timeline") && node.hasClass("is-stage")
+      ? (event.clientX - rect.left) / rect.width
+      : (event.clientY - rect.top) / rect.height;
+    if (!Number.isFinite(ratio)) return "inside";
+    return ratio < EDGE_ZONE ? "before" : ratio > 1 - EDGE_ZONE ? "after" : "inside";
+  }
+
+  private showDrop(element: HTMLElement, position: DropPosition): void {
+    if (this.drop?.element === element && this.drop.position === position) return;
+    this.clearDrop();
+    element.addClass("is-drop-target");
+    element.dataset.drop = position;
+    this.drop = { element, position };
+  }
+
   private clearDrop(): void {
-    this.canvas.querySelectorAll(".is-drop-target").forEach(element => element.removeClass("is-drop-target"));
+    this.drop = null;
+    this.canvas.querySelectorAll<HTMLElement>(".is-drop-target").forEach(element => {
+      element.removeClass("is-drop-target");
+      delete element.dataset.drop;
+    });
   }
 
   private keydown(event: KeyboardEvent): void {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdits, planEdit, type EditCommand, type TextEdit } from '../../src/core/commands';
+import { applyEdits, planEdit, resolveDrop, type EditCommand, type TextEdit } from '../../src/core/commands';
 import { parseMarkdown as parseDocument, type MindDocument, type MindNode } from '../../src/core/markdown';
 
 // Keep the legacy heading-mode contract explicit as new notes default to lists.
@@ -229,6 +229,99 @@ describe('partial Markdown edits', () => {
     if (!second) throw new Error('Missing fixture heading');
     expect(execute(doc, { type: 'rename', nodeId: second.id, title: 'Changed' }).source)
       .toBe('# Same\none\n\n# Changed\ntwo');
+  });
+});
+
+describe('positioned moves for drag and drop (heading format)', () => {
+  it('moves a branch with its body and descendants before a sibling under another parent', () => {
+    const doc = parseMarkdown('# A\n\n## A1\na1 body [[link]]\n\n### A1a\n![[image.png]]\n\n## A2\n\n# B\n\n## B1\n\n## B2\n', 'Note');
+    const plan = planEdit(doc, { type: 'move', nodeId: find(doc, 'A1').id, parentId: find(doc, 'B').id, index: 1 });
+    const source = applyEdits(doc.source, plan.edits);
+    expect(source).toBe('# A\n\n## A2\n\n# B\n\n## B1\n\n## A1\na1 body [[link]]\n\n### A1a\n![[image.png]]\n\n## B2\n');
+    const result = parseMarkdown(source, 'Note');
+    expect(find(result, 'B').children.map((node) => node.title)).toEqual(['B1', 'A1', 'B2']);
+    expect(find(result, 'A1').children.map((node) => node.title)).toEqual(['A1a']);
+    expect(plan.selectionOffset).toBe(find(result, 'A1').titleFrom);
+  });
+
+  it('appends after the last root sibling, adopts its depth, and keeps the missing EOF newline', () => {
+    const doc = parseMarkdown('# First\nbody\n\n### Deep\n\n# Last\nlast', 'Note');
+    const result = execute(doc, { type: 'move', nodeId: find(doc, 'First').id, parentId: 'root', index: 1 });
+    expect(result.source).toBe('# Last\nlast\n\n# First\nbody\n\n### Deep');
+    expect(find(result, 'First').children.map((node) => node.title)).toEqual(['Deep']);
+  });
+
+  it('keeps a single EOF newline when the moved section lands at the end of the document', () => {
+    const doc = parseMarkdown('# A\n\n# B\n\n# C\n', 'Note');
+    expect(execute(doc, { type: 'move', nodeId: find(doc, 'A').id, parentId: 'root', index: 2 }).source)
+      .toBe('# B\n\n# C\n\n# A\n');
+  });
+
+  it('reorders non-adjacent siblings and moves only the requested duplicate title', () => {
+    const doc = parseMarkdown('# Same\none\n\n## Child\n\n# Same\ntwo\n\n# Other\n', 'Note');
+    const second = doc.nodes.filter((node) => node.title === 'Same')[1];
+    if (!second) throw new Error('Missing duplicate heading');
+    const result = execute(doc, { type: 'move', nodeId: second.id, parentId: 'root', index: 0 });
+    expect(result.source).toBe('# Same\ntwo\n\n# Same\none\n\n## Child\n\n# Other\n');
+    expect(result.root.children.map((node) => node.children.map((child) => child.title))).toEqual([[], ['Child'], []]);
+  });
+
+  it('inserts before a deeper sibling using that sibling depth so the structure is unchanged', () => {
+    const doc = parseMarkdown('# P\n\n### Deep\n\n## Shallow\n\n# Q\n\n## X\n', 'Note');
+    const result = execute(doc, { type: 'move', nodeId: find(doc, 'X').id, parentId: find(doc, 'P').id, index: 0 });
+    expect(result.source).toBe('# P\n\n### X\n\n### Deep\n\n## Shallow\n\n# Q\n');
+    expect(find(result, 'P').children.map((node) => [node.title, node.level])).toEqual([['X', 3], ['Deep', 3], ['Shallow', 2]]);
+    expect(find(result, 'Q').children).toEqual([]);
+  });
+
+  it('moves a branch under a collapsed-depth parent and refuses moves past heading level six', () => {
+    const doc = parseMarkdown('# P\n\n## C\n\n###### Deep\n\n# T\n\n## T1\n', 'Note');
+    expect(() => planEdit(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: find(doc, 'T1').id, index: 0 })).toThrow('6 階層');
+    const result = execute(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: find(doc, 'T').id, index: 1 });
+    expect(result.source).toBe('# P\n\n# T\n\n## T1\n\n## C\n\n###### Deep\n');
+  });
+
+  it('rejects self, descendants, the root, and out-of-range positions, and returns no edits for the same position', () => {
+    const doc = parseMarkdown('# P\n\n## Child\n\n# Q\n', 'Note');
+    const parent = find(doc, 'P');
+    expect(() => planEdit(doc, { type: 'move', nodeId: parent.id, parentId: parent.id, index: 0 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: parent.id, parentId: find(doc, 'Child').id, index: 0 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: 'root', parentId: parent.id, index: 0 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: parent.id, parentId: 'root', index: -1 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: parent.id, parentId: 'root', index: 2 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: parent.id, parentId: 'root', index: 0.5 })).toThrow();
+    expect(planEdit(doc, { type: 'move', nodeId: parent.id, parentId: 'root', index: 0 }))
+      .toEqual({ edits: [], selectionOffset: parent.titleFrom });
+    expect(planEdit(doc, { type: 'move', nodeId: find(doc, 'Q').id, parentId: 'root', index: 1 }).edits).toEqual([]);
+  });
+});
+
+describe('drop resolution', () => {
+  it('maps before, after, and inside positions to parent and index without the dragged node', () => {
+    const doc = parseMarkdown('# A\n\n## A1\n\n## A2\n\n## A3\n\n# B\n', 'Note');
+    const a1 = find(doc, 'A1');
+    const a3 = find(doc, 'A3');
+    const a = find(doc, 'A');
+    expect(resolveDrop(doc, a3.id, a1.id, 'before')).toEqual({ type: 'move', nodeId: a3.id, parentId: a.id, index: 0 });
+    expect(resolveDrop(doc, a3.id, a1.id, 'after')).toEqual({ type: 'move', nodeId: a3.id, parentId: a.id, index: 1 });
+    expect(resolveDrop(doc, a1.id, a3.id, 'after')).toEqual({ type: 'move', nodeId: a1.id, parentId: a.id, index: 2 });
+    expect(resolveDrop(doc, a1.id, find(doc, 'B').id, 'inside')).toEqual({ type: 'move', nodeId: a1.id, parentId: find(doc, 'B').id, index: 0 });
+    expect(resolveDrop(doc, find(doc, 'B').id, a.id, 'inside')).toEqual({ type: 'move', nodeId: find(doc, 'B').id, parentId: a.id, index: 3 });
+    expect(resolveDrop(doc, find(doc, 'B').id, a.id, 'before')).toEqual({ type: 'move', nodeId: find(doc, 'B').id, parentId: 'root', index: 0 });
+  });
+
+  it('refuses the dragged node itself, its descendants, the root, unknown ids, and depth overflow', () => {
+    const doc = parseMarkdown('# P\n\n## C\n\n###### Deep\n\n# T\n\n## T1\n', 'Note');
+    const p = find(doc, 'P');
+    const c = find(doc, 'C');
+    expect(resolveDrop(doc, p.id, p.id, 'inside')).toBeNull();
+    expect(resolveDrop(doc, p.id, p.id, 'before')).toBeNull();
+    expect(resolveDrop(doc, p.id, c.id, 'before')).toBeNull();
+    expect(resolveDrop(doc, p.id, find(doc, 'Deep').id, 'inside')).toBeNull();
+    expect(resolveDrop(doc, 'root', p.id, 'inside')).toBeNull();
+    expect(resolveDrop(doc, p.id, 'missing', 'inside')).toBeNull();
+    expect(resolveDrop(doc, c.id, find(doc, 'T1').id, 'inside')).toBeNull();
+    expect(resolveDrop(doc, c.id, find(doc, 'T1').id, 'after')).toEqual({ type: 'move', nodeId: c.id, parentId: find(doc, 'T').id, index: 1 });
   });
 });
 

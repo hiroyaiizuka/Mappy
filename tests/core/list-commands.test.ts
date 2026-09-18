@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyEdits, planEdit, type EditCommand } from '../../src/core/commands';
+import { applyEdits, planEdit, resolveDrop, type EditCommand } from '../../src/core/commands';
 import { parseMarkdown, type MindDocument, type MindNode } from '../../src/core/markdown';
 
 function parse(source: string, previous?: MindDocument): MindDocument {
@@ -134,6 +134,12 @@ describe('source-preserving list commands', () => {
     expect(execute(doc, { type: 'rename', nodeId: blank.id, title: 'New [[link]]' }).source).toBe('## Root\n- New [[link]]');
   });
 
+  it('does not leave a blank line behind when reparenting from the middle of a tight list', () => {
+    const doc = parse('## Root\n- A\n- B\n- C\n');
+    expect(execute(doc, { type: 'reparent', nodeId: find(doc, 'B').id, parentId: find(doc, 'A').id }).source)
+      .toBe('## Root\n- A\n  - B\n- C\n');
+  });
+
   it('rejects self and descendant moves, multiline names, and structural corruption', () => {
     const doc = parse('## Root\n- Parent\n  - Child');
     const parent = find(doc, 'Parent');
@@ -141,5 +147,96 @@ describe('source-preserving list commands', () => {
     expect(() => planEdit(doc, { type: 'reparent', nodeId: parent.id, parentId: child.id })).toThrow();
     expect(() => planEdit(doc, { type: 'reparent', nodeId: parent.id, parentId: parent.id })).toThrow();
     expect(() => planEdit(doc, { type: 'rename', nodeId: child.id, title: 'Break\n- injected' })).toThrow();
+  });
+});
+
+describe('positioned moves for drag and drop (list format)', () => {
+  it('moves a deep branch with continuation, fenced code, and image before a sibling of another parent', () => {
+    const branch = '  - Move\n    Body [[link]]\n\n    ```js\n    code()\n    ```\n    - Child\n      ![image](../image.png)\n';
+    const doc = parse(`## Root\n- A\n${branch}  - A2\n- B\n  - B1\n  - B2\n`);
+    const plan = planEdit(doc, { type: 'move', nodeId: find(doc, 'Move').id, parentId: find(doc, 'B').id, index: 1 });
+    const source = applyEdits(doc.source, plan.edits);
+    expect(source).toBe(`## Root\n- A\n  - A2\n- B\n  - B1\n${branch}  - B2\n`);
+    const result = parse(source);
+    expect(find(result, 'B').children.map(node => node.title)).toEqual(['B1', 'Move', 'B2']);
+    expect(find(result, 'Move').children.map(node => node.title)).toEqual(['Child']);
+    expect(plan.selectionOffset).toBe(find(result, 'Move').titleFrom);
+  });
+
+  it('keeps a parent paragraph that follows its children when nodes move in and out (E19)', () => {
+    const doc = parse('## Root\n- P\n  - C1\n\n  tail of P\n- Q\n  - Q1\n');
+    const joined = execute(doc, { type: 'move', nodeId: find(doc, 'Q1').id, parentId: find(doc, 'P').id, index: 1 });
+    expect(joined.source).toBe('## Root\n- P\n  - C1\n  - Q1\n\n  tail of P\n- Q\n');
+    expect(find(joined, 'P').children.map(node => node.title)).toEqual(['C1', 'Q1']);
+    const left = execute(joined, { type: 'move', nodeId: find(joined, 'C1').id, parentId: find(joined, 'Q').id, index: 0 });
+    expect(left.source).toBe('## Root\n- P\n  - Q1\n\n  tail of P\n- Q\n  - C1\n');
+    expect(find(left, 'Q').children.map(node => node.title)).toEqual(['C1']);
+  });
+
+  it('reorders non-adjacent siblings with CRLF and no EOF newline, and round-trips exactly', () => {
+    const source = '## Root\r\n- A\r\n  a body\r\n- B\r\n- C\r\n- D';
+    const doc = parse(source);
+    const last = execute(doc, { type: 'move', nodeId: find(doc, 'A').id, parentId: find(doc, 'Root').id, index: 3 });
+    expect(last.source).toBe('## Root\r\n- B\r\n- C\r\n- D\r\n- A\r\n  a body');
+    expect(execute(last, { type: 'move', nodeId: find(last, 'A').id, parentId: find(last, 'Root').id, index: 0 }).source).toBe(source);
+  });
+
+  it('moves only the requested duplicate title with its body', () => {
+    const doc = parse('## Root\n- Same\n  one\n- Same\n  two\n- Other\n');
+    const second = doc.nodes.filter(node => node.title === 'Same')[1];
+    if (!second) throw new Error('Missing duplicate item');
+    expect(execute(doc, { type: 'move', nodeId: second.id, parentId: find(doc, 'Root').id, index: 0 }).source)
+      .toBe('## Root\n- Same\n  two\n- Same\n  one\n- Other\n');
+  });
+
+  it('nests beyond heading depth six by continuing the indentation step', () => {
+    const chain = Array.from({ length: 8 }, (_, index) => `${'  '.repeat(index)}- Depth ${index}\n`).join('');
+    const doc = parse(`## Root\n${chain}- Other\n`);
+    const result = execute(doc, { type: 'move', nodeId: find(doc, 'Other').id, parentId: find(doc, 'Depth 7').id, index: 0 });
+    expect(result.source).toBe(`## Root\n${chain}${'  '.repeat(8)}- Other\n`);
+    expect(find(result, 'Other').level).toBe(11);
+  });
+
+  it('moves a node after its former grandparent inside the same list', () => {
+    const doc = parse('## Root\n- P\n  - A\n    - X\n');
+    expect(execute(doc, { type: 'move', nodeId: find(doc, 'X').id, parentId: find(doc, 'P').id, index: 1 }).source)
+      .toBe('## Root\n- P\n  - A\n  - X\n');
+  });
+
+  it('starts a new list under a childless H2 after its prose and keeps the following section', () => {
+    const doc = parse('## A\n- X\n  x body\n\n## B\n\nprose\n\n## C\n');
+    expect(execute(doc, { type: 'move', nodeId: find(doc, 'X').id, parentId: find(doc, 'B').id, index: 0 }).source)
+      .toBe('## A\n\n## B\n\nprose\n\n- X\n  x body\n\n## C\n');
+  });
+
+  it('keeps one blank line when removing an item from a loose list', () => {
+    const doc = parse('## Root\n- A\n\n- B\n\n- C\n');
+    expect(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: find(doc, 'A').id, index: 0 }).source)
+      .toBe('## Root\n- A\n  - B\n\n- C\n');
+    const doc2 = parse('## Root\n- A\n\n- B\n');
+    expect(execute(doc2, { type: 'move', nodeId: find(doc2, 'B').id, parentId: find(doc2, 'A').id, index: 0 }).source)
+      .toBe('## Root\n- A\n  - B\n');
+  });
+
+  it('reorders H2 sections among root children and refuses H2 under list items', () => {
+    const doc = parse('## A\n- a\n\n## B\n- b\n\n## C\n- c\n');
+    expect(execute(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: 'root', index: 0 }).source)
+      .toBe('## C\n- c\n\n## A\n- a\n\n## B\n- b\n');
+    expect(() => planEdit(doc, { type: 'move', nodeId: find(doc, 'C').id, parentId: find(doc, 'a').id, index: 0 })).toThrow();
+  });
+
+  it('rejects list items under the virtual root, self, descendants, and bad positions, and no-ops the same position', () => {
+    const doc = parse('## Root\n- P\n  - C\n- Q\n');
+    const p = find(doc, 'P');
+    const root = find(doc, 'Root');
+    expect(() => planEdit(doc, { type: 'move', nodeId: p.id, parentId: 'root', index: 0 })).toThrow('H2');
+    expect(() => planEdit(doc, { type: 'move', nodeId: p.id, parentId: find(doc, 'C').id, index: 0 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: p.id, parentId: p.id, index: 0 })).toThrow();
+    expect(() => planEdit(doc, { type: 'move', nodeId: p.id, parentId: root.id, index: 2 })).toThrow();
+    expect(planEdit(doc, { type: 'move', nodeId: p.id, parentId: root.id, index: 0 })).toEqual({ edits: [], selectionOffset: p.titleFrom });
+    expect(planEdit(doc, { type: 'move', nodeId: find(doc, 'Q').id, parentId: root.id, index: 1 }).edits).toEqual([]);
+    expect(resolveDrop(doc, p.id, root.id, 'before')).toBeNull();
+    expect(resolveDrop(doc, root.id, p.id, 'inside')).toBeNull();
+    expect(resolveDrop(doc, p.id, find(doc, 'Q').id, 'after')).toEqual({ type: 'move', nodeId: p.id, parentId: root.id, index: 1 });
   });
 });
