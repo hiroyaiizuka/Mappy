@@ -1,0 +1,83 @@
+/*
+ * Page chrome for the browser harness plus placeholder values for the Obsidian
+ * CSS variables that styles.css reads. The values are neutral stand-ins so the
+ * product CSS renders; they are not Obsidian's theme and theme is out of scope.
+ */
+:root {
+  --background-primary: #ffffff;
+  --background-secondary: #f6f6f6;
+  --background-modifier-hover: rgba(0, 0, 0, 0.075);
+  --background-modifier-border: #e0e0e0;
+  --background-modifier-border-hover: #c8c8c8;
+  --color-base-40: #dcdcdc;
+  --color-blue: #086ddd;
+  --interactive-accent: #7852ee;
+  --text-normal: #222222;
+  --text-muted: #5c5c5c;
+  --text-error: #e93147;
+  --font-text-size: 16px;
+  --font-ui-small: 13px;
+  --font-ui-smaller: 12px;
+  --font-smaller: 13px;
+  --font-monospace: ui-monospace, Menlo, Consolas, monospace;
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+  --layer-popover: 30;
+  --layer-menu: 40;
+  --layer-modal: 50;
+  --layer-notice: 60;
+}
+
+html, body { margin: 0; background: var(--background-secondary); color: var(--text-normal); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+code { font-family: var(--font-monospace); font-size: 0.92em; }
+button { font: inherit; }
+
+.harness-header { padding: 10px 16px; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-primary); }
+.harness-header h1 { margin: 0 0 4px; font-size: 16px; }
+.harness-header p { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+.harness-body { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; }
+.harness-panel { flex: 0 0 300px; display: flex; flex-direction: column; gap: 12px; }
+.harness-panel section { padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-primary); }
+.harness-panel h2 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.harness-panel select, .harness-panel input { box-sizing: border-box; width: 100%; margin: 2px 0 6px; padding: 4px 6px; font: inherit; }
+.harness-panel label { display: block; font-size: 12.5px; }
+.harness-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.harness-presets button, #harness-reopen { padding: 3px 8px; font-size: 12.5px; }
+.harness-muted { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.harness-status { margin: 4px 0 0; font-size: 12.5px; }
+.harness-list { margin: 0; padding-left: 16px; font-size: 12px; }
+.harness-list li { margin: 2px 0; overflow-wrap: anywhere; }
+.harness-main { flex: 1 1 auto; min-width: 0; }
+/* The pane stands in for an Obsidian leaf: fixed size, resizable by handle. */
+.harness-pane {
+  position: relative;
+  box-sizing: border-box;
+  width: 1280px;
+  height: 800px;
+  max-width: 100%;
+  overflow: hidden;
+  resize: both;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+}
+.harness-pane .workspace-leaf-content, .harness-pane .view-content { position: absolute; inset: 0; }
+
+/* Mock DOM for Notice, Menu, Modal and Setting from harness/browser/obsidian.ts. */
+.notice-container { position: fixed; right: 16px; top: 16px; z-index: var(--layer-notice); display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.notice { padding: 8px 12px; border-radius: 6px; background: #333; color: #fff; font-size: 13px; box-shadow: var(--shadow-s); cursor: pointer; }
+.menu { position: fixed; z-index: var(--layer-menu); min-width: 180px; padding: 4px; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-primary); box-shadow: var(--shadow-s); font-size: 13px; }
+.menu-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 4px; cursor: pointer; }
+.menu-item:hover { background: var(--background-modifier-hover); }
+.menu-item.is-disabled { opacity: 0.45; cursor: default; }
+.menu-item-icon { display: inline-flex; width: 14px; }
+.menu-item-icon svg { width: 14px; height: 14px; }
+.menu-separator { height: 1px; margin: 4px 0; background: var(--background-modifier-border); }
+.modal-container { position: fixed; inset: 0; z-index: var(--layer-modal); display: grid; place-items: center; }
+.modal-bg { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); }
+.modal { position: relative; box-sizing: border-box; width: min(560px, calc(100vw - 32px)); padding: 16px 20px; border-radius: 10px; background: var(--background-primary); box-shadow: var(--shadow-s); }
+.modal-close-button { position: absolute; right: 12px; top: 8px; cursor: pointer; }
+.modal-close-button::before { content: "×"; font-size: 18px; }
+.modal-title { margin-bottom: 8px; font-weight: 600; }
+.setting-item { display: flex; justify-content: flex-end; gap: 8px; padding-top: 8px; }
+.setting-item-control { display: flex; gap: 8px; }
+.setting-item button.mod-cta { background: var(--interactive-accent); color: #fff; border: 0; border-radius: 4px; padding: 4px 12px; }

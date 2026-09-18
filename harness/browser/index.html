@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mappy ブラウザ検証ページ（②）</title>
+  <link rel="stylesheet" href="harness.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="harness-header">
+    <h1>Mappy ブラウザ検証ページ（②）</h1>
+    <p>
+      製品の <code>src/ui/mindmap-view.ts</code>・<code>core</code>・<code>layout</code>・<code>interaction</code> をそのまま読み込み、
+      <code>obsidian</code> モジュールだけを <code>harness/browser/obsidian.ts</code> のモックに置き換えています。
+      <strong>対象外:</strong> 保存（編集はページ内メモリのみ）、リンク解決（クリックは通知のみ）、テーマ（CSS 変数は仮の値）、日本語 IME。
+      これらは <code>docs/harness.md</code> の ③ Obsidian 実機（E01〜E28）で確認します。ここでの成功を実機の成功と呼びません。
+    </p>
+  </header>
+  <div class="harness-body">
+    <aside id="harness-panel" class="harness-panel" aria-label="検証ページの操作">
+      <section>
+        <h2>fixture</h2>
+        <select id="harness-fixture" aria-label="fixture"></select>
+        <p id="harness-covers" class="harness-muted"></p>
+        <p id="harness-status" class="harness-status" role="status"></p>
+      </section>
+      <section>
+        <h2>ペインのサイズ</h2>
+        <div id="harness-presets" class="harness-presets"></div>
+        <label>幅 <input id="harness-width" type="number" min="120" step="10"></label>
+        <label>高さ <input id="harness-height" type="number" min="120" step="10"></label>
+        <p class="harness-muted">右下の角をドラッグしても変更できます。変更のたびに製品の <code>onResize()</code> を呼びます。</p>
+      </section>
+      <section>
+        <h2>ビュー</h2>
+        <button id="harness-reopen" type="button">閉じて開き直す</button>
+        <p class="harness-muted">選択はクリック／矢印キー、開閉は分岐点の − か Space、パンは背景ドラッグ／スクロール、ズームは Ctrl/⌘＋ホイール・ピンチ・右下のボタン。</p>
+      </section>
+      <section>
+        <h2>時刻の記録</h2>
+        <ul id="harness-timings" class="harness-list"></ul>
+        <p class="harness-muted">fixture 切替ごとの経過時間。計測基盤（条件・基準端末・p95）は別チケットで整備します。<code>window.__mappyHarness.timings</code> と Performance タイムラインの <code>mappy:load:*</code> にも記録します。</p>
+      </section>
+      <section>
+        <h2>モックが受けた呼び出し</h2>
+        <ul id="harness-activity" class="harness-list"></ul>
+      </section>
+      <p id="harness-build" class="harness-muted"></p>
+    </aside>
+    <main class="harness-main">
+      <div id="harness-pane" class="harness-pane" aria-label="マップのペイン"></div>
+    </main>
+  </div>
+  <script src="main.js" defer></script>
+</body>
+</html>

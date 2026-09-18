@@ -15,7 +15,7 @@ export default defineConfig(
     extends: obsidianmd.configs.recommended,
   },
   {
-    files: ["tests/**/*.ts", "vitest.config.ts"],
+    files: ["tests/**/*.ts", "harness/**/*.ts", "vitest.config.ts"],
     extends: tseslint.configs.recommendedTypeChecked,
   },
   {
