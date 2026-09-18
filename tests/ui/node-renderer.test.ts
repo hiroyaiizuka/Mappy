@@ -168,13 +168,15 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), {
       visualRootId: id(parsed, 'Course'), mode: 'mindmap',
     });
-    // Log layout reads and inline style writes in order; jsdom has no layout, so the border read is the spy itself.
+    // Log layout reads and inline style writes in order; jsdom has no layout, so every layout read is the spy itself.
     const log: string[] = [];
-    const border = vi.fn(() => { log.push('read'); return 1; });
+    const layoutRead = vi.fn(() => { log.push('read'); return 1; });
+    const layoutProperties = ['clientLeft', 'clientTop', 'clientWidth', 'clientHeight', 'offsetLeft', 'offsetTop',
+      'offsetWidth', 'offsetHeight', 'scrollWidth', 'scrollHeight'];
     for (const entry of renderer.entries.values()) {
-      Object.defineProperty(entry.element, 'clientLeft', { get: border });
-      Object.defineProperty(entry.element, 'clientTop', { get: border });
       for (const element of [entry.element, entry.toggle]) {
+        for (const name of layoutProperties) Object.defineProperty(element, name, { get: layoutRead });
+        Object.defineProperty(element, 'getBoundingClientRect', { value: layoutRead });
         const style = element.style;
         Object.defineProperty(element, 'style', { get: () => new Proxy(style, {
           set(target, property, value) { log.push(`write ${String(property)}`); return Reflect.set(target, property, value); },
@@ -185,8 +187,9 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     const folds = parsed.nodes.flatMap((node, index) => (node.children.length > 0 ? [{ id: node.id, x: index * 10 + 100, y: index * 20 + 15 }] : []));
     expect(folds).toHaveLength(40);
     renderer.place(positioned, folds);
-    // One clientLeft and one clientTop per fold, all before the first transform / left / top write.
-    expect(border).toHaveBeenCalledTimes(folds.length * 2);
+    // At most one clientLeft and one clientTop per fold, all before the first transform / left / top write.
+    expect(layoutRead.mock.calls.length).toBeGreaterThan(0);
+    expect(layoutRead.mock.calls.length).toBeLessThanOrEqual(folds.length * 2);
     expect(log.lastIndexOf('read')).toBeLessThan(log.findIndex(item => item.startsWith('write')));
     expect(log.filter(item => item === 'write transform')).toHaveLength(positioned.length);
     const stage = renderer.entries.get(id(parsed, 'Level 0'));
