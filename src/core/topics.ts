@@ -105,6 +105,21 @@ export function planTopicMove(doc: MindDocument, title: string, layout: string, 
   return planTopicPositions(doc, positions);
 }
 
+/**
+ * Store one layout's position for several headings at once (the body root dragged against its
+ * topics: every topic keeps its place on screen, so every offset changes). One edit, or null.
+ */
+export function planTopicMoves(doc: MindDocument, layout: string, moves: ReadonlyMap<string, TopicPosition>): TextEdit | null {
+  if (!LAYOUT_PATTERN.test(layout)) throw new Error('レイアウト名が不正です。');
+  const positions = readTopicPositions(doc.source);
+  for (const [title, position] of moves) {
+    if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('トピックの位置が不正です。');
+    if (/[\r\n]/u.test(title)) throw new Error('トピックの見出しは 1 行にしてください。');
+    positions.set(title, { ...(positions.get(title) ?? {}), [layout]: position });
+  }
+  return planTopicPositions(doc, positions);
+}
+
 /** One layout's position for a heading, as the rename command receives it from the view. */
 export interface TopicPlacement { layout: string; x: number; y: number }
 

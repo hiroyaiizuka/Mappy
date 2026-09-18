@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, planEdit } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
 import {
-  TOPICS_KEY, planTopicMove, planTopicPositions, planTopicRemoval, planTopicRename, readTopicPositions, serializeTopicPositions,
-  topicPositionsFromValue, type TopicPositionMap,
+  TOPICS_KEY, planTopicMove, planTopicMoves, planTopicPositions, planTopicRemoval, planTopicRename, readTopicPositions,
+  serializeTopicPositions, topicPositionsFromValue, type TopicPositionMap,
 } from '../../src/core/topics';
 
 const fixture = readFileSync(new URL('../fixtures/free-topics.md', import.meta.url), 'utf8');
@@ -394,5 +394,80 @@ describe('delete removes a topic section together with its position', () => {
     expect(planEdit(doc, { type: 'delete', nodeId: child.id }).edits).toHaveLength(1);
     expect(planTopicRemoval(doc, child)).toBeNull();
     expect(planTopicRemoval(doc, projectMap(doc).root)).toBeNull();
+  });
+});
+
+describe('a topic dropped on a node joins it as a branch (合流)', () => {
+  function topic(doc: MindDocument, title: string): MindNode {
+    const node = projectMap(doc).topics.find((candidate) => candidate.title === title);
+    if (!node) throw new Error(`Missing topic ${title}`);
+    return node;
+  }
+  function node(doc: MindDocument, title: string): MindNode {
+    const found = doc.nodes.find((candidate) => candidate.title === title);
+    if (!found) throw new Error(`Missing node ${title}`);
+    return found;
+  }
+
+  it('turns the section into a list item under the target, keeping prose, images and nested lists, and drops its entry', () => {
+    const doc = parse(fixture);
+    const reference = topic(doc, '参考資料');
+    const recover = node(doc, '回復する');
+    const plan = planEdit(doc, { type: 'move', nodeId: reference.id, parentId: recover.id, index: recover.children.length });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(fixture
+      .replace('  参考資料: { mindmap: [-360, 200], timeline: [0, 260] }\n', '')
+      .replace('  - 睡眠\n', '  - 睡眠\n  - 参考資料\n    位置は frontmatter の `mappy-topics` にあり、本文には何も書かない。\n\n    - [[heading-document|講座ノート]]\n    - ![[sample-image.svg]]\n    - [外部の資料](https://example.com)\n')
+      .replace('\n## 参考資料\n\n位置は frontmatter の `mappy-topics` にあり、本文には何も書かない。\n\n- [[heading-document|講座ノート]]\n- ![[sample-image.svg]]\n- [外部の資料](https://example.com)\n\n', '\n'));
+    const parsed = parse(result);
+    expect(projectMap(parsed).topics.map((item) => item.title)).toEqual(['補足: 用語', '位置のないトピック']);
+    const joined = parsed.nodes.find((item) => item.titleFrom === plan.selectionOffset);
+    expect(joined).toMatchObject({ title: '参考資料', kind: 'list', level: 4 });
+    expect(joined?.children.map((item) => item.title)).toEqual(['[[heading-document|講座ノート]]', '![[sample-image.svg]]', '[外部の資料](https://example.com)']);
+    expect(parsed.nodes.length).toBe(doc.nodes.length);
+    expect(readTopicPositions(result).has('参考資料')).toBe(false);
+    expect(readTopicPositions(result).get('補足: 用語')).toEqual({ mindmap: { x: 560, y: -140 } });
+  });
+
+  it('places the item as a sibling before or after the target, matching the neighbours\' indent and marker', () => {
+    const doc = parse('## Body\n* a\n  * a1\n* b\n\n## T\nprose\n\n- t1\n  - t2\n\n## U\n');
+    const t = topic(doc, 'T');
+    const before = applyEdits(doc.source, planEdit(doc, { type: 'move', nodeId: t.id, parentId: node(doc, 'a').id, index: 0 }).edits);
+    expect(before).toBe('## Body\n* a\n  * T\n    prose\n\n    - t1\n      - t2\n  * a1\n* b\n\n## U\n');
+    const after = applyEdits(doc.source, planEdit(doc, { type: 'move', nodeId: t.id, parentId: projectMap(doc).root.id, index: 2 }).edits);
+    expect(after).toBe('## Body\n* a\n  * a1\n* b\n* T\n  prose\n\n  - t1\n    - t2\n\n## U\n');
+    expect(parse(after).nodes.map((item) => `${item.level}:${item.title}`)).toEqual(['2:Body', '3:a', '4:a1', '3:b', '3:T', '4:t1', '5:t2', '2:U']);
+  });
+
+  it('handles a topic without children, the last section of the file, CRLF, and a code fence in the body', () => {
+    const last = parse('## Body\n- a\n\n## T\n');
+    expect(applyEdits(last.source, planEdit(last, { type: 'move', nodeId: topic(last, 'T').id, parentId: node(last, 'a').id, index: 0 }).edits))
+      .toBe('## Body\n- a\n  - T\n');
+    const crlf = parse('## Body\r\n- a\r\n\r\n## T\r\n\r\n- t1\r\n');
+    expect(applyEdits(crlf.source, planEdit(crlf, { type: 'move', nodeId: topic(crlf, 'T').id, parentId: projectMap(crlf).root.id, index: 1 }).edits))
+      .toBe('## Body\r\n- a\r\n- T\r\n  - t1\r\n');
+    const fence = parse('## Body\n- a\n\n## T\n\n```js\n- not a node\n```\n\n- t1\n\n## U\n- u\n');
+    const result = applyEdits(fence.source, planEdit(fence, { type: 'move', nodeId: topic(fence, 'T').id, parentId: node(fence, 'a').id, index: 0 }).edits);
+    expect(result).toBe('## Body\n- a\n  - T\n    ```js\n    - not a node\n    ```\n\n    - t1\n\n## U\n- u\n');
+    expect(parse(result).nodes.map((item) => item.title)).toEqual(['Body', 'a', 'T', 't1', 'U', 'u']);
+  });
+
+  it('moves a topic section under a heading in heading documents through the existing section move and drops its entry too', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  Topic: { mindmap: [1, 2] }\n---\n# Body\n\n## Child\n\n# Topic\n\n### Deep\n`);
+    const result = applyEdits(doc.source, planEdit(doc, { type: 'move', nodeId: topic(doc, 'Topic').id, parentId: node(doc, 'Child').id, index: 0 }).edits);
+    expect(result).toBe('---\n---\n# Body\n\n## Child\n\n### Topic\n\n##### Deep\n');
+  });
+
+  it('planTopicMoves stores several headings at once and refuses bad input', () => {
+    const doc = parse(fixture);
+    const edit = planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: -460, y: 150 }], ['位置のないトピック', { x: -100, y: 300 }]]));
+    const result = applyEdits(doc.source, edit ? [edit] : []);
+    expect(readTopicPositions(result).get('参考資料')).toEqual({ mindmap: { x: -460, y: 150 }, timeline: { x: 0, y: 260 } });
+    expect(readTopicPositions(result).get('位置のないトピック')).toEqual({ mindmap: { x: -100, y: 300 } });
+    expect(readTopicPositions(result).get('補足: 用語')).toEqual({ mindmap: { x: 560, y: -140 } });
+    expect(result.slice(result.indexOf('---\n', 4))).toBe(fixture.slice(fixture.indexOf('---\n', 4)));
+    expect(planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: -360, y: 200 }]]))).toBeNull();
+    expect(() => planTopicMoves(doc, 'Bad', new Map())).toThrow('レイアウト名');
+    expect(() => planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: Number.NaN, y: 0 }]]))).toThrow('位置が不正');
   });
 });

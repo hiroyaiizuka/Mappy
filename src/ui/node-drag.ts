@@ -6,7 +6,7 @@ export interface DragDelta { x: number; y: number }
 
 export interface NodeDragActions {
   select: (id: string) => void;
-  /** True for a node that moves freely (a free-topic root): its tree follows the pointer instead of previewing a slot. */
+  /** True for a node that moves freely (a free-topic root or the body root): its tree follows the pointer; no ghost. */
   free: (id: string) => boolean;
   /** The move a drop on `targetId` would perform, or null when the target must refuse the dragged node. */
   dropTarget: (draggedId: string, targetId: string, position: DropPosition) => MoveCommand | null;
@@ -15,7 +15,7 @@ export interface NodeDragActions {
   command: (command: MoveCommand) => void;
   /** Live offset of a free node during its drag; null ends the preview and puts the tree back. */
   shift: (id: string, delta: DragDelta | null) => void;
-  /** A free node released inside the canvas keeps its shifted position. */
+  /** A free node released inside the canvas, away from any slot, keeps its shifted position. */
   place: (id: string, delta: DragDelta) => void;
 }
 
@@ -48,8 +48,10 @@ interface Session extends Press {
  * Pointer-driven node dragging: a translucent ghost follows the pointer, the source stays faint in
  * place, and the view previews the slot under the pointer. Pointer events (not HTML5 drag and drop)
  * so the ghost, the placeholder, and touch input are under our control; file drops stay separate.
- * A free node (a free-topic root) drags its whole tree instead: no ghost, no slot, and a release
- * inside the canvas keeps the new position while Escape, cancel, or a release outside puts it back.
+ * A free node (a free-topic root or the body root) drags its whole tree instead of a ghost. Slots are
+ * still previewed under the pointer (the view keeps the moving tree out of hit testing), so a topic
+ * released on a slot joins that node; released elsewhere inside the canvas it keeps the new position,
+ * and Escape, cancel, or a release outside puts it back.
  */
 export class NodeDrag extends Component {
   private press: Press | null = null;
@@ -111,7 +113,7 @@ export class NodeDrag extends Component {
     const rect = press.element.getBoundingClientRect();
     const scale = press.element.offsetWidth > 0 ? rect.width / press.element.offsetWidth : 1;
     const ghost = free ? null : this.ghost(press.element);
-    press.element.addClass(free ? "is-drag-moving" : "is-drag-source");
+    if (!free) press.element.addClass("is-drag-source");
     this.canvas.addClass("is-dragging-node");
     // A pointer that vanished between the press and this move cannot be captured; the drag still runs on canvas events.
     try { this.canvas.setPointerCapture(press.pointerId); } catch { /* InvalidPointerId */ }
@@ -149,7 +151,7 @@ export class NodeDrag extends Component {
     const session = this.session;
     if (!session) return;
     session.last = { x: event.clientX, y: event.clientY };
-    if (session.free) { this.actions.shift(session.id, this.delta(session)); return; }
+    if (session.free) this.actions.shift(session.id, this.delta(session));
     const canvas = this.canvas.getBoundingClientRect();
     const x = event.clientX - canvas.left - session.grab.x;
     const y = event.clientY - canvas.top - session.grab.y;
@@ -204,15 +206,13 @@ export class NodeDrag extends Component {
     if (!session) return;
     this.session = null;
     session.ghost?.remove();
-    session.element.removeClass("is-drag-source", "is-drag-moving");
+    session.element.removeClass("is-drag-source");
     this.canvas.removeClass("is-dragging-node");
     if (this.canvas.hasPointerCapture(session.pointerId)) this.canvas.releasePointerCapture(session.pointerId);
-    if (session.free) {
-      if (drop && this.insideCanvas(session)) this.actions.place(session.id, this.delta(session));
-      else this.actions.shift(session.id, null);
-      return;
-    }
     this.actions.preview(null);
-    if (drop && session.target) this.actions.command(session.target);
+    if (drop && session.target) { this.actions.command(session.target); return; }
+    if (!session.free) return;
+    if (drop && this.insideCanvas(session)) this.actions.place(session.id, this.delta(session));
+    else this.actions.shift(session.id, null);
   }
 }
