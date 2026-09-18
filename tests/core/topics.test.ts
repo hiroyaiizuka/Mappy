@@ -227,6 +227,17 @@ describe('rename keeps the topic key in step', () => {
     expect(planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'A' }).edits).toHaveLength(1);
   });
 
+  it('leaves the entry alone when a node that merely shares a topic\'s text is renamed', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- A\n\n## A\n- Under A\n`);
+    const item = doc.nodes.find((node) => node.title === 'A' && node.kind === 'list');
+    if (!item) throw new Error('Missing item');
+    const plan = planEdit(doc, { type: 'rename', nodeId: item.id, title: 'B' });
+    expect(plan.edits).toHaveLength(1);
+    expect(applyEdits(doc.source, plan.edits)).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- B\n\n## A\n- Under A\n`);
+    const placed = planEdit(doc, { type: 'rename', nodeId: item.id, title: 'B', position: { layout: 'mindmap', x: 5, y: 5 } });
+    expect(placed.edits).toHaveLength(1);
+  });
+
   it('never takes the position of another current topic, but replaces an orphan entry under the new name', () => {
     const doc = parse(note);
     const collided = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'Other' }).edits);
@@ -469,5 +480,73 @@ describe('a topic dropped on a node joins it as a branch (合流)', () => {
     expect(planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: -360, y: 200 }]]))).toBeNull();
     expect(() => planTopicMoves(doc, 'Bad', new Map())).toThrow('レイアウト名');
     expect(() => planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: Number.NaN, y: 0 }]]))).toThrow('位置が不正');
+  });
+});
+
+describe('a branch dropped on empty canvas detaches into a new topic (切り離し)', () => {
+  function node(doc: MindDocument, title: string): MindNode {
+    const found = doc.nodes.find((candidate) => candidate.title === title);
+    if (!found) throw new Error(`Missing node ${title}`);
+    return found;
+  }
+
+  it('turns the branch into an H2 section at the end, dedented, with its drop point stored in the same edit set', () => {
+    const doc = parse(fixture);
+    const recover = node(doc, '回復する');
+    const plan = planEdit(doc, { type: 'detach', nodeId: recover.id, position: { layout: 'mindmap', x: 300, y: 420 } });
+    expect(plan.edits).toHaveLength(3);
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(fixture
+      .replace('  消えた見出し: { mindmap: [0, 0] }\n', '  消えた見出し: { mindmap: [0, 0] }\n  回復する: { mindmap: [300, 420] }\n')
+      .replace('- 回復する\n  参考: [[heading-document#回復する|回復]]\n  - 休息の取り方\n  - 睡眠\n', '')
+      + '\n## 回復する\n\n参考: [[heading-document#回復する|回復]]\n- 休息の取り方\n- 睡眠\n');
+    const parsed = parse(result);
+    const detached = parsed.nodes.find((item) => item.titleFrom === plan.selectionOffset);
+    expect(detached).toMatchObject({ title: '回復する', kind: 'atx', level: 2, parentId: 'root' });
+    expect(detached?.children.map((item) => item.title)).toEqual(['休息の取り方', '睡眠']);
+    expect(projectMap(parsed).topics.map((item) => item.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック', '回復する']);
+    expect(projectMap(parsed).root.children.map((item) => item.title)).toEqual(['記録する', '習慣化する']);
+    expect(parsed.nodes.length).toBe(doc.nodes.length);
+    expect(readTopicPositions(result).get('回復する')).toEqual({ mindmap: { x: 300, y: 420 } });
+  });
+
+  it('detaches a deep branch, a branch inside a topic, a top-level item of a virtual root, and the last item of the file', () => {
+    const deep = parse('## Body\n- a\n  - b\n    text under b\n    - c\n  - d\n');
+    expect(applyEdits(deep.source, planEdit(deep, { type: 'detach', nodeId: node(deep, 'b').id }).edits))
+      .toBe('## Body\n- a\n  - d\n\n## b\n\ntext under b\n- c\n');
+    const inTopic = parse('## Body\n- a\n\n## T\n- t1\n  - t2\n- t3\n');
+    expect(applyEdits(inTopic.source, planEdit(inTopic, { type: 'detach', nodeId: node(inTopic, 't1').id }).edits))
+      .toBe('## Body\n- a\n\n## T\n- t3\n\n## t1\n\n- t2\n');
+    const virtual = parse('- first\n  - child\n- second\n\n## T\n- t\n');
+    const detachedVirtual = applyEdits(virtual.source, planEdit(virtual, { type: 'detach', nodeId: node(virtual, 'first').id }).edits);
+    expect(detachedVirtual).toBe('- second\n\n## T\n- t\n\n## first\n\n- child\n');
+    expect(projectMap(parse(detachedVirtual)).topics.map((item) => item.title)).toEqual(['T', 'first']);
+    const last = parse('## Body\n- a\n- b\n  - b1');
+    expect(applyEdits(last.source, planEdit(last, { type: 'detach', nodeId: node(last, 'b').id }).edits)).toBe('## Body\n- a\n\n## b\n\n- b1');
+    const crlf = parse('## Body\r\n- a\r\n  - a1\r\n- b\r\n');
+    expect(applyEdits(crlf.source, planEdit(crlf, { type: 'detach', nodeId: node(crlf, 'a').id }).edits)).toBe('## Body\r\n- b\r\n\r\n## a\r\n\r\n- a1\r\n');
+  });
+
+  it('keeps a code fence and tabs in the body, and refuses the body root and the virtual root', () => {
+    const fence = parse('## Body\n- a\n  ```js\n  - not a node\n  ```\n  - a1\n- b\n');
+    const result = applyEdits(fence.source, planEdit(fence, { type: 'detach', nodeId: node(fence, 'a').id }).edits);
+    expect(result).toBe('## Body\n- b\n\n## a\n\n```js\n- not a node\n```\n- a1\n');
+    expect(parse(result).nodes.map((item) => item.title)).toEqual(['Body', 'b', 'a', 'a1']);
+    const tabs = parse('## Body\n- a\n\tnote\n\t- a1\n');
+    expect(applyEdits(tabs.source, planEdit(tabs, { type: 'detach', nodeId: node(tabs, 'a').id }).edits)).toBe('## Body\n\n## a\n\nnote\n- a1\n');
+    const doc = parse(fixture);
+    expect(() => planEdit(doc, { type: 'detach', nodeId: projectMap(doc).root.id })).toThrow();
+    expect(() => planEdit(doc, { type: 'detach', nodeId: 'root' })).toThrow();
+  });
+
+  it('does not store a position when another current topic already has the heading, and detaches heading branches by moving them to the top level', () => {
+    const doc = parse('---\nmappy-topics:\n  a: { mindmap: [1, 1] }\n---\n## Body\n- a\n  - x\n\n## a\n- y\n');
+    const result = applyEdits(doc.source, planEdit(doc, { type: 'detach', nodeId: node(doc, 'a').id, position: { layout: 'mindmap', x: 9, y: 9 } }).edits);
+    expect(result).toBe('---\nmappy-topics:\n  a: { mindmap: [1, 1] }\n---\n## Body\n\n## a\n- y\n\n## a\n\n- x\n');
+    const headings = parse('# Body\n\n## Child\n\n### Deep\n\n## Other\n');
+    const plan = planEdit(headings, { type: 'detach', nodeId: node(headings, 'Child').id, position: { layout: 'mindmap', x: 5, y: 6 } });
+    const moved = applyEdits(headings.source, plan.edits);
+    expect(moved).toBe('---\nmappy-topics:\n  Child: { mindmap: [5, 6] }\n---\n# Body\n\n## Other\n\n# Child\n\n## Deep\n');
+    expect(parse(moved).nodes.find((item) => item.titleFrom === plan.selectionOffset)?.title).toBe('Child');
   });
 });

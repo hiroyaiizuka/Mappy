@@ -1,6 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
-import { planTopicRemoval, planTopicRename, type TopicPlacement } from './topics';
+import { planTopicMove, planTopicRemoval, planTopicRename, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
 
@@ -14,6 +14,8 @@ export type EditCommand =
   | { type: 'reparent'; nodeId: string; parentId: string }
   /** Append an empty top-level section at the end of the document: a new free topic (§5 M7). */
   | { type: 'add-topic' }
+  /** Detach a branch into a new top-level section at the end: a free topic placed at `position` (§5 M7 切り離し). */
+  | { type: 'detach'; nodeId: string; position?: TopicPlacement }
   | MoveCommand;
 
 export type DropPosition = 'before' | 'after' | 'inside';
@@ -128,7 +130,7 @@ function shiftedBranch(doc: MindDocument, node: MindNode, level: number): string
   return applyEdits(doc.source.slice(node.from, node.to), edits);
 }
 
-function insertionPrefix(source: string, offset: number, eol: string): string {
+export function insertionPrefix(source: string, offset: number, eol: string): string {
   const before = source.slice(0, offset);
   if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
   return before.endsWith('\n') ? eol : eol + eol;
@@ -159,8 +161,9 @@ function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicP
     || updated.level !== node.level || updated.title !== title.trim()) {
     throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
   }
-  // A free topic's stored position follows its heading text within the same edit set.
-  const key = planTopicRename(doc, node.title, updated.title, place);
+  // A free topic's stored position follows its heading text within the same edit set. Only the topic
+  // itself carries its entry: a list item or the body root that happens to share a topic's text does not.
+  const key = projectMap(doc).topics.some((topic) => topic.id === node.id) ? planTopicRename(doc, node.title, updated.title, place) : null;
   if (!key) return { edits: [edit], selectionOffset: updated.titleFrom };
   const delta = key.text.length - (key.to - key.from);
   const combined = parseMarkdown(applyEdits(doc.source, [key, edit]), doc.root.title, undefined, doc.format);
@@ -311,6 +314,28 @@ function withTopicRemoval(doc: MindDocument, node: MindNode, plan: EditPlan): Ed
   return { edits: [key, ...plan.edits], selectionOffset };
 }
 
+/**
+ * Store the drop point of a branch that just became a topic, in the same edit set. Skipped when
+ * the new section is the body (first heading) or another current topic already has that heading.
+ */
+function withTopicPlacement(doc: MindDocument, plan: EditPlan, title: string, place?: TopicPlacement): EditPlan {
+  const offset = plan.selectionOffset;
+  if (!place || offset === null) return plan;
+  const parsed = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
+  const moved = parsed.nodes.find((candidate) => candidate.titleFrom === offset);
+  const { topics } = projectMap(parsed);
+  if (!moved || !topics.some((topic) => topic.id === moved.id) || topics.some((topic) => topic.id !== moved.id && topic.title === title)) return plan;
+  const key = planTopicMove(doc, title, place.layout, { x: place.x, y: place.y });
+  if (!key) return plan;
+  const delta = key.text.length - (key.to - key.from);
+  const combined = parseMarkdown(applyEdits(doc.source, [key, ...plan.edits]), doc.root.title, undefined, doc.format);
+  const placed = combined.nodes.find((candidate) => candidate.titleFrom === offset + delta);
+  if (combined.nodes.length !== parsed.nodes.length || placed?.title !== title) {
+    throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
+  }
+  return { edits: [key, ...plan.edits], selectionOffset: offset + delta };
+}
+
 function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {
   switch (command.type) {
     case 'add-child': return add(doc, node, false);
@@ -322,6 +347,8 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
     case 'reparent': return moveHeadingSection(doc, node, command.parentId,
       getNode(doc, command.parentId).children.filter((child) => child.id !== node.id).length);
     case 'move': return moveHeadingSection(doc, node, command.parentId, command.index);
+    // A heading branch detaches by moving to the end of the top level; its depth follows the last section there.
+    case 'detach': return moveHeadingSection(doc, node, 'root', doc.root.children.filter((child) => child.id !== node.id).length);
   }
 }
 
@@ -338,5 +365,6 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);
   const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
+  if (command.type === 'detach') return withTopicPlacement(doc, plan, node.title, command.position);
   return leavesTopics(doc, node, command) ? withTopicRemoval(doc, node, plan) : plan;
 }

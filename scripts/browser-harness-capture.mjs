@@ -693,13 +693,13 @@ async function captureTopicOperations(recorder, page) {
     expect((await page.harness('h.source()')) === base, 'the note changed on a cancelled drag');
   });
 
-  await recorder.run('topic-unplaced-drag', '「位置のないトピック」を上へ 80 px ドラッグ', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
+  await recorder.run('topic-unplaced-drag', '「位置のないトピック」を左下へ 60×80 px ドラッグ（他のノードから離れた空白）', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
     const name = '位置のないトピック';
     const base = await page.harness('h.source()');
     const before = await topicRect(name);
     const view = await page.harness('h.viewport()');
     const from = center(before.rect);
-    await page.drag(from.x, from.y, from.x, from.y - 80);
+    await page.drag(from.x, from.y, from.x - 60, from.y + 80);
     await page.settle();
     const source = await page.harness('h.source()');
     const entry = topicEntry(source, name);
@@ -797,6 +797,61 @@ async function captureTopicOperations(recorder, page) {
     await undo();
     expect((await page.harness('h.source()')) === base, 'undo did not restore the entries');
     return `${expected}、位置のないトピック: ${topicEntry(moved, '位置のないトピック')}`;
+  });
+
+  await recorder.run('topic-snap', '「位置のないトピック」を「ふりかえる」の右隣（重ならない位置）へ運ぶ → 離す', 'ポインターが相手に乗らなくても、ルートが隣に来た時点でスロットとゴースト風の表示が出て、離すとその子になる', async () => {
+    const base = await page.harness('h.source()');
+    const topic = await topicRect('位置のないトピック');
+    const target = await topicRect('ふりかえる');
+    const from = center(topic.rect);
+    // Bring the root's left edge 24 px right of the target, vertically level; the pointer stays off the target.
+    const to = { x: target.rect.x + target.rect.width + 24 + (from.x - topic.rect.x), y: target.rect.y + target.rect.height / 2 + (from.y - (topic.rect.y + topic.rect.height / 2)) };
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    for (let step = 1; step <= 12; step += 1) await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 12, from.y + (to.y - from.y) * step / 12, { button: 'left' });
+    await page.settle();
+    const under = await page.evaluate(`document.elementFromPoint(${Math.round(to.x)}, ${Math.round(to.y)})?.closest('[data-node-id]')?.querySelector('.mappy-node-label')?.textContent?.trim() ?? null`);
+    const preview = await page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
+      const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '位置のないトピック');
+      return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')), merging: root?.classList.contains('is-merging') }; })()`);
+    await page.screenshot(join(recorder.directory, 'topic-snap-preview.png'));
+    expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
+    expect(preview.placeholder && preview.connector && preview.merging, `preview state ${JSON.stringify(preview)}`);
+    await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const joined = await page.harness('h.source()');
+    expect(joined.includes('  - ふりかえる\n    - 位置のないトピック\n      `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n      - 既定位置\n'), `joined: ${JSON.stringify(joined.slice(joined.indexOf('- 記録する'), joined.indexOf('- 記録する') + 160))}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
+    return `ポインター下: なし、スロット表示あり → ふりかえる の子`;
+  });
+
+  await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
+    const base = await page.harness('h.source()');
+    const before = (await page.harness('h.nodes()')).length;
+    const branch = await topicRect('記録する');
+    const from = center(branch.rect);
+    const canvas = await page.harness('h.canvasRect()');
+    const point = { x: canvas.x + canvas.width - 260, y: canvas.y + canvas.height - 120 };
+    await page.drag(from.x, from.y, point.x, point.y, 12);
+    await page.settle();
+    const detached = await page.harness('h.source()');
+    expect(detached.endsWith('\n## 記録する\n\n- ふりかえる\n'), `note tail: ${JSON.stringify(detached.slice(-40))}`);
+    expect(!detached.includes('- 記録する\n'), 'the branch is still in the body');
+    const entry = topicEntry(detached, '記録する');
+    expect(entry && /^記録する: \{ mindmap: \[-?\d+, -?\d+\] \}$/u.test(entry), `entry: ${entry}`);
+    expect(bodyOf(detached).startsWith(bodyOf(base).replace('- 記録する\n  - ふりかえる\n', '')), 'the rest of the body changed');
+    const root = await topicRect('記録する');
+    const cls = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-node')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '記録する')?.className`);
+    expect(cls.includes('is-topic') && cls.includes('is-root'), `classes: ${cls}`);
+    // The ghost's top-left becomes the new root's top-left: the release point minus the grab offset inside the node.
+    const grab = { x: from.x - branch.rect.x, y: from.y - branch.rect.y };
+    expect(Math.abs(root.rect.x - (point.x - grab.x)) < 2 && Math.abs(root.rect.y - (point.y - grab.y)) < 2, `root at ${root.rect.x},${root.rect.y}, expected ${point.x - grab.x},${point.y - grab.y}`);
+    const count = (await page.harness('h.nodes()')).length;
+    expect(count === before, `nodes ${before} → ${count}`);
+    await undo();
+    expect((await page.harness('h.source()')) === base, 'undo did not restore the branch');
+    return `${entry}、ノード ${count}`;
   });
 
   await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」を含むメニューが開き、Escape で閉じる', async () => {

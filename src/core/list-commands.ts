@@ -1,5 +1,5 @@
 import {
-  applyEdits, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, type EditCommand, type EditPlan, type TextEdit,
+  applyEdits, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 
@@ -187,6 +187,44 @@ function sectionAsBranch(doc: MindDocument, node: MindNode, style: { indent: str
   return [`${lead}${node.title}`, ...lines].join(doc.eol);
 }
 
+/** Drop up to `width` columns of leading whitespace: the item's content indent, or less on a lazy line. */
+function dedent(line: string, width: number): string {
+  let column = 0;
+  let index = 0;
+  while (index < line.length && column < width) {
+    const char = line.charAt(index);
+    if (char === ' ') column += 1;
+    else if (char === '\t') column += 4 - column % 4;
+    else break;
+    index += 1;
+  }
+  return line.slice(index);
+}
+
+/**
+ * A list branch as its own H2 section (§5 M7 切り離し): the item's first line becomes the heading,
+ * the rest loses the item's content indent, so its prose, images, fences and nested lists keep
+ * their bytes and the nested items become the section's own list.
+ */
+function branchAsSection(doc: MindDocument, node: MindNode): string {
+  const width = indentationWidth(node.list?.contentIndent ?? '');
+  const body = doc.source.slice(node.bodyFrom, node.to).replace(/^(?:[ \t]*\r?\n)+/u, '').replace(/(?:\r?\n)+$/u, '');
+  const lines = body ? body.split(/\r?\n/u).map(line => line.trim() === '' ? '' : dedent(line, width)) : [];
+  return [`## ${node.title}`, ...(lines.length > 0 ? ['', ...lines] : [])].join(doc.eol);
+}
+
+/** Detach a list branch into a new section at the end of the document: a free topic with the branch as its tree. */
+function detach(doc: MindDocument, node: MindNode): EditPlan {
+  if (node.kind !== 'list') throw new Error('切り離せるのはリストの枝だけです。');
+  const removal = removalRange(doc, node);
+  const remaining = doc.source.slice(0, removal.from) + doc.source.slice(removal.to);
+  const prefix = insertionPrefix(remaining, remaining.length, doc.eol);
+  const text = `${prefix}${branchAsSection(doc, node)}${remaining.endsWith('\n') ? doc.eol : ''}`;
+  const edits: TextEdit[] = [{ from: removal.from, to: removal.to, text: '' }, { from: doc.source.length, to: doc.source.length, text }];
+  const index = doc.root.children.filter(child => child.id !== node.id).length;
+  return checkedMove(doc, edits, node, doc.root, index, remaining.length + prefix.length);
+}
+
 /** Move a list branch to a position among a parent's items; H2 sections move as heading sections or, for a free topic dropped on a node, join that node as a branch. */
 function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: number): EditPlan {
   const { parent, siblings, unchanged } = moveTarget(doc, node, parentId, index);
@@ -227,5 +265,6 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'reparent': return moveTo(doc, node, command.parentId,
       getNode(doc, command.parentId).children.filter(child => child.id !== node.id).length);
     case 'move': return moveTo(doc, node, command.parentId, command.index);
+    case 'detach': return detach(doc, node);
   }
 }

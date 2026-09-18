@@ -666,3 +666,133 @@ describe('MindmapView moves the body against its topics and joins a topic to a n
     expect(projectMap(documentOf(view)).topics.map(node => node.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック']);
   });
 });
+
+describe('MindmapView detaches a branch into a new topic', () => {
+  it('a body branch released on empty canvas becomes a topic at the ghost position; undo puts the branch back', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, undo } = await mount(source);
+    const recover = documentOf(view).nodes.find(node => node.title === '回復する');
+    if (!recover) throw new Error('Missing node');
+    const element = nodes().get(recover.id);
+    if (!element) throw new Error('No element');
+    const originBefore = layout().origin;
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    // Pressed at (500, 400); jsdom rects are zero, so the grab offset is the press point itself and the ghost's top-left is the release point.
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 900, 700);
+    pointer('pointerup', canvas, 900, 700);
+    await settle();
+    const detached = current();
+    // The body lost a branch, so its root re-centred; the stored offset is measured from the new origin and the topic sits exactly at the drop point.
+    const origin = layout().origin;
+    expect(origin).not.toEqual(originBefore);
+    const world = { x: (900 - CANVAS.left - 500 - viewport.x) / viewport.scale, y: (700 - CANVAS.top - 400 - viewport.y) / viewport.scale };
+    const expected = { x: Math.round(world.x - origin.x), y: Math.round(world.y - origin.y) };
+    expect(detached.endsWith('\n## 回復する\n\n参考: [[heading-document#回復する|回復]]\n- 休息の取り方\n- 睡眠\n')).toBe(true);
+    expect(detached).not.toContain('- 回復する\n');
+    expect(readTopicPositions(detached).get('回復する')).toEqual({ mindmap: expected });
+    const doc = documentOf(view);
+    expect(projectMap(doc).topics.map(node => node.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック', '回復する']);
+    expect(projectMap(doc).root.children.map(node => node.title)).toEqual(['記録する', '習慣化する']);
+    const topic = doc.nodes.find(node => node.title === '回復する');
+    if (!topic) throw new Error('Missing topic');
+    expect(nodes().get(topic.id)?.classList.contains('is-topic')).toBe(true);
+    expect(nodes().get(topic.id)?.classList.contains('is-selected')).toBe(true);
+    expect(transform(topic.id)).toEqual({ x: world.x, y: world.y });
+    expect(nodes().size).toBe(doc.nodes.length);
+    await undo();
+    expect(current()).toBe(source);
+    expect(projectMap(documentOf(view)).root.children.map(node => node.title)).toEqual(['回復する', '記録する', '習慣化する']);
+  });
+
+  it('a release close to where the node was pressed changes nothing', async () => {
+    const source = fixtureSource();
+    const { view, canvas, nodes, source: current, settle, pointer } = await mount(source);
+    const recover = documentOf(view).nodes.find(node => node.title === '回復する');
+    const element = nodes().get(recover?.id ?? '');
+    if (!element) throw new Error('No element');
+    // Give the node a real box (jsdom reports none), so "near its own place" means something.
+    element.getBoundingClientRect = () => ({ x: 480, y: 380, left: 480, top: 380, width: 80, height: 40, right: 560, bottom: 420, toJSON: () => ({}) });
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 508, 404);
+    pointer('pointerup', canvas, 508, 404);
+    await settle();
+    expect(current()).toBe(source);
+    // Just outside the box plus its margin, the same drag detaches.
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 508, 404);
+    pointer('pointermove', canvas, 620, 400);
+    pointer('pointerup', canvas, 620, 400);
+    await settle();
+    expect(current()).not.toBe(source);
+    expect(current().endsWith('\n## 回復する\n\n参考: [[heading-document#回復する|回復]]\n- 休息の取り方\n- 睡眠\n')).toBe(true);
+  });
+});
+
+describe('MindmapView snaps a dragged topic to the slot beside its root', () => {
+  type Snap = (id: string, root: { x: number; y: number; width: number; height: number }, current: MoveCommand | null) => MoveCommand | null;
+  const at = (view: MindmapView, world: { x: number; y: number; width: number; height: number }) => {
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    return { x: world.x * viewport.scale + viewport.x, y: world.y * viewport.scale + viewport.y, width: world.width * viewport.scale, height: world.height * viewport.scale };
+  };
+
+  it('beside a leaf it becomes the last child; level with a children column it slots in among them; far away nothing', async () => {
+    const source = fixtureSource();
+    const { view, layout, topic } = await mount(source);
+    const doc = documentOf(view);
+    const glossary = topic('補足: 用語');
+    const rest = doc.nodes.find(node => node.title === '休息の取り方');
+    const sleep = doc.nodes.find(node => node.title === '睡眠');
+    const recover = doc.nodes.find(node => node.title === '回復する');
+    if (!rest || !sleep || !recover) throw new Error('Missing nodes');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    const snap = (view as unknown as { snapTarget: Snap }).snapTarget.bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    const leaf = layout().nodes.find(node => node.id === rest.id);
+    const second = layout().nodes.find(node => node.id === sleep.id);
+    if (!leaf || !second) throw new Error('Missing layout nodes');
+    const size = { width: 120, height: 40 };
+    // 30 layout units right of the leaf, vertically level: join it as its child.
+    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 30, y: leaf.y, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: rest.id, index: 0 });
+    // In the children column of 回復する, between 休息の取り方 and 睡眠: before 睡眠.
+    const between = (leaf.y + leaf.height + second.y) / 2;
+    expect(snap(glossary.id, at(view, { x: leaf.x, y: between - size.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 1 });
+    // Level with the lower half of the last child: after it.
+    expect(snap(glossary.id, at(view, { x: leaf.x, y: second.y + second.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 2 });
+    // Far from everything: nothing.
+    expect(snap(glossary.id, at(view, { x: 2000, y: 2000, ...size }), null)).toBeNull();
+    // The current slot survives a little drift beyond the plain zone, then lets go.
+    const current = { type: 'move' as const, nodeId: glossary.id, parentId: rest.id, index: 0 };
+    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 130, y: leaf.y, ...size }), current)).toBe(current);
+    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 130, y: leaf.y, ...size }), null)).not.toEqual(current);
+    expect(snap(glossary.id, at(view, { x: leaf.x + leaf.width + 400, y: leaf.y, ...size }), current)).not.toBe(current);
+    shift(glossary.id, null);
+  });
+
+  it('never snaps the body root, and a topic does not snap onto its own tree', async () => {
+    const source = fixtureSource();
+    const { view, layout, topic } = await mount(source);
+    const doc = documentOf(view);
+    const { root } = projectMap(doc);
+    const reference = topic('参考資料');
+    const own = reference.children[0];
+    if (!own) throw new Error('Missing child');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    const snap = (view as unknown as { snapTarget: Snap }).snapTarget.bind(view);
+    const size = { width: 120, height: 40 };
+    shift(root.id, { x: 0, y: 0 });
+    const child = layout().nodes.find(node => node.id === doc.nodes.find(item => item.title === '用語 A')?.id);
+    if (!child) throw new Error('Missing layout node');
+    expect(snap(root.id, at(view, { x: child.x + child.width + 20, y: child.y, ...size }), null)).toBeNull();
+    shift(root.id, null);
+    shift(reference.id, { x: 0, y: 0 });
+    const ownLayout = layout().nodes.find(node => node.id === own.id);
+    if (!ownLayout) throw new Error('Missing layout node');
+    expect(snap(reference.id, at(view, { x: ownLayout.x + ownLayout.width + 20, y: ownLayout.y, ...size }), null)).toBeNull();
+    shift(reference.id, null);
+  });
+});

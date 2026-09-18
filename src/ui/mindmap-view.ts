@@ -1,11 +1,11 @@
 import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
-import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
+import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { Viewport } from "../interaction/viewport";
-import { isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult } from "../layout/layout";
+import { isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
@@ -19,6 +19,19 @@ import { InlineEditor } from "./inline-editor";
 import { LinkSuggest } from "./link-suggest";
 
 export const VIEW_TYPE = "mappy-map";
+
+/**
+ * Snap zones for a free tree, in layout units: how far right of a node its root may sit (a little past
+ * the branch gap), how far it may overlap, and vertical slack. Tight on purpose: a topic carried past
+ * the body must not catch on it, only one brought up beside a node.
+ */
+const SNAP_GAP = 72;
+const SNAP_OVERLAP = 8;
+const SNAP_PAD = 12;
+/** How far from a node's children column the root may sit to slot in among them. */
+const SNAP_COLUMN = 24;
+/** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
+const SNAP_STICK = 16;
 
 export class MindmapView extends ItemView {
   file: TFile | null = null;
@@ -159,6 +172,8 @@ export class MindmapView extends ItemView {
       command: command => { this.run(() => this.executeDrop(command)); },
       shift: (id, delta) => { this.shiftTopic(id, delta); },
       place: (id, delta) => { this.run(() => this.placeTopic(id, delta)); },
+      detach: (id, point) => { this.run(() => this.detachNode(id, point)); },
+      snap: (id, root, current) => this.snapTarget(id, root, current),
     }));
     this.registerDomEvent(this.canvas, "contextmenu", event => {
       const target = event.targetNode;
@@ -508,10 +523,14 @@ export class MindmapView extends ItemView {
   }
 
   /** Layout coordinates of a canvas-relative pixel, as an offset from the body root (`LayoutResult.origin`). */
-  private topicPoint(point: { x: number; y: number }): TopicPosition {
+  private topicPoint(point: { x: number; y: number }, origin = this.layout?.origin ?? { x: 0, y: 0 }): TopicPosition {
     const view = this.viewport.value;
-    const origin = this.layout?.origin ?? { x: 0, y: 0 };
     return { x: Math.round((point.x - view.x) / view.scale - origin.x), y: Math.round((point.y - view.y) / view.scale - origin.y) };
+  }
+
+  /** Where the body root will sit once `document` is laid out with the sizes on screen: what topic positions are measured from. */
+  private originFor(document: MindDocument): { x: number; y: number } {
+    return layoutTree(projectMap(document).root, this.renderer.sizes(), this.collapsed, this.mode).origin;
   }
 
   /**
@@ -618,6 +637,85 @@ export class MindmapView extends ItemView {
     } finally {
       this.endTopicDrag(id, false);
     }
+  }
+
+  /**
+   * A branch released on empty canvas becomes its own topic (§5 M7 切り離し): a new section at the
+   * end of the note, placed where the ghost was, both in one edit set so Undo brings the branch back.
+   */
+  private async detachNode(id: string, point: { x: number; y: number }): Promise<void> {
+    const document = this.document;
+    const file = this.file;
+    if (!document || !file || this.saving) return;
+    // Removing the branch re-centres the body root, so the drop point is measured from where the root will be.
+    const detached = parseMarkdown(applyEdits(document.source, planEdit(document, { type: "detach", nodeId: id }).edits), file.basename, document);
+    const position = this.topicPoint(point, this.originFor(detached));
+    const plan = planEdit(document, { type: "detach", nodeId: id, position: { layout: this.mode, x: position.x, y: position.y } });
+    await this.commit(document.source, plan.edits, file);
+    if (this.file !== file || this.closed) return;
+    this.reveal(plan.selectionOffset);
+  }
+
+  /**
+   * The slot a dragged topic would join, from where its root sits: beside a leaf (or a collapsed
+   * node) it becomes the last child; level with a node's children column it slots in among them
+   * by height. The slot shown now is kept while the root stays in a widened zone, so the layout
+   * shifting under the placeholder does not make it flicker. Only topics snap; the body never joins.
+   */
+  private snapTarget(draggedId: string, root: { x: number; y: number; width: number; height: number }, current: MoveCommand | null): MoveCommand | null {
+    const document = this.document;
+    const layout = this.layout;
+    const drag = this.topicDrag;
+    if (!document || !layout || !drag || drag.body || drag.id !== draggedId) return null;
+    const view = this.viewport.value;
+    const rect = { x: (root.x - view.x) / view.scale, y: (root.y - view.y) / view.scale, width: root.width / view.scale, height: root.height / view.scale };
+    const centre = rect.y + rect.height / 2;
+    const moving = new Set(drag.marked);
+    const byId = new Map(layout.nodes.map(node => [node.id, node]));
+    const children = new Map<string, PositionedNode[]>();
+    for (const edge of layout.edges) {
+      const child = byId.get(edge.to);
+      if (!child || edge.to === PLACEHOLDER_ID || moving.has(edge.from) || moving.has(edge.to)) continue;
+      const list = children.get(edge.from) ?? [];
+      list.push(child);
+      children.set(edge.from, list);
+    }
+    const slotFor = (node: PositionedNode, widen: number): { targetId: string; position: "before" | "after" | "inside"; distance: number } | null => {
+      const kids = (children.get(node.id) ?? []).sort((left, right) => left.y - right.y);
+      const pad = SNAP_PAD * widen;
+      if (kids.length === 0) {
+        const gap = rect.x - (node.x + node.width);
+        if (gap < -SNAP_OVERLAP * widen || gap > SNAP_GAP * widen) return null;
+        if (rect.y + rect.height < node.y - pad || rect.y > node.y + node.height + pad) return null;
+        return { targetId: node.id, position: "inside", distance: Math.abs(gap) + Math.abs(centre - (node.y + node.height / 2)) };
+      }
+      const first = kids[0];
+      const last = kids[kids.length - 1];
+      if (!first || !last || Math.abs(rect.x - first.x) > SNAP_COLUMN * widen) return null;
+      if (centre < first.y - pad || centre > last.y + last.height + pad) return null;
+      const next = kids.find(kid => centre < kid.y + kid.height / 2);
+      const distance = Math.abs(rect.x - first.x) + (next ? Math.abs(centre - next.y) : Math.abs(centre - (last.y + last.height)));
+      return next ? { targetId: next.id, position: "before", distance } : { targetId: last.id, position: "after", distance };
+    };
+    const resolve = (slot: { targetId: string; position: "before" | "after" | "inside" } | null): MoveCommand | null =>
+      slot ? resolveDrop(document, draggedId, slot.targetId, slot.position) : null;
+    let kept: number | null = null;
+    if (current) {
+      const parent = byId.get(current.parentId);
+      const slot = parent ? slotFor(parent, 2) : null;
+      const same = slot ? resolve(slot) : null;
+      if (slot && same && same.parentId === current.parentId && same.index === current.index) kept = slot.distance;
+    }
+    let best: { command: MoveCommand; distance: number } | null = null;
+    for (const node of layout.nodes) {
+      if (node.id === PLACEHOLDER_ID || moving.has(node.id)) continue;
+      const slot = slotFor(node, 1);
+      if (!slot || (best && slot.distance >= best.distance)) continue;
+      const command = resolve(slot);
+      if (command) best = { command, distance: slot.distance };
+    }
+    if (current && kept !== null && (!best || best.distance >= kept - SNAP_STICK)) return current;
+    return best?.command ?? null;
   }
 
   /** A drop on a slot: a topic joins the node as a branch; a failed move puts the tree back. */
