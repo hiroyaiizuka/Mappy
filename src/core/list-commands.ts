@@ -1,4 +1,6 @@
-import { applyEdits, type EditCommand, type EditPlan, type TextEdit } from './commands';
+import {
+  applyEdits, checkedMove, moveHeadingSection, moveTarget, type EditCommand, type EditPlan, type TextEdit,
+} from './commands';
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' }>;
@@ -140,26 +142,62 @@ function removalFrom(doc: MindDocument, node: MindNode): number {
   return node.from - separator;
 }
 
-function reparent(doc: MindDocument, node: MindNode, parentId: string): EditPlan {
-  const parent = getNode(doc, parentId);
-  if (parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) {
-    throw new Error('ノードを自分自身や子孫の下へ移動できません。');
+/** End of the nearest non-blank line before `offset` (a line start), without its line break. */
+function lineEndBefore(source: string, offset: number): number {
+  let end = offset;
+  while (end > 0) {
+    let lineEnd = end;
+    if (source.charAt(lineEnd - 1) === '\n') lineEnd--;
+    if (source.charAt(lineEnd - 1) === '\r') lineEnd--;
+    const lineStart = source.lastIndexOf('\n', lineEnd - 1) + 1;
+    if (/\S/u.test(source.slice(lineStart, lineEnd))) return lineEnd;
+    end = lineStart;
   }
-  if (node.parentId === parent.id) return { edits: [], selectionOffset: node.titleFrom };
-  if (node.kind !== 'list' || parent.kind === 'root') {
-    throw new Error('リストの枝は H2 ルートか別のリスト項目の下へ移動してください。');
+  return 0;
+}
+
+/**
+ * The item's own lines, including the line break that ends them. A loose list keeps a single
+ * blank line at the seam, and an item at EOF takes the preceding break instead so the file ending is unchanged.
+ */
+function removalRange(doc: MindDocument, node: MindNode): { from: number; to: number } {
+  const source = doc.source;
+  if (node.to >= source.length) return { from: removalFrom(doc, node), to: node.to };
+  let from = node.from;
+  let to = node.to + (source.startsWith('\r\n', node.to) ? 2 : source.charAt(node.to) === '\n' ? 1 : 0);
+  const before = source.slice(0, from);
+  const blankBefore = from === 0 || /\n[ \t]*\r?\n$/u.test(before);
+  const blankAfter = source.slice(to).match(/^[ \t]*\r?\n/u);
+  if (blankBefore && blankAfter) to += blankAfter[0].length;
+  else if (blankBefore && to === source.length && from > 0) from -= before.match(/[ \t]*\r?\n$/u)?.[0].length ?? 0;
+  return { from, to };
+}
+
+/** Move a list branch to a position among a parent's items; H2 sections move as heading sections. */
+function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: number): EditPlan {
+  const { parent, siblings, unchanged } = moveTarget(doc, node, parentId, index);
+  if (node.kind !== 'list') {
+    if (parent.kind !== 'root') throw new Error('H2 のルートは他のノードの下へ移動できません。');
+    return moveHeadingSection(doc, node, parentId, index);
   }
-  const target = appendOffset(parent, node.id);
-  const removeFrom = removalFrom(doc, node);
-  const moved = shiftedBranch(doc, node, childStyle(doc, parent, node.id).indent);
-  const remaining = doc.source.slice(0, removeFrom) + doc.source.slice(node.to);
-  const offset = target >= node.to ? target - (node.to - removeFrom) : target;
-  const insert = insertion(remaining, offset, moved, doc.eol, parent.kind !== 'list' && parent.children.length === 0);
-  const edits: TextEdit[] = target === node.from || target === node.to
-    ? [{ from: removeFrom, to: node.to, text: insert.text }]
-    : [{ from: removeFrom, to: node.to, text: '' }, { from: target, to: target, text: insert.text }];
-  return validate(doc, edits, doc.nodes.length, offset + insert.prefix.length,
-    { kind: 'list', level: parent.level + 1, title: node.title });
+  if (parent.kind === 'root') throw new Error('リストの枝は H2 ルートか別のリスト項目の下へ移動してください。');
+  if (unchanged) return { edits: [], selectionOffset: node.titleFrom };
+  const before = siblings[index];
+  const after = siblings[index - 1];
+  const indent = (before ?? after)?.list?.indent ?? childStyle(doc, parent, node.id).indent;
+  const moved = shiftedBranch(doc, node, indent);
+  const target = before?.from ?? after?.to ?? (parent.kind === 'list' ? parent.to : lineEndBefore(doc.source, parent.to));
+  const removal = removalRange(doc, node);
+  const remaining = doc.source.slice(0, removal.from) + doc.source.slice(removal.to);
+  // A former ancestor that ended with this branch now ends at the line before it.
+  const offset = target > removal.from && target <= removal.to ? lineEndBefore(doc.source, node.from)
+    : target >= removal.to ? target - (removal.to - removal.from) : target;
+  const insert = insertion(remaining, offset, moved, doc.eol, parent.kind !== 'list' && siblings.length === 0);
+  const insertAt = offset < removal.from ? offset : target;
+  const edits: TextEdit[] = offset === removal.from
+    ? [{ from: removal.from, to: removal.to, text: insert.text }]
+    : [{ from: removal.from, to: removal.to, text: '' }, { from: insertAt, to: insertAt, text: insert.text }];
+  return checkedMove(doc, edits, node, parent, index, offset + insert.prefix.length);
 }
 
 export function planListEdit(doc: MindDocument, node: MindNode, command: StructureCommand): EditPlan {
@@ -173,6 +211,8 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     }
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
-    case 'reparent': return reparent(doc, node, command.parentId);
+    case 'reparent': return moveTo(doc, node, command.parentId,
+      getNode(doc, command.parentId).children.filter(child => child.id !== node.id).length);
+    case 'move': return moveTo(doc, node, command.parentId, command.index);
   }
 }

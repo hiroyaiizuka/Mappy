@@ -15,7 +15,6 @@ export interface MapActions {
 }
 
 export class MapEvents extends Component {
-  private dragged: string | null = null;
   private composing = false;
 
   constructor(private readonly canvas: HTMLElement, private readonly actions: MapActions) { super(); }
@@ -46,40 +45,32 @@ export class MapEvents extends Component {
       if (id) { this.actions.select(id); this.actions.edit(); }
     });
     this.registerDomEvent(this.canvas, "keydown", event => { this.keydown(event); });
+    // Node moves use pointer events (NodeDrag); HTML5 drag and drop only brings files in.
     this.registerDomEvent(this.canvas, "dragstart", event => {
-      const target = this.element(event.targetNode);
-      if (target?.closest("a,img")) { event.preventDefault(); return; }
-      const id = target?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-      if (!id || !event.dataTransfer) return;
-      this.dragged = id;
-      this.actions.select(id);
-      event.dataTransfer.setData("application/x-mappy-node", id);
-      event.dataTransfer.effectAllowed = "move";
+      if (this.element(event.targetNode)?.closest("[data-node-id]")) event.preventDefault();
     });
     this.registerDomEvent(this.canvas, "dragover", event => {
       const node = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]");
-      if (!node || (!this.dragged && !event.dataTransfer?.types.includes("Files"))) return;
+      if (!node || !event.dataTransfer?.types.includes("Files")) { this.clearDrop(); return; }
       event.preventDefault();
+      if (node.hasClass("is-drop-target")) return;
       this.clearDrop();
       node.addClass("is-drop-target");
+    });
+    this.registerDomEvent(this.canvas, "dragleave", event => {
+      const entered = this.element(event.relatedTarget as Node | null);
+      if (!entered || !this.canvas.contains(entered)) this.clearDrop();
     });
     this.registerDomEvent(this.canvas, "drop", event => {
       const id = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
       this.clearDrop();
-      if (!id) return;
       const file = event.dataTransfer?.files[0];
-      if (file?.type.startsWith("image/")) {
-        event.preventDefault();
-        this.actions.select(id);
-        this.actions.attach(file);
-      } else if (this.dragged) {
-        event.preventDefault();
-        const from = this.dragged;
-        this.dragged = null;
-        if (from !== id) this.actions.command({ type: "reparent", nodeId: from, parentId: id });
-      }
+      if (!id || !file?.type.startsWith("image/")) return;
+      event.preventDefault();
+      this.actions.select(id);
+      this.actions.attach(file);
     });
-    this.registerDomEvent(this.canvas, "dragend", () => { this.dragged = null; this.clearDrop(); });
+    this.registerDomEvent(this.canvas, "dragend", () => { this.clearDrop(); });
     this.registerDomEvent(this.canvas, "paste", event => {
       if (event.defaultPrevented) return;
       const image = Array.from(event.clipboardData?.files ?? []).find(file => file.type.startsWith("image/"));
@@ -94,7 +85,7 @@ export class MapEvents extends Component {
   }
 
   private clearDrop(): void {
-    this.canvas.querySelectorAll(".is-drop-target").forEach(element => element.removeClass("is-drop-target"));
+    this.canvas.querySelectorAll<HTMLElement>(".is-drop-target").forEach(element => { element.removeClass("is-drop-target"); });
   }
 
   private keydown(event: KeyboardEvent): void {

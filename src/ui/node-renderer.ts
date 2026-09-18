@@ -21,6 +21,7 @@ interface NodeAppearance {
 /** Each Markdown render owns a disposable child component. */
 export class NodeRenderer extends Component {
   readonly entries = new Map<string, NodeEntry>();
+  private selectedId: string | null = null;
 
   constructor(
     private readonly app: App,
@@ -47,7 +48,7 @@ export class NodeRenderer extends Component {
       let entry = this.entries.get(node.id);
       if (!entry) {
         const element = this.layer.createDiv({ cls: "mappy-node", attr: {
-          "data-node-id": node.id, role: "treeitem", tabindex: "-1",
+          "data-node-id": node.id, role: "treeitem", tabindex: "-1", "aria-selected": "false",
         } });
         const content = element.createDiv({ cls: "mappy-node-content" });
         const toggle = element.createEl("button", { cls: "mappy-node-toggle", attr: { tabindex: "0", type: "button" } });
@@ -135,11 +136,17 @@ export class NodeRenderer extends Component {
     }
   }
 
+  /** Only the outgoing and incoming entries change, so selection stays O(1) on large maps. */
   select(id: string | null): void {
-    for (const [key, entry] of this.entries) {
-      entry.element.toggleClass("is-selected", key === id);
-      entry.element.setAttribute("aria-selected", String(key === id));
-      entry.element.tabIndex = key === id ? 0 : -1;
+    const previous = this.selectedId;
+    this.selectedId = id;
+    for (const key of [previous, id]) {
+      const entry = key === null ? undefined : this.entries.get(key);
+      if (!entry) continue;
+      const active = key === id;
+      entry.element.toggleClass("is-selected", active);
+      entry.element.setAttribute("aria-selected", String(active));
+      entry.element.tabIndex = active ? 0 : -1;
     }
   }
 

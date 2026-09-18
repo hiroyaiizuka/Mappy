@@ -1,6 +1,6 @@
 # Mappy の設計と試作実装
 
-更新: 2026-09-16。現在の実装と、引き続き検証する条件を記す。実装済みという記述は、対応環境全体での動作保証を意味しない。
+更新: 2026-09-18。現在の実装と、引き続き検証する条件を記す。実装済みという記述は、対応環境全体での動作保証を意味しない。
 
 ## 1. 中心となる判断
 
@@ -38,7 +38,8 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/obsidian/excalidraw-bridge.ts` / `src/types/excalidraw-automate.ts` | Excalidraw の `ExcalidrawAutomate` へのドロップフック連結と要素生成 | `window.ExcalidrawAutomate`（任意） |
 | `src/ui/mindmap-view.ts` | ファイル・表示状態、描画更新、編集経路の接続 | Obsidian ItemView |
 | `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命 | Obsidian MarkdownRenderer |
-| `src/ui/map-events.ts` / `map-viewport.ts` | キー・リンク・ドラッグ・画像貼付・DOM のパン／ズーム | Obsidian Component、DOM |
+| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
+| `src/layout/drop-preview.ts` | ドラッグ中の移動先に仮ノードを差し込んだレイアウト用の木 | 純粋 TypeScript |
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
 
 Markdown parser は原文の UTF-16 offset を得られる `@lezer/markdown` を採用した。通常の Markdown を構文解析し、frontmatter と Obsidian コメントを補助処理する。製品コードはブラウザ互換にし、Node/Electron や非公開の Obsidian parser を使わない。ランタイム依存は package.json で固定し、バンドルの実測値とハッシュは各ビルドの `dist/build-info.json` と証跡で追う。モバイル互換性は設計上の条件であり、実機では未確認。
@@ -131,6 +132,8 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 ポインター p、平行移動 t、倍率 s に対してワールド座標は `w = (p - t) / s`。倍率を s' に変えた後の平行移動を `t' = p - w * s'` とし、ポインター直下の点を固定する。画面外オフセット、devicePixelRatio、popout を含めてテストする。
 
 背景ドラッグと二本指スクロールをパン、ピンチと修飾キー付きホイールをズームにする。`preventDefault` はマップが処理する範囲のみ。IME の `isComposing` / composition イベント中は構造変更キーを発火しない。マップの roving focus と編集入力を分離し、ノード上だけで Enter/Tab/Delete を扱う。グローバル既定 hotkey を登録しない。
+
+ノードのドラッグは pointer イベントによる自前実装（`src/ui/node-drag.ts`）で、HTML5 の drag and drop は外部からの画像ファイルの添付だけに使う。ノード上の押下から 4px 動いた時点でドラッグを始め、クリック・ダブルクリック・リンク・開閉ボタン・インライン入力には触れない。ドラッグ中はノードの DOM を複製した半透明のゴーストをキャンバス座標で追従させ（ズーム倍率は矩形と `offsetWidth` の比から得る）、元のノードは薄く残す。位置判定は表示中のレイアウトに対して `elementFromPoint` で行い、ノード矩形の上下各 30% を兄弟の前後、残りを子の末尾、タイムラインの第一階層だけは左右で判定する。判定結果は core の `resolveDrop` に渡し、自分自身・子孫・仮想ルート直下のリスト項目・H6 超過なら何も表示しない。受け付ける場合は view が `previewTree`（`src/layout/drop-preview.ts`）で移動先の枝だけを組み替え、ドラッグ中ノードと同じ大きさの空の仮ノードを差し込んで再配置する。既存の兄弟はその分だけ避け、仮ノードへの接続線を太い丸い青線として描く。仮ノードを差し込むとポインターの下でレイアウトが動くため、仮ノード・元ノード・余白の上では現在の判定を保ち、別のノードへ切り替えるのは直前の切り替えから 8px 以上動いたときだけにする（ヒステリシス）。ドロップは最後に表示した位置の `move` コマンド（親 ID と、移動ノードを除いた兄弟内の位置）を実行し、Escape・pointercancel・キャンバス外での離しは取り消す。`move` は両形式で「移動元の行を取り除き、隣接する兄弟の深さ・インデントに合わせて挿入し、再解析した木の形が移動をシミュレートした木と一致する」ことを検証してから差分を返す。
 
 追加した空のノードはモーダルを出さず、そのノード内で編集する。リスト形式の下位には箇条書き、ルートには H2、従来の見出し形式には ATX 見出しを追加する。プレースホルダーを付けない。インライン入力中は Enter で保存、Tab で保存して子を追加、Escape で編集前のテキストに戻る。新しい空ノードを追加済みの場合、Escape は追加そのものを取り消さない。追加操作の取消は Undo で行う。
 
