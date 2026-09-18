@@ -91,8 +91,7 @@
 /* Node dragging (pointer events): the source stays faint in place, a translucent ghost follows the pointer,
    an empty frame of the same size marks the slot, and the connector from the destination parent is drawn thick and blue. */
 .mappy-view .mappy-nodes { user-select: none; -webkit-user-select: none; }
-.mappy-view .mappy-canvas.is-dragging-node { cursor: grabbing; }
-.mappy-view .mappy-canvas.is-dragging-node .mappy-node { cursor: grabbing; }
+/* No cursor change while dragging: cursor is inherited, so setting it on the canvas would restyle every node. */
 .mappy-view .mappy-node.is-drag-source { opacity: 0.35; }
 .mappy-view .mappy-drag-ghost {
   position: absolute;
@@ -100,6 +99,7 @@
   top: 0;
   z-index: 3;
   transform-origin: 0 0;
+  will-change: transform;
   opacity: 0.6;
   background: var(--background-primary);
   box-shadow: var(--shadow-s);

@@ -33,6 +33,7 @@ export class MindmapView extends ItemView {
   private modeButtons = new Map<string, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
   private placeholder!: HTMLDivElement;
+  private edgePaths = new Map<string, SVGPathElement>();
   private dropPreview: MoveCommand | null = null;
   private refreshTimer: number | undefined;
   private layoutFrame: number | undefined;
@@ -229,7 +230,7 @@ export class MindmapView extends ItemView {
     if (!file) {
       this.emptyState.hidden = false;
       this.renderer.update([], parseMarkdown("", ""), "", this.collapsed, { visualRootId: "root", mode: this.mode });
-      this.svg.empty();
+      this.drawEdges([]);
       return;
     }
     const source = await this.store.read(file);
@@ -294,15 +295,35 @@ export class MindmapView extends ItemView {
         this.placeholder.style.height = `${slot.height}px`;
         this.placeholder.style.transform = `translate(${slot.x}px, ${slot.y}px)`;
       }
-      this.svg.empty();
-      for (const edge of this.layout.edges) {
-        this.svg.createSvg("path", { attr: { d: edge.path }, ...(edge.to === PLACEHOLDER_ID ? { cls: "is-preview" } : {}) });
-      }
+      this.drawEdges(this.layout.edges);
       if (this.needsFit && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
         this.viewport.fit(this.layout.bounds); this.needsFit = false;
       }
       if (this.revealId) { this.ensureVisible(this.revealId); this.revealId = null; }
     });
+  }
+
+  /** Reuse path elements across frames; only changed connectors touch the DOM. */
+  private drawEdges(edges: LayoutResult["edges"]): void {
+    const retained = new Set<string>();
+    for (const edge of edges) {
+      retained.add(edge.id);
+      let path = this.edgePaths.get(edge.id);
+      if (!path) {
+        path = this.svg.createSvg("path");
+        this.edgePaths.set(edge.id, path);
+      }
+      if (path.getAttribute("d") !== edge.path) path.setAttribute("d", edge.path);
+      const preview = edge.to === PLACEHOLDER_ID;
+      path.toggleClass("is-preview", preview);
+      // The thick connector must sit above the thin ones it overlaps along the shared trunk.
+      if (preview && path !== this.svg.lastElementChild) this.svg.append(path);
+    }
+    for (const [id, path] of this.edgePaths) {
+      if (retained.has(id)) continue;
+      path.remove();
+      this.edgePaths.delete(id);
+    }
   }
 
   /** Show or clear the slot a pending drop would fill; the layout makes room for it on the next frame. */
