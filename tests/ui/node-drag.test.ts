@@ -102,6 +102,7 @@ function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## 
     shift: vi.fn<NodeDragActions['shift']>(),
     place: vi.fn<NodeDragActions['place']>(),
     detach: vi.fn<NodeDragActions['detach']>(),
+    snap: vi.fn<NodeDragActions['snap']>(() => null),
   } satisfies NodeDragActions;
   const drag = new NodeDrag(canvas, actions);
   components.add(drag);
@@ -358,6 +359,46 @@ describe('NodeDrag pointer dragging', () => {
       expect(actions.command).toHaveBeenCalledExactlyOnceWith(join);
       expect(actions.place).not.toHaveBeenCalled();
       expect(actions.shift).not.toHaveBeenCalledWith(id('Topic'), null);
+    });
+
+    it('asks the view for a snap slot from the root\'s own rect over empty canvas, previews it, and joins on release', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+      const join = { type: 'move', nodeId: id('Topic'), parentId: id('Child'), index: 0 } as const;
+      actions.snap.mockImplementation((_id, root) => (root.x > 400 ? join : null));
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      // Over empty canvas the view is asked with the root's rect as the pointer carries it (canvas pixels), not the pointer itself.
+      pointer('pointermove', canvas, 300, 300);
+      expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 300 - (x - 100), y: 300 - (y - 220), width: 200, height: 40 }, null);
+      expect(actions.preview).not.toHaveBeenCalled();
+      // Carried beside Child: the root's left edge passes 400 and the view offers the slot.
+      pointer('pointermove', canvas, x + 320, 300);
+      expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 420, y: 300 - (y - 220), width: 200, height: 40 }, null);
+      expect(actions.preview).toHaveBeenLastCalledWith(join);
+      pointer('pointermove', canvas, x + 330, 300);
+      expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 430, y: 300 - (y - 220), width: 200, height: 40 }, join);
+      expect(actions.preview).toHaveBeenCalledTimes(1);
+      pointer('pointerup', canvas, x + 330, 300);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      expect(actions.command).toHaveBeenCalledExactlyOnceWith(join);
+      expect(actions.place).not.toHaveBeenCalled();
+    });
+
+    it('clears the slot when the snap says nothing is near', () => {
+      const { canvas, actions, node, id, pointer, center } = fixture(TOPICS, ['Topic']);
+      const join = { type: 'move', nodeId: id('Topic'), parentId: id('Child'), index: 0 } as const;
+      actions.snap.mockImplementation((_id, root) => (root.x > 400 ? join : null));
+      const [x, y] = center('Topic');
+      pointer('pointerdown', node('Topic'), x, y);
+      pointer('pointermove', canvas, x + 8, y);
+      pointer('pointermove', canvas, x + 320, 300);
+      expect(actions.preview).toHaveBeenLastCalledWith(join);
+      pointer('pointermove', canvas, x, 520);
+      expect(actions.preview).toHaveBeenLastCalledWith(null);
+      pointer('pointerup', canvas, x, 520);
+      expect(actions.command).not.toHaveBeenCalled();
+      expect(actions.place).toHaveBeenCalledOnce();
     });
 
     it('puts the tree back on Escape, pointercancel, or a release outside the canvas', () => {

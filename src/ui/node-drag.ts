@@ -19,6 +19,12 @@ export interface NodeDragActions {
   place: (id: string, delta: DragDelta) => void;
   /** A tree node released on empty canvas, away from its own place: detach its branch as a new topic whose root's top-left is `point` (canvas pixels). */
   detach: (id: string, point: { x: number; y: number }) => void;
+  /**
+   * The slot a free tree would join judged from where its root sits (canvas pixels), not from the
+   * pointer, so a topic brought up beside a node previews before it covers anything. `current` is
+   * the slot shown now, kept while the root stays close to it; null when nothing is near.
+   */
+  snap: (draggedId: string, root: { x: number; y: number; width: number; height: number }, current: MoveCommand | null) => MoveCommand | null;
 }
 
 /** Pointer travel before a press on a node becomes a drag, so clicks and double-clicks stay untouched. */
@@ -162,6 +168,20 @@ export class NodeDrag extends Component {
     return point.x >= box.left - margin && point.x <= box.right + margin && point.y >= box.top - margin && point.y <= box.bottom + margin;
   }
 
+  /**
+   * A free tree over empty canvas: the slot follows where its root sits, so it can preview before
+   * overlapping anything. The root's place comes from the pointer and the grab offset, not from the
+   * DOM, which only catches up on the next frame and would leave a fast drag judged one step behind.
+   */
+  private snap(session: Session, event: PointerEvent): void {
+    const canvas = this.canvas.getBoundingClientRect();
+    const rect = session.element.getBoundingClientRect();
+    const root = { x: event.clientX - canvas.left - session.grab.x, y: event.clientY - canvas.top - session.grab.y, width: rect.width, height: rect.height };
+    const command = this.actions.snap(session.id, root, session.target);
+    if (command && session.target && command.parentId === session.target.parentId && command.index === session.target.index) return;
+    this.retarget(session, command, command ? { id: `${command.parentId}@${command.index}`, position: "inside" } : null, event);
+  }
+
   /** Over empty canvas the current slot stays only while the pointer is still close to the node it targets. */
   private leaveIfFar(session: Session, event: PointerEvent): void {
     const anchor = session.anchor;
@@ -190,7 +210,7 @@ export class NodeDrag extends Component {
     if (!hit || !this.canvas.contains(hit) || hit.closest("[data-drop-placeholder]")) return;
     const node = hit.closest<HTMLElement>("[data-node-id]");
     const id = node?.dataset.nodeId;
-    if (!node || !id) { this.leaveIfFar(session, event); return; }
+    if (!node || !id) { if (session.free) this.snap(session, event); else this.leaveIfFar(session, event); return; }
     if (id === session.id) return;
     const sameNode = session.anchor?.id === id;
     const position = this.dropPosition(node, event, sameNode ? session.anchor?.position : undefined);
