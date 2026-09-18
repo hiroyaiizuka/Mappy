@@ -9,7 +9,7 @@ import { planEdit, type MoveCommand } from '../../src/core/commands';
 import { projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
 import { TOPICS_KEY, readTopicPositions } from '../../src/core/topics';
 import { PLACEHOLDER_ID } from '../../src/layout/drop-preview';
-import type { LayoutResult } from '../../src/layout/layout';
+import type { LayoutMode, LayoutResult } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView } from '../../src/ui/mindmap-view';
@@ -65,7 +65,7 @@ interface Mounted {
 /** Canvas at (10, 20) of 1200 × 800 screen pixels; jsdom has no geometry of its own. */
 const CANVAS = { x: 10, y: 20, left: 10, top: 20, width: 1200, height: 800, right: 1210, bottom: 820, toJSON: () => ({}) };
 
-async function mount(source: string, layout: 'mindmap' | 'timeline' = 'mindmap'): Promise<Mounted> {
+async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mounted> {
   const app = new HarnessApp();
   app.put(PATH, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());

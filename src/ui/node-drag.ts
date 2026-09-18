@@ -235,13 +235,15 @@ export class NodeDrag extends Component {
   }
 
   /**
-   * Edge zones select a sibling slot; timeline stages line up horizontally, so their edges are left and right.
+   * Edge zones select a sibling slot. Siblings that line up horizontally (timeline stages, every level of the
+   * hierarchy) use the left and right edges; the rest use top and bottom.
    * With a current zone on this node, the boundary the pointer would cross to leave it sits a little further out.
    */
   private dropPosition(node: HTMLElement, event: PointerEvent, current?: DropPosition): DropPosition {
     if (node.hasClass("is-root")) return "inside";
     const rect = node.getBoundingClientRect();
-    const ratio = node.hasClass("is-timeline") && node.hasClass("is-stage")
+    const horizontal = node.hasClass("is-hierarchy") || (node.hasClass("is-timeline") && node.hasClass("is-stage"));
+    const ratio = horizontal
       ? (event.clientX - rect.left) / rect.width
       : (event.clientY - rect.top) / rect.height;
     if (!Number.isFinite(ratio)) return "inside";

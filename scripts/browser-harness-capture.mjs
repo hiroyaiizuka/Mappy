@@ -377,12 +377,74 @@ async function captureOperations(recorder, page) {
     expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('timeline')), 'layout preference was not written through processFrontMatter');
   });
 
-  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る', async () => {
+  await recorder.run('hierarchy', '左下の「階層図」', 'ルートが上、同じ深さが同じ段になり、ノード数は変わらない。`mappy-layout: hierarchy` が書かれる', async () => {
+    const before = (await page.harness('h.nodes()')).length;
+    const button = await page.harness('h.button("階層図")');
+    expect(button, 'hierarchy button missing');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const hierarchy = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
+    expect(hierarchy === before, `${hierarchy} hierarchy nodes of ${before}`);
+    // Same aria-level ⇒ same top edge, and the root above every other node.
+    const rows = await page.evaluate(`(() => {
+      const nodes = Array.from(document.querySelectorAll('.mappy-node'));
+      const tops = new Map();
+      for (const node of nodes) {
+        const level = node.getAttribute('aria-level');
+        const top = Math.round(node.getBoundingClientRect().top * 10) / 10;
+        tops.set(level, (tops.get(level) ?? new Set()).add(top));
+      }
+      const root = nodes.find(node => node.classList.contains('is-root'))?.getBoundingClientRect();
+      const below = root ? nodes.filter(node => !node.classList.contains('is-root') && node.getBoundingClientRect().top < root.bottom).length : null;
+      return { perLevel: Object.fromEntries([...tops].map(([level, set]) => [level, set.size])), below };
+    })()`);
+    // uneven-branches has one H2 and no free topics, so aria-level (the Markdown depth) is the layout depth.
+    expect(rows.below !== null, 'root node missing');
+    const misaligned = Object.entries(rows.perLevel).filter(([, count]) => count !== 1);
+    expect(misaligned.length === 0, `levels with more than one row: ${JSON.stringify(misaligned)}`);
+    expect(rows.below === 0, `${rows.below} nodes above the root's bottom edge`);
+    const activity = await page.harness('h.activity');
+    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"hierarchy"')), 'hierarchy preference was not written through processFrontMatter');
+    return `${hierarchy} nodes, rows per level ${JSON.stringify(rows.perLevel)}`;
+  });
+
+  await recorder.run('hierarchy-collapse', `階層図で「${title}」の開閉ボタン`, '24 の件数がノードの下に出て、ノードが減り、再展開で戻る', async () => {
+    const before = (await page.harness('h.nodes()')).length;
+    const node = await nodeRect(title);
+    expect(node.toggle, 'fold control missing');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    try {
+      const after = await nodeRect(title);
+      expect(after.collapsed, 'node did not collapse');
+      const badge = await page.evaluate(`document.querySelector('.mappy-node.is-collapsed .mappy-node-toggle-mark')?.textContent`);
+      expect(badge === '24', `badge shows ${badge}`);
+      // In the hierarchy the badge hangs under the node rather than beside it.
+      expect(after.toggle.y > after.rect.y + after.rect.height - 1, 'badge is not below the node');
+      const count = (await page.harness('h.nodes()')).length;
+      expect(count === before - 24, `${count} nodes after collapsing 24`);
+      return `badge ${badge}, ${before} → ${count} nodes`;
+    } finally {
+      // Re-expand even after a failed check so the later cases start from the full map.
+      const current = await nodeRect(title);
+      if (current.collapsed && current.toggle) {
+        await page.click(center(current.toggle).x, center(current.toggle).y);
+        await page.settle();
+      }
+      const restored = (await page.harness('h.nodes()')).length;
+      expect(restored === before, `${restored} nodes after re-expanding`);
+    }
+  });
+
+  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
     const button = await page.harness('h.button("マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
-    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline').length`);
-    expect(timeline === 0, `${timeline} nodes still in timeline`);
+    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy').length`);
+    expect(timeline === 0, `${timeline} nodes still in timeline or hierarchy`);
+    const activity = await page.harness('h.activity');
+    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
+    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
   });
 
   for (const [width, height] of [[640, 480], [390, 700]]) {

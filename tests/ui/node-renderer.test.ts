@@ -76,6 +76,12 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     expect(renderer.entries.get(id(parsed, 'Stage'))?.element.classList.contains('is-stage')).toBe(true);
     expect(renderer.entries.get(id(parsed, 'Detail'))?.element.classList.contains('is-stage')).toBe(false);
     expect(renderer.entries.get(id(parsed, 'Stage'))?.element.classList.contains('is-timeline')).toBe(true);
+    expect(renderer.entries.get(id(parsed, 'Stage'))?.element.classList.contains('is-hierarchy')).toBe(false);
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'hierarchy' });
+    for (const title of ['Course', 'Stage', 'Detail']) {
+      expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-hierarchy')).toBe(true);
+      expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-timeline')).toBe(false);
+    }
   });
 
   it('does not make every H1 a root when a virtual file root is displayed', () => {

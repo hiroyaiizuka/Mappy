@@ -60,14 +60,14 @@ function fixture() {
 }
 
 describe("MindmapView layout preference", () => {
-  it("persists an explicit timeline selection and restores it in a new map view", async () => {
+  it.each(["timeline", "hierarchy"] as const)("persists an explicit %s selection and restores it in a new map view", async layout => {
     const { app, processFrontMatter, properties, view } = fixture();
     const draw = vi.spyOn(view as unknown as { draw: () => void }, "draw").mockImplementation(() => undefined);
 
-    (view as unknown as { selectMode(mode: "timeline"): void }).selectMode("timeline");
+    (view as unknown as { selectMode(mode: typeof layout): void }).selectMode(layout);
     await vi.waitFor(() => { expect(processFrontMatter).toHaveBeenCalledTimes(1); });
 
-    expect(properties).toEqual({ mappy: true, "mappy-layout": "timeline" });
+    expect(properties).toEqual({ mappy: true, "mappy-layout": layout });
     expect(draw).toHaveBeenCalledTimes(1);
     expect(app.workspace.requestSaveLayout).toHaveBeenCalledTimes(1);
 
@@ -77,7 +77,20 @@ describe("MindmapView layout preference", () => {
       {} as ViewRouter,
     );
     await restored.setState({ file: "Map.md" }, {} as never);
-    expect(restored.snapshot()?.mode).toBe("timeline");
+    expect(restored.snapshot()?.mode).toBe(layout);
+    // The view state (leaf history, workspace layout) carries the layout as well.
+    expect(restored.getState()).toMatchObject({ file: "Map.md", layout });
+    const fromState = new MindmapView({ app } as never, {} as DocumentStore, {} as ViewRouter);
+    await fromState.setState({ file: "Map.md", layout }, {} as never);
+    expect(fromState.snapshot()?.mode).toBe(layout);
+  });
+
+  it("ignores an unknown layout in the view state and opens the note with its own preference", async () => {
+    const { app, properties } = fixture();
+    properties["mappy-layout"] = "hierarchy";
+    const view = new MindmapView({ app } as never, {} as DocumentStore, {} as ViewRouter);
+    await view.setState({ file: "Map.md", layout: "issue-tree" }, {} as never);
+    expect(view.snapshot()?.mode).toBe("hierarchy");
   });
 
   it("removes the optional layout key when the user selects the regular map", async () => {

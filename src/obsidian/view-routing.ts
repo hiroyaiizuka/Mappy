@@ -1,5 +1,5 @@
 import { WorkspaceLeaf, type TFile, type ViewState } from 'obsidian';
-import type { MapLayout } from './frontmatter';
+import type { LayoutMode } from '../layout/layout';
 import { patchMethod } from './patch';
 
 export interface ViewRouterOptions {
@@ -63,7 +63,7 @@ export class ViewRouter {
     return leaf.setViewState({ type: 'markdown', state: { file: file.path }, active });
   }
 
-  openMap(leaf: WorkspaceLeaf, file: TFile, active = true, layout?: MapLayout): Promise<void> {
+  openMap(leaf: WorkspaceLeaf, file: TFile, active = true, layout?: LayoutMode): Promise<void> {
     this.markdownLeaves.delete(leaf);
     this.explicitMapLeaves.set(leaf, file.path);
     const opened = leaf.setViewState({

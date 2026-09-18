@@ -2,9 +2,10 @@ import { MarkdownView, Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidia
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge } from "./obsidian/excalidraw-bridge";
 import {
-  isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout, type MapLayout,
+  isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
 import { createMindmapFile } from "./obsidian/map-files";
+import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
 import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
 
@@ -140,7 +141,7 @@ export default class MappyPlugin extends Plugin {
   }
 
   /** A Markdown note is exported as it would open: frontmatter layout, nothing collapsed. */
-  private markdownSnapshot(): { file: TFile; mode: "mindmap" | "timeline"; collapsed: ReadonlySet<string> } | null {
+  private markdownSnapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string> } | null {
     const file = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
     const mode = file ? readMapLayout(this.app, file) : null;
     if (!file || !mode) return null;
@@ -165,7 +166,7 @@ export default class MappyPlugin extends Plugin {
     if (map?.file === file) await map.showSource(false);
   }
 
-  private open(file: TFile, split: boolean, layout: MapLayout): Promise<void> {
+  private open(file: TFile, split: boolean, layout: LayoutMode): Promise<void> {
     const workspace = this.app.workspace;
     const map = workspace.getActiveViewOfType(MindmapView);
     if (split && map?.file === file) {

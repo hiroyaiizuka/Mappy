@@ -1,4 +1,5 @@
 import { placeHierarchy } from "./hierarchy";
+import type { LayoutMode } from "../core/layout-mode";
 import {
   connect, foldBadgeWidth, foldControlFor, foldControlSize,
   type FoldPosition, type LayoutBounds, type LayoutEdge, type NodeSize, type PositionedNode,
@@ -18,12 +19,8 @@ export interface LayoutPoint {
   y: number;
 }
 
-/**
- * mindmap: root on the left, branches to the right. timeline: first level on a
- * horizontal axis, deeper levels alternating above and below. hierarchy: root on
- * top, every depth on one row, branches downward (`./hierarchy`).
- */
-export type LayoutMode = "mindmap" | "timeline" | "hierarchy";
+/** The mode vocabulary is core's (`../core/layout-mode`); re-exported so layout callers need one import. */
+export { LAYOUT_MODES, isLayoutMode, type LayoutMode } from "../core/layout-mode";
 
 /**
  * A free topic: an independent tree placed beside the body. `position` is its root
