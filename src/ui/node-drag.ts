@@ -14,8 +14,10 @@ export interface NodeDragActions {
 const DRAG_THRESHOLD = 4;
 /** Share of a node's extent on each edge that means "sibling before/after"; the middle means "last child". */
 const EDGE_ZONE = 0.3;
-/** After the preview changes, the layout shifts under a still pointer; a new node may take over only after this much travel. */
-const SWITCH_DISTANCE = 8;
+/** Zone boundaries move away from the current zone, so a pointer resting near a boundary does not flicker. */
+const ZONE_DEAD_BAND = 0.08;
+/** After the preview changes, the layout shifts under a still pointer; another node may take over only after this much travel. */
+const SWITCH_DISTANCE = 6;
 
 interface Press { pointerId: number; id: string; element: HTMLElement; x: number; y: number }
 
@@ -44,7 +46,8 @@ export class NodeDrag extends Component {
     this.registerDomEvent(this.canvas, "pointerdown", event => {
       if (event.button !== 0 || this.session) return;
       const target = this.element(event.targetNode);
-      if (!target || target.closest("a, img, button, input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+      // Links and images are part of the node and may start a drag; controls and text inputs keep the press.
+      if (!target || target.closest("button, input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
       const element = target.closest<HTMLElement>("[data-node-id]");
       const id = element?.dataset.nodeId;
       if (!element || !id) return;
@@ -126,9 +129,11 @@ export class NodeDrag extends Component {
     const node = hit.closest<HTMLElement>("[data-node-id]");
     const id = node?.dataset.nodeId;
     if (!node || !id || id === session.id) return;
-    const position = this.dropPosition(node, event);
-    if (session.anchor?.id === id && session.anchor.position === position) return;
-    if (session.switched && Math.hypot(event.clientX - session.switched.x, event.clientY - session.switched.y) < SWITCH_DISTANCE) return;
+    const sameNode = session.anchor?.id === id;
+    const position = this.dropPosition(node, event, sameNode ? session.anchor?.position : undefined);
+    if (sameNode && session.anchor?.position === position) return;
+    // Zone changes on the node already targeted follow the pointer at once; a different node waits for real travel.
+    if (!sameNode && session.switched && Math.hypot(event.clientX - session.switched.x, event.clientY - session.switched.y) < SWITCH_DISTANCE) return;
     const command = this.actions.dropTarget(session.id, id, position);
     this.retarget(session, command, command ? { id, position } : null, event);
   }
@@ -141,15 +146,20 @@ export class NodeDrag extends Component {
     this.actions.preview(command);
   }
 
-  /** Edge zones select a sibling slot; timeline stages line up horizontally, so their edges are left and right. */
-  private dropPosition(node: HTMLElement, event: PointerEvent): DropPosition {
+  /**
+   * Edge zones select a sibling slot; timeline stages line up horizontally, so their edges are left and right.
+   * With a current zone on this node, the boundary the pointer would cross to leave it sits a little further out.
+   */
+  private dropPosition(node: HTMLElement, event: PointerEvent, current?: DropPosition): DropPosition {
     if (node.hasClass("is-root")) return "inside";
     const rect = node.getBoundingClientRect();
     const ratio = node.hasClass("is-timeline") && node.hasClass("is-stage")
       ? (event.clientX - rect.left) / rect.width
       : (event.clientY - rect.top) / rect.height;
     if (!Number.isFinite(ratio)) return "inside";
-    return ratio < EDGE_ZONE ? "before" : ratio > 1 - EDGE_ZONE ? "after" : "inside";
+    const before = EDGE_ZONE + (current === "before" ? ZONE_DEAD_BAND : current === "inside" ? -ZONE_DEAD_BAND : 0);
+    const after = EDGE_ZONE + (current === "after" ? ZONE_DEAD_BAND : current === "inside" ? -ZONE_DEAD_BAND : 0);
+    return ratio < before ? "before" : ratio > 1 - after ? "after" : "inside";
   }
 
   private finish(drop: boolean): void {

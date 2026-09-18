@@ -182,7 +182,7 @@ describe('NodeDrag pointer dragging', () => {
     expect(capture.release).toHaveBeenCalledWith(1);
   });
 
-  it('ignores relayout under a still pointer: another node needs a deliberate move to take over', () => {
+  it('changes zones on the targeted node at once, with a dead band so a resting pointer does not flicker', () => {
     const { canvas, actions, id, pointer, begin } = fixture();
     begin('B');
     pointer('pointermove', canvas, 200, 223);
@@ -190,12 +190,32 @@ describe('NodeDrag pointer dragging', () => {
     pointer('pointermove', canvas, 200, 305);
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A2'), index: 0 });
     const calls = actions.preview.mock.calls.length;
-    // A2 spans y 280–320 and its after zone starts at 308: drifting a few px past it must not retarget.
+    // A2 spans y 280–320; leaving "inside" needs 78% (311.2) instead of the plain 70% (308).
     pointer('pointermove', canvas, 200, 310);
     pointer('pointermove', canvas, 201, 311);
     expect(actions.preview.mock.calls.length).toBe(calls);
-    pointer('pointermove', canvas, 200, 315);
+    pointer('pointermove', canvas, 200, 313);
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
+    // Coming back needs 62% (304.8) rather than 70%, so the boundary always sits away from the pointer.
+    pointer('pointermove', canvas, 200, 306);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
+    pointer('pointermove', canvas, 200, 303);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A2'), index: 0 });
+  });
+
+  it('ignores relayout under a still pointer: another node needs a deliberate move to take over', () => {
+    const { canvas, actions, id, pointer, begin, node, rects } = fixture();
+    // Put A3 right below A2 (touching), so a tiny drift after a switch lands on it, as a relayout would.
+    rects.set(node('A3'), { left: 100, top: 318, width: 200, height: 40 });
+    begin('B');
+    pointer('pointermove', canvas, 200, 316);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
+    const calls = actions.preview.mock.calls.length;
+    // Switched at (200, 316); 5px later the pointer is on A3, which is not deliberate travel yet.
+    pointer('pointermove', canvas, 200, 321);
+    expect(actions.preview.mock.calls.length).toBe(calls);
+    pointer('pointermove', canvas, 200, 338);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A3'), index: 0 });
   });
 
   it('keeps the current slot over the placeholder, the source, and empty canvas', () => {
@@ -255,18 +275,29 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('Course'), index: 1 });
   });
 
-  it('does not start from links, buttons, inputs, or non-primary buttons, and cleans up on unload', () => {
+  it('starts from links and images but not from controls or non-primary buttons, and cleans up on unload', () => {
     const { canvas, actions, node, pointer, ghost, begin } = fixture();
-    for (const tag of ['a', 'button', 'textarea'] as const) {
+    for (const tag of ['a', 'img'] as const) {
       const child = document.createElement(tag);
       node('A2').append(child);
-      pointer('pointerdown', child, 200, 240);
-      pointer('pointermove', canvas, 240, 240);
+      pointer('pointerdown', child, 200, 300);
+      pointer('pointermove', canvas, 240, 300);
+      expect(ghost()).not.toBeNull();
+      pointer('pointercancel', canvas, 240, 300);
       expect(ghost()).toBeNull();
       child.remove();
     }
-    pointer('pointerdown', node('A2'), 200, 240, { button: 2 });
-    pointer('pointermove', canvas, 240, 240);
+    actions.select.mockClear();
+    for (const tag of ['button', 'textarea'] as const) {
+      const child = document.createElement(tag);
+      node('A2').append(child);
+      pointer('pointerdown', child, 200, 300);
+      pointer('pointermove', canvas, 240, 300);
+      expect(ghost()).toBeNull();
+      child.remove();
+    }
+    pointer('pointerdown', node('A2'), 200, 300, { button: 2 });
+    pointer('pointermove', canvas, 240, 300);
     expect(ghost()).toBeNull();
     expect(actions.select).not.toHaveBeenCalled();
     begin('A3');
