@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import {
-  LAYOUT_KEY, MAPPY_KEY, isMappyCandidate, layoutFromFrontmatter, readMapLayout,
+  LAYOUT_KEY, MAPPY_KEY, TOPICS_KEY, isMappyCandidate, layoutFromFrontmatter, readMapLayout,
   readPreferredMapLayout, writeMapLayout,
 } from '../../src/obsidian/frontmatter';
 
@@ -74,9 +74,15 @@ describe('writeMapLayout', () => {
     expect(store).toEqual({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' });
   });
 
-  it('removes both Mappy properties without changing unrelated frontmatter', async () => {
-    const { instance, store } = app({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' });
+  it('removes every Mappy property, topic positions included, without changing unrelated frontmatter', async () => {
+    const { instance, store } = app({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline', [TOPICS_KEY]: { 参考: { mindmap: [1, 2] } } });
     await writeMapLayout(instance, file(), null);
     expect(store).toEqual({ tags: ['a'] });
+  });
+
+  it('keeps topic positions when enabling or changing the layout', async () => {
+    const { instance, store } = app({ [MAPPY_KEY]: true, [TOPICS_KEY]: { 参考: { mindmap: [1, 2] } } });
+    await writeMapLayout(instance, file(), 'timeline');
+    expect(store).toEqual({ [MAPPY_KEY]: true, [TOPICS_KEY]: { 参考: { mindmap: [1, 2] } }, [LAYOUT_KEY]: 'timeline' });
   });
 });

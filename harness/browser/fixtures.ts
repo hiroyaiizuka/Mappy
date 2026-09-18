@@ -5,6 +5,7 @@
 import headingDocument from "../../tests/fixtures/heading-document.md?raw";
 import roundtripEdgeCases from "../../tests/fixtures/roundtrip-edge-cases.md?raw";
 import unevenBranches from "../../tests/fixtures/uneven-branches.md?raw";
+import freeTopics from "../../tests/fixtures/free-topics.md?raw";
 import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
 import { makePerformanceFixture, performanceNodeCounts } from "../../scripts/performance-fixtures.mjs";
 
@@ -47,6 +48,13 @@ const staticFixtures: HarnessFixture[] = [
     label: "uneven-branches（H2＋リスト・不均等な枝）",
     covers: "H2＋箇条書き、8 段の一列の枝、24 兄弟、長い日本語タイトル、リンク・画像・欠落画像、本文のコードブロック、同名ノード、空に近い枝",
     source: unevenBranches,
+  },
+  {
+    id: "free-topics",
+    path: `${FIXTURE_DIRECTORY}/free-topics.md`,
+    label: "free-topics（本体＋フリートピック）",
+    covers: "複数の H2: 最初の区画が本体、後ろの 3 区画がフリートピック。frontmatter `mappy-topics` の位置（レイアウト別、`:` を含む引用符付きキー、孤児キー）と、位置未設定の既定配置",
+    source: freeTopics,
   },
 ];
 

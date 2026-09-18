@@ -31,11 +31,30 @@ export interface FoldPosition {
   y: number;
 }
 
+export interface LayoutPoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * A free topic: an independent tree placed beside the body. `position` is its root
+ * node's top-left relative to the body root's top-left (`LayoutResult.origin`), so a
+ * topic follows the body root when the body grows. Null asks for the default slot
+ * below the body, clear of every node already placed.
+ */
+export interface FreeTopicLayout {
+  tree: LayoutNode;
+  position: LayoutPoint | null;
+}
+
 export interface LayoutResult {
   nodes: PositionedNode[];
   edges: LayoutEdge[];
   folds: FoldPosition[];
+  /** Body, free topics and fold controls together, for Fit. */
   bounds: LayoutBounds;
+  /** Top-left of the body root; free-topic positions are offsets from here. */
+  origin: LayoutPoint;
 }
 
 interface MeasuredNode extends NodeSize {
@@ -57,6 +76,7 @@ const TIMELINE_GAP = 44;
 const TIMELINE_STEM_GAP = 20;
 const TIMELINE_AXIS_GAP = 34;
 const TIMELINE_FOLD_OFFSET = 12;
+const TOPIC_GAP = 48;
 const DEFAULT_WIDTH = 160;
 const DEFAULT_HEIGHT = 44;
 
@@ -82,9 +102,9 @@ function measureTree(
   sizes: ReadonlyMap<string, NodeSize>,
   collapsed: ReadonlySet<string>,
   mode: "mindmap" | "timeline",
+  seen: Set<string>,
 ): MeasuredNode {
   const nodes: MeasuredNode[] = [];
-  const seen = new Set<string>();
   const pending: { source: LayoutNode; parent: MeasuredNode | null }[] = [{ source: root, parent: null }];
   while (pending.length > 0) {
     const current = pending.pop();
@@ -211,16 +231,19 @@ function placeRightward(
   }
 }
 
+/** Root's top-left at (x, y); the axis runs through the root's vertical center. */
 function placeTimeline(
-  root: MeasuredNode, nodes: PositionedNode[], edges: LayoutEdge[], folds: FoldPosition[], foldBounds: LayoutBounds[],
+  root: MeasuredNode, x: number, y: number,
+  nodes: PositionedNode[], edges: LayoutEdge[], folds: FoldPosition[], foldBounds: LayoutBounds[],
 ): void {
-  const rootPosition = { id: root.id, x: 0, y: -root.height / 2, width: root.width, height: root.height };
+  const axisY = y + root.height / 2;
+  const rootPosition = { id: root.id, x, y, width: root.width, height: root.height };
   nodes.push(rootPosition);
   addFold(root, rootPosition, folds, foldBounds);
-  let nextAxisX = root.width + HORIZONTAL_GAP;
-  let previousAxisRight = root.width;
-  let upperNextX = 0;
-  let lowerNextX = 0;
+  let nextAxisX = x + root.width + HORIZONTAL_GAP;
+  let previousAxisRight = x + root.width;
+  let upperNextX = -Infinity;
+  let lowerNextX = -Infinity;
   const axisHalfHeight = root.children.reduce((height, stage) => Math.max(height, stage.height / 2), root.height / 2);
   for (let index = 0; index < root.children.length; index += 1) {
     const stage = root.children[index];
@@ -229,18 +252,18 @@ function placeTimeline(
     const childOffset = stage.width / 2 + TIMELINE_STEM_GAP;
     const sideNextX = upper ? upperNextX : lowerNextX;
     const stageX = stage.children.length > 0 ? Math.max(nextAxisX, sideNextX - childOffset) : nextAxisX;
-    const position = { id: stage.id, x: stageX, y: -stage.height / 2, width: stage.width, height: stage.height };
+    const position = { id: stage.id, x: stageX, y: axisY - stage.height / 2, width: stage.width, height: stage.height };
     nodes.push(position);
     addFold(stage, position, folds, foldBounds, upper);
     // The tree relationship remains root → stage, but each visible axis segment
     // is drawn only once and leaves the topic's text rectangle unobstructed.
-    edges.push(connect(rootPosition, position, `M ${previousAxisRight} 0 H ${position.x}`));
+    edges.push(connect(rootPosition, position, `M ${previousAxisRight} ${axisY} H ${position.x}`));
 
     const startY = upper ? position.y : position.y + position.height;
     let childTop = upper
-      ? -axisHalfHeight - TIMELINE_AXIS_GAP - childForestHeight(stage)
-      : axisHalfHeight + TIMELINE_AXIS_GAP;
-    let forestRight = 0;
+      ? axisY - axisHalfHeight - TIMELINE_AXIS_GAP - childForestHeight(stage)
+      : axisY + axisHalfHeight + TIMELINE_AXIS_GAP;
+    let forestRight = -Infinity;
     for (const child of stage.children) {
       const childX = stageX + childOffset;
       const childPosition = place(child, childX, childTop);
@@ -276,18 +299,83 @@ function boundsOf(nodes: readonly LayoutBounds[]): LayoutBounds {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+interface PlacedTree {
+  nodes: PositionedNode[];
+  edges: LayoutEdge[];
+  folds: FoldPosition[];
+  foldBounds: LayoutBounds[];
+  /** Nodes and fold controls together. */
+  bounds: LayoutBounds;
+}
+
+/** Place one measured tree with its root's top-left at (x, y). */
+function placeTree(tree: MeasuredNode, x: number, y: number, mode: "mindmap" | "timeline"): PlacedTree {
+  const nodes: PositionedNode[] = [];
+  const edges: LayoutEdge[] = [];
+  const folds: FoldPosition[] = [];
+  const foldBounds: LayoutBounds[] = [];
+  if (mode === "timeline") placeTimeline(tree, x, y, nodes, edges, folds, foldBounds);
+  else placeRightward(tree, x, y - (tree.subtreeHeight - tree.height) / 2, nodes, edges, folds, foldBounds);
+  return { nodes, edges, folds, foldBounds, bounds: boundsOf([...nodes, ...foldBounds]) };
+}
+
+function intersects(first: LayoutBounds, second: LayoutBounds): boolean {
+  return first.x < second.x + second.width && first.x + first.width > second.x
+    && first.y < second.y + second.height && first.y + first.height > second.y;
+}
+
+/** The nearest slot in the column under the body's left edge that no placed rectangle touches. */
+function defaultSlot(size: NodeSize, body: LayoutBounds, occupied: readonly LayoutBounds[]): LayoutPoint {
+  const slot = { x: body.x, y: body.y + body.height + TOPIC_GAP, ...size };
+  for (let guard = 0; guard <= occupied.length; guard += 1) {
+    const blocker = occupied.find((area) => intersects(slot, area));
+    if (!blocker) break;
+    slot.y = blocker.y + blocker.height + TOPIC_GAP;
+  }
+  return { x: slot.x, y: slot.y };
+}
+
+/**
+ * Lay out the body at the origin and each free topic as its own tree of the same mode.
+ * Positioned topics land where asked, even over other nodes; the rest stack under the
+ * body in source order, each in the first slot clear of everything placed before it.
+ */
 export function layoutTree(
   root: LayoutNode,
   sizes: ReadonlyMap<string, NodeSize>,
   collapsed: ReadonlySet<string>,
   mode: "mindmap" | "timeline",
+  topics: readonly FreeTopicLayout[] = [],
 ): LayoutResult {
-  const measured = measureTree(root, sizes, collapsed, mode);
-  const nodes: PositionedNode[] = [];
-  const edges: LayoutEdge[] = [];
-  const folds: FoldPosition[] = [];
-  const foldBounds: LayoutBounds[] = [];
-  if (mode === "timeline") placeTimeline(measured, nodes, edges, folds, foldBounds);
-  else placeRightward(measured, 0, 0, nodes, edges, folds, foldBounds);
-  return { nodes, edges, folds, bounds: boundsOf([...nodes, ...foldBounds]) };
+  const seen = new Set<string>();
+  const measured = measureTree(root, sizes, collapsed, mode, seen);
+  const origin = { x: 0, y: mode === "timeline" ? -measured.height / 2 : (measured.subtreeHeight - measured.height) / 2 };
+  const body = placeTree(measured, origin.x, origin.y, mode);
+  const placed: (PlacedTree | undefined)[] = [];
+  const occupied = [body.bounds];
+  const measuredTopics = topics.map((topic) => measureTree(topic.tree, sizes, collapsed, mode, seen));
+  measuredTopics.forEach((tree, index) => {
+    const position = topics[index]?.position;
+    if (!position) return;
+    const result = placeTree(tree, origin.x + position.x, origin.y + position.y, mode);
+    placed[index] = result;
+    occupied.push(result.bounds);
+  });
+  measuredTopics.forEach((tree, index) => {
+    if (placed[index]) return;
+    // Measure once at the origin, then move the whole extent (fold controls included) into the slot.
+    const probe = placeTree(tree, 0, 0, mode);
+    const slot = defaultSlot(probe.bounds, body.bounds, occupied);
+    const result = placeTree(tree, slot.x - probe.bounds.x, slot.y - probe.bounds.y, mode);
+    placed[index] = result;
+    occupied.push(result.bounds);
+  });
+  const trees = [body, ...placed.filter((tree): tree is PlacedTree => tree !== undefined)];
+  return {
+    nodes: trees.flatMap((tree) => tree.nodes),
+    edges: trees.flatMap((tree) => tree.edges),
+    folds: trees.flatMap((tree) => tree.folds),
+    bounds: boundsOf(trees.flatMap((tree) => [...tree.nodes, ...tree.foldBounds])),
+    origin,
+  };
 }

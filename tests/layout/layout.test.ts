@@ -325,3 +325,155 @@ describe("tree layout", () => {
       .toThrow(/duplicate/iu);
   });
 });
+
+describe("free topics", () => {
+  const body = node("root", node("a", node("a1"), node("a2")), node("b"));
+  const bodySizes: ReadonlyMap<string, NodeSize> = new Map([
+    ["root", { width: 200, height: 60 }],
+    ["a1", { width: 300, height: 40 }],
+    ["b", { width: 120, height: 90 }],
+    ["t1", { width: 180, height: 50 }],
+    ["t1a", { width: 240, height: 30 }],
+    ["t2", { width: 90, height: 40 }],
+  ]);
+  const topics = [
+    { tree: node("t1", node("t1a"), node("t1b")), position: null },
+    { tree: node("t2"), position: null },
+    { tree: node("t3", node("t3a")), position: null },
+  ];
+
+  function byId(result: LayoutResult): Map<string, LayoutResult["nodes"][number]> {
+    return new Map(result.nodes.map(item => [item.id, item]));
+  }
+
+  function rectsOverlap(first: LayoutResult["nodes"][number], second: LayoutResult["nodes"][number]): boolean {
+    return first.x < second.x + second.width && first.x + first.width > second.x
+      && first.y < second.y + second.height && first.y + first.height > second.y;
+  }
+
+  it.each(["mindmap", "timeline"] as const)("leaves the body geometry untouched and reports the body root as origin in %s", mode => {
+    const alone = layoutTree(body, bodySizes, new Set(), mode);
+    const withTopics = layoutTree(body, bodySizes, new Set(), mode, topics);
+    const bodyIds = new Set(alone.nodes.map(item => item.id));
+    expect(withTopics.nodes.filter(item => bodyIds.has(item.id))).toEqual(alone.nodes);
+    expect(withTopics.edges.filter(edge => bodyIds.has(edge.from))).toEqual(alone.edges);
+    expect(withTopics.folds.filter(fold => bodyIds.has(fold.id))).toEqual(alone.folds);
+    const root = byId(alone).get("root");
+    expect(root).toBeDefined();
+    if (!root) return;
+    expect(alone.origin).toEqual({ x: root.x, y: root.y });
+    expect(withTopics.origin).toEqual(alone.origin);
+    expect(mode === "timeline" ? root.y + root.height / 2 : root.x).toBe(0);
+  });
+
+  it.each(["mindmap", "timeline"] as const)("stacks unpositioned topics below the body without overlapping anything and inside the bounds in %s", mode => {
+    const alone = layoutTree(body, bodySizes, new Set(), mode);
+    const result = layoutTree(body, bodySizes, new Set(), mode, topics);
+    expect(result.nodes).toHaveLength(alone.nodes.length + 6);
+    expect(result.edges).toHaveLength(alone.edges.length + 3);
+    for (let index = 0; index < result.nodes.length; index += 1) {
+      for (let other = index + 1; other < result.nodes.length; other += 1) {
+        const first = result.nodes[index];
+        const second = result.nodes[other];
+        if (first && second && rectsOverlap(first, second)) throw new Error(`Overlapping nodes: ${first.id}, ${second.id}`);
+      }
+    }
+    const positions = byId(result);
+    const bodyBottom = alone.bounds.y + alone.bounds.height;
+    let previousBottom = bodyBottom;
+    for (const id of ["t1", "t2", "t3"]) {
+      const topic = positions.get(id);
+      expect(topic).toBeDefined();
+      if (!topic) continue;
+      // Source order becomes vertical order: each topic sits below the body and below the previous topic.
+      expect(topic.y).toBeGreaterThanOrEqual(previousBottom + 48);
+      expect(topic.x).toBe(alone.bounds.x);
+      const subtree = result.nodes.filter(item => item.id.startsWith(id));
+      previousBottom = Math.max(...subtree.map(item => item.y + item.height));
+      for (const item of subtree) {
+        expect(item.x).toBeGreaterThanOrEqual(result.bounds.x);
+        expect(item.x + item.width).toBeLessThanOrEqual(result.bounds.x + result.bounds.width);
+        expect(item.y + item.height).toBeLessThanOrEqual(result.bounds.y + result.bounds.height);
+      }
+    }
+    // Fold controls of a topic count towards the slot, so the next topic never covers them.
+    const t1Fold = result.folds.find(fold => fold.id === "t1");
+    const t2 = positions.get("t2");
+    expect(t1Fold).toBeDefined();
+    if (t1Fold && t2) expect(t2.y).toBeGreaterThanOrEqual(t1Fold.y + 14);
+    expect(result.bounds.height).toBeGreaterThan(alone.bounds.height);
+  });
+
+  it.each(["mindmap", "timeline"] as const)("puts a positioned topic's root at origin + offset, keeps its tree shape, and includes it in the bounds in %s", mode => {
+    const placed = [
+      { tree: node("t1", node("t1a"), node("t1b")), position: { x: -400, y: 300 } },
+      { tree: node("t2"), position: { x: 900, y: -250 } },
+    ];
+    const result = layoutTree(body, bodySizes, new Set(), mode, placed);
+    const positions = byId(result);
+    const t1 = positions.get("t1");
+    const t2 = positions.get("t2");
+    expect(t1 && t2).toBeTruthy();
+    if (!t1 || !t2) return;
+    expect({ x: t1.x, y: t1.y }).toEqual({ x: result.origin.x - 400, y: result.origin.y + 300 });
+    expect({ x: t2.x, y: t2.y }).toEqual({ x: result.origin.x + 900, y: result.origin.y - 250 });
+    expect(t1.width).toBe(180);
+    // The topic is laid out like a body of its own: children to the right, same gaps, same edge shapes.
+    const alone = layoutTree(node("t1", node("t1a"), node("t1b")), bodySizes, new Set(), mode);
+    const shift = { x: t1.x - (alone.nodes[0]?.x ?? 0), y: t1.y - (alone.nodes[0]?.y ?? 0) };
+    for (const item of alone.nodes) {
+      expect(positions.get(item.id)).toEqual({ ...item, x: item.x + shift.x, y: item.y + shift.y });
+    }
+    for (const edge of alone.edges) {
+      const moved = result.edges.find(candidate => candidate.id === edge.id);
+      expect(moved?.path).toBe(edge.path.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)|([HV]) (-?\d+(?:\.\d+)?)/gu, (match, x, y, axis, value) => {
+        if (axis === "H") return `H ${Number(value) + shift.x}`;
+        if (axis === "V") return `V ${Number(value) + shift.y}`;
+        return x !== undefined ? `${Number(x) + shift.x} ${Number(y) + shift.y}` : match;
+      }));
+    }
+    expect(result.bounds.x).toBeLessThanOrEqual(t1.x);
+    expect(result.bounds.y).toBeLessThanOrEqual(t2.y);
+    expect(result.bounds.x + result.bounds.width).toBeGreaterThanOrEqual(t2.x + t2.width);
+    expect(result.bounds.y + result.bounds.height).toBeGreaterThanOrEqual(Math.max(...result.nodes.map(item => item.y + item.height)));
+  });
+
+  it("keeps same-side timeline forests apart when a topic is placed left of the body", () => {
+    const topic = { tree: node("t", node("s1", node("s1c")), node("s2", node("s2c")), node("s3", node("s3c"))), position: { x: -3000, y: 0 } };
+    const result = layoutTree(body, bodySizes, new Set(), "timeline", [topic]);
+    const positions = byId(result);
+    const first = positions.get("s1c");
+    const third = positions.get("s3");
+    expect(first && third).toBeTruthy();
+    if (!first || !third) return;
+    expect(third.x + third.width / 2 - 20).toBeGreaterThanOrEqual(first.x + first.width + 44 - 1);
+    expect(positions.get("s2")?.x).toBeLessThan(0);
+  });
+
+  it("places a default topic in the first free slot when a positioned topic already occupies the slot below the body", () => {
+    const free = byId(layoutTree(body, bodySizes, new Set(), "mindmap", [{ tree: node("t2"), position: null }])).get("t2");
+    const origin = layoutTree(body, bodySizes, new Set(), "mindmap").origin;
+    expect(free).toBeDefined();
+    if (!free) return;
+    const blocker = { tree: node("blocker"), position: { x: free.x - origin.x, y: free.y - origin.y } };
+    const result = layoutTree(body, bodySizes, new Set(), "mindmap", [blocker, { tree: node("t2"), position: null }]);
+    const positions = byId(result);
+    const placed = positions.get("blocker");
+    const stacked = positions.get("t2");
+    expect(placed && stacked).toBeTruthy();
+    if (!placed || !stacked) return;
+    expect({ x: placed.x, y: placed.y }).toEqual({ x: free.x, y: free.y });
+    expect(rectsOverlap(placed, stacked)).toBe(false);
+    expect(stacked.y).toBeGreaterThanOrEqual(placed.y + placed.height + 48);
+    // A positioned topic far away does not push the default slot further than needed.
+    const far = layoutTree(body, bodySizes, new Set(), "mindmap", [{ tree: node("far"), position: { x: 0, y: 5000 } }, { tree: node("t2"), position: null }]);
+    expect(byId(far).get("t2")?.y).toBe(free.y);
+  });
+
+  it("collapses topics like any branch and rejects an identity shared between the body and a topic", () => {
+    const result = layoutTree(body, bodySizes, new Set(["t1"]), "mindmap", topics);
+    expect(result.nodes.some(item => item.id === "t1a")).toBe(false);
+    expect(result.folds.some(fold => fold.id === "t1")).toBe(true);
+    expect(() => layoutTree(body, bodySizes, new Set(), "mindmap", [{ tree: node("a"), position: null }])).toThrow(/duplicate/iu);
+  });
+});

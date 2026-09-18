@@ -1,5 +1,6 @@
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
+import { planTopicRename } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
 
@@ -155,7 +156,16 @@ function rename(doc: MindDocument, node: MindNode, title: string): EditPlan {
     || updated.level !== node.level || updated.title !== title.trim()) {
     throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
   }
-  return { edits: [edit], selectionOffset: updated.titleFrom };
+  // A free topic's stored position follows its heading text within the same edit set.
+  const key = planTopicRename(doc, node.title, updated.title);
+  if (!key) return { edits: [edit], selectionOffset: updated.titleFrom };
+  const delta = key.text.length - (key.to - key.from);
+  const combined = parseMarkdown(applyEdits(doc.source, [key, edit]), doc.root.title, undefined, doc.format);
+  const renamed = combined.nodes.find((candidate) => candidate.from === node.from + delta);
+  if (combined.nodes.length !== doc.nodes.length || renamed?.title !== updated.title) {
+    throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
+  }
+  return { edits: [key, edit], selectionOffset: renamed.titleFrom };
 }
 
 function add(doc: MindDocument, node: MindNode, sibling: boolean): EditPlan {

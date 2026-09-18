@@ -1,9 +1,12 @@
 import type { App, TFile } from 'obsidian';
+import { TOPICS_KEY } from '../core/topics';
 
 /** Canonical identity marker. Only the YAML boolean `true` claims a Markdown note. */
 export const MAPPY_KEY = 'mappy';
 /** Optional presentation preference. Its absence means the regular mindmap. */
 export const LAYOUT_KEY = 'mappy-layout';
+/** Free-topic positions by layout (M7). The topics' text stays in the note body, so removing the key loses no words. */
+export { TOPICS_KEY };
 /** Excalidraw drawings are Markdown too; never claim them. */
 const EXCALIDRAW_KEY = 'excalidraw-plugin';
 
@@ -44,6 +47,7 @@ export function writeMapLayout(app: App, file: TFile, layout: MapLayout | null):
     } else {
       delete properties[MAPPY_KEY];
       delete properties[LAYOUT_KEY];
+      delete properties[TOPICS_KEY];
     }
   });
 }
