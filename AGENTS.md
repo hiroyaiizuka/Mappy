@@ -1,7 +1,7 @@
 # Mappy 開発ハーネス
 
 - 英語で考え、日本語で報告する。
-- 製品要件は `docs/product-plan.md`、設計判断は `docs/architecture.md`、検証手順は `docs/harness.md`。
+- 製品要件は `docs/product-plan.md`、設計判断は `docs/architecture.md`、検証手順は `docs/harness.md`、チケット運用は `docs/linear-workflow.md`。
 - 実装前に受入条件を確認する。修正時は対象の再現ケースを先に用意する。
 - 完了前に `npm run check` を実行する。失敗を無効化や広範な lint 抑制で回避しない。
 - UI・保存経路を変更した場合は専用テスト Vault で実機確認し、実行条件・結果・証跡を `artifacts/` に残す。未実施なら明記する。モックの成功を実機の成功と呼ばない。
