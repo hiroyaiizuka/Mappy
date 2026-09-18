@@ -4,10 +4,10 @@ import { planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdi
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMove, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
-import { layoutTree, type FreeTopicLayout, type LayoutNode, type LayoutResult } from "../layout/layout";
+import { isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { DocumentStore } from "../obsidian/document-store";
-import { readMapLayout, writeMapLayout, type MapLayout } from "../obsidian/frontmatter";
+import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
@@ -26,7 +26,7 @@ export class MindmapView extends ItemView {
   private projected: { document: MindDocument; projection: MapProjection; positions: TopicPositionMap } | undefined;
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
-  private mode: MapLayout = "mindmap";
+  private mode: LayoutMode = "mindmap";
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -44,7 +44,7 @@ export class MindmapView extends ItemView {
    * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
    * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
    */
-  private pendingTopic: { id: string; layout: MapLayout; position: TopicPosition } | null = null;
+  private pendingTopic: { id: string; layout: LayoutMode; position: TopicPosition } | null = null;
   private refreshTimer: number | undefined;
   private layoutFrame: number | undefined;
   private epoch = 0;
@@ -59,7 +59,7 @@ export class MindmapView extends ItemView {
   constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
 
   /** Current presentation, for exports that mirror what the user sees. */
-  snapshot(): { file: TFile; mode: "mindmap" | "timeline"; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
+  snapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
     if (!this.file) return null;
     return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
   }
@@ -77,7 +77,7 @@ export class MindmapView extends ItemView {
     const file = typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
     const changed = this.file !== file;
     this.file = file instanceof TFile && file.extension === "md" ? file : null;
-    if (value.layout === "timeline" || value.layout === "mindmap") this.mode = value.layout;
+    if (isLayoutMode(value.layout)) this.mode = value.layout;
     else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
     if (changed) {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
@@ -103,7 +103,9 @@ export class MindmapView extends ItemView {
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
-    for (const [mode, label, icon] of [["mindmap", "マップ", "git-fork"], ["timeline", "タイムライン", "git-commit-horizontal"]] as const) {
+    for (const [mode, label, icon] of [
+      ["mindmap", "マップ", "git-fork"], ["timeline", "タイムライン", "git-commit-horizontal"], ["hierarchy", "階層図", "network"],
+    ] as const) {
       const button = this.button(modes, label, icon, () => {
         this.selectMode(mode);
       });
@@ -233,7 +235,7 @@ export class MindmapView extends ItemView {
   }
 
   /** A deliberate layout switch is the note's next-open preference. */
-  private selectMode(mode: MapLayout): void {
+  private selectMode(mode: LayoutMode): void {
     if (mode === this.mode) return;
     this.mode = mode;
     this.needsFit = true;

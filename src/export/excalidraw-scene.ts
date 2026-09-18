@@ -2,11 +2,10 @@ import type { MindDocument, MindNode } from '../core/markdown';
 import { nodeBody } from '../core/body';
 import { attachmentEntries } from '../core/attachments';
 import { plainTitle } from '../core/plain-text';
-import { layoutTree, type LayoutBounds, type LayoutNode, type NodeSize } from '../layout/layout';
+import { layoutTree, type LayoutBounds, type LayoutMode, type LayoutNode, type NodeSize } from '../layout/layout';
 import { pathToPoints, type Point } from '../layout/path-points';
 
 export type NodeRole = 'root' | 'stage' | 'branch';
-export type MapMode = 'mindmap' | 'timeline';
 
 /** What each visible node shows, independent of any drawing API. */
 export interface SceneNodeContent {
@@ -101,7 +100,7 @@ function imageRow(images: readonly NodeSize[]): NodeSize {
 export function buildScene(
   contents: SceneContents,
   measures: ReadonlyMap<string, NodeMeasure>,
-  mode: MapMode,
+  mode: LayoutMode,
   collapsed: ReadonlySet<string>,
   origin: Point,
 ): ExcalidrawScene {

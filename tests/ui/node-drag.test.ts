@@ -279,6 +279,25 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('Course'), index: 1 });
   });
 
+  it('uses left/right slots on every hierarchy node, stage or not', () => {
+    const { canvas, actions, node, id, pointer, begin } = fixture();
+    for (const title of ['A', 'A2']) node(title).classList.add('is-hierarchy');
+    begin('B');
+    // Left edge of a hierarchy stage: before it among the root's children.
+    pointer('pointermove', canvas, 110, 165);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('Course'), index: 0 });
+    // Middle: appended as the last of A's three children.
+    pointer('pointermove', canvas, 200, 165);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 3 });
+    pointer('pointerup', canvas, 200, 165);
+    // A deeper hierarchy node: still left/right rather than top/bottom.
+    begin('B');
+    pointer('pointermove', canvas, 110, 300);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 1 });
+    pointer('pointermove', canvas, 290, 300);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
+  });
+
   it('starts from links and images but not from controls or non-primary buttons, and cleans up on unload', () => {
     const { canvas, actions, node, pointer, ghost, begin } = fixture();
     for (const tag of ['a', 'img'] as const) {

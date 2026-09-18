@@ -21,9 +21,15 @@ export interface LayoutPoint {
 /**
  * mindmap: root on the left, branches to the right. timeline: first level on a
  * horizontal axis, deeper levels alternating above and below. hierarchy: root on
- * top, every depth on one row, branches downward (`./hierarchy`).
+ * top, every depth on one row, branches downward (`./hierarchy`). The list is the
+ * single source for the frontmatter value, the view state and the layout buttons.
  */
-export type LayoutMode = "mindmap" | "timeline" | "hierarchy";
+export const LAYOUT_MODES = ["mindmap", "timeline", "hierarchy"] as const;
+export type LayoutMode = (typeof LAYOUT_MODES)[number];
+
+export function isLayoutMode(value: unknown): value is LayoutMode {
+  return typeof value === "string" && (LAYOUT_MODES as readonly string[]).includes(value);
+}
 
 /**
  * A free topic: an independent tree placed beside the body. `position` is its root
