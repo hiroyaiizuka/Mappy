@@ -2,7 +2,7 @@
 
 Obsidian のノートを、そのままマインドマップとしても読み書きするプラグインです。H2 見出しと箇条書きで書いた普通のノートを、マップ・タイムライン・階層図・左右バランスの 4 つのレイアウトで表示し、ノードの追加・編集・移動をそのノートの Markdown に書き戻します。専用のファイル形式はなく、Mappy を外しても見出しと箇条書きのノートのままです。
 
-**ベータ版です。** macOS デスクトップの Obsidian でだけ確認しており、日本語 IME の実入力、Windows・Linux、モバイルの確認は終わっていません（[対応環境](#対応環境)、[既知の制限](#既知の制限)）。日常の Vault に入れる場合は、git や Obsidian Sync などのバックアップがあることを確かめてから使ってください。
+**0.1.x はベータ版です。** macOS デスクトップの Obsidian でだけ確認しており、日本語 IME の実入力、Windows・Linux、モバイルの確認は終わっていません（[対応環境](#対応環境)、[既知の制限](#既知の制限)）。日常の Vault に入れる場合は、git や Obsidian Sync などのバックアップがあることを確かめてから使ってください。
 
 ## できること
 
@@ -49,13 +49,13 @@ frontmatter に書くキーは 3 つです。Mappy が扱うのは `mappy: true`
 
 ## 導入（BRAT）
 
-ベータ版は GitHub release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。コミュニティプラグイン一覧には公開していません。
+ベータ版（0.1.x）は、このリポジトリの GitHub Release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。コミュニティプラグイン一覧には公開していません。
 
 1. Obsidian のコミュニティプラグインから BRAT を入れて有効にする
-2. 設定 → BRAT → Add beta plugin で、リポジトリに `hiroyaiizuka/Mappy` を指定する。リポジトリがプライベートの間は GitHub のトークンも渡す
-3. コミュニティプラグインの一覧で Mappy を有効にする。以後は BRAT の「Check for updates」で新しい版を取り込む
+2. コマンド「BRAT: Add a beta plugin for testing」（設定タブでは Add beta plugin）で、リポジトリに `hiroyaiizuka/Mappy` を入れて Add plugin。BRAT が最新の Release（pre-release を含む）の 3 ファイルを `.obsidian/plugins/mappy/` に置く
+3. コミュニティプラグインの一覧で Mappy を有効にする。以後は BRAT の「Check for updates」で新しい版を取り込む。版を固定したい場合は BRAT の「frozen version」でタグを指定する
 
-トークンの発行、リリースの作り方、注意点の正本は [docs/harness.md の「ベータ配布（BRAT）」](docs/harness.md#ベータ配布brat)です。手動で入れる場合は release に添付された `main.js`・`manifest.json`・`styles.css` の 3 ファイルを Vault の `.obsidian/plugins/mappy/` に置きます。リポジトリ本体には `main.js` を含めていません。
+リリースの作り方と注意点の正本は [docs/harness.md の「リリース手順」](docs/harness.md#リリース手順)です。手動で入れる場合は Release に添付された `main.js`・`manifest.json`・`styles.css` の 3 ファイルを Vault の `.obsidian/plugins/mappy/` に置きます。リポジトリ本体には `main.js` を含めていません。
 
 ## 基本操作
 
@@ -199,7 +199,7 @@ Mappy に自前のサーバーはなく、テレメトリ・更新確認・ノ�
 
 ## ライセンス
 
-**公開ライセンスは未確定で、公開時に確定します。** 現在の `LICENSE` は権利を留保する仮の文面で、ベータ版は試用のために配布しています。
+[MIT License](LICENSE)（Copyright (c) 2026 Hiroya Iizuka）です。
 
 同梱する第三者のコードは Markdown パーサーの [@lezer/markdown](https://github.com/lezer-parser/markdown)（MIT License, Copyright (C) 2020 by Marijn Haverbeke and others）です。他のプラグイン（MarkMind、Light Mindmap）は機能の参考にしており、コードは含みません。
 
@@ -219,7 +219,7 @@ npm ci
 npm run check
 ```
 
-`check` はメタデータ検証 → lint → テスト → 型検査 → production build → 配布物検証 → ブラウザ検証ページのビルドを実行します。Markdown の解析・原文差分、保存と競合、レイアウト、ズーム、DOM の操作も自動テスト対象です。Obsidian のモックを使った成功は実機の成功として扱いません。**公式 lint（`eslint-plugin-obsidianmd`）を通ることは、コミュニティ審査の通過を保証しません。** 審査要件のチェック結果は `artifacts/lev-24-readme/record.md`（git 管理外）に項目ごとに残しています。
+`check` はメタデータ検証 → lint → テスト → 型検査 → production build → 配布物検証 → ブラウザ検証ページのビルドを実行します。Markdown の解析・原文差分、保存と競合、レイアウト、ズーム、DOM の操作も自動テスト対象です。Obsidian のモックを使った成功は実機の成功として扱いません。**公式 lint（`eslint-plugin-obsidianmd`）を通ることは、コミュニティ審査の通過を保証しません。** ベータ版のバージョンは 0.1.x で、タグは `manifest.version` と同じ `x.y.z`（`v` なし）です。審査要件のチェック結果は `artifacts/lev-24-readme/record.md`（git 管理外）に項目ごとに残しています。
 
 ```sh
 npm run dev               # ビルド監視
@@ -237,4 +237,4 @@ npm run harness:browser:capture # headless Chrome で fixture と主要操作を
 
 任意で `npm run hooks:install` を実行すると、このリポジトリの pre-commit に同じ品質ゲートを設定できます。CI の定義は `.github/workflows/check.yml` にあります。
 
-名称・ID `mappy`、作者表記、最低対応バージョン `1.8.7` は開発用です。plugin ID と名前は 2026-09-19 時点のコミュニティ一覧と衝突していませんが、公開時の宣言（対応環境・ID・名称）は別途決めます。
+plugin ID `mappy` と名前 `Mappy` は 2026-09-19 時点のコミュニティ一覧と衝突していません。最低対応バージョン `1.8.7` と `isDesktopOnly: false` は現在の宣言で、対応環境の実機確認は[対応環境](#対応環境)のとおりです。
