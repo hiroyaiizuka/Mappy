@@ -15,9 +15,10 @@ import type { MapTheme } from "../obsidian/settings";
 import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
+import { nodeEmbeds } from "./map-embed";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
-import { MapEvents } from "./map-events";
+import { MapEvents, nodeOf } from "./map-events";
 import { NodeDrag, type DragDelta } from "./node-drag";
 import { InlineEditor } from "./inline-editor";
 import { LinkSuggest } from "./link-suggest";
@@ -230,7 +231,8 @@ export class MindmapView extends ItemView {
     this.zoomLabel = this.button(zoom, "100%", undefined, () => { this.viewport.zoom(1 / this.viewport.value.scale); });
     this.button(zoom, "拡大", "plus", () => { this.viewport.zoom(1.2); });
     this.button(zoom, "全体表示", "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
-    this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }));
+    // A node that is one `![[map]]` draws that map inside itself (§5 M12); the map's own nodes are not this view's.
+    this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }, nodeEmbeds(this.app, this.store)));
     this.viewport = this.addChild(new MapViewport(this.canvas, world, view => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
@@ -258,7 +260,7 @@ export class MindmapView extends ItemView {
       const target = event.targetNode;
       if (!target?.instanceOf(Element)) return;
       if (target.closest("input,textarea,[contenteditable='true'],button,.mappy-floating")) return;
-      const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      const id = nodeOf(this.canvas, target)?.dataset.nodeId;
       if (!this.document || !this.file) return;
       event.preventDefault();
       const menu = new Menu();

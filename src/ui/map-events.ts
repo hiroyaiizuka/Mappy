@@ -19,15 +19,34 @@ export interface MapActions {
 /** What a click on a map means: an internal link to follow, or a node (and whether its fold control was hit). */
 export type MapClick = { link: string; newLeaf: boolean } | { nodeId: string; toggle: boolean };
 
+/**
+ * The node of this canvas that holds `target`. A map embedded in a node (§5 M12) draws
+ * nodes of its own inside that node; those answer to the embed's canvas, never to the
+ * outer map, so the outermost node under the canvas is the one meant.
+ */
+export function nodeOf(canvas: Element, target: Node | null): HTMLElement | null {
+  let node = target?.instanceOf(Element) ? target.closest<HTMLElement>("[data-node-id]") : null;
+  let outer = node?.parentElement?.closest<HTMLElement>("[data-node-id]") ?? null;
+  while (outer && canvas.contains(outer)) {
+    node = outer;
+    outer = outer.parentElement?.closest<HTMLElement>("[data-node-id]") ?? null;
+  }
+  return node && canvas.contains(node) ? node : null;
+}
+
 /** Shared by the map view and the read-only embed, so links and fold controls answer the same way in both. */
-export function mapClick(event: MouseEvent): MapClick | null {
+export function mapClick(event: MouseEvent, canvas: Element): MapClick | null {
   const target = event.targetNode;
   if (!target?.instanceOf(Element)) return null;
   const anchor = target.closest<HTMLAnchorElement>("a.internal-link");
   if (anchor) return { link: anchor.dataset.href ?? anchor.getAttribute("href") ?? "", newLeaf: event.metaKey || event.ctrlKey };
   if (target.closest("a")) return null;
-  const nodeId = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-  return nodeId ? { nodeId, toggle: Boolean(target.closest(".mappy-node-toggle")) } : null;
+  const node = nodeOf(canvas, target);
+  const nodeId = node?.dataset.nodeId;
+  if (!node || !nodeId) return null;
+  // A fold control inside an embedded map belongs to that map's node, not to the node that holds the embed.
+  const toggle = target.closest<HTMLElement>(".mappy-node-toggle");
+  return { nodeId, toggle: Boolean(toggle && toggle.parentElement === node) };
 }
 
 export class MapEvents extends Component {
@@ -39,7 +58,7 @@ export class MapEvents extends Component {
     this.registerDomEvent(this.canvas, "compositionstart", () => { this.composing = true; });
     this.registerDomEvent(this.canvas, "compositionend", () => { this.composing = false; });
     this.registerDomEvent(this.canvas, "click", event => {
-      const click = mapClick(event);
+      const click = mapClick(event, this.canvas);
       if (!click) return;
       if ("link" in click) {
         event.preventDefault();
@@ -53,7 +72,7 @@ export class MapEvents extends Component {
     this.registerDomEvent(this.canvas, "dblclick", event => {
       const target = this.element(event.targetNode);
       if (!target || target.closest("a, button, input, textarea, .mappy-floating, [data-drop-placeholder], .mappy-drag-ghost")) return;
-      const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      const id = nodeOf(this.canvas, target)?.dataset.nodeId;
       if (id) { this.actions.select(id); this.actions.edit(); return; }
       event.preventDefault();
       const rect = this.canvas.getBoundingClientRect();
@@ -65,7 +84,7 @@ export class MapEvents extends Component {
       if (this.element(event.targetNode)?.closest("[data-node-id]")) event.preventDefault();
     });
     this.registerDomEvent(this.canvas, "dragover", event => {
-      const node = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]");
+      const node = nodeOf(this.canvas, event.targetNode);
       if (!node || !event.dataTransfer?.types.includes("Files")) { this.clearDrop(); return; }
       event.preventDefault();
       if (node.hasClass("is-drop-target")) return;
@@ -77,7 +96,7 @@ export class MapEvents extends Component {
       if (!entered || !this.canvas.contains(entered)) this.clearDrop();
     });
     this.registerDomEvent(this.canvas, "drop", event => {
-      const id = this.element(event.targetNode)?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+      const id = nodeOf(this.canvas, event.targetNode)?.dataset.nodeId;
       this.clearDrop();
       const file = event.dataTransfer?.files[0];
       if (!id || !file?.type.startsWith("image/")) return;

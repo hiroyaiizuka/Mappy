@@ -450,16 +450,38 @@ function embedInfo(element: HTMLElement): EmbedInfo {
   };
 }
 
-function nodeInfo(element: HTMLElement): { id: string; title: string; rect: PlainRect; toggle: PlainRect | null; collapsed: boolean; selected: boolean } {
-  const toggle = element.querySelector<HTMLElement>(".mappy-node-toggle");
+function nodeInfo(element: HTMLElement): { id: string; title: string; rect: PlainRect; toggle: PlainRect | null; collapsed: boolean; selected: boolean; embed: boolean } {
+  const toggle = element.querySelector<HTMLElement>(":scope > .mappy-node-toggle");
   return {
     id: element.dataset.nodeId ?? "",
-    title: element.querySelector(".mappy-node-label")?.textContent?.trim() ?? "",
+    // A node that holds a map has no label of its own; its title is the text as written (`![[…]]`).
+    title: element.querySelector(":scope > .mappy-node-content > .mappy-node-label")?.textContent?.trim() ?? element.getAttribute("aria-label") ?? "",
     rect: plainRect(element) ?? { x: 0, y: 0, width: 0, height: 0 },
     toggle: toggle && !toggle.hidden ? plainRect(toggle) : null,
     collapsed: element.classList.contains("is-collapsed"),
     selected: element.classList.contains("is-selected"),
+    embed: element.classList.contains("is-embed"),
   };
+}
+
+/** The view's own nodes: a map drawn inside a node (§5 M12) carries nodes of its own, which are that frame's, not the view's. */
+function ownNodes(): HTMLElement[] {
+  return Array.from(pane.querySelectorAll<HTMLElement>(".mappy-node")).filter(element => !element.parentElement?.closest(".mappy-embed"));
+}
+
+interface NodeEmbedInfo {
+  /** The node holding the map, as `nodes()` reports it. */
+  node: ReturnType<typeof nodeInfo>;
+  /** The frame inside it, as `embeds()` reports a note embed. */
+  frame: EmbedInfo;
+}
+
+/** Every map drawn inside a node of the open view, in DOM order (§5 M12). */
+function nodeEmbeds(): NodeEmbedInfo[] {
+  return ownNodes().filter(element => element.classList.contains("is-embed")).flatMap(element => {
+    const frame = element.querySelector<HTMLElement>(":scope > .mappy-node-content > .mappy-embed");
+    return frame ? [{ node: nodeInfo(element), frame: embedInfo(frame) }] : [];
+  });
 }
 
 /** Exposed for the capture script and manual DevTools use. */
@@ -488,12 +510,16 @@ const api = {
   get openCount() { return openCount; },
   viewport: () => view?.getState().viewport ?? null,
   canvasRect: () => plainRect(pane.querySelector(".mappy-canvas")),
-  nodes: () => Array.from(pane.querySelectorAll<HTMLElement>(".mappy-node"), nodeInfo),
+  /** The view's own nodes; the nodes of a map drawn inside a node are reported by `nodeEmbeds()`. */
+  nodes: () => ownNodes().map(nodeInfo),
   node: (title: string) => {
-    const element = Array.from(pane.querySelectorAll<HTMLElement>(".mappy-node"))
-      .find(candidate => candidate.querySelector(".mappy-node-label")?.textContent?.trim() === title);
+    const element = ownNodes().find(candidate => nodeInfo(candidate).title === title);
     return element ? nodeInfo(element) : null;
   },
+  /** Maps drawn inside nodes of the open view (§5 M12): the holding node and its frame. */
+  nodeEmbeds,
+  /** Live subscriptions on the in-memory vault and workspace: every map on the page holds some, and releases them when it goes. */
+  listeners: () => ({ vault: app.vaultEvents.count(), workspace: app.workspaceEvents.count() }),
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
   /**
    * The Excalidraw scene the command「現在のマップを Excalidraw の図面に挿入」would build from the

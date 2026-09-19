@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { transclusionsAsLinks } from '../../src/core/attachments';
 import {
-  embedTopicLayouts, embedTrees, findSection, initialFolds, isBlockReference, normalizeHeading, readMapFromSource, visibleNodes,
+  embedOnlyTitle, embedTopicLayouts, embedTrees, findSection, initialFolds, isBlockReference, normalizeHeading, readMapFromSource, visibleNodes,
 } from '../../src/core/embed';
 import { parseMarkdown } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
@@ -119,6 +119,31 @@ describe('embedTrees and the opening folds', () => {
     const positions = readTopicPositions(source);
     expect(embedTopicLayouts(trees, positions, 'mindmap').map(topic => topic.position)).toEqual([{ x: 10, y: 20 }, null]);
     expect(embedTopicLayouts(trees, positions, 'hierarchy').map(topic => topic.position)).toEqual([null, null]);
+  });
+});
+
+describe('embedOnlyTitle (an item that is one embed, §5 M12)', () => {
+  it('returns the link text of a title that is exactly one `![[…]]`, whitespace around it allowed, the alias dropped', () => {
+    expect(embedOnlyTitle('![[Map]]')).toBe('Map');
+    expect(embedOnlyTitle('  ![[Folder/Map#見出し#深い]]\t')).toBe('Folder/Map#見出し#深い');
+    expect(embedOnlyTitle('![[Map|別名]]')).toBe('Map');
+    expect(embedOnlyTitle('![[Map#見出し|別名]]')).toBe('Map#見出し');
+    expect(embedOnlyTitle('![[figure.png|120]]')).toBe('figure.png');
+    expect(embedOnlyTitle('![[ Map ]]')).toBe('Map');
+  });
+
+  it('is null for anything else: an embed in a sentence, two embeds, a link, code, an empty embed', () => {
+    expect(embedOnlyTitle('参考 ![[Map]]')).toBeNull();
+    expect(embedOnlyTitle('![[Map]] を見る')).toBeNull();
+    expect(embedOnlyTitle('![[Map]] ![[Other]]')).toBeNull();
+    expect(embedOnlyTitle('[[Map]]')).toBeNull();
+    expect(embedOnlyTitle('`![[Map]]`')).toBeNull();
+    expect(embedOnlyTitle('![[]]')).toBeNull();
+    expect(embedOnlyTitle('![[ ]]')).toBeNull();
+    expect(embedOnlyTitle('![[|alias]]')).toBeNull();
+    expect(embedOnlyTitle('')).toBeNull();
+    expect(embedOnlyTitle('![[Map')).toBeNull();
+    expect(embedOnlyTitle('![[Map]]]')).toBeNull();
   });
 });
 
