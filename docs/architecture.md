@@ -157,7 +157,7 @@ map view のノードの最初の行が `![[マップノート]]`／`![[ノー�
 
 枠の中のノードは外側の view のノードではない。枠の中の要素も `.mappy-node[data-node-id]` なので（id は `root` が衝突しうる）、view 側のクリック（`mapClick`）・ダブルクリック・右クリック・`NodeDrag` の押下と移動先・ファイルドロップは `nodeOf(canvas, target)`（`map-events.ts`）でそのキャンバスの最も外側のノードに帰着させる。開閉ボタンはノード直下の子だけをそのノードのものと見なす。`MapEmbed` 自身のクリック（枠内の開閉とリンク）は内側のキャンバスで先に処理して伝播を止め、それ以外のクリックは外側に伝わって枠を持つノードの選択になる。ホイールとポインターのドラッグは枠が扱わないので外側のパン・ズーム・ノードのドラッグになる（枠内で独立にパン・ズームしない。`touch-action: none`）。`.is-root`／`.is-stage` の label の太字は `> .mappy-node-content > .mappy-node-label` に限り、枠の中の label に及ばない。
 
-再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E34）で確認する。SVG／PNG 書き出し（§9c）は枠の中のマップを配置どおりに描かず（算出スタイルの白名簿に `position`／`transform` がない）、別 issue で扱う。
+再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E34）で確認する。SVG／PNG 書き出し（§9c）は枠の中のマップを配置どおりに描かず（算出スタイルの白名簿に `position`／`transform` がない）、LEV-73 で扱う。
 
 ## 6. 操作とズーム
 
