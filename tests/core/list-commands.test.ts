@@ -118,6 +118,12 @@ describe('source-preserving list commands', () => {
       expect(execute(withBreak, { type: 'add-child', nodeId: find(withBreak, 'Root').id }).source).toBe('## Root\n\nprose\n\n- \n');
       const noBreak = parse('## Root\n\nprose');
       expect(execute(noBreak, { type: 'add-child', nodeId: find(noBreak, 'Root').id, title: LINK }).source).toBe(`## Root\n\nprose\n\n- ${LINK}`);
+      // The other two ways of making a section at the very end keep the break too: a sibling of the last H2, a child of the virtual root.
+      const section = parse('## Root\n- A\n');
+      expect(execute(section, { type: 'add-sibling', nodeId: find(section, 'Root').id }).source).toBe('## Root\n- A\n\n## \n');
+      expect(execute(section, { type: 'add-child', nodeId: 'root' }).source).toBe('## Root\n- A\n\n## \n');
+      const unbroken = parse('## Root\n- A');
+      expect(execute(unbroken, { type: 'add-sibling', nodeId: find(unbroken, 'Root').id }).source).toBe('## Root\n- A\n\n## ');
     });
 
     it('adds the same map twice as two items and leaves the rest of the note byte for byte', () => {

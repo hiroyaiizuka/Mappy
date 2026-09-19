@@ -58,7 +58,6 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
   constructor(app: App, private readonly except: TFile | null, private readonly choose: (file: TFile) => void) {
     super(app);
     this.setPlaceholder('マップを検索（タイトルとパス）');
-    this.emptyStateText = 'マップがありません';
     this.setInstructions([
       { command: '↑↓', purpose: '移動' },
       { command: '↵', purpose: '呼び出す' },
@@ -72,6 +71,12 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
   }
 
   getItemText(file: TFile): string { return searchText(file); }
+
+  /** No map at all and no map matching the query are different news; the empty line says which. */
+  onNoSuggestion(): void {
+    this.emptyStateText = this.getItems().length === 0 ? 'マップがありません' : '一致するマップがありません';
+    super.onNoSuggestion();
+  }
 
   renderSuggestion(match: FuzzyMatch<TFile>, el: HTMLElement): void {
     const file = match.item;

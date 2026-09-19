@@ -134,8 +134,7 @@ export class HarnessApp {
       this.attachmentCount += 1;
       return Promise.resolve(`Attachments/${this.attachmentCount}-${name}`);
     },
-    /** Obsidian's default ("shortest path when possible", extension dropped for notes) for a unique name; other formats are not modelled. */
-    generateMarkdownLink: (file: TFile): string => `[[${file.extension === "md" ? file.basename : file.name}]]`,
+    generateMarkdownLink: (file: TFile): string => `[[${file.name}]]`,
   };
 
   /** Replace or add a file; the map view observes the change like an external edit. */

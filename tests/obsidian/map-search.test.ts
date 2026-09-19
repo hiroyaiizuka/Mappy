@@ -92,9 +92,10 @@ describe('MapSearchModal', () => {
     expect(items().map(item => item.querySelector('.suggestion-title')?.textContent)).toEqual(['timeline']);
     expect(highlighted(items()[0], 'suggestion-note')).toBe('sub');
     expect(highlighted(items()[0], 'suggestion-title')).toBe('time');
+    // A query nothing matches is not "no maps": the vault still has three.
     type(input, 'nothing like this');
     expect(items()).toHaveLength(0);
-    expect(document.querySelector('.suggestion-empty')?.textContent).toBe('マップがありません');
+    expect(document.querySelector('.suggestion-empty')?.textContent).toBe('一致するマップがありません');
   });
 
   it('hands the chosen file back once and closes, by click and by Enter', () => {

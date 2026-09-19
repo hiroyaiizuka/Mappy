@@ -375,6 +375,8 @@ export abstract class SuggestModal<T> extends Modal {
   private readonly instructionsEl: HTMLElement;
   private suggestions: T[] = [];
   private active = 0;
+  /** The query being answered; an older query's late answer is dropped. */
+  private query = 0;
 
   constructor(app: App) {
     super(app);
@@ -387,6 +389,8 @@ export abstract class SuggestModal<T> extends Modal {
     this.instructionsEl = this.modalEl.createDiv({ cls: "prompt-instructions" });
     this.inputEl.addEventListener("input", () => { this.refresh(); });
     this.inputEl.addEventListener("keydown", event => {
+      // Obsidian ignores keys the IME is still composing (keyCode 229): a conversion's Enter never chooses.
+      if (event.isComposing || event.key === "Process") return;
       if (event.key === "ArrowDown") { event.preventDefault(); this.setActive(this.active + 1); }
       else if (event.key === "ArrowUp") { event.preventDefault(); this.setActive(this.active - 1); }
       else if (event.key === "Enter") { event.preventDefault(); this.selectActiveSuggestion(event); }
@@ -429,8 +433,9 @@ export abstract class SuggestModal<T> extends Modal {
   abstract onChooseSuggestion(item: T, evt: MouseEvent | KeyboardEvent): void;
 
   private refresh(): void {
+    const query = ++this.query;
     const result = this.getSuggestions(this.inputEl.value);
-    if (result instanceof Promise) { void result.then(values => { this.show(values); }); return; }
+    if (result instanceof Promise) { void result.then(values => { if (query === this.query) this.show(values); }); return; }
     this.show(result);
   }
 

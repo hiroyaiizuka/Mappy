@@ -14,12 +14,18 @@ import { MindmapView } from '../../src/ui/mindmap-view';
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); Notice.log.length = 0; });
+/** Views mounted by a test, closed after it so a pending refresh or layout frame cannot run into the next test. */
+const mounted: MindmapView[] = [];
+afterEach(async () => {
+  for (const view of mounted.splice(0)) { await view.onClose(); view.unload(); }
+  document.body.replaceChildren();
+  Notice.log.length = 0;
+});
 
 const PATH = 'Fixtures/free-topics.md';
 const OTHER = 'Fixtures/other-map.md';
 const OTHER_SOURCE = '---\nmappy: true\nmappy-layout: timeline\n---\n## 別のマップ\n- 第 1 週\n- 第 2 週\n';
-/** What the in-memory `generateMarkdownLink` writes for a note (Obsidian's default: shortest path, no extension), as an embed. */
+/** The wiki embed of the in-memory `fileToLinktext` (the note's name without extension), as Obsidian writes it for a unique name. */
 const LINK = '![[other-map]]';
 
 function fixtureSource(): string {
@@ -61,6 +67,7 @@ async function mount(source = fixtureSource()): Promise<Mounted> {
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
+  mounted.push(view);
   view.load();
   await view.onOpen();
   const canvas = view.containerEl.querySelector<HTMLElement>('.mappy-canvas');
@@ -179,7 +186,7 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
 
   it('refuses to call the map into itself and refuses while a title is being edited, leaving the note as it was', async () => {
     const source = fixtureSource();
-    const { view, app, source: current, select, canvas, editor, other } = await mount();
+    const { view, app, source: current, select, canvas, editor, other, node } = await mount();
     const self = app.asApp<App>().vault.getAbstractFileByPath(PATH) as TFile;
     await expect(view.callMap(self)).rejects.toThrow('自身');
     expect(current()).toBe(source);
@@ -187,6 +194,23 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true }));
     expect(editor()).not.toBeNull();
     await expect(view.callMap(other)).rejects.toThrow('編集を確定');
+    // The guard sits on the shared edit path, so a context-menu add-child under a kept draft is refused the same way.
+    const execute = (view as unknown as { execute(command: { type: 'add-child'; nodeId: string }): Promise<void> }).execute.bind(view);
+    await expect(execute({ type: 'add-child', nodeId: node('記録する').id })).rejects.toThrow('編集を確定');
     expect(current()).toBe(source);
+  });
+
+  it('says so instead of dropping the choice while a save is in flight, and refuses a note whose body is the virtual root', async () => {
+    const source = fixtureSource();
+    const { view, other, source: current, settle } = await mount();
+    const first = view.callMap(other);
+    await expect(view.callMap(other)).rejects.toThrow('保存処理');
+    await first;
+    await settle();
+    expect(current()).toBe(source.replace('- 習慣化する\n', `- 習慣化する\n- ${LINK}\n`));
+    const headless = '---\nmappy: true\n---\n- 見出しより前の項目\n';
+    const bare = await mount(headless);
+    await expect(bare.view.callMap(bare.other)).rejects.toThrow('H2');
+    expect(bare.source()).toBe(headless);
   });
 });
