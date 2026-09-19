@@ -14,6 +14,7 @@ import {
   installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
   type EditSample, type FrameSample, type LoadSample, type MeasureContext,
 } from "./measure";
+import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import type { LayoutMode } from "../../src/layout/layout";
@@ -118,7 +119,7 @@ async function closeView(): Promise<void> {
   closing.containerEl.remove();
 }
 
-/** `mode` opens the fixture in that layout (the performance runner measures all three); omitted, the note decides. */
+/** `mode` opens the fixture in that layout (the performance runner measures every layout); omitted, the note decides. */
 async function load(id: string, mode?: LayoutMode): Promise<HarnessTiming> {
   const fixture = findFixture(id);
   if (!fixture) throw new Error(`Unknown fixture: ${id}`);
@@ -350,6 +351,29 @@ const api = {
     return element ? nodeInfo(element) : null;
   },
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
+  /**
+   * The Excalidraw scene the command「現在のマップを Excalidraw の図面に挿入」would build from the
+   * view as shown (its layout and folds), with every node measured from its element and no image
+   * blocks, so the capture can compare the scene's coordinates with the nodes on screen. Excalidraw
+   * itself is not here; the insertion is checked on the real vault (E30).
+   */
+  scene: () => {
+    const snapshot = view?.snapshot();
+    if (!snapshot?.document) return null;
+    const contents = sceneContents(snapshot.document, snapshot.collapsed);
+    const measures = new Map(contents.nodes.map(node => {
+      const element = pane.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
+      return [node.id, { label: { width: element?.offsetWidth ?? 0, height: element?.offsetHeight ?? 0 }, images: [] }];
+    }));
+    const scene = buildScene(contents, measures, snapshot.mode, snapshot.collapsed, [0, 0]);
+    return {
+      mode: snapshot.mode,
+      visualRootId: contents.visualRootId,
+      blocks: scene.blocks.map(block => ({ id: block.nodeId, x: block.x, y: block.y, width: block.width, height: block.height })),
+      lines: scene.lines,
+      bounds: scene.bounds,
+    };
+  },
   /** SVG／PNG export of the view as shown (§5 M13); nothing is saved, the capture script writes the files. */
   export: { svg: exportSvg, png: exportPng },
   /** The current fixture's Markdown as the in-memory vault holds it now (edits stay in this page). */

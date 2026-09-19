@@ -8,7 +8,7 @@ import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
-import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
+import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
 import type { MapTheme } from "../obsidian/settings";
@@ -27,11 +27,19 @@ export const VIEW_TYPE = "mappy-map";
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
 
+/** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
+interface SnapIndex {
+  byId: ReadonlyMap<string, PositionedNode>;
+  children: ReadonlyMap<string, readonly PositionedNode[]>;
+  places: ReadonlyMap<string, NodePlace>;
+}
+
 /** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
   mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
   timeline: { label: LAYOUT_LABELS.timeline, icon: "git-commit-horizontal" },
   hierarchy: { label: LAYOUT_LABELS.hierarchy, icon: "network" },
+  balanced: { label: LAYOUT_LABELS.balanced, icon: "unfold-horizontal" },
 };
 
 export class MindmapView extends ItemView {
@@ -69,6 +77,8 @@ export class MindmapView extends ItemView {
      * pushes a timeline stage past a forest).
      */
     base: LayoutResult;
+    /** The snap's reading of `base` (tree structure and each node's place), built once per base rather than per pointer move. */
+    index: SnapIndex | null;
   } | null = null;
   /**
    * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
@@ -443,7 +453,7 @@ export class MindmapView extends ItemView {
       const preview = this.previewLayout(projection, sizes);
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
         this.topicLayouts(preview?.trees));
-      if (this.topicDrag && !preview) this.topicDrag.base = this.layout;
+      if (this.topicDrag && !preview) { this.topicDrag.base = this.layout; this.topicDrag.index = null; }
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
       this.placeholder.hidden = !slot;
@@ -646,7 +656,7 @@ export class MindmapView extends ItemView {
       if (node) from.set(topic.id, { x: node.x - layout.origin.x, y: node.y - layout.origin.y });
     }
     this.topicDrag = {
-      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id), base: layout,
+      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id), base: layout, index: null,
     };
     return this.topicDrag;
   }
@@ -734,26 +744,7 @@ export class MindmapView extends ItemView {
     const view = this.viewport.value;
     const rect = { x: (root.x - view.x) / view.scale, y: (root.y - view.y) / view.scale, width: root.width / view.scale, height: root.height / view.scale };
     const moving = new Set(drag.marked);
-    const byId = new Map(layout.nodes.map(node => [node.id, node]));
-    const children = new Map<string, PositionedNode[]>();
-    const parents = new Set<string>();
-    for (const edge of layout.edges) {
-      const child = byId.get(edge.to);
-      if (!child || edge.to === PLACEHOLDER_ID || moving.has(edge.from) || moving.has(edge.to)) continue;
-      const list = children.get(edge.from) ?? [];
-      list.push(child);
-      children.set(edge.from, list);
-      parents.add(edge.to);
-    }
-    // On the timeline a stage's forest hangs above the axis for even stages and below for odd ones (`placeTimeline`).
-    const places = new Map<string, TimelinePlace>();
-    if (this.mode === "timeline") {
-      for (const node of layout.nodes) {
-        if (parents.has(node.id)) continue;
-        places.set(node.id, "root");
-        (children.get(node.id) ?? []).forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); });
-      }
-    }
+    const { byId, children, places } = drag.index ??= this.snapIndex(layout, moving);
     const slotFor = (node: PositionedNode, widen: number): SnapSlot | null =>
       snapSlot(this.mode, rect, node, children.get(node.id) ?? [], widen, places.get(node.id));
     const resolve = (slot: SnapSlot | null): MoveCommand | null =>
@@ -775,6 +766,42 @@ export class MindmapView extends ItemView {
     }
     if (current && kept !== null && (!best || best.distance >= kept - SNAP_STICK)) return current;
     return best?.command ?? null;
+  }
+
+  /**
+   * What the snap reads from a placeholder-free layout: the visible children of every node (the moving
+   * tree left out) and, where the zones depend on it, each node's place. On the timeline a stage's
+   * forest hangs above the axis for even stages and below for odd ones (`placeTimeline`); in the
+   * balanced map a tree's first level sits right or left of its root (`balancedSideOf`) and every
+   * deeper node keeps that side.
+   */
+  private snapIndex(layout: LayoutResult, moving: ReadonlySet<string>): SnapIndex {
+    const byId = new Map(layout.nodes.map(node => [node.id, node]));
+    const children = new Map<string, PositionedNode[]>();
+    const parents = new Set<string>();
+    for (const edge of layout.edges) {
+      const child = byId.get(edge.to);
+      if (!child || edge.to === PLACEHOLDER_ID || moving.has(edge.from) || moving.has(edge.to)) continue;
+      const list = children.get(edge.from) ?? [];
+      list.push(child);
+      children.set(edge.from, list);
+      parents.add(edge.to);
+    }
+    const places = new Map<string, NodePlace>();
+    if (this.mode === "timeline" || this.mode === "balanced") {
+      for (const node of layout.nodes) {
+        if (parents.has(node.id)) continue;
+        places.set(node.id, "root");
+        const kids = children.get(node.id) ?? [];
+        if (this.mode === "timeline") { kids.forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); }); continue; }
+        const pending = kids.map(kid => ({ kid, side: balancedSideOf(node, kid) }));
+        for (let next = pending.pop(); next; next = pending.pop()) {
+          places.set(next.kid.id, next.side);
+          for (const kid of children.get(next.kid.id) ?? []) pending.push({ kid, side: next.side });
+        }
+      }
+    }
+    return { byId, children, places };
   }
 
   /** A drop on a slot: a topic joins the node as a branch; a failed move puts the tree back. */

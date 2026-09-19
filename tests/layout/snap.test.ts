@@ -125,3 +125,98 @@ describe("snapSlot on the hierarchy's per-parent rows", () => {
     expect(snapSlot("hierarchy", rect(c.x, c.y + c.height + 88), c, [])).toBeNull();
   });
 });
+
+describe("snapSlot on the balanced map's two sides", () => {
+  // Root → A (first, right) with A1, A2; B (second, left) with B1, B2; C (third, right, a leaf); D (fourth, left, a leaf).
+  const tree: LayoutNode = {
+    id: "root",
+    children: [
+      { id: "A", children: [{ id: "A1", children: [] }, { id: "A2", children: [] }] },
+      { id: "B", children: [{ id: "B1", children: [] }, { id: "B2", children: [] }] },
+      { id: "C", children: [] },
+      { id: "D", children: [] },
+    ],
+  };
+  const placed = layoutTree(tree, new Map([["root", { width: 200, height: 60 }]]), new Set(), "balanced");
+  const byId = new Map(placed.nodes.map(item => [item.id, item]));
+  const of = (id: string): PositionedNode => {
+    const found = byId.get(id);
+    if (!found) throw new Error(`Missing ${id}`);
+    return found;
+  };
+  const kids = (id: string): PositionedNode[] => placed.edges.filter(edge => edge.from === id).map(edge => of(edge.to));
+
+  it("a leaf takes its child on its own side: right of a right leaf, left of a left leaf, and nothing on the other side", () => {
+    const [c, d] = [of("C"), of("D")];
+    expect(snapSlot("balanced", rect(c.x + c.width + 30, c.y), c, [], 1, "right")).toEqual({ targetId: "C", position: "inside", distance: 30 + 2 });
+    expect(snapSlot("balanced", rect(c.x - 30 - 120, c.y), c, [], 1, "right")).toBeNull();
+    expect(snapSlot("balanced", rect(d.x - 30 - 120, d.y), d, [], 1, "left")).toEqual({ targetId: "D", position: "inside", distance: 30 + 2 });
+    expect(snapSlot("balanced", rect(d.x + d.width + 30, d.y), d, [], 1, "left")).toBeNull();
+    // The same zone limits as the map, mirrored: 8 units of overlap to 72 past the edge.
+    expect(snapSlot("balanced", rect(d.x - 72 - 120, d.y), d, [], 1, "left")?.position).toBe("inside");
+    expect(snapSlot("balanced", rect(d.x - 73 - 120, d.y), d, [], 1, "left")).toBeNull();
+    expect(snapSlot("balanced", rect(d.x + 8 - 120, d.y), d, [], 1, "left")?.position).toBe("inside");
+    expect(snapSlot("balanced", rect(d.x + 9 - 120, d.y), d, [], 1, "left")).toBeNull();
+  });
+
+  it("a left node's children line up on their right edges, a right node's on their left edges", () => {
+    const [a, b, a1, a2, b1, b2] = [of("A"), of("B"), of("A1"), of("A2"), of("B1"), of("B2")];
+    expect(a1.x).toBe(a.x + a.width + 56);
+    expect(b1.x + b1.width).toBe(b.x - 56);
+    // Between B1 and B2, right edge on their line: before B2. Off that line by more than 24 units: nothing.
+    const betweenB = (b1.y + b1.height + b2.y) / 2 - 20;
+    expect(snapSlot("balanced", rect(b1.x + b1.width - 120, betweenB), b, kids("B"), 1, "left")).toMatchObject({ targetId: "B2", position: "before" });
+    expect(snapSlot("balanced", rect(b1.x + b1.width - 120 - 25, betweenB), b, kids("B"), 1, "left")).toBeNull();
+    // Judged on the left edge, as a right node would be, the same spot lines up with nothing.
+    expect(snapSlot("balanced", rect(b1.x + b1.width - 120, betweenB), b, kids("B"), 1, "right")).toBeNull();
+    const betweenA = (a1.y + a1.height + a2.y) / 2 - 20;
+    expect(snapSlot("balanced", rect(a1.x, betweenA), a, kids("A"), 1, "right")).toMatchObject({ targetId: "A2", position: "before" });
+    expect(snapSlot("balanced", rect(a1.x, a2.y + a2.height / 2), a, kids("A"), 1, "right")).toMatchObject({ targetId: "A2", position: "after" });
+  });
+
+  it("the root's children form a column on each side, each judged on its own line, and a slot lands the topic on that side", () => {
+    const root = of("root");
+    const [a, b, c, d] = [of("A"), of("B"), of("C"), of("D")];
+    // Right column: A then C. Between them, left edge on their line: before C (source index 2, an even index: the right side).
+    expect(snapSlot("balanced", rect(a.x, (a.y + a.height + c.y) / 2 - 20), root, kids("root"), 1, "root")).toMatchObject({ targetId: "C", position: "before" });
+    // Under C: the next index (4) is dealt to the right, so the topic joins after the last child of all (D), which keeps it under C.
+    expect(snapSlot("balanced", rect(a.x, c.y + c.height / 2), root, kids("root"), 1, "root")).toMatchObject({ targetId: "D", position: "after" });
+    // Left column: B then D, lined up on their right edges. Between them: before D (index 3, the left side).
+    expect(snapSlot("balanced", rect(b.x + b.width - 120, (b.y + b.height + d.y) / 2 - 20), root, kids("root"), 1, "root")).toMatchObject({ targetId: "D", position: "before" });
+    // Under D there is no index that lands on the left (index 4 goes right), so nothing is offered rather than a slot that jumps sides.
+    expect(snapSlot("balanced", rect(b.x + b.width - 120, d.y + d.height / 2), root, kids("root"), 1, "root")).toBeNull();
+    // The columns are far apart: a rect on the left edge line of the left column matches neither.
+    expect(snapSlot("balanced", rect(b.x, (b.y + b.height + d.y) / 2 - 20), root, kids("root"), 1, "root")).toBeNull();
+    // A collapsed root (no children) takes its first child on the right, like the map.
+    expect(snapSlot("balanced", rect(root.x + root.width + 30, root.y), root, [], 1, "root")?.position).toBe("inside");
+    expect(snapSlot("balanced", rect(root.x - 30 - 120, root.y), root, [], 1, "root")).toBeNull();
+  });
+
+  it("with an odd count the append slot is on the left, and a lone child leaves the root's left side open for the second", () => {
+    // Three children: A (right), B (left), C (right). The next index, 3, is dealt to the left.
+    const three: LayoutNode = { id: "root", children: [{ id: "A", children: [] }, { id: "B", children: [] }, { id: "C", children: [] }] };
+    const placedThree = layoutTree(three, new Map([["root", { width: 200, height: 60 }]]), new Set(), "balanced");
+    const at = (result: typeof placedThree, id: string): PositionedNode => {
+      const found = result.nodes.find(item => item.id === id);
+      if (!found) throw new Error(`Missing ${id}`);
+      return found;
+    };
+    const rootOf = (result: typeof placedThree): PositionedNode => at(result, "root");
+    const kidsOf = (result: typeof placedThree): PositionedNode[] => result.edges.filter(edge => edge.from === "root").map(edge => at(result, edge.to));
+    const [a3, b3, c3] = [at(placedThree, "A"), at(placedThree, "B"), at(placedThree, "C")];
+    // Under C in the right column: no even index is free after the last child, so nothing.
+    expect(snapSlot("balanced", rect(a3.x, c3.y + c3.height / 2), rootOf(placedThree), kidsOf(placedThree), 1, "root")).toBeNull();
+    // Under B in the left column: index 3 is the left side, reached by joining after the last child of all, C.
+    expect(snapSlot("balanced", rect(b3.x + b3.width - 120, b3.y + b3.height / 2), rootOf(placedThree), kidsOf(placedThree), 1, "root"))
+      .toMatchObject({ targetId: "C", position: "after" });
+    // Before A still works: the topic takes index 0 (right) and A moves to the left, as the rule fixes.
+    expect(snapSlot("balanced", rect(a3.x, a3.y - 20), rootOf(placedThree), kidsOf(placedThree), 1, "root")).toMatchObject({ targetId: "A", position: "before" });
+
+    // One child: A on the right. The second child would hang left of the root, so that empty side is a zone; the right side is not.
+    const one: LayoutNode = { id: "root", children: [{ id: "A", children: [] }] };
+    const placedOne = layoutTree(one, new Map([["root", { width: 200, height: 60 }]]), new Set(), "balanced");
+    const root1 = rootOf(placedOne);
+    expect(snapSlot("balanced", rect(root1.x - 30 - 120, root1.y), root1, kidsOf(placedOne), 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 30 + 10 });
+    expect(snapSlot("balanced", rect(at(placedOne, "A").x, at(placedOne, "A").y + 44), root1, kidsOf(placedOne), 1, "root")).toBeNull();
+  });
+});
