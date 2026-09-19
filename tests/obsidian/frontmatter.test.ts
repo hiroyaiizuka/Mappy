@@ -35,6 +35,8 @@ describe('layoutFromFrontmatter', () => {
   it('accepts every layout mode, trimmed and case-insensitively, and never a look-alike', () => {
     expect(layoutFromFrontmatter('hierarchy')).toBe('hierarchy');
     expect(layoutFromFrontmatter(' Hierarchy ')).toBe('hierarchy');
+    expect(layoutFromFrontmatter('balanced')).toBe('balanced');
+    expect(layoutFromFrontmatter(' Balanced ')).toBe('balanced');
     expect(layoutFromFrontmatter('issue-tree')).toBe('mindmap');
     expect(layoutFromFrontmatter(['hierarchy'])).toBe('mindmap');
   });
@@ -46,6 +48,7 @@ describe('readMapLayout', () => {
     expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' }).instance, file())).toBe('timeline');
     expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'unknown' }).instance, file())).toBe('mindmap');
     expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'hierarchy' }).instance, file())).toBe('hierarchy');
+    expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'balanced' }).instance, file())).toBe('balanced');
   });
 
   it('does not claim ordinary, disabled, malformed, or legacy layout-only notes', () => {
@@ -76,7 +79,7 @@ describe('writeMapLayout', () => {
     expect(processFrontMatter).toHaveBeenCalledOnce();
   });
 
-  it.each(['timeline', 'hierarchy'] as const)('stores %s as the optional initial layout and replaces the previous one', async layout => {
+  it.each(['timeline', 'hierarchy', 'balanced'] as const)('stores %s as the optional initial layout and replaces the previous one', async layout => {
     const { instance, store } = app({ tags: ['a'], [LAYOUT_KEY]: layout === 'timeline' ? 'hierarchy' : 'timeline' });
     await writeMapLayout(instance, file(), layout);
     expect(store).toEqual({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: layout });

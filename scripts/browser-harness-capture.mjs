@@ -105,6 +105,45 @@ async function captureFixtures(recorder, page, timings) {
   }
 }
 
+/**
+ * Which side of the body root every node sits on in the balanced layout, from the DOM rects and the
+ * snapshot's tree: each first-level child with its source index and side, deeper nodes that are not on
+ * their first-level ancestor's side (`strays`), and the vertical centres of the root and of each side's extent.
+ */
+async function balancedSides(page) {
+  return page.evaluate(`(() => {
+    const nodes = Array.from(document.querySelectorAll('.mappy-node'));
+    const rects = new Map(nodes.map(node => [node.dataset.nodeId, node.getBoundingClientRect()]));
+    const titles = new Map(nodes.map(node => [node.dataset.nodeId, node.querySelector('.mappy-node-label')?.textContent?.trim() ?? '']));
+    const doc = window.__mappyHarness.view.snapshot().document;
+    const parents = new Map(doc.nodes.map(node => [node.id, node.parentId]));
+    const rootEl = nodes.find(node => node.classList.contains('is-root'));
+    const rootId = rootEl?.dataset.nodeId;
+    const root = rootEl?.getBoundingClientRect();
+    const children = new Map();
+    for (const [id, parentId] of parents) { if (!children.has(parentId)) children.set(parentId, []); children.get(parentId).push(id); }
+    const sideOf = rect => rect.x + rect.width / 2 < root.x + root.width / 2 ? 'left' : 'right';
+    const stages = (children.get(rootId) ?? []).filter(id => rects.has(id)).map((id, index) => ({ id, index, title: titles.get(id), side: sideOf(rects.get(id)) }));
+    const expected = new Map();
+    const pending = stages.map(stage => ({ id: stage.id, side: stage.side }));
+    while (pending.length > 0) { const next = pending.pop(); expected.set(next.id, next.side); for (const child of children.get(next.id) ?? []) pending.push({ id: child, side: next.side }); }
+    const strays = []; let unmatched = 0; let rightCount = 0; let leftCount = 0;
+    const columns = { right: [], left: [] };
+    for (const [id, rect] of rects) {
+      if (id === rootId) continue;
+      const want = expected.get(id);
+      if (!want) { unmatched += 1; continue; }
+      const side = sideOf(rect);
+      if (side !== want) strays.push(titles.get(id));
+      if (side === 'right') rightCount += 1; else leftCount += 1;
+      columns[side].push(rect);
+    }
+    // Each side is a column of subtrees centred on the root, so the extent of all its nodes is centred there too.
+    const centre = column => column.length ? (Math.min(...column.map(r => r.top)) + Math.max(...column.map(r => r.bottom))) / 2 : NaN;
+    return { stages, strays, unmatched, rightCount, leftCount, rootCentre: root ? root.top + root.height / 2 : NaN, rightCentre: centre(columns.right), leftCentre: centre(columns.left) };
+  })()`);
+}
+
 /** The harness's description of the node with this title (rect, toggle, flags); missing nodes fail the case. */
 async function nodeInfo(page, name) {
   const node = await page.harness(`h.node(${JSON.stringify(name)})`);
@@ -302,12 +341,99 @@ async function captureOperations(recorder, page) {
     }
   });
 
+  await recorder.run('balanced', '左下の「左右バランス」', 'ルートが中央、第一階層が原文順に右・左・右・左、下位はその側へ伸び、ノード数は変わらない。`mappy-layout: balanced` が書かれる', async () => {
+    const before = (await page.harness('h.nodes()')).length;
+    const button = await page.harness('h.button("左右バランス")');
+    expect(button, 'balanced button missing');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const balanced = await page.evaluate(`document.querySelectorAll('.mappy-node.is-balanced').length`);
+    expect(balanced === before, `${balanced} balanced nodes of ${before}`);
+    const sides = await balancedSides(page);
+    expect(sides.stages.length > 1, 'the root has fewer than two children');
+    // First level: even source indices right of the root, odd ones left; deeper nodes on their branch's side.
+    const wrongStage = sides.stages.filter(stage => stage.side !== (stage.index % 2 === 0 ? 'right' : 'left'));
+    expect(wrongStage.length === 0, `stages on the wrong side: ${JSON.stringify(wrongStage.map(stage => `${stage.index}:${stage.title}`))}`);
+    expect(sides.strays.length === 0, `deeper nodes off their branch's side: ${JSON.stringify(sides.strays)}`);
+    expect(sides.unmatched === 0, `${sides.unmatched} nodes without a first-level ancestor (ids of the snapshot and the DOM differ?)`);
+    // The root sits between the two columns, vertically centred on each.
+    expect(Math.abs(sides.rightCentre - sides.rootCentre) < 1.5 && Math.abs(sides.leftCentre - sides.rootCentre) < 1.5,
+      `columns not centred on the root: root ${sides.rootCentre.toFixed(1)}, right ${sides.rightCentre.toFixed(1)}, left ${sides.leftCentre.toFixed(1)}`);
+    const activity = await page.harness('h.activity');
+    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"balanced"')), 'balanced preference was not written through processFrontMatter');
+    return `${balanced} nodes, 第一階層 ${sides.stages.map(stage => `${stage.index}:${stage.side === 'right' ? '右' : '左'}`).join(' ')}、右 ${sides.rightCount} / 左 ${sides.leftCount} ノード`;
+  });
+
+  await recorder.run('balanced-collapse', `左右バランスで左側の「${title}」の開閉ボタン`, '24 の件数がノードの左に出て、ノードが減り、右側の枝は動かず、再展開で戻る', async () => {
+    const before = await page.harness('h.nodes()');
+    const node = await nodeRect(title);
+    expect(node.toggle, 'fold control missing');
+    // The fold control of a left-side parent sits on its left stem.
+    expect(node.toggle.x + node.toggle.width / 2 < node.rect.x, 'fold control is not left of the node');
+    const root = await nodeRect('不均等な枝');
+    const rightSide = before.filter(item => item.rect.x > root.rect.x + root.rect.width).map(item => [item.id, item.rect.x, item.rect.y]);
+    expect(rightSide.length > 0, 'no nodes right of the root');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    try {
+      const after = await nodeRect(title);
+      expect(after.collapsed, 'node did not collapse');
+      const badge = await page.evaluate(`document.querySelector('.mappy-node.is-collapsed .mappy-node-toggle-mark')?.textContent`);
+      expect(badge === '24', `badge shows ${badge}`);
+      expect(after.toggle.x + after.toggle.width < after.rect.x + 1, 'badge is not left of the node');
+      const nodes = await page.harness('h.nodes()');
+      expect(nodes.length === before.length - 24, `${nodes.length} nodes after collapsing 24`);
+      // Folding a left branch leaves the right column where it was.
+      const moved = rightSide.filter(([id, x, y]) => { const now = nodes.find(item => item.id === id); return !now || Math.abs(now.rect.x - x) > 0.5 || Math.abs(now.rect.y - y) > 0.5; });
+      expect(moved.length === 0, `${moved.length} right-side nodes moved when a left branch folded`);
+      return `badge ${badge} 左側、${before.length} → ${nodes.length} nodes、右側 ${rightSide.length} ノードは不動`;
+    } finally {
+      const current = await nodeRect(title);
+      if (current.collapsed && current.toggle) {
+        await page.click(center(current.toggle).x, center(current.toggle).y);
+        await page.settle();
+      }
+      const restored = (await page.harness('h.nodes()')).length;
+      expect(restored === before.length, `${restored} nodes after re-expanding`);
+    }
+  });
+
+  await recorder.run('balanced-scene', '左右バランスの表示から Excalidraw 挿入のシーンを組み立てる', '各ノードのブロックがマップ上の位置（ルート基準）と一致し、左側のブロックはルートの左、線は直角の折れ線', async () => {
+    const scene = await page.harness('h.scene()');
+    expect(scene && scene.mode === 'balanced', `scene mode ${scene?.mode}`);
+    const view = await page.harness('h.viewport()');
+    const canvas = await page.harness('h.canvasRect()');
+    const nodes = await page.harness('h.nodes()');
+    const rootNode = nodes.find(item => item.id === scene.visualRootId);
+    const rootBlock = scene.blocks.find(block => block.id === scene.visualRootId);
+    expect(rootNode && rootBlock, 'root missing from the scene or the DOM');
+    const rootWorld = worldPoint(view, rootNode.rect, canvas);
+    let compared = 0;
+    let left = 0;
+    for (const block of scene.blocks) {
+      const node = nodes.find(item => item.id === block.id);
+      expect(node, `scene block ${block.id} has no node on screen`);
+      const world = worldPoint(view, node.rect, canvas);
+      const dx = (block.x - rootBlock.x) - (world.x - rootWorld.x);
+      const dy = (block.y - rootBlock.y) - (world.y - rootWorld.y);
+      expect(Math.abs(dx) < 1.5 && Math.abs(dy) < 1.5, `${node.title}: scene offset differs from the map by (${dx.toFixed(2)}, ${dy.toFixed(2)})`);
+      compared += 1;
+      if (block.x + block.width < rootBlock.x) left += 1;
+    }
+    expect(compared === nodes.length && compared === scene.blocks.length, `${compared} blocks compared for ${nodes.length} nodes and ${scene.blocks.length} blocks`);
+    expect(left > 0, 'no block left of the root in the scene');
+    expect(scene.lines.length === scene.blocks.length - 1, `${scene.lines.length} lines for ${scene.blocks.length} blocks`);
+    const bent = scene.lines.filter(line => line.some((point, index) => index > 0 && point[0] !== line[index - 1][0] && point[1] !== line[index - 1][1]));
+    expect(bent.length === 0, `${bent.length} lines with a diagonal segment`);
+    return `${compared} ブロックの位置がマップと一致（許容 1.5px）、左側 ${left} ブロック、線 ${scene.lines.length} 本すべて直角`;
+  });
+
   await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
     const button = await page.harness('h.button("マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
-    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy').length`);
-    expect(timeline === 0, `${timeline} nodes still in timeline or hierarchy`);
+    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy, .mappy-node.is-balanced').length`);
+    expect(timeline === 0, `${timeline} nodes still in timeline, hierarchy or balanced`);
     const activity = await page.harness('h.activity');
     const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
     expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
@@ -418,6 +544,39 @@ async function captureOperations(recorder, page) {
     const restored = (await page.harness('h.nodes()')).length;
     expect(restored === before, `nodes after expand ${restored}`);
     return `${before} → ${folded} → ${restored}、閉じてから安定まで約 ${foldMs} ms（settle の待ち時間込み）`;
+  });
+
+  await recorder.run('fold-2000-balanced', 'performance-2000 を左右バランスで開き、左側の「第2節」へ寄って分岐点を閉じる → Space で開く', '100 の節が右・左に 50 ずつ、19 ノードが隠れ、再展開で戻る', async () => {
+    const timing = await loadFixture(page, 'performance-2000', 'balanced');
+    // A layout switch through the view state keeps the viewport, so start from the whole map like a fresh open.
+    const fit = await page.harness('h.button("全体表示")');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+    const before = (await page.harness('h.nodes()')).length;
+    expect(before === timing.nodes, `DOM has ${before} nodes, parser found ${timing.nodes}`);
+    const sides = await balancedSides(page);
+    expect(sides.stages.length === 100 && sides.stages.filter(stage => stage.side === 'right').length === 50, `stages: ${sides.stages.length}, right ${sides.stages.filter(stage => stage.side === 'right').length}`);
+    expect(sides.strays.length === 0 && sides.unmatched === 0, `${sides.strays.length} strays, ${sides.unmatched} unmatched`);
+    let node = await nodeRect('第2節');
+    for (let step = 0; step < 12 && (await page.harness('h.viewport()')).scale < 0.8; step += 1) {
+      const point = center(node.rect);
+      await page.wheel(point.x, point.y, 0, -200, 2);
+      node = await nodeRect('第2節');
+    }
+    expect(node.toggle, 'fold control missing on 第2節');
+    expect(node.toggle.x + node.toggle.width / 2 < node.rect.x, 'fold control of the left-side 第2節 is not on its left');
+    const startFold = Date.now();
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    const folded = (await page.harness('h.nodes()')).length;
+    const foldMs = Date.now() - startFold;
+    expect(folded === before - 19, `nodes ${before} → ${folded}`);
+    await page.key(' ', 'Space', 32);
+    await page.settle();
+    const restored = (await page.harness('h.nodes()')).length;
+    expect(restored === before, `nodes after expand ${restored}`);
+    expect(!(await page.harness('h.source()')).includes('mappy-layout'), 'opening through the view state wrote mappy-layout');
+    return `初回配置 ${timing.firstLayoutMs.toFixed(1)} ms、安定 ${timing.settledMs.toFixed(1)} ms、${before} → ${folded} → ${restored}、閉じてから安定まで約 ${foldMs} ms（settle の待ち時間込み）`;
   });
 }
 
@@ -799,6 +958,11 @@ async function captureTopicOperations(recorder, page) {
     await snapCase('timeline', 'topic-snap-timeline-axis', 'タイムライン', ['記録する', '習慣化する'], '軸上の「記録する」と「習慣化する」の間', (topic, [left, right], from) => ({
       x: (left.x + left.width + right.x) / 2 + (from.x - (topic.x + topic.width / 2)), y: left.y + left.height / 2 + (from.y - (topic.y + topic.height / 2)),
     }), '- 記録する\n  - ふりかえる\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n- 習慣化する\n', '記録する の後ろのステージになる');
+    // Balanced: 記録する (the second child) hangs left of the root with its leaf ふりかえる on its left, so the child slot is
+    // the mirror image of the map's: the root's right edge 24 px left of the leaf, level with it.
+    await snapCase('balanced', 'topic-snap-balanced', '左右バランス', ['ふりかえる'], '左側の「ふりかえる」の左隣', (topic, [goal], from) => ({
+      x: goal.x - 24 - topic.width + (from.x - topic.x), y: goal.y + (from.y - topic.y),
+    }), '  - ふりかえる\n    - 位置のないトピック\n      `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n      - 既定位置\n', 'ふりかえる の子になる');
   } finally {
     // Back to the map, with its own Fit, for the cases that follow.
     await switchLayout('mindmap');

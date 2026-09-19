@@ -18,14 +18,16 @@ const SNAP_LINE = 24;
 export interface SnapSlot { targetId: string; position: DropPosition; distance: number }
 
 /**
- * Where a node hangs on the timeline: the root, a stage whose forest goes above or below the axis
- * (`placeTimeline` alternates by stage index), or a node inside a forest. The other layouts ignore it.
+ * Where a node hangs in the layouts whose zones depend on it. Timeline: the root, a stage whose
+ * forest goes above or below the axis (`placeTimeline` alternates by stage index), or a node
+ * inside a forest. Balanced map: the root, or a node on its right or left side (`balancedSide`
+ * deals the first level; deeper nodes keep their branch's side). The other layouts ignore it.
  */
-export type TimelinePlace = "root" | "upper" | "lower" | "forest";
+export type NodePlace = "root" | "upper" | "lower" | "forest" | "right" | "left";
 
 type Axis = "x" | "y";
 /** A side of a node on which its children hang. */
-type Side = "right" | "below" | "above";
+type Side = "right" | "left" | "below" | "above";
 
 function span(box: LayoutBounds, axis: Axis): { from: number; to: number; mid: number } {
   const from = axis === "x" ? box.x : box.y;
@@ -40,10 +42,11 @@ function span(box: LayoutBounds, axis: Axis): { from: number; to: number; mid: n
  */
 function beside(rect: LayoutBounds, node: PositionedNode, side: Side, widen: number, landing?: (node: PositionedNode) => number): SnapSlot | null {
   const gap = side === "right" ? rect.x - (node.x + node.width)
-    : side === "below" ? rect.y - (node.y + node.height)
-      : node.y - (rect.y + rect.height);
+    : side === "left" ? node.x - (rect.x + rect.width)
+      : side === "below" ? rect.y - (node.y + node.height)
+        : node.y - (rect.y + rect.height);
   if (gap < -SNAP_OVERLAP * widen || gap > SNAP_GAP * widen) return null;
-  const across: Axis = side === "right" ? "y" : "x";
+  const across: Axis = side === "right" || side === "left" ? "y" : "x";
   const own = span(rect, across);
   const other = span(node, across);
   const pad = SNAP_PAD * widen;
@@ -82,24 +85,39 @@ function stageLanding(stage: PositionedNode): number {
   return stage.x + stage.width / 2 + TIMELINE_STEM_GAP;
 }
 
+/** A column of children growing right shares its left edge; one growing left, its right edge (the mirror image). */
+function columnLine(side: "right" | "left"): (box: LayoutBounds) => number {
+  return side === "right" ? box => box.x : box => box.x + box.width;
+}
+
 /**
  * The slot the root of a dragged tree (`rect`) would take beside `node`, whose visible children are
  * `kids`, or null when the root is not in the node's zone. The zones follow each layout's geometry.
  * With no children, the root joins as the last child when it sits where the first child would go:
- * right of the node in the map and in the timeline's forests, below it in the hierarchy, and on the
- * side of the axis a timeline stage's forest takes (`place`). With children, it slots in among them
- * by position along the line they share (a column, a row, or the timeline axis) when it lines up
- * with them across it. `widen` stretches every zone, so the slot already shown is kept a while.
+ * right of the node in the map and in the timeline's forests, below it in the hierarchy, on the
+ * side of the axis a timeline stage's forest takes, and on a balanced node's own side (`place`).
+ * With children, it slots in among them by position along the line they share (a column, a row,
+ * or the timeline axis) when it lines up with them across it; the balanced root's children form
+ * a column on each side, judged on its own line. `widen` stretches every zone, so the slot
+ * already shown is kept a while.
  */
 export function snapSlot(
-  mode: LayoutMode, rect: LayoutBounds, node: PositionedNode, kids: readonly PositionedNode[], widen = 1, place: TimelinePlace = "forest",
+  mode: LayoutMode, rect: LayoutBounds, node: PositionedNode, kids: readonly PositionedNode[], widen = 1, place: NodePlace = "forest",
 ): SnapSlot | null {
   if (kids.length === 0) {
     if (mode === "hierarchy") return beside(rect, node, "below", widen);
     if (mode === "timeline" && (place === "upper" || place === "lower")) return beside(rect, node, place === "upper" ? "above" : "below", widen, stageLanding);
+    if (mode === "balanced" && place === "left") return beside(rect, node, "left", widen);
     return beside(rect, node, "right", widen);
   }
   if (mode === "hierarchy") return among(rect, kids, "x", box => box.y, widen);
   if (mode === "timeline" && place === "root") return among(rect, kids, "x", box => box.y + box.height / 2, widen);
-  return among(rect, kids, "y", box => box.x, widen);
+  if (mode === "balanced" && place === "root") {
+    const centre = node.x + node.width / 2;
+    const slots = (["right", "left"] as const)
+      .map(side => among(rect, kids.filter(kid => (kid.x + kid.width / 2 < centre) === (side === "left")), "y", columnLine(side), widen))
+      .filter((slot): slot is SnapSlot => slot !== null);
+    return slots.sort((first, second) => first.distance - second.distance)[0] ?? null;
+  }
+  return among(rect, kids, "y", columnLine(mode === "balanced" && place === "left" ? "left" : "right"), widen);
 }

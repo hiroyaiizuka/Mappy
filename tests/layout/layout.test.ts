@@ -272,7 +272,7 @@ describe("tree layout", () => {
     }
   });
 
-  it.each(["mindmap", "timeline", "hierarchy"] as const)("removes collapsed descendants and their edges in %s", (mode) => {
+  it.each(["mindmap", "timeline", "hierarchy", "balanced"] as const)("removes collapsed descendants and their edges in %s", (mode) => {
     const expanded = layoutTree(tree, sizes, new Set(), mode);
     const collapsed = layoutTree(tree, sizes, new Set(["a"]), mode);
     expectDisjoint(collapsed);
@@ -281,7 +281,7 @@ describe("tree layout", () => {
     expect(layoutTree(tree, sizes, new Set(["root"]), mode).nodes).toHaveLength(1);
   });
 
-  it.each(["mindmap", "timeline", "hierarchy"] as const)("handles 500 nodes of mixed sizes without overlap in %s", (mode) => {
+  it.each(["mindmap", "timeline", "hierarchy", "balanced"] as const)("handles 500 nodes of mixed sizes without overlap in %s", (mode) => {
     const branches: LayoutNode[] = [];
     const measurements = new Map<string, NodeSize>();
     let count = 1;
@@ -351,7 +351,7 @@ describe("free topics", () => {
       && first.y < second.y + second.height && first.y + first.height > second.y;
   }
 
-  it.each(["mindmap", "timeline", "hierarchy"] as const)("leaves the body geometry untouched and reports the body root as origin in %s", mode => {
+  it.each(["mindmap", "timeline", "hierarchy", "balanced"] as const)("leaves the body geometry untouched and reports the body root as origin in %s", mode => {
     const alone = layoutTree(body, bodySizes, new Set(), mode);
     const withTopics = layoutTree(body, bodySizes, new Set(), mode, topics);
     const bodyIds = new Set(alone.nodes.map(item => item.id));
@@ -363,11 +363,12 @@ describe("free topics", () => {
     if (!root) return;
     expect(alone.origin).toEqual({ x: root.x, y: root.y });
     expect(withTopics.origin).toEqual(alone.origin);
-    // Map: root on the left edge. Timeline: axis through y = 0. Hierarchy: root centered on x = 0.
-    expect(mode === "timeline" ? root.y + root.height / 2 : mode === "hierarchy" ? root.x + root.width / 2 : root.x).toBe(0);
+    // Map: root on the left edge. Timeline: axis through y = 0. Hierarchy: root centered on x = 0. Balanced: root centered on (0, 0).
+    if (mode === "balanced") expect([root.x + root.width / 2, root.y + root.height / 2]).toEqual([0, 0]);
+    else expect(mode === "timeline" ? root.y + root.height / 2 : mode === "hierarchy" ? root.x + root.width / 2 : root.x).toBe(0);
   });
 
-  it.each(["mindmap", "timeline", "hierarchy"] as const)("stacks unpositioned topics below the body without overlapping anything and inside the bounds in %s", mode => {
+  it.each(["mindmap", "timeline", "hierarchy", "balanced"] as const)("stacks unpositioned topics below the body without overlapping anything and inside the bounds in %s", mode => {
     const alone = layoutTree(body, bodySizes, new Set(), mode);
     const result = layoutTree(body, bodySizes, new Set(), mode, topics);
     expect(result.nodes).toHaveLength(alone.nodes.length + 6);
@@ -389,11 +390,11 @@ describe("free topics", () => {
       // Source order becomes vertical order: each topic sits below the body and below the previous topic.
       expect(topic.y).toBeGreaterThanOrEqual(previousBottom + 48);
       const subtree = result.nodes.filter(item => item.id.startsWith(id));
-      // The topic's tree is flush with the body's left edge; in the hierarchy, whose left edge may be a far-off
-      // leaf of its widest row, it is centered under the body root instead.
+      // The topic's tree is flush with the body's left edge; in the hierarchy and the balanced map, whose left edge
+      // may be a far-off leaf of the widest row or of the left side, it is centered under the body root instead.
       const left = Math.min(...subtree.map(item => item.x));
       const right = Math.max(...subtree.map(item => item.x + item.width));
-      if (mode === "hierarchy") expect((left + right) / 2).toBeCloseTo(alone.origin.x + (byId(alone).get("root")?.width ?? 0) / 2, 6);
+      if (mode === "hierarchy" || mode === "balanced") expect((left + right) / 2).toBeCloseTo(alone.origin.x + (byId(alone).get("root")?.width ?? 0) / 2, 6);
       else expect(left).toBe(alone.bounds.x);
       previousBottom = Math.max(...subtree.map(item => item.y + item.height));
       for (const item of subtree) {
@@ -410,7 +411,7 @@ describe("free topics", () => {
     expect(result.bounds.height).toBeGreaterThan(alone.bounds.height);
   });
 
-  it.each(["mindmap", "timeline", "hierarchy"] as const)("puts a positioned topic's root at origin + offset, keeps its tree shape, and includes it in the bounds in %s", mode => {
+  it.each(["mindmap", "timeline", "hierarchy", "balanced"] as const)("puts a positioned topic's root at origin + offset, keeps its tree shape, and includes it in the bounds in %s", mode => {
     const placed = [
       { tree: node("t1", node("t1a"), node("t1b")), position: { x: -400, y: 300 } },
       { tree: node("t2"), position: { x: 900, y: -250 } },

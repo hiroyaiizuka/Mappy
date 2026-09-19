@@ -7,7 +7,7 @@ import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPosit
 import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
-import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
+import { snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
 import type { ViewRouter } from "../obsidian/view-routing";
@@ -29,6 +29,7 @@ const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
   mindmap: { label: "マップ", icon: "git-fork" },
   timeline: { label: "タイムライン", icon: "git-commit-horizontal" },
   hierarchy: { label: "階層図", icon: "network" },
+  balanced: { label: "左右バランス", icon: "unfold-horizontal" },
 };
 
 export class MindmapView extends ItemView {
@@ -689,12 +690,18 @@ export class MindmapView extends ItemView {
       parents.add(edge.to);
     }
     // On the timeline a stage's forest hangs above the axis for even stages and below for odd ones (`placeTimeline`).
-    const places = new Map<string, TimelinePlace>();
-    if (this.mode === "timeline") {
-      for (const node of layout.nodes) {
-        if (parents.has(node.id)) continue;
-        places.set(node.id, "root");
-        (children.get(node.id) ?? []).forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); });
+    // In the balanced map a tree's first level sits right or left of its root and every deeper node keeps that side.
+    const places = new Map<string, NodePlace>();
+    for (const node of layout.nodes) {
+      if (parents.has(node.id) || (this.mode !== "timeline" && this.mode !== "balanced")) continue;
+      places.set(node.id, "root");
+      const kids = children.get(node.id) ?? [];
+      if (this.mode === "timeline") { kids.forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); }); continue; }
+      const centre = node.x + node.width / 2;
+      const pending = kids.map(kid => ({ kid, side: kid.x + kid.width / 2 < centre ? "left" as const : "right" as const }));
+      for (let next = pending.pop(); next; next = pending.pop()) {
+        places.set(next.kid.id, next.side);
+        for (const kid of children.get(next.kid.id) ?? []) pending.push({ kid, side: next.side });
       }
     }
     const slotFor = (node: PositionedNode, widen: number): SnapSlot | null =>

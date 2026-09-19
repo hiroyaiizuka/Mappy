@@ -26,9 +26,9 @@ describe('browser-harness-perf', () => {
     expect(() => selectFixtures({ shapes: ['spiral'] })).toThrow(/Unknown shape/u);
   });
 
-  it('measures the product\'s three layouts by default, in the product\'s order, and rejects unknown ones', () => {
+  it('measures the product\'s four layouts by default, in the product\'s order, and rejects unknown ones', () => {
     expect(LAYOUTS).toEqual([...LAYOUT_MODES]);
-    expect(selectLayouts({})).toEqual(['mindmap', 'timeline', 'hierarchy']);
+    expect(selectLayouts({})).toEqual(['mindmap', 'timeline', 'hierarchy', 'balanced']);
     expect(selectLayouts({ layouts: ['hierarchy', 'mindmap'] })).toEqual(['mindmap', 'hierarchy']);
     expect(() => selectLayouts({ layouts: ['radial'] })).toThrow(/Unknown layout/u);
   });
@@ -44,9 +44,9 @@ describe('browser-harness-perf', () => {
     ];
     const summary = buildSummary(fixtures, samples);
     expect(summary.map(row => [row.fixture, row.layout])).toEqual([
-      ['performance-500', 'mindmap'], ['performance-500', 'timeline'], ['performance-500', 'hierarchy'],
+      ['performance-500', 'mindmap'], ['performance-500', 'timeline'], ['performance-500', 'hierarchy'], ['performance-500', 'balanced'],
     ]);
-    const [mindmap, timeline, hierarchy] = summary;
+    const [mindmap, timeline, hierarchy, balanced] = summary;
     expect(mindmap?.load.firstLayoutMs).toMatchObject({ n: 10, p50: 28, p95: 100, min: 20, max: 100 });
     expect(mindmap?.['markdown-edit'].totalMs).toMatchObject({ n: 1, p50: 64, p95: 64 });
     expect(mindmap?.pan).toMatchObject({ n: 4, over: 1, max: 33.4 });
@@ -54,6 +54,7 @@ describe('browser-harness-perf', () => {
     expect(mindmap?.['inline-key'].totalMs?.n).toBe(0);
     expect(timeline?.load.firstLayoutMs?.n).toBe(0);
     expect(hierarchy?.load.firstLayoutMs).toMatchObject({ n: 1, p50: 70 });
+    expect(balanced?.load.firstLayoutMs?.n).toBe(0);
     // A record from before the layout dimension has no `mode`; it belongs to the mind map.
     expect(buildSummary(fixtures, [{ ...load('performance-500', 5), mode: undefined }], ['mindmap'])[0]?.load.firstLayoutMs?.n).toBe(1);
   });

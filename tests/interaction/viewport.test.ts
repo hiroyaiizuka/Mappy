@@ -67,7 +67,7 @@ describe("viewport", () => {
     const root = { id: "root", children: branches };
     const allNodes = [root, ...branches, ...branches.flatMap(branch => branch.children)];
     const sizes = new Map(allNodes.map(node => [node.id, { width: 224, height: 54 }]));
-    for (const mode of ["mindmap", "timeline", "hierarchy"] as const) {
+    for (const mode of ["mindmap", "timeline", "hierarchy", "balanced"] as const) {
       const layout = layoutTree(root, sizes, new Set(), mode);
       expect(layout.nodes).toHaveLength(count);
       const view = fitToBounds(layout.bounds, 1000, 700, 60);

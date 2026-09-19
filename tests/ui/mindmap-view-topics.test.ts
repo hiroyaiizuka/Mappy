@@ -779,7 +779,7 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     gone: { x: leaf.x, y: leaf.y + leaf.height + 400, ...size },
   };
 
-  it.each([['mindmap', 'right'], ['timeline', 'right'], ['hierarchy', 'down']] as const)(
+  it.each([['mindmap', 'right'], ['timeline', 'right'], ['hierarchy', 'down'], ['balanced', 'right']] as const)(
     'in %s, beside a leaf it becomes the last child; level with a node\'s children it slots in among them; far away nothing', async (mode, grow) => {
       const source = fixtureSource();
       const { view, topic } = await mount(source, mode);
@@ -834,6 +834,48 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
     // Right of it, where the map would put a child, is nothing in the hierarchy.
     expect(snap(glossary.id, at(view, { x: last.x + last.width + 30, y: last.y + last.height + 30, ...size }), null)).toBeNull();
+    shift(glossary.id, null);
+  });
+
+  it('in the balanced map, a left branch takes the topic on its left, its children line up on their right edges, and the root has a column on each side', async () => {
+    const source = fixtureSource();
+    const { view, topic } = await mount(source, 'balanced');
+    const doc = documentOf(view);
+    const body = projectMap(doc).root;
+    const glossary = topic('補足: 用語');
+    const record = doc.nodes.find(node => node.title === '記録する');
+    const review = doc.nodes.find(node => node.title === 'ふりかえる');
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!record || !review || !habit) throw new Error('Missing nodes');
+    const { shift, snap } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    const root = placed(view, body);
+    const recover = placed(view, doc.nodes.find(node => node.title === '回復する'));
+    const left = placed(view, record);
+    const leftLeaf = placed(view, review);
+    const last = placed(view, habit);
+    // 記録する (second child) hangs left of the root with ふりかえる on its left; 回復する and 習慣化する hang right.
+    expect(left.x + left.width).toBe(root.x - 80);
+    expect(leftLeaf.x + leftLeaf.width).toBe(left.x - 56);
+    expect(recover.x).toBe(root.x + root.width + 80);
+    expect(last.x).toBe(recover.x);
+    // Left of the left leaf, level with it: its child. Right of it (between it and its parent) is nothing.
+    expect(snap(glossary.id, at(view, { x: leftLeaf.x - 30 - size.width, y: leftLeaf.y, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: review.id, index: 0 });
+    expect(snap(glossary.id, at(view, { x: leftLeaf.x + leftLeaf.width + 8, y: leftLeaf.y, ...size }), null)).toBeNull();
+    // On the left column's line (right edges), centred on 記録する's top edge: before it (source index 1); on its lower half: after it (index 2).
+    expect(snap(glossary.id, at(view, { x: left.x + left.width - size.width, y: left.y - size.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 1 });
+    expect(snap(glossary.id, at(view, { x: left.x + left.width - size.width, y: left.y + left.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 2 });
+    // On the right column's line (left edges), centred just above 習慣化する: before it (index 2); on its lower half: after it (index 3).
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y - size.height / 2 - 4, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 2 });
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height / 2, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
+    // Right of the right leaf 習慣化する: its child, as in the map.
+    expect(snap(glossary.id, at(view, { x: last.x + last.width + 30, y: last.y, ...size }), null))
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
     shift(glossary.id, null);
   });
 

@@ -68,6 +68,7 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-parent", node.children.length > 0);
       entry.element.toggleClass("is-timeline", appearance.mode === "timeline");
       entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
+      entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       entry.element.setAttribute("aria-label", node.title.trim() || "空のノード");
