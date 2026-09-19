@@ -33,7 +33,7 @@ Obsidian API 型は、現在の lint パッケージの peer dependency と初�
 
 ## 既存 TaskChute Plus から引き継いだ点
 
-参考元: `/Users/hiroyaiizuka/Desktop/Evergreens/.obsidian/plugins/taskchute-plus`。
+参考元: 本人の Vault にある TaskChute Plus プラグイン（ローカルのみ。公開リポジトリではない）。
 
 | 参考ファイル | 採用した考え方 | Mappy での変更 |
 | --- | --- | --- |
