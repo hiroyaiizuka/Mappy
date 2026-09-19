@@ -203,6 +203,39 @@
 .mappy-view .mappy-node-toggle:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
 .mappy-view .mappy-node-toggle[hidden] { display: none; }
 .mappy-view .mappy-zoom { right: 16px; bottom: 16px; }
+/* Embedded map (§5 M10): the node and edge styles of the view inside a frame of fixed height; no panning, no editing.
+   The frame follows Obsidian's theme like any other embed; only its own variables are set here. */
+.mappy-embed.mappy-view {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--mappy-embed-height, 320px);
+  margin: 4px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+.mappy-embed.mappy-view .mappy-canvas { cursor: default; touch-action: auto; }
+.mappy-embed.mappy-view .mappy-canvas[hidden] { display: none; }
+.mappy-embed.mappy-view .mappy-node { cursor: default; }
+.mappy-embed.mappy-view .mappy-embed-open {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 2;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  border-radius: 6px;
+  opacity: 0.55;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+.mappy-embed.mappy-view .mappy-embed-open:hover, .mappy-embed.mappy-view .mappy-embed-open:focus-visible { opacity: 1; }
+.mappy-embed.mappy-view .mappy-embed-message { position: absolute; inset: 50% 44px auto 16px; transform: translateY(-50%); color: var(--text-muted); font-size: var(--font-ui-small); }
+.mappy-embed.mappy-view .mappy-embed-message[hidden] { display: none; }
+/* Live preview renders the map inside Obsidian's own embed container: its rendered note stays hidden while the map is shown. */
+.internal-embed.mappy-embed-host { display: block; }
+.internal-embed.mappy-embed-host > :not(.mappy-embed) { display: none; }
 .mappy-view .mappy-file-input { display: none; }
 .mappy-edit-modal .mappy-edit-input { width: 100%; margin: 8px 0 12px; }
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }

@@ -14,3 +14,9 @@ export type LayoutMode = (typeof LAYOUT_MODES)[number];
 export function isLayoutMode(value: unknown): value is LayoutMode {
   return typeof value === "string" && (LAYOUT_MODES as readonly string[]).includes(value);
 }
+
+/** A frontmatter or view-state value as a layout: unknown values, casing and padding fall back to the regular map. */
+export function layoutFromValue(value: unknown): LayoutMode {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : value;
+  return isLayoutMode(normalized) ? normalized : "mindmap";
+}

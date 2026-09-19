@@ -62,6 +62,29 @@ export function installObsidianDom(): void {
   for (const [name, value] of Object.entries(nodeMethods)) {
     Object.defineProperty(Node.prototype, name, { value, configurable: true, writable: true });
   }
+  // The window-level creators make detached elements (no parent to append to).
+  const globalCreators = {
+    createEl<K extends keyof HTMLElementTagNameMap>(tag: K, options?: DomElementInfo | string, callback?: (el: HTMLElementTagNameMap[K]) => void): HTMLElementTagNameMap[K] {
+      const element = document.createElement(tag);
+      const info = typeof options === "string" ? { cls: options } : options;
+      applyInfo(element, info, document.createDocumentFragment());
+      element.remove();
+      callback?.(element);
+      return element;
+    },
+    createDiv(options?: DomElementInfo | string, callback?: (el: HTMLDivElement) => void): HTMLDivElement {
+      return globalCreators.createEl("div", options, callback);
+    },
+    createSpan(options?: DomElementInfo | string, callback?: (el: HTMLSpanElement) => void): HTMLSpanElement {
+      return globalCreators.createEl("span", options, callback);
+    },
+  };
+  // vitest's jsdom copies window keys onto Node's global once at setup, so both need the creators.
+  for (const target of new Set<object>([window, globalThis])) {
+    for (const [name, value] of Object.entries(globalCreators)) {
+      Object.defineProperty(target, name, { value, configurable: true, writable: true });
+    }
+  }
   Object.defineProperty(Node.prototype, "win", {
     configurable: true,
     get(this: Node): Window { return (this.ownerDocument ?? document).defaultView ?? window; },

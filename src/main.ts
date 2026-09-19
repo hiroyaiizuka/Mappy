@@ -7,6 +7,7 @@ import {
 import { createMindmapFile } from "./obsidian/map-files";
 import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
+import { MapEmbeds } from "./ui/map-embed";
 import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
 
 export default class MappyPlugin extends Plugin {
@@ -30,6 +31,11 @@ export default class MappyPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.bridge.ensureHook(); }));
 
     this.registerView(VIEW_TYPE, leaf => new MindmapView(leaf, store, this.router));
+    // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is
+    // unregistered first and the release below puts the plain embeds back without a new map taking over.
+    const embeds = new MapEmbeds(this.app, store);
+    this.register(() => { embeds.dispose(); });
+    this.registerMarkdownPostProcessor(embeds.processor);
     this.addCommand({
       id: "create-mindmap", name: "新しいマインドマップを作成",
       callback: () => {

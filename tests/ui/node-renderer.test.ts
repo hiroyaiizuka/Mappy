@@ -227,3 +227,15 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     expect(toggle?.getAttribute('aria-expanded')).toBe('false');
   });
 });
+
+describe('NodeRenderer title rendering', () => {
+  it('renders a note transclusion in a title as a link and keeps image embeds, so a node never nests another note', async () => {
+    const { parsed, renderer } = setup('## Course\n- ![[Other Map]] と ![[図.png|120]]\n- ![[doc.pdf]]\n');
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+    await Promise.resolve();
+    const labels = parsed.nodes.map(node => renderer.entries.get(node.id)?.content.querySelector('.mappy-node-label')?.textContent);
+    expect(labels).toEqual(['Course', '[[Other Map]] と ![[図.png|120]]', '[[doc.pdf]]']);
+    // The identity key still carries the title as written, so the DOM is reused across updates.
+    expect(renderer.entries.get(id(parsed, '![[doc.pdf]]'))?.key).toBe('Course.md\0![[doc.pdf]]\0');
+  });
+});

@@ -3,6 +3,17 @@ import { GFM, parser } from '@lezer/markdown';
 const attachmentParser = parser.configure(GFM);
 
 const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/iu;
+/** A wiki embed whose target (before any `|alias` or `#heading`) is an image file. */
+const IMAGE_EMBED = /^!\[\[[^\]|#\r\n]*\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[|#][^\]\r\n]*)?\]\]$/iu;
+
+/**
+ * Note and PDF transclusions become plain links; only image embeds stay embeds.
+ * Titles and body attachments share this rule, so a node never renders another
+ * note inside itself and an embedded map cannot recurse through its own nodes.
+ */
+export function transclusionsAsLinks(markdown: string): string {
+  return markdown.replace(/!\[\[[^\]\r\n]+\]\]/gu, (embed) => (IMAGE_EMBED.test(embed) ? embed : embed.slice(1)));
+}
 
 export interface AttachmentEntry {
   kind: 'image' | 'link';
@@ -57,12 +68,8 @@ function attachmentSnippets(body: string): AttachmentSnippets {
   let lastEnd = -1;
   for (const range of attachments.sort((left, right) => left.from - right.from || right.to - left.to)) {
     if (range.from < lastEnd || protectedRanges.some(literal => range.from < literal.to && range.to > literal.from)) continue;
-    let snippet = body.slice(range.from, range.to);
     // Note/PDF transclusions stay links; only image embeds become previews.
-    if (snippet.startsWith('![[') && !/\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[|#][^\]]*)?\]\]$/iu.test(snippet)) {
-      snippet = snippet.slice(1);
-    }
-    snippets.push(snippet);
+    snippets.push(transclusionsAsLinks(body.slice(range.from, range.to)));
     lastEnd = range.to;
   }
   return { snippets, references };

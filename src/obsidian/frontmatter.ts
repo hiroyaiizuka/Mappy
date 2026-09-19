@@ -1,6 +1,6 @@
 import type { App, TFile } from 'obsidian';
 import { TOPICS_KEY } from '../core/topics';
-import { isLayoutMode, type LayoutMode } from '../core/layout-mode';
+import { layoutFromValue, type LayoutMode } from '../core/layout-mode';
 
 /** Canonical identity marker. Only the YAML boolean `true` claims a Markdown note. */
 export const MAPPY_KEY = 'mappy';
@@ -13,8 +13,7 @@ const EXCALIDRAW_KEY = 'excalidraw-plugin';
 
 /** Layout never determines whether a file is a map. Unknown values use the safe default. */
 export function layoutFromFrontmatter(value: unknown): LayoutMode {
-  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : value;
-  return isLayoutMode(normalized) ? normalized : 'mindmap';
+  return layoutFromValue(value);
 }
 
 function frontmatter(app: App, file: TFile): Record<string, unknown> | undefined {

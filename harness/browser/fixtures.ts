@@ -6,8 +6,11 @@ import headingDocument from "../../tests/fixtures/heading-document.md?raw";
 import roundtripEdgeCases from "../../tests/fixtures/roundtrip-edge-cases.md?raw";
 import unevenBranches from "../../tests/fixtures/uneven-branches.md?raw";
 import freeTopics from "../../tests/fixtures/free-topics.md?raw";
+import embedHost from "../../tests/fixtures/embed-host.md?raw";
+import embedTimeline from "../../tests/fixtures/embed-timeline.md?raw";
+import embedHierarchy from "../../tests/fixtures/embed-hierarchy.md?raw";
 import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
-import { makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
+import { makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
 
 export interface HarnessFixture {
   /** Stable identifier for the `?fixture=` query and the automation API. */
@@ -76,4 +79,55 @@ export const FIXTURES: readonly HarnessFixture[] = [...staticFixtures, ...perfor
 
 export function findFixture(id: string | null | undefined): HarnessFixture | undefined {
   return FIXTURES.find(fixture => fixture.id === id);
+}
+
+/**
+ * A note that embeds maps (§5 M10), shown on the page as a rendered note instead of
+ * a map view. `reading` renders the host's own sections and lets the post processor
+ * replace the `![[…]]` placeholders (reading view, hover preview); `live` renders each
+ * embedded note inside an Obsidian-like embed container first and hands those
+ * sections to the processor (live preview).
+ */
+export interface HarnessHost {
+  id: string;
+  path: string;
+  label: string;
+  covers: string;
+  source: string;
+  mode: "reading" | "live";
+}
+
+const [embed2000Filename, embed2000Source] = makeEmbedFixture();
+
+/** Map notes the host embeds that are not fixtures of the map view themselves; `harness:prepare` writes the same files. */
+export const EMBED_TARGETS: readonly { path: string; source: string }[] = [
+  { path: `${FIXTURE_DIRECTORY}/embed-timeline.md`, source: embedTimeline },
+  { path: `${FIXTURE_DIRECTORY}/embed-hierarchy.md`, source: embedHierarchy },
+  { path: `${FIXTURE_DIRECTORY}/${embed2000Filename}`, source: embed2000Source },
+];
+
+const HOST_COVERS = "通常マップ（uneven-branches）・タイムライン・階層図・`#見出し` の部分木（同名見出しの最初の一致）・2,000 ノード（embed-2000）を埋め込み、"
+  + "`mappy: true` のないノート・存在しないノート・ブロック参照は通常の埋め込みのまま";
+
+export const EMBED_HOSTS: readonly HarnessHost[] = [
+  {
+    id: "embed-host",
+    path: `${FIXTURE_DIRECTORY}/embed-host.md`,
+    label: "embed-host（閲覧モード: ホストの区画を差し替え）",
+    covers: `${HOST_COVERS}。閲覧モードと同じく、ホストの区画にある placeholder の span を post-processor が差し替える`,
+    source: embedHost,
+    mode: "reading",
+  },
+  {
+    id: "embed-host-live",
+    path: `${FIXTURE_DIRECTORY}/embed-host.md`,
+    label: "embed-host-live（ライブプレビュー相当: 埋め込み内容側で差し替え）",
+    covers: `${HOST_COVERS}。ライブプレビューと同じく、Obsidian が埋め込み先を描いた後にその区画から post-processor が容器を差し替える`,
+    source: embedHost,
+    mode: "live",
+  },
+];
+
+export function findHost(id: string | null | undefined): HarnessHost | undefined {
+  return EMBED_HOSTS.find(host => host.id === id);
 }

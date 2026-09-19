@@ -1,7 +1,7 @@
 import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
-import { attachmentMarkdown } from "../core/attachments";
+import { attachmentMarkdown, transclusionsAsLinks } from "../core/attachments";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
 
 interface NodeEntry {
@@ -93,8 +93,9 @@ export class NodeRenderer extends Component {
       entry.component = this.addChild(new Component());
       entry.content.empty();
       const label = entry.content.createDiv({ cls: "mappy-node-label" });
+      // A note transclusion in a title renders as a link (as in the body), so a node never nests another note's rendering.
       const labelTask = node.title
-        ? MarkdownRenderer.render(this.app, node.title, label, sourcePath, entry.component)
+        ? MarkdownRenderer.render(this.app, transclusionsAsLinks(node.title), label, sourcePath, entry.component)
         : Promise.resolve();
       const attachmentsEl = entry.content.createDiv({ cls: "mappy-node-attachments" });
       const attachmentsTask = attachments

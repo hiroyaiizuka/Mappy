@@ -1,6 +1,6 @@
 # Mappy の設計と試作実装
 
-更新: 2026-09-18。現在の実装と、引き続き検証する条件を記す。実装済みという記述は、対応環境全体での動作保証を意味しない。
+更新: 2026-09-19。現在の実装と、引き続き検証する条件を記す。実装済みという記述は、対応環境全体での動作保証を意味しない。
 
 ## 1. 中心となる判断
 
@@ -43,6 +43,9 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
 | `src/layout/drop-preview.ts` / `snap.ts` | ドラッグ中の移動先に仮ノードを差し込んだレイアウト用の木と、運んだトピックのルートの矩形からレイアウト別の幾何で合流先を決めるスロット判定 | 純粋 TypeScript |
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
+| `src/core/embed.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード | 純粋 TypeScript |
+| `src/obsidian/embed-target.ts` | `.internal-embed` の `src` からマップノートと見出しパスを解決（`parseLinktext`、`getFirstLinkpathDest`、metadataCache の `mappy: true`） | Obsidian の公開 API |
+| `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
 
 Markdown parser は原文の UTF-16 offset を得られる `@lezer/markdown` を採用した。通常の Markdown を構文解析し、frontmatter と Obsidian コメントを補助処理する。製品コードはブラウザ互換にし、Node/Electron や非公開の Obsidian parser を使わない。ランタイム依存は package.json で固定し、バンドルの実測値とハッシュは各ビルドの `dist/build-info.json` と証跡で追う。モバイル互換性は設計上の条件であり、実機では未確認。
 
@@ -130,6 +133,19 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 `layoutTree` は本体を原点に配置したうえで、各フリートピックを同じモードの独立した木として配置する。位置があるトピックは `origin + 位置` に置く（他のノードと重なっても利用者の指定を優先する）。位置がないトピックは本体の bounds の下に原文順で積み、配置済みのどの矩形（開閉ボタンを含む）とも重ならない最初の空きに置く。列はマップとタイムラインでは本体の左端に揃え、階層図では本体の左端が最も広い段の端になり得るためルートの中央に揃える。Fit の bounds は本体・トピック・開閉ボタンすべてを含む。ドラッグ中の仮ノードは移動先を含む木（本体または一つのトピック）だけを組み替える。Excalidraw への挿入（`sceneContents`）は本体のみで、フリートピックを含めるかは M7 の残項目。
 
 大規模化は、差分更新 → 折りたたみ → 可視領域外 DOM の省略の順に検討する。Worker や WebGL は、計測で必要性が出た段階で判断する。
+
+### 5b. 埋め込み表示（M10）
+
+別のノートの `![[マップノート]]`／`![[ノート#見出し]]` を読み取り専用のマップとして描く。`registerMarkdownPostProcessor` を 1 つ登録し（`src/main.ts`）、post-processor `MapEmbeds.process` は同じ区画を 2 つの経路で見る。
+
+1. **ホストの区画（閲覧モード・ホバープレビュー）**: 区画の `.internal-embed` の `src` を `resolveEmbedTarget` で解決し、`mappy: true` のノート（cache で判定。文字列 `"true"`、Excalidraw、`.md` 以外、ブロック参照 `#^id`、自分自身は対象外）なら、Obsidian がノートを読み込む前に placeholder の span を `div.mappy-embed.mappy-view` に差し替える。
+2. **埋め込み先の区画（ライブプレビュー）**: ライブプレビューではホストの段落は CodeMirror の widget で区画にならず、Obsidian が埋め込み先のノートを `.internal-embed.markdown-embed` の中に描いたその区画が post-processor に届く（`ctx.sourcePath` は埋め込み先）。`ctx.sourcePath` のノートがマップで、区画が `.internal-embed` の中にあれば、その容器を 1 度だけ claim する: `mappy-embed-host` を付けて Obsidian の内容を CSS で隠し（`.internal-embed.mappy-embed-host > :not(.mappy-embed)`）、`markdown-embed`／`inline-embed` を外して同じ枠を末尾に足す。区画がまだ DOM に付いていなければ次のフレームで 1 度だけ見直す。マップ自身のノードの中で描かれた区画（`.mappy-view` の内側）と、claim した容器の中に残る Obsidian の描画は対象にしない。通常ノートの埋め込みの中にあるマップの埋め込みは（Obsidian がその通常ノートを描くときに）描く。
+
+描画は既存の `NodeRenderer`（`sourcePath` は元ノート。リンク・画像は元ノート基準）、`layoutTree`、`fitToBounds` を使い、view の編集・ドラッグ・パン／ズーム・履歴は持ち込まない。元ノートの原文は `DocumentStore.read`（開いているエディタのバッファを優先）で読み、`mappy: true` と `mappy-layout` は cache ではなくその原文から読む（`readMapFromSource`）。`![[ノート#A#B]]` は Obsidian の `[[ノート#A#B]]` と同じく、文書順で最初に A に一致する見出し、その区画の中で最初に B に一致する見出しに解決する（`findSection`。正規化は `stripHeading` に準じて `:#|^\` と `%%`・`[[`・`]]` を空白にし、連続する空白を 1 つにして大文字小文字を無視する。リスト項目は見出しではない）。見出しが見つからない場合とノートがマップでなくなった場合は枠の中に一文を出す。枠の高さは既定 320px（`--mappy-embed-height`）で、配置後に全体を Fit し、1 倍を超えて拡大しない。開いた時点でルート直下より下の枝をすべて折りたたみ（`initialFolds`）、開閉ボタンで一段ずつ開ける。折りたたみは枠内の一時状態で原文を変えない。元ノートの `editor-change`（別 leaf の未保存の編集）・`modify`・`rename`・`delete` で 45 ms の debounce の後に再読込し、読者の折りたたみは残し、新しく現れた枝は折りたたむ。右上のボタンで元ノートを開く（`openLinkText`。`mappy: true` のノートは §8 のルーティングでマップになる）。
+
+Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差し替えられたとき・ホストを閉じたとき・ポップオーバーが閉じたときに Obsidian が unload する。unload で rAF・タイマー・`ResizeObserver`・vault／workspace のイベント（`registerEvent`）・`NodeRenderer` の MarkdownRenderer の Component を解放し、ホスト側の DOM を元に戻す（閲覧モードは placeholder の span、ライブプレビューは容器のクラスと内容）。`MapEmbeds` は生きている埋め込みを持ち、プラグインの unload（post-processor の解除より前に登録）で全部を解放し、それらを表示していた閲覧モードの view を `previewMode.rerender(true)` で描き直す。ノードのタイトルの `![[ノート]]`（画像以外）は本文の添付と同じ規則でリンクとして描くので（`transclusionsAsLinks`）、埋め込みの中で別のノートの埋め込みが描かれることはなく、循環しない。自分自身の埋め込みは Obsidian の扱いに任せる。
+
+再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E31）で確認する。
 
 ## 6. 操作とズーム
 
