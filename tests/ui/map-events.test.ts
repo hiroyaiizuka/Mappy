@@ -236,6 +236,71 @@ describe('MapEvents DOM interactions', () => {
     expect(actions.command).not.toHaveBeenCalled();
   });
 
+  it('does not act on a key something else already consumed', () => {
+    const { canvas, node, actions } = fixture();
+    // Obsidian's keymap consumes a key at the window's capture phase; a listener there stands in for it.
+    const consume = (event: KeyboardEvent): void => { if (event.key === 'F2') event.preventDefault(); };
+    window.addEventListener('keydown', consume, true);
+    try {
+      expect(key(node, 'F2').defaultPrevented).toBe(true);
+      expect(actions.edit).not.toHaveBeenCalled();
+      expect(key(canvas, 'Enter').defaultPrevented).toBe(true);
+      expect(actions.command).toHaveBeenCalledOnce();
+    } finally { window.removeEventListener('keydown', consume, true); }
+  });
+
+  describe('as the view scope handler (Obsidian consults it before its own hotkeys)', () => {
+    /** Not dispatched: the handler judges the event by its target, as Obsidian's keymap hands it over at the window. */
+    const scoped = (target: EventTarget, value: string, init: KeyboardEventInit = {}): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, 'target', { value: target });
+      return event;
+    };
+
+    it('takes F2 on a node inside the canvas: edits, prevents the default and reports it as consumed', () => {
+      const { node, actions, events } = fixture();
+      const event = scoped(node, 'F2');
+      expect(events.hotkey(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+      expect(actions.edit).toHaveBeenCalledOnce();
+    });
+
+    it('leaves F2 alone outside the canvas, inside the inline editor, during composition and without a selection', () => {
+      const { canvas, node, actions, events } = fixture();
+      const outside = document.createElement('button');
+      document.body.append(outside);
+      expect(events.hotkey(scoped(outside, 'F2'))).toBeUndefined();
+      expect(events.hotkey(scoped(document.body, 'F2'))).toBeUndefined();
+      const input = document.createElement('textarea');
+      node.append(input);
+      expect(events.hotkey(scoped(input, 'F2'))).toBeUndefined();
+      const composing = scoped(node, 'F2', { isComposing: true });
+      expect(events.hotkey(composing)).toBeUndefined();
+      expect(composing.defaultPrevented).toBe(false);
+      actions.selected.mockReturnValue(undefined);
+      const unselected = scoped(canvas, 'F2');
+      expect(events.hotkey(unselected)).toBeUndefined();
+      expect(unselected.defaultPrevented).toBe(false);
+      expect(actions.edit).not.toHaveBeenCalled();
+    });
+
+    it('edits once when the keymap consumes the key before the canvas listener sees it', () => {
+      const { node, actions, events } = fixture();
+      // What Obsidian's Keymap does with a `false` from the active view's scope: preventDefault and stopPropagation.
+      const keymap = (event: KeyboardEvent): void => {
+        if (events.hotkey(event) === false) { event.preventDefault(); event.stopPropagation(); }
+      };
+      window.addEventListener('keydown', keymap, true);
+      try {
+        expect(key(node, 'F2').defaultPrevented).toBe(true);
+        expect(actions.edit).toHaveBeenCalledOnce();
+      } finally { window.removeEventListener('keydown', keymap, true); }
+      // Without the keymap (the browser page, jsdom) the canvas listener still takes F2.
+      expect(key(node, 'F2').defaultPrevented).toBe(true);
+      expect(actions.edit).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('removes DOM listeners on unload and does not duplicate them when loaded again', () => {
     const { canvas, label, selected, actions, events } = fixture();
     events.unload();

@@ -103,25 +103,41 @@ export class MapEvents extends Component {
     this.canvas.querySelectorAll<HTMLElement>(".is-drop-target").forEach(element => { element.removeClass("is-drop-target"); });
   }
 
-  private keydown(event: KeyboardEvent): void {
-    if (event.isComposing || this.composing || event.key === "Process"
-      || this.element(event.targetNode)?.closest("input,textarea,button,a,select,[contenteditable]:not([contenteditable='false'])")) return;
+  /**
+   * The view's `Scope` handler (see `MindmapView`): Obsidian's keymap consults the active view's
+   * scope at the window's capture phase, before its own hotkeys and before this component's canvas
+   * listener. A key pressed inside the canvas is handled here exactly as the canvas listener would,
+   * and `false` (Obsidian's "consumed": preventDefault and stop) keeps the default hotkey on the same
+   * key — F2 is `workspace:edit-file-title` — from running. Anything else is left alone (`undefined`),
+   * including keys pressed outside the canvas, in the inline editor, or with nothing selected.
+   */
+  hotkey(event: KeyboardEvent): false | undefined {
+    const target = event.targetNode;
+    if (!target || !this.canvas.contains(target)) return undefined;
+    return this.keydown(event) ? false : undefined;
+  }
+
+  /** Acts on a key for the selected node; true when the map took it. A key something already consumed is not taken twice. */
+  private keydown(event: KeyboardEvent): boolean {
+    if (event.defaultPrevented || event.isComposing || this.composing || event.key === "Process"
+      || this.element(event.targetNode)?.closest("input,textarea,button,a,select,[contenteditable]:not([contenteditable='false'])")) return false;
     const node = this.actions.selected();
-    if (!node) return;
+    if (!node) return false;
     const modifier = event.metaKey || event.ctrlKey;
     if (modifier && event.key.toLowerCase() === "z") {
       event.preventDefault();
       event.stopPropagation();
       this.actions.history(event.shiftKey ? "redo" : "undo");
-      return;
+      return true;
     }
     if (modifier || event.altKey) {
       if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
         event.preventDefault();
         event.stopPropagation();
         this.actions.command({ type: event.key === "ArrowUp" ? "move-up" : "move-down", nodeId: node.id });
+        return true;
       }
-      return;
+      return false;
     }
     const commands = { Enter: "add-sibling", Tab: "add-child", Delete: "delete", Backspace: "delete" } as const;
     if (event.key in commands) {
@@ -141,6 +157,7 @@ export class MapEvents extends Component {
       if (event.key === "ArrowLeft") next = node.parentId ?? undefined;
       if (event.key === "ArrowRight") next = node.children[0]?.id;
       if (next && visible.some(item => item.id === next)) this.actions.select(next, true);
-    }
+    } else return false;
+    return true;
   }
 }

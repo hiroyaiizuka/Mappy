@@ -5,7 +5,7 @@
  * run unchanged. Everything below is a mock: Markdown rendering, link
  * resolution, notices and menus approximate Obsidian's DOM, they do not prove it.
  */
-import type { App, EventRef, TFile as ObsidianFile, ViewState } from "obsidian";
+import type { App, EventRef, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState } from "obsidian";
 
 export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
 
@@ -123,6 +123,28 @@ export function parseLinktext(linktext: string): { path: string; subpath: string
   return index < 0 ? { path: linktext, subpath: "" } : { path: linktext.slice(0, index), subpath: linktext.slice(index) };
 }
 
+/** A registered handler with its callback, so a test can call the one a view registered. */
+export interface HarnessKeymapHandler extends KeymapEventHandler { func: KeymapEventListener }
+
+/**
+ * Same registration contract as Obsidian's Scope. There is no Keymap here: nothing in this page routes a
+ * real keydown through a scope. Which scope Obsidian consults first, and what a `false` return does to
+ * the event, are Obsidian-only checks (E02).
+ */
+export class Scope {
+  readonly keys: HarnessKeymapHandler[] = [];
+  constructor(readonly parent?: Scope) {}
+  register(modifiers: Modifier[] | null, key: string | null, func: KeymapEventListener): KeymapEventHandler {
+    const handler: HarnessKeymapHandler = { scope: this, modifiers: modifiers ? modifiers.join(",") : null, key, func };
+    this.keys.push(handler);
+    return handler;
+  }
+  unregister(handler: KeymapEventHandler): void {
+    const index = this.keys.indexOf(handler as HarnessKeymapHandler);
+    if (index >= 0) this.keys.splice(index, 1);
+  }
+}
+
 /** A leaf only needs to carry the app and remember the last requested state. */
 export class WorkspaceLeaf {
   view: View | null = null;
@@ -138,6 +160,8 @@ export abstract class View extends Component {
   app: App;
   containerEl: HTMLElement;
   navigation = false;
+  /** Hotkeys for when the view is in focus; Obsidian's workspace reads it on each key, this page never does. */
+  scope: Scope | null = null;
   constructor(readonly leaf: WorkspaceLeaf) {
     super();
     this.app = leaf.app;
