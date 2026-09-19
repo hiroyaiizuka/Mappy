@@ -8,6 +8,12 @@ export class TFile {
   get name(): string { return this.path.split('/').pop() ?? ''; }
   get basename(): string { return this.name.replace(/\.[^.]+$/u, ''); }
   get extension(): string { return this.name.includes('.') ? this.name.split('.').pop() ?? '' : ''; }
+  /** The containing folder, read off the path; a file at the top level is in the root folder `/`. */
+  get parent(): TFolder | null {
+    const folder = new TFolder();
+    folder.path = this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '/';
+    return folder;
+  }
 }
 
 export class TFolder {

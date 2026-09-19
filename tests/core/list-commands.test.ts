@@ -78,6 +78,71 @@ describe('source-preserving list commands', () => {
     expect(result.source).toBe('## Root\n- Parent\n  detail\n  - \n\nOutside paragraph [[kept]]\n\n## Next\n');
   });
 
+  describe('add-child with a title (a called map, §5 M12)', () => {
+    const LINK = '![[別マップ]]';
+
+    it('writes the item after the last child of a node with children, at that child\'s indent and marker', () => {
+      const doc = parse('## Root\n* Parent\n    + Child\n        - Deep\n      note\n* Keep\n');
+      const plan = planEdit(doc, { type: 'add-child', nodeId: find(doc, 'Parent').id, title: LINK });
+      // One insertion at the end of the branch's last line: the same edit Tab makes, with the text filled in.
+      expect(plan.edits).toEqual([{ from: find(doc, 'Parent').to, to: find(doc, 'Parent').to, text: `\n    + ${LINK}` }]);
+      const result = parse(applyEdits(doc.source, plan.edits), doc);
+      expect(result.source).toBe(`## Root\n* Parent\n    + Child\n        - Deep\n      note\n    + ${LINK}\n* Keep\n`);
+      expect(find(result, 'Parent').children.map(node => node.title)).toEqual(['Child', LINK]);
+      expect(plan.selectionOffset).toBe(find(result, LINK).titleFrom);
+    });
+
+    it('nests the item one step deeper under a leaf, keeping its continuation lines above', () => {
+      const doc = parse('## Root\n- Leaf\n  detail [[kept]]\n- Next');
+      expect(execute(doc, { type: 'add-child', nodeId: find(doc, 'Leaf').id, title: LINK }).source)
+        .toBe(`## Root\n- Leaf\n  detail [[kept]]\n  - ${LINK}\n- Next`);
+    });
+
+    it('appends to the body root after its last item and to a childless section after a blank line', () => {
+      const doc = parse('## Root\n- A\n  - a\n\n## Topic\n\nprose\n');
+      expect(execute(doc, { type: 'add-child', nodeId: find(doc, 'Root').id, title: LINK }).source)
+        .toBe(`## Root\n- A\n  - a\n- ${LINK}\n\n## Topic\n\nprose\n`);
+      expect(execute(doc, { type: 'add-child', nodeId: find(doc, 'Topic').id, title: LINK }).source)
+        .toBe(`## Root\n- A\n  - a\n\n## Topic\n\nprose\n\n- ${LINK}\n`);
+    });
+
+    it('makes an H2 section for the virtual root, as an empty add-child does', () => {
+      const doc = parse('- before any heading\n');
+      expect(execute(doc, { type: 'add-child', nodeId: 'root', title: LINK }).source).toBe(`- before any heading\n\n## ${LINK}\n`);
+    });
+
+    it('keeps the file ending at the very end of the note, with or without a final line break, as Tab now does too', () => {
+      expect(execute(parse('## Root\n'), { type: 'add-child', nodeId: 'root', title: LINK }).source).toBe(`## Root\n\n## ${LINK}\n`);
+      const withBreak = parse('## Root\n\nprose\n');
+      expect(execute(withBreak, { type: 'add-child', nodeId: find(withBreak, 'Root').id, title: LINK }).source).toBe(`## Root\n\nprose\n\n- ${LINK}\n`);
+      expect(execute(withBreak, { type: 'add-child', nodeId: find(withBreak, 'Root').id }).source).toBe('## Root\n\nprose\n\n- \n');
+      const noBreak = parse('## Root\n\nprose');
+      expect(execute(noBreak, { type: 'add-child', nodeId: find(noBreak, 'Root').id, title: LINK }).source).toBe(`## Root\n\nprose\n\n- ${LINK}`);
+      // The other two ways of making a section at the very end keep the break too: a sibling of the last H2, a child of the virtual root.
+      const section = parse('## Root\n- A\n');
+      expect(execute(section, { type: 'add-sibling', nodeId: find(section, 'Root').id }).source).toBe('## Root\n- A\n\n## \n');
+      expect(execute(section, { type: 'add-child', nodeId: 'root' }).source).toBe('## Root\n- A\n\n## \n');
+      const unbroken = parse('## Root\n- A');
+      expect(execute(unbroken, { type: 'add-sibling', nodeId: find(unbroken, 'Root').id }).source).toBe('## Root\n- A\n\n## ');
+    });
+
+    it('adds the same map twice as two items and leaves the rest of the note byte for byte', () => {
+      const source = '---\r\nmappy: true\r\n---\r\n## Root\r\n- A\r\n\r\nOutside ![[image.png]]\r\n';
+      const doc = parse(source);
+      const once = execute(doc, { type: 'add-child', nodeId: find(doc, 'Root').id, title: LINK });
+      const twice = execute(once, { type: 'add-child', nodeId: find(once, 'Root').id, title: LINK });
+      expect(twice.source).toBe(`---\r\nmappy: true\r\n---\r\n## Root\r\n- A\r\n- ${LINK}\r\n- ${LINK}\r\n\r\nOutside ![[image.png]]\r\n`);
+      expect(find(twice, 'Root').children.map(node => node.title)).toEqual(['A', LINK, LINK]);
+    });
+
+    it('trims the title, refuses a line break in it, and refuses text that is not the item it names', () => {
+      const doc = parse('## Root\n- A\n');
+      expect(execute(doc, { type: 'add-child', nodeId: find(doc, 'Root').id, title: `  ${LINK}  ` }).source).toBe(`## Root\n- A\n-   ${LINK}  \n`);
+      expect(() => planEdit(doc, { type: 'add-child', nodeId: find(doc, 'Root').id, title: 'two\nlines' })).toThrow('改行');
+      expect(() => planEdit(doc, { type: 'add-child', nodeId: find(doc, 'A').id, title: '[ ] task' })).toThrow('リスト構造');
+    });
+  });
+
   it('deletes a branch with descendants without deleting a following outside paragraph', () => {
     const source = '## Root\n- Delete\n  - Child\n    continuation\n\nOutside paragraph\n\n- Keep';
     const doc = parse(source);

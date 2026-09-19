@@ -26,7 +26,7 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | --- | --- | --- |
 | `src/main.ts` | view・command・ribbon・ファイルメニューの登録 | Obsidian |
 | `src/core/markdown.ts` | 構文解析、原文範囲、ノードの対応付け | `@lezer/markdown` |
-| `src/core/commands.ts` / `list-commands.ts` / `body.ts` | rename / add / move / delete / 本文変更 → 原文差分 | 純粋 TypeScript |
+| `src/core/commands.ts` / `list-commands.ts` / `body.ts` | rename / add（空、または `title` 付きで文を同じ差分に）/ move / delete / 本文変更 → 原文差分 | 純粋 TypeScript |
 | `src/core/list-conversion.ts` | 旧見出し形式から H2＋箇条書きへの明示変換 | 純粋 TypeScript |
 | `src/core/topics.ts` / `yaml-lite.ts` | frontmatter `mappy-topics` の読み取り（YAML サブセット）と、そのキーだけを差し替える書き込み（移動・改名時の持ち越し・削除時の除去） | 純粋 TypeScript |
 | `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムライン／階層図／左右バランスの座標と線。モードの振り分け、右向き・左向き（鏡像）の枝の配置、フリートピックの配置 | 純粋 TypeScript |
@@ -48,7 +48,8 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/layout/drop-preview.ts` / `snap.ts` | ドラッグ中の移動先に仮ノードを差し込んだレイアウト用の木と、運んだトピックのルートの矩形からレイアウト別の幾何で合流先を決めるスロット判定 | 純粋 TypeScript |
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
 | `src/core/embed.ts` / `map-keys.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`（キーは `map-keys.ts` で cache 側と共有）、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード。項目が埋め込み 1 つだけかの判定（`embedOnlyTitle`、M12） | 純粋 TypeScript |
-| `src/obsidian/embed-target.ts` | `.internal-embed` の `src` からマップノートと見出しパスを解決（`parseLinktext`、`getFirstLinkpathDest`、metadataCache の `mappy: true`） | Obsidian の公開 API |
+| `src/obsidian/embed-target.ts` | マップノートの判定 `isMapNote`（metadataCache の `mappy: true`。埋め込みと検索で共有）と、`.internal-embed` の `src` からのマップノートと見出しパスの解決（`parseLinktext`、`getFirstLinkpathDest`） | Obsidian の公開 API |
+| `src/obsidian/map-search.ts` | コマンド「マップを検索して呼び出す」の検索 UI（M12 の入力側）: 他のマップノートを候補にした `FuzzySuggestModal`。候補の列挙 `listMapNotes`、検索文字列 `searchText`、選んだファイルを返すだけで書き込みは持たない | Obsidian の FuzzySuggestModal、Vault、metadataCache |
 | `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`）。map view のノードの中に同じ枠を描く resolver（`nodeEmbeds`、M12）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
 
 Markdown parser は原文の UTF-16 offset を得られる `@lezer/markdown` を採用した。通常の Markdown を構文解析し、frontmatter と Obsidian コメントを補助処理する。製品コードはブラウザ互換にし、Node/Electron や非公開の Obsidian parser を使わない。ランタイム依存は package.json で固定し、バンドルの実測値とハッシュは各ビルドの `dist/build-info.json` と証跡で追う。モバイル互換性は設計上の条件であり、実機では未確認。
@@ -247,6 +248,17 @@ Excalidraw 挿入と並ぶ、外へ持ち出す経路（§5 M13）。図面 API 
 - **テーマ**: body の `theme-dark` でクラスと既定色を決め、背景は canvas の算出 `background-color`、線は最初の path の算出 `stroke`（`currentcolor` なら `color`）。
 - **PNG**: 同じ SVG を `data:image/svg+xml` の `<img>` に読み込み、canvas に `scale` 倍で描いて `toBlob`。blob URL は `file://` のような不透明オリジンで canvas を汚染するため使わない。WebKit（iOS の Obsidian）は `foreignObject` を含む SVG 画像で canvas を汚染するので、コマンド実行時に 1 ピクセルの SVG で一度だけ読み戻しを試し（`canRasterizeForeignObject`）、できなければモーダルの PNG を無効にする。それでも `SecurityError` が出れば「この環境では PNG を作れません」に言い換える。縮尺は 2 倍を上限に、`DESKTOP_PNG_LIMITS`（8,192²・一辺 16,384）／`MOBILE_PNG_LIMITS`（4,096²）に収める。`<img>` に載せた SVG は文書の Web フォントを使えないので、フォントはこの端末のものになる。
 - **保存**: `MindmapView.exportImage(format)` → `exportMap` → `getAvailablePathForAttachment(<basename>.svg|png, note.path)` → `vault.create`（SVG）／`vault.createBinary`（PNG）。パスを取るのは書き出す直前で、PNG が作れない環境はその前に断る（添付フォルダを作らない）。ノートは読まない・書かない。コマンドは `canSaveAttachments`（添付パス API と create の存在）が真のときだけ出す。
+
+## 9d. マップの検索と呼び出し（M12 の入力側）
+
+マップを開いたまま別のマップを `![[別マップ]]` の項目として足す経路。表示は M10 の埋め込み描画を map view の中でも使う（LEV-69）。書き込み側は通常のノード追加をそのまま使い、専用の保存経路を作らない。
+
+- **コマンド**は `src/main.ts` の登録 1 か所。`checkCallback` で map view がアクティブなときだけ出し、`MapSearchModal` を開いて、選ばれた `TFile` を `MindmapView.callMap` に渡す。名前にプラグイン名を含めず、既定ホットキーは登録しない。
+- **候補**は `listMapNotes`: `vault.getMarkdownFiles()` のうち `isMapNote`（`embed-target.ts`。metadataCache の frontmatter に真偽値の `mappy: true` があり Excalidraw でない）が真で、呼び出し元のノートでないもの。metadataCache を読むので、編集中で未保存の frontmatter は反映されない（埋め込みの解決と同じ前提）。検索文字列は拡張子なしのパス（`フォルダ/タイトル`）で、タイトル・フォルダ・`フォルダ/タイトル` のどれでも絞り込める。表示はファイル名と親フォルダの 2 行（Obsidian の `suggestion-title`／`suggestion-note` の class を使い、独自 CSS を足さない）で、一致箇所は `FuzzyMatch.match.matches` を各行の位置にずらして `suggestion-highlight` で包む（`renderMatches` の offset の向きは公開 API の説明がなく、自前で計算する）。0 件は `emptyStateText`。
+- **書き込み**は `callMap`: 選択ノード（`selected()`）がなければ本体ルート（`projectMap` の root。フリートピックのルートも選択ノードとして通る）を親に、`![[` + `app.metadataCache.fileToLinktext(target, note.path, true)` + `]]` を `add-child` コマンドの `title` に渡す。パスの形（最短・相対・絶対、同名なら完全パス）は Vault の「新しいリンクの形式」に従うが、記法は `generateMarkdownLink` に任せず Wiki 形式に固定する: ノードのタイトルを描く `transclusionsAsLinks` と表示側（LEV-69）の「`![[…]]` だけの項目」の判定が Wiki 形式しか読まないので、「Wikilinks を使用」オフの `![名前](パス.md)` を書くとノードの中にノート全体が展開されてしまう。core の `add`（両形式）は空の項目と同じ位置・同じ 1 つの挿入差分に文を含め、再解析した木で「1 ノード増え、その項目の文が `title.trim()`」であることを検証する（改行は事前に拒否）。view は空の add-child と同じく新しい項目を選択して表示するが、`title` 付きではインライン入力を開かない。差分と履歴は Tab と同じなので、Undo 1 回で項目ごと消え、`DocumentStore` の履歴・原文照合・開いているエディタ優先はそのまま効く。呼び出したマップの元ノートには触れない。
+- **拒否**: 自分自身（候補には出ないが、モーダルを開いたあとに view のノートが変わった場合）、保存中（Tab は黙って捨てるが、選んだマップが消えたように見えないよう伝える）、本体が仮想ルートの文書（H2 がなく、add-child なら `## ![[別マップ]]` という見出し＝本体の名前になってしまうので「先に H2 を」と断る）、インライン編集中（`execute` 側のガードなので右クリックの子追加も同じ。下書きの確定 → 子追加の経路は `inlineEditor` を外したあとに通る）。見出し形式のノートでは add-child と同じく 1 段深い見出し `### ![[別マップ]]` になる（拒否も変換の誘導もしない）。
+- 一致箇所の強調は自前の `renderHighlighted`。Obsidian の `renderMatches(el, text, matches, offset)` の `offset` の向きは公開 API に説明がなく、実機で確かめてから置き換える（LEV-71）。
+- リスト形式の `insertion` は、改行で終わる文書の末尾に足すとき末尾の改行を保つように直した。子のない最終区画への Tab に加え、最後の H2 の Enter（兄弟）と仮想ルートへの Tab（どちらも末尾に `## ` を作る）も `## \n` で終わるようになる。
 
 ## 10. 最初に検証する順序
 

@@ -64,6 +64,7 @@ export class HarnessApp {
     getAbstractFileByPath: (path: string): TFile | null => this.entries.get(path)?.file ?? null,
     getFileByPath: (path: string): TFile | null => this.entries.get(path)?.file ?? null,
     getFiles: (): TFile[] => Array.from(this.entries.values(), entry => entry.file),
+    getMarkdownFiles: (): TFile[] => Array.from(this.entries.values(), entry => entry.file).filter(file => file.extension === "md"),
     getResourcePath: (file: TFile): string => this.entries.get(file.path)?.url ?? "",
     read: (file: TFile): Promise<string> => Promise.resolve(this.entry(file).content),
     cachedRead: (file: TFile): Promise<string> => Promise.resolve(this.entry(file).content),
