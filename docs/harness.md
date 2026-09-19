@@ -14,8 +14,8 @@ AI エージェントと人間が同じ条件で開発・検証するため、�
 | 単体・DOM テスト | `npm test` | ハーネス検証器、Markdown と原文差分、保存・競合、配置・ズーム、操作 |
 | production bundle | `npm run build` | ブラウザ互換 CJS バンドル。Obsidian 提供 API は external |
 | 配布物 | `npm run package` | `dist/mappy/` の必要ファイルと元ビルドとの一致 |
-| Vault 初期準備 | `npm run harness:prepare` | `check` 後、生成専用 Vault に配布物・fixture を配置。既知の fixture を初期化する |
-| 実機前確認 | `npm run harness:preflight` | root / dist / 検証 Vault の SHA256、一致する ID/version、有効プラグイン |
+| Vault 初期準備 | `npm run harness:prepare` | `check` 後、生成専用 Vault に配布物・fixture を配置。既知の fixture を初期化する。有効プラグインは mappy と、すでに有効なら Excalidraw（M6 用）だけを残す |
+| 実機前確認 | `npm run harness:preflight` | root / dist / 検証 Vault の SHA256、一致する ID/version、有効プラグイン（mappy と Excalidraw（M6 用）だけを有効にする。他のプラグインが有効なら失敗） |
 | ブラウザ検証ページ | `npm run harness:browser` | Obsidian なしで製品の map view を動かす。表示崩れ、ポインター操作、ズーム、ペインサイズ（下記②） |
 | ブラウザ撮影 | `npm run harness:browser:capture` | headless Chrome で fixture 表示と主要操作を実行し、スクリーンショットと時刻を `artifacts/browser-harness/` に記録 |
 
@@ -59,6 +59,7 @@ Obsidian API 型は、現在の lint パッケージの peer dependency と初�
 - 設定（M14）: `normalizeSettings` が欠損・null・旧形式・不正値を項目ごとに既定値へ戻し、未知のキーを捨てること。設定タブ（jsdom、ブラウザ検証ページのモックの `Setting`／`DropdownComponent`／`TextComponent`／`PluginSettingTab`）が 3 項目だけを出し、レイアウトの選択肢が `LAYOUT_MODES` の順であること、変更した項目だけを差し替えて保存し、Vault・frontmatter に一切書かないこと、1.13 以降向けの `getSettingDefinitions`／`getControlValue`／`setControlValue` が `display()` と同じ 3 項目を返し不正値を保存しないこと。`createMindmapFile` が既定の設定で従来と同じ frontmatter・作成先になり、既定レイアウトを新規ノートだけに書き、作成先フォルダを正規化して既存なら（大文字小文字違いでも）再利用・なければ作成・同名ファイルと `.` で始まる名前なら拒否・作成結果が空ならエラーにすること（モックの `normalizePath` は Obsidian と同じくスラッシュしか整えない）。1.13 以降の `addSettingTab → update() → 描画` の流れをモックで再現し、`settingItems` が 3 件になり `display()` に落ちないこと。`readPreferredMapLayout` が旧 `mappy-layout` を持つノートではその値、持たないノートでは設定の既定を返し、`readMapLayout`（既存ノートの表示）は設定を見ないこと。`MindmapView.setTheme()` がコンテナにだけ `theme-light`／`theme-dark` を付け外しし（body・leaf・canvas・別 view には付かない）、開く前に設定した値が `onOpen` 後も残り、「Obsidian に従う」で両方外れ、原文・frontmatter・レイアウト保存が起きないこと。styles.css のテーマ変数が `:where(.mappy-view.theme-*)` にだけあり、カスタムプロパティ以外を含まないこと。
 - SVG／PNG 書き出し（M13）: 純粋部分（`tests/export/svg-document.test.ts`）は viewBox と余白、PNG の縮尺の上限（面積・一辺・希望倍率）、XML のエスケープ、スタイルの重複除去、シーン → SVG の構造（背景 → 線 → ノード → バッジの順、CDATA の終端）。DOM 部分（`tests/export/svg-capture.test.ts`、jsdom で製品の view を起動）は `foreignObject` の数と id が表示ノードと一致し座標が `LayoutResult` と一致すること、線の数、viewBox、テーマ class（body の `theme-dark`）と既定の背景色、状態クラス・開閉ボタン・`tabindex` を含まないこと、折りたたみ（枝が消え、件数バッジが `folds` の位置に出る。配置フレームが予約中でも `exportSource()` が待ってから返す）、欠落・読めない画像でノードが残り読める画像は data URL になること、タイムライン・階層図、編集中と file なしの拒否、10／100／500／2,000 ノードの完了と原文不変、画像を待つ間に DOM が壊されてもノードが欠けないこと、debounce 中の編集が書き出しに入ること、フォームフィードと `xlink:href` 付きのインライン SVG でも整形式であること、汚染された canvas が「PNG を作れません」になり probe が false を返すこと。Obsidian 側（`tests/obsidian/image-export.test.ts`）は添付パス API の有無による可否、resolver（data URL の素通し、埋め込みの link target を `readBinary`、Markdown 画像の書かれたパス、http(s) の取得と失敗時の null、PDF を読まない、`image/*` 以外の応答と応答のないホストの拒否）、`getAvailablePathForAttachment` → `vault.create` での保存とノート不変、整形式の検査、canvas のない環境で添付パスを取る前に PNG を断ること。モーダル（`tests/ui/export-modal.test.ts`）は形式の選択と PNG の無効化。
 - 埋め込み（M10）: core で原文からのマップ識別（`mappy: true` の真偽値だけ。`True`／`TRUE` も cache と同じく真偽値、`"true"`・Excalidraw・未閉の frontmatter は対象外）、`#見出し` の区画解決（文書順の最初の一致、`#A#B` の入れ子、大文字小文字・空白・`:#|^` の正規化、リスト項目は対象外、ブロック参照と見つからない見出しは null）、描く木（全体は本体＋フリートピック、見出しは部分木だけ）、開いた時点の折りたたみ（ルート直下より下の全枝）、タイトルの `![[ノート]]` のリンク化。jsdom で製品の post-processor を Obsidian 風の区画に通し、閲覧モード経路（placeholder の差し替え、Obsidian が先に読み込んだ span は claim、対象外の素通し、部分木と見つからない見出しの文言、`mappy-layout` とフリートピック、原文不変、保存と別 leaf の未保存編集での再描画、読者の折りたたみの保持（一時的な文言をはさんでも）、マップでなくなった場合の文言、区画の unload でのリスナー解放、プラグイン unload での placeholder の復元とその枠を含む閲覧モードの view だけの描き直し、「マップで開く」とノード内リンクの基準、Fit の上限 1 倍、自己埋め込みとタイトル経由の循環がないこと）とライブプレビュー経路（容器の claim が 1 度だけ、区画の中の anchor が寿命を持ち枠は容器に付くこと、Obsidian のクラスの退避と復元、自分のノートの閲覧モードは対象外、通常ノートの埋め込みの中のマップは描き claim した容器の中の placeholder は描かない、未接続の区画の見直しと unload 後の拒否）を確認する。
+- ハーネス: `tests/tooling/preflight.test.mjs` が一時ディレクトリに配布物と生成 Vault を組み立て、`community-plugins.json` が `["mappy"]`（生成直後）と `["mappy", "obsidian-excalidraw-plugin"]`（M6 の Vault）なら preflight が通り、他のプラグインが有効・mappy が無効・プラグイン ID の配列でない内容なら失敗すること、CLI の終了コードと表示、`prepare-test-vault.mjs` の再実行で Excalidraw が残り他のプラグインが落ちることを確認する。
 
 Vitest の Node 環境で検証する。乱択・property-based test は、保存と復元の不変条件に効果がある場合に追加する。
 
@@ -84,12 +85,12 @@ jsdom を導入し、製品の DOM 操作・インライン入力・キー操作
 ### Obsidian 実機の初回準備
 
 1. まだ試用していない専用環境で `npm run harness:prepare` を実行する。生成するのはこのプロジェクト内の `test-vault/` のみ。
-2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。
-3. `npm run harness:preflight` を実行する。これはファイルと設定の検査であり、実行中プラグインが最新である証明ではない。
+2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。M6 のケース（E23〜E27・E30・E33）には Excalidraw（`obsidian-excalidraw-plugin`）をこの Vault にインストールして有効にする。
+3. `npm run harness:preflight` を実行する。これはファイルと設定の検査であり、実行中プラグインが最新である証明ではない。有効プラグインは mappy と Excalidraw（M6 用）だけを有効にする。それ以外が有効なら preflight は失敗し、実機確認の条件に含めない。
 4. プラグインを再読込し、対象 Vault と機能の挙動を画面で確認する。将来は表示する build ID も照合する。
 5. 下記ケースを再現し、UI の状態と変更後の Markdown を両方保存する。
 
-`harness:prepare` は既知の fixture を初期化するため、ユーザーが試用中の Vault には再実行しない。生成 fixture に書いたノードも利用者の変更として保持する。既存の Evergreens Vault や taskchute-plus の配布物は操作しない。
+`harness:prepare` は既知の fixture を初期化するため、ユーザーが試用中の Vault には再実行しない。生成 fixture に書いたノードも利用者の変更として保持する。再実行した場合、`community-plugins.json` は mappy と、すでに有効なら Excalidraw だけを残して書き直す（Excalidraw の配布物と設定には触れない）。既存の Evergreens Vault や taskchute-plus の配布物は操作しない。
 
 ### 試用中の更新
 
