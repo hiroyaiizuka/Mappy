@@ -206,13 +206,23 @@ export default class MappyPlugin extends Plugin {
     void action().catch((error: unknown) => { new Notice(error instanceof Error ? error.message : fallback); });
   }
 
-  /** Settings are presentation and defaults for new maps only: saving one never touches a note. */
+  /**
+   * Settings are presentation and defaults for new maps only: saving one never touches a note. The new
+   * value is current as soon as it is asked for (the tab reads it back for its next change) and put
+   * back if the data file cannot be written, so what the tab shows after its own revert is what is stored.
+   */
   private async saveSettings(next: MappySettings): Promise<void> {
-    const themeChanged = next.theme !== this.settings.theme;
+    const previous = this.settings;
+    const themeChanged = next.theme !== previous.theme;
     // Both lists are normalized (LAYOUT_MODES order, no repeats), so their text is their identity.
-    const layoutsChanged = next.visibleLayouts.join() !== this.settings.visibleLayouts.join();
+    const layoutsChanged = next.visibleLayouts.join() !== previous.visibleLayouts.join();
     this.settings = next;
-    await this.saveData(next);
+    try {
+      await this.saveData(next);
+    } catch (error) {
+      if (this.settings === next) this.settings = previous;
+      throw error;
+    }
     if (!themeChanged && !layoutsChanged) return;
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (!(leaf.view instanceof MindmapView)) continue;

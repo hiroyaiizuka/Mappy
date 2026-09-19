@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Plugin } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
-import type { PluginSettingTab as HarnessSettingTab } from '../../harness/browser/obsidian';
+import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../../harness/browser/obsidian';
 import { LAYOUT_LABELS, LAYOUT_MODES } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, THEME_LABELS } from '../../src/obsidian/settings-tab';
@@ -11,14 +11,19 @@ import { MappySettingTab, THEME_LABELS } from '../../src/obsidian/settings-tab';
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { document.body.replaceChildren(); Notice.log.length = 0; });
 
 const NAMES = ['テーマ', '新規マップの既定レイアウト', '新規マップの作成先フォルダ', '左下に表示するレイアウト'];
 const ALL_LAYOUTS = [...LAYOUT_MODES];
 
-function mount(initial: MappySettings = DEFAULT_SETTINGS) {
+/** The store as the plugin keeps it (src/main.ts `saveSettings`): the new value is current at once, and put back when `saveData` fails. */
+function mount(initial: MappySettings = DEFAULT_SETTINGS, saving: (next: MappySettings) => Promise<void> = () => Promise.resolve()) {
   let settings = initial;
-  const save = vi.fn((next: MappySettings) => { settings = next; return Promise.resolve(); });
+  const save = vi.fn((next: MappySettings) => {
+    const previous = settings;
+    settings = next;
+    return saving(next).catch((error: unknown) => { if (settings === next) settings = previous; throw error; });
+  });
   // Anything that could touch a note, so the test can assert the tab never does.
   const app = {
     vault: { process: vi.fn(), modify: vi.fn(), create: vi.fn(), createFolder: vi.fn() },
@@ -64,6 +69,9 @@ function click(toggle: HTMLElement): void {
 
 function on(toggle: HTMLElement): boolean { return toggle.classList.contains('is-enabled'); }
 
+/** Let a save settle: the store's promise, the tab's refresh after it, and a revert after a failure. */
+function flush(): Promise<void> { return new Promise(resolve => setTimeout(resolve, 0)); }
+
 describe('MappySettingTab', () => {
   it('renders exactly four settings, showing the stored values', () => {
     const { items, theme, layout, folder, toggles } = mount({ theme: 'dark', defaultLayout: 'timeline', newMapFolder: 'Maps', visibleLayouts: ['mindmap', 'balanced'] });
@@ -101,7 +109,7 @@ describe('MappySettingTab', () => {
     expect(folder.value).toBe(' Maps/2026 ');
     click(toggles.timeline);
     expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
-    await Promise.resolve();
+    await flush();
     expect(settings()).toEqual({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
     expect(save).toHaveBeenCalledTimes(4);
   });
@@ -140,23 +148,32 @@ describe('MappySettingTab', () => {
     const { tab, save } = mount();
     // The 1.8.7 types know nothing of the 1.13 members; the mock models them (harness/browser/obsidian.ts).
     const runtime = tab as unknown as HarnessSettingTab;
-    tab.containerEl.empty();
     // update() is the base class's own method (app.js 1.14.2); a subclass member of that name would shadow it.
     runtime.update();
     expect(runtime.settingItems).toHaveLength(4);
     expect(save).not.toHaveBeenCalled();
+    // The declarative renderer replaces what display() drew: dropdowns and text through the bindings, the last row through its render().
     runtime.renderTab();
-    // The declarative renderer draws the rows itself: dropdowns and text through the bindings, the last row through its render().
     expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(4);
-    for (const name of ['update', 'settingItems', 'hide', 'renderTab', 'getControlBinding']) {
-      expect(Object.getOwnPropertyNames(MappySettingTab.prototype)).not.toContain(name);
-    }
+    // update() while the tab is open renders again; Obsidian tears the rows down first, and so does the mock.
+    runtime.update();
+    runtime.renderTab();
+    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(4);
+    expect(tab.containerEl.querySelectorAll('.mappy-setting-note')).toHaveLength(1);
+    expect(tab.containerEl.querySelectorAll('.mappy-setting-layouts .checkbox-container')).toHaveLength(4);
+    // Every other name SettingTab / PluginSettingTab own in app.js 1.14.2 (fields set in their constructors and the
+    // renderer's methods): the types are pinned to 1.8.7, so this list is the only check that none is shadowed.
+    const methods = ['update', 'hide', 'renderTab', 'getControlBinding', 'refreshDomState', 'getElementForDefinition', 'getDefinitionForElement'];
+    for (const name of methods) expect(Object.getOwnPropertyNames(MappySettingTab.prototype)).not.toContain(name);
+    const fields = ['settingItems', 'renderedItems', 'setting', 'navEl', 'name', 'id', 'icon', 'app', 'plugin', 'containerEl'];
+    const base = new (class extends MockSettingTab { display(): void { /* nothing */ } })(tab.app, {});
+    const own = Object.keys(tab).filter(key => !(key in base));
+    for (const name of fields) expect(own).not.toContain(name);
   });
 
   it('draws the layout row the same way through the 1.13 declarative path, saving and noting through the same code', async () => {
     const { tab, save } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' });
     const runtime = tab as unknown as HarnessSettingTab;
-    tab.containerEl.empty();
     runtime.update();
     runtime.renderTab();
     const { toggles, note, layout } = controls(tab.containerEl);
@@ -164,19 +181,17 @@ describe('MappySettingTab', () => {
     expect(note.hidden).toBe(true);
     click(toggles.hierarchy);
     expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy', visibleLayouts: ['mindmap', 'timeline', 'balanced'] });
-    await Promise.resolve();
+    await flush();
     expect(note.hidden).toBe(false);
     expect(note.textContent).toContain('階層図');
     // The dropdown goes through the binding (setControlValue), which refreshes the note as well.
     change(layout, 'timeline');
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(note.hidden).toBe(true);
     // hide() runs the row's cleanup; a later save no longer touches the dropped element.
     runtime.hide();
     change(layout, 'hierarchy');
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(note.hidden).toBe(true);
   });
 
@@ -246,7 +261,7 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(on(toggles.timeline)).toBe(true);
     // Re-adding timeline after balanced was removed still yields LAYOUT_MODES order, not click order.
     expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] });
-    await Promise.resolve();
+    await flush();
     expect(settings().visibleLayouts).toEqual(['mindmap', 'timeline', 'hierarchy']);
     expect(settings().theme).toBe('follow');
     expect(settings().defaultLayout).toBe('mindmap');
@@ -257,18 +272,18 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(note.hidden).toBe(true);
     expect(note.textContent).toBe('');
     click(toggles.timeline);
-    await Promise.resolve();
+    await flush();
     expect(note.hidden).toBe(false);
     expect(note.textContent).toBe('既定レイアウト「タイムライン」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。');
     // Changing the default to a visible layout clears it; to another hidden one, it names that layout.
     change(layout, 'hierarchy');
-    await Promise.resolve();
+    await flush();
     expect(note.hidden).toBe(true);
     click(toggles.hierarchy);
-    await Promise.resolve();
+    await flush();
     expect(note.textContent).toContain('「階層図」');
     click(toggles.hierarchy);
-    await Promise.resolve();
+    await flush();
     expect(note.hidden).toBe(true);
   });
 
@@ -276,5 +291,52 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(mount({ ...DEFAULT_SETTINGS, defaultLayout: 'balanced', visibleLayouts: ['mindmap', 'timeline'] }).note.hidden).toBe(false);
     document.body.replaceChildren();
     expect(mount({ ...DEFAULT_SETTINGS, defaultLayout: 'mindmap', visibleLayouts: ['mindmap'] }).note.hidden).toBe(true);
+  });
+
+  it('flips a toggle from its text too, except the locked regular map', () => {
+    const { tab, toggles, save } = mount();
+    const labels = Array.from(tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout > span'));
+    labels[1]?.click();
+    expect(on(toggles.timeline)).toBe(false);
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
+    labels[1]?.click();
+    expect(on(toggles.timeline)).toBe(true);
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ALL_LAYOUTS });
+    labels[0]?.click();
+    expect(on(toggles.mindmap)).toBe(true);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('puts a toggle back when the save fails, so the next change starts from what is really stored', async () => {
+    let fail = true;
+    const { toggles, save, settings } = mount(DEFAULT_SETTINGS, () => fail ? Promise.reject(new Error('data.json は書き込めません')) : Promise.resolve());
+    click(toggles.timeline);
+    expect(on(toggles.timeline)).toBe(false);
+    await flush();
+    // The store still has the old list; the toggle shows it again and the failure is reported once.
+    expect(on(toggles.timeline)).toBe(true);
+    expect(settings().visibleLayouts).toEqual(ALL_LAYOUTS);
+    expect(Notice.log).toEqual(['data.json は書き込めません']);
+    // Putting it back did not start another save (the store already says "visible").
+    expect(save).toHaveBeenCalledTimes(1);
+    fail = false;
+    click(toggles.balanced);
+    // Computed from the stored list, so timeline stays in it.
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] });
+    await flush();
+    expect(settings().visibleLayouts).toEqual(['mindmap', 'timeline', 'hierarchy']);
+    expect(on(toggles.balanced)).toBe(false);
+    expect(Notice.log).toHaveLength(1);
+  });
+
+  it('leaves a detached note alone after the tab was hidden, on both paths', async () => {
+    const { tab, layout, note } = mount({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap'] });
+    // display() path: hide() empties the container; a save resolving afterwards must not write into the dropped row.
+    change(layout, 'timeline');
+    (tab as unknown as HarnessSettingTab).hide();
+    await flush();
+    expect(note.isConnected).toBe(false);
+    expect(note.hidden).toBe(true);
+    expect(note.textContent).toBe('');
   });
 });

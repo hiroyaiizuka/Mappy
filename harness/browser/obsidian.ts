@@ -691,8 +691,9 @@ export abstract class PluginSettingTab {
   getControlBinding(key: string): { value: unknown; onChange: (value: unknown) => Promise<void> } {
     return { value: this.getControlValue(key), onChange: async value => { await this.setControlValue(key, value); } };
   }
-  /** What Obsidian 1.13+ does when the tab is shown. */
+  /** What Obsidian 1.13+ does when the tab is shown, and again on `update()` while it is open: the rows are torn down (cleanups first) and drawn afresh. */
   renderTab(): void {
+    this.tearDown();
     if (this.settingItems.length === 0) { this.display(); return; }
     for (const item of this.settingItems as DeclaredSetting[]) {
       const setting = new Setting(this.containerEl).setName(item.name ?? "").setDesc(item.desc ?? "");
@@ -712,7 +713,8 @@ export abstract class PluginSettingTab {
     }
   }
   abstract display(): void;
-  hide(): void {
+  hide(): void { this.tearDown(); }
+  private tearDown(): void {
     for (const cleanup of this.cleanups.splice(0)) cleanup();
     this.containerEl.empty();
   }

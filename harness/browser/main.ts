@@ -546,6 +546,8 @@ const api = {
   setMapTheme,
   setVisibleLayouts,
   layoutButtons,
+  /** The bar's expected labels, in LAYOUT_MODES order, from the one definition in core. */
+  layoutLabels: LAYOUT_MODES.map(mode => LAYOUT_LABELS[mode]),
   /** Theme classes as they are now: the page's body and the map container. */
   themes: () => ({
     page: document.body.classList.contains("theme-dark") ? "dark" : document.body.classList.contains("theme-light") ? "light" : "none",

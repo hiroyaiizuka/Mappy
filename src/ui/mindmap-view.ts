@@ -218,6 +218,8 @@ export class MindmapView extends ItemView {
     this.file = file instanceof TFile && file.extension === "md" ? file : null;
     if (isLayoutMode(value.layout)) this.mode = value.layout;
     else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
+    // The bar follows the layout at once, before the read: draw() does not run for a note that fails to load.
+    this.syncModeButtons();
     if (changed) {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.document = undefined; this.selectedId = null; this.collapsed.clear(); this.needsFit = true;
@@ -392,6 +394,7 @@ export class MindmapView extends ItemView {
     if (mode === this.mode) return;
     this.mode = mode;
     this.needsFit = true;
+    this.syncModeButtons();
     this.draw();
     this.app.workspace.requestSaveLayout();
     const file = this.file;
@@ -509,7 +512,10 @@ export class MindmapView extends ItemView {
     this.scheduleLayout();
   }
 
-  /** The layout buttons as the settings and the current layout leave them; with every layout listed, nothing is hidden. */
+  /**
+   * The layout buttons as the settings and the current layout leave them; with every layout listed,
+   * nothing is hidden. Called wherever `mode` changes, not only from draw(), which needs a document.
+   */
   private syncModeButtons(): void {
     for (const [mode, button] of this.modeButtons) {
       button.hidden = mode !== this.mode && !this.visibleLayouts.includes(mode);

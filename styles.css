@@ -332,6 +332,7 @@
 /* The settings tab's「左下に表示するレイアウト」: four labelled toggles on one row, wrapping when the row is narrow. */
 .mappy-setting-layouts { display: flex; flex-wrap: wrap; gap: var(--size-4-2) var(--size-4-4); }
 .mappy-setting-layout { display: inline-flex; align-items: center; gap: var(--size-4-2); font-size: var(--font-ui-small); }
+.mappy-setting-layout > span { cursor: var(--cursor); }
 .mappy-setting-note { padding-top: var(--size-4-1); }
 .mappy-setting-note[hidden] { display: none; }
 .mappy-link-suggest {

@@ -723,8 +723,6 @@ async function captureThemes(recorder, page) {
   });
 }
 
-const LAYOUT_LABELS = ['通常マップ', 'タイムライン', '階層図', '左右バランス'];
-
 /** The bar as the page reports it, in one line for the record. */
 function describeButtons(buttons) {
   return buttons.map(button => `${button.label}${button.hidden ? '（hidden）' : ''}${button.active ? '＝選択中' : ''}`).join('・');
@@ -742,8 +740,9 @@ async function captureVisibleLayouts(recorder, page) {
 
   await recorder.run('visible-layouts', '設定「左下に表示するレイアウト」を通常マップ・階層図だけにする', '左下のボタンがタイムラインと左右バランスを除く 2 つになる（hidden と display: none）。ノードと原文は変わらない', async () => {
     const before = await page.harness('h.layoutButtons()');
-    expect(before.length === 4 && before.every(button => !button.hidden && button.displayed), `before: ${describeButtons(before)}`);
-    expect(before.map(button => button.label).join() === LAYOUT_LABELS.join(), `order: ${describeButtons(before)}`);
+    const labels = await page.harness('h.layoutLabels');
+    expect(before.length === labels.length && before.every(button => !button.hidden && button.displayed), `before: ${describeButtons(before)}`);
+    expect(before.map(button => button.label).join() === labels.join(), `order: ${describeButtons(before)} (expected ${labels.join('・')})`);
     const nodes = (await page.harness('h.nodes()')).length;
     await page.harness('h.setVisibleLayouts(["mindmap", "hierarchy"])');
     await page.settle();

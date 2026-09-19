@@ -70,7 +70,11 @@ export function mapSettingDefinitions(renderLayouts: (setting: Setting) => void 
 }
 
 export class MappySettingTab extends PluginSettingTab {
-  /** The line under the layout toggles about a hidden default layout, while that row is on screen. */
+  /**
+   * The line under the layout toggles about a hidden default layout. Set by the row's render and
+   * dropped by its cleanup (1.13+) or the next `display()`; a save that resolves after the tab was
+   * hidden finds it detached and leaves it alone.
+   */
   private hiddenDefaultEl: HTMLElement | undefined;
 
   constructor(app: App, plugin: Plugin, private readonly store: SettingsStore) { super(app, plugin); }
@@ -92,7 +96,7 @@ export class MappySettingTab extends PluginSettingTab {
     return this.store.save({ ...this.store.current(), [key]: accepted }).then(() => { this.refreshHiddenDefault(); });
   }
 
-  /** Obsidian before 1.13: the same four settings, built by hand. */
+  /** Obsidian before 1.13: the same four settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -118,20 +122,24 @@ export class MappySettingTab extends PluginSettingTab {
   /**
    * The bottom-left bar's buttons as four toggles on one row: the regular map is on and cannot be
    * changed, the others save through the same reader as the data file, so the stored list stays
-   * normalized. The line under them notes a default layout that is hidden: new maps are still
-   * created with it, and then show its button.
+   * normalized. Each toggle's text flips it too, as a setting row's name does. The line under them
+   * notes a default layout that is hidden: new maps are still created with it, and then show its button.
    */
   private renderLayoutToggles(setting: Setting): () => void {
     const list = setting.controlEl.createDiv({ cls: 'mappy-setting-layouts' });
     const shown = this.store.current().visibleLayouts;
     for (const mode of LAYOUT_MODES) {
       const item = list.createDiv({ cls: 'mappy-setting-layout' });
-      item.createSpan({ text: LAYOUT_LABELS[mode] });
+      const label = item.createSpan({ text: LAYOUT_LABELS[mode] });
       const toggle = new ToggleComponent(item).setValue(shown.includes(mode)).setTooltip(LAYOUT_LABELS[mode]);
       if (mode === 'mindmap') { toggle.setDisabled(true); continue; }
+      label.addEventListener('click', () => { toggle.setValue(!toggle.getValue()); });
       toggle.onChange(on => {
-        const others = this.store.current().visibleLayouts.filter(other => other !== mode);
-        this.commit('visibleLayouts', on ? [...others, mode] : others);
+        const current = this.store.current().visibleLayouts;
+        // Already so: the toggle was put back after a failed save, or the store changed under it.
+        if (on === current.includes(mode)) return;
+        const others = current.filter(other => other !== mode);
+        this.commit('visibleLayouts', on ? [...others, mode] : others, () => { toggle.setValue(!on); });
       });
     }
     this.hiddenDefaultEl = setting.descEl.createDiv({ cls: 'mappy-setting-note' });
@@ -141,15 +149,17 @@ export class MappySettingTab extends PluginSettingTab {
 
   private refreshHiddenDefault(): void {
     const line = this.hiddenDefaultEl;
-    if (!line) return;
+    if (!line?.isConnected) return;
     const { defaultLayout, visibleLayouts } = this.store.current();
     const hidden = !visibleLayouts.includes(defaultLayout);
     line.setText(hidden ? `既定レイアウト「${LAYOUT_LABELS[defaultLayout]}」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。` : '');
     line.hidden = !hidden;
   }
 
-  private commit(key: SettingKey, value: unknown): void {
+  /** Save one field; when the save fails, `revert` puts the control back to what is still stored. */
+  private commit(key: SettingKey, value: unknown, revert?: () => void): void {
     this.setControlValue(key, value).catch((error: unknown) => {
+      revert?.();
       new Notice(error instanceof Error ? error.message : '設定を保存できませんでした。');
     });
   }
