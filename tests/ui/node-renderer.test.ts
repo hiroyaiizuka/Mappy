@@ -81,6 +81,12 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     for (const title of ['Course', 'Stage', 'Detail']) {
       expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-hierarchy')).toBe(true);
       expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-timeline')).toBe(false);
+      expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-balanced')).toBe(false);
+    }
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'balanced' });
+    for (const title of ['Course', 'Stage', 'Detail']) {
+      expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-balanced')).toBe(true);
+      expect(renderer.entries.get(id(parsed, title))?.element.classList.contains('is-hierarchy')).toBe(false);
     }
   });
 

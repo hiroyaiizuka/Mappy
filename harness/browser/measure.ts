@@ -87,7 +87,7 @@ export interface MeasureContext {
 export interface LoadSample {
   kind: "load";
   fixture: string;
-  /** The layout the view placed the map in; product-plan §6 records all three. */
+  /** The layout the view placed the map in; product-plan §6 records every layout. */
   mode: LayoutMode;
   nodes: number;
   /** parseMarkdown alone on the same text. */

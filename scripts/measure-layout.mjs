@@ -20,7 +20,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { estimateNodeSizes, makePerformanceFixture, performanceNodeCounts } from './performance-fixtures.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const modes = ['mindmap', 'timeline', 'hierarchy'];
+const modes = ['mindmap', 'timeline', 'hierarchy', 'balanced'];
 const WARMUP = 5;
 
 function option(name, fallback) {

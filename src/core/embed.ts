@@ -6,18 +6,16 @@
  * Obsidian layer only resolves the link and owns the rendering lifecycle.
  */
 import { layoutFromValue, type LayoutMode } from './layout-mode';
+import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from './map-keys';
 import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
 import type { TopicPositionMap } from './topics';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
 
-const MAPPY_KEY = 'mappy';
-const LAYOUT_KEY = 'mappy-layout';
-const EXCALIDRAW_KEY = 'excalidraw-plugin';
-
 /**
  * The layout a note asks for, read from its own text: `mappy: true` (the YAML
- * boolean, never the string) makes it a map, `mappy-layout` picks the layout,
- * and an Excalidraw drawing is never claimed. Null for every other note.
+ * boolean in any of its spellings, never the string) makes it a map, `mappy-layout`
+ * picks the layout, and an Excalidraw drawing is never claimed. Null for every
+ * other note. Same verdict as the metadata cache (`readMapLayout`).
  */
 export function readMapFromSource(source: string): LayoutMode | null {
   const layout = frontmatterLayout(source);

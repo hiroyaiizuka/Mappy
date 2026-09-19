@@ -10,7 +10,7 @@
 flowchart LR
   E[Obsidian 標準 Markdown エディタ] -->|editor-change| S[文書セッション: 原文と revision]
   S --> P[原文範囲付きツリー]
-  P --> L[マップ / タイムライン / 階層図配置]
+  P --> L[マップ / タイムライン / 階層図 / 左右バランス配置]
   L --> V[HTML ノード + SVG 接続線]
   V -->|ノード編集コマンド| C[revision 検証と部分変更]
   C -->|Editor.transaction| E
@@ -29,21 +29,25 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/core/commands.ts` / `list-commands.ts` / `body.ts` | rename / add / move / delete / 本文変更 → 原文差分 | 純粋 TypeScript |
 | `src/core/list-conversion.ts` | 旧見出し形式から H2＋箇条書きへの明示変換 | 純粋 TypeScript |
 | `src/core/topics.ts` / `yaml-lite.ts` | frontmatter `mappy-topics` の読み取り（YAML サブセット）と、そのキーだけを差し替える書き込み（移動・改名時の持ち越し・削除時の除去） | 純粋 TypeScript |
-| `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムライン／階層図の座標と線。モードの振り分けとフリートピックの配置 | 純粋 TypeScript |
+| `src/layout/layout.ts` | tree＋実測サイズ → マップ／タイムライン／階層図／左右バランスの座標と線。モードの振り分け、右向き・左向き（鏡像）の枝の配置、フリートピックの配置 | 純粋 TypeScript |
 | `src/layout/hierarchy.ts` / `primitives.ts` | 階層図（ルートを上、親ごとに段揃え）の配置本体と、全モード・renderer が共有する矩形・線・開閉ボタンの型と寸法 | 純粋 TypeScript |
 | `src/interaction/viewport.ts` | パン・ズーム・Fit の座標計算 | 純粋 TypeScript |
 | `src/core/attachments.ts` / `plain-text.ts` | 本文からのリンク・画像抽出、タイトルの平文化 | `@lezer/markdown` |
 | `src/export/excalidraw-scene.ts` / `src/layout/path-points.ts` | tree＋計測 → 描画 API 非依存のシーン（ブロック・折れ線） | 純粋 TypeScript |
+| `src/export/svg-document.ts` | SVG 書き出しのシーン（ノードの XHTML・線のパス・バッジ・色）→ SVG 文字列、viewBox と余白、PNG の縮尺、スタイルの重複除去 | 純粋 TypeScript |
+| `src/export/svg-capture.ts` | 配置済みのノード要素と `LayoutResult` → シーン。算出スタイルの白名簿を直列化し、画像は差し込まれた resolver で data URL に。SVG → canvas → PNG | DOM（Obsidian の global `createEl` で作業用要素） |
+| `src/obsidian/image-export.ts` | Vault の画像を data URL に読む resolver、添付設定の保存先への `create`／`createBinary`、モバイルのピクセル上限 | Vault、metadataCache、FileManager、`requestUrl`、`Platform` |
 | `src/obsidian/document-store.ts` | Editor/Vault の一本化、原文照合、キュー、履歴 | Obsidian の公開 API |
 | `src/obsidian/frontmatter.ts` / `map-files.ts` | `mappy: true` の識別、初期レイアウト、新規マップ作成 | metadataCache、FileManager、Vault |
+| `src/obsidian/settings.ts` / `settings-tab.ts` | 設定の型・既定値・欠損／旧形式の正規化と、`PluginSettingTab`（`display()` と 1.13 以降の `getSettingDefinitions`）。保存は `main.ts` の `loadData`／`saveData` | Obsidian の Setting UI |
 | `src/obsidian/view-routing.ts` / `patch.ts` | frontmatter を持つノートを map view へ導く `setViewState` の差し替え | WorkspaceLeaf.prototype |
 | `src/obsidian/excalidraw-bridge.ts` / `src/types/excalidraw-automate.ts` | Excalidraw の `ExcalidrawAutomate` へのドロップフック連結と要素生成 | `window.ExcalidrawAutomate`（任意） |
 | `src/ui/mindmap-view.ts` | ファイル・表示状態、描画更新、編集経路の接続 | Obsidian ItemView |
 | `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命 | Obsidian MarkdownRenderer |
-| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
+| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付（クリックの解釈 `mapClick` は埋め込みと共有）、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
 | `src/layout/drop-preview.ts` / `snap.ts` | ドラッグ中の移動先に仮ノードを差し込んだレイアウト用の木と、運んだトピックのルートの矩形からレイアウト別の幾何で合流先を決めるスロット判定 | 純粋 TypeScript |
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
-| `src/core/embed.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード | 純粋 TypeScript |
+| `src/core/embed.ts` / `map-keys.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`（キーは `map-keys.ts` で cache 側と共有）、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード | 純粋 TypeScript |
 | `src/obsidian/embed-target.ts` | `.internal-embed` の `src` からマップノートと見出しパスを解決（`parseLinktext`、`getFirstLinkpathDest`、metadataCache の `mappy: true`） | Obsidian の公開 API |
 | `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
 
@@ -72,7 +76,7 @@ mappy: true
     この本文もノードと一緒に保持する。
 ```
 
-`mappy: true` はマップの必須識別子である。文字列 `"true"`、`false`、`mappy-layout` だけのノートは対象にしない。`mappy-layout` は任意の初期表示設定で、`timeline` ならタイムライン、`hierarchy` なら階層図、それ以外と省略時は通常マップにする（値の一覧は `src/core/layout-mode.ts` の `LAYOUT_MODES` が唯一の定義で、frontmatter・view state・レイアウトボタン（`Record<LayoutMode, …>` で網羅を型検査）・Excalidraw 挿入はすべてそれを使う。`layout.ts` からも再 export する）。新規作成・マインドマップ化・解除と、レイアウトボタンによる明示選択だけが frontmatter を書く。タイムライン・階層図の選択は `mappy-layout` にその値を保存し、通常マップ選択はキーを削除する。閲覧・折りたたみ・ズーム・Excalidraw への挿入では書かない。旧 `mappy-layout` 単独ノートは自動で取得せず、明示的なマインドマップ化で旧レイアウトを引き継いで `mappy: true` を追加する。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
+`mappy: true` はマップの必須識別子である。文字列 `"true"`、`false`、`mappy-layout` だけのノートは対象にしない。`mappy-layout` は任意の初期表示設定で、`timeline` ならタイムライン、`hierarchy` なら階層図、`balanced` なら左右バランス、それ以外と省略時は通常マップにする（値の一覧は `src/core/layout-mode.ts` の `LAYOUT_MODES` が唯一の定義で、frontmatter・view state・レイアウトボタン（`Record<LayoutMode, …>` で網羅を型検査）・Excalidraw 挿入はすべてそれを使う。`layout.ts` からも再 export する）。新規作成・マインドマップ化・解除と、レイアウトボタンによる明示選択だけが frontmatter を書く。タイムライン・階層図・左右バランスの選択は `mappy-layout` にその値を保存し、通常マップ選択はキーを削除する。閲覧・折りたたみ・ズーム・Excalidraw への挿入では書かない。旧 `mappy-layout` 単独ノートは自動で取得せず、明示的なマインドマップ化で旧レイアウトを引き継いで `mappy: true` を追加する。新規作成と、`mappy-layout` を持たないノートのマインドマップ化が書く値は設定「新規マップの既定レイアウト」（M14、既定は通常マップ＝キーなし）で、既存ノートの読み取り（`readMapLayout`）は設定を見ない。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
 
 - ATX 見出し、Setext、frontmatter、フェンス、空行、CRLF、末尾改行、引用、コメントを fixture で扱う。初期に編集未対応の構文は表示または source 編集へ誘導し、推測で変更しない。
 - 不明な記法は原文の範囲として保存する。本文を AST 全体から再生成しない。
@@ -130,7 +134,7 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 
 `LayoutResult.folds` に開閉操作の中心座標を返し、renderer が分岐点にボタンを配置する。展開中はボタンの領域へカーソルを合わせたとき、またはキーボードフォーカス時に丸い − を表示する。折りたたみ件数には直接の子だけでなく隠れる子孫をすべて含める。数字の桁数で変わるバッジ幅とヒット領域の寸法を layout と renderer で共有し、枝間の余白と Fit の bounds に含める。閉じた枝にも開閉座標を残す。
 
-`layoutTree` は本体を原点に配置したうえで、各フリートピックを同じモードの独立した木として配置する。位置があるトピックは `origin + 位置` に置く（他のノードと重なっても利用者の指定を優先する）。位置がないトピックは本体の bounds の下に原文順で積み、配置済みのどの矩形（開閉ボタンを含む）とも重ならない最初の空きに置く。列はマップとタイムラインでは本体の左端に揃え、階層図では本体の左端が最も広い段の端になり得るためルートの中央に揃える。Fit の bounds は本体・トピック・開閉ボタンすべてを含む。ドラッグ中の仮ノードは移動先を含む木（本体または一つのトピック）だけを組み替える。Excalidraw への挿入（`sceneContents`）は本体のみで、フリートピックを含めるかは M7 の残項目。
+`layoutTree` は本体を原点に配置したうえで、各フリートピックを同じモードの独立した木として配置する。位置があるトピックは `origin + 位置` に置く（他のノードと重なっても利用者の指定を優先する）。位置がないトピックは本体の bounds の下に原文順で積み、配置済みのどの矩形（開閉ボタンを含む）とも重ならない最初の空きに置く。列はマップとタイムラインでは本体の左端に揃え、階層図と左右バランスでは本体の左端が最も広い段や左側の枝の端になり得るためルートの中央に揃える。Fit の bounds は本体・トピック・開閉ボタンすべてを含む。ドラッグ中の仮ノードは移動先を含む木（本体または一つのトピック）だけを組み替える。Excalidraw への挿入（`sceneContents`）は本体のみで、フリートピックを含めるかは M7 の残項目。
 
 大規模化は、差分更新 → 折りたたみ → 可視領域外 DOM の省略の順に検討する。Worker や WebGL は、計測で必要性が出た段階で判断する。
 
@@ -138,14 +142,14 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 
 別のノートの `![[マップノート]]`／`![[ノート#見出し]]` を読み取り専用のマップとして描く。`registerMarkdownPostProcessor` を 1 つ登録し（`src/main.ts`）、post-processor `MapEmbeds.process` は同じ区画を 2 つの経路で見る。
 
-1. **ホストの区画（閲覧モード・ホバープレビュー）**: 区画の `.internal-embed` の `src` を `resolveEmbedTarget` で解決し、`mappy: true` のノート（cache で判定。文字列 `"true"`、Excalidraw、`.md` 以外、ブロック参照 `#^id`、自分自身は対象外）なら、Obsidian がノートを読み込む前に placeholder の span を `div.mappy-embed.mappy-view` に差し替える。
-2. **埋め込み先の区画（ライブプレビュー）**: ライブプレビューではホストの段落は CodeMirror の widget で区画にならず、Obsidian が埋め込み先のノートを `.internal-embed.markdown-embed` の中に描いたその区画が post-processor に届く（`ctx.sourcePath` は埋め込み先）。`ctx.sourcePath` のノートがマップで、区画が `.internal-embed` の中にあれば、その容器を 1 度だけ claim する: `mappy-embed-host` を付けて Obsidian の内容を CSS で隠し（`.internal-embed.mappy-embed-host > :not(.mappy-embed)`）、`markdown-embed`／`inline-embed` を外して同じ枠を末尾に足す。区画がまだ DOM に付いていなければ次のフレームで 1 度だけ見直す。マップ自身のノードの中で描かれた区画（`.mappy-view` の内側）と、claim した容器の中に残る Obsidian の描画は対象にしない。通常ノートの埋め込みの中にあるマップの埋め込みは（Obsidian がその通常ノートを描くときに）描く。
+1. **ホストの区画（閲覧モード・ホバープレビュー）**: 区画の `.internal-embed` の `src` を `resolveEmbedTarget` で解決し、`mappy: true` のノート（cache で判定。文字列 `"true"`、Excalidraw、`.md` 以外、ブロック参照 `#^id`、自分自身は対象外）なら、Obsidian がノートを読み込む前に placeholder の span を `div.mappy-embed.mappy-view` に差し替える。Obsidian の読み込みが先に走って span に内容や `is-loaded` が付いていた場合は差し替えず、2 の要領で claim する（span の中の Obsidian の Component は区画と一緒に解放される）。
+2. **埋め込み先の区画（ライブプレビュー）**: ライブプレビューではホストの段落は CodeMirror の widget で区画にならず、Obsidian が埋め込み先のノートを `.internal-embed.markdown-embed` の中に描いたその区画が post-processor に届く（`ctx.sourcePath` は埋め込み先）。`ctx.sourcePath` のノートがマップで、区画が DOM に付いた `.internal-embed` の中にあれば、その容器を 1 度だけ claim する: `mappy-embed-host` を付けて Obsidian の内容を CSS で隠し（`.internal-embed.mappy-embed-host > :not(.mappy-embed)`）、`markdown-embed`／`inline-embed` を外して同じ枠を末尾に足す。枠は区画の外（容器）にあるので、Component の `containerEl` には区画の中に置いた隠しの anchor（`mappy-embed-anchor`）を使う（Obsidian は `containerEl` が区画から外れたときに unload するため）。区画がまだ DOM に付いていなければ次のフレームで 1 度だけ見直す（プラグインの unload 後は見直さない）。マップ自身のノードの中で描かれた区画（`.mappy-view` の内側）と、claim した容器の中に残る Obsidian の描画は対象にしない。通常ノートの埋め込みの中にあるマップの埋め込みは（Obsidian がその通常ノートを描くときに）描く。
 
-描画は既存の `NodeRenderer`（`sourcePath` は元ノート。リンク・画像は元ノート基準）、`layoutTree`、`fitToBounds` を使い、view の編集・ドラッグ・パン／ズーム・履歴は持ち込まない。元ノートの原文は `DocumentStore.read`（開いているエディタのバッファを優先）で読み、`mappy: true` と `mappy-layout` は cache ではなくその原文から読む（`readMapFromSource`）。`![[ノート#A#B]]` は Obsidian の `[[ノート#A#B]]` と同じく、文書順で最初に A に一致する見出し、その区画の中で最初に B に一致する見出しに解決する（`findSection`。正規化は `stripHeading` に準じて `:#|^\` と `%%`・`[[`・`]]` を空白にし、連続する空白を 1 つにして大文字小文字を無視する。リスト項目は見出しではない）。見出しが見つからない場合とノートがマップでなくなった場合は枠の中に一文を出す。枠の高さは既定 320px（`--mappy-embed-height`）で、配置後に全体を Fit し、1 倍を超えて拡大しない。開いた時点でルート直下より下の枝をすべて折りたたみ（`initialFolds`）、開閉ボタンで一段ずつ開ける。折りたたみは枠内の一時状態で原文を変えない。元ノートの `editor-change`（別 leaf の未保存の編集）・`modify`・`rename`・`delete` で 45 ms の debounce の後に再読込し、読者の折りたたみは残し、新しく現れた枝は折りたたむ。右上のボタンで元ノートを開く（`openLinkText`。`mappy: true` のノートは §8 のルーティングでマップになる）。
+描画は既存の `NodeRenderer`（`sourcePath` は元ノート。リンク・画像は元ノート基準）、`layoutTree`、`fitToBounds` を使い、view の編集・ドラッグ・パン／ズーム・履歴は持ち込まない。元ノートの原文は `DocumentStore.read`（開いているエディタのバッファを優先）で読み、`mappy: true` と `mappy-layout` は cache ではなくその原文から読む（`readMapFromSource`）。`![[ノート#A#B]]` は Obsidian の `[[ノート#A#B]]` と同じく、文書順で最初に A に一致する見出し、その区画の中で最初に B に一致する見出しに解決する（`findSection`。正規化は `stripHeading` に準じて `:#|^\` と `%%`・`[[`・`]]` を空白にし、連続する空白を 1 つにして大文字小文字を無視する。リスト項目は見出しではない）。見出しが見つからない場合とノートがマップでなくなった場合は枠の中に一文を出す。枠の高さは既定 320px（`--mappy-embed-height`）で、配置後に全体を Fit し、1 倍を超えて拡大しない。開いた時点でルート直下より下の枝をすべて折りたたみ（`initialFolds`）、開閉ボタンで一段ずつ開ける。折りたたみは枠内の一時状態で原文を変えない。元ノートの `editor-change`（別 leaf の未保存の編集）・`modify`・`rename`・`delete` で 45 ms の debounce の後に再読込し、読者の折りたたみは残し、新しく現れた枝は折りたたむ。枠の中に一文を出す間も最後に描いた文書は保持し、マップに戻ったときノードの同一性と折りたたみを引き継ぐ。枠の大きさが変わったときは Fit だけをやり直す（配置は変えない）。右上のボタンで元ノートを開く（`openLinkText`。`mappy: true` のノートは §8 のルーティングでマップになる）。クリックの解釈（内部リンク・ノード・開閉ボタン）は view と同じ `mapClick`（`map-events.ts`）で、埋め込みは開閉とリンクだけに応える。
 
-Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差し替えられたとき・ホストを閉じたとき・ポップオーバーが閉じたときに Obsidian が unload する。unload で rAF・タイマー・`ResizeObserver`・vault／workspace のイベント（`registerEvent`）・`NodeRenderer` の MarkdownRenderer の Component を解放し、ホスト側の DOM を元に戻す（閲覧モードは placeholder の span、ライブプレビューは容器のクラスと内容）。`MapEmbeds` は生きている埋め込みを持ち、プラグインの unload（post-processor の解除より前に登録）で全部を解放し、それらを表示していた閲覧モードの view を `previewMode.rerender(true)` で描き直す。ノードのタイトルの `![[ノート]]`（画像以外）は本文の添付と同じ規則でリンクとして描くので（`transclusionsAsLinks`）、埋め込みの中で別のノートの埋め込みが描かれることはなく、循環しない。自分自身の埋め込みは Obsidian の扱いに任せる。
+Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差し替えられたとき・ホストを閉じたとき・ポップオーバーが閉じたときに Obsidian が unload する。unload で rAF・タイマー・`ResizeObserver`・vault／workspace のイベント（`registerEvent`）・`NodeRenderer` の MarkdownRenderer の Component を解放し、ホスト側の DOM を元に戻す（閲覧モードは placeholder の span、ライブプレビューは容器のクラスと内容）。`MapEmbeds` は生きている埋め込みを持ち、プラグインの unload で全部を解放し、その枠を含んでいた閲覧モードの view（`containerEl.contains(frame)` で選ぶ。パスでは入れ子や埋め込み先の区画を取り違える）を `previewMode.rerender(true)` で描き直す。解放後は post-processor もフレームの見直しも何もしない。ノードのタイトルの `![[ノート]]`（画像以外）は本文の添付と同じ規則でリンクとして描くので（`transclusionsAsLinks`）、埋め込みの中で別のノートの埋め込みが描かれることはなく、循環しない。自分自身の埋め込みは Obsidian の扱いに任せる。
 
-再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E31）で確認する。
+再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E34）で確認する。
 
 ## 6. 操作とズーム
 
@@ -157,7 +161,7 @@ Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差�
 
 ノードのドラッグは pointer イベントによる自前実装（`src/ui/node-drag.ts`）で、HTML5 の drag and drop は外部からの画像ファイルの添付だけに使う。ノード上の押下から 4px 動いた時点でドラッグを始め、クリック・ダブルクリック・リンク・開閉ボタン・インライン入力には触れない。ドラッグ中はノードの DOM を複製した半透明のゴーストをキャンバス座標で追従させ（ズーム倍率は矩形と `offsetWidth` の比から得る）、元のノードは薄く残す。位置判定は表示中のレイアウトに対して `elementFromPoint` で行い、ノード矩形の上下各 30% を兄弟の前後、残りを子の末尾、タイムラインの第一階層だけは左右で判定する。判定結果は core の `resolveDrop` に渡し、自分自身・子孫・仮想ルート直下のリスト項目・H6 超過なら何も表示しない。受け付ける場合は view が `previewTree`（`src/layout/drop-preview.ts`）で移動先の枝だけを組み替え、ドラッグ中ノードと同じ大きさの空の仮ノードを差し込んで再配置する。既存の兄弟はその分だけ避け、仮ノードへの接続線を太い丸い青線として描く。仮ノードを差し込むとポインターの下でレイアウトが動くため、仮ノード・元ノード・余白の上では現在の判定を保ち、別のノードへ切り替えるのは直前の切り替えから 8px 以上動いたときだけにする（ヒステリシス）。ドロップは最後に表示した位置の `move` コマンド（親 ID と、移動ノードを除いた兄弟内の位置）を実行し、Escape・pointercancel・キャンバス外での離しは取り消す。`move` は両形式で「移動元の行を取り除き、隣接する兄弟の深さ・インデントに合わせて挿入し、再解析した木の形が移動をシミュレートした木と一致する」ことを検証してから差分を返す。
 
-マップ上の木のルート（`projectMap` の本体ルートと各トピックのルート）は「自由に動くノード」として別扱いにする（`NodeDragActions.free`）。ゴーストは作らず、押下からの移動量（screen px）を view に渡し（`shift`）、view は `LayoutResult.origin` 基準の開始位置＋移動量／倍率を `topicLayouts` の一時的な位置にして毎フレーム再配置するので、木全体（子・線・開閉ボタン）がポインターに追従する。動いている木のノードには `is-drag-moving`（`pointer-events: none`）を付け、`elementFromPoint` の判定は従来どおり続けるので、ノードの上では仮ノード＋青線のスロットが出る（このときトピックのルートは `is-merging` で平常のノードの見た目になる）。ポインターがノードに乗っていない間は、view の `snapTarget` が「ルートの矩形がどこにあるか」でスロットを決める（`NodeDragActions.snap`。ノードごとの判定は `src/layout/snap.ts` の `snapSlot`）: 子のないノード（または閉じたノード）の「最初の子が置かれる側」8〜72 単位・交差方向に重なる位置にルートの近い辺が来ればその末尾の子、子のあるノードの子が並ぶ線（±24 単位）に来れば並びの方向の位置で前後の兄弟。側と線はレイアウトの幾何に従う: 通常マップとタイムラインの上下の森（第二階層以下）では右側と縦の列、階層図では下側と横の段、タイムラインの第一階層では軸の中心線（左右の並び）。子のないステージは、`placeTimeline` が森を置く側（偶数番目は上、奇数番目は下。view が配置結果の線からルート・ステージ・森を 1 パスで分ける）だけで受け付け、順位の距離は森の始まる列（ステージの中心＋20）からのずれで測る。判定はドラッグ中の「仮ノードのないレイアウト」（`topicDrag.base`。仮ノードなしのフレームごとに更新）に対して行う。仮ノードを差し込むと階層図の段は親の下で中央揃えし直され（兄弟が 72〜92 単位ずれる）、タイムラインの子のないステージは同じ側の森を避けて右へ跳ぶため、表示中のレイアウトで判定すると自分の仮ノードで判定が外れてフリッカーする。表示中のスロットは 2 倍の範囲で保ち、明らかに近い別のスロット（距離差 16 単位超）があるときだけ切り替える。ルートの矩形は DOM ではなくポインターと掴んだ位置から求める（DOM は次のフレームまで古い）。トピックを相手に重ねなくても、隣に来た時点で事前表示が出る。3 レイアウトとも同じ経路で、ポインターがノードに乗っているときはポインターの判定（重ねたときのスロット）が優先する。本体のルートのドラッグ中はどのノードにも合流しない（`resolveDrop` も両形式で本体の区画を拒否）。空白で離すと `place` → `planTopicMoves` で `mappy-topics` のそのレイアウトの項目だけを書く（位置未設定なら項目を作る。Markdown 側の改名で位置を失ったトピックは既定配置から動かした時点で新しいキーが書かれ、旧キーは孤児として残る）。スロットの上で離すと `move` コマンドで合流する。Escape・pointercancel・キャンバス外で離した場合は一時的な位置を捨てて元へ戻し、原文は変えない。
+マップ上の木のルート（`projectMap` の本体ルートと各トピックのルート）は「自由に動くノード」として別扱いにする（`NodeDragActions.free`）。ゴーストは作らず、押下からの移動量（screen px）を view に渡し（`shift`）、view は `LayoutResult.origin` 基準の開始位置＋移動量／倍率を `topicLayouts` の一時的な位置にして毎フレーム再配置するので、木全体（子・線・開閉ボタン）がポインターに追従する。動いている木のノードには `is-drag-moving`（`pointer-events: none`）を付け、`elementFromPoint` の判定は従来どおり続けるので、ノードの上では仮ノード＋青線のスロットが出る（このときトピックのルートは `is-merging` で平常のノードの見た目になる）。ポインターがノードに乗っていない間は、view の `snapTarget` が「ルートの矩形がどこにあるか」でスロットを決める（`NodeDragActions.snap`。ノードごとの判定は `src/layout/snap.ts` の `snapSlot`）: 子のないノード（または閉じたノード）の「最初の子が置かれる側」8〜72 単位・交差方向に重なる位置にルートの近い辺が来ればその末尾の子、子のあるノードの子が並ぶ線（±24 単位）に来れば並びの方向の位置で前後の兄弟。側と線はレイアウトの幾何に従う: 通常マップとタイムラインの上下の森（第二階層以下）では右側と縦の列、階層図では下側と横の段、タイムラインの第一階層では軸の中心線（左右の並び）、左右バランスでは各ノードの側（右側の枝は右と左辺の列、左側の枝は左と右辺の列。ルートの子は右列・左列それぞれの線で判定し、スロットはその側に着地する原文の index に解決する: 子の前ならその子の index、列の末尾は次の index がその側に配られるときだけ「全体の末尾の後ろ」、空の側は次の index がその側なら「ルートの隣」。view は `balancedSideOf` で第一階層の側をルートの中心との位置関係から決めて子孫に引き継ぎ、この読み取りは仮ノードなしのレイアウトごとに 1 回だけ作る（`topicDrag.index`）。子のないステージは、`placeTimeline` が森を置く側（偶数番目は上、奇数番目は下。view が配置結果の線からルート・ステージ・森を 1 パスで分ける）だけで受け付け、順位の距離は森の始まる列（ステージの中心＋20）からのずれで測る。判定はドラッグ中の「仮ノードのないレイアウト」（`topicDrag.base`。仮ノードなしのフレームごとに更新）に対して行う。仮ノードを差し込むと階層図の段は親の下で中央揃えし直され（兄弟が 72〜92 単位ずれる）、タイムラインの子のないステージは同じ側の森を避けて右へ跳ぶため、表示中のレイアウトで判定すると自分の仮ノードで判定が外れてフリッカーする。表示中のスロットは 2 倍の範囲で保ち、明らかに近い別のスロット（距離差 16 単位超）があるときだけ切り替える。ルートの矩形は DOM ではなくポインターと掴んだ位置から求める（DOM は次のフレームまで古い）。トピックを相手に重ねなくても、隣に来た時点で事前表示が出る。4 レイアウトとも同じ経路で、ポインターがノードに乗っているときはポインターの判定（重ねたときのスロット）が優先する。本体のルートのドラッグ中はどのノードにも合流しない（`resolveDrop` も両形式で本体の区画を拒否）。空白で離すと `place` → `planTopicMoves` で `mappy-topics` のそのレイアウトの項目だけを書く（位置未設定なら項目を作る。Markdown 側の改名で位置を失ったトピックは既定配置から動かした時点で新しいキーが書かれ、旧キーは孤児として残る）。スロットの上で離すと `move` コマンドで合流する。Escape・pointercancel・キャンバス外で離した場合は一時的な位置を捨てて元へ戻し、原文は変えない。
 
 合流（区画→リストの枝）はリスト形式では `list-commands.ts` の `moveTo` が行う: 見出しの文を項目の初行にし、見出し行より後ろ（本文・画像・フェンス・入れ子のリスト）を項目の内容インデントだけ下げて、隣接する兄弟のインデント・マーカーに合わせて差し込む。本文冒頭の空行は落とし、それ以外の行はインデント以外のバイトを保つ。区画の削除と同じく末尾の区画なら区切りの空行も取り除く。`checkedMove` で「再解析した木の形が、区画を枝に移した形と一致する」ことを検証し、ずれれば拒否する。見出し形式では既存の `moveHeadingSection`（深さの付け替え）がそのまま合流になる。どちらも `mappy-topics` の項目を同じ編集セットで除く（`leavesTopics` → `withTopicRemoval`）。本体のルートは合流しない（`resolveDrop` と `moveTo` が拒否）。
 
@@ -175,7 +179,7 @@ Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差�
 
 `layoutTree` の timeline モードで、第一階層を中央の水平線へ並べ、そのサブツリーを上下交互へ配置する。幹はステージの上辺または下辺の中央から伸ばし、子テキストの中央高さで曲げて左端に止める。深い枝も直角線にする。軸上の線は前のノードの右辺から次の左辺までの区間ごとに描く。
 
-同じ側の枝は包絡矩形を使って間隔を確保し、反対側は横幅を共有する。計測と配置は明示的なスタックで処理し、深い木で再帰スタックに依存しない。長文・画像が混在する実機表示と性能は別途記録する。レイアウト単体の配置時間は `node scripts/measure-layout.mjs` が 10／100／500／2,000 ノードの fixture で 3 モードを計測し、`artifacts/layout-timing/` に記録する。
+同じ側の枝は包絡矩形を使って間隔を確保し、反対側は横幅を共有する。計測と配置は明示的なスタックで処理し、深い木で再帰スタックに依存しない。長文・画像が混在する実機表示と性能は別途記録する。レイアウト単体の配置時間は `node scripts/measure-layout.mjs` が 10／100／500／2,000 ノードの fixture で 4 モードを計測し、`artifacts/layout-timing/` に記録する。
 
 保存順序・ノード ID・編集コマンドは通常マップと共通。日時比例や工数を扱うものではなく、講座の章立てを表す配置である。レイアウト変更では初期表示用の frontmatter だけを更新し、本文を書き換えない。
 
@@ -186,6 +190,12 @@ Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差�
 線は親の下辺中央から隙間の中央（バス）まで下り、子の上辺中央の真上まで水平に走ってから子へ下りる直角線で、ノードの内側や文字の下へは伸びない。幹と枝は隙間の半分ずつなので、縦線の長さは親の高さによらず一定になる（バスの高さは親ごと）。開閉ボタンは展開中はバスと幹の交点、閉じた枝ではノードの 16px 下に置き、非表示の子孫数のバッジ幅を占有幅と Fit の bounds に含める。計測と配置は明示的なスタックで処理し、深さ 2,000 の一列の枝でも再帰しない。
 
 本体のルートは x = 0 を中心に置き（`LayoutResult.origin` はルートの左上）、フリートピックは同じモードの独立した木として本体の下、ルートの中央に揃えた列に積む。レイアウトボタン（左下の 3 つ目、Lucide の `network`）、`mappy-layout: hierarchy` の保存・復元、Excalidraw 挿入は M6 のタイムラインと同じ規則で動く。ノードには `is-hierarchy` を付け、ドラッグの兄弟判定は全階層で左右 30% にする（兄弟が横に並ぶため）。
+
+## 7c. 左右バランス
+
+`layoutTree` の balanced モード（`src/layout/layout.ts` の `placeBalanced`）で、ルートを中央に置き、第一階層を原文順に右・左・右・左と交互に振り分け（`balancedSide(index)`: 偶数番目が右、奇数番目が左。規則は 1 つに固定し、左右を手動で選ばせない）、以下の階層はその側へ伸ばす。通常マップの右向きの配置（`placeSideways` に `"right"`）を左向き（`"left"`）でも使い、左側は鏡像になる: 子は親の左辺から 1 隙間（ルート直下 80px・以下 56px）離れて右辺を揃え、線は親の左辺→中間で曲がる→子の右辺、開閉ボタンは左の幹（親の左辺 − 隙間/2）、閉じた枝のバッジはノードの左に出る。各側は独立した列で、その側の枝の合計高さ（兄弟間 22px）をルートの高さ中央に揃えるので、片側だけが背の高い枝を持っても反対側は動かない。ルートの開閉ボタンは右の幹に置く（第一階層があれば必ず右にある。閉じたルートのバッジも右）。`LayoutResult.origin` はルートの左上で、ルートの中心が (0, 0)。フリートピックは同じ規則の木として置き、位置未設定ならルートの中央に揃えた列に本体の下から積む。
+
+配置は右列・左列の順位を保つので、右列を上から、左列を上から交互に読むと原文順に戻る。並べ替え（`move`）は他のレイアウトと同じ原文の index で行い、index の偶奇が側を決める。したがって第一階層に 1 つ差し込むと後続の兄弟は側が入れ替わる（規則が固定であるための帰結で、ドラッグの事前表示はその結果をそのまま見せる）。ノードには `is-balanced` を付ける。ドラッグの兄弟判定は上下 30% のまま（どちらの側でも兄弟は縦に並ぶ）。フリートピックの合流の事前表示（`snapSlot`）は側ごとの鏡像で、view の `snapTarget` が各木の第一階層を `balancedSideOf`（ルートの中心との位置関係）で右・左に分け、子孫に引き継いで `NodePlace` として渡す。ルートの子の列に対するスロットは、着地する側が列と一致する原文の index だけを出す（`amongBalancedRoot`。子の前はその子の index、列の末尾は次の index がその側に配られるときだけ全体の末尾の後ろ、空の側は次の index がその側ならルートの隣）。側の判定を geometry から読むのは、配置の規則が変わっても「ルートの左にあるものが左」という事実は変わらないためで、view と `snapSlot` は同じ関数を使う。レイアウトボタン（左下の 4 つ目、Lucide の `unfold-horizontal`）、`mappy-layout: balanced` の保存・復元、Excalidraw 挿入（`buildScene` は `layoutTree` の結果をそのまま使うので左側の線も鏡像の折れ線になる）は他のレイアウトと同じ規則で動く。
 
 ## 8. 表裏切替とビューのルーティング
 
@@ -210,6 +220,25 @@ Excalidraw プラグインが有効なら、`window.ExcalidrawAutomate` の公�
 要素の対応は map view の見た目に合わせる: 表示ルートは塗り矩形＋白文字、第一階層は枠付き矩形、下位は平文。線は `layoutTree` の `M/H/V` パスを折れ線にし、`![[画像]]` はラベル下に 240×140 以内で並べ、タイトル・本文の最初のリンクを要素の `link` に、ルートには元ノートへの `link` を付ける。1 回の挿入を 1 グループにする。サイズは DOM ではなく Excalidraw 自身の計測に従う: 全要素を原点に作成 → 実寸を読む → `buildScene` で配置 → 座標を書き戻す。フォントは図面の `currentItemFontFamily` を使う。挿入後の図面と元ノートは同期しない。
 
 対話フレーム内では Excalidraw が `--text-normal` を空にするため、線の色は `--mappy-line: currentColor` にしている。`var()` が空文字を展開すると `stroke` は無効値になり、`border` の省略形だけが生き残る。
+
+## 9b. 設定（M14）
+
+設定は `loadData`／`saveData` の 1 オブジェクト（`theme`・`defaultLayout`・`newMapFolder`）で、項目ごとの読み取り（`readSettingField`）を `normalizeSettings`（欠損・旧形式・不正値を項目ごとに既定値へ戻す）と設定タブの `setControlValue` が共有し、タブが受け付ける値と再読込で残る値を一致させる。既定値はどれも設定が無かったときの動作（テーマは Obsidian に追従、レイアウトは通常マップでキーなし、作成先は `FileManager.getNewFileParent`）である。設定タブは `PluginSettingTab` で、`display()`（1.8.7〜）と `getSettingDefinitions`／`getControlValue`／`setControlValue`（1.13 以降。宣言的設定で、Obsidian の設定検索にも出る。`obsidian` の型は 1.8.7 に固定しているので使う部分集合だけを `MapSettingDefinition` として写す）を同じ 3 項目の定義から出す。型が 1.13 の基底を知らないため、`update`・`settingItems`・`hide` など `SettingTab` の名前をこのクラスの他のメンバーに使わない（`addSettingTab` が `update()` を呼んで `settingItems` を埋めるので、同名の private メソッドがあると宣言的経路が黙って死ぬ。ブラウザ検証ページのモックがこの流れを持ち、jsdom で固定する）。レイアウト名は `src/core/layout-mode.ts` の `LAYOUT_LABELS` が唯一の定義で、レイアウトボタンと設定のドロップダウンが共有する。保存はプラグインだけが行い、タブはノートにも Vault にも触れない。
+
+テーマは `MindmapView.setTheme()` が map view のコンテナ（`.mappy-view`）にだけ Obsidian の `theme-light`／`theme-dark` class を付け外しする。Obsidian の app.css は素の配色（`--color-base-*`・`--mono-rgb-*`・`--color-<名前>`・`--shadow-s`・`color-scheme`）を `.theme-light`／`.theme-dark` に、意味変数（`--background-primary`・`--text-normal`・`--link-color`…）をそこから導く形で `body` に置くため、コンテナに class を付けるだけでは意味変数が body の計算済みの値のまま継承される。そこで styles.css の `:where(.mappy-view.theme-light, .mappy-view.theme-dark)` が、マップとノード内の描画済み Markdown が読む意味変数を app.css と同じ対応で導き直す（1.6.7 と 1.14.2 で照合）。`:where()` で詳細度を 0 にしてあるので、コミュニティテーマが `.theme-dark { --background-primary: … }` と書けばそれが勝つ。「Obsidian に従う」は class を外すだけで、設定が無かったときと同じ継承になる。埋め込み表示（M10）と Excalidraw 挿入はこの class を付けないので Obsidian のテーマに従う。限界: 変数ではなく body の class で分岐する子孫規則（コミュニティテーマの `.theme-dark .markdown-rendered code { … }` のような形）は、body が暗色ならコンテナが明色でも一致する。Obsidian 本体の app.css（1.14.2）にはノード内に届くこの形の規則がないが、コミュニティテーマでは起こり得るので LEV-62 の目視項目にする。
+
+作成先フォルダは空欄で Obsidian の「新規ノートの作成場所」、`/` で最上位、それ以外は `normalizePath` した相対パス。`normalizePath` はスラッシュを整えるだけ（app.js 1.14.2 で確認）なので、`.`・`..`・`.` で始まる名前（Vault が索引しないフォルダ）はここで拒否する。大文字小文字だけが違う既存フォルダは再利用し（ファイルシステムは通常区別しない）、同名のファイルがあれば作らずにエラー、存在しなければ `Vault.createFolder`（結果が空ならエラー）。上書きはしない。
+
+## 9c. SVG／PNG 書き出し
+
+Excalidraw 挿入と並ぶ、外へ持ち出す経路（§5 M13）。図面 API を持たないので、map view が画面に置いたものをそのまま文書にする。
+
+- **入力は view の最終配置**: `MindmapView.exportSource()` は、最後の配置フレームで使った `LayoutResult`、`NodeRenderer.entries` の複製、canvas、線の `<svg>` を渡す。debounce 中の refresh があれば先に実行し、配置フレームが予約中なら 1 フレーム（隠れたウィンドウでは 100 ms）待ち、インライン編集中・ドラッグ中は拒否する。配置し直さないので、線の `d`・ノードの座標・折りたたみは画面と一致する。MarkdownRenderer の描画途中は待てない（renderer は完了を次のフレームの予約でしか知らせない。`node-renderer.ts` に手を入れる別チケット）。
+- **ノードは `foreignObject` の XHTML**: `svg-capture.ts` が要素を歩き、状態クラス（`is-selected` など）、開閉ボタン、`tabindex`／ARIA／インライン style を落として直列化する。DOM は最初の `await` の前に一度で読み切り（画像は印を置いて後から差し込む）、途中で refresh が来てもノードが欠けない。XML に書けない制御文字・孤立サロゲートは落とし、宣言していない接頭辞の属性（`foo:bar`）は捨て、`xlink:` はルートで宣言する。書き出す前に `DOMParser` で整形式を確かめる。見た目は Obsidian のスタイルシートに頼らず、`getComputedStyle` の白名簿（余白・枠・角丸・背景・文字・折り返し・flex）を宣言列ごとに 1 クラスにまとめ、`<style>` に置く（2,000 ノードでも数十クラス）。ノードのルートには配置時の幅と高さを書き、`foreignObject` は `overflow="visible"` にして、フォントが違う環境で 1 行増えても文字が切れないようにする。閉じた枝の件数は、枠からはみ出すので `foreignObject` の外に SVG の丸と文字で描く（`LayoutResult.folds` と `foldBadgeWidth`）。
+- **画像は data URL**: resolver は差し込み。Obsidian 側（`image-export.ts`）は `.internal-embed[src]` の link target（`core/wiki-link.ts` の `wikiLinkPath`）を `metadataCache` で解決し、`core/attachments.ts` の画像拡張子表にあれば `vault.readBinary`、Markdown 形式の画像は属性に残った書かれたパスで同じことを試み、`http(s)` だけ `requestUrl` で取る（15 秒で諦め、`image/*` 以外は受け付けない）。読めなければ null を返し、`<img>` は同じ大きさの `<span>`（代替テキスト）になる。ノードは残る。
+- **テーマ**: body の `theme-dark` でクラスと既定色を決め、背景は canvas の算出 `background-color`、線は最初の path の算出 `stroke`（`currentcolor` なら `color`）。
+- **PNG**: 同じ SVG を `data:image/svg+xml` の `<img>` に読み込み、canvas に `scale` 倍で描いて `toBlob`。blob URL は `file://` のような不透明オリジンで canvas を汚染するため使わない。WebKit（iOS の Obsidian）は `foreignObject` を含む SVG 画像で canvas を汚染するので、コマンド実行時に 1 ピクセルの SVG で一度だけ読み戻しを試し（`canRasterizeForeignObject`）、できなければモーダルの PNG を無効にする。それでも `SecurityError` が出れば「この環境では PNG を作れません」に言い換える。縮尺は 2 倍を上限に、`DESKTOP_PNG_LIMITS`（8,192²・一辺 16,384）／`MOBILE_PNG_LIMITS`（4,096²）に収める。`<img>` に載せた SVG は文書の Web フォントを使えないので、フォントはこの端末のものになる。
+- **保存**: `MindmapView.exportImage(format)` → `exportMap` → `getAvailablePathForAttachment(<basename>.svg|png, note.path)` → `vault.create`（SVG）／`vault.createBinary`（PNG）。パスを取るのは書き出す直前で、PNG が作れない環境はその前に断る（添付フォルダを作らない）。ノートは読まない・書かない。コマンドは `canSaveAttachments`（添付パス API と create の存在）が真のときだけ出す。
 
 ## 10. 最初に検証する順序
 

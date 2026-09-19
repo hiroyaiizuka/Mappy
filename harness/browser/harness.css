@@ -1,51 +1,116 @@
 /*
  * Page chrome for the browser harness plus placeholder values for the Obsidian
- * CSS variables that styles.css reads. The values are neutral stand-ins so the
- * product CSS renders; they are not Obsidian's theme and theme is out of scope.
+ * CSS variables that styles.css reads. The values are stand-ins so the product
+ * CSS renders; they are not Obsidian's theme. They are laid out the way
+ * app.css lays them out, though: the raw palette on `.theme-light` /
+ * `.theme-dark` and the semantic variables derived from it on `body`. That is
+ * what the map's explicit theme (settings, M14) relies on, so this page can
+ * show a dark map on a light page and the reverse; whether Obsidian's own
+ * palette reads the same is a ③ check on the real app.
  */
-:root {
-  --background-primary: #ffffff;
-  --background-secondary: #f6f6f6;
-  --background-modifier-hover: rgba(0, 0, 0, 0.075);
-  --background-modifier-border: #e0e0e0;
-  --background-modifier-border-hover: #c8c8c8;
-  --color-base-40: #dcdcdc;
+.theme-light {
+  color-scheme: light;
+  --mono-rgb-0: 255, 255, 255;
+  --mono-rgb-100: 0, 0, 0;
+  --color-red: #e93147;
   --color-blue: #086ddd;
-  --interactive-accent: #7852ee;
-  --text-normal: #222222;
-  --text-muted: #5c5c5c;
-  --text-error: #e93147;
+  --color-base-00: #ffffff;
+  --color-base-05: #fcfcfc;
+  --color-base-10: #fafafa;
+  --color-base-20: #f6f6f6;
+  --color-base-25: #e3e3e3;
+  --color-base-30: #e0e0e0;
+  --color-base-35: #d4d4d4;
+  --color-base-40: #bdbdbd;
+  --color-base-50: #ababab;
+  --color-base-60: #707070;
+  --color-base-70: #5c5c5c;
+  --color-base-100: #222222;
+  --color-accent-hsl: var(--accent-h), var(--accent-s), var(--accent-l);
+  --color-accent: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
+  --color-accent-1: hsl(calc(var(--accent-h) - 1), calc(var(--accent-s) * 1.01), calc(var(--accent-l) * 1.075));
+  --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+.theme-dark {
+  color-scheme: dark;
+  --mono-rgb-0: 0, 0, 0;
+  --mono-rgb-100: 255, 255, 255;
+  --color-red: #fb464c;
+  --color-blue: #027aff;
+  --color-base-00: #1e1e1e;
+  --color-base-05: #212121;
+  --color-base-10: #242424;
+  --color-base-20: #262626;
+  --color-base-25: #2a2a2a;
+  --color-base-30: #363636;
+  --color-base-35: #3f3f3f;
+  --color-base-40: #555555;
+  --color-base-50: #666666;
+  --color-base-60: #999999;
+  --color-base-70: #b3b3b3;
+  --color-base-100: #dadada;
+  --color-accent-hsl: var(--accent-h), var(--accent-s), var(--accent-l);
+  --color-accent: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
+  --color-accent-1: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
+  --color-accent-2: hsl(calc(var(--accent-h) - 5), calc(var(--accent-s) * 1.05), calc(var(--accent-l) * 1.29));
+  /* As in app.css, the dark palette also re-points the accent and the interactive surfaces. */
+  --interactive-normal: var(--color-base-30);
+  --interactive-hover: var(--color-base-35);
+  --text-accent: var(--color-accent-1);
+  --interactive-accent: var(--color-accent);
+  --interactive-accent-hover: var(--color-accent-1);
+  --text-selection: hsla(var(--interactive-accent-hsl), 0.25);
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+body {
+  --accent-h: 258;
+  --accent-s: 88%;
+  --accent-l: 66%;
+  --background-primary: var(--color-base-00);
+  --background-primary-alt: var(--color-base-10);
+  --background-secondary: var(--color-base-20);
+  --background-modifier-hover: rgba(var(--mono-rgb-100), 0.075);
+  --background-modifier-border: var(--color-base-30);
+  --background-modifier-border-hover: var(--color-base-35);
+  --background-modifier-border-focus: var(--color-base-40);
+  --background-modifier-form-field: var(--color-base-00);
+  --text-normal: var(--color-base-100);
+  --text-muted: var(--color-base-70);
+  --text-faint: var(--color-base-50);
+  --text-error: var(--color-red);
+  --text-accent: var(--color-accent);
+  --text-accent-hover: var(--color-accent-2);
+  --text-selection: hsla(var(--color-accent-hsl), 0.2);
+  --interactive-normal: var(--color-base-00);
+  --interactive-hover: var(--color-base-10);
+  --interactive-accent-hsl: var(--color-accent-hsl);
+  --interactive-accent: var(--color-accent-1);
+  --interactive-accent-hover: var(--color-accent-2);
+  --link-color: var(--text-accent);
+  --link-color-hover: var(--text-accent-hover);
+  --link-external-color: var(--text-accent);
+  --link-external-color-hover: var(--text-accent-hover);
+  --link-unresolved-color: var(--text-accent);
+  --code-background: var(--background-primary-alt);
+  --code-normal: var(--text-muted);
   --font-text-size: 16px;
   --font-ui-small: 13px;
   --font-ui-smaller: 12px;
   --font-smaller: 13px;
   --font-monospace: ui-monospace, Menlo, Consolas, monospace;
-  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
   --layer-popover: 30;
   --layer-menu: 40;
   --layer-modal: 50;
   --layer-notice: 60;
 }
 
-/* Dark stand-in values: the same neutral placeholders, inverted. Not Obsidian's dark theme. */
-body.theme-dark {
-  --background-primary: #1e1e1e;
-  --background-secondary: #262626;
-  --background-modifier-hover: rgba(255, 255, 255, 0.075);
-  --background-modifier-border: #3a3a3a;
-  --background-modifier-border-hover: #4a4a4a;
-  --color-base-40: #4b4b4b;
-  --color-blue: #6aa8ff;
-  --interactive-accent: #a48cff;
-  --text-normal: #dcdcdc;
-  --text-muted: #9a9a9a;
-  --text-error: #ff6b7a;
-  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.4);
-}
-
 html, body { margin: 0; background: var(--background-secondary); color: var(--text-normal); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
 code { font-family: var(--font-monospace); font-size: 0.92em; }
 button { font: inherit; }
+/* The mock renderer's links and code, coloured the way app.css colours them, so a themed map shows them too. */
+a.internal-link, a.external-link { color: var(--link-color); }
+code { background: var(--code-background); color: var(--code-normal); border-radius: 3px; padding: 0 0.2em; }
 
 .harness-header { padding: 10px 16px; border-bottom: 1px solid var(--background-modifier-border); background: var(--background-primary); }
 .harness-header h1 { margin: 0 0 4px; font-size: 16px; }

@@ -2,17 +2,31 @@ import { GFM, parser } from '@lezer/markdown';
 
 const attachmentParser = parser.configure(GFM);
 
-const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/iu;
-/** A wiki embed whose target (before any `|alias` or `#heading`) is an image file. */
-const IMAGE_EMBED = /^!\[\[[^\]|#\r\n]*\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[|#][^\]\r\n]*)?\]\]$/iu;
+/** Image files the map previews and the exports embed, by extension; the single list every layer reads. */
+export const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
+  avif: 'image/avif', bmp: 'image/bmp', gif: 'image/gif', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
+};
+
+/** The media type of an image extension (any case, with or without the dot), or undefined for anything else. */
+export function imageMimeType(extension: string): string | undefined {
+  return IMAGE_MIME_TYPES[extension.replace(/^\./u, '').toLowerCase()];
+}
+
+const IMAGE_EXTENSION_ALTERNATIVES = Object.keys(IMAGE_MIME_TYPES).join('|');
+const IMAGE_EXTENSION = new RegExp(`\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})$`, 'iu');
+/** `![[figure.png]]`, `![[figure.png|120]]`, `![[figure.png#anchor]]`: an embed whose target (before any alias or heading) is an image file. */
+const IMAGE_EMBED = new RegExp(`^!\\[\\[[^\\]|#\\r\\n]*\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})(?:[|#][^\\]\\r\\n]*)?\\]\\]$`, 'iu');
 
 /**
- * Note and PDF transclusions become plain links; only image embeds stay embeds.
- * Titles and body attachments share this rule, so a node never renders another
- * note inside itself and an embedded map cannot recurse through its own nodes.
+ * Note and PDF transclusions become plain links; only image embeds stay embeds,
+ * and inline code keeps its text. Titles and body attachments share this rule, so
+ * a node never renders another note inside itself and an embedded map cannot
+ * recurse through its own nodes.
  */
 export function transclusionsAsLinks(markdown: string): string {
-  return markdown.replace(/!\[\[[^\]\r\n]+\]\]/gu, (embed) => (IMAGE_EMBED.test(embed) ? embed : embed.slice(1)));
+  return markdown.replace(/(`+)[^`]*\1|!\[\[[^\]\r\n]+\]\]/gu, (match) =>
+    (match.startsWith('`') || IMAGE_EMBED.test(match) ? match : match.slice(1)));
 }
 
 export interface AttachmentEntry {

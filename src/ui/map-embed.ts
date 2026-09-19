@@ -11,10 +11,13 @@ import type { DocumentStore } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
 import { EdgeLayer } from "./edge-layer";
+import { mapClick } from "./map-events";
 import { NodeRenderer } from "./node-renderer";
 
-/** Obsidian's embed container whose content a map replaced (the live-preview path); its own children are hidden by CSS. */
+/** Obsidian's embed container whose content a map replaced; its own children are hidden by CSS while the map shows. */
 export const EMBED_HOST_CLASS = "mappy-embed-host";
+/** The element inside a rendered section that carries a map's lifecycle when the map's frame cannot sit in that section itself. */
+export const EMBED_ANCHOR_CLASS = "mappy-embed-anchor";
 /** Obsidian's classes that give a note embed its chrome; removed while a map is shown so both paths look the same, restored on release. */
 const OBSIDIAN_EMBED_CLASSES = ["markdown-embed", "inline-embed"];
 const EMBED_PADDING = 24;
@@ -31,6 +34,13 @@ export interface MapEmbedSource extends EmbedTarget {
  * everything below the first level folded. It never writes; it re-reads the note
  * (an open editor buffer first) when the note changes, and it lives exactly as
  * long as the rendered section that holds it.
+ *
+ * `containerEl` is what Obsidian watches to decide the component is still alive
+ * (it must be a child of the rendered section); `frame` is where the map is drawn.
+ * They are the same element when the frame replaces a placeholder inside the
+ * section, and differ when the frame is appended to Obsidian's embed container
+ * around the section (live preview), where a hidden anchor inside the section
+ * carries the lifecycle instead.
  */
 export class MapEmbed extends MarkdownRenderChild {
   private canvas!: HTMLDivElement;
@@ -41,7 +51,10 @@ export class MapEmbed extends MarkdownRenderChild {
   private edges!: EdgeLayer;
   private document: MindDocument | undefined;
   private trees: EmbedTrees | null = null;
+  /** The source text the map on screen was drawn from; null while a sentence shows instead. */
+  private drawnSource: string | null = null;
   private positions: TopicPositionMap = new Map();
+  private bounds: LayoutBounds | null = null;
   private mode: LayoutMode = "mindmap";
   private collapsed = new Set<string>();
   private epoch = 0;
@@ -53,13 +66,15 @@ export class MapEmbed extends MarkdownRenderChild {
     private readonly app: App,
     private readonly store: DocumentStore,
     containerEl: HTMLElement,
+    /** Where the map is drawn; `containerEl` itself unless the section cannot hold the frame. */
+    readonly frame: HTMLElement,
     readonly source: MapEmbedSource,
     /** Puts the host's own embed back; runs once, whoever unloads the component. */
     private readonly release: () => void,
   ) { super(containerEl); }
 
   onload(): void {
-    const el = this.containerEl;
+    const el = this.frame;
     const name = this.source.file.basename + this.source.subpath.replace(/^#/u, " › ");
     el.addClass("mappy-embed", "mappy-view");
     el.dataset.mappyEmbed = this.source.file.path + this.source.subpath;
@@ -89,7 +104,8 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerEvent(this.app.vault.on("rename", file => { if (file === this.source.file) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("delete", file => { if (file === this.source.file) this.scheduleRefresh(); }));
     if (typeof ResizeObserver !== "undefined") {
-      this.observer = new ResizeObserver(() => { this.scheduleLayout(); });
+      // Only the fit depends on the frame's size; the layout itself does not.
+      this.observer = new ResizeObserver(() => { if (this.bounds) this.fit(this.bounds); });
       this.observer.observe(this.canvas);
     }
     void this.refresh();
@@ -97,7 +113,7 @@ export class MapEmbed extends MarkdownRenderChild {
 
   onunload(): void {
     this.epoch += 1;
-    const win = this.containerEl.win;
+    const win = this.frame.win;
     if (this.refreshTimer !== undefined) win.clearTimeout(this.refreshTimer);
     if (this.layoutFrame !== undefined) win.cancelAnimationFrame(this.layoutFrame);
     this.refreshTimer = undefined;
@@ -106,34 +122,31 @@ export class MapEmbed extends MarkdownRenderChild {
     this.observer = undefined;
     this.document = undefined;
     this.trees = null;
-    this.containerEl.empty();
+    this.drawnSource = null;
+    this.frame.empty();
     this.release();
   }
 
-  /** The reader's folds; read-only otherwise. */
+  /** The reader's folds and the links; nothing else reacts. */
   private click(event: MouseEvent): void {
-    const target = event.targetNode;
-    if (!target?.instanceOf(Element)) return;
-    const anchor = target.closest<HTMLAnchorElement>("a.internal-link");
-    if (anchor) {
+    const click = mapClick(event);
+    if (!click) return;
+    if ("link" in click) {
       event.preventDefault();
       event.stopPropagation();
-      const link = anchor.dataset.href ?? anchor.getAttribute("href") ?? "";
-      void this.app.workspace.openLinkText(link, this.source.file.path, event.metaKey || event.ctrlKey);
+      void this.app.workspace.openLinkText(click.link, this.source.file.path, click.newLeaf);
       return;
     }
-    if (target.closest("a")) return;
-    const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-    if (!id || !target.closest(".mappy-node-toggle")) return;
+    if (!click.toggle) return;
     event.preventDefault();
     event.stopPropagation();
-    if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id);
+    if (this.collapsed.has(click.nodeId)) this.collapsed.delete(click.nodeId); else this.collapsed.add(click.nodeId);
     this.draw();
   }
 
   private scheduleRefresh(): void {
     this.epoch += 1;
-    const win = this.containerEl.win;
+    const win = this.frame.win;
     if (this.refreshTimer !== undefined) win.clearTimeout(this.refreshTimer);
     this.refreshTimer = win.setTimeout(() => {
       this.refreshTimer = undefined;
@@ -152,12 +165,13 @@ export class MapEmbed extends MarkdownRenderChild {
       return;
     }
     if (epoch !== this.epoch) return;
-    if (text === this.document?.source && this.document.root.title === file.basename) return;
+    if (text === this.drawnSource && this.document?.root.title === file.basename) return;
     const mode = readMapFromSource(text);
     if (!mode) {
       this.show(`${file.basename} はマップではなくなりました。ノートを開き直すと通常の埋め込みに戻ります。`);
       return;
     }
+    // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
     const previous = this.document;
     this.document = parseMarkdown(text, file.basename, previous);
     this.mode = mode;
@@ -174,13 +188,15 @@ export class MapEmbed extends MarkdownRenderChild {
     const collapsed = new Set(Array.from(this.collapsed).filter(id => ids.has(id)));
     for (const id of initialFolds(trees)) if (!known?.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
+    this.drawnSource = text;
     this.draw();
   }
 
   /** A frame with a sentence instead of a map: the note stopped being one, lost the heading, or could not be read. */
   private show(text: string): void {
-    this.document = undefined;
     this.trees = null;
+    this.drawnSource = null;
+    this.bounds = null;
     this.renderer.update([], parseMarkdown("", ""), "", this.collapsed, { visualRootId: "root", mode: this.mode });
     this.edges.clear();
     this.canvas.hidden = true;
@@ -201,13 +217,14 @@ export class MapEmbed extends MarkdownRenderChild {
 
   private scheduleLayout(): void {
     if (this.layoutFrame !== undefined) return;
-    this.layoutFrame = this.containerEl.win.requestAnimationFrame(() => {
+    this.layoutFrame = this.frame.win.requestAnimationFrame(() => {
       this.layoutFrame = undefined;
       const trees = this.trees;
       if (!trees) return;
       const layout = layoutTree(trees.root, this.renderer.sizes(), this.collapsed, this.mode, embedTopicLayouts(trees, this.positions, this.mode));
       this.renderer.place(layout.nodes, layout.folds);
       this.edges.update(layout.edges);
+      this.bounds = layout.bounds;
       this.fit(layout.bounds);
     });
   }
@@ -224,55 +241,51 @@ export class MapEmbed extends MarkdownRenderChild {
   }
 }
 
-interface LiveEmbed {
-  embed: MapEmbed;
-  hostPath: string;
-}
-
 /**
  * The Markdown post processor for map embeds and the registry of the embeds it
  * created. Two ways an embed reaches it:
  *
  * - Reading view and hover previews render the host note's sections, where the
  *   `.internal-embed` span for `![[map]]` is still Obsidian's placeholder. The span
- *   is replaced by a map before Obsidian loads the note into it.
+ *   is replaced by a map before Obsidian loads the note into it. A span Obsidian
+ *   loaded first keeps its own component and is claimed instead.
  * - Live preview renders the embedded note's own sections inside Obsidian's
  *   embed container (the host paragraph is a CodeMirror widget, never a section).
- *   The container is claimed once: its own content is hidden and a map appended.
+ *   The container is claimed once: its own content is hidden and a map appended,
+ *   with an anchor inside the section carrying the lifecycle.
  *
  * In both cases the component is handed to the renderer (`ctx.addChild`) so it
  * unloads with the section, and every live embed is released when the plugin
  * unloads, so disabling Mappy leaves the ordinary embeds behind.
  */
 export class MapEmbeds {
-  private readonly live = new Set<LiveEmbed>();
+  private readonly live = new Set<MapEmbed>();
+  private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
   constructor(private readonly app: App, private readonly store: DocumentStore) {}
 
   process(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     // Node labels of a map (view or embed) are rendered Markdown too; they never host embeds.
-    if (el.closest(".mappy-view")) return;
+    if (this.disposed || el.closest(".mappy-view")) return;
     this.claimContainer(el, ctx, false);
     this.replaceSpans(el, ctx);
   }
 
   get size(): number { return this.live.size; }
 
-  /** Plugin unload: every map goes back to the ordinary embed, and reading views that showed one are redrawn. */
+  /** Plugin unload: every map goes back to the ordinary embed, and the reading views that showed one are redrawn. */
   dispose(): void {
-    const hosts = new Set<string>();
-    for (const entry of Array.from(this.live)) {
-      hosts.add(entry.hostPath);
-      entry.embed.unload();
-    }
-    this.live.clear();
+    this.disposed = true;
+    const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
-      if (view instanceof MarkdownView && view.file && hosts.has(view.file.path) && view.getMode() === "preview") {
-        view.previewMode.rerender(true);
-      }
+      if (!(view instanceof MarkdownView) || view.getMode() !== "preview") continue;
+      for (const embed of this.live) if (view.containerEl.contains(embed.frame)) views.add(view);
     }
+    for (const embed of Array.from(this.live)) embed.unload();
+    this.live.clear();
+    for (const view of views) view.previewMode.rerender(true);
   }
 
   private replaceSpans(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
@@ -283,9 +296,15 @@ export class MapEmbeds {
       const target = src ? resolveEmbedTarget(this.app, src, ctx.sourcePath) : null;
       // A note embedding itself stays Obsidian's own case.
       if (!target || target.file.path === ctx.sourcePath) continue;
-      const container = createDiv();
-      span.replaceWith(container);
-      this.mount(ctx, container, { ...target, hostPath: ctx.sourcePath }, () => { container.replaceWith(span); });
+      const source = { ...target, hostPath: ctx.sourcePath };
+      if (span.hasClass("is-loaded") || span.childElementCount > 0) {
+        // Obsidian got to the span first: its component lives on inside, so the container is claimed, not swapped out.
+        this.claim(ctx, span, source, null);
+        continue;
+      }
+      const frame = createDiv();
+      span.replaceWith(frame);
+      this.mount(ctx, frame, frame, source, () => { frame.replaceWith(span); });
     }
   }
 
@@ -293,34 +312,39 @@ export class MapEmbeds {
     const own = this.app.vault.getFileByPath(ctx.sourcePath);
     if (!own || readMapLayout(this.app, own) === null) return;
     const span = el.closest<HTMLElement>(".internal-embed");
-    if (!span) {
+    if (!span?.isConnected) {
       // A section can reach the processor before it is attached; look once more when it is.
-      if (!retried && !el.isConnected) el.win.requestAnimationFrame(() => { this.claimContainer(el, ctx, true); });
+      if (!retried && !el.isConnected) el.win.requestAnimationFrame(() => { if (!this.disposed) this.claimContainer(el, ctx, true); });
       return;
     }
     if (span.hasClass(EMBED_HOST_CLASS) || span.parentElement?.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
     const { subpath } = parseLinktext(span.getAttribute("src") ?? "");
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
+    // The frame goes on the container, outside this section; the anchor inside the section keeps the lifecycle honest.
+    this.claim(ctx, span, { ...target, hostPath: ctx.sourcePath }, el.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
+  }
+
+  /** Hide what Obsidian rendered into the container and draw the map beside it; `anchor` null means the frame is inside the section. */
+  private claim(ctx: MarkdownPostProcessorContext, span: HTMLElement, source: MapEmbedSource, anchor: HTMLElement | null): void {
     const removed = OBSIDIAN_EMBED_CLASSES.filter(name => span.hasClass(name));
     span.removeClass(...removed);
     span.addClass(EMBED_HOST_CLASS);
-    const container = span.createDiv();
-    this.mount(ctx, container, { ...target, hostPath: ctx.sourcePath }, () => {
-      container.remove();
+    const frame = span.createDiv();
+    this.mount(ctx, anchor ?? frame, frame, source, () => {
+      frame.remove();
+      anchor?.remove();
       span.removeClass(EMBED_HOST_CLASS);
       span.addClass(...removed);
     });
   }
 
-  private mount(ctx: MarkdownPostProcessorContext, container: HTMLElement, source: MapEmbedSource, restore: () => void): void {
-    let entry: LiveEmbed | undefined;
-    const embed = new MapEmbed(this.app, this.store, container, source, () => {
+  private mount(ctx: MarkdownPostProcessorContext, anchor: HTMLElement, frame: HTMLElement, source: MapEmbedSource, restore: () => void): void {
+    const embed: MapEmbed = new MapEmbed(this.app, this.store, anchor, frame, source, () => {
       restore();
-      if (entry) this.live.delete(entry);
+      this.live.delete(embed);
     });
-    entry = { embed, hostPath: source.hostPath };
-    this.live.add(entry);
+    this.live.add(embed);
     ctx.addChild(embed);
   }
 }

@@ -19,6 +19,10 @@ describe('readMapFromSource', () => {
     expect(readMapFromSource(LIST)).toBe('mindmap');
     expect(readMapFromSource('---\nmappy: true\nmappy-layout: Timeline \n---\n')).toBe('timeline');
     expect(readMapFromSource('---\nmappy: true\nmappy-layout: unknown\n---\n')).toBe('mindmap');
+    // The spellings Obsidian's own YAML reader accepts as booleans, so the text and the cache agree.
+    expect(readMapFromSource('---\nmappy: True\n---\n')).toBe('mindmap');
+    expect(readMapFromSource('---\nmappy: TRUE\nmappy-layout: timeline\n---\n')).toBe('timeline');
+    expect(readMapFromSource('---\nmappy: False\n---\n')).toBeNull();
   });
 
   it('leaves the string "true", a missing key, an unfinished header and Excalidraw drawings alone', () => {
@@ -123,5 +127,10 @@ describe('transclusionsAsLinks', () => {
     expect(transclusionsAsLinks('見出し ![[Other Map]] と ![[doc.pdf|別名]]')).toBe('見出し [[Other Map]] と [[doc.pdf|別名]]');
     expect(transclusionsAsLinks('![[図.png|120]] ![[photo.JPG#anchor]] ![[Note#見出し]]')).toBe('![[図.png|120]] ![[photo.JPG#anchor]] [[Note#見出し]]');
     expect(transclusionsAsLinks('plain')).toBe('plain');
+  });
+
+  it('leaves inline code alone, as the body rule does', () => {
+    expect(transclusionsAsLinks('記法の例: `![[Note]]` と ![[Other]]')).toBe('記法の例: `![[Note]]` と [[Other]]');
+    expect(transclusionsAsLinks('``a ` ![[Note]]`` ![[Note]]')).toBe('``a ` ![[Note]]`` [[Note]]');
   });
 });

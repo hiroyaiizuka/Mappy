@@ -16,6 +16,20 @@ export interface MapActions {
   addTopic: (point: { x: number; y: number }) => void;
 }
 
+/** What a click on a map means: an internal link to follow, or a node (and whether its fold control was hit). */
+export type MapClick = { link: string; newLeaf: boolean } | { nodeId: string; toggle: boolean };
+
+/** Shared by the map view and the read-only embed, so links and fold controls answer the same way in both. */
+export function mapClick(event: MouseEvent): MapClick | null {
+  const target = event.targetNode;
+  if (!target?.instanceOf(Element)) return null;
+  const anchor = target.closest<HTMLAnchorElement>("a.internal-link");
+  if (anchor) return { link: anchor.dataset.href ?? anchor.getAttribute("href") ?? "", newLeaf: event.metaKey || event.ctrlKey };
+  if (target.closest("a")) return null;
+  const nodeId = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+  return nodeId ? { nodeId, toggle: Boolean(target.closest(".mappy-node-toggle")) } : null;
+}
+
 export class MapEvents extends Component {
   private composing = false;
 
@@ -25,20 +39,16 @@ export class MapEvents extends Component {
     this.registerDomEvent(this.canvas, "compositionstart", () => { this.composing = true; });
     this.registerDomEvent(this.canvas, "compositionend", () => { this.composing = false; });
     this.registerDomEvent(this.canvas, "click", event => {
-      const target = this.element(event.targetNode);
-      if (!target) return;
-      const anchor = target.closest<HTMLAnchorElement>("a.internal-link");
-      if (anchor) {
+      const click = mapClick(event);
+      if (!click) return;
+      if ("link" in click) {
         event.preventDefault();
         event.stopPropagation();
-        this.actions.link(anchor.dataset.href ?? anchor.getAttribute("href") ?? "", event.metaKey || event.ctrlKey);
+        this.actions.link(click.link, click.newLeaf);
         return;
       }
-      if (target.closest("a")) return;
-      const id = target.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-      if (!id) return;
-      this.actions.select(id, true);
-      if (target.closest(".mappy-node-toggle")) this.actions.fold(id);
+      this.actions.select(click.nodeId, true);
+      if (click.toggle) this.actions.fold(click.nodeId);
     });
     this.registerDomEvent(this.canvas, "dblclick", event => {
       const target = this.element(event.targetNode);

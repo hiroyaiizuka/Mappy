@@ -5,13 +5,25 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Component, MarkdownRenderer, MarkdownView, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
+import { EMBED_ANCHOR_CLASS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
 
 // The browser-harness stand-in for `obsidian`, so the shipped post processor, embed component and renderer run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+/** Every renderer a test loaded; unloading them releases timers and subscriptions so nothing leaks into the next test. */
+const renderers: Component[] = [];
+afterEach(() => {
+  for (const renderer of renderers.splice(0)) renderer.unload();
+  document.body.replaceChildren();
+});
+
+function loadedRenderer(): Component {
+  const renderer = new Component();
+  renderer.load();
+  renderers.push(renderer);
+  return renderer;
+}
 
 const MAP = ['---', 'mappy: true', '---', '## 講座', '- 回復する', '  - 睡眠', '    - 昼寝', '  - 運動', '- 記録する', '  - 日誌', '- 葉', ''].join('\n');
 const HEADINGS = [
@@ -58,8 +70,7 @@ async function render(files: Record<string, string>, hostPath: string): Promise<
   for (const [path, content] of Object.entries(files)) app.put(path, content);
   const store = new DocumentStore(app.asApp<App>());
   const embeds = new MapEmbeds(app.asApp<App>(), store);
-  const renderer = new Component();
-  renderer.load();
+  const renderer = loadedRenderer();
   const section = document.body.createDiv({ cls: 'markdown-preview-section' });
   await MarkdownRenderer.render(app.asApp<App>(), files[hostPath] ?? '', section, hostPath);
   const process = (el: HTMLElement, sourcePath: string): void => { embeds.process(el, context(renderer, sourcePath)); };
@@ -216,6 +227,22 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     expect(nodeByTitle(section, '追加').hasClass('is-collapsed')).toBe(true);
   });
 
+  it('keeps the reader\'s folds through a sentence, so a transient bad read does not close every branch', async () => {
+    const { app, section } = await render({ 'Host.md': '![[Map]]', 'Map.md': MAP }, 'Host.md');
+    nodeByTitle(section, '回復する').querySelector<HTMLElement>('.mappy-node-toggle')?.click();
+    await settle();
+    sameTitles(section, ['講座', '回復する', '睡眠', '運動', '記録する', '葉']);
+    // The closing `---` is gone for a moment while the note is edited elsewhere: not a map until it is back.
+    app.put('Map.md', MAP.replace('mappy: true\n---\n', 'mappy: true\n'));
+    await refreshed();
+    expect(titles(section)).toEqual([]);
+    expect(section.querySelector('.mappy-embed-message')?.textContent).toContain('マップではなくなりました');
+    app.put('Map.md', MAP);
+    await refreshed();
+    sameTitles(section, ['講座', '回復する', '睡眠', '運動', '記録する', '葉']);
+    expect(section.querySelector<HTMLElement>('.mappy-embed-message')?.hidden).toBe(true);
+  });
+
   it('shows a sentence instead of a map once the note stops being one', async () => {
     const { app, section } = await render({ 'Host.md': '![[Map]]', 'Map.md': MAP }, 'Host.md');
     app.put('Map.md', MAP.replace('mappy: true', 'mappy: false'));
@@ -237,6 +264,59 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     app.put('Map.md', MAP.replace('- 葉', '- 後で'));
     await refreshed();
     expect(section.querySelector('.mappy-node')).toBeNull();
+  });
+
+  it('claims a span Obsidian loaded first instead of swapping it out, and its inner sections do not mount a second map', async () => {
+    const app = new HarnessApp();
+    app.put('Host.md', '![[Map]]');
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const section = document.body.createDiv({ cls: 'markdown-preview-section' });
+    await MarkdownRenderer.render(app.asApp<App>(), '![[Map]]', section, 'Host.md');
+    const span = section.querySelector<HTMLElement>('.internal-embed');
+    if (!span) throw new Error('no span');
+    // Obsidian's embed loader ran before this processor: the span carries the note's rendering and its component.
+    span.addClass('markdown-embed', 'inline-embed', 'is-loaded');
+    span.empty();
+    const inner = span.createDiv({ cls: 'markdown-embed-content' }).createDiv({ cls: 'markdown-preview-view' });
+    const innerSection = inner.createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 回復する', innerSection, 'Map.md');
+    embeds.process(section, context(renderer, 'Host.md'));
+    await settle();
+    expect(span.isConnected).toBe(true);
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+    expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
+    expect(embeds.size).toBe(1);
+    embeds.process(innerSection, context(renderer, 'Map.md'));
+    await settle();
+    expect(embeds.size).toBe(1);
+    expect(span.querySelectorAll('.mappy-embed')).toHaveLength(1);
+  });
+
+  it('redraws the reading views that held a map when the plugin unloads, found by the frame and not by a path', async () => {
+    const { app, section, embeds } = await render({ 'Host.md': '![[Plain]]', 'Plain.md': '# Plain\n\n![[Map]]\n', 'Map.md': MAP }, 'Host.md');
+    // Host embeds Plain, which embeds Map: Obsidian renders Plain's sections with Plain as the source path.
+    const plainSpan = section.querySelector<HTMLElement>('.internal-embed[src="Plain"]');
+    if (!plainSpan) throw new Error('no Plain span');
+    const plainSection = plainSpan.createDiv({ cls: 'markdown-embed-content' }).createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '![[Map]]', plainSection, 'Plain.md');
+    embeds.process(plainSection, context(loadedRenderer(), 'Plain.md'));
+    await settle();
+    expect(embeds.size).toBe(1);
+    const rerender = vi.fn();
+    const hostView = Object.assign(new MarkdownView(new WorkspaceLeaf(app.asApp<App>())), {
+      getMode: () => 'preview', previewMode: { rerender },
+    });
+    hostView.containerEl.append(section);
+    const otherView = Object.assign(new MarkdownView(new WorkspaceLeaf(app.asApp<App>())), {
+      getMode: () => 'preview', previewMode: { rerender: vi.fn() },
+    });
+    app.workspace.getLeavesOfType = () => [{ view: hostView }, { view: otherView }];
+    embeds.dispose();
+    expect(rerender).toHaveBeenCalledWith(true);
+    expect((otherView as unknown as { previewMode: { rerender: ReturnType<typeof vi.fn> } }).previewMode.rerender).not.toHaveBeenCalled();
+    expect(embeds.size).toBe(0);
   });
 
   it("puts Obsidian's placeholder back when the plugin unloads, so the plain embed can take over", async () => {
@@ -319,8 +399,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const app = new HarnessApp();
     app.put('Map.md', HEADINGS);
     const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
-    const renderer = new Component();
-    renderer.load();
+    const renderer = loadedRenderer();
     const { span, sections } = await container(app, 'Map#記録する', 'Map.md');
     for (const section of sections) embeds.process(section, context(renderer, 'Map.md'));
     await settle();
@@ -331,7 +410,13 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(embeds.size).toBe(1);
     // Obsidian's own content is still there for it to update; the stylesheet hides it.
     expect(span.querySelector('.markdown-embed-content')).not.toBeNull();
+    // The lifecycle rides on an anchor inside the section Obsidian rendered, which is what it watches; the frame sits beside the content.
+    const anchors = span.querySelectorAll(`.${EMBED_ANCHOR_CLASS}`);
+    expect(anchors).toHaveLength(1);
+    expect(sections.some(section => section.contains(anchors[0] ?? null))).toBe(true);
+    expect(span.querySelector('.markdown-embed-content .mappy-embed')).toBeNull();
     renderer.unload();
+    expect(span.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
     expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
     expect(span.hasClass('markdown-embed')).toBe(true);
     expect(span.querySelector('.mappy-embed')).toBeNull();
@@ -343,8 +428,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     app.put('Map.md', MAP);
     app.put('Plain.md', '# Plain\n\n![[Map]]\n');
     const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
-    const renderer = new Component();
-    renderer.load();
+    const renderer = loadedRenderer();
     // Obsidian rendering Plain inside the host's `![[Plain]]` container: its section carries the map's placeholder.
     const { sections } = await container(app, 'Plain', 'Plain.md');
     for (const section of sections) embeds.process(section, context(renderer, 'Plain.md'));
@@ -368,8 +452,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
     const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
-    const renderer = new Component();
-    renderer.load();
+    const renderer = loadedRenderer();
     const own = document.body.createDiv({ cls: 'markdown-preview-view' }).createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 回復する', own, 'Map.md');
     embeds.process(own, context(renderer, 'Map.md'));
@@ -383,5 +466,25 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     await settle();
     expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
     expect(embeds.size).toBe(1);
+  });
+
+  it('does not claim anything after the plugin unloaded, even from a look-again that was already scheduled', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const { span } = await container(app, 'Map', 'Map.md');
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    embeds.process(late, context(renderer, 'Map.md'));
+    embeds.dispose();
+    span.querySelector('.markdown-preview-view')?.append(late);
+    await settle();
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    expect(embeds.size).toBe(0);
+    expect(app.vaultEvents.count()).toBe(0);
+    embeds.process(span.querySelector('.markdown-preview-view')?.firstElementChild as HTMLElement, context(renderer, 'Map.md'));
+    await settle();
+    expect(embeds.size).toBe(0);
   });
 });

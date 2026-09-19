@@ -7,7 +7,7 @@
  */
 import type { App, EventRef, TFile as ObsidianFile, ViewState } from "obsidian";
 
-export { TFile, normalizePath } from "../../tests/mocks/obsidian-file";
+export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
 
 interface HarnessEventRef extends EventRef {
   events: Events;
@@ -349,6 +349,39 @@ export class ButtonComponent {
   }
 }
 
+/** A `<select>` whose value the setting tab reads and writes; `onChange` fires on the DOM event, as in Obsidian. */
+export class DropdownComponent {
+  readonly selectEl: HTMLSelectElement;
+  constructor(container: HTMLElement) {
+    this.selectEl = container.createEl("select", { cls: "dropdown" });
+  }
+  addOption(value: string, display: string): this { this.selectEl.createEl("option", { value, text: display }); return this; }
+  addOptions(options: Record<string, string>): this { for (const [value, display] of Object.entries(options)) this.addOption(value, display); return this; }
+  getValue(): string { return this.selectEl.value; }
+  setValue(value: string): this { this.selectEl.value = value; return this; }
+  setDisabled(disabled: boolean): this { this.selectEl.disabled = disabled; return this; }
+  onChange(callback: (value: string) => unknown): this {
+    this.selectEl.addEventListener("change", () => { callback(this.selectEl.value); });
+    return this;
+  }
+}
+
+/** A text `<input>`; `onChange` fires on `input`, the way Obsidian's TextComponent reports each keystroke. */
+export class TextComponent {
+  readonly inputEl: HTMLInputElement;
+  constructor(container: HTMLElement) {
+    this.inputEl = container.createEl("input", { type: "text" });
+  }
+  getValue(): string { return this.inputEl.value; }
+  setValue(value: string): this { this.inputEl.value = value; return this; }
+  setPlaceholder(placeholder: string): this { this.inputEl.placeholder = placeholder; return this; }
+  setDisabled(disabled: boolean): this { this.inputEl.disabled = disabled; return this; }
+  onChange(callback: (value: string) => unknown): this {
+    this.inputEl.addEventListener("input", () => { callback(this.inputEl.value); });
+    return this;
+  }
+}
+
 export class Setting {
   readonly settingEl: HTMLElement;
   readonly infoEl: HTMLElement;
@@ -369,6 +402,33 @@ export class Setting {
   setHeading(): this { this.settingEl.addClass("setting-item-heading"); return this; }
   setDisabled(disabled: boolean): this { this.settingEl.toggleClass("is-disabled", disabled); return this; }
   addButton(callback: (button: ButtonComponent) => unknown): this { callback(new ButtonComponent(this.controlEl)); return this; }
+  addDropdown(callback: (dropdown: DropdownComponent) => unknown): this { callback(new DropdownComponent(this.controlEl)); return this; }
+  addText(callback: (text: TextComponent) => unknown): this { callback(new TextComponent(this.controlEl)); return this; }
+}
+
+/**
+ * The settings tab as Obsidian 1.13+ drives it (app.js 1.14.2): `addSettingTab` calls `update()`,
+ * which stores `getSettingDefinitions()` in `settingItems`; the tab then renders those when there
+ * are any and falls back to `display()` otherwise. A subclass member named like one of these
+ * shadows the base, which is what this mock exists to catch.
+ */
+export abstract class PluginSettingTab {
+  readonly containerEl: HTMLElement;
+  settingItems: unknown[] = [];
+  constructor(readonly app: App, readonly plugin: unknown) {
+    this.containerEl = document.createElement("div");
+    this.containerEl.className = "vertical-tab-content";
+  }
+  getSettingDefinitions(): unknown[] { return []; }
+  update(): void { this.settingItems = this.getSettingDefinitions(); }
+  getControlValue(key: string): unknown { return this.values[key]; }
+  setControlValue(key: string, value: unknown): void | Promise<void> { this.values[key] = value; }
+  /** Stand-in for `this.plugin.settings`, which the real default implementations read and write. */
+  private readonly values: Record<string, unknown> = {};
+  /** What Obsidian 1.13+ does when the tab is shown. */
+  renderTab(): void { if (this.settingItems.length === 0) this.display(); }
+  abstract display(): void;
+  hide(): void { this.containerEl.empty(); }
 }
 
 /** Minimal line glyphs so the floating controls stay readable; not Lucide artwork. */
@@ -379,6 +439,7 @@ const ICON_PATHS: Record<string, string> = {
   "git-fork": "M12 15v6M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM12 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9",
   "git-commit-horizontal": "M3 12h6M15 12h6M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
   network: "M9 2h6v6H9zM3 16h6v6H3zM15 16h6v6h-6zM12 8v4M6 16v-4h12v4",
+  "unfold-horizontal": "M12 22v-6M12 8V2M4 12H2M10 12H8M16 12h-2M22 12h-2M19 15l3-3-3-3M5 9l-3 3 3 3",
   "file-text": "M14 3v4a1 1 0 0 0 1 1h4M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2zM9 13h6M9 17h6",
   "panel-left": "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 3v18",
   pencil: "M17 3l4 4L8 20H4v-4L17 3z",
@@ -489,3 +550,25 @@ export const MarkdownRenderer = {
     return Promise.resolve();
   },
 };
+
+/** This page is a desktop browser tab: no Capacitor shell, so the export uses the desktop canvas limits. */
+export const Platform = {
+  isDesktop: true, isMobile: false, isDesktopApp: false, isMobileApp: false, isIosApp: false, isAndroidApp: false,
+  isPhone: false, isTablet: false, isMacOS: false, isWin: false, isLinux: false, isSafari: false,
+  resourcePathPrefix: "",
+};
+
+/** Same contract as Obsidian's helper; chunked so a large image does not overflow the call stack. */
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/** Network requests are Obsidian's; the page has no vault-side client, so a remote image stays unread. */
+export function requestUrl(): Promise<never> {
+  return Promise.reject(new Error("requestUrl はこのページの対象外です（③ 実機で確認）。"));
+}
