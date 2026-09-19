@@ -1,5 +1,9 @@
 import { Platform, arrayBufferToBase64, requestUrl, type App, type TFile } from 'obsidian';
-import { canRasterize, captureScene, rasterizeSvg, type CaptureSource, type ImageResolver } from '../export/svg-capture';
+import { imageMimeType } from '../core/attachments';
+import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
+import {
+  PNG_UNAVAILABLE, canRasterize, captureScene, rasterizeSvg, type CaptureSource, type ImageResolver,
+} from '../export/svg-capture';
 import {
   DESKTOP_PNG_LIMITS, MOBILE_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme, type PngScaleLimits,
 } from '../export/svg-document';
@@ -14,10 +18,8 @@ export type ExportFormat = 'svg' | 'png';
 
 export const EXPORT_FORMATS: readonly ExportFormat[] = ['svg', 'png'];
 
-const IMAGE_MIME: Readonly<Record<string, string>> = {
-  avif: 'image/avif', bmp: 'image/bmp', gif: 'image/gif', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
-};
+/** A remote image that has not answered by then is treated as unreadable, so the export cannot hang on one host. */
+export const REMOTE_IMAGE_TIMEOUT_MS = 15_000;
 
 /** Canvas limits the raster must respect; WebKit on mobile allows far less than desktop Chromium. */
 export function pixelLimits(mobile = Platform.isMobile): PngScaleLimits {
@@ -30,30 +32,31 @@ export function canSaveAttachments(app: App): boolean {
     && typeof app.vault.create === 'function' && typeof app.vault.createBinary === 'function';
 }
 
-/** `[[figure.png|120]]` / `figure.png#^id` → `figure.png`. */
-function linkpathOf(target: string): string | null {
-  const trimmed = target.trim();
-  const inner = trimmed.match(/^!?\[\[([\s\S]+)\]\]$/u)?.[1] ?? trimmed;
-  const path = inner.split('|', 1)[0]?.split('#', 1)[0]?.trim() ?? '';
-  return path || null;
-}
-
-function hasScheme(url: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/iu.test(url);
-}
-
 /** Bytes and media type of a remote image. */
 export interface FetchedImage {
   buffer: ArrayBuffer;
   mime: string;
 }
 
-/** `requestUrl` is Obsidian's own client: no CORS, and the same call on desktop and mobile. */
-async function fetchRemoteImage(url: string): Promise<FetchedImage> {
-  const response = await requestUrl({ url, throw: false });
-  if (response.status >= 400) throw new Error(`画像を取得できませんでした: ${response.status}`);
-  const mime = response.headers['content-type']?.split(';', 1)[0]?.trim() || 'image/png';
-  return { buffer: response.arrayBuffer, mime };
+/**
+ * `requestUrl` is Obsidian's own client: no CORS, and the same call on desktop and
+ * mobile. Only an image media type is accepted; a login page served with 200 would
+ * otherwise be embedded as `data:text/html`.
+ */
+export async function fetchRemoteImage(url: string, timeoutMs = REMOTE_IMAGE_TIMEOUT_MS): Promise<FetchedImage> {
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = window.setTimeout(() => { reject(new Error(`画像の取得が ${timeoutMs} ms 以内に終わりませんでした: ${url}`)); }, timeoutMs);
+  });
+  try {
+    const response = await Promise.race([requestUrl({ url, throw: false }), timeout]);
+    if (response.status >= 400) throw new Error(`画像を取得できませんでした: ${response.status}`);
+    const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+    if (!mime.startsWith('image/')) throw new Error(`画像ではありません: ${mime || '不明な形式'}`);
+    return { buffer: response.arrayBuffer, mime };
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function dataUrl(mime: string, buffer: ArrayBuffer): string {
@@ -75,9 +78,9 @@ function safeDecode(text: string): string {
  */
 export function vaultImageResolver(app: App, sourcePath: string, fetchImage: (url: string) => Promise<FetchedImage> = fetchRemoteImage): ImageResolver {
   const fromVault = async (target: string | null): Promise<string | null> => {
-    const linkpath = target ? linkpathOf(target) : null;
+    const linkpath = wikiLinkPath(target);
     const file = linkpath ? app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath) : null;
-    const mime = file ? IMAGE_MIME[file.extension.toLowerCase()] : undefined;
+    const mime = file ? imageMimeType(file.extension) : undefined;
     if (!file || !mime) return null;
     return dataUrl(mime, await app.vault.readBinary(file));
   };
@@ -88,7 +91,7 @@ export function vaultImageResolver(app: App, sourcePath: string, fetchImage: (ur
     if (embedded) return embedded;
     // A Markdown image (`![alt](figure.png)`) keeps its written path in the attribute when the renderer left it alone.
     const written = image.getAttribute('src') ?? '';
-    if (written && !hasScheme(written)) {
+    if (written && !hasUrlScheme(written)) {
       const resolved = await fromVault(safeDecode(written));
       if (resolved) return resolved;
     }
@@ -102,6 +105,13 @@ export function vaultImageResolver(app: App, sourcePath: string, fetchImage: (ur
   };
 }
 
+/** The file is checked before it is written: a parser error here is a bug in the capture, not a broken vault file. */
+export function assertWellFormed(svg: string): void {
+  const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  const error = parsed.querySelector('parsererror');
+  if (error) throw new Error(`書き出した SVG が整形式ではありません: ${error.textContent?.trim().split('\n')[0] ?? ''}`);
+}
+
 export interface ExportOptions {
   theme?: ExportTheme;
   limits?: PngScaleLimits;
@@ -110,18 +120,23 @@ export interface ExportOptions {
 /**
  * Capture, encode and create the attachment. SVG is written as text; PNG is the
  * same SVG rasterised at a scale the canvas limits allow, so a 2,000-node map
- * still completes, at a lower resolution.
+ * still completes, at a lower resolution. A host that cannot rasterise is refused
+ * before any work is done and before the attachment folder is touched.
  */
 export async function exportMap(app: App, note: TFile, source: CaptureSource, format: ExportFormat, options: ExportOptions = {}): Promise<TFile> {
+  if (format === 'png' && !canRasterize()) throw new Error(PNG_UNAVAILABLE);
   const scene = await captureScene(source, {
     resolveImage: vaultImageResolver(app, note.path), ...(options.theme ? { theme: options.theme } : {}),
   });
   if (scene.nodes.length === 0) throw new Error('書き出すノードがありません。');
   const svg = buildSvg(scene);
-  const path = await app.fileManager.getAvailablePathForAttachment(`${note.basename}.${format}`, note.path);
-  if (format === 'svg') return app.vault.create(path, svg);
-  if (!canRasterize()) throw new Error('この環境では PNG を作れません。SVG で書き出してください。');
+  assertWellFormed(svg);
+  if (format === 'svg') {
+    const path = await app.fileManager.getAvailablePathForAttachment(`${note.basename}.svg`, note.path);
+    return app.vault.create(path, svg);
+  }
   const size = svgSize(scene.bounds);
   const png = await rasterizeSvg(svg, size, pngScale(size, options.limits ?? pixelLimits()));
-  return app.vault.createBinary(path, await png.arrayBuffer());
+  const path = await app.fileManager.getAvailablePathForAttachment(`${note.basename}.png`, note.path);
+  return app.vault.createBinary(path, await png.blob.arrayBuffer());
 }

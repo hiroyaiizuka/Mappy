@@ -207,18 +207,22 @@ export interface HarnessPngExport {
   ms: number;
 }
 
+/** One reader for both directions the page converts blobs: the image bytes it reads back and the PNG it hands out. */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : ""); }, { once: true });
+    reader.addEventListener("error", () => { reject(new Error("Blob を data URL に読めません")); }, { once: true });
+    reader.readAsDataURL(blob);
+  });
+}
+
 /** The page keeps the sample image as a data URL; attachments added on the page are blob URLs and are read back. */
 const resolveHarnessImage: ImageResolver = async image => {
   const src = image.currentSrc || image.src;
   if (src.startsWith("data:")) return src;
   if (!src.startsWith("blob:")) return null;
-  const blob = await (await fetch(src)).blob();
-  return new Promise(resolve => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : null); }, { once: true });
-    reader.addEventListener("error", () => { resolve(null); }, { once: true });
-    reader.readAsDataURL(blob);
-  });
+  return blobToDataUrl(await (await fetch(src)).blob());
 };
 
 /** M13 in this page: the same capture and document the plugin writes, minus the vault. */
@@ -240,16 +244,10 @@ async function exportPng(): Promise<HarnessPngExport> {
   const started = performance.now();
   const size = { width: exported.width, height: exported.height };
   const scale = pngScale(size, DESKTOP_PNG_LIMITS);
-  const blob = await rasterizeSvg(exported.svg, size, scale);
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : ""); }, { once: true });
-    reader.addEventListener("error", () => { reject(new Error("PNG を読み戻せません")); }, { once: true });
-    reader.readAsDataURL(blob);
-  });
+  const png = await rasterizeSvg(exported.svg, size, scale);
   return {
-    dataUrl, scale, width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)),
-    bytes: blob.size, nodes: exported.nodes, svgMs: exported.ms, ms: performance.now() - started,
+    dataUrl: await blobToDataUrl(png.blob), scale, width: png.width, height: png.height,
+    bytes: png.blob.size, nodes: exported.nodes, svgMs: exported.ms, ms: performance.now() - started,
   };
 }
 

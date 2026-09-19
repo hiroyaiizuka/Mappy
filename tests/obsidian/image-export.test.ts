@@ -4,7 +4,10 @@ import type { App, TFile as ObsidianFile } from 'obsidian';
 import { TFile } from '../mocks/obsidian-file';
 import { installObsidianDom } from '../../harness/browser/dom';
 import type { CaptureSource } from '../../src/export/svg-capture';
-import { canSaveAttachments, exportMap, pixelLimits, vaultImageResolver } from '../../src/obsidian/image-export';
+import { requestUrl } from 'obsidian';
+import {
+  assertWellFormed, canSaveAttachments, exportMap, fetchRemoteImage, pixelLimits, vaultImageResolver,
+} from '../../src/obsidian/image-export';
 
 vi.mock('obsidian', () => ({
   Platform: { isMobile: false },
@@ -153,11 +156,17 @@ describe('exportMap', () => {
     expect(raw.vault.createBinary).not.toHaveBeenCalled();
   });
 
-  it('refuses PNG where no canvas can be drawn, before naming a file', async () => {
+  it('refuses PNG where no canvas can be drawn, before capturing or naming a file', async () => {
     const { app, raw, created } = fakeApp({});
     await expect(exportMap(app, file('Map.md'), source(), 'png')).rejects.toThrow('PNG を作れません');
     expect(created).toHaveLength(0);
     expect(raw.vault.createBinary).not.toHaveBeenCalled();
+    expect(raw.fileManager.getAvailablePathForAttachment).not.toHaveBeenCalled();
+  });
+
+  it('checks the file is well formed before it is created', () => {
+    expect(() => { assertWellFormed('<svg xmlns="http://www.w3.org/2000/svg"><g></svg>'); }).toThrow('整形式ではありません');
+    expect(() => { assertWellFormed('<svg xmlns="http://www.w3.org/2000/svg"><g/></svg>'); }).not.toThrow();
   });
 
   it('refuses an empty map', async () => {
@@ -165,5 +174,29 @@ describe('exportMap', () => {
     const empty = { ...source(), layout: { nodes: [], edges: [], folds: [], bounds: { x: 0, y: 0, width: 0, height: 0 }, origin: { x: 0, y: 0 } } };
     await expect(exportMap(app, file('Map.md'), empty, 'svg')).rejects.toThrow('ノードがありません');
     expect(created).toHaveLength(0);
+  });
+});
+
+describe('fetchRemoteImage', () => {
+  const request = vi.mocked(requestUrl);
+
+  afterEach(() => { request.mockReset(); vi.useRealTimers(); });
+
+  it('accepts only an image media type', async () => {
+    request.mockResolvedValueOnce({ status: 200, headers: { 'content-type': 'image/webp; charset=binary' }, arrayBuffer: PNG_BYTES.buffer.slice(0) } as never);
+    await expect(fetchRemoteImage('https://example.com/a.webp')).resolves.toMatchObject({ mime: 'image/webp' });
+    request.mockResolvedValueOnce({ status: 200, headers: { 'content-type': 'text/html' }, arrayBuffer: new ArrayBuffer(0) } as never);
+    await expect(fetchRemoteImage('https://example.com/login')).rejects.toThrow('画像ではありません');
+    request.mockResolvedValueOnce({ status: 404, headers: {}, arrayBuffer: new ArrayBuffer(0) } as never);
+    await expect(fetchRemoteImage('https://example.com/missing.png')).rejects.toThrow('404');
+  });
+
+  it('gives up on a host that never answers', async () => {
+    vi.useFakeTimers();
+    request.mockReturnValueOnce(new Promise(() => { /* never settles */ }) as never);
+    const pending = fetchRemoteImage('https://example.com/stalled.png', 500);
+    const outcome = expect(pending).rejects.toThrow('500 ms');
+    await vi.advanceTimersByTimeAsync(600);
+    await outcome;
   });
 });

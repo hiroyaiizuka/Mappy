@@ -11,6 +11,7 @@ import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
@@ -93,19 +94,43 @@ export class MindmapView extends ItemView {
 
   /**
    * What is on screen, for the SVG／PNG export (§5 M13): the layout the nodes were
-   * placed with, their elements and the connector layer. A pending layout frame is
-   * awaited first, so the geometry handed out is the one the DOM shows.
+   * placed with, their elements and the connector layer. A debounced refresh is run
+   * first and a pending layout frame is awaited, so the geometry handed out is the
+   * one the DOM shows; the entries are copied, so a later refresh cannot change the
+   * set being exported. Markdown renders still in flight are not awaited (the
+   * renderer reports them only by scheduling another frame).
    */
   async exportSource(): Promise<CaptureSource & { file: TFile }> {
     const file = this.file;
     if (!file || !this.document) throw new Error("マップを開いてから書き出してください。");
     if (this.inlineEditor) throw new Error("テキストの編集を確定してから書き出してください。");
     if (this.topicDrag || this.dropPreview) throw new Error("ドラッグを終えてから書き出してください。");
-    if (this.layoutFrame !== undefined) await new Promise<void>(resolve => { this.contentEl.win.requestAnimationFrame(() => { resolve(); }); });
+    if (this.refreshTimer !== undefined) {
+      this.contentEl.win.clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+      await this.refresh();
+    }
+    if (this.layoutFrame !== undefined) await this.nextFrame();
     const layout = this.layout;
     if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
     if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
-    return { file, layout, entries: this.renderer.entries, canvas: this.canvas, edges: this.svg };
+    return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
+  }
+
+  /** The next animation frame, or 100 ms: a hidden window never paints, and the export must not wait for it. */
+  private nextFrame(): Promise<void> {
+    const win = this.contentEl.win;
+    return new Promise<void>(resolve => {
+      let done = false;
+      const finish = (): void => { if (!done) { done = true; resolve(); } };
+      win.requestAnimationFrame(finish);
+      win.setTimeout(finish, 100);
+    });
+  }
+
+  /** The command's route: capture what is shown and create the attachment; the note is not written. */
+  exportImage(format: ExportFormat): Promise<TFile> {
+    return this.exportSource().then(source => exportMap(this.app, source.file, source, format));
   }
 
   getViewType(): string { return VIEW_TYPE; }

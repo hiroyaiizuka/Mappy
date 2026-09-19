@@ -2,7 +2,7 @@ import { PLACEHOLDER_ID } from '../layout/drop-preview';
 import type { LayoutResult } from '../layout/layout';
 import { foldBadgeWidth } from '../layout/primitives';
 import {
-  StyleRegistry, SVG_NAMESPACE, XHTML_NAMESPACE, escapeAttribute, escapeText, formatNumber,
+  StyleRegistry, SVG_NAMESPACE, XHTML_NAMESPACE, XLINK_NAMESPACE, escapeAttribute, escapeText, formatNumber,
   type ExportTheme, type SvgBadge, type SvgEdge, type SvgNode, type SvgScene,
 } from './svg-document';
 
@@ -13,6 +13,9 @@ import {
  * the current theme without Obsidian's stylesheets. Images become data URLs
  * through a resolver the host supplies; a resolver that fails leaves the
  * node in place with the image's text. Nothing here reads Obsidian.
+ *
+ * The DOM is read in one synchronous pass, so a refresh that lands while the
+ * images are being read cannot change what the file shows.
  */
 
 export interface CapturedEntry {
@@ -89,7 +92,11 @@ const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img'
 /** Elements that cannot be shown in a file, or that belong to editing and dragging. */
 const SKIPPED_SELECTOR = 'script,style,template,iframe,video,audio,canvas,object,embed,input,textarea,select,button,.mappy-node-toggle,.mappy-inline-input,.mappy-inline-error';
 
-const BADGE_HEIGHT = 18;
+/** Namespace prefixes the document declares; any other prefixed attribute would leave the file ill-formed. */
+const DECLARED_PREFIXES = new Set(['xlink', 'xml', 'xmlns']);
+
+/** The badge on screen is this tall unless the theme says otherwise (`.mappy-node-toggle-mark`). */
+const DEFAULT_BADGE_HEIGHT = 18;
 
 function themeOf(document: Document): ExportTheme {
   return document.body.classList.contains('theme-dark') ? 'dark' : 'light';
@@ -126,15 +133,23 @@ function isHidden(element: Element, style: CSSStyleDeclaration | null): boolean 
   return element.hasAttribute('hidden') || style?.getPropertyValue('display').trim() === 'none';
 }
 
-function exportedClasses(element: Element, styleClass: string | null): string {
+function exportedClasses(element: Element, styleClass: string | null, extra?: string): string {
   const classes = Array.from(element.classList).filter(name => !STATE_CLASSES.has(name));
   if (styleClass) classes.push(styleClass);
+  if (extra) classes.push(extra);
   return classes.join(' ');
 }
 
 /** `[a-zA-Z_:][-a-zA-Z0-9_:.]*` is what XML accepts; DOM attribute names can be anything. */
 function isXmlName(name: string): boolean {
   return /^[A-Za-z_:][-A-Za-z0-9_:.]*$/u.test(name);
+}
+
+/** A prefixed name is only written when the prefix is declared on the export's root. */
+function isWritableAttributeName(name: string): boolean {
+  if (!isXmlName(name)) return false;
+  const colon = name.indexOf(':');
+  return colon === -1 || DECLARED_PREFIXES.has(name.slice(0, colon));
 }
 
 /** The vault-side identity of an image: the embed's link target when Obsidian rendered it, else the URL it shows. */
@@ -149,9 +164,21 @@ function boxOf(element: HTMLElement): { width: number; height: number } {
   return { width: element.offsetWidth, height: element.offsetHeight };
 }
 
+/**
+ * An image met while serializing: the markup is finished later, once its data URL
+ * is known, from what was read now. The token never collides with content because
+ * escaping strips control characters.
+ */
+interface PendingImage {
+  token: string;
+  image: HTMLImageElement;
+  present: (src: string) => string;
+  missing: string;
+}
+
 interface Serializer {
   registry: StyleRegistry;
-  images: ReadonlyMap<HTMLImageElement, string | null>;
+  images: PendingImage[];
 }
 
 function serializeAttributes(element: Element, names: Iterable<string>, extra: Record<string, string | null>): string {
@@ -162,7 +189,7 @@ function serializeAttributes(element: Element, names: Iterable<string>, extra: R
     if (value !== null && value !== '') parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
   for (const name of names) {
-    if (written.has(name) || !isXmlName(name)) continue;
+    if (written.has(name) || !isWritableAttributeName(name)) continue;
     const value = element.getAttribute(name);
     if (value !== null) parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
@@ -178,25 +205,25 @@ function serializeChildren(element: Element, context: Serializer): string {
   return html;
 }
 
-/** An image the resolver could not read keeps its box and shows its text, so the node it sits in stays whole. */
-function serializeMissingImage(image: HTMLImageElement, context: Serializer, style: CSSStyleDeclaration | null): string {
-  const size = boxOf(image);
-  const declarations = [styleDeclarations(image, style), 'display:inline-block;overflow:hidden'].filter(Boolean).join(';');
-  const styleClass = context.registry.classFor(declarations);
-  const geometry = size.width > 0 && size.height > 0 ? `width:${size.width}px;height:${size.height}px` : null;
-  const text = image.alt || image.getAttribute('src') || '';
-  return `<span${serializeAttributes(image, ['title'], {
-    class: [...exportedClasses(image, styleClass).split(' ').filter(Boolean), 'mappy-export-missing-image'].join(' '), style: geometry,
-  })}>${escapeText(text)}</span>`;
-}
-
+/**
+ * Both outcomes of an image are prepared now: the `<img>` with its data URL, or a
+ * `<span>` of the same size showing its text when the resolver cannot read it, so
+ * the node it sits in stays whole either way.
+ */
 function serializeImage(image: HTMLImageElement, context: Serializer, style: CSSStyleDeclaration | null): string {
-  const src = context.images.get(image) ?? null;
-  if (src === null) return serializeMissingImage(image, context, style);
   const size = boxOf(image);
-  const styleClass = context.registry.classFor(styleDeclarations(image, style));
   const geometry = size.width > 0 && size.height > 0 ? `width:${size.width}px;height:${size.height}px` : null;
-  return `<img${serializeAttributes(image, KEPT_ATTRIBUTES, { class: exportedClasses(image, styleClass), src, style: geometry })}/>`;
+  const declarations = styleDeclarations(image, style);
+  const imageClass = exportedClasses(image, context.registry.classFor(declarations));
+  const spanDeclarations = [declarations, 'display:inline-block;overflow:hidden'].filter(Boolean).join(';');
+  const spanClass = exportedClasses(image, context.registry.classFor(spanDeclarations), 'mappy-export-missing-image');
+  const token = `image${context.images.length}`;
+  context.images.push({
+    token, image,
+    present: src => `<img${serializeAttributes(image, KEPT_ATTRIBUTES, { class: imageClass, src, style: geometry })}/>`,
+    missing: `<span${serializeAttributes(image, ['title'], { class: spanClass, style: geometry })}>${escapeText(image.alt || image.getAttribute('src') || '')}</span>`,
+  });
+  return token;
 }
 
 function serializeElement(element: Element, context: Serializer, root: boolean, geometry?: { width: number; height: number }): string {
@@ -206,7 +233,7 @@ function serializeElement(element: Element, context: Serializer, root: boolean, 
   if (element.namespaceURI === SVG_NAMESPACE) {
     // Inline SVG (icons a renderer may add) keeps its own attributes; it is already XML.
     const parent = element.parentElement;
-    const xmlns = parent && parent.namespaceURI !== SVG_NAMESPACE ? { xmlns: SVG_NAMESPACE } : {};
+    const xmlns = parent && parent.namespaceURI !== SVG_NAMESPACE ? { xmlns: SVG_NAMESPACE, 'xmlns:xlink': XLINK_NAMESPACE } : {};
     const tag = element.localName;
     const attributes = serializeAttributes(element, Array.from(element.attributes, attribute => attribute.name), xmlns);
     return `<${tag}${attributes}>${serializeChildren(element, context)}</${tag}>`;
@@ -226,23 +253,19 @@ function serializeElement(element: Element, context: Serializer, root: boolean, 
   return `<${tag}${attributes}>${serializeChildren(element, context)}</${tag}>`;
 }
 
-/** Every image the exported nodes show, resolved once per source through the host's resolver. */
-async function resolveImages(elements: readonly HTMLElement[], resolve: ImageResolver): Promise<Map<HTMLImageElement, string | null>> {
+/** Every image the serialization met, resolved once per source through the host's resolver. */
+async function resolveImages(pending: readonly PendingImage[], resolve: ImageResolver): Promise<Map<string, string | null>> {
   const bySource = new Map<string, Promise<string | null>>();
-  const results = new Map<HTMLImageElement, string | null>();
-  const pending: Promise<void>[] = [];
-  for (const element of elements) {
-    for (const image of Array.from(element.querySelectorAll('img'))) {
-      const key = imageKey(image);
-      let request = bySource.get(key);
-      if (!request) {
-        request = resolve(image).catch(() => null);
-        bySource.set(key, request);
-      }
-      pending.push(request.then(src => { results.set(image, src); }));
+  const results = new Map<string, string | null>();
+  await Promise.all(pending.map(async entry => {
+    const key = imageKey(entry.image);
+    let request = bySource.get(key);
+    if (!request) {
+      request = resolve(entry.image).catch(() => null);
+      bySource.set(key, request);
     }
-  }
-  await Promise.all(pending);
+    results.set(entry.token, await request);
+  }));
   return results;
 }
 
@@ -287,26 +310,21 @@ function badgeCss(mark: HTMLElement | undefined, fallbackColor: string, backgrou
  * The scene of what is on screen: one `SvgNode` per placed node in layout
  * order, the connectors' path data, and a badge for every collapsed node.
  * Layout coordinates are kept, so the SVG's viewBox is the map's own space.
+ * Everything is read from the DOM before the first `await`; only the image
+ * bytes are fetched afterwards and spliced into the markup already built.
  */
 export async function captureScene(source: CaptureSource, options: CaptureOptions): Promise<SvgScene> {
   const document = source.canvas.ownerDocument;
   const theme = options.theme ?? themeOf(document);
-  const placed = source.layout.nodes.filter(node => node.id !== PLACEHOLDER_ID);
-  const elements: HTMLElement[] = [];
-  for (const node of placed) {
-    const entry = source.entries.get(node.id);
-    if (entry) elements.push(entry.element);
-  }
-  const images = await resolveImages(elements, options.resolveImage);
   const registry = new StyleRegistry();
-  const context: Serializer = { registry, images };
-  const nodes: SvgNode[] = [];
-  for (const node of placed) {
+  const context: Serializer = { registry, images: [] };
+  const drafts: SvgNode[] = [];
+  for (const node of source.layout.nodes) {
+    if (node.id === PLACEHOLDER_ID) continue;
     const entry = source.entries.get(node.id);
     if (!entry) continue;
     const html = serializeElement(entry.element, context, true, { width: node.width, height: node.height });
-    if (!html) continue;
-    nodes.push({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height, html });
+    if (html) drafts.push({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height, html });
   }
   const edges: SvgEdge[] = source.layout.edges
     .filter(edge => edge.to !== PLACEHOLDER_ID && edge.from !== PLACEHOLDER_ID)
@@ -320,12 +338,24 @@ export async function captureScene(source: CaptureSource, options: CaptureOption
     if (!text) continue;
     mark ??= entry.toggleMark;
     const width = foldBadgeWidth(Number(text) || 0);
-    badges.push({ x: fold.x - width / 2, y: fold.y - BADGE_HEIGHT / 2, width, height: BADGE_HEIGHT, text });
+    const height = entry.toggleMark.offsetHeight || DEFAULT_BADGE_HEIGHT;
+    badges.push({ x: fold.x - width / 2, y: fold.y - height / 2, width, height, text });
   }
   const color = canvasColor(source.canvas, theme);
   const background = backgroundOf(source.canvas, theme);
   const css = [registry.css(), edgeCss(source.edges, color), ...(badges.length > 0 ? [badgeCss(mark, color, background)] : [])]
     .filter(Boolean).join('\n');
+  // The DOM has been read; from here on only the image bytes are awaited.
+  const resolved = await resolveImages(context.images, options.resolveImage);
+  const nodes = drafts.map(draft => {
+    let html = draft.html;
+    for (const entry of context.images) {
+      if (!html.includes(entry.token)) continue;
+      const src = resolved.get(entry.token) ?? null;
+      html = html.replace(entry.token, src === null ? entry.missing : entry.present(src));
+    }
+    return { ...draft, html };
+  });
   return { theme, background, bounds: { ...source.layout.bounds }, nodes, edges, badges, css };
 }
 
@@ -338,29 +368,91 @@ export function canRasterize(): boolean {
   }
 }
 
+/** The message every PNG failure of the host surfaces; the SVG route always remains. */
+export const PNG_UNAVAILABLE = 'この環境では PNG を作れません。SVG で書き出してください。';
+
+/** Width and height of the raster in device pixels. */
+export interface RasterSize {
+  width: number;
+  height: number;
+}
+
+export function rasterSize(size: { width: number; height: number }, scale: number): RasterSize {
+  return { width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) };
+}
+
+export interface RasterizedPng extends RasterSize {
+  blob: Blob;
+}
+
+function loadSvgImage(svg: string): Promise<HTMLImageElement> {
+  const image = createEl('img');
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    image.addEventListener('load', () => { resolve(image); }, { once: true });
+    image.addEventListener('error', () => { reject(new Error('SVG を画像として読み込めませんでした。')); }, { once: true });
+    // A data URL, not a blob URL: a blob made by a page with an opaque origin (`file://`) is cross-origin to itself and taints the canvas.
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  });
+}
+
+function drawToCanvas(image: HTMLImageElement, size: { width: number; height: number }, scale: number): HTMLCanvasElement {
+  const canvas = createEl('canvas');
+  const raster = rasterSize(size, scale);
+  canvas.width = raster.width;
+  canvas.height = raster.height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error(PNG_UNAVAILABLE);
+  context.scale(scale, scale);
+  context.drawImage(image, 0, 0, size.width, size.height);
+  return canvas;
+}
+
+/**
+ * WebKit treats an SVG image containing `foreignObject` as tainting; reading the canvas
+ * back then throws a SecurityError. A DOMException is not an `Error` in every realm.
+ */
+function isTaint(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { name, message } = error as { name?: unknown; message?: unknown };
+  return name === 'SecurityError' || (typeof message === 'string' && /taint|insecure/iu.test(message));
+}
+
+let foreignObjectProbe: Promise<boolean> | undefined;
+
+/**
+ * Whether this host can read back a canvas that an SVG with `foreignObject` was
+ * drawn into: Chromium can, WebKit (Obsidian on iOS) cannot. Probed once with a
+ * one-pixel document, so the modal offers PNG only where it will work.
+ */
+export function canRasterizeForeignObject(): Promise<boolean> {
+  foreignObjectProbe ??= (async () => {
+    if (!canRasterize()) return false;
+    try {
+      const svg = `<svg xmlns="${SVG_NAMESPACE}" width="1" height="1"><foreignObject width="1" height="1"><div xmlns="${XHTML_NAMESPACE}"></div></foreignObject></svg>`;
+      const canvas = drawToCanvas(await loadSvgImage(svg), { width: 1, height: 1 }, 1);
+      return canvas.toDataURL('image/png').startsWith('data:image/png');
+    } catch {
+      return false;
+    }
+  })();
+  return foreignObjectProbe;
+}
+
 /**
  * The SVG drawn onto a canvas at `scale` and encoded as PNG. The SVG is
  * loaded as an image, so it can only use what it embeds: data URL images and
  * fonts installed on this device. Web fonts of the app are not available to it.
- * The image is a data URL, not a blob URL: a blob made by a page with an opaque
- * origin (a `file://` page) is cross-origin to itself and taints the canvas.
  * The scratch image and canvas come from Obsidian's global `createEl`, never attached.
  */
-export async function rasterizeSvg(svg: string, size: { width: number; height: number }, scale: number): Promise<Blob> {
-  const image = createEl('img');
-  await new Promise<void>((resolve, reject) => {
-    image.addEventListener('load', () => { resolve(); }, { once: true });
-    image.addEventListener('error', () => { reject(new Error('SVG を画像として読み込めませんでした。')); }, { once: true });
-    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-  });
-  const canvas = createEl('canvas');
-  canvas.width = Math.max(1, Math.round(size.width * scale));
-  canvas.height = Math.max(1, Math.round(size.height * scale));
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('この環境では PNG を作れません。SVG で書き出してください。');
-  context.scale(scale, scale);
-  context.drawImage(image, 0, 0, size.width, size.height);
-  const png = await new Promise<Blob | null>(resolve => { canvas.toBlob(resolve, 'image/png'); });
-  if (!png) throw new Error('PNG を生成できませんでした。');
-  return png;
+export async function rasterizeSvg(svg: string, size: { width: number; height: number }, scale: number): Promise<RasterizedPng> {
+  const image = await loadSvgImage(svg);
+  try {
+    const canvas = drawToCanvas(image, size, scale);
+    const blob = await new Promise<Blob | null>(resolve => { canvas.toBlob(resolve, 'image/png'); });
+    if (!blob) throw new Error('PNG を生成できませんでした。');
+    return { blob, width: canvas.width, height: canvas.height };
+  } catch (error) {
+    if (isTaint(error)) throw new Error(PNG_UNAVAILABLE);
+    throw error;
+  }
 }

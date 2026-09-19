@@ -459,3 +459,25 @@ export const MarkdownRenderer = {
     return Promise.resolve();
   },
 };
+
+/** This page is a desktop browser tab: no Capacitor shell, so the export uses the desktop canvas limits. */
+export const Platform = {
+  isDesktop: true, isMobile: false, isDesktopApp: false, isMobileApp: false, isIosApp: false, isAndroidApp: false,
+  isPhone: false, isTablet: false, isMacOS: false, isWin: false, isLinux: false, isSafari: false,
+  resourcePathPrefix: "",
+};
+
+/** Same contract as Obsidian's helper; chunked so a large image does not overflow the call stack. */
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/** Network requests are Obsidian's; the page has no vault-side client, so a remote image stays unread. */
+export function requestUrl(): Promise<never> {
+  return Promise.reject(new Error("requestUrl はこのページの対象外です（③ 実機で確認）。"));
+}

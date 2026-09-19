@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertWikiLink, wikiLinkContext } from "../../src/core/wiki-link";
+import { hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath } from "../../src/core/wiki-link";
 
 describe("inline wikilink completion", () => {
   it("finds the active link after surrounding Japanese text", () => {
@@ -44,5 +44,30 @@ describe("inline wikilink completion", () => {
     const text = "[[first]] text [[next";
     expect(wikiLinkContext(text, text.length)?.query).toBe("next");
     expect(wikiLinkContext("[[first\nnext", 12)).toBeNull();
+  });
+});
+
+describe("wikiLinkPath and hasUrlScheme (shared by the Excalidraw bridge and the SVG export)", () => {
+  it.each([
+    ["[[note#heading|alias]]", "note"],
+    ["![[図.png|120]]", "図.png"],
+    ["figure.png|120", "figure.png"],
+    ["note^block", "note"],
+    ["  Notes/spaced name.md  ", "Notes/spaced name.md"],
+  ])("reduces %s to its linkpath", (link, path) => {
+    expect(wikiLinkPath(link)).toBe(path);
+  });
+
+  it.each(["", "   ", "|alias", "#heading", null, undefined])("returns null for %s", link => {
+    expect(wikiLinkPath(link)).toBeNull();
+  });
+
+  it("tells a URL with a scheme from a vault path", () => {
+    expect(hasUrlScheme("https://example.com/a.png")).toBe(true);
+    expect(hasUrlScheme("app://obsidian.md/x")).toBe(true);
+    expect(hasUrlScheme("data:image/png;base64,AAAA")).toBe(true);
+    expect(hasUrlScheme("Attachments/図.png")).toBe(false);
+    expect(hasUrlScheme("C-drive:not a scheme?")).toBe(true);
+    expect(hasUrlScheme("時間: 10:00")).toBe(false);
   });
 });

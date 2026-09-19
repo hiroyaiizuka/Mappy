@@ -86,11 +86,12 @@ export function installObsidianDom(): void {
   for (const [name, value] of Object.entries(elementMethods)) {
     Object.defineProperty(Element.prototype, name, { value, configurable: true, writable: true });
   }
-  // Obsidian also exposes detached creation as globals (`createEl("canvas")` for scratch elements).
+  // Obsidian also exposes creation as globals: detached unless `parent` is given (`createEl("canvas")` for scratch elements).
   const detachedEl = (tag: string, options?: DomElementInfo | string, callback?: (element: HTMLElement) => void): HTMLElement => {
     const element = document.createElement(tag);
-    applyInfo(element, typeof options === "string" ? { cls: options } : options, document.createDocumentFragment());
-    element.remove();
+    const info = typeof options === "string" ? { cls: options } : options;
+    applyInfo(element, info, document.createDocumentFragment());
+    if (!info?.parent) element.remove();
     callback?.(element);
     return element;
   };

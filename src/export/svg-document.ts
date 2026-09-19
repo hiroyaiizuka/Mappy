@@ -46,9 +46,23 @@ export const EXPORT_MARGIN = 24;
 
 export const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 export const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+export const XLINK_NAMESPACE = 'http://www.w3.org/1999/xlink';
+
+/**
+ * Code points XML 1.0 forbids even when escaped: control characters other than tab,
+ * LF and CR, the two non-characters and lone surrogates (with the `u` flag a pair is
+ * one code point, so `\p{Surrogate}` matches only a lone half). Text pasted from a
+ * PDF often carries a form feed, and one of them makes the whole file unreadable.
+ */
+const UNWRITABLE = /[\p{Cc}\p{Surrogate}\uFFFE\uFFFF]/gu;
+const XML_WHITESPACE = new Set(['\t', '\n', '\r']);
+
+function dropUnwritable(text: string): string {
+  return text.replace(UNWRITABLE, character => (XML_WHITESPACE.has(character) ? character : ''));
+}
 
 export function escapeText(text: string): string {
-  return text.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
+  return dropUnwritable(text).replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
 }
 
 export function escapeAttribute(text: string): string {
@@ -137,7 +151,8 @@ function rect(bounds: LayoutBounds, extra: string): string {
 export function buildSvg(scene: SvgScene, margin = EXPORT_MARGIN): string {
   const size = svgSize(scene.bounds, margin);
   const lines: string[] = [];
-  lines.push(`<svg xmlns="${SVG_NAMESPACE}" width="${size.width}" height="${size.height}" viewBox="${size.viewBox}" class="mappy-export theme-${scene.theme}" data-theme="${scene.theme}" data-nodes="${scene.nodes.length}" data-edges="${scene.edges.length}">`);
+  // xlink is declared up front: inline SVG inside a node (MathJax, hand-written markup) may use `xlink:href`.
+  lines.push(`<svg xmlns="${SVG_NAMESPACE}" xmlns:xlink="${XLINK_NAMESPACE}" width="${size.width}" height="${size.height}" viewBox="${size.viewBox}" class="mappy-export theme-${scene.theme}" data-theme="${scene.theme}" data-nodes="${scene.nodes.length}" data-edges="${scene.edges.length}">`);
   lines.push(`<style>${cdata(scene.css)}</style>`);
   const box = { x: scene.bounds.x - margin, y: scene.bounds.y - margin, width: size.width, height: size.height };
   lines.push(rect(box, `class="mappy-export-background" fill="${escapeAttribute(scene.background)}"`));

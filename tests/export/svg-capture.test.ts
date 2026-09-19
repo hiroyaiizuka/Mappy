@@ -5,7 +5,9 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
-import { canRasterize, captureScene, type ImageResolver } from '../../src/export/svg-capture';
+import {
+  PNG_UNAVAILABLE, canRasterize, canRasterizeForeignObject, captureScene, rasterizeSvg, type ImageResolver,
+} from '../../src/export/svg-capture';
 import { EXPORT_MARGIN, XHTML_NAMESPACE, buildSvg, svgSize } from '../../src/export/svg-document';
 import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
@@ -33,11 +35,11 @@ interface Mounted {
   fold: (title: string) => void;
 }
 
-async function mount(fixtureId: string, layout: LayoutMode = 'mindmap'): Promise<Mounted> {
+async function mount(fixtureId: string, layout: LayoutMode = 'mindmap', source?: string): Promise<Mounted> {
   const fixture = findFixture(fixtureId);
   if (!fixture) throw new Error(`Missing fixture ${fixtureId}`);
   const app = new HarnessApp();
-  app.put(fixture.path, fixture.source);
+  app.put(fixture.path, source ?? fixture.source);
   app.put(SAMPLE_IMAGE.path, '', SAMPLE_IMAGE.url);
   let modified = 0;
   app.vault.on('modify', () => { modified += 1; });
@@ -212,6 +214,71 @@ describe('SVG export of the map view (jsdom)', () => {
 
   it('cannot rasterise in jsdom, and says so instead of hanging', () => {
     expect(canRasterize()).toBe(false);
+  });
+
+  it('reads the DOM before waiting for images, so a refresh that lands meanwhile cannot drop or blank nodes', async () => {
+    const mounted = await mount('uneven-branches');
+    const before = mounted.nodes().length;
+    const source = await mounted.view.exportSource();
+    // The resolver stands in for a refresh arriving mid-export: it tears the node layer down while the export waits on it.
+    const scene = await captureScene(source, {
+      resolveImage: () => {
+        for (const node of mounted.nodes()) node.remove();
+        return Promise.resolve(null);
+      },
+    });
+    expect(scene.nodes.length).toBe(before);
+    expect(scene.nodes.every(node => node.html.includes('mappy-node-label'))).toBe(true);
+    expect(parseSvg(buildSvg(scene)).querySelectorAll('foreignObject').length).toBe(before);
+  });
+
+  it('runs a pending debounced refresh before exporting, so an edit just made is in the file', async () => {
+    const mounted = await mount('uneven-branches');
+    const before = mounted.nodes().length;
+    const fixture = findFixture('uneven-branches');
+    mounted.app.put(fixture?.path ?? '', `${fixture?.source ?? ''}- 直前に足した枝\n`);
+    // No settle: the 45 ms refresh timer is still pending.
+    const { parsed } = await exportOf(mounted);
+    expect(parsed.querySelectorAll('foreignObject').length).toBe(before + 1);
+    expect(Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim())).toContain('直前に足した枝');
+  });
+
+  it('keeps the file well formed when a title carries a form feed or a renderer put inline SVG with xlink:href into a node', async () => {
+    const fixture = findFixture('uneven-branches');
+    const mounted = await mount('uneven-branches', 'mindmap', `${fixture?.source ?? ''}- PDF から\u000c貼った文字\n`);
+    // The harness renderer escapes markup, so the inline SVG (as MathJax or a theme icon would add it) is put in by hand.
+    const label = mounted.nodes().find(node => node.querySelector('.mappy-node-label')?.textContent?.includes('空に近い枝'))?.querySelector('.mappy-node-label');
+    label?.insertAdjacentHTML('beforeend', '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><use xlink:href="#g" foo:bar="1"/></svg>');
+    expect(label?.querySelector('use')?.getAttribute('xlink:href')).toBe('#g');
+    const { svg, parsed } = await exportOf(mounted);
+    expect(svg).not.toContain('\u000c');
+    expect(Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim())).toContain('PDF から貼った文字');
+    const use = parsed.querySelector('use');
+    expect(use?.getAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe('#g');
+    expect(use?.hasAttribute('foo:bar')).toBe(false);
+  });
+
+  it('reports a tainted canvas as "PNG unavailable" and probes it once for the modal', async () => {
+    const win = window as unknown as { createEl: (tag: string) => unknown };
+    const original = win.createEl;
+    const fakeImage = {
+      listeners: new Map<string, () => void>(),
+      addEventListener(type: string, listener: () => void) { this.listeners.set(type, listener); },
+      set src(_value: string) { queueMicrotask(() => { this.listeners.get('load')?.(); }); },
+    };
+    const fakeCanvas = {
+      width: 0, height: 0,
+      getContext: () => ({ scale() { /* stub */ }, drawImage() { /* stub */ } }),
+      toBlob() { throw new DOMException('The operation is insecure.', 'SecurityError'); },
+      toDataURL() { throw new DOMException('The operation is insecure.', 'SecurityError'); },
+    };
+    win.createEl = (tag: string) => (tag === 'img' ? fakeImage : fakeCanvas);
+    try {
+      await expect(rasterizeSvg('<svg xmlns="http://www.w3.org/2000/svg"/>', { width: 10, height: 10 }, 1)).rejects.toThrow(PNG_UNAVAILABLE);
+      await expect(canRasterizeForeignObject()).resolves.toBe(false);
+    } finally {
+      win.createEl = original;
+    }
   });
 
   it.each([10, 100, 500, 2000])('completes for the %i-node link-and-image document', async count => {

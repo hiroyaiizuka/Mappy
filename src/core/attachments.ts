@@ -2,7 +2,21 @@ import { GFM, parser } from '@lezer/markdown';
 
 const attachmentParser = parser.configure(GFM);
 
-const IMAGE_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/iu;
+/** Image files the map previews and the exports embed, by extension; the single list every layer reads. */
+export const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {
+  avif: 'image/avif', bmp: 'image/bmp', gif: 'image/gif', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
+};
+
+/** The media type of an image extension (any case, with or without the dot), or undefined for anything else. */
+export function imageMimeType(extension: string): string | undefined {
+  return IMAGE_MIME_TYPES[extension.replace(/^\./u, '').toLowerCase()];
+}
+
+const IMAGE_EXTENSION_ALTERNATIVES = Object.keys(IMAGE_MIME_TYPES).join('|');
+const IMAGE_EXTENSION = new RegExp(`\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})$`, 'iu');
+/** `![[figure.png]]`, `![[figure.png|120]]`, `![[figure.png#anchor]]`: an embed of an image file. */
+const IMAGE_EMBED = new RegExp(`\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})(?:[|#][^\\]]*)?\\]\\]$`, 'iu');
 
 export interface AttachmentEntry {
   kind: 'image' | 'link';
@@ -59,7 +73,7 @@ function attachmentSnippets(body: string): AttachmentSnippets {
     if (range.from < lastEnd || protectedRanges.some(literal => range.from < literal.to && range.to > literal.from)) continue;
     let snippet = body.slice(range.from, range.to);
     // Note/PDF transclusions stay links; only image embeds become previews.
-    if (snippet.startsWith('![[') && !/\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[|#][^\]]*)?\]\]$/iu.test(snippet)) {
+    if (snippet.startsWith('![[') && !IMAGE_EMBED.test(snippet)) {
       snippet = snippet.slice(1);
     }
     snippets.push(snippet);

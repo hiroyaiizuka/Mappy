@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import {
   EXPORT_MARGIN, StyleRegistry, buildSvg, escapeAttribute, escapeText, formatNumber, pngScale, svgSize, type SvgScene,
@@ -106,5 +107,23 @@ describe('buildSvg', () => {
     const svg = buildSvg(scene({ css: '.m0{content:"]]>"}' }));
     expect(svg).toContain('<![CDATA[\n.m0{content:"]]]]><![CDATA[>"}\n]]>');
     expect(svg).toContain('<path d="M120 62 H160 V35 H200"/>');
+  });
+});
+
+describe('what XML cannot carry', () => {
+  it('drops control characters and lone surrogates but keeps tab, newlines and astral characters', () => {
+    const surrogatePair = String.fromCharCode(0xd83d, 0xde00);
+    const loneSurrogate = String.fromCharCode(0xd800);
+    const input = `a${String.fromCharCode(0x0c)}b${String.fromCharCode(0x01)}c\td\ne\rf${surrogatePair}g${loneSurrogate}h`;
+    expect(escapeText(input)).toBe(`abc\td\ne\rf${surrogatePair}gh`);
+    expect(escapeAttribute(`x${String.fromCharCode(0x0b)}y"z`)).toBe('xy&quot;z');
+  });
+
+  it('declares the xlink namespace on the root, so inline SVG with xlink:href stays well formed', () => {
+    const html = '<div xmlns="http://www.w3.org/1999/xhtml"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#g"/></svg></div>';
+    const svg = buildSvg(scene({ nodes: [{ id: 'n', x: 0, y: 0, width: 10, height: 10, html }] }));
+    expect(svg).toContain('xmlns:xlink="http://www.w3.org/1999/xlink"');
+    const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    expect(parsed.querySelector('parsererror')).toBeNull();
   });
 });

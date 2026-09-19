@@ -4,11 +4,11 @@ import { ExcalidrawBridge } from "./obsidian/excalidraw-bridge";
 import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
-import { canSaveAttachments, exportMap } from "./obsidian/image-export";
+import { canSaveAttachments } from "./obsidian/image-export";
 import { createMindmapFile } from "./obsidian/map-files";
 import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
-import { canRasterize } from "./export/svg-capture";
+import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
 import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
 
@@ -112,13 +112,12 @@ export default class MappyPlugin extends Plugin {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (!map?.file || !canSaveAttachments(this.app)) return false;
         if (!checking) {
-          new ExportModal(this.app, canRasterize(), format => {
-            this.run(async () => {
-              const source = await map.exportSource();
-              const saved = await exportMap(this.app, source.file, source, format);
-              new Notice(`${saved.path} に書き出しました。`);
-            }, "書き出しに失敗しました。");
-          }).open();
+          this.run(async () => {
+            const png = await canRasterizeForeignObject();
+            new ExportModal(this.app, png, format => {
+              this.run(async () => { new Notice(`${(await map.exportImage(format)).path} に書き出しました。`); }, "書き出しに失敗しました。");
+            }).open();
+          }, "書き出しを始められませんでした。");
         }
         return true;
       },
