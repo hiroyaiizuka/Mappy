@@ -262,8 +262,9 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'add-sibling': return add(doc, node, true);
     case 'delete': {
       const parent = getNode(doc, node.parentId ?? 'root');
-      const from = node.kind === 'list' ? removalFrom(doc, node) : sectionRemovalFrom(doc, node);
-      return validate(doc, [{ from, to: node.to, text: '' }], doc.nodes.length - branchSize(node), parent.kind === 'root' ? null : parent.from);
+      // An item leaves with its line break, as it does when moved; a section keeps `sectionRemovalFrom`'s EOF handling.
+      const removal = node.kind === 'list' ? removalRange(doc, node) : { from: sectionRemovalFrom(doc, node), to: node.to };
+      return validate(doc, [{ ...removal, text: '' }], doc.nodes.length - branchSize(node), parent.kind === 'root' ? null : parent.from);
     }
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
