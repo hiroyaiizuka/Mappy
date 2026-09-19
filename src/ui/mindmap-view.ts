@@ -111,12 +111,21 @@ export class MindmapView extends ItemView {
     super(leaf);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
     // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
-    // it before the canvas listener (E02, LEV-48). The handler acts — and returns false, Obsidian's "consumed" — only
-    // inside the canvas with a node selected and no inline editor; elsewhere it does nothing, which is also what that
-    // default would do for a map (it renames the file of the most recently active Markdown tab). Only F2 is registered:
-    // no other map key has a default hotkey. The workspace reads `view.scope` on each key, so there is nothing to undo.
+    // it before the canvas listener and, the map not being a navigation view, starts renaming the most recently active
+    // Markdown tab's file instead (E02, LEV-48). While the focus is in this view, F2 is the map's key: on the canvas it
+    // edits the selected node, in the inline editor or on a floating control it does nothing, and either way `false`
+    // (Obsidian's "consumed": preventDefault and stopPropagation) keeps that default from running. With the focus
+    // outside the view the handler declines (`undefined`); what Obsidian then does with F2 is its own affair (1.14.2
+    // runs no other handler for a key the active view registered, so the default stays off while the map is active).
+    // Only F2 is registered: no other map key has a default hotkey. The workspace reads `view.scope` on each key, so
+    // there is nothing to undo.
     this.scope = new Scope(this.app.scope);
-    this.scope.register([], "F2", event => this.events?.hotkey(event));
+    this.scope.register([], "F2", event => {
+      const target = event.targetNode;
+      if (!target || !this.contentEl.contains(target)) return undefined;
+      this.events?.hotkey(event);
+      return false;
+    });
   }
 
   /** Current presentation, for exports that mirror what the user sees. */

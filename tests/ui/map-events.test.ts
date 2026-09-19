@@ -2,6 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
 import { MapEvents, type MapActions } from '../../src/ui/map-events';
+import { keyAt } from './keys';
 
 const originalTargetNode = Object.getOwnPropertyDescriptor(UIEvent.prototype, 'targetNode');
 const originalInstanceOf = Object.getOwnPropertyDescriptor(Node.prototype, 'instanceOf');
@@ -249,36 +250,43 @@ describe('MapEvents DOM interactions', () => {
     } finally { window.removeEventListener('keydown', consume, true); }
   });
 
-  describe('as the view scope handler (Obsidian consults it before its own hotkeys)', () => {
-    /** Not dispatched: the handler judges the event by its target, as Obsidian's keymap hands it over at the window. */
-    const scoped = (target: EventTarget, value: string, init: KeyboardEventInit = {}): KeyboardEvent => {
-      const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...init });
-      Object.defineProperty(event, 'target', { value: target });
-      return event;
-    };
+  it('leaves Shift chords alone: Shift+Tab keeps moving the focus, Shift+Enter and Shift+Backspace add and delete nothing', () => {
+    const { canvas, node, actions } = fixture();
+    for (const value of ['Tab', 'Enter', 'Backspace', 'Delete', 'F2', ' ']) {
+      expect(key(node, value, { shiftKey: true }).defaultPrevented).toBe(false);
+    }
+    expect(key(canvas, 'ArrowUp', { altKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    expect(actions.command).not.toHaveBeenCalled();
+    expect(actions.edit).not.toHaveBeenCalled();
+    expect(actions.fold).not.toHaveBeenCalled();
+    // The same keys without Shift are the map's.
+    expect(key(node, 'Tab').defaultPrevented).toBe(true);
+    expect(actions.command).toHaveBeenCalledOnce();
+  });
 
+  describe('as the view scope handler (Obsidian consults it before its own hotkeys)', () => {
     it('takes F2 on a node inside the canvas: edits, prevents the default and reports it as consumed', () => {
       const { node, actions, events } = fixture();
-      const event = scoped(node, 'F2');
+      const event = keyAt(node, 'F2');
       expect(events.hotkey(event)).toBe(false);
       expect(event.defaultPrevented).toBe(true);
       expect(actions.edit).toHaveBeenCalledOnce();
     });
 
-    it('leaves F2 alone outside the canvas, inside the inline editor, during composition and without a selection', () => {
+    it('does not act outside the canvas, inside the inline editor, during composition or without a selection', () => {
       const { canvas, node, actions, events } = fixture();
       const outside = document.createElement('button');
       document.body.append(outside);
-      expect(events.hotkey(scoped(outside, 'F2'))).toBeUndefined();
-      expect(events.hotkey(scoped(document.body, 'F2'))).toBeUndefined();
+      expect(events.hotkey(keyAt(outside, 'F2'))).toBeUndefined();
+      expect(events.hotkey(keyAt(document.body, 'F2'))).toBeUndefined();
       const input = document.createElement('textarea');
       node.append(input);
-      expect(events.hotkey(scoped(input, 'F2'))).toBeUndefined();
-      const composing = scoped(node, 'F2', { isComposing: true });
+      expect(events.hotkey(keyAt(input, 'F2'))).toBeUndefined();
+      const composing = keyAt(node, 'F2', { isComposing: true });
       expect(events.hotkey(composing)).toBeUndefined();
       expect(composing.defaultPrevented).toBe(false);
       actions.selected.mockReturnValue(undefined);
-      const unselected = scoped(canvas, 'F2');
+      const unselected = keyAt(canvas, 'F2');
       expect(events.hotkey(unselected)).toBeUndefined();
       expect(unselected.defaultPrevented).toBe(false);
       expect(actions.edit).not.toHaveBeenCalled();

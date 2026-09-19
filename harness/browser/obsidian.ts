@@ -5,7 +5,7 @@
  * run unchanged. Everything below is a mock: Markdown rendering, link
  * resolution, notices and menus approximate Obsidian's DOM, they do not prove it.
  */
-import type { App, EventRef, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState } from "obsidian";
+import type { App, EventRef, KeymapContext, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState } from "obsidian";
 
 export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
 
@@ -126,22 +126,52 @@ export function parseLinktext(linktext: string): { path: string; subpath: string
 /** A registered handler with its callback, so a test can call the one a view registered. */
 export interface HarnessKeymapHandler extends KeymapEventHandler { func: KeymapEventListener }
 
+/** `Mod` is Meta on macOS and Ctrl elsewhere; the rest sorted and joined, as Obsidian's `Keymap.compileModifiers` stores them. */
+export function compileModifiers(modifiers: readonly Modifier[]): string {
+  const mac = navigator.platform.startsWith("Mac");
+  return modifiers.map(modifier => modifier === "Mod" ? (mac ? "Meta" : "Ctrl") : modifier).sort().join(",");
+}
+
+/** The modifier string of a keyboard event, in the same form (`Keymap.getModifiers`). */
+export function eventModifiers(event: KeyboardEvent): string {
+  const held: Modifier[] = [];
+  if (event.ctrlKey) held.push("Ctrl");
+  if (event.metaKey) held.push("Meta");
+  if (event.altKey) held.push("Alt");
+  if (event.shiftKey) held.push("Shift");
+  return compileModifiers(held);
+}
+
 /**
- * Same registration contract as Obsidian's Scope. There is no Keymap here: nothing in this page routes a
- * real keydown through a scope. Which scope Obsidian consults first, and what a `false` return does to
- * the event, are Obsidian-only checks (E02).
+ * Same registration contract as Obsidian's Scope, and the same key dispatch as its 1.14.2 `handleKey`
+ * (read from app.js, artifacts/lev-48-f2-scope): handlers are tried in registration order; the first
+ * match that returns anything ends the search with that value, a match on a key- or modifier-specific
+ * handler ends it even on `undefined`, and only a catch-all (`null`, `null`) match falls through to the
+ * next handler and then the parent scope. Obsidian's Keymap then prevents and stops the event on
+ * `false`; this page has no Keymap, so nothing routes a real keydown here — tests call `handleKey`.
  */
 export class Scope {
   readonly keys: HarnessKeymapHandler[] = [];
   constructor(readonly parent?: Scope) {}
   register(modifiers: Modifier[] | null, key: string | null, func: KeymapEventListener): KeymapEventHandler {
-    const handler: HarnessKeymapHandler = { scope: this, modifiers: modifiers ? modifiers.join(",") : null, key, func };
+    const handler: HarnessKeymapHandler = { scope: this, modifiers: modifiers ? compileModifiers(modifiers) : null, key, func };
     this.keys.push(handler);
     return handler;
   }
   unregister(handler: KeymapEventHandler): void {
     const index = this.keys.indexOf(handler as HarnessKeymapHandler);
     if (index >= 0) this.keys.splice(index, 1);
+  }
+  handleKey(event: KeyboardEvent, context: KeymapContext = { modifiers: eventModifiers(event), key: event.key, vkey: event.key }): unknown {
+    for (const handler of this.keys) {
+      const matches = (handler.modifiers === null || handler.modifiers === context.modifiers)
+        && (!handler.key || handler.key === context.vkey || (!!context.key && handler.key.toLowerCase() === context.key.toLowerCase()));
+      if (!matches) continue;
+      const result: unknown = handler.func(event, context);
+      if (result !== undefined) return result;
+      if (handler.key !== null || handler.modifiers !== null) return result;
+    }
+    return this.parent?.handleKey(event, context);
   }
 }
 
