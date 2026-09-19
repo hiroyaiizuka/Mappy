@@ -22,7 +22,7 @@ H0a の静的検査・テスト・配布物検証に加え、M1〜M4 の機能�
 | M11 | 未着手 | 左右バランス配置（`mappy-layout: balanced`） |
 | M12 | 未着手 | マップから他のマップを検索して呼び出す（埋め込み項目の追加） |
 | M13 | コマンド「現在のマップを SVG／PNG に書き出し」（`src/main.ts` の登録 1 か所、形式はモーダルで選ぶ。添付ファイルの保存先を扱えない環境では出さない）。`src/export/svg-document.ts`（純粋: シーン → SVG 文字列、viewBox・余白・PNG の縮尺）と `svg-capture.ts`（DOM: 配置済みノードの要素を `foreignObject` の XHTML に直列化し、算出スタイルを重複除去したクラスで埋め込む。線は `LayoutResult.edges` のパスそのまま、閉じた枝は件数のバッジ、画像は差し込まれた resolver で data URL 化し、読めなければノードを保って代替テキスト。テーマは body の `theme-dark` と canvas の色）、`src/obsidian/image-export.ts`（Vault の画像を `readBinary` で data URL に、http(s) は `requestUrl`（15 秒・`image/*` のみ）、整形式を確かめてから `getAvailablePathForAttachment` + `vault.create`／`createBinary` で保存。ノートは書かない）、`MindmapView.exportSource()`／`exportImage()`（編集中・ドラッグ中は拒否、debounce 中の refresh を実行、配置フレーム待ち、DOM は同期で読み切る）。WebKit のように `foreignObject` 入り SVG で canvas が汚染される環境では PNG を無効にする。jsdom（ノード数・線の数・viewBox・折りたたみ・テーマ class・欠落画像・原文不変・10〜2,000 ノード）と headless Chrome（書き出した SVG を別タブで開いて位置と画像の復号を確認、PNG の寸法、2,000 ノードの完了。`artifacts/lev-59-svg-export-2026-09-19.md`） | Obsidian 実機（テーマの色、Vault の画像、添付設定の保存先、モバイルの PNG）は未実施 — verification 子 issue で確認する |
-| M14 | 未着手 | 設定タブ（テーマ・新規マップの既定レイアウト・作成先） |
+| M14 | 設定タブ（`src/obsidian/settings.ts`・`settings-tab.ts`、LEV-60）: テーマ（Obsidian に従う／明色／暗色）・新規マップの既定レイアウト（`LAYOUT_MODES` から生成）・新規マップの作成先フォルダの 3 項目。`loadData`／`saveData` に保存し、欠損・旧形式は項目ごとに既定値へ戻す。既定値はこれまでと同じ動作（テーマは追従、レイアウトは通常マップでキーなし、フォルダは Obsidian の新規ノート作成場所）。テーマは map view のコンテナにだけ Obsidian の `theme-light`／`theme-dark` class を付け、styles.css の `:where(.mappy-view.theme-*)` で意味変数をその配色から導き直す（ノートは書かない）。既定レイアウトは新規作成の frontmatter と、`mappy-layout` を持たないノートのマインドマップ化だけに書き、既存ノートの表示は変えない。作成先はなければ作り、大文字小文字違いの既存フォルダは再利用、同名ファイル・`.` で始まる名前は拒否する。レイアウト名は core の `LAYOUT_LABELS` をボタンと共有。Obsidian 1.13 以降の宣言的設定（`getSettingDefinitions`、設定検索）と 1.8.7〜の `display()` の両経路を同じ定義から出す。jsdom（既定値で従来と同じ frontmatter、既定レイアウト変更でも既存ノート不変、フォルダ解決、テーマ class の付け外しと追従への復帰、`loadData` の欠損・旧形式）と headless Chrome の撮影（明色ページに暗色マップ・暗色ページに明色マップ・追従、開き直し後も保持。`artifacts/lev-60-settings-tab/record.md`）で確認 | Obsidian 実機（設定タブの表示、明色・暗色の実配色とコミュニティテーマでの目視、新規作成の作成先・レイアウト、再起動後の設定の復元、モバイル。E31）は verification 子 issue LEV-62 で行う |
 
 最新の見た目・操作の受入条件は [interaction-revision.md](./interaction-revision.md) に記す。
 
@@ -296,6 +296,8 @@ Obsidian 標準の設定タブに次の 3 項目だけを置く。既定値は�
 - 新規マップの作成先フォルダ。
 
 **受入条件:** 設定の変更で既存ノートの本文・frontmatter を書き換えない。設定は `loadData`／`saveData` に保存し、デスクトップとモバイルで同じ。既定値のままなら現在の動作と一致する。テーマの明示指定で明色・暗色の両方が破綻しない。
+
+**現在の実装（LEV-60）:** 3 項目を `src/obsidian/settings.ts`（型・既定値・`normalizeSettings`）と `settings-tab.ts`（`PluginSettingTab`）に置き、`src/main.ts` は `loadData`／`saveData`・`addSettingTab`・開いている map view への `setTheme` だけを持つ。テーマは `MindmapView.setTheme()` が map view のコンテナ（`.mappy-view`）にだけ Obsidian の `theme-light`／`theme-dark` class を付け外しし、styles.css が `:where(.mappy-view.theme-light, .mappy-view.theme-dark)` で `--background-primary`・`--text-normal`・リンク・コード・タグなどの意味変数をそのコンテナの配色（Obsidian と有効なテーマが `.theme-*` に置く `--color-base-*` など）から導き直す。「Obsidian に従う」は class を外すだけで、以前と同じ継承になる。既定レイアウトは `createMindmapFile` が新規ノートの frontmatter に書き、「マインドマップ化」は `mappy-layout` を持たないノートにだけ書く（旧値は引き継ぐ）。作成先フォルダは空欄で Obsidian の新規ノート作成場所、`/` で最上位、なければ作成、大文字小文字違いは再利用、同名ファイルと `.` で始まる名前は拒否。実機（E31）と、コミュニティテーマでの配色の目視（body の class で分岐する子孫規則は変数の導き直しでは追従しない）は未実施（LEV-62）。
 
 ### M5: 配布・審査準備
 

@@ -6,11 +6,12 @@ import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import type { MapTheme } from "../obsidian/settings";
 import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
@@ -26,11 +27,11 @@ export const VIEW_TYPE = "mappy-map";
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
 
-/** One button per layout, in LAYOUT_MODES order; the Record keeps the list and the buttons in step. */
+/** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
-  mindmap: { label: "マップ", icon: "git-fork" },
-  timeline: { label: "タイムライン", icon: "git-commit-horizontal" },
-  hierarchy: { label: "階層図", icon: "network" },
+  mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
+  timeline: { label: LAYOUT_LABELS.timeline, icon: "git-commit-horizontal" },
+  hierarchy: { label: LAYOUT_LABELS.hierarchy, icon: "network" },
 };
 
 export class MindmapView extends ItemView {
@@ -41,6 +42,7 @@ export class MindmapView extends ItemView {
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
+  private theme: MapTheme = "follow";
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -137,6 +139,17 @@ export class MindmapView extends ItemView {
   getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
   getIcon(): string { return "git-fork"; }
 
+  /**
+   * The settings' theme (M14): Obsidian's own `theme-light` / `theme-dark` class on the map container
+   * only, where styles.css re-derives the palette; `follow` removes both so the container inherits
+   * the app's theme again. Presentation only, nothing is written to the note.
+   */
+  setTheme(theme: MapTheme): void {
+    this.theme = theme;
+    this.contentEl.toggleClass("theme-light", theme === "light");
+    this.contentEl.toggleClass("theme-dark", theme === "dark");
+  }
+
   getState(): Record<string, unknown> {
     return { file: this.file?.path, layout: this.mode, viewport: this.viewport?.value };
   }
@@ -171,6 +184,7 @@ export class MindmapView extends ItemView {
     this.closed = false;
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
+    this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
     for (const mode of LAYOUT_MODES) {
       const { label, icon } = LAYOUT_BUTTONS[mode];
