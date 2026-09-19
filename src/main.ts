@@ -6,6 +6,7 @@ import {
 } from "./obsidian/frontmatter";
 import { canSaveAttachments } from "./obsidian/image-export";
 import { createMindmapFile } from "./obsidian/map-files";
+import { MapSearchModal } from "./obsidian/map-search";
 import { DEFAULT_SETTINGS, normalizeSettings, type MappySettings } from "./obsidian/settings";
 import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
@@ -138,6 +139,19 @@ export default class MappyPlugin extends Plugin {
               this.run(async () => { new Notice(`${(await map.exportImage(format)).path} に書き出しました。`); }, "書き出しに失敗しました。");
             }).open();
           }, "書き出しを始められませんでした。");
+        }
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "call-map", name: "マップを検索して呼び出す",
+      checkCallback: checking => {
+        const map = this.app.workspace.getActiveViewOfType(MindmapView);
+        if (!map?.file) return false;
+        if (!checking) {
+          new MapSearchModal(this.app, map.file, target => {
+            this.run(() => map.callMap(target), "マップを呼び出せませんでした。");
+          }).open();
         }
         return true;
       },

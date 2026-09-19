@@ -1,5 +1,6 @@
 import {
-  applyEdits, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom, type EditCommand, type EditPlan, type TextEdit,
+  applyEdits, assertSingleLine, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom,
+  type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 
@@ -44,11 +45,12 @@ function paragraphGap(before: string, eol: string): string {
   return before.endsWith('\n') ? eol : eol + eol;
 }
 
+/** Text placed at `offset`, separated from what surrounds it; at the very end of a file that ends with a line break, the break is kept. */
 function insertion(source: string, offset: number, body: string, eol: string, paragraph: boolean): { text: string; prefix: string } {
   const before = source.slice(0, offset);
   const after = source.slice(offset);
   const prefix = paragraph ? paragraphGap(before, eol) : before && !before.endsWith('\n') ? eol : '';
-  const suffix = after && !/^[\r\n]/u.test(after) ? (paragraph ? eol + eol : eol) : '';
+  const suffix = after ? (/^[\r\n]/u.test(after) ? '' : paragraph ? eol + eol : eol) : before.endsWith('\n') ? eol : '';
   return { text: prefix + body + suffix, prefix };
 }
 
@@ -76,15 +78,17 @@ function appendOffset(parent: MindNode, omittedId?: string): number {
   return children[children.length - 1]?.to ?? parent.to;
 }
 
-function add(doc: MindDocument, node: MindNode, sibling: boolean): EditPlan {
+/** A new item after the node's last child (or after the node's branch, for a sibling); `title` is its text, empty for the inline editor. */
+function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): EditPlan {
+  assertSingleLine(title);
   const heading = node.kind === 'root' || (sibling && node.kind !== 'list');
   const parent = sibling ? getNode(doc, node.parentId ?? 'root') : node;
   const style = sibling && node.list ? node.list : childStyle(doc, parent);
   const offset = sibling || heading ? node.to : appendOffset(node);
-  const body = heading ? '## ' : `${style.indent}${style.marker} `;
+  const body = `${heading ? '## ' : `${style.indent}${style.marker} `}${title}`;
   const insert = insertion(doc.source, offset, body, doc.eol, heading || (node.kind !== 'list' && node.children.length === 0));
   return validate(doc, [{ from: offset, to: offset, text: insert.text }], doc.nodes.length + 1,
-    offset + insert.prefix.length, { kind: heading ? 'atx' : 'list', level: heading ? 2 : parent.level + 1, title: '' });
+    offset + insert.prefix.length, { kind: heading ? 'atx' : 'list', level: heading ? 2 : parent.level + 1, title: title.trim() });
 }
 
 function indentationWidth(indent: string): number {
@@ -254,7 +258,7 @@ function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: numb
 
 export function planListEdit(doc: MindDocument, node: MindNode, command: StructureCommand): EditPlan {
   switch (command.type) {
-    case 'add-child': return add(doc, node, false);
+    case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true);
     case 'delete': {
       const parent = getNode(doc, node.parentId ?? 'root');

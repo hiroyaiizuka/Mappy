@@ -56,6 +56,7 @@ export function installObsidianDom(): void {
       return element;
     },
     empty() { while (this.lastChild) this.removeChild(this.lastChild); },
+    appendText(value) { this.appendChild(document.createTextNode(value)); },
     detach() { this.parentNode?.removeChild(this); },
     instanceOf<T>(type: new () => T): this is T { return this instanceof type; },
   };

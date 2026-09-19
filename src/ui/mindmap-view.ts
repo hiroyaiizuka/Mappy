@@ -612,11 +612,36 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!document || this.saving) return;
+    // A kept draft (E05) still addresses its node; a structural edit under it would move what the draft comes back to.
+    if (this.inlineEditor) throw new Error("テキストの編集を確定してから、もう一度実行してください。");
     const plan = planEdit(document, command);
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(plan.selectionOffset);
-    if (selected && (command.type === "add-child" || command.type === "add-sibling")) this.editTitle();
+    // A new empty node is named in place; one added with its text (a called map) is only selected.
+    if (selected && ((command.type === "add-child" && command.title === undefined) || command.type === "add-sibling")) this.editTitle();
+  }
+
+  /**
+   * Call another map (§5 M12): `![[map]]` becomes the last child of the selected node, or
+   * of the body root when nothing is selected (a topic's root counts as selected). One
+   * `add-child` edit with the link as its text, so the diff, the history (Undo removes the
+   * item) and the selection are those of Tab. The called map's note is not touched. The
+   * link is always the wiki form the map and the embed display read (`![[…]]`), its path
+   * following the vault's link-path setting (`fileToLinktext`: shortest, relative or absolute).
+   */
+  async callMap(target: TFile): Promise<void> {
+    const file = this.file;
+    if (!file || !this.document) return;
+    if (target.path === file.path) throw new Error("このマップ自身は呼び出せません。");
+    // Tab stays quiet while a save is in flight; a chosen map must not vanish without a word.
+    if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
+    const parent = this.selected() ?? this.projection()?.root;
+    if (!parent) return;
+    // Under the virtual root (a note without a heading section) add-child makes an H2 whose title would be the embed: not an item.
+    if (parent.kind === "root") throw new Error("本体のルートがないノートです。先に H2 の見出しを作ってから呼び出してください。");
+    const link = `![[${this.app.metadataCache.fileToLinktext(target, file.path, true)}]]`;
+    await this.execute({ type: "add-child", nodeId: parent.id, title: link });
   }
 
   /** Select the node a plan points at, unfolding its parent, after the document was re-read. */
