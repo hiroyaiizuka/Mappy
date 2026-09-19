@@ -187,6 +187,31 @@ describe('source-preserving list commands', () => {
       expect(remove('## R\n- A\n  - X\n\n- B\n', 'X')).toBe('## R\n- A\n\n- B\n');
     });
 
+    // Code review of PR #39: the blank after a tight first item was its seam to the next sibling, not the parent's.
+    it('takes the seam to the next sibling with a tight first item, and leaves a blank that belongs to the parent', () => {
+      expect(remove('## R\n- A\n  - X\n\n  - Y\n- B\n', 'X')).toBe('## R\n- A\n  - Y\n- B\n');
+      expect(remove('## R\n- A\n- X\n\n- B\n- C\n', 'X')).toBe('## R\n- A\n- B\n- C\n');
+      const kept = parse('## R\n- A\n  - X\n\n  text of A\n');
+      const result = execute(kept, { type: 'delete', nodeId: find(kept, 'X').id });
+      expect(result.source).toBe('## R\n- A\n\n  text of A\n');
+      expect(find(result, 'A').children).toEqual([]);
+      const detached = parse('## R\n- A\n  - X\n\n  - Y\n- B\n');
+      expect(execute(detached, { type: 'detach', nodeId: find(detached, 'X').id }).source).toBe('## R\n- A\n  - Y\n- B\n\n## X\n');
+    });
+
+    it('treats a whitespace-only line as blank and an unclosed fence at EOF as the item\'s end', () => {
+      expect(remove('## R\n\n- A\n  \n- X', 'X')).toBe('## R\n\n- A');
+      expect(remove('## R\n\n- A\n\n- X\n  ```\n  code\n', 'X')).toBe('## R\n\n- A\n');
+    });
+
+    it('keeps the break as a blank line when the lines around the item would join into another block', () => {
+      // `Intro` + `---` would be a Setext heading; the delete still succeeds, as it did before the line break was taken.
+      const doc = parse('## R\nIntro\n- X\n---\n');
+      const result = execute(doc, { type: 'delete', nodeId: find(doc, 'X').id });
+      expect(result.source).toBe('## R\nIntro\n\n---\n');
+      expect(result.nodes.map(node => node.title)).toEqual(['R']);
+    });
+
     it('selects the parent and keeps its descendants count, so a following outside item is untouched', () => {
       const doc = parse('## R\n- A\n  - X\n    - deep\n  - Y\n- B\n');
       const plan = planEdit(doc, { type: 'delete', nodeId: find(doc, 'X').id });

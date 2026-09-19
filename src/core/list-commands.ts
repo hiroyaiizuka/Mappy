@@ -140,12 +140,6 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
     { kind: node.kind, level: neighbor.level, title: node.title });
 }
 
-function removalFrom(doc: MindDocument, node: MindNode): number {
-  if (node.to !== doc.source.length || doc.source.endsWith('\n')) return node.from;
-  const separator = /(?:\r?\n)+$/u.exec(doc.source.slice(0, node.from))?.[0].length ?? 0;
-  return node.from - separator;
-}
-
 /** End of the nearest non-blank line before `offset` (a line start), without its line break. */
 function lineEndBefore(source: string, offset: number): number {
   let end = offset;
@@ -160,20 +154,31 @@ function lineEndBefore(source: string, offset: number): number {
   return 0;
 }
 
+/** The child of the node's parent that follows it in source order. */
+function nextSibling(doc: MindDocument, node: MindNode): MindNode | undefined {
+  const siblings = getNode(doc, node.parentId ?? 'root').children;
+  return siblings[siblings.findIndex(child => child.id === node.id) + 1];
+}
+
 /**
- * The item's own lines, including the line break that ends them. A loose list keeps a single
- * blank line at the seam, and an item at EOF takes the preceding break instead so the file ending is unchanged.
+ * The item's own lines, including the line break that ends them. A blank line after the item goes
+ * with it when it was the seam to the next sibling, or when a blank precedes the item too, so a loose
+ * list keeps a single blank at each seam. An item at EOF takes the preceding break instead, so the
+ * file ending is unchanged: one break when the file ends with one, every break (blank lines included)
+ * when it does not.
  */
 function removalRange(doc: MindDocument, node: MindNode): { from: number; to: number } {
   const source = doc.source;
-  if (node.to >= source.length) return { from: removalFrom(doc, node), to: node.to };
+  const before = source.slice(0, node.from);
+  if (node.to >= source.length && !source.endsWith('\n')) {
+    return { from: node.from - (/(?:[ \t]*\r?\n)+$/u.exec(before)?.[0].length ?? 0), to: node.to };
+  }
   let from = node.from;
-  let to = node.to + (source.startsWith('\r\n', node.to) ? 2 : source.charAt(node.to) === '\n' ? 1 : 0);
-  const before = source.slice(0, from);
+  let to = Math.min(source.length, node.to + (source.startsWith('\r\n', node.to) ? 2 : source.charAt(node.to) === '\n' ? 1 : 0));
   const blankBefore = from === 0 || /\n[ \t]*\r?\n$/u.test(before);
-  const blankAfter = source.slice(to).match(/^[ \t]*\r?\n/u);
-  if (blankBefore && blankAfter) to += blankAfter[0].length;
-  else if (blankBefore && to === source.length && from > 0) from -= before.match(/[ \t]*\r?\n$/u)?.[0].length ?? 0;
+  const blankAfter = /^[ \t]*\r?\n/u.exec(source.slice(to));
+  if (blankAfter && (blankBefore || nextSibling(doc, node)?.from === to + blankAfter[0].length)) to += blankAfter[0].length;
+  else if (blankBefore && to === source.length && from > 0) from -= /[ \t]*\r?\n$/u.exec(before)?.[0].length ?? 0;
   return { from, to };
 }
 
@@ -262,9 +267,16 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'add-sibling': return add(doc, node, true);
     case 'delete': {
       const parent = getNode(doc, node.parentId ?? 'root');
-      // An item leaves with its line break, as it does when moved; a section keeps `sectionRemovalFrom`'s EOF handling.
-      const removal = node.kind === 'list' ? removalRange(doc, node) : { from: sectionRemovalFrom(doc, node), to: node.to };
-      return validate(doc, [{ ...removal, text: '' }], doc.nodes.length - branchSize(node), parent.kind === 'root' ? null : parent.from);
+      const count = doc.nodes.length - branchSize(node);
+      const selected = parent.kind === 'root' ? null : parent.from;
+      if (node.kind !== 'list') return validate(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }], count, selected);
+      try {
+        // An item leaves with its line break, as it does when moved.
+        return validate(doc, [{ ...removalRange(doc, node), text: '' }], count, selected);
+      } catch {
+        // The lines around the item would join into another block (`Intro` + `---` is a Setext heading): keep the break, as a blank line.
+        return validate(doc, [{ from: node.from, to: node.to, text: '' }], count, selected);
+      }
     }
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
