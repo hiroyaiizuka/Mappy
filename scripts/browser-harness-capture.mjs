@@ -16,7 +16,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
-import { CdpClosedError, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { CdpClosedError, Page, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
@@ -33,7 +33,7 @@ const worldPoint = (view, point, canvas) => ({
 });
 
 /** Runs the scenario list, recording PASS/FAIL without stopping on the first failure. */
-class Recorder {
+export class Recorder {
   constructor(page, directory) { this.page = page; this.directory = directory; this.cases = []; this.index = 0; }
 
   async run(id, operation, expectation, body) {
@@ -429,8 +429,8 @@ async function captureOperations(recorder, page) {
     return `${compared} ブロックの位置がマップと一致（許容 1.5px）、左側 ${left} ブロック、線 ${scene.lines.length} 本すべて直角`;
   });
 
-  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('timeline-back', '左下の「通常マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy, .mappy-node.is-balanced').length`);
@@ -610,8 +610,8 @@ async function captureHierarchyRows(recorder, page) {
   });
 
   // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
-  await recorder.run('hierarchy-rows-back', '左下の「マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     expect(button, 'map button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
@@ -619,6 +619,107 @@ async function captureHierarchyRows(recorder, page) {
     expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
     const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
     expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+  });
+}
+
+/** Computed colours that tell the two placeholder palettes apart: the page, the map canvas, one node and one link. */
+async function themeColors(page) {
+  return page.evaluate(`(() => {
+    const color = (element, property) => element ? getComputedStyle(element)[property] : null;
+    const pane = document.getElementById('harness-pane');
+    const node = pane.querySelector('.mappy-node:not(.is-root)');
+    return {
+      page: color(document.body, 'backgroundColor'),
+      canvas: color(pane.querySelector('.mappy-canvas'), 'backgroundColor'),
+      text: color(node, 'color'),
+      link: color(pane.querySelector('.mappy-node a.internal-link'), 'color'),
+      scheme: color(pane.querySelector('.mappy-view'), 'colorScheme'),
+    };
+  })()`);
+}
+
+/** The harness palettes (harness.css, stand-ins laid out like app.css): what each theme should resolve to. */
+const PALETTE = {
+  light: { background: 'rgb(255, 255, 255)', page: 'rgb(246, 246, 246)', text: 'rgb(34, 34, 34)' },
+  dark: { background: 'rgb(30, 30, 30)', page: 'rgb(38, 38, 38)', text: 'rgb(218, 218, 218)' },
+};
+
+/**
+ * M14 (LEV-60): the settings' theme puts `theme-light` / `theme-dark` on the map container only,
+ * and styles.css re-derives the palette there. Each combination of page theme and map theme is
+ * checked by computed colour, then left as it was (page light, map following the page).
+ */
+async function captureThemes(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  let lightLink = null;
+  await recorder.run('theme-follow-light', 'ページ明色、マップ「Obsidian に従う」（既定）', 'コンテナに theme class がなく、キャンバスはページと同じ明色の配色', async () => {
+    await page.harness('h.setPageTheme("light")');
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.length === 0, `container carries ${themes.container.join(' ')}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.light.background && colors.text === PALETTE.light.text, `canvas ${colors.canvas}, text ${colors.text}`);
+    expect(colors.link, 'no internal link rendered in a node');
+    lightLink = colors.link;
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, color-scheme ${colors.scheme}`;
+  });
+
+  await recorder.run('theme-dark-on-light', 'ページ明色のまま、マップ「暗色」→「閉じて開き直す」', 'コンテナだけが theme-dark。キャンバス・文字・リンクが暗色の配色になり、ページの背景は明色のまま。開き直しても保たれる', async () => {
+    await page.harness('h.setMapTheme("dark")');
+    await page.settle();
+    let themes = await page.harness('h.themes()');
+    expect(themes.container.join(' ') === 'theme-dark' && themes.page === 'light', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    let colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.dark.background, `canvas ${colors.canvas}`);
+    expect(colors.text === PALETTE.dark.text, `text ${colors.text}`);
+    expect(colors.page === PALETTE.light.page, `page background ${colors.page}`);
+    expect(colors.link && colors.link !== lightLink, `link ${colors.link} did not change from ${lightLink}`);
+    expect(colors.scheme === 'dark', `color-scheme ${colors.scheme}`);
+    const darkLink = colors.link;
+    await page.harness('h.reopen()');
+    await page.settle();
+    themes = await page.harness('h.themes()');
+    colors = await themeColors(page);
+    expect(themes.container.join(' ') === 'theme-dark' && colors.canvas === PALETTE.dark.background, `after reopen: ${themes.container.join(' ')}, canvas ${colors.canvas}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${darkLink}（明色時 ${lightLink}）, page ${colors.page}, color-scheme ${colors.scheme}, 開き直し後も theme-dark`;
+  });
+
+  await recorder.run('theme-light-on-dark', 'ページ暗色、マップ「明色」', 'コンテナだけが theme-light。キャンバス・文字が明色の配色になり、ページの背景は暗色', async () => {
+    await page.harness('h.setPageTheme("dark")');
+    await page.harness('h.setMapTheme("light")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.join(' ') === 'theme-light' && themes.page === 'dark', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.light.background, `canvas ${colors.canvas}`);
+    expect(colors.text === PALETTE.light.text, `text ${colors.text}`);
+    expect(colors.page === PALETTE.dark.page, `page background ${colors.page}`);
+    expect(colors.link === lightLink, `link ${colors.link} differs from the light page's ${lightLink}`);
+    expect(colors.scheme === 'light', `color-scheme ${colors.scheme}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, page ${colors.page}, color-scheme ${colors.scheme}`;
+  });
+
+  await recorder.run('theme-follow-dark', 'ページ暗色のまま、マップ「Obsidian に従う」', 'theme class が外れ、キャンバスがページと同じ暗色に戻る', async () => {
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.length === 0, `container carries ${themes.container.join(' ')}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.dark.background && colors.text === PALETTE.dark.text, `canvas ${colors.canvas}, text ${colors.text}`);
+    expect(colors.page === PALETTE.dark.page, `page background ${colors.page}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, page ${colors.page}`;
+  });
+
+  // Runs even when a case above failed, so the later cases see the page as they always did.
+  await recorder.run('theme-back', 'ページ明色、マップ「Obsidian に従う」に戻す', '最初の状態（明色、theme class なし）に戻る', async () => {
+    await page.harness('h.setPageTheme("light")');
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    const colors = await themeColors(page);
+    expect(themes.container.length === 0 && themes.page === 'light', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    expect(colors.canvas === PALETTE.light.background && colors.page === PALETTE.light.page, `canvas ${colors.canvas}, page ${colors.page}`);
   });
 }
 
@@ -1011,6 +1112,161 @@ async function captureTopicOperations(recorder, page) {
   });
 }
 
+/** Width and height from a PNG's IHDR chunk. */
+function pngSize(buffer) {
+  expect(buffer.length > 24 && buffer.toString('latin1', 1, 4) === 'PNG', 'not a PNG');
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+/** Parse an exported SVG inside the page and report what it holds; the counts come from the file, not from the exporter. */
+async function svgFacts(page, svg) {
+  return page.evaluate(`(() => {
+    const parsed = new DOMParser().parseFromString(${JSON.stringify(svg)}, 'image/svg+xml');
+    const error = parsed.querySelector('parsererror');
+    if (error) return { error: error.textContent };
+    const images = Array.from(parsed.querySelectorAll('img'));
+    const root = parsed.documentElement;
+    return {
+      className: root.getAttribute('class'), width: Number(root.getAttribute('width')), height: Number(root.getAttribute('height')),
+      viewBox: root.getAttribute('viewBox'), objects: parsed.querySelectorAll('foreignObject').length, paths: parsed.querySelectorAll('.mappy-edges path').length,
+      badges: Array.from(parsed.querySelectorAll('.mappy-fold text'), text => text.textContent), images: images.length,
+      dataImages: images.filter(image => (image.getAttribute('src') ?? '').startsWith('data:')).length,
+      missing: parsed.querySelectorAll('.mappy-export-missing-image').length,
+      labels: Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent.trim()),
+      background: parsed.querySelector('.mappy-export-background')?.getAttribute('fill'),
+    };
+  })()`);
+}
+
+/**
+ * Open the written SVG in a second tab of the same Chrome and read back where its
+ * nodes render: at scale 1 a foreignObject sits at its layout coordinates, so the
+ * placement in the file equals the map view's (the view only pans and scales them).
+ */
+async function renderSvgFile(page, file, screenshot, expectedNodes) {
+  const cdp = page.cdp;
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  try {
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    const tab = new Page(cdp, sessionId);
+    await tab.send('Page.enable');
+    await tab.send('Runtime.enable');
+    await tab.send('Emulation.setDeviceMetricsOverride', { ...WINDOW, deviceScaleFactor: 1, mobile: false });
+    await tab.send('Page.navigate', { url: pathToFileURL(file).href });
+    const deadline = Date.now() + 15000;
+    while ((await tab.evaluate(`document.readyState`)) !== 'complete') {
+      if (Date.now() > deadline) throw new Error('The SVG tab did not finish loading.');
+      await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
+    }
+    // Let the data URL images decode before the screenshot.
+    await new Promise(resolveWait => { setTimeout(resolveWait, 500); });
+    const rendered = await tab.evaluate(`(() => {
+      const svg = document.documentElement;
+      const box = svg.viewBox.baseVal;
+      const origin = svg.getBoundingClientRect();
+      const objects = Array.from(document.querySelectorAll('foreignObject'));
+      const scale = origin.width / box.width;
+      return {
+        tag: svg.tagName, objects: objects.length, scale,
+        placed: objects.slice(0, 200).map(object => {
+          const rect = object.getBoundingClientRect();
+          return { id: object.getAttribute('data-node-id'), x: (rect.x - origin.x) / scale + box.x, y: (rect.y - origin.y) / scale + box.y,
+            declaredX: Number(object.getAttribute('x')), declaredY: Number(object.getAttribute('y')), text: object.textContent.trim().slice(0, 40) };
+        }),
+        images: Array.from(document.querySelectorAll('img')).map(image => ({ complete: image.complete, natural: image.naturalWidth })),
+      };
+    })()`);
+    expect(rendered.tag === 'svg', `document root is ${rendered.tag}`);
+    expect(rendered.objects === expectedNodes, `${rendered.objects} foreignObjects rendered, expected ${expectedNodes}`);
+    const drifted = rendered.placed.filter(item => Math.abs(item.x - item.declaredX) > 1 || Math.abs(item.y - item.declaredY) > 1);
+    expect(drifted.length === 0, `${drifted.length} nodes render away from their declared position: ${JSON.stringify(drifted.slice(0, 3))}`);
+    const empty = rendered.placed.filter(item => !item.text);
+    expect(empty.length === 0, `${empty.length} rendered nodes have no text`);
+    const broken = rendered.images.filter(image => !image.complete || image.natural === 0);
+    expect(broken.length === 0, `${broken.length} of ${rendered.images.length} images did not decode from their data URL`);
+    const { data } = await tab.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile(screenshot, Buffer.from(data, 'base64'));
+    return rendered;
+  } finally {
+    await cdp.send('Target.closeTarget', { targetId });
+  }
+}
+
+/**
+ * M13 (LEV-59): the SVG and PNG the export command would save, produced by the same
+ * capture on this page and written next to the record. The SVG is opened in Chrome
+ * to confirm foreignObject nodes and data URL images render; the PNG is checked by size.
+ */
+export async function captureExport(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  const title = '多数の兄弟';
+  const node = await nodeInfo(page, title);
+  expect(node.toggle, 'fold control missing');
+  await page.click(center(node.toggle).x, center(node.toggle).y);
+  await page.settle();
+  const shown = (await page.harness('h.nodes()')).length;
+  const original = await page.harness('h.source()');
+  const svgFile = join(recorder.directory, 'export-uneven-branches.svg');
+
+  await recorder.run('export-svg', `uneven-branches で「${title}」を閉じ、h.export.svg() で SVG を書き出す`, 'foreignObject の数が表示ノード数、線の数がノード数 − 1、閉じた枝のバッジ 24、画像はすべて data URL、欠落画像のノードも残る', async () => {
+    const exported = await page.harness('h.export.svg()');
+    await writeFile(svgFile, exported.svg);
+    const facts = await svgFacts(page, exported.svg);
+    expect(!facts.error, `SVG is not well formed: ${facts.error}`);
+    expect(facts.objects === shown, `${facts.objects} foreignObjects for ${shown} visible nodes`);
+    expect(facts.paths === shown - 1, `${facts.paths} paths for ${shown} nodes`);
+    expect(facts.badges.length === 1 && facts.badges[0] === '24', `badges: ${JSON.stringify(facts.badges)}`);
+    expect(facts.images > 0 && facts.dataImages === facts.images, `${facts.dataImages} of ${facts.images} images are data URLs`);
+    expect(facts.missing === 0, `${facts.missing} placeholders for unreadable images`);
+    expect(facts.labels.includes('画像の欠落') && facts.labels.includes('リンクと画像'), 'nodes with a missing image or links are absent');
+    expect(facts.className === 'mappy-export theme-light', `class: ${facts.className}`);
+    expect(facts.width === exported.width && facts.height === exported.height, `size ${facts.width}×${facts.height}`);
+    expect((await page.harness('h.source()')) === original, 'the note changed during the export');
+    return `${facts.objects} ノード、線 ${facts.paths}、画像 ${facts.dataImages}/${facts.images} を data URL 化、${exported.width}×${exported.height}、${(exported.svg.length / 1024).toFixed(0)} KB、${exported.ms.toFixed(0)} ms → ${relative(root, svgFile)}`;
+  });
+
+  await recorder.run('export-svg-render', '書き出した SVG を Chrome の別タブで開く', 'foreignObject のノードが宣言した座標に描かれ、文字と data URL の画像が見える', async () => {
+    const rendered = await renderSvgFile(page, svgFile, join(recorder.directory, 'export-uneven-branches-rendered.png'), shown);
+    return `${rendered.objects} ノードを描画、画像 ${rendered.images.length} 枚が復号、位置のずれ 1 px 未満 → export-uneven-branches-rendered.png`;
+  });
+
+  await recorder.run('export-png', 'h.export.png() で同じ SVG をラスタ化', 'PNG の寸法が SVG のサイズ × scale に一致する', async () => {
+    const exported = await page.harness('h.export.png()');
+    const buffer = Buffer.from(exported.dataUrl.split(',')[1] ?? '', 'base64');
+    const file = join(recorder.directory, 'export-uneven-branches.png');
+    await writeFile(file, buffer);
+    const size = pngSize(buffer);
+    expect(size.width === exported.width && size.height === exported.height, `PNG is ${size.width}×${size.height}, expected ${exported.width}×${exported.height}`);
+    expect(exported.scale === 2, `scale ${exported.scale}`);
+    return `${size.width}×${size.height} px（scale ${exported.scale}）、${(buffer.length / 1024).toFixed(0)} KB、SVG ${exported.svgMs.toFixed(0)} ms + ラスタ化 ${exported.ms.toFixed(0)} ms → ${relative(root, file)}`;
+  });
+
+  // Leave the fixture as it was loaded.
+  const collapsed = await nodeInfo(page, title);
+  if (collapsed.collapsed && collapsed.toggle) {
+    await page.click(center(collapsed.toggle).x, center(collapsed.toggle).y);
+    await page.settle();
+  }
+
+  await recorder.run('export-2000', 'performance-2000-links で SVG と PNG を書き出す', '2,000 ノードで完了する。PNG はピクセル上限に収まるよう縮小される', async () => {
+    await loadFixture(page, 'performance-2000-links');
+    const count = (await page.harness('h.nodes()')).length;
+    const svg = await page.harness('h.export.svg()');
+    const facts = await svgFacts(page, svg.svg);
+    expect(!facts.error, `SVG is not well formed: ${facts.error}`);
+    expect(facts.objects === count && facts.paths === count - 1, `${facts.objects} objects / ${facts.paths} paths for ${count} nodes`);
+    expect(facts.dataImages === facts.images && facts.images === Math.floor((count - 1) / 5), `${facts.dataImages}/${facts.images} images`);
+    await writeFile(join(recorder.directory, 'export-performance-2000-links.svg'), svg.svg);
+    const png = await page.harness('h.export.png()');
+    const buffer = Buffer.from(png.dataUrl.split(',')[1] ?? '', 'base64');
+    const size = pngSize(buffer);
+    expect(size.width === png.width && size.height === png.height, `PNG is ${size.width}×${size.height}`);
+    expect(size.width * size.height <= 8192 * 8192 + 1, `PNG area ${size.width * size.height} exceeds the desktop cap`);
+    await writeFile(join(recorder.directory, 'export-performance-2000-links.png'), buffer);
+    return `${count} ノード: SVG ${(svg.svg.length / 1024).toFixed(0)} KB を ${svg.ms.toFixed(0)} ms、PNG ${size.width}×${size.height}（scale ${png.scale.toFixed(3)}、${(buffer.length / 1024).toFixed(0)} KB）を ${png.ms.toFixed(0)} ms`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -1020,7 +1276,7 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- ブラウザ: ${version} (${chrome})`,
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
-    '- 対象外: 保存、リンク解決、テーマ、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
+    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
     '- 描画時間は「時刻の記録」の生値（1 回分）。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。繰り返し計測と p50／p95 は `node scripts/browser-harness-perf.mjs` の記録（`artifacts/performance/`）で扱う。',
     '',
     '## fixture と主要操作',
@@ -1081,7 +1337,9 @@ async function main() {
       await captureFixtures(recorder, page, timings);
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
+      await captureThemes(recorder, page);
       await captureTopicOperations(recorder, page);
+      await captureExport(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
   } catch (error) {

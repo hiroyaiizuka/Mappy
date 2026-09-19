@@ -34,8 +34,12 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/interaction/viewport.ts` | パン・ズーム・Fit の座標計算 | 純粋 TypeScript |
 | `src/core/attachments.ts` / `plain-text.ts` | 本文からのリンク・画像抽出、タイトルの平文化 | `@lezer/markdown` |
 | `src/export/excalidraw-scene.ts` / `src/layout/path-points.ts` | tree＋計測 → 描画 API 非依存のシーン（ブロック・折れ線） | 純粋 TypeScript |
+| `src/export/svg-document.ts` | SVG 書き出しのシーン（ノードの XHTML・線のパス・バッジ・色）→ SVG 文字列、viewBox と余白、PNG の縮尺、スタイルの重複除去 | 純粋 TypeScript |
+| `src/export/svg-capture.ts` | 配置済みのノード要素と `LayoutResult` → シーン。算出スタイルの白名簿を直列化し、画像は差し込まれた resolver で data URL に。SVG → canvas → PNG | DOM（Obsidian の global `createEl` で作業用要素） |
+| `src/obsidian/image-export.ts` | Vault の画像を data URL に読む resolver、添付設定の保存先への `create`／`createBinary`、モバイルのピクセル上限 | Vault、metadataCache、FileManager、`requestUrl`、`Platform` |
 | `src/obsidian/document-store.ts` | Editor/Vault の一本化、原文照合、キュー、履歴 | Obsidian の公開 API |
 | `src/obsidian/frontmatter.ts` / `map-files.ts` | `mappy: true` の識別、初期レイアウト、新規マップ作成 | metadataCache、FileManager、Vault |
+| `src/obsidian/settings.ts` / `settings-tab.ts` | 設定の型・既定値・欠損／旧形式の正規化と、`PluginSettingTab`（`display()` と 1.13 以降の `getSettingDefinitions`）。保存は `main.ts` の `loadData`／`saveData` | Obsidian の Setting UI |
 | `src/obsidian/view-routing.ts` / `patch.ts` | frontmatter を持つノートを map view へ導く `setViewState` の差し替え | WorkspaceLeaf.prototype |
 | `src/obsidian/excalidraw-bridge.ts` / `src/types/excalidraw-automate.ts` | Excalidraw の `ExcalidrawAutomate` へのドロップフック連結と要素生成 | `window.ExcalidrawAutomate`（任意） |
 | `src/ui/mindmap-view.ts` | ファイル・表示状態、描画更新、編集経路の接続 | Obsidian ItemView |
@@ -69,7 +73,7 @@ mappy: true
     この本文もノードと一緒に保持する。
 ```
 
-`mappy: true` はマップの必須識別子である。文字列 `"true"`、`false`、`mappy-layout` だけのノートは対象にしない。`mappy-layout` は任意の初期表示設定で、`timeline` ならタイムライン、`hierarchy` なら階層図、`balanced` なら左右バランス、それ以外と省略時は通常マップにする（値の一覧は `src/core/layout-mode.ts` の `LAYOUT_MODES` が唯一の定義で、frontmatter・view state・レイアウトボタン（`Record<LayoutMode, …>` で網羅を型検査）・Excalidraw 挿入はすべてそれを使う。`layout.ts` からも再 export する）。新規作成・マインドマップ化・解除と、レイアウトボタンによる明示選択だけが frontmatter を書く。タイムライン・階層図・左右バランスの選択は `mappy-layout` にその値を保存し、通常マップ選択はキーを削除する。閲覧・折りたたみ・ズーム・Excalidraw への挿入では書かない。旧 `mappy-layout` 単独ノートは自動で取得せず、明示的なマインドマップ化で旧レイアウトを引き継いで `mappy: true` を追加する。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
+`mappy: true` はマップの必須識別子である。文字列 `"true"`、`false`、`mappy-layout` だけのノートは対象にしない。`mappy-layout` は任意の初期表示設定で、`timeline` ならタイムライン、`hierarchy` なら階層図、`balanced` なら左右バランス、それ以外と省略時は通常マップにする（値の一覧は `src/core/layout-mode.ts` の `LAYOUT_MODES` が唯一の定義で、frontmatter・view state・レイアウトボタン（`Record<LayoutMode, …>` で網羅を型検査）・Excalidraw 挿入はすべてそれを使う。`layout.ts` からも再 export する）。新規作成・マインドマップ化・解除と、レイアウトボタンによる明示選択だけが frontmatter を書く。タイムライン・階層図・左右バランスの選択は `mappy-layout` にその値を保存し、通常マップ選択はキーを削除する。閲覧・折りたたみ・ズーム・Excalidraw への挿入では書かない。旧 `mappy-layout` 単独ノートは自動で取得せず、明示的なマインドマップ化で旧レイアウトを引き継いで `mappy: true` を追加する。新規作成と、`mappy-layout` を持たないノートのマインドマップ化が書く値は設定「新規マップの既定レイアウト」（M14、既定は通常マップ＝キーなし）で、既存ノートの読み取り（`readMapLayout`）は設定を見ない。ファイル・レイアウト・viewport は各 leaf の view state で扱い、選択と折りたたみはビュー内の一時状態として保持する。
 
 - ATX 見出し、Setext、frontmatter、フェンス、空行、CRLF、末尾改行、引用、コメントを fixture で扱う。初期に編集未対応の構文は表示または source 編集へ誘導し、推測で変更しない。
 - 不明な記法は原文の範囲として保存する。本文を AST 全体から再生成しない。
@@ -200,6 +204,25 @@ Excalidraw プラグインが有効なら、`window.ExcalidrawAutomate` の公�
 要素の対応は map view の見た目に合わせる: 表示ルートは塗り矩形＋白文字、第一階層は枠付き矩形、下位は平文。線は `layoutTree` の `M/H/V` パスを折れ線にし、`![[画像]]` はラベル下に 240×140 以内で並べ、タイトル・本文の最初のリンクを要素の `link` に、ルートには元ノートへの `link` を付ける。1 回の挿入を 1 グループにする。サイズは DOM ではなく Excalidraw 自身の計測に従う: 全要素を原点に作成 → 実寸を読む → `buildScene` で配置 → 座標を書き戻す。フォントは図面の `currentItemFontFamily` を使う。挿入後の図面と元ノートは同期しない。
 
 対話フレーム内では Excalidraw が `--text-normal` を空にするため、線の色は `--mappy-line: currentColor` にしている。`var()` が空文字を展開すると `stroke` は無効値になり、`border` の省略形だけが生き残る。
+
+## 9b. 設定（M14）
+
+設定は `loadData`／`saveData` の 1 オブジェクト（`theme`・`defaultLayout`・`newMapFolder`）で、項目ごとの読み取り（`readSettingField`）を `normalizeSettings`（欠損・旧形式・不正値を項目ごとに既定値へ戻す）と設定タブの `setControlValue` が共有し、タブが受け付ける値と再読込で残る値を一致させる。既定値はどれも設定が無かったときの動作（テーマは Obsidian に追従、レイアウトは通常マップでキーなし、作成先は `FileManager.getNewFileParent`）である。設定タブは `PluginSettingTab` で、`display()`（1.8.7〜）と `getSettingDefinitions`／`getControlValue`／`setControlValue`（1.13 以降。宣言的設定で、Obsidian の設定検索にも出る。`obsidian` の型は 1.8.7 に固定しているので使う部分集合だけを `MapSettingDefinition` として写す）を同じ 3 項目の定義から出す。型が 1.13 の基底を知らないため、`update`・`settingItems`・`hide` など `SettingTab` の名前をこのクラスの他のメンバーに使わない（`addSettingTab` が `update()` を呼んで `settingItems` を埋めるので、同名の private メソッドがあると宣言的経路が黙って死ぬ。ブラウザ検証ページのモックがこの流れを持ち、jsdom で固定する）。レイアウト名は `src/core/layout-mode.ts` の `LAYOUT_LABELS` が唯一の定義で、レイアウトボタンと設定のドロップダウンが共有する。保存はプラグインだけが行い、タブはノートにも Vault にも触れない。
+
+テーマは `MindmapView.setTheme()` が map view のコンテナ（`.mappy-view`）にだけ Obsidian の `theme-light`／`theme-dark` class を付け外しする。Obsidian の app.css は素の配色（`--color-base-*`・`--mono-rgb-*`・`--color-<名前>`・`--shadow-s`・`color-scheme`）を `.theme-light`／`.theme-dark` に、意味変数（`--background-primary`・`--text-normal`・`--link-color`…）をそこから導く形で `body` に置くため、コンテナに class を付けるだけでは意味変数が body の計算済みの値のまま継承される。そこで styles.css の `:where(.mappy-view.theme-light, .mappy-view.theme-dark)` が、マップとノード内の描画済み Markdown が読む意味変数を app.css と同じ対応で導き直す（1.6.7 と 1.14.2 で照合）。`:where()` で詳細度を 0 にしてあるので、コミュニティテーマが `.theme-dark { --background-primary: … }` と書けばそれが勝つ。「Obsidian に従う」は class を外すだけで、設定が無かったときと同じ継承になる。埋め込み表示（M10）と Excalidraw 挿入はこの class を付けないので Obsidian のテーマに従う。限界: 変数ではなく body の class で分岐する子孫規則（コミュニティテーマの `.theme-dark .markdown-rendered code { … }` のような形）は、body が暗色ならコンテナが明色でも一致する。Obsidian 本体の app.css（1.14.2）にはノード内に届くこの形の規則がないが、コミュニティテーマでは起こり得るので LEV-62 の目視項目にする。
+
+作成先フォルダは空欄で Obsidian の「新規ノートの作成場所」、`/` で最上位、それ以外は `normalizePath` した相対パス。`normalizePath` はスラッシュを整えるだけ（app.js 1.14.2 で確認）なので、`.`・`..`・`.` で始まる名前（Vault が索引しないフォルダ）はここで拒否する。大文字小文字だけが違う既存フォルダは再利用し（ファイルシステムは通常区別しない）、同名のファイルがあれば作らずにエラー、存在しなければ `Vault.createFolder`（結果が空ならエラー）。上書きはしない。
+
+## 9c. SVG／PNG 書き出し
+
+Excalidraw 挿入と並ぶ、外へ持ち出す経路（§5 M13）。図面 API を持たないので、map view が画面に置いたものをそのまま文書にする。
+
+- **入力は view の最終配置**: `MindmapView.exportSource()` は、最後の配置フレームで使った `LayoutResult`、`NodeRenderer.entries` の複製、canvas、線の `<svg>` を渡す。debounce 中の refresh があれば先に実行し、配置フレームが予約中なら 1 フレーム（隠れたウィンドウでは 100 ms）待ち、インライン編集中・ドラッグ中は拒否する。配置し直さないので、線の `d`・ノードの座標・折りたたみは画面と一致する。MarkdownRenderer の描画途中は待てない（renderer は完了を次のフレームの予約でしか知らせない。`node-renderer.ts` に手を入れる別チケット）。
+- **ノードは `foreignObject` の XHTML**: `svg-capture.ts` が要素を歩き、状態クラス（`is-selected` など）、開閉ボタン、`tabindex`／ARIA／インライン style を落として直列化する。DOM は最初の `await` の前に一度で読み切り（画像は印を置いて後から差し込む）、途中で refresh が来てもノードが欠けない。XML に書けない制御文字・孤立サロゲートは落とし、宣言していない接頭辞の属性（`foo:bar`）は捨て、`xlink:` はルートで宣言する。書き出す前に `DOMParser` で整形式を確かめる。見た目は Obsidian のスタイルシートに頼らず、`getComputedStyle` の白名簿（余白・枠・角丸・背景・文字・折り返し・flex）を宣言列ごとに 1 クラスにまとめ、`<style>` に置く（2,000 ノードでも数十クラス）。ノードのルートには配置時の幅と高さを書き、`foreignObject` は `overflow="visible"` にして、フォントが違う環境で 1 行増えても文字が切れないようにする。閉じた枝の件数は、枠からはみ出すので `foreignObject` の外に SVG の丸と文字で描く（`LayoutResult.folds` と `foldBadgeWidth`）。
+- **画像は data URL**: resolver は差し込み。Obsidian 側（`image-export.ts`）は `.internal-embed[src]` の link target（`core/wiki-link.ts` の `wikiLinkPath`）を `metadataCache` で解決し、`core/attachments.ts` の画像拡張子表にあれば `vault.readBinary`、Markdown 形式の画像は属性に残った書かれたパスで同じことを試み、`http(s)` だけ `requestUrl` で取る（15 秒で諦め、`image/*` 以外は受け付けない）。読めなければ null を返し、`<img>` は同じ大きさの `<span>`（代替テキスト）になる。ノードは残る。
+- **テーマ**: body の `theme-dark` でクラスと既定色を決め、背景は canvas の算出 `background-color`、線は最初の path の算出 `stroke`（`currentcolor` なら `color`）。
+- **PNG**: 同じ SVG を `data:image/svg+xml` の `<img>` に読み込み、canvas に `scale` 倍で描いて `toBlob`。blob URL は `file://` のような不透明オリジンで canvas を汚染するため使わない。WebKit（iOS の Obsidian）は `foreignObject` を含む SVG 画像で canvas を汚染するので、コマンド実行時に 1 ピクセルの SVG で一度だけ読み戻しを試し（`canRasterizeForeignObject`）、できなければモーダルの PNG を無効にする。それでも `SecurityError` が出れば「この環境では PNG を作れません」に言い換える。縮尺は 2 倍を上限に、`DESKTOP_PNG_LIMITS`（8,192²・一辺 16,384）／`MOBILE_PNG_LIMITS`（4,096²）に収める。`<img>` に載せた SVG は文書の Web フォントを使えないので、フォントはこの端末のものになる。
+- **保存**: `MindmapView.exportImage(format)` → `exportMap` → `getAvailablePathForAttachment(<basename>.svg|png, note.path)` → `vault.create`（SVG）／`vault.createBinary`（PNG）。パスを取るのは書き出す直前で、PNG が作れない環境はその前に断る（添付フォルダを作らない）。ノートは読まない・書かない。コマンドは `canSaveAttachments`（添付パス API と create の存在）が真のときだけ出す。
 
 ## 10. 最初に検証する順序
 

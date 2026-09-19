@@ -20,7 +20,7 @@ export interface LayoutPoint {
 }
 
 /** The mode vocabulary is core's (`../core/layout-mode`); re-exported so layout callers need one import. */
-export { LAYOUT_MODES, isLayoutMode, type LayoutMode } from "../core/layout-mode";
+export { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, type LayoutMode } from "../core/layout-mode";
 
 /**
  * A free topic: an independent tree placed beside the body. `position` is its root

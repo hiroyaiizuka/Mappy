@@ -64,6 +64,25 @@ describe('readMapLayout', () => {
     expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'mindmap' }).instance, file())).toBe('mindmap');
   });
 
+  it('converts with the settings\' default layout only when the note names no valid layout of its own', () => {
+    // No frontmatter, no layout key, or an unusable value: the default from the settings (M14).
+    expect(readPreferredMapLayout(app(undefined).instance, file(), 'hierarchy')).toBe('hierarchy');
+    expect(readPreferredMapLayout(app({ tags: ['a'] }).instance, file(), 'timeline')).toBe('timeline');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'issue-tree' }).instance, file(), 'hierarchy')).toBe('hierarchy');
+    // A legacy note keeps its own, even the explicit regular map, whatever the default says.
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'timeline' }).instance, file(), 'hierarchy')).toBe('timeline');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'mindmap' }).instance, file(), 'hierarchy')).toBe('mindmap');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: ' Hierarchy ' }).instance, file(), 'timeline')).toBe('hierarchy');
+    // Without a fallback the regular map remains the default, as before.
+    expect(readPreferredMapLayout(app(undefined).instance, file())).toBe('mindmap');
+  });
+
+  it('opens an existing note the same way whatever the default layout is: the setting is not consulted', () => {
+    // readMapLayout has no fallback parameter by design; a note without mappy-layout stays the regular map.
+    expect(readMapLayout(app({ [MAPPY_KEY]: true }).instance, file())).toBe('mindmap');
+    expect(readMapLayout.length).toBe(2);
+  });
+
   it('never claims Excalidraw drawings and excludes them from map conversion', () => {
     const instance = app({ [MAPPY_KEY]: true, 'excalidraw-plugin': 'parsed' }).instance;
     expect(readMapLayout(instance, file())).toBeNull();

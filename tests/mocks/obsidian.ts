@@ -1,7 +1,7 @@
 import type { Editor, TFile as ObsidianFile, ViewState } from 'obsidian';
 
 /** Only the public runtime members used by DocumentStore are needed in Node. */
-export { TFile, normalizePath } from './obsidian-file';
+export { TFile, TFolder, normalizePath } from './obsidian-file';
 
 /** Records the states a leaf received, so routing tests can inspect the real call. */
 export class WorkspaceLeaf {

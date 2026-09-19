@@ -4,12 +4,15 @@ import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, 
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import type { MapTheme } from "../obsidian/settings";
+import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
@@ -31,12 +34,12 @@ interface SnapIndex {
   places: ReadonlyMap<string, NodePlace>;
 }
 
-/** One button per layout, in LAYOUT_MODES order; the Record keeps the list and the buttons in step. */
+/** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
-  mindmap: { label: "マップ", icon: "git-fork" },
-  timeline: { label: "タイムライン", icon: "git-commit-horizontal" },
-  hierarchy: { label: "階層図", icon: "network" },
-  balanced: { label: "左右バランス", icon: "unfold-horizontal" },
+  mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
+  timeline: { label: LAYOUT_LABELS.timeline, icon: "git-commit-horizontal" },
+  hierarchy: { label: LAYOUT_LABELS.hierarchy, icon: "network" },
+  balanced: { label: LAYOUT_LABELS.balanced, icon: "unfold-horizontal" },
 };
 
 export class MindmapView extends ItemView {
@@ -47,6 +50,7 @@ export class MindmapView extends ItemView {
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
+  private theme: MapTheme = "follow";
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -100,9 +104,61 @@ export class MindmapView extends ItemView {
     return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
   }
 
+  /**
+   * What is on screen, for the SVG／PNG export (§5 M13): the layout the nodes were
+   * placed with, their elements and the connector layer. A debounced refresh is run
+   * first and a pending layout frame is awaited, so the geometry handed out is the
+   * one the DOM shows; the entries are copied, so a later refresh cannot change the
+   * set being exported. Markdown renders still in flight are not awaited (the
+   * renderer reports them only by scheduling another frame).
+   */
+  async exportSource(): Promise<CaptureSource & { file: TFile }> {
+    const file = this.file;
+    if (!file || !this.document) throw new Error("マップを開いてから書き出してください。");
+    if (this.inlineEditor) throw new Error("テキストの編集を確定してから書き出してください。");
+    if (this.topicDrag || this.dropPreview) throw new Error("ドラッグを終えてから書き出してください。");
+    if (this.refreshTimer !== undefined) {
+      this.contentEl.win.clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+      await this.refresh();
+    }
+    if (this.layoutFrame !== undefined) await this.nextFrame();
+    const layout = this.layout;
+    if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
+    if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
+    return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
+  }
+
+  /** The next animation frame, or 100 ms: a hidden window never paints, and the export must not wait for it. */
+  private nextFrame(): Promise<void> {
+    const win = this.contentEl.win;
+    return new Promise<void>(resolve => {
+      let done = false;
+      const finish = (): void => { if (!done) { done = true; resolve(); } };
+      win.requestAnimationFrame(finish);
+      win.setTimeout(finish, 100);
+    });
+  }
+
+  /** The command's route: capture what is shown and create the attachment; the note is not written. */
+  exportImage(format: ExportFormat): Promise<TFile> {
+    return this.exportSource().then(source => exportMap(this.app, source.file, source, format));
+  }
+
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
   getIcon(): string { return "git-fork"; }
+
+  /**
+   * The settings' theme (M14): Obsidian's own `theme-light` / `theme-dark` class on the map container
+   * only, where styles.css re-derives the palette; `follow` removes both so the container inherits
+   * the app's theme again. Presentation only, nothing is written to the note.
+   */
+  setTheme(theme: MapTheme): void {
+    this.theme = theme;
+    this.contentEl.toggleClass("theme-light", theme === "light");
+    this.contentEl.toggleClass("theme-dark", theme === "dark");
+  }
 
   getState(): Record<string, unknown> {
     return { file: this.file?.path, layout: this.mode, viewport: this.viewport?.value };
@@ -138,6 +194,7 @@ export class MindmapView extends ItemView {
     this.closed = false;
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
+    this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
     for (const mode of LAYOUT_MODES) {
       const { label, icon } = LAYOUT_BUTTONS[mode];

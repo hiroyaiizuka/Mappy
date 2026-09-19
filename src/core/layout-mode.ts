@@ -15,3 +15,10 @@ export type LayoutMode = (typeof LAYOUT_MODES)[number];
 export function isLayoutMode(value: unknown): value is LayoutMode {
   return typeof value === "string" && (LAYOUT_MODES as readonly string[]).includes(value);
 }
+
+/**
+ * The one name each layout goes by in the UI: the layout buttons and the settings
+ * dropdown both read it, and the Record type turns a new mode into a compile error
+ * until it is named here.
+ */
+export const LAYOUT_LABELS: Record<LayoutMode, string> = { mindmap: "通常マップ", timeline: "タイムライン", hierarchy: "階層図", balanced: "左右バランス" };

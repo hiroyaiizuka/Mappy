@@ -2,7 +2,8 @@
  * Layer ② of docs/harness.md: the product's map view running in a plain
  * browser. `src/ui/mindmap-view.ts`, its renderer, viewport and events are the
  * shipped modules; only the `obsidian` module is replaced by ./obsidian.ts.
- * Saving, link resolution, themes and IME are Obsidian-only and stay out of scope.
+ * Saving, link resolution, Obsidian's own palette and IME are Obsidian-only and stay out of
+ * scope; the map's explicit theme (M14) is exercised here with placeholder colours only.
  */
 import type { App, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
 import { installObsidianDom } from "./dom";
@@ -14,8 +15,11 @@ import {
   type EditSample, type FrameSample, type LoadSample, type MeasureContext,
 } from "./measure";
 import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
+import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
+import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import type { LayoutMode } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
+import { isMapTheme, type MapTheme } from "../../src/obsidian/settings";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MindmapView } from "../../src/ui/mindmap-view";
 
@@ -52,6 +56,8 @@ const presetsEl = mustFind<HTMLElement>("#harness-presets");
 const widthInput = mustFind<HTMLInputElement>("#harness-width");
 const heightInput = mustFind<HTMLInputElement>("#harness-height");
 const statusEl = mustFind<HTMLElement>("#harness-status");
+const pageThemeSelect = mustFind<HTMLSelectElement>("#harness-page-theme");
+const mapThemeSelect = mustFind<HTMLSelectElement>("#harness-map-theme");
 const timingsEl = mustFind<HTMLElement>("#harness-timings");
 const activityEl = mustFind<HTMLElement>("#harness-activity");
 const buildEl = mustFind<HTMLElement>("#harness-build");
@@ -59,6 +65,8 @@ const buildEl = mustFind<HTMLElement>("#harness-build");
 let view: MindmapView | null = null;
 let current: HarnessFixture | null = null;
 let openCount = 0;
+/** What the settings' "テーマ" would hold; applied to every view this page opens. */
+let mapTheme: MapTheme = "follow";
 const timings: HarnessTiming[] = [];
 
 function mustFind<T extends Element>(selector: string): T {
@@ -93,6 +101,8 @@ async function openView(): Promise<MindmapView> {
   const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router);
   // MindmapView is typed against Obsidian's View; at runtime it extends the mock.
   leaf.view = opened as unknown as WorkspaceLeaf["view"];
+  // The plugin applies the setting when it constructs a view (src/main.ts); the page does the same.
+  opened.setTheme(mapTheme);
   pane.replaceChildren(opened.containerEl);
   opened.load();
   await opened.onOpen();
@@ -146,6 +156,22 @@ async function reopen(): Promise<HarnessTiming | null> {
 
 function setStatus(text: string): void { statusEl.textContent = text; }
 
+type PageTheme = "light" | "dark";
+
+/** The page stands in for Obsidian's body: one of its theme classes at a time. */
+function setPageTheme(theme: PageTheme): void {
+  document.body.classList.toggle("theme-light", theme === "light");
+  document.body.classList.toggle("theme-dark", theme === "dark");
+  pageThemeSelect.value = theme;
+}
+
+/** The setting as the plugin would apply it: the open view now, and every view opened later. */
+function setMapTheme(theme: MapTheme): void {
+  mapTheme = theme;
+  mapThemeSelect.value = theme;
+  view?.setTheme(theme);
+}
+
 const measureContext: MeasureContext = { probes, pane, vault: app.vault, settle };
 
 function currentFile(): { fixture: HarnessFixture; file: unknown; view: MindmapView } {
@@ -180,6 +206,75 @@ const measure = {
   /** Product frames and timers seen so far, for DevTools inspection. */
   probes,
 };
+
+/** What `h.export.svg()` hands the capture script: the file and the counts to check it against. */
+export interface HarnessSvgExport {
+  svg: string;
+  width: number;
+  height: number;
+  nodes: number;
+  edges: number;
+  badges: number;
+  images: number;
+  theme: ExportTheme;
+  ms: number;
+}
+
+export interface HarnessPngExport {
+  dataUrl: string;
+  width: number;
+  height: number;
+  scale: number;
+  bytes: number;
+  nodes: number;
+  /** Capture and serialisation, then rasterisation. */
+  svgMs: number;
+  ms: number;
+}
+
+/** One reader for both directions the page converts blobs: the image bytes it reads back and the PNG it hands out. */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : ""); }, { once: true });
+    reader.addEventListener("error", () => { reject(new Error("Blob を data URL に読めません")); }, { once: true });
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** The page keeps the sample image as a data URL; attachments added on the page are blob URLs and are read back. */
+const resolveHarnessImage: ImageResolver = async image => {
+  const src = image.currentSrc || image.src;
+  if (src.startsWith("data:")) return src;
+  if (!src.startsWith("blob:")) return null;
+  return blobToDataUrl(await (await fetch(src)).blob());
+};
+
+/** M13 in this page: the same capture and document the plugin writes, minus the vault. */
+async function exportSvg(): Promise<HarnessSvgExport> {
+  if (!view) throw new Error("No fixture is loaded");
+  const started = performance.now();
+  const source = await view.exportSource();
+  const scene = await captureScene(source, { resolveImage: resolveHarnessImage });
+  const svg = buildSvg(scene);
+  const size = svgSize(scene.bounds);
+  return {
+    svg, width: size.width, height: size.height, nodes: scene.nodes.length, edges: scene.edges.length, badges: scene.badges.length,
+    images: (svg.match(/<img /gu) ?? []).length, theme: scene.theme, ms: performance.now() - started,
+  };
+}
+
+async function exportPng(): Promise<HarnessPngExport> {
+  const exported = await exportSvg();
+  const started = performance.now();
+  const size = { width: exported.width, height: exported.height };
+  const scale = pngScale(size, DESKTOP_PNG_LIMITS);
+  const png = await rasterizeSvg(exported.svg, size, scale);
+  return {
+    dataUrl: await blobToDataUrl(png.blob), scale, width: png.width, height: png.height,
+    bytes: png.blob.size, nodes: exported.nodes, svgMs: exported.ms, ms: performance.now() - started,
+  };
+}
 
 /** Page controls report failures in the status line instead of an unhandled rejection. */
 function report(action: Promise<unknown>): void {
@@ -237,6 +332,14 @@ const api = {
   resize,
   settle,
   measure,
+  setPageTheme,
+  setMapTheme,
+  /** Theme classes as they are now: the page's body and the map container. */
+  themes: () => ({
+    page: document.body.classList.contains("theme-dark") ? "dark" : document.body.classList.contains("theme-light") ? "light" : "none",
+    map: mapTheme,
+    container: Array.from(view?.contentEl.classList ?? []).filter(name => name.startsWith("theme-")),
+  }),
   get view() { return view; },
   get openCount() { return openCount; },
   viewport: () => view?.getState().viewport ?? null,
@@ -271,6 +374,8 @@ const api = {
       bounds: scene.bounds,
     };
   },
+  /** SVG／PNG export of the view as shown (§5 M13); nothing is saved, the capture script writes the files. */
+  export: { svg: exportSvg, png: exportPng },
   /** The current fixture's Markdown as the in-memory vault holds it now (edits stay in this page). */
   source: () => {
     const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
@@ -299,6 +404,8 @@ function setupPanel(): void {
   widthInput.addEventListener("change", applySize);
   heightInput.addEventListener("change", applySize);
   mustFind<HTMLButtonElement>("#harness-reopen").addEventListener("click", () => { report(reopen()); });
+  pageThemeSelect.addEventListener("change", () => { setPageTheme(pageThemeSelect.value === "dark" ? "dark" : "light"); });
+  mapThemeSelect.addEventListener("change", () => { setMapTheme(isMapTheme(mapThemeSelect.value) ? mapThemeSelect.value : "follow"); });
   new ResizeObserver(() => {
     widthInput.value = String(Math.round(pane.offsetWidth));
     heightInput.value = String(Math.round(pane.offsetHeight));
@@ -311,5 +418,8 @@ function setupPanel(): void {
 const params = new URL(location.href).searchParams;
 setupPanel();
 resize(Number(params.get("width")) || 1280, Number(params.get("height")) || 800);
+setPageTheme(params.get("page-theme") === "dark" ? "dark" : "light");
+const requestedTheme = params.get("theme");
+setMapTheme(isMapTheme(requestedTheme) ? requestedTheme : "follow");
 api.ready = load(findFixture(params.get("fixture"))?.id ?? "uneven-branches").then(() => undefined);
 report(api.ready);
