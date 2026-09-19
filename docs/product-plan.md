@@ -1,6 +1,6 @@
 # Mappy 製品計画
 
-更新日: 2026-09-19
+更新日: 2026-09-20
 
 本書は製品方針と受入条件を記す。現在は専用テスト Vault 向けのプロトタイプを実装しており、機能の実装と全受入条件の達成を分けて扱う。最新のユーザー選択により、通常の入力は「H2 のルート＋インデントした箇条書き」とし、本文・リンク・画像を持たせる。従来の見出し階層も保持し、明示操作で変換する。通常の Markdown が正本であることは変えない。
 
@@ -312,7 +312,7 @@ Obsidian 標準の設定タブに次の 3 項目だけを置く。既定値は�
 
 **受入条件:** 宣言した対応環境で主要操作が通る。無効化・再有効化・ペインの閉開後にイベントや表示が残らない。必要な配布物だけでインストールできる。自動検査と実機確認の結果が記録され、既知の制限が README に反映される。
 
-**現在の実装（LEV-68）:** リリース手順は harness.md「リリース手順」に固定した。`npm version <x.y.z>` → `npm run check` → `git push origin main <x.y.z>` で、`release.yml` がタグと `manifest.version` の一致を検査してから check を通し、`dist/mappy/` の 3 ファイルを添付した Release を作る（`0.x` は pre-release）。dry-run（`workflow_dispatch`・release 系ファイルの PR）は Release を作らず workflow artifact に上げる。BRAT は semver 最大の Release（pre-release を含む）の添付 3 ファイルを読み、draft は読めないため draft にしない。実際のタグ・Release・public 化は本人の決定（2026-09-20: ベータは 0.1.0、public 化は tag の直前）に沿って未実施。LICENSE は同日 MIT で確定（LEV-24 の PR）。
+**現在の実装（LEV-68）:** リリース手順は harness.md「リリース手順」に固定した。`npm version <x.y.z>` → `npm run check` → `git push origin main <x.y.z>` で、`release.yml` がタグと `manifest.version` の一致を検査してから check を通し、`dist/mappy/` の 3 ファイルを添付した Release を作る（`0.x` は pre-release）。dry-run（`workflow_dispatch`・release 系ファイルの PR）は Release を作らず workflow artifact に上げる。BRAT は semver 最大の Release（pre-release を含む）の添付 3 ファイルを読み、draft は読めないため draft にしない。2026-09-20 にこの手順でベータ 0.1.0 を公開した: リポジトリを public 化 → main で `npm version 0.1.0`（commit `6db5f58`、tag `0.1.0`）→ `release.yml` が成功し、[Release 0.1.0](https://github.com/hiroyaiizuka/Mappy/releases/tag/0.1.0)（pre-release）に 3 ファイルを添付（SHA256 はローカルの `dist/mappy/` と一致）。含むのは M1〜M4・M6〜M8・M10・M11・M13・M14 と LEV-16・LEV-48 の修正で、M12（LEV-69／70）は実機未確認のため次の版。BRAT での取り込み確認は本人の日常 Vault で行い、未実施。LICENSE は同日 MIT で確定（LEV-24 の PR）。
 
 **現在の実装（LEV-24）:** 公式の提出要件・プラグインガイドライン・開発者ポリシー（2026-09-19 取得）に照らして manifest、コマンド、ログ、Node／Electron、ネットワーク、ライフサイクル、依存関係、配布物、README・LICENSE・対応環境の 47 項目を `artifacts/lev-24-readme/record.md` に記録した。コード上の PASS は自動検査と grep・テストの根拠つきで、Obsidian 実機の項目（無効化・再有効化・ペインの閉開、1.8.7・Windows・Linux・モバイル）は未実施と明記した。README は利用者向けに書き換え、開発者向けの節は末尾に残した。ライセンスは 2026-09-20 に MIT と決まり、`LICENSE`（Copyright (c) 2026 Hiroya Iizuka）と `package.json` を置き換えて README に節を書いた。ベータの版は 0.1.0（この PR では version を上げない）、リポジトリは tag を切る直前に public にする。ネットワークは自前のサーバー・テレメトリ・送信なしで、ノートが参照する外部 URL の画像の表示と書き出し時の取得だけを開示する。`WorkspaceLeaf.prototype.setViewState` の差し替えは解除をテストで固定しているが、審査で説明を求められうる項目として記録した。
 
