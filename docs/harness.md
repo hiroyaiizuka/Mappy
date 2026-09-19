@@ -165,3 +165,17 @@ OS / Obsidian version / Vault / build hash:
 提出時には公式ドキュメントで手順を再確認し、自動レビューの指摘を解決する。sample README と差がある場合は提出時点の公式ドキュメントを優先する。[提出手順](https://docs.obsidian.md/plugins/releasing/submit-plugin)、[提出要件](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)
 
 コードを参考にした製品の権利表示・公開方針も確認する。今回 MarkMind と Light Mindmap の製品ソースはコピーしていない。[Developer policies](https://docs.obsidian.md/community-directory/developer-policies)
+
+### 審査要件のチェック項目
+
+公式の[提出要件](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)・[プラグインガイドライン](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)・[開発者ポリシー](https://docs.obsidian.md/community-directory/developer-policies)を次の項目に分け、結果は日時・ビルドのハッシュ・根拠（バリデータ、grep、テスト名）つきで `artifacts/lev-24-readme/record.md` に残す（初回は 2026-09-19、47 項目）。提出前に同じ項目で再確認し、公式文書が変わっていれば項目を足す。lint の通過も、この表の PASS も、審査の通過を保証しない。
+
+| 区分 | 項目 | 主な根拠 |
+| --- | --- | --- |
+| manifest | `id`（一意・`obsidian` を含まない）、`name`、`version` の 4 ファイル一致、`minAppVersion` の根拠（使う API と型の版）、`description` の書式、`fundingUrl` の有無、`isDesktopOnly`、不明なキー | `npm run validate`、`obsidian` 型での型検査 |
+| コマンド・UI | コマンド名にプラグイン名を含めない、ID を前置しない、既定ホットキーなし、`checkCallback`、設定タブの見出し、Sentence case、`innerHTML` 不使用、インラインスタイルは動的な幾何だけ、CSS のスコープ、グローバル `app`・`activeLeaf` 不使用、サンプルコードの残り | lint（obsidianmd recommended）、grep |
+| ログ・互換 | `console.*` が `src/` と `dist/mappy/main.js` にない、`node:*`／`electron`／`fs`／`process` の不使用、バンドルの `require()` が Obsidian 提供の external だけ、正規表現の後読みなし | grep、`build-meta.json` |
+| ネットワーク | 自前のサーバー・テレメトリ・送信・アカウント・課金・広告なし。外部へ出る通信（ノートが参照する外部 URL の画像の表示と書き出し時の取得）を README に開示 | grep、README |
+| ライフサイクル | `register*` による解除、`onunload` で leaf を detach しない、prototype 差し替えの復元、view・埋め込み・Excalidraw フックの解放。実機の E09・E25・E34 | テスト名を記録、実機は verification issue |
+| 依存・配布物 | ランタイム依存とライセンス（表示義務）、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしない、release のタグと添付、minify は難読化ではない | `npm run package`、`package-lock.json` |
+| README・LICENSE | 保存形式、導入、基本操作、既知の制限、復旧方法、ネットワーク利用、対応環境、ライセンス、第三者コードの表示 | README、`LICENSE` |
