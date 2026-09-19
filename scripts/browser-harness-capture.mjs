@@ -500,6 +500,14 @@ async function captureOperations(recorder, page) {
     expect(menu.y >= gear.y + gear.height, `menu top ${menu.y} is not under the button bottom ${gear.y + gear.height}`);
     expect(Math.abs(menu.x + menu.width - (gear.x + gear.width)) <= 4, `menu right edge ${menu.x + menu.width} is not aligned with the button's ${gear.x + gear.width}`);
     await page.screenshot(join(recorder.directory, 'action-menu-open.png'));
+    // The button's next press closes the menu (the mousedown outside hides it, the click must not reopen it); the one after opens it again.
+    await page.click(center(gear).x, center(gear).y);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open after the second press of the button');
+    expect((await page.evaluate(`document.querySelector('.mappy-actions button')?.getAttribute('aria-expanded')`)) === 'false', 'aria-expanded is not false after closing');
+    await page.click(center(gear).x, center(gear).y);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 1, 'menu did not open on the third press of the button');
+    // The menu's own listeners (Escape among them) are registered a timer after it opens, as Obsidian's are.
+    await page.settle();
     await page.key('Escape', 'Escape', 27);
     expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open after Escape');
     return `項目: ${entries.join(' / ')}`;

@@ -316,14 +316,17 @@ export class Menu extends Component {
     document.body.appendChild(this.dom);
     this.load();
     const rect = this.dom.getBoundingClientRect();
-    const [rightward, leftward] = position.width === undefined ? [position.x + 2, position.x - 2]
+    // Obsidian branches on the truthiness of `width`, so a zero width places like no width.
+    const [rightward, leftward] = !position.width ? [position.x + 2, position.x - 2]
       : position.overlap ? [position.x, position.x + position.width] : [position.x + position.width, position.x];
     const fitsLeft = leftward - rect.width >= 0;
     const x = rightward + rect.width > window.innerWidth || (position.left && fitsLeft) ? Math.max(0, leftward - rect.width) : rightward;
     const y = (position.y + rect.height > window.innerHeight ? Math.max(0, position.y - rect.height) : position.y) + 2;
     this.dom.style.left = `${x}px`;
     this.dom.style.top = `${y}px`;
-    const onPointer = (pointer: Event): void => { if (!this.dom.contains(pointer.target as Node)) this.hide(); };
+    // Obsidian's menu listens on the window, in the bubbling phase, once it has loaded (a timer later): a mousedown
+    // or a click outside the menu hides it, so a button's own listeners run first and can see the menu still open.
+    const onOutside = (pointer: Event): void => { if (!this.dom.contains(pointer.target as Node)) this.hide(); };
     // Consume Escape like Obsidian's menu does; an unhandled key would go on to the native menu bar.
     const onKey = (key: KeyboardEvent): void => {
       if (key.key !== "Escape") return;
@@ -333,13 +336,15 @@ export class Menu extends Component {
     };
     window.setTimeout(() => {
       if (!this.dom.isConnected) return;
-      document.addEventListener("pointerdown", onPointer, true);
-      document.addEventListener("wheel", onPointer, true);
+      window.addEventListener("mousedown", onOutside);
+      window.addEventListener("click", onOutside);
+      window.addEventListener("wheel", onOutside);
       document.addEventListener("keydown", onKey, true);
     }, 0);
     this.register(() => {
-      document.removeEventListener("pointerdown", onPointer, true);
-      document.removeEventListener("wheel", onPointer, true);
+      window.removeEventListener("mousedown", onOutside);
+      window.removeEventListener("click", onOutside);
+      window.removeEventListener("wheel", onOutside);
       document.removeEventListener("keydown", onKey, true);
     });
     return this;

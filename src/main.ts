@@ -47,7 +47,7 @@ export default class MappyPlugin extends Plugin {
     // same callbacks as the commands below; the view only learns their names, icons and checks.
     const menuActions: MapMenuAction[] = [
       { title: "マップを検索して呼び出す", icon: "search", check: map => map.file !== null, run: map => { this.searchAndCallMap(map); } },
-      { title: "Excalidraw の図面に挿入", icon: "pencil-ruler", check: () => this.bridge.available, run: map => { this.insertIntoExcalidraw(map.snapshot()); } },
+      { title: "Excalidraw の図面に挿入", icon: "pencil-ruler", check: map => map.file !== null && this.bridge.available, run: map => { this.insertIntoExcalidraw(map.snapshot()); } },
       { title: "SVG／PNG に書き出し", icon: "image-down", check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },
     ];
     this.registerView(VIEW_TYPE, leaf => {

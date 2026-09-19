@@ -46,7 +46,7 @@ function pluginActions(): PluginActions {
   const state: PluginActions = { actions: [], ran: [], views: [], excalidraw: false };
   state.actions = [
     { title: 'マップを検索して呼び出す', icon: 'search', check: map => map.file !== null, run: map => { state.ran.push('call'); state.views.push(map); } },
-    { title: 'Excalidraw の図面に挿入', icon: 'pencil-ruler', check: () => state.excalidraw, run: map => { state.ran.push('excalidraw'); state.views.push(map); } },
+    { title: 'Excalidraw の図面に挿入', icon: 'pencil-ruler', check: map => map.file !== null && state.excalidraw, run: map => { state.ran.push('excalidraw'); state.views.push(map); } },
     { title: 'SVG／PNG に書き出し', icon: 'image-down', check: map => map.file !== null, run: map => { state.ran.push('export'); state.views.push(map); } },
   ];
   return state;
@@ -133,12 +133,41 @@ describe('the 操作 menu at the top right (§5 M3)', () => {
   it('opens under the button, right-aligned, in the view\'s own document, with the entries, separators and keys in order', async () => {
     const { open, gear } = await mount();
     const shown = vi.spyOn(Menu.prototype, 'showAtPosition');
+    // jsdom has no layout: give the button a place, as a real window would.
+    const rect = { x: 1200, y: 16, left: 1200, top: 16, right: 1232, bottom: 48, width: 32, height: 32, toJSON: () => undefined };
+    vi.spyOn(gear(), 'getBoundingClientRect').mockReturnValue(rect);
     expect(await open()).toEqual(ENTRIES);
-    const rect = gear().getBoundingClientRect();
     expect(shown).toHaveBeenCalledTimes(1);
-    expect(shown.mock.calls[0]?.[0]).toEqual({ x: rect.right, y: rect.bottom, left: true });
+    // Obsidian's own menu right-aligns with the button (`left` with its width); a native one opens from (x, y), its left-bottom corner.
+    expect(shown.mock.calls[0]?.[0]).toEqual({ x: 1200, y: 48, width: 32, overlap: true, left: true });
     // Obsidian takes the document as the second argument (a popout window shows the menu in its own window).
     expect((shown.mock.calls[0] as unknown[])[1]).toBe(document);
+    expect(gear().getAttribute('aria-haspopup')).toBe('menu');
+    expect(gear().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('closes on the button\'s next press instead of opening a second menu, and opens again on the press after that', async () => {
+    const { open, gear } = await mount();
+    await open();
+    expect(gear().getAttribute('aria-expanded')).toBe('true');
+    // Obsidian's menu hides on the window's mousedown outside it (registered once the menu has loaded), before the button's click.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    gear().dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(document.querySelector('.menu')).toBeNull();
+    gear().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(document.querySelector('.menu')).toBeNull();
+    expect(gear().getAttribute('aria-expanded')).toBe('false');
+    // A keyboard activation is a click without a mousedown: it opens.
+    gear().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(document.querySelectorAll('.menu')).toHaveLength(1);
+    expect(gear().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('closes with the view', async () => {
+    const mounted = await mount();
+    await mounted.open();
+    await mounted.close();
+    expect(document.querySelector('.menu')).toBeNull();
   });
 
   it('enables every entry on an open note with the selected root, except the Excalidraw item without Excalidraw, the list conversion of a list note and the empty history', async () => {
@@ -167,12 +196,38 @@ describe('the 操作 menu at the top right (§5 M3)', () => {
   });
 
   it('disables the node entries, the Markdown entries, the topic and the plugin\'s items while the view shows no note', async () => {
-    const { view, open, item, settle } = await mount();
+    const { view, open, item, settle, plugin } = await mount();
+    // Excalidraw present: its item still needs a note, as the command's own check does (`snapshot()` is null without one).
+    plugin.excalidraw = true;
     await view.setState({}, { history: false } satisfies ViewStateResult);
     await settle();
     expect(view.file).toBeNull();
     expect(await open()).toEqual(ENTRIES);
     for (const title of ENTRIES.filter(entry => entry !== SEPARATOR)) expect(disabled(item(title)), title).toBe(true);
+  });
+
+  it('on the virtual root of a note without a heading, disables the sibling, the title and the deletion the keys would refuse, and keeps the rest', async () => {
+    const { open, item, view } = await mount('Fixtures/list-only.md', '---\nmappy: true\n---\n- 項目 A\n  - 項目 A の子\n- 項目 B\n');
+    expect(view.containerEl.querySelector<HTMLElement>('.mappy-node.is-selected')?.dataset.nodeId).toBe('root');
+    await open();
+    for (const title of ['兄弟を追加（Enter）', 'テキストを編集（F2）', '削除（Delete）']) expect(disabled(item(title)), title).toBe(true);
+    for (const title of ['子を追加（Tab）', 'トピックを追加', '本文・リンクを編集', '画像を追加', '折りたたみ（Space）']) expect(disabled(item(title)), title).toBe(false);
+  });
+
+  it('folds the node selected when the entry is chosen, not the one selected when the menu opened', async () => {
+    const { open, choose, select, node, app, file, source } = await mount();
+    select('記録する');
+    await open();
+    // The selected node is removed outside while the menu is open: after the refresh its id is gone and the map selects the body root instead.
+    app.put(file.path, source().replace('- 記録する\n  - ふりかえる\n', ''));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect(() => node('記録する')).toThrow();
+    expect(node('講座の本体').classList.contains('is-selected')).toBe(true);
+    expect(document.querySelectorAll('.menu')).toHaveLength(1);
+    await choose('折りたたみ（Space）');
+    expect(node('講座の本体').classList.contains('is-collapsed')).toBe(true);
+    expect(() => node('回復する')).toThrow();
   });
 
   it('switches to Markdown and opens the split with the same calls the buttons made', async () => {
