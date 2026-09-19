@@ -416,9 +416,11 @@ export function prepareFuzzySearch(query: string): (text: string) => SearchResul
 }
 
 /**
- * Obsidian's own marking of matched ranges (`.suggestion-highlight`), as 1.14.2 does it: `offset` is
- * added to each match, a match ending at or before the start of `text` is skipped, one starting past
- * its end stops the loop, and the ranges are taken in the order given (the fuzzy search hands them sorted).
+ * Obsidian's own marking of matched ranges (`.suggestion-highlight`), step for step as 1.14.2 does it
+ * (read from the running app, LEV-71): `offset` is added to each match, a match ending at or before the
+ * start of `text` is skipped, one starting past its end stops the loop, which also stops once the cursor
+ * has reached the end. The ranges are taken in the order given and cut with `substring` (so an overlapping
+ * range repeats the overlap, as the real one does); Obsidian's fuzzy search hands them sorted and disjoint.
  */
 export function renderMatches(el: HTMLElement | DocumentFragment, text: string, matches: SearchMatches | null, offset = 0): void {
   if (!matches || matches.length === 0) { el.appendText(text); return; }
@@ -429,11 +431,11 @@ export function renderMatches(el: HTMLElement | DocumentFragment, text: string, 
     if (to <= 0) continue;
     const from = Math.max(0, start + offset);
     if (from >= text.length) break;
-    if (from !== cursor) el.appendText(text.slice(cursor, from));
-    el.createSpan({ cls: "suggestion-highlight", text: text.slice(from, to) });
+    if (from !== cursor) el.appendText(text.substring(cursor, from));
+    el.createSpan({ cls: "suggestion-highlight", text: text.substring(from, to) });
     cursor = to;
   }
-  if (cursor < text.length) el.appendText(text.slice(cursor));
+  if (cursor < text.length) el.appendText(text.substring(cursor));
 }
 
 /**

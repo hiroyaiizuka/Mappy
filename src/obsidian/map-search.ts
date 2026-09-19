@@ -21,7 +21,7 @@ function folderOf(file: TFile): string {
 /**
  * What the fuzzy search reads: the path without its extension, so a query can name
  * the title, a folder, or `folder/title`. The title comes last, and the suggestion
- * shows it with the matches shifted back by the folder's length.
+ * shows it with the matches shifted back by the folder and the slash before it.
  */
 export function searchText(file: TFile): string {
   const folder = folderOf(file);
