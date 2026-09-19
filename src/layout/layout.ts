@@ -20,7 +20,7 @@ export interface LayoutPoint {
 }
 
 /** The mode vocabulary is core's (`../core/layout-mode`); re-exported so layout callers need one import. */
-export { LAYOUT_MODES, isLayoutMode, type LayoutMode } from "../core/layout-mode";
+export { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, type LayoutMode } from "../core/layout-mode";
 
 /**
  * A free topic: an independent tree placed beside the body. `position` is its root
@@ -139,64 +139,92 @@ function place(node: MeasuredNode, x: number, top: number): PositionedNode {
   return { id: node.id, x, y: top + (node.subtreeHeight - node.height) / 2, width: node.width, height: node.height };
 }
 
+/** The side of a node its branches grow on: the map grows right, the balanced map right or left. */
+type Side = "right" | "left";
+
+/** Where a node's fold control sits: on the stem to its side, or above/below a timeline stage. */
+type FoldSide = Side | "upper" | "lower";
+
 function addFold(
   node: MeasuredNode,
   position: PositionedNode,
   folds: FoldPosition[],
   bounds: LayoutBounds[],
-  upperStage?: boolean,
+  side: FoldSide = "right",
 ): void {
   if (node.descendantCount === 0) return;
   const collapsed = node.children.length === 0;
   const size = foldControlSize(collapsed ? node.descendantCount : 0);
-  const fold: FoldPosition = upperStage === undefined
-    ? { id: node.id, x: position.x + position.width + foldOffset(node), y: position.y + position.height / 2 }
+  const fold: FoldPosition = side === "right" || side === "left"
+    ? {
+      id: node.id,
+      x: side === "right" ? position.x + position.width + foldOffset(node) : position.x - foldOffset(node),
+      y: position.y + position.height / 2,
+    }
     : {
       id: node.id,
       x: position.x + position.width / 2,
-      y: collapsed || upperStage ? position.y - TIMELINE_FOLD_OFFSET : position.y + position.height + TIMELINE_FOLD_OFFSET,
+      y: collapsed || side === "upper" ? position.y - TIMELINE_FOLD_OFFSET : position.y + position.height + TIMELINE_FOLD_OFFSET,
     };
   folds.push(fold);
   bounds.push({ x: fold.x - size.width / 2, y: fold.y - size.height / 2, ...size });
 }
 
-function rightwardEdge(parent: PositionedNode, child: PositionedNode): LayoutEdge {
-  const startX = parent.x + parent.width;
+/** Stem, bend and branch between the facing edges of parent and child; growing left is the mirror image. */
+function sidewaysEdge(parent: PositionedNode, child: PositionedNode, side: Side): LayoutEdge {
+  const startX = side === "right" ? parent.x + parent.width : parent.x;
   const startY = parent.y + parent.height / 2;
-  const endX = child.x;
+  const endX = side === "right" ? child.x : child.x + child.width;
   const endY = child.y + child.height / 2;
   const middleX = (startX + endX) / 2;
   const branch = `M ${startX} ${startY} H ${middleX} V ${endY} H ${endX}`;
   return connect(parent, child, branch);
 }
 
-function childForestHeight(node: MeasuredNode): number {
-  return node.children.reduce((height, child) => height + child.subtreeHeight, 0)
-    + Math.max(0, node.children.length - 1) * node.verticalGap;
+function forestHeight(children: readonly MeasuredNode[], gap: number): number {
+  return children.reduce((height, child) => height + child.subtreeHeight, 0) + Math.max(0, children.length - 1) * gap;
 }
 
-function placeRightward(
+function childForestHeight(node: MeasuredNode): number {
+  return forestHeight(node.children, node.verticalGap);
+}
+
+/** Top-left of a node whose near edge (left when growing right, right when growing left) is at `edge`. */
+function placeBeside(node: MeasuredNode, edge: number, top: number, side: Side): PositionedNode {
+  return place(node, side === "right" ? edge : edge - node.width, top);
+}
+
+/**
+ * Place `root` and its forest growing to `side`, the root's near edge at `edge` and the
+ * subtree's top at `top`. Growing left mirrors the map's geometry: children hang one gap
+ * past the parent's left edge with their right edges aligned, and the fold control sits
+ * on the stem to the left.
+ */
+function placeSideways(
   root: MeasuredNode,
-  x: number,
+  edge: number,
   top: number,
+  side: Side,
   nodes: PositionedNode[],
   edges: LayoutEdge[],
   folds: FoldPosition[],
   foldBounds: LayoutBounds[],
 ): void {
-  const pending = [{ node: root, x, top }];
+  const pending = [{ node: root, edge, top }];
   while (pending.length > 0) {
     const current = pending.pop();
     if (!current) break;
-    const position = place(current.node, current.x, current.top);
+    const position = placeBeside(current.node, current.edge, current.top, side);
     nodes.push(position);
-    addFold(current.node, position, folds, foldBounds);
+    addFold(current.node, position, folds, foldBounds, side);
     let childTop = current.top + (current.node.subtreeHeight - childForestHeight(current.node)) / 2;
+    const childEdge = side === "right"
+      ? position.x + current.node.width + current.node.horizontalGap
+      : position.x - current.node.horizontalGap;
     const children: typeof pending = [];
     for (const child of current.node.children) {
-      const childX = current.x + current.node.width + current.node.horizontalGap;
-      edges.push(rightwardEdge(position, place(child, childX, childTop)));
-      children.push({ node: child, x: childX, top: childTop });
+      edges.push(sidewaysEdge(position, placeBeside(child, childEdge, childTop, side), side));
+      children.push({ node: child, edge: childEdge, top: childTop });
       childTop += child.subtreeHeight + current.node.verticalGap;
     }
     for (let index = children.length - 1; index >= 0; index -= 1) {
@@ -204,6 +232,41 @@ function placeRightward(
       if (child) pending.push(child);
     }
   }
+}
+
+/** The side a first-level child of the balanced map grows on: the first child right, the next left, and so on. */
+export function balancedSide(index: number): Side {
+  return index % 2 === 0 ? "right" : "left";
+}
+
+/**
+ * Balanced map: root's top-left at (x, y), the first level dealt to its right and left in
+ * source order (`balancedSide`), every deeper node growing on its branch's side. Each side is
+ * a column of subtrees centred on the root, so a side is only as tall as its own branches.
+ * The root's fold control sits on the right stem, where its first child hangs.
+ */
+function placeBalanced(
+  root: MeasuredNode, x: number, y: number,
+  nodes: PositionedNode[], edges: LayoutEdge[], folds: FoldPosition[], foldBounds: LayoutBounds[],
+): void {
+  const rootPosition = { id: root.id, x, y, width: root.width, height: root.height };
+  nodes.push(rootPosition);
+  addFold(root, rootPosition, folds, foldBounds, "right");
+  const columns: Record<Side, MeasuredNode[]> = { right: [], left: [] };
+  root.children.forEach((child, index) => { columns[balancedSide(index)].push(child); });
+  const centreY = y + root.height / 2;
+  const tops: Record<Side, number> = {
+    right: centreY - forestHeight(columns.right, root.verticalGap) / 2,
+    left: centreY - forestHeight(columns.left, root.verticalGap) / 2,
+  };
+  const edgeOf: Record<Side, number> = { right: x + root.width + root.horizontalGap, left: x - root.horizontalGap };
+  root.children.forEach((child, index) => {
+    const side = balancedSide(index);
+    const top = tops[side];
+    edges.push(sidewaysEdge(rootPosition, placeBeside(child, edgeOf[side], top, side), side));
+    placeSideways(child, edgeOf[side], top, side, nodes, edges, folds, foldBounds);
+    tops[side] = top + child.subtreeHeight + root.verticalGap;
+  });
 }
 
 /** Root's top-left at (x, y); the axis runs through the root's vertical center. */
@@ -229,7 +292,7 @@ function placeTimeline(
     const stageX = stage.children.length > 0 ? Math.max(nextAxisX, sideNextX - childOffset) : nextAxisX;
     const position = { id: stage.id, x: stageX, y: axisY - stage.height / 2, width: stage.width, height: stage.height };
     nodes.push(position);
-    addFold(stage, position, folds, foldBounds, upper);
+    addFold(stage, position, folds, foldBounds, upper ? "upper" : "lower");
     // The tree relationship remains root → stage, but each visible axis segment
     // is drawn only once and leaves the topic's text rectangle unobstructed.
     edges.push(connect(rootPosition, position, `M ${previousAxisRight} ${axisY} H ${position.x}`));
@@ -245,7 +308,7 @@ function placeTimeline(
       const startX = position.x + position.width / 2;
       const endY = childPosition.y + childPosition.height / 2;
       edges.push(connect(position, childPosition, `M ${startX} ${startY} V ${endY} H ${childX}`));
-      placeRightward(child, childX, childTop, nodes, edges, folds, foldBounds);
+      placeSideways(child, childX, childTop, "right", nodes, edges, folds, foldBounds);
       forestRight = Math.max(forestRight, childX + child.subtreeWidth);
       childTop += child.subtreeHeight + VERTICAL_GAP;
     }
@@ -291,7 +354,8 @@ function placeTree(tree: MeasuredNode, x: number, y: number, mode: LayoutMode): 
   const foldBounds: LayoutBounds[] = [];
   if (mode === "timeline") placeTimeline(tree, x, y, nodes, edges, folds, foldBounds);
   else if (mode === "hierarchy") placeHierarchy(tree, x, y, nodes, edges, folds, foldBounds);
-  else placeRightward(tree, x, y - (tree.subtreeHeight - tree.height) / 2, nodes, edges, folds, foldBounds);
+  else if (mode === "balanced") placeBalanced(tree, x, y, nodes, edges, folds, foldBounds);
+  else placeSideways(tree, x, y - (tree.subtreeHeight - tree.height) / 2, "right", nodes, edges, folds, foldBounds);
   return { nodes, edges, folds, foldBounds, bounds: boundsOf([...nodes, ...foldBounds]) };
 }
 
@@ -316,8 +380,8 @@ function defaultSlot(size: NodeSize, x: number, body: LayoutBounds, occupied: re
  * Lay out the body at the origin and each free topic as its own tree of the same mode.
  * Positioned topics land where asked, even over other nodes; the rest stack under the
  * body in source order, each in the first slot clear of everything placed before it:
- * flush with the body's left edge, or centered under the root in the hierarchy, whose
- * left edge can be a far-off leaf of its widest row.
+ * flush with the body's left edge, or centered under the root in the hierarchy and the
+ * balanced map, whose left edge can be a far-off leaf of the widest row or of the left side.
  */
 export function layoutTree(
   root: LayoutNode,
@@ -328,11 +392,13 @@ export function layoutTree(
 ): LayoutResult {
   const seen = new Set<string>();
   const measured = measureTree(root, sizes, collapsed, mode, seen);
-  // The map's forest starts at y = 0, the timeline axis runs through y = 0, and the
-  // hierarchy's root is centered on x = 0.
+  // The map's forest starts at y = 0, the timeline axis runs through y = 0, the
+  // hierarchy's root is centered on x = 0, and the balanced map's root on (0, 0).
   const origin = mode === "hierarchy"
     ? { x: -measured.width / 2, y: 0 }
-    : { x: 0, y: mode === "timeline" ? -measured.height / 2 : (measured.subtreeHeight - measured.height) / 2 };
+    : mode === "balanced"
+      ? { x: -measured.width / 2, y: -measured.height / 2 }
+      : { x: 0, y: mode === "timeline" ? -measured.height / 2 : (measured.subtreeHeight - measured.height) / 2 };
   const body = placeTree(measured, origin.x, origin.y, mode);
   const placed: (PlacedTree | undefined)[] = [];
   const occupied = [body.bounds];
@@ -348,7 +414,7 @@ export function layoutTree(
     if (placed[index]) return;
     // Measure once at the origin, then move the whole extent (fold controls included) into the slot.
     const probe = placeTree(tree, 0, 0, mode);
-    const column = mode === "hierarchy" ? origin.x + (measured.width - probe.bounds.width) / 2 : body.bounds.x;
+    const column = mode === "hierarchy" || mode === "balanced" ? origin.x + (measured.width - probe.bounds.width) / 2 : body.bounds.x;
     const slot = defaultSlot(probe.bounds, column, body.bounds, occupied);
     const result = placeTree(tree, slot.x - probe.bounds.x, slot.y - probe.bounds.y, mode);
     placed[index] = result;

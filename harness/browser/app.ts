@@ -60,6 +60,7 @@ export class HarnessApp {
     on: (name: string, callback: (...data: unknown[]) => unknown) => this.vaultEvents.on(name, callback),
     offref: (ref: unknown) => { this.vaultEvents.offref(ref as never); },
     getAbstractFileByPath: (path: string): TFile | null => this.entries.get(path)?.file ?? null,
+    getFileByPath: (path: string): TFile | null => this.entries.get(path)?.file ?? null,
     getFiles: (): TFile[] => Array.from(this.entries.values(), entry => entry.file),
     getResourcePath: (file: TFile): string => this.entries.get(file.path)?.url ?? "",
     read: (file: TFile): Promise<string> => Promise.resolve(this.entry(file).content),

@@ -5,7 +5,8 @@ import { parseMarkdown, projectMap } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
-import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
+import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost } from '../../harness/browser/fixtures';
+import { readMapFromSource } from '../../src/core/embed';
 import { Component, Events, MarkdownRenderer } from '../../harness/browser/obsidian';
 import { performanceFixtureMatrix, performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
 
@@ -62,6 +63,24 @@ describe('browser harness fixtures', () => {
     expect(FIXTURES.filter(fixture => !fixture.performance).map(fixture => fixture.id))
       .toEqual(['heading-document', 'roundtrip-edge-cases', 'uneven-branches', 'free-topics']);
     expect(SAMPLE_IMAGE.url.startsWith('data:image/svg+xml')).toBe(true);
+  });
+
+  it('keeps the embed host and its map notes beside the map-view fixtures, in the same vault folder (E31)', () => {
+    expect(EMBED_HOSTS.map(host => [host.id, host.path, host.mode])).toEqual([
+      ['embed-host', 'Fixtures/embed-host.md', 'reading'], ['embed-host-live', 'Fixtures/embed-host.md', 'live'],
+    ]);
+    expect(findHost('embed-host-live')?.source).toBe(findHost('embed-host')?.source);
+    expect(findFixture('embed-host')).toBeUndefined();
+    const host = findHost('embed-host');
+    if (!host) throw new Error('no host');
+    expect(readMapFromSource(host.source)).toBeNull();
+    for (const link of ['![[uneven-branches]]', '![[embed-timeline]]', '![[embed-hierarchy]]', '![[embed-hierarchy#同じ名前]]', '![[embed-2000]]',
+      '![[heading-document]]', '![[存在しないノート]]', '![[embed-hierarchy#^block]]']) expect(host.source).toContain(link);
+    expect(EMBED_TARGETS.map(target => target.path)).toEqual(['Fixtures/embed-timeline.md', 'Fixtures/embed-hierarchy.md', 'Fixtures/embed-2000.md']);
+    expect(EMBED_TARGETS.map(target => readMapFromSource(target.source))).toEqual(['timeline', 'hierarchy', 'mindmap']);
+    const hierarchy = parseMarkdown(EMBED_TARGETS[1]?.source ?? '', 'embed-hierarchy');
+    expect(hierarchy.nodes.filter(node => node.title === '同じ名前')).toHaveLength(2);
+    expect(parseMarkdown(EMBED_TARGETS[2]?.source ?? '', 'embed-2000').nodes).toHaveLength(2000);
   });
 });
 

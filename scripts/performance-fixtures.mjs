@@ -114,6 +114,16 @@ export function makePerformanceFixture(nodeCount, shape = 'headings') {
   }
 }
 
+/**
+ * The 2,000-node map note the embed cases use (docs/harness.md E31): the balanced
+ * list shape with `mappy: true`, so `![[embed-2000]]` renders as a map without a
+ * conversion step. The performance documents themselves stay without frontmatter.
+ */
+export function makeEmbedFixture() {
+  const [, body] = makePerformanceFixture(2000, 'list');
+  return ['embed-2000.md', `---\nmappy: true\n---\n${body}`];
+}
+
 /** Every count × shape pair, the original heading documents first. */
 export function performanceFixtureMatrix() {
   const matrix = [];

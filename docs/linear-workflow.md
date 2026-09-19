@@ -85,8 +85,10 @@ product-plan.md §5 <フェーズ> より: （該当文を引用。書き換え�
 ```sh
 orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番号> \
   --agent claude --no-parent \
-  --prompt "orca linear issue --current --full --json でチケットを読み、AGENTS.md と docs/linear-workflow.md に従って進める。完了フローは orca-linear スキルに従う"
+  --prompt "orca linear issue --current --full --json でチケットを読み、AGENTS.md と docs/linear-workflow.md に従って進める。完了フローは orca-linear スキルに従う。プライマリー（projects/Mappy）には触らず、この worktree だけで作業する"
 ```
+
+`orca-linear` は Orca 同梱のスキルで、`~/.claude/skills/orca-linear` にインストール済み（`orca skills install --skill orca-linear --agent claude-code`）。見つからない場合は `orca skills get orca-linear` で同じガイドを読める。スキル名であって CLI の名前空間ではなく、実行するコマンドは常に `orca linear ...`。
 
 ワーカーの手順:
 
@@ -98,7 +100,7 @@ orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番�
 6. `orca linear attach --current --url <PR>`、完了コメント1本、`orca linear status set --current --to "In Review"`。
 7. 途中経過のコメントは書かない。範囲外は `--parent-current` で子 issue にする。
 
-同時に走らせる worktree は層（core / layout / interaction / docs）で分け、`src/main.ts` を複数が触らないようにする。Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする。
+同時に走らせる worktree は層（core / layout / interaction / docs）で分け、`src/main.ts` を複数が触らないようにする。Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする。並走する PR は `docs/`・`README.md`・`src/ui/mindmap-view.ts` で衝突しやすいので、merge は 1 本ずつ行い、次の PR はワーカーが origin/main へ rebase してから merge する（2026-09-19 の wave 1 で 3 本が同時に衝突した）。
 
 ## アイデアの置き場
 

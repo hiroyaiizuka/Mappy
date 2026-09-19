@@ -41,3 +41,17 @@ export function insertWikiLink(value: string, context: WikiLinkContext, linktext
     cursor: context.from + replacement.length,
   };
 }
+
+/** `[[note#heading|alias]]`, `note|alias` or `figure.png|120` → the linkpath alone; null when nothing is left. */
+export function wikiLinkPath(link: string | null | undefined): string | null {
+  if (!link) return null;
+  const trimmed = link.trim();
+  const value = trimmed.match(/^!?\[\[([\s\S]+)\]\]$/u)?.[1] ?? trimmed;
+  const path = value.split("|", 1)[0]?.split("#", 1)[0]?.split("^", 1)[0]?.trim();
+  return path || null;
+}
+
+/** `https://…`, `app://…`, `data:…`: a URL with a scheme, as opposed to a vault path. */
+export function hasUrlScheme(text: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/iu.test(text);
+}

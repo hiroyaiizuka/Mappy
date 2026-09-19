@@ -35,6 +35,8 @@ describe('layoutFromFrontmatter', () => {
   it('accepts every layout mode, trimmed and case-insensitively, and never a look-alike', () => {
     expect(layoutFromFrontmatter('hierarchy')).toBe('hierarchy');
     expect(layoutFromFrontmatter(' Hierarchy ')).toBe('hierarchy');
+    expect(layoutFromFrontmatter('balanced')).toBe('balanced');
+    expect(layoutFromFrontmatter(' Balanced ')).toBe('balanced');
     expect(layoutFromFrontmatter('issue-tree')).toBe('mindmap');
     expect(layoutFromFrontmatter(['hierarchy'])).toBe('mindmap');
   });
@@ -46,6 +48,7 @@ describe('readMapLayout', () => {
     expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'timeline' }).instance, file())).toBe('timeline');
     expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'unknown' }).instance, file())).toBe('mindmap');
     expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'hierarchy' }).instance, file())).toBe('hierarchy');
+    expect(readMapLayout(app({ [MAPPY_KEY]: true, [LAYOUT_KEY]: 'balanced' }).instance, file())).toBe('balanced');
   });
 
   it('does not claim ordinary, disabled, malformed, or legacy layout-only notes', () => {
@@ -59,6 +62,25 @@ describe('readMapLayout', () => {
   it('keeps a legacy layout as the preference for an explicit migration', () => {
     expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'timeline' }).instance, file())).toBe('timeline');
     expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'mindmap' }).instance, file())).toBe('mindmap');
+  });
+
+  it('converts with the settings\' default layout only when the note names no valid layout of its own', () => {
+    // No frontmatter, no layout key, or an unusable value: the default from the settings (M14).
+    expect(readPreferredMapLayout(app(undefined).instance, file(), 'hierarchy')).toBe('hierarchy');
+    expect(readPreferredMapLayout(app({ tags: ['a'] }).instance, file(), 'timeline')).toBe('timeline');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'issue-tree' }).instance, file(), 'hierarchy')).toBe('hierarchy');
+    // A legacy note keeps its own, even the explicit regular map, whatever the default says.
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'timeline' }).instance, file(), 'hierarchy')).toBe('timeline');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: 'mindmap' }).instance, file(), 'hierarchy')).toBe('mindmap');
+    expect(readPreferredMapLayout(app({ [LAYOUT_KEY]: ' Hierarchy ' }).instance, file(), 'timeline')).toBe('hierarchy');
+    // Without a fallback the regular map remains the default, as before.
+    expect(readPreferredMapLayout(app(undefined).instance, file())).toBe('mindmap');
+  });
+
+  it('opens an existing note the same way whatever the default layout is: the setting is not consulted', () => {
+    // readMapLayout has no fallback parameter by design; a note without mappy-layout stays the regular map.
+    expect(readMapLayout(app({ [MAPPY_KEY]: true }).instance, file())).toBe('mindmap');
+    expect(readMapLayout.length).toBe(2);
   });
 
   it('never claims Excalidraw drawings and excludes them from map conversion', () => {
@@ -76,7 +98,7 @@ describe('writeMapLayout', () => {
     expect(processFrontMatter).toHaveBeenCalledOnce();
   });
 
-  it.each(['timeline', 'hierarchy'] as const)('stores %s as the optional initial layout and replaces the previous one', async layout => {
+  it.each(['timeline', 'hierarchy', 'balanced'] as const)('stores %s as the optional initial layout and replaces the previous one', async layout => {
     const { instance, store } = app({ tags: ['a'], [LAYOUT_KEY]: layout === 'timeline' ? 'hierarchy' : 'timeline' });
     await writeMapLayout(instance, file(), layout);
     expect(store).toEqual({ tags: ['a'], [MAPPY_KEY]: true, [LAYOUT_KEY]: layout });

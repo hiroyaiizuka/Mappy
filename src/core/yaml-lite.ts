@@ -25,9 +25,10 @@ function scalar(text: string): YamlValue {
   const trimmed = text.trim();
   if (/^["']/u.test(trimmed)) return unquote(trimmed);
   const plain = trimmed.replace(/(?:^|[ \t])#.*$/u, '').trim();
-  if (plain === '' || plain === '~' || plain === 'null') return null;
-  if (plain === 'true') return true;
-  if (plain === 'false') return false;
+  // The core-schema spellings Obsidian's own reader accepts, so `mappy: True` is a map here as it is in the cache.
+  if (plain === '' || plain === '~' || plain === 'null' || plain === 'Null' || plain === 'NULL') return null;
+  if (plain === 'true' || plain === 'True' || plain === 'TRUE') return true;
+  if (plain === 'false' || plain === 'False' || plain === 'FALSE') return false;
   if (/^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/u.test(plain)) return Number(plain);
   return plain;
 }

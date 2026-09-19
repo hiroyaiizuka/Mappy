@@ -4,12 +4,15 @@ import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type Move
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
-import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
+import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore, conflictMessage } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import type { MapTheme } from "../obsidian/settings";
+import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
@@ -31,11 +34,19 @@ function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
 }
 
-/** One button per layout, in LAYOUT_MODES order; the Record keeps the list and the buttons in step. */
+/** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
+interface SnapIndex {
+  byId: ReadonlyMap<string, PositionedNode>;
+  children: ReadonlyMap<string, readonly PositionedNode[]>;
+  places: ReadonlyMap<string, NodePlace>;
+}
+
+/** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
-  mindmap: { label: "マップ", icon: "git-fork" },
-  timeline: { label: "タイムライン", icon: "git-commit-horizontal" },
-  hierarchy: { label: "階層図", icon: "network" },
+  mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
+  timeline: { label: LAYOUT_LABELS.timeline, icon: "git-commit-horizontal" },
+  hierarchy: { label: LAYOUT_LABELS.hierarchy, icon: "network" },
+  balanced: { label: LAYOUT_LABELS.balanced, icon: "unfold-horizontal" },
 };
 
 export class MindmapView extends ItemView {
@@ -46,6 +57,7 @@ export class MindmapView extends ItemView {
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
+  private theme: MapTheme = "follow";
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -72,6 +84,8 @@ export class MindmapView extends ItemView {
      * pushes a timeline stage past a forest).
      */
     base: LayoutResult;
+    /** The snap's reading of `base` (tree structure and each node's place), built once per base rather than per pointer move. */
+    index: SnapIndex | null;
   } | null = null;
   /**
    * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
@@ -99,9 +113,61 @@ export class MindmapView extends ItemView {
     return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
   }
 
+  /**
+   * What is on screen, for the SVG／PNG export (§5 M13): the layout the nodes were
+   * placed with, their elements and the connector layer. A debounced refresh is run
+   * first and a pending layout frame is awaited, so the geometry handed out is the
+   * one the DOM shows; the entries are copied, so a later refresh cannot change the
+   * set being exported. Markdown renders still in flight are not awaited (the
+   * renderer reports them only by scheduling another frame).
+   */
+  async exportSource(): Promise<CaptureSource & { file: TFile }> {
+    const file = this.file;
+    if (!file || !this.document) throw new Error("マップを開いてから書き出してください。");
+    if (this.inlineEditor) throw new Error("テキストの編集を確定してから書き出してください。");
+    if (this.topicDrag || this.dropPreview) throw new Error("ドラッグを終えてから書き出してください。");
+    if (this.refreshTimer !== undefined) {
+      this.contentEl.win.clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+      await this.refresh();
+    }
+    if (this.layoutFrame !== undefined) await this.nextFrame();
+    const layout = this.layout;
+    if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
+    if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
+    return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
+  }
+
+  /** The next animation frame, or 100 ms: a hidden window never paints, and the export must not wait for it. */
+  private nextFrame(): Promise<void> {
+    const win = this.contentEl.win;
+    return new Promise<void>(resolve => {
+      let done = false;
+      const finish = (): void => { if (!done) { done = true; resolve(); } };
+      win.requestAnimationFrame(finish);
+      win.setTimeout(finish, 100);
+    });
+  }
+
+  /** The command's route: capture what is shown and create the attachment; the note is not written. */
+  exportImage(format: ExportFormat): Promise<TFile> {
+    return this.exportSource().then(source => exportMap(this.app, source.file, source, format));
+  }
+
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
   getIcon(): string { return "git-fork"; }
+
+  /**
+   * The settings' theme (M14): Obsidian's own `theme-light` / `theme-dark` class on the map container
+   * only, where styles.css re-derives the palette; `follow` removes both so the container inherits
+   * the app's theme again. Presentation only, nothing is written to the note.
+   */
+  setTheme(theme: MapTheme): void {
+    this.theme = theme;
+    this.contentEl.toggleClass("theme-light", theme === "light");
+    this.contentEl.toggleClass("theme-dark", theme === "dark");
+  }
 
   getState(): Record<string, unknown> {
     return { file: this.file?.path, layout: this.mode, viewport: this.viewport?.value };
@@ -137,6 +203,7 @@ export class MindmapView extends ItemView {
     this.closed = false;
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
+    this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
     for (const mode of LAYOUT_MODES) {
       const { label, icon } = LAYOUT_BUTTONS[mode];
@@ -400,7 +467,7 @@ export class MindmapView extends ItemView {
       const preview = this.previewLayout(projection, sizes);
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
         this.topicLayouts(preview?.trees));
-      if (this.topicDrag && !preview) this.topicDrag.base = this.layout;
+      if (this.topicDrag && !preview) { this.topicDrag.base = this.layout; this.topicDrag.index = null; }
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
       this.placeholder.hidden = !slot;
@@ -603,7 +670,7 @@ export class MindmapView extends ItemView {
       if (node) from.set(topic.id, { x: node.x - layout.origin.x, y: node.y - layout.origin.y });
     }
     this.topicDrag = {
-      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id), base: layout,
+      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id), base: layout, index: null,
     };
     return this.topicDrag;
   }
@@ -691,26 +758,7 @@ export class MindmapView extends ItemView {
     const view = this.viewport.value;
     const rect = { x: (root.x - view.x) / view.scale, y: (root.y - view.y) / view.scale, width: root.width / view.scale, height: root.height / view.scale };
     const moving = new Set(drag.marked);
-    const byId = new Map(layout.nodes.map(node => [node.id, node]));
-    const children = new Map<string, PositionedNode[]>();
-    const parents = new Set<string>();
-    for (const edge of layout.edges) {
-      const child = byId.get(edge.to);
-      if (!child || edge.to === PLACEHOLDER_ID || moving.has(edge.from) || moving.has(edge.to)) continue;
-      const list = children.get(edge.from) ?? [];
-      list.push(child);
-      children.set(edge.from, list);
-      parents.add(edge.to);
-    }
-    // On the timeline a stage's forest hangs above the axis for even stages and below for odd ones (`placeTimeline`).
-    const places = new Map<string, TimelinePlace>();
-    if (this.mode === "timeline") {
-      for (const node of layout.nodes) {
-        if (parents.has(node.id)) continue;
-        places.set(node.id, "root");
-        (children.get(node.id) ?? []).forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); });
-      }
-    }
+    const { byId, children, places } = drag.index ??= this.snapIndex(layout, moving);
     const slotFor = (node: PositionedNode, widen: number): SnapSlot | null =>
       snapSlot(this.mode, rect, node, children.get(node.id) ?? [], widen, places.get(node.id));
     const resolve = (slot: SnapSlot | null): MoveCommand | null =>
@@ -732,6 +780,42 @@ export class MindmapView extends ItemView {
     }
     if (current && kept !== null && (!best || best.distance >= kept - SNAP_STICK)) return current;
     return best?.command ?? null;
+  }
+
+  /**
+   * What the snap reads from a placeholder-free layout: the visible children of every node (the moving
+   * tree left out) and, where the zones depend on it, each node's place. On the timeline a stage's
+   * forest hangs above the axis for even stages and below for odd ones (`placeTimeline`); in the
+   * balanced map a tree's first level sits right or left of its root (`balancedSideOf`) and every
+   * deeper node keeps that side.
+   */
+  private snapIndex(layout: LayoutResult, moving: ReadonlySet<string>): SnapIndex {
+    const byId = new Map(layout.nodes.map(node => [node.id, node]));
+    const children = new Map<string, PositionedNode[]>();
+    const parents = new Set<string>();
+    for (const edge of layout.edges) {
+      const child = byId.get(edge.to);
+      if (!child || edge.to === PLACEHOLDER_ID || moving.has(edge.from) || moving.has(edge.to)) continue;
+      const list = children.get(edge.from) ?? [];
+      list.push(child);
+      children.set(edge.from, list);
+      parents.add(edge.to);
+    }
+    const places = new Map<string, NodePlace>();
+    if (this.mode === "timeline" || this.mode === "balanced") {
+      for (const node of layout.nodes) {
+        if (parents.has(node.id)) continue;
+        places.set(node.id, "root");
+        const kids = children.get(node.id) ?? [];
+        if (this.mode === "timeline") { kids.forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); }); continue; }
+        const pending = kids.map(kid => ({ kid, side: balancedSideOf(node, kid) }));
+        for (let next = pending.pop(); next; next = pending.pop()) {
+          places.set(next.kid.id, next.side);
+          for (const kid of children.get(next.kid.id) ?? []) pending.push({ kid, side: next.side });
+        }
+      }
+    }
+    return { byId, children, places };
   }
 
   /** A drop on a slot: a topic joins the node as a branch; a failed move puts the tree back. */

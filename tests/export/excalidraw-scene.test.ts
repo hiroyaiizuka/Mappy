@@ -134,6 +134,35 @@ describe('buildScene', () => {
     }
   });
 
+  it('uses the balanced layout when requested: stages on both sides of the root, mirrored connectors as polylines', () => {
+    const contents = sceneContents(parseMarkdown(SOURCE, 'Note'));
+    const scene = buildScene(contents, measures(contents), 'balanced', new Set(), [10, 20]);
+    const role = (nodeId: string): string | undefined => contents.nodes.find(node => node.id === nodeId)?.role;
+    const root = scene.blocks.find(block => role(block.nodeId) === 'root');
+    const stages = scene.blocks.filter(block => block.kind === 'label' && role(block.nodeId) === 'stage');
+    expect(root && stages.length === 2).toBeTruthy();
+    if (!root) return;
+    const [first, second] = stages;
+    // はじめに (first) hangs right of the root, 回復する (second) left, both centred on the root's height.
+    expect(first?.x).toBe(root.x + root.width + 80);
+    expect((second?.x ?? 0) + (second?.width ?? 0)).toBe(root.x - 80);
+    expect(stages.every(stage => stage.y + stage.height / 2 === root.y + root.height / 2)).toBe(true);
+    expect(scene.bounds).toMatchObject({ x: 10, y: 20 });
+    expect(Math.min(...scene.blocks.map(block => block.x))).toBe(10);
+    // The left connector runs from the root's left edge to the stage's right edge; the right one is the map's shape.
+    const toSecond = scene.lines.find(line => line[0]?.[0] === root.x);
+    const toFirst = scene.lines.find(line => line[0]?.[0] === root.x + root.width);
+    expect(toSecond?.[toSecond.length - 1]).toEqual([(second?.x ?? 0) + (second?.width ?? 0), (second?.y ?? 0) + (second?.height ?? 0) / 2]);
+    expect(toFirst?.[toFirst.length - 1]).toEqual([first?.x, (first?.y ?? 0) + (first?.height ?? 0) / 2]);
+    for (const line of scene.lines) {
+      for (let index = 1; index < line.length; index += 1) {
+        const [ax, ay] = line[index - 1] ?? [NaN, NaN];
+        const [bx, by] = line[index] ?? [NaN, NaN];
+        expect(ax === bx || ay === by).toBe(true);
+      }
+    }
+  });
+
   it('skips nodes without measurements', () => {
     const contents = sceneContents(parseMarkdown(SOURCE, 'Note'));
     const partial = measures(contents);

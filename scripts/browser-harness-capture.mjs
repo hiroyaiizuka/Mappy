@@ -16,7 +16,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
-import { CdpClosedError, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { CdpClosedError, Page, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
@@ -33,7 +33,7 @@ const worldPoint = (view, point, canvas) => ({
 });
 
 /** Runs the scenario list, recording PASS/FAIL without stopping on the first failure. */
-class Recorder {
+export class Recorder {
   constructor(page, directory) { this.page = page; this.directory = directory; this.cases = []; this.index = 0; }
 
   async run(id, operation, expectation, body) {
@@ -103,6 +103,46 @@ async function captureFixtures(recorder, page, timings) {
       return `${timing.nodes} ノード、scale ${view.scale.toFixed(4)}、setState ${timing.stateMs.toFixed(1)} ms、初回配置 ${timing.firstLayoutMs.toFixed(1)} ms、安定 ${timing.settledMs.toFixed(1)} ms`;
     });
   }
+}
+
+/**
+ * Which side of the body root every node sits on in the balanced layout, from the DOM rects and the
+ * snapshot's tree: each first-level child with its source index and side, deeper nodes that are not on
+ * their first-level ancestor's side (`strays`), and the vertical centres of the root and of each side's extent.
+ */
+async function balancedSides(page) {
+  return page.evaluate(`(() => {
+    const nodes = Array.from(document.querySelectorAll('.mappy-node'));
+    const rects = new Map(nodes.map(node => [node.dataset.nodeId, node.getBoundingClientRect()]));
+    const titles = new Map(nodes.map(node => [node.dataset.nodeId, node.querySelector('.mappy-node-label')?.textContent?.trim() ?? '']));
+    const doc = window.__mappyHarness.view.snapshot().document;
+    const parents = new Map(doc.nodes.map(node => [node.id, node.parentId]));
+    const rootEl = nodes.find(node => node.classList.contains('is-root'));
+    if (!rootEl) return { error: 'no .is-root node on screen' };
+    const rootId = rootEl.dataset.nodeId;
+    const root = rootEl.getBoundingClientRect();
+    const children = new Map();
+    for (const [id, parentId] of parents) { if (!children.has(parentId)) children.set(parentId, []); children.get(parentId).push(id); }
+    const sideOf = rect => rect.x + rect.width / 2 < root.x + root.width / 2 ? 'left' : 'right';
+    const stages = (children.get(rootId) ?? []).filter(id => rects.has(id)).map((id, index) => ({ id, index, title: titles.get(id), side: sideOf(rects.get(id)) }));
+    const expected = new Map();
+    const pending = stages.map(stage => ({ id: stage.id, side: stage.side }));
+    while (pending.length > 0) { const next = pending.pop(); expected.set(next.id, next.side); for (const child of children.get(next.id) ?? []) pending.push({ id: child, side: next.side }); }
+    const strays = []; let unmatched = 0; let rightCount = 0; let leftCount = 0;
+    const columns = { right: [], left: [] };
+    for (const [id, rect] of rects) {
+      if (id === rootId) continue;
+      const want = expected.get(id);
+      if (!want) { unmatched += 1; continue; }
+      const side = sideOf(rect);
+      if (side !== want) strays.push(titles.get(id));
+      if (side === 'right') rightCount += 1; else leftCount += 1;
+      columns[side].push(rect);
+    }
+    // Each side is a column of subtrees centred on the root, so the extent of all its nodes is centred there too.
+    const centre = column => column.length ? (Math.min(...column.map(r => r.top)) + Math.max(...column.map(r => r.bottom))) / 2 : NaN;
+    return { stages, strays, unmatched, rightCount, leftCount, rootCentre: root.top + root.height / 2, rightCentre: centre(columns.right), leftCentre: centre(columns.left) };
+  })()`).then(result => { expect(!result.error, result.error); return result; });
 }
 
 /** The harness's description of the node with this title (rect, toggle, flags); missing nodes fail the case. */
@@ -302,12 +342,99 @@ async function captureOperations(recorder, page) {
     }
   });
 
-  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('balanced', '左下の「左右バランス」', 'ルートが中央、第一階層が原文順に右・左・右・左、下位はその側へ伸び、ノード数は変わらない。`mappy-layout: balanced` が書かれる', async () => {
+    const before = (await page.harness('h.nodes()')).length;
+    const button = await page.harness('h.button("左右バランス")');
+    expect(button, 'balanced button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
-    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy').length`);
-    expect(timeline === 0, `${timeline} nodes still in timeline or hierarchy`);
+    const balanced = await page.evaluate(`document.querySelectorAll('.mappy-node.is-balanced').length`);
+    expect(balanced === before, `${balanced} balanced nodes of ${before}`);
+    const sides = await balancedSides(page);
+    expect(sides.stages.length > 1, 'the root has fewer than two children');
+    // First level: even source indices right of the root, odd ones left; deeper nodes on their branch's side.
+    const wrongStage = sides.stages.filter(stage => stage.side !== (stage.index % 2 === 0 ? 'right' : 'left'));
+    expect(wrongStage.length === 0, `stages on the wrong side: ${JSON.stringify(wrongStage.map(stage => `${stage.index}:${stage.title}`))}`);
+    expect(sides.strays.length === 0, `deeper nodes off their branch's side: ${JSON.stringify(sides.strays)}`);
+    expect(sides.unmatched === 0, `${sides.unmatched} nodes without a first-level ancestor (ids of the snapshot and the DOM differ?)`);
+    // The root sits between the two columns, vertically centred on each.
+    expect(Math.abs(sides.rightCentre - sides.rootCentre) < 1.5 && Math.abs(sides.leftCentre - sides.rootCentre) < 1.5,
+      `columns not centred on the root: root ${sides.rootCentre.toFixed(1)}, right ${sides.rightCentre.toFixed(1)}, left ${sides.leftCentre.toFixed(1)}`);
+    const activity = await page.harness('h.activity');
+    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"balanced"')), 'balanced preference was not written through processFrontMatter');
+    return `${balanced} nodes, 第一階層 ${sides.stages.map(stage => `${stage.index}:${stage.side === 'right' ? '右' : '左'}`).join(' ')}、右 ${sides.rightCount} / 左 ${sides.leftCount} ノード`;
+  });
+
+  await recorder.run('balanced-collapse', `左右バランスで左側の「${title}」の開閉ボタン`, '24 の件数がノードの左に出て、ノードが減り、右側の枝は動かず、再展開で戻る', async () => {
+    const before = await page.harness('h.nodes()');
+    const node = await nodeRect(title);
+    expect(node.toggle, 'fold control missing');
+    // The fold control of a left-side parent sits on its left stem.
+    expect(node.toggle.x + node.toggle.width / 2 < node.rect.x, 'fold control is not left of the node');
+    const root = await nodeRect('不均等な枝');
+    const rightSide = before.filter(item => item.rect.x > root.rect.x + root.rect.width).map(item => [item.id, item.rect.x, item.rect.y]);
+    expect(rightSide.length > 0, 'no nodes right of the root');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    try {
+      const after = await nodeRect(title);
+      expect(after.collapsed, 'node did not collapse');
+      const badge = await page.evaluate(`document.querySelector('.mappy-node.is-collapsed .mappy-node-toggle-mark')?.textContent`);
+      expect(badge === '24', `badge shows ${badge}`);
+      expect(after.toggle.x + after.toggle.width < after.rect.x + 1, 'badge is not left of the node');
+      const nodes = await page.harness('h.nodes()');
+      expect(nodes.length === before.length - 24, `${nodes.length} nodes after collapsing 24`);
+      // Folding a left branch leaves the right column where it was.
+      const moved = rightSide.filter(([id, x, y]) => { const now = nodes.find(item => item.id === id); return !now || Math.abs(now.rect.x - x) > 0.5 || Math.abs(now.rect.y - y) > 0.5; });
+      expect(moved.length === 0, `${moved.length} right-side nodes moved when a left branch folded`);
+      return `badge ${badge} 左側、${before.length} → ${nodes.length} nodes、右側 ${rightSide.length} ノードは不動`;
+    } finally {
+      const current = await nodeRect(title);
+      if (current.collapsed && current.toggle) {
+        await page.click(center(current.toggle).x, center(current.toggle).y);
+        await page.settle();
+      }
+      const restored = (await page.harness('h.nodes()')).length;
+      expect(restored === before.length, `${restored} nodes after re-expanding`);
+    }
+  });
+
+  await recorder.run('balanced-scene', '左右バランスの表示から Excalidraw 挿入のシーンを組み立てる', '各ノードのブロックがマップ上の位置（ルート基準）と一致し、左側のブロックはルートの左、線は直角の折れ線', async () => {
+    const scene = await page.harness('h.scene()');
+    expect(scene && scene.mode === 'balanced', `scene mode ${scene?.mode}`);
+    const view = await page.harness('h.viewport()');
+    const canvas = await page.harness('h.canvasRect()');
+    const nodes = await page.harness('h.nodes()');
+    const rootNode = nodes.find(item => item.id === scene.visualRootId);
+    const rootBlock = scene.blocks.find(block => block.id === scene.visualRootId);
+    expect(rootNode && rootBlock, 'root missing from the scene or the DOM');
+    const rootWorld = worldPoint(view, rootNode.rect, canvas);
+    let compared = 0;
+    let left = 0;
+    for (const block of scene.blocks) {
+      const node = nodes.find(item => item.id === block.id);
+      expect(node, `scene block ${block.id} has no node on screen`);
+      const world = worldPoint(view, node.rect, canvas);
+      const dx = (block.x - rootBlock.x) - (world.x - rootWorld.x);
+      const dy = (block.y - rootBlock.y) - (world.y - rootWorld.y);
+      expect(Math.abs(dx) < 1.5 && Math.abs(dy) < 1.5, `${node.title}: scene offset differs from the map by (${dx.toFixed(2)}, ${dy.toFixed(2)})`);
+      compared += 1;
+      if (block.x + block.width < rootBlock.x) left += 1;
+    }
+    expect(compared === nodes.length && compared === scene.blocks.length, `${compared} blocks compared for ${nodes.length} nodes and ${scene.blocks.length} blocks`);
+    expect(left > 0, 'no block left of the root in the scene');
+    expect(scene.lines.length === scene.blocks.length - 1, `${scene.lines.length} lines for ${scene.blocks.length} blocks`);
+    const bent = scene.lines.filter(line => line.some((point, index) => index > 0 && point[0] !== line[index - 1][0] && point[1] !== line[index - 1][1]));
+    expect(bent.length === 0, `${bent.length} lines with a diagonal segment`);
+    return `${compared} ブロックの位置がマップと一致（許容 1.5px）、左側 ${left} ブロック、線 ${scene.lines.length} 本すべて直角`;
+  });
+
+  await recorder.run('timeline-back', '左下の「通常マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy, .mappy-node.is-balanced').length`);
+    expect(timeline === 0, `${timeline} nodes still in timeline, hierarchy or balanced`);
     const activity = await page.harness('h.activity');
     const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
     expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
@@ -419,6 +546,39 @@ async function captureOperations(recorder, page) {
     expect(restored === before, `nodes after expand ${restored}`);
     return `${before} → ${folded} → ${restored}、閉じてから安定まで約 ${foldMs} ms（settle の待ち時間込み）`;
   });
+
+  await recorder.run('fold-2000-balanced', 'performance-2000 を左右バランスで開き、左側の「第2節」へ寄って分岐点を閉じる → Space で開く', '100 の節が右・左に 50 ずつ、19 ノードが隠れ、再展開で戻る', async () => {
+    const timing = await loadFixture(page, 'performance-2000', 'balanced');
+    // A layout switch through the view state keeps the viewport, so start from the whole map like a fresh open.
+    const fit = await page.harness('h.button("全体表示")');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+    const before = (await page.harness('h.nodes()')).length;
+    expect(before === timing.nodes, `DOM has ${before} nodes, parser found ${timing.nodes}`);
+    const sides = await balancedSides(page);
+    expect(sides.stages.length === 100 && sides.stages.filter(stage => stage.side === 'right').length === 50, `stages: ${sides.stages.length}, right ${sides.stages.filter(stage => stage.side === 'right').length}`);
+    expect(sides.strays.length === 0 && sides.unmatched === 0, `${sides.strays.length} strays, ${sides.unmatched} unmatched`);
+    let node = await nodeRect('第2節');
+    for (let step = 0; step < 12 && (await page.harness('h.viewport()')).scale < 0.8; step += 1) {
+      const point = center(node.rect);
+      await page.wheel(point.x, point.y, 0, -200, 2);
+      node = await nodeRect('第2節');
+    }
+    expect(node.toggle, 'fold control missing on 第2節');
+    expect(node.toggle.x + node.toggle.width / 2 < node.rect.x, 'fold control of the left-side 第2節 is not on its left');
+    const startFold = Date.now();
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    const folded = (await page.harness('h.nodes()')).length;
+    const foldMs = Date.now() - startFold;
+    expect(folded === before - 19, `nodes ${before} → ${folded}`);
+    await page.key(' ', 'Space', 32);
+    await page.settle();
+    const restored = (await page.harness('h.nodes()')).length;
+    expect(restored === before, `nodes after expand ${restored}`);
+    expect(!(await page.harness('h.source()')).includes('mappy-layout'), 'opening through the view state wrote mappy-layout');
+    return `初回配置 ${timing.firstLayoutMs.toFixed(1)} ms、安定 ${timing.settledMs.toFixed(1)} ms、${before} → ${folded} → ${restored}、閉じてから安定まで約 ${foldMs} ms（settle の待ち時間込み）`;
+  });
 }
 
 /**
@@ -450,8 +610,8 @@ async function captureHierarchyRows(recorder, page) {
   });
 
   // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
-  await recorder.run('hierarchy-rows-back', '左下の「マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     expect(button, 'map button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
@@ -459,6 +619,107 @@ async function captureHierarchyRows(recorder, page) {
     expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
     const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
     expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+  });
+}
+
+/** Computed colours that tell the two placeholder palettes apart: the page, the map canvas, one node and one link. */
+async function themeColors(page) {
+  return page.evaluate(`(() => {
+    const color = (element, property) => element ? getComputedStyle(element)[property] : null;
+    const pane = document.getElementById('harness-pane');
+    const node = pane.querySelector('.mappy-node:not(.is-root)');
+    return {
+      page: color(document.body, 'backgroundColor'),
+      canvas: color(pane.querySelector('.mappy-canvas'), 'backgroundColor'),
+      text: color(node, 'color'),
+      link: color(pane.querySelector('.mappy-node a.internal-link'), 'color'),
+      scheme: color(pane.querySelector('.mappy-view'), 'colorScheme'),
+    };
+  })()`);
+}
+
+/** The harness palettes (harness.css, stand-ins laid out like app.css): what each theme should resolve to. */
+const PALETTE = {
+  light: { background: 'rgb(255, 255, 255)', page: 'rgb(246, 246, 246)', text: 'rgb(34, 34, 34)' },
+  dark: { background: 'rgb(30, 30, 30)', page: 'rgb(38, 38, 38)', text: 'rgb(218, 218, 218)' },
+};
+
+/**
+ * M14 (LEV-60): the settings' theme puts `theme-light` / `theme-dark` on the map container only,
+ * and styles.css re-derives the palette there. Each combination of page theme and map theme is
+ * checked by computed colour, then left as it was (page light, map following the page).
+ */
+async function captureThemes(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  let lightLink = null;
+  await recorder.run('theme-follow-light', 'ページ明色、マップ「Obsidian に従う」（既定）', 'コンテナに theme class がなく、キャンバスはページと同じ明色の配色', async () => {
+    await page.harness('h.setPageTheme("light")');
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.length === 0, `container carries ${themes.container.join(' ')}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.light.background && colors.text === PALETTE.light.text, `canvas ${colors.canvas}, text ${colors.text}`);
+    expect(colors.link, 'no internal link rendered in a node');
+    lightLink = colors.link;
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, color-scheme ${colors.scheme}`;
+  });
+
+  await recorder.run('theme-dark-on-light', 'ページ明色のまま、マップ「暗色」→「閉じて開き直す」', 'コンテナだけが theme-dark。キャンバス・文字・リンクが暗色の配色になり、ページの背景は明色のまま。開き直しても保たれる', async () => {
+    await page.harness('h.setMapTheme("dark")');
+    await page.settle();
+    let themes = await page.harness('h.themes()');
+    expect(themes.container.join(' ') === 'theme-dark' && themes.page === 'light', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    let colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.dark.background, `canvas ${colors.canvas}`);
+    expect(colors.text === PALETTE.dark.text, `text ${colors.text}`);
+    expect(colors.page === PALETTE.light.page, `page background ${colors.page}`);
+    expect(colors.link && colors.link !== lightLink, `link ${colors.link} did not change from ${lightLink}`);
+    expect(colors.scheme === 'dark', `color-scheme ${colors.scheme}`);
+    const darkLink = colors.link;
+    await page.harness('h.reopen()');
+    await page.settle();
+    themes = await page.harness('h.themes()');
+    colors = await themeColors(page);
+    expect(themes.container.join(' ') === 'theme-dark' && colors.canvas === PALETTE.dark.background, `after reopen: ${themes.container.join(' ')}, canvas ${colors.canvas}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${darkLink}（明色時 ${lightLink}）, page ${colors.page}, color-scheme ${colors.scheme}, 開き直し後も theme-dark`;
+  });
+
+  await recorder.run('theme-light-on-dark', 'ページ暗色、マップ「明色」', 'コンテナだけが theme-light。キャンバス・文字が明色の配色になり、ページの背景は暗色', async () => {
+    await page.harness('h.setPageTheme("dark")');
+    await page.harness('h.setMapTheme("light")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.join(' ') === 'theme-light' && themes.page === 'dark', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.light.background, `canvas ${colors.canvas}`);
+    expect(colors.text === PALETTE.light.text, `text ${colors.text}`);
+    expect(colors.page === PALETTE.dark.page, `page background ${colors.page}`);
+    expect(colors.link === lightLink, `link ${colors.link} differs from the light page's ${lightLink}`);
+    expect(colors.scheme === 'light', `color-scheme ${colors.scheme}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, page ${colors.page}, color-scheme ${colors.scheme}`;
+  });
+
+  await recorder.run('theme-follow-dark', 'ページ暗色のまま、マップ「Obsidian に従う」', 'theme class が外れ、キャンバスがページと同じ暗色に戻る', async () => {
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.length === 0, `container carries ${themes.container.join(' ')}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.dark.background && colors.text === PALETTE.dark.text, `canvas ${colors.canvas}, text ${colors.text}`);
+    expect(colors.page === PALETTE.dark.page, `page background ${colors.page}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, page ${colors.page}`;
+  });
+
+  // Runs even when a case above failed, so the later cases see the page as they always did.
+  await recorder.run('theme-back', 'ページ明色、マップ「Obsidian に従う」に戻す', '最初の状態（明色、theme class なし）に戻る', async () => {
+    await page.harness('h.setPageTheme("light")');
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    const colors = await themeColors(page);
+    expect(themes.container.length === 0 && themes.page === 'light', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    expect(colors.canvas === PALETTE.light.background && colors.page === PALETTE.light.page, `canvas ${colors.canvas}, page ${colors.page}`);
   });
 }
 
@@ -799,6 +1060,11 @@ async function captureTopicOperations(recorder, page) {
     await snapCase('timeline', 'topic-snap-timeline-axis', 'タイムライン', ['記録する', '習慣化する'], '軸上の「記録する」と「習慣化する」の間', (topic, [left, right], from) => ({
       x: (left.x + left.width + right.x) / 2 + (from.x - (topic.x + topic.width / 2)), y: left.y + left.height / 2 + (from.y - (topic.y + topic.height / 2)),
     }), '- 記録する\n  - ふりかえる\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n- 習慣化する\n', '記録する の後ろのステージになる');
+    // Balanced: 記録する (the second child) hangs left of the root with its leaf ふりかえる on its left, so the child slot is
+    // the mirror image of the map's: the root's right edge 24 px left of the leaf, level with it.
+    await snapCase('balanced', 'topic-snap-balanced', '左右バランス', ['ふりかえる'], '左側の「ふりかえる」の左隣', (topic, [goal], from) => ({
+      x: goal.x - 24 - topic.width + (from.x - topic.x), y: goal.y + (from.y - topic.y),
+    }), '  - ふりかえる\n    - 位置のないトピック\n      `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n      - 既定位置\n', 'ふりかえる の子になる');
   } finally {
     // Back to the map, with its own Fit, for the cases that follow.
     await switchLayout('mindmap');
@@ -846,6 +1112,366 @@ async function captureTopicOperations(recorder, page) {
   });
 }
 
+/** Width and height from a PNG's IHDR chunk. */
+function pngSize(buffer) {
+  expect(buffer.length > 24 && buffer.toString('latin1', 1, 4) === 'PNG', 'not a PNG');
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+/** Parse an exported SVG inside the page and report what it holds; the counts come from the file, not from the exporter. */
+async function svgFacts(page, svg) {
+  return page.evaluate(`(() => {
+    const parsed = new DOMParser().parseFromString(${JSON.stringify(svg)}, 'image/svg+xml');
+    const error = parsed.querySelector('parsererror');
+    if (error) return { error: error.textContent };
+    const images = Array.from(parsed.querySelectorAll('img'));
+    const root = parsed.documentElement;
+    return {
+      className: root.getAttribute('class'), width: Number(root.getAttribute('width')), height: Number(root.getAttribute('height')),
+      viewBox: root.getAttribute('viewBox'), objects: parsed.querySelectorAll('foreignObject').length, paths: parsed.querySelectorAll('.mappy-edges path').length,
+      badges: Array.from(parsed.querySelectorAll('.mappy-fold text'), text => text.textContent), images: images.length,
+      dataImages: images.filter(image => (image.getAttribute('src') ?? '').startsWith('data:')).length,
+      missing: parsed.querySelectorAll('.mappy-export-missing-image').length,
+      labels: Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent.trim()),
+      background: parsed.querySelector('.mappy-export-background')?.getAttribute('fill'),
+    };
+  })()`);
+}
+
+/**
+ * Open the written SVG in a second tab of the same Chrome and read back where its
+ * nodes render: at scale 1 a foreignObject sits at its layout coordinates, so the
+ * placement in the file equals the map view's (the view only pans and scales them).
+ */
+async function renderSvgFile(page, file, screenshot, expectedNodes) {
+  const cdp = page.cdp;
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  try {
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    const tab = new Page(cdp, sessionId);
+    await tab.send('Page.enable');
+    await tab.send('Runtime.enable');
+    await tab.send('Emulation.setDeviceMetricsOverride', { ...WINDOW, deviceScaleFactor: 1, mobile: false });
+    await tab.send('Page.navigate', { url: pathToFileURL(file).href });
+    const deadline = Date.now() + 15000;
+    while ((await tab.evaluate(`document.readyState`)) !== 'complete') {
+      if (Date.now() > deadline) throw new Error('The SVG tab did not finish loading.');
+      await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
+    }
+    // Let the data URL images decode before the screenshot.
+    await new Promise(resolveWait => { setTimeout(resolveWait, 500); });
+    const rendered = await tab.evaluate(`(() => {
+      const svg = document.documentElement;
+      const box = svg.viewBox.baseVal;
+      const origin = svg.getBoundingClientRect();
+      const objects = Array.from(document.querySelectorAll('foreignObject'));
+      const scale = origin.width / box.width;
+      return {
+        tag: svg.tagName, objects: objects.length, scale,
+        placed: objects.slice(0, 200).map(object => {
+          const rect = object.getBoundingClientRect();
+          return { id: object.getAttribute('data-node-id'), x: (rect.x - origin.x) / scale + box.x, y: (rect.y - origin.y) / scale + box.y,
+            declaredX: Number(object.getAttribute('x')), declaredY: Number(object.getAttribute('y')), text: object.textContent.trim().slice(0, 40) };
+        }),
+        images: Array.from(document.querySelectorAll('img')).map(image => ({ complete: image.complete, natural: image.naturalWidth })),
+      };
+    })()`);
+    expect(rendered.tag === 'svg', `document root is ${rendered.tag}`);
+    expect(rendered.objects === expectedNodes, `${rendered.objects} foreignObjects rendered, expected ${expectedNodes}`);
+    const drifted = rendered.placed.filter(item => Math.abs(item.x - item.declaredX) > 1 || Math.abs(item.y - item.declaredY) > 1);
+    expect(drifted.length === 0, `${drifted.length} nodes render away from their declared position: ${JSON.stringify(drifted.slice(0, 3))}`);
+    const empty = rendered.placed.filter(item => !item.text);
+    expect(empty.length === 0, `${empty.length} rendered nodes have no text`);
+    const broken = rendered.images.filter(image => !image.complete || image.natural === 0);
+    expect(broken.length === 0, `${broken.length} of ${rendered.images.length} images did not decode from their data URL`);
+    const { data } = await tab.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile(screenshot, Buffer.from(data, 'base64'));
+    return rendered;
+  } finally {
+    await cdp.send('Target.closeTarget', { targetId });
+  }
+}
+
+/**
+ * M13 (LEV-59): the SVG and PNG the export command would save, produced by the same
+ * capture on this page and written next to the record. The SVG is opened in Chrome
+ * to confirm foreignObject nodes and data URL images render; the PNG is checked by size.
+ */
+export async function captureExport(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  const title = '多数の兄弟';
+  const node = await nodeInfo(page, title);
+  expect(node.toggle, 'fold control missing');
+  await page.click(center(node.toggle).x, center(node.toggle).y);
+  await page.settle();
+  const shown = (await page.harness('h.nodes()')).length;
+  const original = await page.harness('h.source()');
+  const svgFile = join(recorder.directory, 'export-uneven-branches.svg');
+
+  await recorder.run('export-svg', `uneven-branches で「${title}」を閉じ、h.export.svg() で SVG を書き出す`, 'foreignObject の数が表示ノード数、線の数がノード数 − 1、閉じた枝のバッジ 24、画像はすべて data URL、欠落画像のノードも残る', async () => {
+    const exported = await page.harness('h.export.svg()');
+    await writeFile(svgFile, exported.svg);
+    const facts = await svgFacts(page, exported.svg);
+    expect(!facts.error, `SVG is not well formed: ${facts.error}`);
+    expect(facts.objects === shown, `${facts.objects} foreignObjects for ${shown} visible nodes`);
+    expect(facts.paths === shown - 1, `${facts.paths} paths for ${shown} nodes`);
+    expect(facts.badges.length === 1 && facts.badges[0] === '24', `badges: ${JSON.stringify(facts.badges)}`);
+    expect(facts.images > 0 && facts.dataImages === facts.images, `${facts.dataImages} of ${facts.images} images are data URLs`);
+    expect(facts.missing === 0, `${facts.missing} placeholders for unreadable images`);
+    expect(facts.labels.includes('画像の欠落') && facts.labels.includes('リンクと画像'), 'nodes with a missing image or links are absent');
+    expect(facts.className === 'mappy-export theme-light', `class: ${facts.className}`);
+    expect(facts.width === exported.width && facts.height === exported.height, `size ${facts.width}×${facts.height}`);
+    expect((await page.harness('h.source()')) === original, 'the note changed during the export');
+    return `${facts.objects} ノード、線 ${facts.paths}、画像 ${facts.dataImages}/${facts.images} を data URL 化、${exported.width}×${exported.height}、${(exported.svg.length / 1024).toFixed(0)} KB、${exported.ms.toFixed(0)} ms → ${relative(root, svgFile)}`;
+  });
+
+  await recorder.run('export-svg-render', '書き出した SVG を Chrome の別タブで開く', 'foreignObject のノードが宣言した座標に描かれ、文字と data URL の画像が見える', async () => {
+    const rendered = await renderSvgFile(page, svgFile, join(recorder.directory, 'export-uneven-branches-rendered.png'), shown);
+    return `${rendered.objects} ノードを描画、画像 ${rendered.images.length} 枚が復号、位置のずれ 1 px 未満 → export-uneven-branches-rendered.png`;
+  });
+
+  await recorder.run('export-png', 'h.export.png() で同じ SVG をラスタ化', 'PNG の寸法が SVG のサイズ × scale に一致する', async () => {
+    const exported = await page.harness('h.export.png()');
+    const buffer = Buffer.from(exported.dataUrl.split(',')[1] ?? '', 'base64');
+    const file = join(recorder.directory, 'export-uneven-branches.png');
+    await writeFile(file, buffer);
+    const size = pngSize(buffer);
+    expect(size.width === exported.width && size.height === exported.height, `PNG is ${size.width}×${size.height}, expected ${exported.width}×${exported.height}`);
+    expect(exported.scale === 2, `scale ${exported.scale}`);
+    return `${size.width}×${size.height} px（scale ${exported.scale}）、${(buffer.length / 1024).toFixed(0)} KB、SVG ${exported.svgMs.toFixed(0)} ms + ラスタ化 ${exported.ms.toFixed(0)} ms → ${relative(root, file)}`;
+  });
+
+  // Leave the fixture as it was loaded.
+  const collapsed = await nodeInfo(page, title);
+  if (collapsed.collapsed && collapsed.toggle) {
+    await page.click(center(collapsed.toggle).x, center(collapsed.toggle).y);
+    await page.settle();
+  }
+
+  await recorder.run('export-2000', 'performance-2000-links で SVG と PNG を書き出す', '2,000 ノードで完了する。PNG はピクセル上限に収まるよう縮小される', async () => {
+    await loadFixture(page, 'performance-2000-links');
+    const count = (await page.harness('h.nodes()')).length;
+    const svg = await page.harness('h.export.svg()');
+    const facts = await svgFacts(page, svg.svg);
+    expect(!facts.error, `SVG is not well formed: ${facts.error}`);
+    expect(facts.objects === count && facts.paths === count - 1, `${facts.objects} objects / ${facts.paths} paths for ${count} nodes`);
+    expect(facts.dataImages === facts.images && facts.images === Math.floor((count - 1) / 5), `${facts.dataImages}/${facts.images} images`);
+    await writeFile(join(recorder.directory, 'export-performance-2000-links.svg'), svg.svg);
+    const png = await page.harness('h.export.png()');
+    const buffer = Buffer.from(png.dataUrl.split(',')[1] ?? '', 'base64');
+    const size = pngSize(buffer);
+    expect(size.width === png.width && size.height === png.height, `PNG is ${size.width}×${size.height}`);
+    expect(size.width * size.height <= 8192 * 8192 + 1, `PNG area ${size.width * size.height} exceeds the desktop cap`);
+    await writeFile(join(recorder.directory, 'export-performance-2000-links.png'), buffer);
+    return `${count} ノード: SVG ${(svg.svg.length / 1024).toFixed(0)} KB を ${svg.ms.toFixed(0)} ms、PNG ${size.width}×${size.height}（scale ${png.scale.toFixed(3)}、${(buffer.length / 1024).toFixed(0)} KB）を ${png.ms.toFixed(0)} ms`;
+  });
+}
+
+const EMBED_HOST = 'embed-host';
+const EMBED_HOST_LIVE = 'embed-host-live';
+const EMBED_EXPECTED = [
+  { src: 'Fixtures/uneven-branches.md', layout: 'mindmap' },
+  { src: 'Fixtures/embed-timeline.md', layout: 'timeline' },
+  { src: 'Fixtures/embed-hierarchy.md', layout: 'hierarchy' },
+  { src: 'Fixtures/embed-hierarchy.md#同じ名前', layout: 'hierarchy' },
+  { src: 'Fixtures/embed-2000.md', layout: 'mindmap' },
+];
+const EMBED_PLAIN = ['heading-document', '存在しないノート', 'embed-hierarchy#^block'];
+const EMBED_NOTES = ['Fixtures/embed-host.md', 'Fixtures/uneven-branches.md', 'Fixtures/embed-timeline.md', 'Fixtures/embed-hierarchy.md', 'Fixtures/embed-2000.md'];
+
+/** Every map on the host: the expected notes in order, each layout as its own frontmatter says, every node inside its frame, never magnified. */
+function expectEmbeds(embeds) {
+  const maps = embeds.filter(embed => embed.kind === 'map');
+  const plain = embeds.filter(embed => embed.kind === 'plain');
+  expect(maps.length === EMBED_EXPECTED.length, `${maps.length} maps, expected ${EMBED_EXPECTED.length}`);
+  EMBED_EXPECTED.forEach((wanted, index) => {
+    const embed = maps[index];
+    expect(embed.src === wanted.src, `map ${index}: ${embed.src}, expected ${wanted.src}`);
+    expect(embed.layout === wanted.layout, `${embed.src}: layout ${embed.layout}, expected ${wanted.layout}`);
+    expect(embed.nodes.length > 0 && !embed.message, `${embed.src}: ${embed.nodes.length} nodes, message ${embed.message}`);
+    expect(embed.scale !== null && embed.scale <= 1.0001, `${embed.src}: scale ${embed.scale}`);
+    const outside = embed.nodes.filter(node => !inside(node.rect, embed.rect, 2));
+    expect(outside.length === 0, `${embed.src}: ${outside.length} nodes outside the frame`);
+  });
+  expect(plain.map(embed => embed.src).join(',') === EMBED_PLAIN.join(','), `plain embeds: ${plain.map(embed => embed.src).join(', ')}`);
+  return maps;
+}
+
+async function noteSources(page) {
+  const sources = {};
+  for (const path of EMBED_NOTES) sources[path] = await page.harness(`h.noteSource(${JSON.stringify(path)})`);
+  return sources;
+}
+
+function expectUnchanged(before, after) {
+  for (const path of EMBED_NOTES) expect(before[path] === after[path], `${path} changed`);
+}
+
+async function revealEmbed(page, src) {
+  await page.harness(`h.revealEmbed(${JSON.stringify(src)})`);
+  await page.settle();
+}
+
+async function embedNode(page, src, title) {
+  const embed = (await page.harness('h.embeds()')).find(candidate => candidate.src === src);
+  expect(embed, `embed missing: ${src}`);
+  const node = embed.nodes.find(candidate => candidate.title === title);
+  expect(node, `node missing in ${src}: ${title}`);
+  return { embed, node };
+}
+
+/** docs/harness.md E34 on this page: a note that embeds maps, in the reading-view path and the live-preview path. */
+async function captureEmbeds(recorder, page) {
+  // Earlier cases wrote `mappy: true` into heading-document's in-memory frontmatter (the page never rewrites the text);
+  // re-putting the notes as they are re-reads the frontmatter from the text, so the host sees the fixtures as shipped.
+  for (const path of ['Fixtures/heading-document.md', ...EMBED_NOTES]) {
+    await page.harness(`h.putNote(${JSON.stringify(path)}, h.noteSource(${JSON.stringify(path)}))`);
+  }
+  const sources = await noteSources(page);
+  let timing = null;
+
+  await recorder.run('embed-reading', `${EMBED_HOST} を読み込む（閲覧モード: ホストの区画の placeholder を差し替え）`,
+    '5 つの `![[…]]` が読み取り専用のマップ（通常・タイムライン・階層図・#見出し の部分木・2,000 ノード）になり、mappy: true のないノート・存在しないノート・ブロック参照は通常の埋め込みのまま。ホストも元ノートも変わらない', async () => {
+    timing = await loadFixture(page, EMBED_HOST);
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    expectUnchanged(sources, await noteSources(page));
+    const live = await page.harness('h.liveEmbeds()');
+    expect(live === maps.length, `${live} live embeds`);
+    const nodes = maps.map(embed => embed.nodes.length);
+    return `マップ ${maps.length}（ノード ${nodes.join(' / ')}、scale ${maps.map(embed => embed.scale.toFixed(2)).join(' / ')}）、通常の埋め込み ${EMBED_PLAIN.length}、安定まで ${timing.settledMs.toFixed(0)} ms`;
+  });
+
+  await recorder.run('embed-first-level', '階層図の埋め込みまでスクロール', 'ルートと第一階層だけが見え、第一階層の各ノードに隠れた子孫の件数（回復する 4、記録する 2、習慣化する 1）。#見出し の埋め込みは最初の「同じ名前」（回復する の下）をルートにその 2 つの子を描く', async () => {
+    await revealEmbed(page, 'Fixtures/embed-hierarchy.md');
+    const embeds = await page.harness('h.embeds()');
+    const hierarchy = embeds.find(embed => embed.src === 'Fixtures/embed-hierarchy.md');
+    const titles = hierarchy.nodes.map(node => node.title).sort();
+    expect(titles.join(',') === ['講座の構成', '回復する', '記録する', '習慣化する'].sort().join(','), `hierarchy shows ${titles.join(', ')}`);
+    const counts = {};
+    for (const node of hierarchy.nodes) if (node.collapsed) counts[node.title] = await page.evaluate(`document.querySelector('.mappy-node[data-node-id="${node.id}"] .mappy-node-toggle-mark').textContent`);
+    expect(counts['回復する'] === '4' && counts['記録する'] === '2' && counts['習慣化する'] === '1', `fold counts ${JSON.stringify(counts)}`);
+    const section = embeds.find(embed => embed.src === 'Fixtures/embed-hierarchy.md#同じ名前');
+    const sectionTitles = section.nodes.map(node => node.title).sort();
+    expect(sectionTitles.join(',') === ['同じ名前', '十分に眠る', '週に一度は休む'].sort().join(','), `section shows ${sectionTitles.join(', ')}`);
+    return `階層図: ${titles.length} ノード、件数 ${JSON.stringify(counts)}。部分木: ${sectionTitles.join(' / ')}`;
+  });
+
+  await recorder.run('embed-fold-click', '階層図の埋め込みで「回復する」の開閉ボタンをクリック → もう一度クリック', '一段だけ開いて枠に収まり直し（同じ名前・休息の取り方が見え、その下は閉じたまま）、再クリックで戻る。元ノートは変わらない', async () => {
+    const src = 'Fixtures/embed-hierarchy.md';
+    const { node } = await embedNode(page, src, '回復する');
+    expect(node.toggle, 'no toggle on 回復する');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    const opened = (await page.harness('h.embeds()')).find(embed => embed.src === src);
+    const titles = opened.nodes.map(item => item.title);
+    expect(titles.includes('同じ名前') && titles.includes('休息の取り方') && !titles.includes('十分に眠る'), `after opening: ${titles.join(', ')}`);
+    const outside = opened.nodes.filter(item => !inside(item.rect, opened.rect, 2));
+    expect(outside.length === 0, `${outside.length} nodes outside the frame after opening`);
+    const again = (await embedNode(page, src, '回復する')).node;
+    await page.click(center(again.toggle).x, center(again.toggle).y);
+    await page.settle();
+    const closed = (await page.harness('h.embeds()')).find(embed => embed.src === src);
+    expect(closed.nodes.length === 4, `${closed.nodes.length} nodes after closing`);
+    expectUnchanged(sources, await noteSources(page));
+    return `開いて ${opened.nodes.length} ノード（scale ${opened.scale.toFixed(2)}）、閉じて ${closed.nodes.length}`;
+  });
+
+  await recorder.run('embed-2000', '2,000 ノードの埋め込みまでスクロール', 'ルート＋第一階層の 13 ノードだけを描き（残りは件数バッジ）、ホストの読み込み全体が 1 秒以内に安定する', async () => {
+    await revealEmbed(page, 'Fixtures/embed-2000.md');
+    const embed = (await page.harness('h.embeds()')).find(candidate => candidate.src === 'Fixtures/embed-2000.md');
+    expect(embed.nodes.length === 14, `${embed.nodes.length} nodes drawn for 2,000`);
+    const total = await page.evaluate(`document.querySelectorAll('.mappy-node').length`);
+    expect(timing && timing.settledMs < 1000, `host settled in ${timing?.settledMs} ms`);
+    return `描画 ${embed.nodes.length} ノード（ページ全体 ${total}）、ホスト全体の安定まで ${timing.settledMs.toFixed(0)} ms`;
+  });
+
+  await recorder.run('embed-source-change', '元ノート embed-timeline を書き換える（第 1 週の名前を変える）→ 元に戻す', 'タイムラインの埋め込みが新しい名前で描き直され、ホストは変わらない。戻すと元の名前に戻る', async () => {
+    const path = 'Fixtures/embed-timeline.md';
+    await revealEmbed(page, path);
+    const original = sources[path];
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original.replace('- 第 1 週: 準備', '- 第 1 週: 準備（更新）'))})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    const changed = (await page.harness('h.embeds()')).find(embed => embed.src === path);
+    expect(changed.nodes.some(node => node.title === '第 1 週: 準備（更新）'), `titles after change: ${changed.nodes.map(node => node.title).join(', ')}`);
+    const after = await noteSources(page);
+    expect(after['Fixtures/embed-host.md'] === sources['Fixtures/embed-host.md'], 'host changed');
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original)})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    const restored = (await page.harness('h.embeds()')).find(embed => embed.src === path);
+    expect(restored.nodes.some(node => node.title === '第 1 週: 準備'), `titles after restore: ${restored.nodes.map(node => node.title).join(', ')}`);
+    expectUnchanged(sources, await noteSources(page));
+    return `変更後 ${changed.nodes.length} ノード、復元後 ${restored.nodes.length} ノード`;
+  });
+
+  await recorder.run('embed-reopen', '「閉じて開き直す」', '古い埋め込みの Component が解放され（live の数が増えない）、同じ 5 つのマップが再表示される', async () => {
+    await page.harness('h.reopen()');
+    await page.settle();
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const live = await page.harness('h.liveEmbeds()');
+    expect(live === maps.length, `${live} live embeds after reopen`);
+    const stray = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    expect(stray === maps.length, `${stray} map frames in the document`);
+    return `live ${live}、枠 ${stray}`;
+  });
+
+  await recorder.run('embed-dark', 'ページのテーマを暗色にする（body の theme-dark、harness.css の仮の配色）', '配色の導き直しだけで枠・ノード・線が見え、崩れない（Obsidian のテーマそのものではない）', async () => {
+    await page.harness('h.setPageTheme("dark")');
+    await page.harness('h.scrollTo(0)');
+    await page.settle();
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const colors = await page.evaluate(`(() => { const node = document.querySelector('.mappy-embed .mappy-node.is-root'); const style = getComputedStyle(node); return style.color + ' on ' + style.backgroundColor; })()`);
+    return `マップ ${maps.length}、ルートの色 ${colors}`;
+  });
+
+  await recorder.run('embed-dark-hierarchy', '暗色のまま階層図の埋め込みへスクロール', '線・枠・件数バッジが暗色でも読める', async () => {
+    await revealEmbed(page, 'Fixtures/embed-hierarchy.md');
+    const embed = (await page.harness('h.embeds()')).find(candidate => candidate.src === 'Fixtures/embed-hierarchy.md');
+    expect(embed.nodes.length === 4, `${embed.nodes.length} nodes`);
+    await page.harness('h.setPageTheme("light")');
+  });
+
+  await recorder.run('embed-live', `${EMBED_HOST_LIVE} を読み込む（ライブプレビュー相当: 埋め込み先を描いた後にその区画から容器を差し替え）`,
+    '同じ 5 つのマップが Obsidian の .internal-embed 容器の中に描かれ、容器の元の内容は隠れる。通常の埋め込みは中身が見えたまま', async () => {
+    await loadFixture(page, EMBED_HOST_LIVE);
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const hosts = await page.evaluate(`document.querySelectorAll('.internal-embed.mappy-embed-host').length`);
+    expect(hosts === maps.length, `${hosts} claimed containers`);
+    const hidden = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed.mappy-embed-host > .markdown-embed-content')).every(el => getComputedStyle(el).display === 'none')`);
+    expect(hidden, 'Obsidian content still visible inside a claimed container');
+    const plainVisible = await page.evaluate(`getComputedStyle(document.querySelector('.internal-embed[src="heading-document"] .markdown-embed-content')).display !== 'none'`);
+    expect(plainVisible, 'plain embed content hidden');
+    expectUnchanged(sources, await noteSources(page));
+    return `容器 ${hosts}、マップ ${maps.length}（ノード ${maps.map(embed => embed.nodes.length).join(' / ')}）`;
+  });
+
+  await recorder.run('embed-live-dispose', 'プラグインの無効化と同じ解放（disposeEmbeds）', 'マップが消え、Obsidian の容器がそのまま（元の内容が再び見える）残る。live が 0', async () => {
+    await page.harness('h.disposeEmbeds()');
+    await page.settle();
+    const live = await page.harness('h.liveEmbeds()');
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    const claimed = await page.evaluate(`document.querySelectorAll('.mappy-embed-host').length`);
+    const visible = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed > .markdown-embed-content')).filter(el => getComputedStyle(el).display !== 'none').length`);
+    expect(live === 0 && frames === 0 && claimed === 0, `live ${live}, frames ${frames}, claimed ${claimed}`);
+    expect(visible >= EMBED_EXPECTED.length, `${visible} embed contents visible`);
+    return `live ${live}、枠 ${frames}、容器の内容が見える ${visible}`;
+  });
+
+  await recorder.run('embed-reading-dispose', `${EMBED_HOST} を読み込み直してから解放（disposeEmbeds）`, 'placeholder の span が元の src で戻り、マップの枠と Component が残らない', async () => {
+    await loadFixture(page, EMBED_HOST);
+    await page.harness('h.disposeEmbeds()');
+    await page.settle();
+    const live = await page.harness('h.liveEmbeds()');
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    const srcs = await page.evaluate(`Array.from(document.querySelectorAll('#harness-pane .internal-embed:not(.image-embed)'), el => el.getAttribute('src'))`);
+    const wanted = ['uneven-branches', 'embed-timeline', 'embed-hierarchy', 'embed-hierarchy#同じ名前', 'embed-2000', ...EMBED_PLAIN];
+    expect(live === 0 && frames === 0, `live ${live}, frames ${frames}`);
+    expect(srcs.join(',') === wanted.join(','), `placeholders: ${srcs.join(', ')}`);
+    return `placeholder ${srcs.length}`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -855,7 +1481,8 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- ブラウザ: ${version} (${chrome})`,
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
-    '- 対象外: 保存、リンク解決、テーマ、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
+    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E34）の PASS ではない。',
+    '- 埋め込み（embed-*）: ホストノートをページが閲覧モード相当（ホストの区画を post-processor に渡す）とライブプレビュー相当（埋め込み先を Obsidian 風の容器に描いてから渡す）で描く。Obsidian の描画順序・ホバープレビュー・実テーマは含まない。',
     '- 描画時間は「時刻の記録」の生値（1 回分）。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。繰り返し計測と p50／p95 は `node scripts/browser-harness-perf.mjs` の記録（`artifacts/performance/`）で扱う。',
     '',
     '## fixture と主要操作',
@@ -887,10 +1514,11 @@ async function main() {
   const directory = join(outRoot, stamp);
   await mkdir(directory, { recursive: true });
   const notExecuted = [
-    'Obsidian 実機（③ E01〜E29）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
+    'Obsidian 実機（③ E01〜E34）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
     'トラックパッドのピンチ・二本指スクロール、ネイティブ IME、モバイル: headless の合成入力では確認できない。',
     '⌘Z／⌘⇧Z の連打: headless Chrome 153 は修飾キー付きのキー入力を CDP で繰り返すと応答しなくなるため、フリートピックの Undo／Redo は右クリックメニューで実行した。キー経由の Undo は edit-inline-memory の 1 回と jsdom のテストで確認する。',
     '性能計測（基準端末・条件・p50／p95）: `node scripts/browser-harness-perf.mjs` が `artifacts/performance/` に記録する。ここでは時刻の生値だけを残す。',
+    '埋め込み（E34）の実機: Obsidian の閲覧モード・ライブプレビュー・ホバープレビューでの描画、テーマ、埋め込み内リンクの遷移、Mappy 無効化での復帰は、このページの閲覧モード相当／ライブプレビュー相当のケース（embed-*）では確認できない。',
   ];
   const chrome = findChrome(option('--chrome'));
   const output = await buildBrowserHarness();
@@ -916,7 +1544,10 @@ async function main() {
       await captureFixtures(recorder, page, timings);
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
+      await captureThemes(recorder, page);
       await captureTopicOperations(recorder, page);
+      await captureExport(recorder, page);
+      await captureEmbeds(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
   } catch (error) {

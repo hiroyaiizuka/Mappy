@@ -6,7 +6,7 @@
  *   node scripts/browser-harness-perf.mjs [--chrome <path>] [--out artifacts/performance]
  *       [--repeat 10] [--keystrokes 30] [--frames 60] [--shapes headings,list,...]
  *       [--counts 10,100,500,2000] [--fixtures performance-500,...]
- *       [--layouts mindmap,timeline,hierarchy] [--gpu]
+ *       [--layouts mindmap,timeline,hierarchy,balanced] [--gpu]
  *
  * `--gpu` drops --disable-gpu so Chrome rasterises on the GPU like Electron does;
  * the default software rendering makes raster costs show up as frame delays.
@@ -36,8 +36,8 @@ const FRAME_RUNS = 2;
 /** One frame at 60 fps; intervals above it mean a frame was missed. */
 const FRAME_BUDGET_MS = 1000 / 60 + 0.5;
 /** The product's layouts (src/core/layout-mode.ts LAYOUT_MODES), in the order the record lists them. */
-export const LAYOUTS = ['mindmap', 'timeline', 'hierarchy'];
-const LAYOUT_LABELS = { mindmap: 'マップ', timeline: 'タイムライン', hierarchy: '階層図' };
+export const LAYOUTS = ['mindmap', 'timeline', 'hierarchy', 'balanced'];
+const LAYOUT_LABELS = { mindmap: 'マップ', timeline: 'タイムライン', hierarchy: '階層図', balanced: '左右バランス' };
 
 const LOAD_FIELDS = [
   ['parseMs', 'parse'], ['stateMs', 'setState'], ['measureMs', '計測'], ['layoutMs', 'layoutTree'],

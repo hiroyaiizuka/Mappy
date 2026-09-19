@@ -60,7 +60,7 @@ function fixture() {
 }
 
 describe("MindmapView layout preference", () => {
-  it.each(["timeline", "hierarchy"] as const)("persists an explicit %s selection and restores it in a new map view", async layout => {
+  it.each(["timeline", "hierarchy", "balanced"] as const)("persists an explicit %s selection and restores it in a new map view", async layout => {
     const { app, processFrontMatter, properties, view } = fixture();
     const draw = vi.spyOn(view as unknown as { draw: () => void }, "draw").mockImplementation(() => undefined);
 

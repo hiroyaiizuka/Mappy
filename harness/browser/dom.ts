@@ -62,6 +62,29 @@ export function installObsidianDom(): void {
   for (const [name, value] of Object.entries(nodeMethods)) {
     Object.defineProperty(Node.prototype, name, { value, configurable: true, writable: true });
   }
+  // The window-level creators make detached elements (no parent to append to).
+  const globalCreators = {
+    createEl<K extends keyof HTMLElementTagNameMap>(tag: K, options?: DomElementInfo | string, callback?: (el: HTMLElementTagNameMap[K]) => void): HTMLElementTagNameMap[K] {
+      const element = document.createElement(tag);
+      const info = typeof options === "string" ? { cls: options } : options;
+      applyInfo(element, info, document.createDocumentFragment());
+      element.remove();
+      callback?.(element);
+      return element;
+    },
+    createDiv(options?: DomElementInfo | string, callback?: (el: HTMLDivElement) => void): HTMLDivElement {
+      return globalCreators.createEl("div", options, callback);
+    },
+    createSpan(options?: DomElementInfo | string, callback?: (el: HTMLSpanElement) => void): HTMLSpanElement {
+      return globalCreators.createEl("span", options, callback);
+    },
+  };
+  // vitest's jsdom copies window keys onto Node's global once at setup, so both need the creators.
+  for (const target of new Set<object>([window, globalThis])) {
+    for (const [name, value] of Object.entries(globalCreators)) {
+      Object.defineProperty(target, name, { value, configurable: true, writable: true });
+    }
+  }
   Object.defineProperty(Node.prototype, "win", {
     configurable: true,
     get(this: Node): Window { return (this.ownerDocument ?? document).defaultView ?? window; },
@@ -85,6 +108,28 @@ export function installObsidianDom(): void {
   };
   for (const [name, value] of Object.entries(elementMethods)) {
     Object.defineProperty(Element.prototype, name, { value, configurable: true, writable: true });
+  }
+  // Obsidian also exposes creation as globals: detached unless `parent` is given (`createEl("canvas")` for scratch elements).
+  const detachedEl = (tag: string, options?: DomElementInfo | string, callback?: (element: HTMLElement) => void): HTMLElement => {
+    const element = document.createElement(tag);
+    const info = typeof options === "string" ? { cls: options } : options;
+    applyInfo(element, info, document.createDocumentFragment());
+    if (!info?.parent) element.remove();
+    callback?.(element);
+    return element;
+  };
+  const globalHelpers: Record<string, unknown> = {
+    createEl: detachedEl,
+    createDiv: (options?: DomElementInfo | string, callback?: (element: HTMLElement) => void) => detachedEl("div", options, callback),
+    createSpan: (options?: DomElementInfo | string, callback?: (element: HTMLElement) => void) => detachedEl("span", options, callback),
+    createFragment: (callback?: (fragment: DocumentFragment) => void): DocumentFragment => {
+      const fragment = document.createDocumentFragment();
+      callback?.(fragment);
+      return fragment;
+    },
+  };
+  for (const [name, value] of Object.entries(globalHelpers)) {
+    Object.defineProperty(window, name, { value, configurable: true, writable: true });
   }
   Object.defineProperty(UIEvent.prototype, "targetNode", {
     configurable: true,

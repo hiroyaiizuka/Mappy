@@ -301,6 +301,23 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
   });
 
+  it('keeps top/bottom slots on balanced nodes: siblings stack vertically on both sides, so the zones need no mirror', () => {
+    const { canvas, actions, node, id, pointer, begin } = fixture();
+    for (const title of ['A', 'A2']) node(title).classList.add('is-balanced');
+    begin('B');
+    // Top edge of a balanced stage: before it among the root's children; the middle appends to it.
+    pointer('pointermove', canvas, 200, 163);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('Course'), index: 0 });
+    pointer('pointermove', canvas, 200, 180);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 3 });
+    // The left and right edges of the node mean nothing on their own: still the child slot.
+    pointer('pointermove', canvas, 110, 180);
+    pointer('pointermove', canvas, 290, 180);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 3 });
+    pointer('pointermove', canvas, 200, 317);
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
+  });
+
   it('starts from links and images but not from controls or non-primary buttons, and cleans up on unload', () => {
     const { canvas, actions, node, pointer, ghost, begin } = fixture();
     for (const tag of ['a', 'img'] as const) {

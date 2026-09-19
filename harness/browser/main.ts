@@ -2,20 +2,26 @@
  * Layer ② of docs/harness.md: the product's map view running in a plain
  * browser. `src/ui/mindmap-view.ts`, its renderer, viewport and events are the
  * shipped modules; only the `obsidian` module is replaced by ./obsidian.ts.
- * Saving, link resolution, themes and IME are Obsidian-only and stay out of scope.
+ * Saving, link resolution, Obsidian's own palette and IME are Obsidian-only and stay out of
+ * scope; the map's explicit theme (M14) is exercised here with placeholder colours only.
  */
-import type { App, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
+import type { App, MarkdownPostProcessorContext, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
 import { installObsidianDom } from "./dom";
-import { Notice, WorkspaceLeaf } from "./obsidian";
+import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext } from "./obsidian";
 import { HarnessApp } from "./app";
-import { FIXTURES, SAMPLE_IMAGE, findFixture, type HarnessFixture } from "./fixtures";
+import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost, type HarnessFixture, type HarnessHost } from "./fixtures";
 import {
   installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
   type EditSample, type FrameSample, type LoadSample, type MeasureContext,
 } from "./measure";
+import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
+import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
+import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import type { LayoutMode } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
+import { isMapTheme, type MapTheme } from "../../src/obsidian/settings";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
+import { MapEmbeds } from "../../src/ui/map-embed";
 import { MindmapView } from "../../src/ui/mindmap-view";
 
 declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
@@ -34,8 +40,12 @@ const PANE_PRESETS: readonly [label: string, width: number, height: number][] = 
 
 const app = new HarnessApp();
 for (const fixture of FIXTURES) app.put(fixture.path, fixture.source);
+for (const target of EMBED_TARGETS) app.put(target.path, target.source);
+for (const host of EMBED_HOSTS) app.put(host.path, host.source);
 app.put(SAMPLE_IMAGE.path, "", SAMPLE_IMAGE.url);
 const store = new DocumentStore(app.asApp<App>());
+/** The shipped post processor for `![[map]]` (§5 M10); the page plays Obsidian's renderer around it. */
+const embeds = new MapEmbeds(app.asApp<App>(), store);
 /** Markdown editors do not exist here; the router only reports the request. */
 const router = {
   openMarkdown(): Promise<void> {
@@ -51,6 +61,8 @@ const presetsEl = mustFind<HTMLElement>("#harness-presets");
 const widthInput = mustFind<HTMLInputElement>("#harness-width");
 const heightInput = mustFind<HTMLInputElement>("#harness-height");
 const statusEl = mustFind<HTMLElement>("#harness-status");
+const pageThemeSelect = mustFind<HTMLSelectElement>("#harness-page-theme");
+const mapThemeSelect = mustFind<HTMLSelectElement>("#harness-map-theme");
 const timingsEl = mustFind<HTMLElement>("#harness-timings");
 const activityEl = mustFind<HTMLElement>("#harness-activity");
 const buildEl = mustFind<HTMLElement>("#harness-build");
@@ -58,7 +70,22 @@ const buildEl = mustFind<HTMLElement>("#harness-build");
 let view: MindmapView | null = null;
 let current: HarnessFixture | null = null;
 let openCount = 0;
+/** What the settings' "テーマ" would hold; applied to every view this page opens. */
+let mapTheme: MapTheme = "follow";
 const timings: HarnessTiming[] = [];
+/** The rendered host note on the pane, when a host is loaded instead of a map view. */
+let host: { note: HarnessHost; renderer: Component; sizer: HTMLElement } | null = null;
+
+export interface HostTiming {
+  host: string;
+  mode: HarnessHost["mode"];
+  /** Embeds the page rendered as maps / left as Obsidian's placeholders. */
+  maps: number;
+  plain: number;
+  /** From the first post-processor call until every map had its nodes placed and stopped moving. */
+  settledMs: number;
+}
+const hostTimings: HostTiming[] = [];
 
 function mustFind<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -87,11 +114,99 @@ async function settle(maxMs = 1500): Promise<void> {
   }
 }
 
+/** Drop the rendered host note the way Obsidian drops a view: the renderer unloads, and the embeds with it. */
+function closeHost(): void {
+  if (!host) return;
+  const closing = host;
+  host = null;
+  closing.renderer.unload();
+  closing.sizer.closest(".markdown-reading-view")?.remove();
+}
+
+/** Blocks of a note as Obsidian's reading view lays them out: one section element per block, headings as headings. */
+async function renderNote(sizer: HTMLElement, source: string, sourcePath: string): Promise<HTMLElement[]> {
+  const body = source.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u, "");
+  const sections: HTMLElement[] = [];
+  for (const block of body.split(/\n{2,}/u)) {
+    if (!block.trim()) continue;
+    const heading = block.match(/^(#{1,6})[ \t]+(.+?)[ \t]*$/u);
+    if (heading?.[1] && heading[2]) {
+      const level = heading[1].length;
+      const section = sizer.createDiv({ cls: `el-h${level}` });
+      section.createEl(`h${level}` as "h1", { text: heading[2] });
+      sections.push(section);
+      continue;
+    }
+    const section = sizer.createDiv({ cls: "el-p" });
+    await MarkdownRenderer.render(app.asApp<App>(), block, section, sourcePath);
+    sections.push(section);
+  }
+  return sections;
+}
+
+function contextFor(renderer: Component, sourcePath: string): MarkdownPostProcessorContext {
+  return {
+    docId: sourcePath, sourcePath, frontmatter: null,
+    addChild: child => { renderer.addChild(child as unknown as Component); },
+    getSectionInfo: () => null,
+  };
+}
+
+/**
+ * Show a note that embeds maps. `reading` hands the host's sections to the post processor
+ * (the `![[…]]` placeholders are still spans). `live` first renders every embedded note
+ * inside an Obsidian-like `.internal-embed.markdown-embed` container, as the live-preview
+ * widget does, and hands those inner sections to the processor with the embedded note as
+ * the source path. Neither path touches the in-memory notes.
+ */
+async function loadHost(note: HarnessHost): Promise<HostTiming> {
+  await closeView();
+  closeHost();
+  current = null;
+  fixtureSelect.value = note.id;
+  coversEl.textContent = note.covers;
+  const url = new URL(location.href);
+  url.searchParams.set("fixture", note.id);
+  history.replaceState(null, "", url);
+  const reading = pane.createDiv({ cls: "markdown-reading-view" });
+  const preview = reading.createDiv({ cls: "markdown-preview-view markdown-rendered" });
+  const sizer = preview.createDiv({ cls: "markdown-preview-sizer" });
+  const renderer = new Component();
+  renderer.load();
+  host = { note, renderer, sizer };
+  const sections = await renderNote(sizer, note.source, note.path);
+  const started = performance.now();
+  if (note.mode === "reading") {
+    for (const section of sections) embeds.process(section, contextFor(renderer, note.path));
+  } else {
+    for (const span of Array.from(sizer.querySelectorAll<HTMLElement>(".internal-embed"))) {
+      const { path } = parseLinktext(span.getAttribute("src") ?? "");
+      const file = app.metadataCache.getFirstLinkpathDest(path);
+      if (!file || file.extension !== "md") continue;
+      span.addClass("markdown-embed", "inline-embed", "is-loaded");
+      span.empty();
+      const inner = span.createDiv({ cls: "markdown-embed-content" }).createDiv({ cls: "markdown-preview-view markdown-rendered" });
+      for (const section of await renderNote(inner, app.content(file), file.path)) embeds.process(section, contextFor(renderer, file.path));
+    }
+  }
+  await settle(4000);
+  const maps = sizer.querySelectorAll(".mappy-embed").length;
+  const plain = sizer.querySelectorAll(".internal-embed:not(.mappy-embed-host)").length;
+  const timing: HostTiming = { host: note.id, mode: note.mode, maps, plain, settledMs: performance.now() - started };
+  hostTimings.push(timing);
+  openCount += 1;
+  setStatus(`${note.label}: 埋め込み ${maps + plain}（マップ ${maps}、通常の埋め込み ${plain}）、安定まで ${timing.settledMs.toFixed(0)} ms、表示 ${openCount} 回目`);
+  return timing;
+}
+
 async function openView(): Promise<MindmapView> {
+  closeHost();
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router);
   // MindmapView is typed against Obsidian's View; at runtime it extends the mock.
   leaf.view = opened as unknown as WorkspaceLeaf["view"];
+  // The plugin applies the setting when it constructs a view (src/main.ts); the page does the same.
+  opened.setTheme(mapTheme);
   pane.replaceChildren(opened.containerEl);
   opened.load();
   await opened.onOpen();
@@ -108,8 +223,10 @@ async function closeView(): Promise<void> {
   closing.containerEl.remove();
 }
 
-/** `mode` opens the fixture in that layout (the performance runner measures all three); omitted, the note decides. */
-async function load(id: string, mode?: LayoutMode): Promise<HarnessTiming> {
+/** `mode` opens the fixture in that layout (the performance runner measures every layout); omitted, the note decides. */
+async function load(id: string, mode?: LayoutMode): Promise<HarnessTiming | HostTiming> {
+  const embedHost = findHost(id);
+  if (embedHost) return loadHost(embedHost);
   const fixture = findFixture(id);
   if (!fixture) throw new Error(`Unknown fixture: ${id}`);
   current = fixture;
@@ -136,7 +253,12 @@ function resize(width: number, height: number): void {
   heightInput.value = String(Math.round(height));
 }
 
-async function reopen(): Promise<HarnessTiming | null> {
+async function reopen(): Promise<HarnessTiming | HostTiming | null> {
+  if (host) {
+    const note = host.note;
+    closeHost();
+    return loadHost(note);
+  }
   const fixture = current;
   await closeView();
   view = await openView();
@@ -144,6 +266,22 @@ async function reopen(): Promise<HarnessTiming | null> {
 }
 
 function setStatus(text: string): void { statusEl.textContent = text; }
+
+type PageTheme = "light" | "dark";
+
+/** The page stands in for Obsidian's body: one of its theme classes at a time. */
+function setPageTheme(theme: PageTheme): void {
+  document.body.classList.toggle("theme-light", theme === "light");
+  document.body.classList.toggle("theme-dark", theme === "dark");
+  pageThemeSelect.value = theme;
+}
+
+/** The setting as the plugin would apply it: the open view now, and every view opened later. */
+function setMapTheme(theme: MapTheme): void {
+  mapTheme = theme;
+  mapThemeSelect.value = theme;
+  view?.setTheme(theme);
+}
 
 const measureContext: MeasureContext = { probes, pane, vault: app.vault, settle };
 
@@ -160,9 +298,10 @@ function currentFile(): { fixture: HarnessFixture; file: unknown; view: MindmapV
  */
 const measure = {
   async load(id: string, mode?: LayoutMode): Promise<LoadSample> {
+    if (findHost(id)) throw new Error(`${id} は埋め込みのホストノートで、性能計測の対象は map view の fixture だけです`);
     await closeView();
     view = await openView();
-    return load(id, mode);
+    return load(id, mode) as Promise<LoadSample>;
   },
   markdownEdit(): Promise<EditSample> {
     const { fixture, file, view: opened } = currentFile();
@@ -179,6 +318,75 @@ const measure = {
   /** Product frames and timers seen so far, for DevTools inspection. */
   probes,
 };
+
+/** What `h.export.svg()` hands the capture script: the file and the counts to check it against. */
+export interface HarnessSvgExport {
+  svg: string;
+  width: number;
+  height: number;
+  nodes: number;
+  edges: number;
+  badges: number;
+  images: number;
+  theme: ExportTheme;
+  ms: number;
+}
+
+export interface HarnessPngExport {
+  dataUrl: string;
+  width: number;
+  height: number;
+  scale: number;
+  bytes: number;
+  nodes: number;
+  /** Capture and serialisation, then rasterisation. */
+  svgMs: number;
+  ms: number;
+}
+
+/** One reader for both directions the page converts blobs: the image bytes it reads back and the PNG it hands out. */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : ""); }, { once: true });
+    reader.addEventListener("error", () => { reject(new Error("Blob を data URL に読めません")); }, { once: true });
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** The page keeps the sample image as a data URL; attachments added on the page are blob URLs and are read back. */
+const resolveHarnessImage: ImageResolver = async image => {
+  const src = image.currentSrc || image.src;
+  if (src.startsWith("data:")) return src;
+  if (!src.startsWith("blob:")) return null;
+  return blobToDataUrl(await (await fetch(src)).blob());
+};
+
+/** M13 in this page: the same capture and document the plugin writes, minus the vault. */
+async function exportSvg(): Promise<HarnessSvgExport> {
+  if (!view) throw new Error("No fixture is loaded");
+  const started = performance.now();
+  const source = await view.exportSource();
+  const scene = await captureScene(source, { resolveImage: resolveHarnessImage });
+  const svg = buildSvg(scene);
+  const size = svgSize(scene.bounds);
+  return {
+    svg, width: size.width, height: size.height, nodes: scene.nodes.length, edges: scene.edges.length, badges: scene.badges.length,
+    images: (svg.match(/<img /gu) ?? []).length, theme: scene.theme, ms: performance.now() - started,
+  };
+}
+
+async function exportPng(): Promise<HarnessPngExport> {
+  const exported = await exportSvg();
+  const started = performance.now();
+  const size = { width: exported.width, height: exported.height };
+  const scale = pngScale(size, DESKTOP_PNG_LIMITS);
+  const png = await rasterizeSvg(exported.svg, size, scale);
+  return {
+    dataUrl: await blobToDataUrl(png.blob), scale, width: png.width, height: png.height,
+    bytes: png.blob.size, nodes: exported.nodes, svgMs: exported.ms, ms: performance.now() - started,
+  };
+}
 
 /** Page controls report failures in the status line instead of an unhandled rejection. */
 function report(action: Promise<unknown>): void {
@@ -212,6 +420,36 @@ function plainRect(element: Element | null | undefined): PlainRect | null {
   return { x, y, width, height };
 }
 
+interface EmbedInfo {
+  /** `data-mappy-embed` of a map, or the placeholder's `src`. */
+  src: string;
+  kind: "map" | "plain";
+  rect: PlainRect;
+  nodes: ReturnType<typeof nodeInfo>[];
+  /** The sentence shown instead of a map, if any. */
+  message: string | null;
+  layout: LayoutMode | null;
+  /** `scale(…)` of the fitted map, when placed. */
+  scale: number | null;
+}
+
+/** Every embed on the rendered host note in document order, maps and Obsidian's placeholders alike. */
+function embedInfo(element: HTMLElement): EmbedInfo {
+  const map = element.hasClass("mappy-embed");
+  const node = element.querySelector<HTMLElement>(".mappy-node");
+  const scale = element.querySelector<HTMLElement>(".mappy-world")?.style.transform.match(/scale\(([\d.]+)\)/u)?.[1];
+  const message = element.querySelector<HTMLElement>(".mappy-embed-message");
+  return {
+    src: element.dataset.mappyEmbed ?? element.getAttribute("src") ?? "",
+    kind: map ? "map" : "plain",
+    rect: plainRect(element) ?? { x: 0, y: 0, width: 0, height: 0 },
+    nodes: Array.from(element.querySelectorAll<HTMLElement>(".mappy-node"), nodeInfo),
+    message: message && !message.hidden ? message.textContent : null,
+    layout: node ? (node.hasClass("is-timeline") ? "timeline" : node.hasClass("is-hierarchy") ? "hierarchy" : node.hasClass("is-balanced") ? "balanced" : "mindmap") : null,
+    scale: scale ? Number(scale) : null,
+  };
+}
+
 function nodeInfo(element: HTMLElement): { id: string; title: string; rect: PlainRect; toggle: PlainRect | null; collapsed: boolean; selected: boolean } {
   const toggle = element.querySelector<HTMLElement>(".mappy-node-toggle");
   return {
@@ -228,7 +466,9 @@ function nodeInfo(element: HTMLElement): { id: string; title: string; rect: Plai
 const api = {
   build: __MAPPY_HARNESS_BUILD__,
   fixtures: FIXTURES.map(fixture => fixture.id),
+  hosts: EMBED_HOSTS.map(note => note.id),
   timings,
+  hostTimings,
   activity: app.activity,
   notices: Notice.log,
   load,
@@ -236,6 +476,14 @@ const api = {
   resize,
   settle,
   measure,
+  setPageTheme,
+  setMapTheme,
+  /** Theme classes as they are now: the page's body and the map container. */
+  themes: () => ({
+    page: document.body.classList.contains("theme-dark") ? "dark" : document.body.classList.contains("theme-light") ? "light" : "none",
+    map: mapTheme,
+    container: Array.from(view?.contentEl.classList ?? []).filter(name => name.startsWith("theme-")),
+  }),
   get view() { return view; },
   get openCount() { return openCount; },
   viewport: () => view?.getState().viewport ?? null,
@@ -247,6 +495,50 @@ const api = {
     return element ? nodeInfo(element) : null;
   },
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
+  /**
+   * The Excalidraw scene the command「現在のマップを Excalidraw の図面に挿入」would build from the
+   * view as shown (its layout and folds), with every node measured from its element and no image
+   * blocks, so the capture can compare the scene's coordinates with the nodes on screen. Excalidraw
+   * itself is not here; the insertion is checked on the real vault (E30).
+   */
+  scene: () => {
+    const snapshot = view?.snapshot();
+    if (!snapshot?.document) return null;
+    const contents = sceneContents(snapshot.document, snapshot.collapsed);
+    const measures = new Map(contents.nodes.map(node => {
+      const element = pane.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
+      return [node.id, { label: { width: element?.offsetWidth ?? 0, height: element?.offsetHeight ?? 0 }, images: [] }];
+    }));
+    const scene = buildScene(contents, measures, snapshot.mode, snapshot.collapsed, [0, 0]);
+    return {
+      mode: snapshot.mode,
+      visualRootId: contents.visualRootId,
+      blocks: scene.blocks.map(block => ({ id: block.nodeId, x: block.x, y: block.y, width: block.width, height: block.height })),
+      lines: scene.lines,
+      bounds: scene.bounds,
+    };
+  },
+  /** SVG／PNG export of the view as shown (§5 M13); nothing is saved, the capture script writes the files. */
+  export: { svg: exportSvg, png: exportPng },
+  /** Note embeds on the rendered host note (maps and Obsidian's placeholders) in document order; images and anything inside a map are not embeds of the host. */
+  embeds: () => Array.from(pane.querySelectorAll<HTMLElement>(".mappy-embed, .internal-embed:not(.mappy-embed-host):not(.image-embed)"))
+    .filter(element => !element.parentElement?.closest(element.hasClass("mappy-embed") ? ".mappy-embed" : ".mappy-embed, .mappy-embed-host"))
+    .map(embedInfo),
+  /** Live map embeds the post processor still owns. */
+  liveEmbeds: () => embeds.size,
+  /** What the plugin does on unload: every map goes back to Obsidian's placeholder. */
+  disposeEmbeds: () => { embeds.dispose(); },
+  /** The note a path holds now, as the in-memory vault has it. */
+  noteSource: (path: string) => { const file = app.vault.getAbstractFileByPath(path); return file ? app.content(file) : null; },
+  /** Replace a note in the in-memory vault; open maps and embeds observe it like an external edit. */
+  putNote: (path: string, content: string) => { app.put(path, content); },
+  scrollTo: (top: number) => { const reading = pane.querySelector<HTMLElement>(".markdown-reading-view"); if (reading) reading.scrollTop = top; },
+  /** Scroll the rendered host so the embed with this `data-mappy-embed` / `src` sits at the top of the pane. */
+  revealEmbed: (src: string) => {
+    const element = Array.from(pane.querySelectorAll<HTMLElement>(".mappy-embed, .internal-embed"))
+      .find(candidate => (candidate.dataset.mappyEmbed ?? candidate.getAttribute("src")) === src);
+    element?.scrollIntoView({ block: "start" });
+  },
   /** The current fixture's Markdown as the in-memory vault holds it now (edits stay in this page). */
   source: () => {
     const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
@@ -266,6 +558,8 @@ function setupPanel(): void {
     if (!group) { group = fixtureSelect.createEl("optgroup", { attr: { label } }); groups.set(label, group); }
     group.createEl("option", { value: fixture.id, text: fixture.label });
   }
+  const hostGroup = fixtureSelect.createEl("optgroup", { attr: { label: "埋め込み（ホストノート）" } });
+  for (const note of EMBED_HOSTS) hostGroup.createEl("option", { value: note.id, text: note.label });
   fixtureSelect.addEventListener("change", () => { report(load(fixtureSelect.value)); });
   for (const [label, width, height] of PANE_PRESETS) {
     const button = presetsEl.createEl("button", { text: label, attr: { type: "button" } });
@@ -275,6 +569,8 @@ function setupPanel(): void {
   widthInput.addEventListener("change", applySize);
   heightInput.addEventListener("change", applySize);
   mustFind<HTMLButtonElement>("#harness-reopen").addEventListener("click", () => { report(reopen()); });
+  pageThemeSelect.addEventListener("change", () => { setPageTheme(pageThemeSelect.value === "dark" ? "dark" : "light"); });
+  mapThemeSelect.addEventListener("change", () => { setMapTheme(isMapTheme(mapThemeSelect.value) ? mapThemeSelect.value : "follow"); });
   new ResizeObserver(() => {
     widthInput.value = String(Math.round(pane.offsetWidth));
     heightInput.value = String(Math.round(pane.offsetHeight));
@@ -287,5 +583,8 @@ function setupPanel(): void {
 const params = new URL(location.href).searchParams;
 setupPanel();
 resize(Number(params.get("width")) || 1280, Number(params.get("height")) || 800);
-api.ready = load(findFixture(params.get("fixture"))?.id ?? "uneven-branches").then(() => undefined);
+setPageTheme(params.get("page-theme") === "dark" ? "dark" : "light");
+const requestedTheme = params.get("theme");
+setMapTheme(isMapTheme(requestedTheme) ? requestedTheme : "follow");
+api.ready = load(findHost(params.get("fixture"))?.id ?? findFixture(params.get("fixture"))?.id ?? "uneven-branches").then(() => undefined);
 report(api.ready);

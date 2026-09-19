@@ -13,6 +13,77 @@
   background: var(--background-primary);
 }
 
+/*
+ * Explicit theme (settings, M14). The view puts Obsidian's own `theme-light` / `theme-dark`
+ * class on the map container, so the app's (and the active community theme's) palette
+ * for that theme applies inside it: `--color-base-*`, `--mono-rgb-*`, `--color-<name>`,
+ * `--shadow-s`, `color-scheme`. Obsidian derives the semantic variables from that
+ * palette on `body`, and a child inherits the already-computed body values, so the ones
+ * the map and the Markdown rendered in its nodes read are derived again here, on the
+ * container, with the mapping app.css uses (checked against 1.6.7 and 1.14.2; the
+ * `--mono-rgb-*` / `--color-accent-hsl` helpers exist in both). `:where()` keeps this at
+ * zero specificity: a theme's `.theme-dark { --background-primary: … }` still wins, and
+ * Obsidian's `.theme-dark` overrides for the accent (`--text-accent`,
+ * `--interactive-accent`, `--interactive-normal`, `--text-selection`) apply as they do
+ * on the body. Without a theme class nothing here matches and the container inherits
+ * the app's theme, exactly as before the setting existed.
+ */
+:where(.mappy-view.theme-light, .mappy-view.theme-dark) {
+  --background-primary: var(--color-base-00);
+  --background-primary-alt: var(--color-base-10);
+  --background-secondary: var(--color-base-20);
+  --background-modifier-hover: rgba(var(--mono-rgb-100), 0.075);
+  --background-modifier-border: var(--color-base-30);
+  --background-modifier-border-hover: var(--color-base-35);
+  --background-modifier-border-focus: var(--color-base-40);
+  --background-modifier-form-field: var(--color-base-00);
+  --text-normal: var(--color-base-100);
+  --text-muted: var(--color-base-70);
+  --text-faint: var(--color-base-50);
+  --text-error: var(--color-red);
+  --text-accent: var(--color-accent);
+  --text-accent-hover: var(--color-accent-2);
+  --text-selection: hsla(var(--color-accent-hsl), 0.2);
+  --interactive-normal: var(--color-base-00);
+  --interactive-hover: var(--color-base-10);
+  --interactive-accent-hsl: var(--color-accent-hsl);
+  --interactive-accent: var(--color-accent-1);
+  --interactive-accent-hover: var(--color-accent-2);
+  --link-color: var(--text-accent);
+  --link-color-hover: var(--text-accent-hover);
+  --link-external-color: var(--text-accent);
+  --link-external-color-hover: var(--text-accent-hover);
+  --link-unresolved-color: var(--text-accent);
+  --link-unresolved-decoration-color: hsla(var(--interactive-accent-hsl), 0.3);
+  --code-background: var(--background-primary-alt);
+  --code-normal: var(--text-normal);
+  --code-comment: var(--text-faint);
+  --tag-color: var(--text-accent);
+  --tag-color-hover: var(--text-accent);
+  --tag-background: hsla(var(--interactive-accent-hsl), 0.1);
+  --tag-background-hover: hsla(var(--interactive-accent-hsl), 0.2);
+  --tag-border-color: hsla(var(--interactive-accent-hsl), 0.15);
+  --tag-border-color-hover: hsla(var(--interactive-accent-hsl), 0.15);
+  --icon-color: var(--text-muted);
+  --icon-color-hover: var(--text-muted);
+  --icon-color-active: var(--text-accent);
+  --icon-color-focused: var(--text-normal);
+  --hr-color: var(--background-modifier-border);
+  --divider-color: var(--background-modifier-border);
+  --blockquote-border-color: var(--interactive-accent);
+  --embed-border-start: 2px solid var(--interactive-accent);
+  --checkbox-color: var(--interactive-accent);
+  --checkbox-border-color: var(--text-faint);
+  --checkbox-marker-color: var(--background-primary);
+  --list-marker-color: var(--text-faint);
+  --table-border-color: var(--background-modifier-border);
+  --table-header-color: var(--text-normal);
+  --indentation-guide-color: rgba(var(--mono-rgb-100), 0.12);
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: rgba(var(--mono-rgb-100), 0.1);
+  --scrollbar-active-thumb-bg: rgba(var(--mono-rgb-100), 0.2);
+}
+
 .mappy-view .mappy-floating {
   position: absolute;
   z-index: 2;
@@ -203,10 +274,44 @@
 .mappy-view .mappy-node-toggle:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
 .mappy-view .mappy-node-toggle[hidden] { display: none; }
 .mappy-view .mappy-zoom { right: 16px; bottom: 16px; }
+/* Embedded map (§5 M10): the node and edge styles of the view inside a frame of fixed height; no panning, no editing.
+   The frame follows Obsidian's theme like any other embed; only its own variables are set here. */
+.mappy-embed.mappy-view {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--mappy-embed-height, 320px);
+  margin: 4px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+.mappy-embed.mappy-view .mappy-canvas { cursor: default; touch-action: auto; }
+.mappy-embed.mappy-view .mappy-canvas[hidden] { display: none; }
+.mappy-embed.mappy-view .mappy-node { cursor: default; }
+.mappy-embed.mappy-view .mappy-embed-open {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 2;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  border-radius: 6px;
+  opacity: 0.55;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+.mappy-embed.mappy-view .mappy-embed-open:hover, .mappy-embed.mappy-view .mappy-embed-open:focus-visible { opacity: 1; }
+.mappy-embed.mappy-view .mappy-embed-message { position: absolute; inset: 50% 44px auto 16px; transform: translateY(-50%); color: var(--text-muted); font-size: var(--font-ui-small); }
+.mappy-embed.mappy-view .mappy-embed-message[hidden] { display: none; }
+/* Live preview renders the map inside Obsidian's own embed container: its rendered note stays hidden while the map is shown. */
+.internal-embed.mappy-embed-host { display: block; }
+.internal-embed.mappy-embed-host > :not(.mappy-embed) { display: none; }
 .mappy-view .mappy-file-input { display: none; }
 .mappy-edit-modal .mappy-edit-input { width: 100%; margin: 8px 0 12px; }
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }
 .mappy-edit-modal .mappy-edit-error { color: var(--text-error); }
+.mappy-export-modal .mappy-export-note { color: var(--text-muted); font-size: var(--font-ui-small); }
 .mappy-link-suggest {
   position: fixed;
   z-index: var(--layer-popover);

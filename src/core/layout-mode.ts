@@ -6,11 +6,25 @@
  *
  * mindmap: root on the left, branches to the right. timeline: first level on a
  * horizontal axis, deeper levels alternating above and below. hierarchy: root on
- * top, every depth on one row, branches downward.
+ * top, every depth on one row, branches downward. balanced: root in the centre,
+ * first level dealt right and left in turn, each branch growing on its side.
  */
-export const LAYOUT_MODES = ["mindmap", "timeline", "hierarchy"] as const;
+export const LAYOUT_MODES = ["mindmap", "timeline", "hierarchy", "balanced"] as const;
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
 
 export function isLayoutMode(value: unknown): value is LayoutMode {
   return typeof value === "string" && (LAYOUT_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * The one name each layout goes by in the UI: the layout buttons and the settings
+ * dropdown both read it, and the Record type turns a new mode into a compile error
+ * until it is named here.
+ */
+export const LAYOUT_LABELS: Record<LayoutMode, string> = { mindmap: "通常マップ", timeline: "タイムライン", hierarchy: "階層図", balanced: "左右バランス" };
+
+/** A frontmatter or view-state value as a layout: unknown values, casing and padding fall back to the regular map. */
+export function layoutFromValue(value: unknown): LayoutMode {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : value;
+  return isLayoutMode(normalized) ? normalized : "mindmap";
 }
