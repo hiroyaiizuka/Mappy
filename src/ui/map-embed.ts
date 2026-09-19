@@ -12,7 +12,7 @@ import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
 import { EdgeLayer } from "./edge-layer";
 import { mapClick } from "./map-events";
-import { NodeRenderer } from "./node-renderer";
+import { NodeRenderer, type NodeEmbedResolver } from "./node-renderer";
 
 /** Obsidian's embed container whose content a map replaced; its own children are hidden by CSS while the map shows. */
 export const EMBED_HOST_CLASS = "mappy-embed-host";
@@ -127,9 +127,14 @@ export class MapEmbed extends MarkdownRenderChild {
     this.release();
   }
 
-  /** The reader's folds and the links; nothing else reacts. */
+  /**
+   * The reader's folds and the links; nothing else reacts. A link is followed here and
+   * goes no further; a fold is toggled here and the click still bubbles, so a map drawn
+   * inside a node (§5 M12) lets the outer map select and focus that node, as any click
+   * in the frame does.
+   */
   private click(event: MouseEvent): void {
-    const click = mapClick(event);
+    const click = mapClick(event, this.canvas);
     if (!click) return;
     if ("link" in click) {
       event.preventDefault();
@@ -139,7 +144,6 @@ export class MapEmbed extends MarkdownRenderChild {
     }
     if (!click.toggle) return;
     event.preventDefault();
-    event.stopPropagation();
     if (this.collapsed.has(click.nodeId)) this.collapsed.delete(click.nodeId); else this.collapsed.add(click.nodeId);
     this.draw();
   }
@@ -168,7 +172,7 @@ export class MapEmbed extends MarkdownRenderChild {
     if (text === this.drawnSource && this.document?.root.title === file.basename) return;
     const mode = readMapFromSource(text);
     if (!mode) {
-      this.show(`${file.basename} はマップではなくなりました。ノートを開き直すと通常の埋め込みに戻ります。`);
+      this.show(`${file.basename} はマップではなくなりました。開き直すと通常の表示に戻ります。`);
       return;
     }
     // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
@@ -239,6 +243,46 @@ export class MapEmbed extends MarkdownRenderChild {
     const y = height / 2 - (bounds.y + bounds.height / 2) * scale;
     this.world.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
   }
+}
+
+/**
+ * What the map view hands its renderer for a node whose title is one `![[map]]`
+ * (§5 M12): the same read-only map as a note embed, drawn inside the node and
+ * living as long as the node's rendering. Judgement and recursion stop here: a
+ * note that is not a map, a missing note or a block reference keeps the link
+ * (`resolveEmbedTarget`), the note itself is never drawn inside itself, and the
+ * maps drawn here get no resolver of their own (`MapEmbed` builds its renderer
+ * without one), so a chain of calls (A → B → A, A → B → C → A) shows the
+ * embed that would recurse as a link. The same map called twice draws twice; the
+ * embeds share nothing but the note.
+ */
+export function nodeEmbeds(app: App, store: DocumentStore): NodeEmbedResolver {
+  return (linktext, sourcePath) => {
+    const target = resolveEmbedTarget(app, linktext, sourcePath);
+    if (!target || target.file.path === sourcePath) return null;
+    const source: MapEmbedSource = { ...target, hostPath: sourcePath };
+    return {
+      key: target.file.path + target.subpath,
+      mount: (owner, frame, changed) => {
+        owner.addChild(new MapEmbed(app, store, frame, frame, source, () => { /* The node's rendering owns the frame. */ }));
+        // A double click anywhere in the frame opens the called map, as the frame's own button does; the node's
+        // text (`![[…]]`) is still edited by F2, the context menu, or a double click on the node outside the frame.
+        owner.registerDomEvent(frame, "dblclick", event => {
+          // The frame's own button and the links inside answer to their clicks already.
+          const target = event.targetNode;
+          if (target?.instanceOf(Element) && target.closest("a, button")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void app.workspace.openLinkText(source.file.path, sourcePath, event.metaKey || event.ctrlKey);
+        });
+        if (typeof ResizeObserver === "undefined") return;
+        // The frame's size is the node's size; the outer layout follows it (a theme's sheet may change it after mount).
+        const observer = new ResizeObserver(() => { changed(); });
+        observer.observe(frame);
+        owner.register(() => { observer.disconnect(); });
+      },
+    };
+  };
 }
 
 /**

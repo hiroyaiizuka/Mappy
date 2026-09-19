@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
-import { MapEvents, type MapActions } from '../../src/ui/map-events';
+import { MapEvents, mapClick, nodeOf, type MapActions } from '../../src/ui/map-events';
 import { keyAt } from './keys';
 
 const originalTargetNode = Object.getOwnPropertyDescriptor(UIEvent.prototype, 'targetNode');
@@ -124,6 +124,48 @@ describe('MapEvents DOM interactions', () => {
     click(toggle);
     expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id, true);
     expect(actions.fold).toHaveBeenCalledExactlyOnceWith(selected.id);
+  });
+
+  it('answers for the node that holds an embedded map, never for the nodes drawn inside it (§5 M12)', () => {
+    const { canvas, node, selected, actions } = fixture();
+    // The frame a `![[map]]` node draws: a canvas of its own with nodes, toggles and links of the embedded map.
+    const frame = document.createElement('div');
+    frame.className = 'mappy-embed mappy-view';
+    const innerCanvas = document.createElement('div');
+    innerCanvas.className = 'mappy-canvas';
+    const inner = document.createElement('div');
+    inner.className = 'mappy-node';
+    inner.dataset.nodeId = 'inner-1';
+    const innerLabel = document.createElement('span');
+    inner.append(innerLabel);
+    const innerToggle = document.createElement('button');
+    innerToggle.className = 'mappy-node-toggle';
+    inner.append(innerToggle);
+    innerCanvas.append(inner);
+    frame.append(innerCanvas);
+    node.append(frame);
+    expect(nodeOf(canvas, innerLabel)).toBe(node);
+    expect(nodeOf(canvas, innerToggle)).toBe(node);
+    expect(nodeOf(innerCanvas, innerLabel)).toBe(inner);
+    expect(nodeOf(canvas, canvas)).toBeNull();
+    expect(nodeOf(canvas, document.body)).toBeNull();
+    // What each canvas reads from the same click, taken as the event passes the inner canvas.
+    const readings: unknown[] = [];
+    innerCanvas.addEventListener('click', event => { readings.push(mapClick(event, canvas), mapClick(event, innerCanvas)); });
+    click(innerToggle);
+    // The inner toggle is the embedded map's; seen from the outer canvas it is a plain click on the holding node.
+    expect(readings).toEqual([{ nodeId: selected.id, toggle: false }, { nodeId: 'inner-1', toggle: true }]);
+    readings.length = 0;
+    actions.select.mockClear();
+    actions.fold.mockClear();
+    click(innerLabel);
+    expect(readings).toEqual([{ nodeId: selected.id, toggle: false }, { nodeId: 'inner-1', toggle: false }]);
+    expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id, true);
+    expect(actions.fold).not.toHaveBeenCalled();
+    innerLabel.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+    expect(actions.edit).toHaveBeenCalledOnce();
+    expect(actions.select).toHaveBeenLastCalledWith(selected.id);
+    expect(actions.addTopic).not.toHaveBeenCalled();
   });
 
   it.each([{ metaKey: false }, { metaKey: true }, { ctrlKey: true }])(
@@ -408,6 +450,25 @@ describe('MapEvents file drops next to pointer dragging', () => {
     drag(node('A1'), 'dragover', {}, transfer({ types: ['Files'] }));
     drag(canvas, 'dragend');
     expect(highlighted()).toEqual([]);
+  });
+
+  it('highlights and attaches to the node holding an embedded map when the file is dragged over the map inside it', () => {
+    const { actions, node, id, highlighted } = dragFixture();
+    const frame = document.createElement('div');
+    frame.className = 'mappy-embed mappy-view';
+    const inner = document.createElement('div');
+    inner.className = 'mappy-node';
+    inner.dataset.nodeId = 'inner-1';
+    inner.textContent = 'inner';
+    frame.append(inner);
+    node('A1').append(frame);
+    const image = new File(['png'], 'figure.png', { type: 'image/png' });
+    drag(inner, 'dragover', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'] }));
+    expect(highlighted()).toEqual(['A1inner']);
+    expect(inner.classList.contains('is-drop-target')).toBe(false);
+    drag(inner, 'drop', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'], files: [image] }));
+    expect(actions.select).toHaveBeenCalledWith(id('A1'));
+    expect(actions.attach).toHaveBeenCalledExactlyOnceWith(image);
   });
 
   it('ignores drags that carry neither files nor an image', () => {

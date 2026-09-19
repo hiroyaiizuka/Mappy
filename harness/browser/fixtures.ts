@@ -9,6 +9,8 @@ import freeTopics from "../../tests/fixtures/free-topics.md?raw";
 import embedHost from "../../tests/fixtures/embed-host.md?raw";
 import embedTimeline from "../../tests/fixtures/embed-timeline.md?raw";
 import embedHierarchy from "../../tests/fixtures/embed-hierarchy.md?raw";
+import embedNodes from "../../tests/fixtures/embed-nodes.md?raw";
+import embedCycle from "../../tests/fixtures/embed-cycle.md?raw";
 import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
 import { makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
 
@@ -60,6 +62,21 @@ const staticFixtures: HarnessFixture[] = [
     label: "free-topics（本体＋フリートピック）",
     covers: "複数の H2: 最初の区画が本体、後ろの 3 区画がフリートピック。frontmatter `mappy-topics` の位置（レイアウト別、`:` を含む引用符付きキー、孤児キー）と、位置未設定の既定配置",
     source: freeTopics,
+  },
+  {
+    id: "embed-nodes",
+    path: `${FIXTURE_DIRECTORY}/embed-nodes.md`,
+    label: "embed-nodes（マップの中の呼び出し: `![[…]]` だけのノード）",
+    covers: "`![[マップノート]]` だけのノードが読み取り専用のマップになる（M12、E35）: タイムライン・`#見出し` の部分木・2,000 ノード・同じマップの 2 回目・循環の相手（embed-cycle）。"
+      + "自分自身・文中の埋め込み・`mappy: true` のないノート・存在しないノート・ブロック参照はリンク、画像は画像のまま",
+    source: embedNodes,
+  },
+  {
+    id: "embed-cycle",
+    path: `${FIXTURE_DIRECTORY}/embed-cycle.md`,
+    label: "embed-cycle（embed-nodes と互いに呼び出す）",
+    covers: "embed-nodes を呼び出し、embed-nodes からも呼び出される（A ↔ B）。呼び出したマップの中の呼び出しはリンクのまま描かれ、循環しても描画が止まらない。自分自身はリンク",
+    source: embedCycle,
   },
 ];
 

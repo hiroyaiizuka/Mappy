@@ -318,6 +318,36 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
   });
 
+  it('drags the node holding an embedded map from inside its frame, and targets that node under the pointer (§5 M12)', () => {
+    const { canvas, actions, node, id, pointer, ghost, rects, begin } = fixture();
+    // A2 holds a map: a frame with a node of the embedded map inside, which even shares the root's id.
+    const frame = document.createElement('div');
+    frame.className = 'mappy-embed mappy-view';
+    const inner = document.createElement('div');
+    inner.className = 'mappy-node';
+    inner.dataset.nodeId = id('Course');
+    inner.textContent = 'inner root';
+    frame.append(inner);
+    node('A2').append(frame);
+    const a2 = rects.get(node('A2'));
+    if (!a2) throw new Error('no rect');
+    inner.getBoundingClientRect = () => rectOf({ left: a2.left + 20, top: a2.top + 10, width: 100, height: 20 });
+    pointer('pointerdown', inner, a2.left + 30, a2.top + 15);
+    pointer('pointermove', canvas, a2.left + 40, a2.top + 15);
+    expect(ghost()?.textContent).toBe('A2inner root');
+    expect(node('A2').classList.contains('is-drag-source')).toBe(true);
+    expect(inner.classList.contains('is-drag-source')).toBe(false);
+    expect(actions.select).toHaveBeenCalledExactlyOnceWith(id('A2'));
+    pointer('pointercancel', canvas, a2.left + 40, a2.top + 15);
+    // Dragging A3 over the map inside A2 targets A2 (the middle of A2 is the child slot), not the embedded map's node.
+    rects.set(inner, { left: a2.left + 20, top: a2.top + 10, width: 100, height: 20 });
+    begin('A3');
+    pointer('pointermove', canvas, a2.left + 60, a2.top + 20);
+    expect(actions.dropTarget).toHaveBeenLastCalledWith(id('A3'), id('A2'), 'inside');
+    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('A3'), parentId: id('A2'), index: 0 });
+    pointer('pointercancel', canvas, a2.left + 60, a2.top + 20);
+  });
+
   it('starts from links and images but not from controls or non-primary buttons, and cleans up on unload', () => {
     const { canvas, actions, node, pointer, ghost, begin } = fixture();
     for (const tag of ['a', 'img'] as const) {

@@ -2,6 +2,7 @@ import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
 import { attachmentMarkdown, transclusionsAsLinks } from "../core/attachments";
+import { embedOnlyTitle } from "../core/embed";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
 
 interface NodeEntry {
@@ -20,6 +21,21 @@ interface NodeAppearance {
   mode: LayoutMode;
 }
 
+/** A map drawn inside a node (§5 M12): `key` tells one target from another, `mount` draws it in the frame for as long as `owner` lives. */
+export interface NodeEmbed {
+  key: string;
+  mount(owner: Component, frame: HTMLElement, changed: () => void): void;
+}
+
+/**
+ * What the map view lends its renderer so a node whose title is one `![[map]]` draws
+ * that map inside itself instead of a link (§5 M12). `sourcePath` is the note being
+ * drawn, so the resolver can refuse the note itself. A renderer without one (the
+ * read-only embed) keeps every such title a link (§5 M10), which is what stops a
+ * chain of calls from recursing: an embedded map never draws another.
+ */
+export type NodeEmbedResolver = (linktext: string, sourcePath: string) => NodeEmbed | null;
+
 /** Each Markdown render owns a disposable child component. */
 export class NodeRenderer extends Component {
   readonly entries = new Map<string, NodeEntry>();
@@ -29,6 +45,7 @@ export class NodeRenderer extends Component {
     private readonly app: App,
     private readonly layer: HTMLElement,
     private readonly changed: () => void,
+    private readonly embeds?: NodeEmbedResolver,
   ) { super(); }
 
   update(
@@ -62,10 +79,14 @@ export class NodeRenderer extends Component {
       const isTopic = appearance.topicIds?.has(node.id) ?? false;
       const isRoot = isTopic || node.id === appearance.visualRootId;
       const parentIsRoot = node.parentId === appearance.visualRootId || (node.parentId !== null && (appearance.topicIds?.has(node.parentId) ?? false));
+      // A title that is one `![[map]]` draws that map in the node when the view allows it; the frame counts as the node's size.
+      const linktext = this.embeds ? embedOnlyTitle(node.title) : null;
+      const embed = this.embeds && linktext ? this.embeds(linktext, sourcePath) : null;
       entry.element.toggleClass("is-root", isRoot);
       entry.element.toggleClass("is-topic", isTopic);
       entry.element.toggleClass("is-stage", !isRoot && parentIsRoot);
       entry.element.toggleClass("is-parent", node.children.length > 0);
+      entry.element.toggleClass("is-embed", embed !== null);
       entry.element.toggleClass("is-timeline", appearance.mode === "timeline");
       entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
@@ -87,15 +108,21 @@ export class NodeRenderer extends Component {
       if (node.children.length > 0) entry.element.setAttribute("aria-expanded", String(!collapsed.has(node.id)));
       else entry.element.removeAttribute("aria-expanded");
       const attachments = attachmentMarkdown(nodeBody(document, node));
-      const key = `${sourcePath}\0${node.title}\0${attachments}`;
+      const key = `${sourcePath}\0${node.title}\0${attachments}${embed ? `\0${embed.key}` : ""}`;
       if (entry.key === key) continue;
       entry.key = key;
       this.removeChild(entry.component);
       entry.component = this.addChild(new Component());
       entry.content.empty();
-      const label = entry.content.createDiv({ cls: "mappy-node-label" });
+      const current = entry;
+      const changed = (): void => {
+        if (this.entries.get(node.id) === current && current.key === key) this.changed();
+      };
+      // The map takes the label's place (§5 M12); the title itself (`![[…]]`) is what the inline editor shows.
+      const label = embed ? null : entry.content.createDiv({ cls: "mappy-node-label" });
+      if (embed) embed.mount(entry.component, entry.content.createDiv(), changed);
       // A note transclusion in a title renders as a link (as in the body), so a node never nests another note's rendering.
-      const labelTask = node.title
+      const labelTask = label && node.title
         ? MarkdownRenderer.render(this.app, transclusionsAsLinks(node.title), label, sourcePath, entry.component)
         : Promise.resolve();
       const attachmentsEl = entry.content.createDiv({ cls: "mappy-node-attachments" });
@@ -107,17 +134,13 @@ export class NodeRenderer extends Component {
           attachmentsEl.replaceChildren(...items);
         })
         : Promise.resolve();
-      const current = entry;
-      const changed = (): void => {
-        if (this.entries.get(node.id) === current && current.key === key) this.changed();
-      };
       entry.component.registerDomEvent(entry.content, "load", changed, true);
       entry.component.registerDomEvent(entry.content, "error", changed, true);
       void Promise.all([labelTask, attachmentsTask]).then(() => {
         changed();
       }).catch(() => {
         if (this.entries.get(node.id) === current && current.key === key) {
-          label.setText(node.title);
+          label?.setText(node.title);
           attachmentsEl.empty();
           this.changed();
         }

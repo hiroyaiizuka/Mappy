@@ -31,6 +31,7 @@ vi.mock("obsidian", () => {
 });
 
 vi.mock("../../src/ui/node-renderer", () => ({ NodeRenderer: class {} }));
+vi.mock("../../src/ui/map-embed", () => ({ nodeEmbeds: () => () => null }));
 vi.mock("../../src/ui/map-viewport", () => ({ MapViewport: class {} }));
 vi.mock("../../src/ui/map-events", () => ({ MapEvents: class {} }));
 vi.mock("../../src/ui/node-drag", () => ({ NodeDrag: class {} }));

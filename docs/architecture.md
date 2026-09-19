@@ -43,14 +43,14 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/obsidian/view-routing.ts` / `patch.ts` | frontmatter を持つノートを map view へ導く `setViewState` の差し替え | WorkspaceLeaf.prototype |
 | `src/obsidian/excalidraw-bridge.ts` / `src/types/excalidraw-automate.ts` | Excalidraw の `ExcalidrawAutomate` へのドロップフック連結と要素生成 | `window.ExcalidrawAutomate`（任意） |
 | `src/ui/mindmap-view.ts` | ファイル・表示状態、描画更新、編集経路の接続 | Obsidian ItemView |
-| `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命 | Obsidian MarkdownRenderer |
-| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付（クリックの解釈 `mapClick` は埋め込みと共有）、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
+| `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命。`![[マップ]]` だけの題名は view から渡された resolver（`NodeEmbedResolver`）で枠にし、entry の Component に寿命を合わせる | Obsidian MarkdownRenderer |
+| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付（クリックの解釈 `mapClick` は埋め込みと共有。`nodeOf` はそのキャンバスのノードだけを答え、ノードの中に描いたマップのノードを取り違えない）、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
 | `src/layout/drop-preview.ts` / `snap.ts` | ドラッグ中の移動先に仮ノードを差し込んだレイアウト用の木と、運んだトピックのルートの矩形からレイアウト別の幾何で合流先を決めるスロット判定 | 純粋 TypeScript |
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
-| `src/core/embed.ts` / `map-keys.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`（キーは `map-keys.ts` で cache 側と共有）、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード | 純粋 TypeScript |
+| `src/core/embed.ts` / `map-keys.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`（キーは `map-keys.ts` で cache 側と共有）、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード。項目が埋め込み 1 つだけかの判定（`embedOnlyTitle`、M12） | 純粋 TypeScript |
 | `src/obsidian/embed-target.ts` | マップノートの判定 `isMapNote`（metadataCache の `mappy: true`。埋め込みと検索で共有）と、`.internal-embed` の `src` からのマップノートと見出しパスの解決（`parseLinktext`、`getFirstLinkpathDest`） | Obsidian の公開 API |
 | `src/obsidian/map-search.ts` | コマンド「マップを検索して呼び出す」の検索 UI（M12 の入力側）: 他のマップノートを候補にした `FuzzySuggestModal`。候補の列挙 `listMapNotes`、検索文字列 `searchText`、選んだファイルを返すだけで書き込みは持たない | Obsidian の FuzzySuggestModal、Vault、metadataCache |
-| `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
+| `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`）。map view のノードの中に同じ枠を描く resolver（`nodeEmbeds`、M12）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
 
 Markdown parser は原文の UTF-16 offset を得られる `@lezer/markdown` を採用した。通常の Markdown を構文解析し、frontmatter と Obsidian コメントを補助処理する。製品コードはブラウザ互換にし、Node/Electron や非公開の Obsidian parser を使わない。ランタイム依存は package.json で固定し、バンドルの実測値とハッシュは各ビルドの `dist/build-info.json` と証跡で追う。モバイル互換性は設計上の条件であり、実機では未確認。
 
@@ -150,7 +150,15 @@ HTML ノード＋SVG 接続線を一つの変換レイヤーに配置する。�
 
 Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差し替えられたとき・ホストを閉じたとき・ポップオーバーが閉じたときに Obsidian が unload する。unload で rAF・タイマー・`ResizeObserver`・vault／workspace のイベント（`registerEvent`）・`NodeRenderer` の MarkdownRenderer の Component を解放し、ホスト側の DOM を元に戻す（閲覧モードは placeholder の span、ライブプレビューは容器のクラスと内容）。`MapEmbeds` は生きている埋め込みを持ち、プラグインの unload で全部を解放し、その枠を含んでいた閲覧モードの view（`containerEl.contains(frame)` で選ぶ。パスでは入れ子や埋め込み先の区画を取り違える）を `previewMode.rerender(true)` で描き直す。解放後は post-processor もフレームの見直しも何もしない。ノードのタイトルの `![[ノート]]`（画像以外）は本文の添付と同じ規則でリンクとして描くので（`transclusionsAsLinks`）、埋め込みの中で別のノートの埋め込みが描かれることはなく、循環しない。自分自身の埋め込みは Obsidian の扱いに任せる。
 
-再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E34）で確認する。
+### 5c. マップの中の呼び出し（M12 の表示側）
+
+map view のノードの最初の行が `![[マップノート]]`／`![[ノート#見出し]]` 1 つだけなら（core の `embedOnlyTitle`。前後の空白は許し、`|別名` は Obsidian が `src` から捨てるのと同じく捨てる）、そのノードの中に M10 と同じ枠を描く。post-processor は使わない: map view のノードの題名は `MarkdownRenderer` で描くが、`transclusionsAsLinks` が先に `![[…]]` をリンクにするので `.internal-embed` は生まれず、`MapEmbeds.process` の `.mappy-view` の除外は「ノードの中の区画をホストにしない」ためだけに残る。判定と描画は `NodeRenderer` が view から受け取る resolver（`NodeEmbedResolver`: 題名のリンクテキストと描いているノートのパス → `{ key, mount }` か null）で行う。`MindmapView` は `nodeEmbeds(app, store)`（`map-embed.ts`）を渡し、resolver は既存の `resolveEmbedTarget`（`mappy: true` のノートだけ）で解決し、自分自身（`file.path === sourcePath`）は null にする。`mount` はノードの content の中に作った枠を `containerEl`＝`frame` にした `MapEmbed` を entry の Component の子として足す（ノードの削除・題名の変更・view の閉じで unload される）。`key`（元ノートのパス＋見出し）はノードの同一性キーに入り、同じ題名が別のマップを指すようになれば描き直す。判定は描くときに読むので、view は `metadataCache` の `changed`／`deleted` と vault の `rename`（自分以外のノート）で、呼び出しを持つ文書に限って `draw()` し直す（呼び出し先が後から作られた・`mappy: true` を得た・消えた場合にノードが枠になり／リンクに戻る）。ダブルクリックで元ノートを開くのは `mount` が枠に足す 1 つのハンドラ（`openLinkText`。`stopPropagation` で view のダブルクリック編集に渡さない。枠の中のボタンとリンクはクリックで既に開いているので対象外）。枠の大きさは CSS の固定値（既定 320×220px、`--mappy-node-embed-width`／`-height`）で、`ResizeObserver` で外側の配置に伝える。
+
+再帰の遮断は 2 段で、鎖の追跡は持たない。自分自身は resolver が拒み、枠の中で描く `MapEmbed` は自分の `NodeRenderer` に resolver を渡さないので、枠の中の `![[…]]` は M10 と同じくリンクになる。A→B→A、A→B→C→A のどれも最初の枠のリンクで止まり、枠の中に枠はできない。同じマップを 2 回呼ぶと 2 つの `MapEmbed` が独立に読み込み・折りたたみを持つ（同じ題名のノードは編集のたびに id が変わるので、そのとき枠も作り直される。§3 の同一性の規則どおり）。
+
+枠の中のノードは外側の view のノードではない。枠の中の要素も `.mappy-node[data-node-id]` なので（id は `root` が衝突しうる）、view 側のクリック（`mapClick`）・ダブルクリック・右クリック・`NodeDrag` の押下と移動先・ファイルドロップは `nodeOf(canvas, target)`（`map-events.ts`）でそのキャンバスの最も外側のノードに帰着させる。開閉ボタンはノード直下の子だけをそのノードのものと見なす。`MapEmbed` 自身のクリックは内側のキャンバスで先に処理し、リンクは伝播を止め、開閉ボタンは折りたたみを切り替えてから伝播させる（それ以外のクリックと同じく外側に伝わり、枠を持つノードの選択とフォーカスになる。フォーカスが枠の中のボタンに残ると外側のキーボード操作が効かなくなるため）。ホイールとポインターのドラッグは枠が扱わないので外側のパン・ズーム・ノードのドラッグになる（枠内で独立にパン・ズームしない。`touch-action: none`）。`.is-root`／`.is-stage` の label の太字は `> .mappy-node-content > .mappy-node-label` に限り、枠の中の label に及ばない。
+
+再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E34）で確認する。SVG／PNG 書き出し（§9c）は枠の中のマップを配置どおりに描けない（算出スタイルの白名簿に `position`／`transform` がない）ので、枠を同じ大きさの箱にしてマップ名を書く（`serializeFrame`、`mappy-export-embed`）。中のマップを描くかは LEV-73 で扱う。
 
 ## 6. 操作とズーム
 

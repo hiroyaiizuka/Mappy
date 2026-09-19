@@ -1472,6 +1472,319 @@ async function captureEmbeds(recorder, page) {
   });
 }
 
+const EMBED_NODES_FIXTURE = 'embed-nodes';
+const EMBED_CYCLE_FIXTURE = 'embed-cycle';
+/** The frames the `embed-nodes` map draws inside its nodes, in document order: the node's text, the map, its layout and the nodes drawn. */
+const EMBED_NODE_EXPECTED = [
+  { title: '![[embed-timeline]]', src: 'Fixtures/embed-timeline.md', layout: 'timeline', nodes: 5 },
+  { title: '![[embed-hierarchy#同じ名前]]', src: 'Fixtures/embed-hierarchy.md#同じ名前', layout: 'hierarchy', nodes: 3 },
+  { title: '![[embed-2000]]', src: 'Fixtures/embed-2000.md', layout: 'mindmap', nodes: 14 },
+  { title: '![[embed-timeline]]', src: 'Fixtures/embed-timeline.md', layout: 'timeline', nodes: 5 },
+  { title: '![[embed-cycle]]', src: 'Fixtures/embed-cycle.md', layout: 'mindmap', nodes: 4 },
+];
+/** Nodes of `embed-nodes` that stay links (their rendered label) and the image node (no label). */
+const EMBED_NODE_LINKS = ['embed-nodes', '文中の embed-timeline はリンク', 'heading-document', '存在しないノート', 'embed-hierarchy#^block'];
+const EMBED_NODE_NOTES = ['Fixtures/embed-nodes.md', 'Fixtures/embed-cycle.md', 'Fixtures/embed-timeline.md', 'Fixtures/embed-hierarchy.md', 'Fixtures/embed-2000.md'];
+
+/**
+ * Every frame inside a node as expected: the map it names, its layout, its nodes inside the frame and the
+ * frame inside the node, never magnified. Frames are matched top to bottom (the map lays the nodes out in
+ * source order), since the DOM order changes once a node is redrawn.
+ */
+function expectNodeEmbeds(embeds, nodeCount) {
+  expect(embeds.length === EMBED_NODE_EXPECTED.length, `${embeds.length} frames in nodes, expected ${EMBED_NODE_EXPECTED.length}`);
+  const ordered = [...embeds].sort((left, right) => left.node.rect.y - right.node.rect.y);
+  EMBED_NODE_EXPECTED.forEach((wanted, index) => {
+    const { node, frame } = ordered[index];
+    expect(node.title === wanted.title && node.embed, `frame ${index}: node ${node.title}`);
+    expect(frame.src === wanted.src, `${node.title}: ${frame.src}, expected ${wanted.src}`);
+    expect(frame.layout === wanted.layout, `${node.title}: layout ${frame.layout}, expected ${wanted.layout}`);
+    expect(frame.nodes.length === wanted.nodes && !frame.message, `${node.title}: ${frame.nodes.length} nodes, message ${frame.message}`);
+    expect(frame.scale !== null && frame.scale <= 1.0001, `${node.title}: scale ${frame.scale}`);
+    expect(inside(frame.rect, node.rect, 1), `${node.title}: frame outside its node`);
+    const outside = frame.nodes.filter(inner => !inside(inner.rect, frame.rect, 2));
+    expect(outside.length === 0, `${node.title}: ${outside.length} nodes outside the frame`);
+  });
+  if (nodeCount !== undefined) expect(embeds.length + EMBED_NODE_LINKS.length + 1 + 5 === nodeCount, `own nodes ${nodeCount}`);
+}
+
+async function embedNodeSources(page) {
+  const sources = {};
+  for (const path of EMBED_NODE_NOTES) sources[path] = await page.harness(`h.noteSource(${JSON.stringify(path)})`);
+  return sources;
+}
+
+/** The frame inside the node of this text (the n-th of that text) and one of the nodes drawn in it. */
+async function frameNode(page, title, innerTitle, occurrence = 0) {
+  const embeds = (await page.harness('h.nodeEmbeds()')).filter(embed => embed.node.title === title);
+  const embed = embeds[occurrence];
+  expect(embed, `frame missing in ${title} (${occurrence})`);
+  const inner = embed.frame.nodes.find(candidate => candidate.title === innerTitle);
+  expect(inner, `node missing in ${title}: ${innerTitle}`);
+  return { embed, inner };
+}
+
+/** Zoom the outer map towards a point until its scale reaches `target`, as a user would before working inside a small frame. */
+async function zoomTowards(page, point, target) {
+  for (let step = 0; step < 12 && (await page.harness('h.viewport()')).scale < target; step += 1) {
+    await page.wheel(point.x, point.y, 0, -200, 2);
+  }
+  await page.settle();
+}
+
+/** docs/harness.md E35 on this page: a map whose nodes call other maps (§5 M12). */
+async function captureEmbedNodes(recorder, page) {
+  for (const path of EMBED_NODE_NOTES) await page.harness(`h.putNote(${JSON.stringify(path)}, h.noteSource(${JSON.stringify(path)}))`);
+  const sources = await embedNodeSources(page);
+  const unchanged = async () => { const after = await embedNodeSources(page); for (const path of EMBED_NODE_NOTES) expect(after[path] === sources[path], `${path} changed`); };
+  let listeners = null;
+
+  await recorder.run('embed-node-draw', `${EMBED_NODES_FIXTURE} を読み込む（mappy: true のマップ。ノードのテキストが ![[…]] だけの項目を持つ）`,
+    '5 つのノードが読み取り専用のマップの枠（タイムライン・#見出し の部分木・2,000 ノードはルート＋13・同じマップの 2 回目・循環の相手）になり、枠は Fit で拡大なし、ノードの中に収まる。自分自身・文中の埋め込み・mappy: true のないノート・存在しないノート・ブロック参照はリンク、画像は画像。どのノートも変わらない', async () => {
+    const timing = await loadFixture(page, EMBED_NODES_FIXTURE);
+    const own = await page.harness('h.nodes()');
+    expect(own.length === timing.nodes, `DOM has ${own.length} own nodes, parser found ${timing.nodes}`);
+    const embeds = await page.harness('h.nodeEmbeds()');
+    expectNodeEmbeds(embeds, own.length);
+    const links = own.filter(node => EMBED_NODE_LINKS.includes(node.title));
+    expect(links.length === EMBED_NODE_LINKS.length && links.every(node => !node.embed && node.link), `link nodes: ${links.map(node => `${node.title}→${node.link}`).join(', ')}`);
+    expect(own.filter(node => node.link).length === EMBED_NODE_LINKS.length && own.filter(node => node.image).length === 1, `links ${own.filter(node => node.link).length}, images ${own.filter(node => node.image).length}`);
+    const shapes = await page.evaluate(`({
+      frames: document.querySelectorAll('.mappy-embed').length,
+      nested: document.querySelectorAll('.mappy-embed .mappy-embed').length,
+      editable: document.querySelectorAll('.mappy-embed textarea, .mappy-embed [contenteditable]').length,
+    })`);
+    expect(shapes.frames === EMBED_NODE_EXPECTED.length && shapes.nested === 0, `frames ${shapes.frames}, nested ${shapes.nested}`);
+    expect(shapes.editable === 0, `${shapes.editable} editable elements inside frames`);
+    await unchanged();
+    listeners = await page.harness('h.listeners()');
+    return `ノード ${own.length}（枠 ${embeds.length}、リンク ${links.length}、画像 1）、枠内のノード ${embeds.map(embed => embed.frame.nodes.length).join(' / ')}、scale ${embeds.map(embed => embed.frame.scale.toFixed(2)).join(' / ')}、安定まで ${timing.settledMs.toFixed(0)} ms、購読 vault ${listeners.vault}／workspace ${listeners.workspace}`;
+  });
+
+  await recorder.run('embed-node-wheel', 'タイムラインの枠の上で Ctrl＋ホイール（拡大）と修飾キーなしのホイール（パン）', '外側のマップがズーム・パンし、枠の中のマップは動かない（枠内で独立にパン・ズームしない）', async () => {
+    const { embed } = await frameNode(page, '![[embed-timeline]]', '講座の進行');
+    const point = center(embed.frame.rect);
+    const innerBefore = await page.evaluate(`document.querySelector('.mappy-node.is-embed .mappy-embed .mappy-world').style.transform`);
+    const before = await page.harness('h.viewport()');
+    await zoomTowards(page, point, 1);
+    const zoomed = await page.harness('h.viewport()');
+    expect(zoomed.scale > before.scale, `scale ${before.scale} → ${zoomed.scale}`);
+    const { embed: after } = await frameNode(page, '![[embed-timeline]]', '講座の進行');
+    await page.wheel(center(after.frame.rect).x, center(after.frame.rect).y, 0, 100);
+    const panned = await page.harness('h.viewport()');
+    expect(Math.abs(panned.y - zoomed.y + 100) < 1, `viewport y moved by ${(panned.y - zoomed.y).toFixed(1)}`);
+    const innerAfter = await page.evaluate(`document.querySelector('.mappy-node.is-embed .mappy-embed .mappy-world').style.transform`);
+    expect(innerAfter === innerBefore, `inner world moved: ${innerBefore} → ${innerAfter}`);
+    return `scale ${before.scale.toFixed(3)} → ${zoomed.scale.toFixed(3)}、ホイールで y ${zoomed.y.toFixed(0)} → ${panned.y.toFixed(0)}、枠内の transform 不変`;
+  });
+
+  await recorder.run('embed-node-select', '枠の中のノード「講座の進行」をクリック', '枠を持つ外側のノード（![[embed-timeline]]）が選択され、枠の中では何も選択されない', async () => {
+    const { embed, inner } = await frameNode(page, '![[embed-timeline]]', '講座の進行');
+    await page.click(center(inner.rect).x, center(inner.rect).y);
+    const own = await page.harness('h.nodes()');
+    const selected = own.filter(node => node.selected);
+    expect(selected.length === 1 && selected[0].id === embed.node.id, `selected: ${selected.map(node => node.title).join(', ')}`);
+    const innerSelected = await page.evaluate(`document.querySelectorAll('.mappy-embed .mappy-node.is-selected').length`);
+    expect(innerSelected === 0, `${innerSelected} inner nodes selected`);
+    await unchanged();
+  });
+
+  await recorder.run('embed-node-fold', 'タイムラインの枠の中で「第 2 週: 回復」の開閉ボタンをクリック → もう一度クリック', '枠の中だけが一段開いて Fit し直し、枠の大きさ・外側のノード数・選択・もう一つの同じ枠は変わらない。再クリックで戻り、どのノートも変わらない', async () => {
+    const first = await frameNode(page, '![[embed-timeline]]', '第 2 週: 回復', 0);
+    const other = (await frameNode(page, '![[embed-timeline]]', '講座の進行', 1)).embed;
+    expect(first.inner.toggle, 'fold control missing inside the frame');
+    const ownBefore = (await page.harness('h.nodes()')).length;
+    await page.click(center(first.inner.toggle).x, center(first.inner.toggle).y);
+    await page.settle();
+    const opened = (await frameNode(page, '![[embed-timeline]]', '第 2 週: 回復', 0)).embed;
+    expect(opened.frame.nodes.length === first.embed.frame.nodes.length + 2, `${first.embed.frame.nodes.length} → ${opened.frame.nodes.length} nodes in the frame`);
+    expect(opened.frame.nodes.every(node => inside(node.rect, opened.frame.rect, 2)), 'a node left the frame');
+    expect(Math.abs(opened.frame.rect.width - first.embed.frame.rect.width) < 1 && Math.abs(opened.frame.rect.height - first.embed.frame.rect.height) < 1, 'the frame changed size');
+    expect((await page.harness('h.nodes()')).length === ownBefore, 'own nodes changed');
+    expect((await page.harness('h.node("![[embed-timeline]]")')).selected, 'selection changed');
+    const otherAfter = (await frameNode(page, '![[embed-timeline]]', '講座の進行', 1)).embed;
+    expect(otherAfter.frame.nodes.length === other.frame.nodes.length, `the other frame changed: ${other.frame.nodes.length} → ${otherAfter.frame.nodes.length}`);
+    const again = (await frameNode(page, '![[embed-timeline]]', '第 2 週: 回復', 0)).inner;
+    await page.click(center(again.toggle).x, center(again.toggle).y);
+    await page.settle();
+    const closed = (await frameNode(page, '![[embed-timeline]]', '第 2 週: 回復', 0)).embed;
+    expect(closed.frame.nodes.length === first.embed.frame.nodes.length, `${closed.frame.nodes.length} nodes after closing`);
+    await unchanged();
+    return `枠内 ${first.embed.frame.nodes.length} → ${opened.frame.nodes.length} → ${closed.frame.nodes.length} ノード、もう一つの枠 ${other.frame.nodes.length} のまま`;
+  });
+
+  await recorder.run('embed-node-dblclick', '枠の中をダブルクリック', '呼び出したノート（embed-timeline）をマップで開く要求が、このノートを基準に出る。インライン入力は開かない', async () => {
+    const { inner } = await frameNode(page, '![[embed-timeline]]', '講座の進行');
+    await page.dblclick(center(inner.rect).x, center(inner.rect).y);
+    const activity = await page.harness('h.activity');
+    const last = activity.at(-1);
+    expect(last && last.kind === 'link' && last.detail === 'Fixtures/embed-timeline.md（Fixtures/embed-nodes.md から）', `last activity: ${JSON.stringify(last)}`);
+    const editing = await page.evaluate(`document.querySelector('.mappy-inline-input') !== null`);
+    expect(!editing, 'the inline editor opened');
+    return last.detail;
+  });
+
+  await recorder.run('embed-node-edit', 'F2 → Escape', 'インライン入力に原文（![[embed-timeline]]）がそのまま入り、取り消すと枠が同じまま戻る', async () => {
+    const { embed } = await frameNode(page, '![[embed-timeline]]', '講座の進行');
+    await page.click(center(embed.node.rect).x, embed.node.rect.y + 2);
+    await page.key('F2', 'F2', 113);
+    const value = await page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') ? document.activeElement.value : null`);
+    expect(value === '![[embed-timeline]]', `inline editor holds ${JSON.stringify(value)}`);
+    await page.key('Escape', 'Escape', 27);
+    await page.settle();
+    const embeds = await page.harness('h.nodeEmbeds()');
+    expectNodeEmbeds(embeds);
+    await unchanged();
+    return `入力欄の値 ${value}`;
+  });
+
+  await recorder.run('embed-node-source-change', '元ノート embed-timeline を書き換える（第 1 週の名前を変える）→ 元に戻す', '2 つのタイムラインの枠が新しい名前で描き直され、このノートは変わらない。戻すと元の名前に戻る', async () => {
+    const path = 'Fixtures/embed-timeline.md';
+    const original = sources[path];
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original.replace('- 第 1 週: 準備', '- 第 1 週: 準備（更新）'))})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    const changed = (await page.harness('h.nodeEmbeds()')).filter(embed => embed.frame.src === path);
+    expect(changed.length === 2 && changed.every(embed => embed.frame.nodes.some(node => node.title === '第 1 週: 準備（更新）')), `titles after change: ${changed.map(embed => embed.frame.nodes.map(node => node.title).join(',')).join(' / ')}`);
+    expect((await page.harness('h.noteSource("Fixtures/embed-nodes.md")')) === sources['Fixtures/embed-nodes.md'], 'the host changed');
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original)})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    const restored = (await page.harness('h.nodeEmbeds()')).filter(embed => embed.frame.src === path);
+    expect(restored.every(embed => embed.frame.nodes.some(node => node.title === '第 1 週: 準備')), 'titles after restore');
+    await unchanged();
+    return `変更後 ${changed.map(embed => embed.frame.nodes.length).join(' / ')} ノード、復元後 ${restored.map(embed => embed.frame.nodes.length).join(' / ')} ノード`;
+  });
+
+  await recorder.run('embed-node-recall', '存在しなかった「存在しないノート」を mappy: true のノートとして作る → 消す', 'このノートを編集しなくても、リンクだったノードが枠になり、消すとリンクに戻る（呼び出し先の cache・存在の変化で判定し直す）', async () => {
+    const path = 'Fixtures/存在しないノート.md';
+    const title = '存在しないノート';
+    const before = await nodeInfo(page, title);
+    expect(before.link === title && !before.embed, `before: ${JSON.stringify(before)}`);
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify('---\nmappy: true\n---\n## 後から作ったマップ\n- 一\n- 二\n')})`);
+    await page.settle();
+    const embeds = await page.harness('h.nodeEmbeds()');
+    const made = embeds.find(embed => embed.frame.src === path);
+    expect(made && made.node.title === `![[${title}]]` && made.frame.nodes.length === 3, `frames after create: ${embeds.map(embed => embed.frame.src).join(', ')}`);
+    expect(embeds.length === EMBED_NODE_EXPECTED.length + 1, `${embeds.length} frames`);
+    await page.harness(`h.removeNote(${JSON.stringify(path)})`);
+    await page.settle();
+    const after = await nodeInfo(page, title);
+    expect(after.link === title && !after.embed, `after: ${JSON.stringify(after)}`);
+    expectNodeEmbeds(await page.harness('h.nodeEmbeds()'));
+    await unchanged();
+    return `リンク → 枠（${made.frame.nodes.length} ノード）→ リンク。ホスト不変`;
+  });
+
+  await recorder.run('embed-node-resize', '枠の高さを CSS 変数（--mappy-node-embed-height）で 220 → 300px に変える → 戻す', '枠を持つノードの実測が変わり、外側の配置が追従する（下のノードが下がり、線もつながったまま）。戻すと元の位置', async () => {
+    const below = '同じマップをもう一度';
+    const before = await nodeInfo(page, below);
+    const { scale } = await page.harness('h.viewport()');
+    await page.evaluate(`document.getElementById('harness-pane').style.setProperty('--mappy-node-embed-height', '300px')`);
+    await page.settle();
+    const grown = (await page.harness('h.nodeEmbeds()'))[0];
+    expect(Math.abs(grown.frame.rect.height - 300 * scale) < 2, `frame height ${grown.frame.rect.height.toFixed(1)}, expected ${(300 * scale).toFixed(1)}`);
+    const after = await nodeInfo(page, below);
+    expect(after.rect.y > before.rect.y + 20 * scale, `${below} y ${before.rect.y.toFixed(1)} → ${after.rect.y.toFixed(1)}`);
+    await page.evaluate(`document.getElementById('harness-pane').style.removeProperty('--mappy-node-embed-height')`);
+    await page.settle();
+    const restored = await nodeInfo(page, below);
+    expect(Math.abs(restored.rect.y - before.rect.y) < 1, `${below} y after restore ${restored.rect.y.toFixed(1)}, was ${before.rect.y.toFixed(1)}`);
+    return `枠 ${(220 * scale).toFixed(0)} → ${grown.frame.rect.height.toFixed(0)} px、下のノード y ${before.rect.y.toFixed(0)} → ${after.rect.y.toFixed(0)} → ${restored.rect.y.toFixed(0)}`;
+  });
+
+  await recorder.run('embed-node-collapse', '「呼び出したマップ」の開閉ボタンをクリック → Space で開く', '3 つの枠がノードごと消えて購読が減り（Component の解放）、再展開で同じ枠が戻り購読数も戻る', async () => {
+    const node = await nodeInfo(page, '呼び出したマップ');
+    expect(node.toggle, 'fold control missing');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    const folded = await page.harness('h.nodeEmbeds()');
+    expect(folded.length === EMBED_NODE_EXPECTED.length - 3, `${folded.length} frames while folded`);
+    const fewer = await page.harness('h.listeners()');
+    expect(fewer.vault < listeners.vault && fewer.workspace < listeners.workspace, `listeners ${JSON.stringify(listeners)} → ${JSON.stringify(fewer)}`);
+    await page.key(' ', 'Space', 32);
+    await page.settle();
+    expectNodeEmbeds(await page.harness('h.nodeEmbeds()'));
+    const back = await page.harness('h.listeners()');
+    expect(back.vault === listeners.vault && back.workspace === listeners.workspace, `listeners after expand ${JSON.stringify(back)}`);
+    await unchanged();
+    return `枠 ${EMBED_NODE_EXPECTED.length} → ${folded.length} → ${EMBED_NODE_EXPECTED.length}、購読 vault ${listeners.vault} → ${fewer.vault} → ${back.vault}`;
+  });
+
+  await recorder.run('embed-node-drag', '「全体表示」のあと、枠の中からドラッグして「リンクのまま」の中央へ離す', '枠を持つノードそのものが移動し（枠の中のノードではない）、原文の行が「リンクのまま」の子の末尾へ移る。元に戻す', async () => {
+    const fit = await page.harness('h.button("全体表示")');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+    const { embed, inner } = await frameNode(page, '![[embed-timeline]]', '講座の進行');
+    const target = await nodeInfo(page, 'リンクのまま');
+    const from = center(inner.rect);
+    const to = center(target.rect);
+    // Straight to the slot: a pointer wandering over the nodes in between previews their slots and shifts the layout under itself.
+    await page.mouse('mouseMoved', from.x, from.y);
+    await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+    await page.mouse('mouseMoved', from.x + 8, from.y + 2, { button: 'left' });
+    const dragging = await page.evaluate(`JSON.stringify({ ghost: document.querySelector('.mappy-drag-ghost') !== null, source: document.querySelector('.mappy-node.is-drag-source')?.getAttribute('aria-label') ?? null, inner: document.querySelector('.mappy-embed .is-drag-source') !== null })`);
+    await page.mouse('mouseMoved', to.x, to.y, { button: 'left' });
+    await page.mouse('mouseMoved', to.x + 1, to.y, { button: 'left' });
+    await page.mouse('mouseReleased', to.x + 1, to.y, { button: 'left', clickCount: 1 });
+    await page.settle();
+    const started = JSON.parse(dragging);
+    expect(started.ghost && started.source === '![[embed-timeline]]' && !started.inner, `drag state: ${dragging}`);
+    const after = await page.harness('h.noteSource("Fixtures/embed-nodes.md")');
+    expect(after !== sources['Fixtures/embed-nodes.md'], 'nothing moved');
+    expect(after.includes('  - ![[sample-image.svg]]\n  - ![[embed-timeline]]\n'), `moved line not at the end of リンクのまま:\n${after}`);
+    expect((after.match(/!\[\[embed-timeline\]\]/gu) ?? []).length === (sources['Fixtures/embed-nodes.md'].match(/!\[\[embed-timeline\]\]/gu) ?? []).length, 'the embed text was duplicated or lost');
+    const moved = await page.harness('h.nodeEmbeds()');
+    expect(moved.length === EMBED_NODE_EXPECTED.length, `${moved.length} frames after the move`);
+    expect((await page.harness('h.noteSource("Fixtures/embed-timeline.md")')) === sources['Fixtures/embed-timeline.md'], 'the called note changed');
+    await page.harness(`h.putNote("Fixtures/embed-nodes.md", ${JSON.stringify(sources['Fixtures/embed-nodes.md'])})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    await unchanged();
+    return `${embed.node.title} を「リンクのまま」の子の末尾へ。原文で復元`;
+  });
+
+  await recorder.run('embed-node-cycle', `${EMBED_CYCLE_FIXTURE} を読み込み、枠の中の「循環（…）」を開く`, '互いに呼び出す 2 つのマップでも描画が止まらない: embed-nodes が枠になり、その中の ![[embed-cycle]] はリンク（枠の中に枠はない）。自分自身の ![[embed-cycle]] もリンク', async () => {
+    await page.evaluate('window.scrollTo(0, 0)');
+    const timing = await loadFixture(page, EMBED_CYCLE_FIXTURE);
+    const embeds = await page.harness('h.nodeEmbeds()');
+    expect(embeds.length === 1 && embeds[0].frame.src === 'Fixtures/embed-nodes.md', `frames: ${embeds.map(embed => embed.frame.src).join(', ')}`);
+    expect(embeds[0].frame.nodes.length === 5, `${embeds[0].frame.nodes.length} nodes in the frame`);
+    const self = await nodeInfo(page, 'embed-cycle');
+    expect(self && !self.embed, 'the note itself is not a link');
+    const { inner } = await frameNode(page, '![[embed-nodes]]', '循環（embed-cycle はこのノートを呼び出す）');
+    await zoomTowards(page, center(inner.rect), 1);
+    const zoomed = (await frameNode(page, '![[embed-nodes]]', '循環（embed-cycle はこのノートを呼び出す）')).inner;
+    expect(zoomed.toggle, 'fold control missing inside the frame');
+    await page.click(center(zoomed.toggle).x, center(zoomed.toggle).y);
+    await page.settle();
+    const opened = (await page.harness('h.nodeEmbeds()'))[0];
+    expect(opened.frame.nodes.length === 6, `${opened.frame.nodes.length} nodes after opening`);
+    const shapes = await page.evaluate(`(() => {
+      const frame = document.querySelector('.mappy-node.is-embed .mappy-embed');
+      const back = Array.from(frame.querySelectorAll('.mappy-node')).find(node => node.getAttribute('aria-label') === '![[embed-cycle]]');
+      return { frames: document.querySelectorAll('.mappy-embed').length, nested: frame.querySelectorAll('.mappy-embed').length,
+        backIsLink: Boolean(back && back.querySelector('a.internal-link') && !back.classList.contains('is-embed')) };
+    })()`);
+    expect(shapes.frames === 1 && shapes.nested === 0 && shapes.backIsLink, `frames ${shapes.frames}, nested ${shapes.nested}, link ${shapes.backIsLink}`);
+    await unchanged();
+    return `枠 1（embed-nodes、${embeds[0].frame.nodes.length} → ${opened.frame.nodes.length} ノード）、枠の中の枠 0、安定まで ${timing.settledMs.toFixed(0)} ms`;
+  });
+
+  await recorder.run('embed-node-reopen', `${EMBED_NODES_FIXTURE} に戻り「閉じて開き直す」`, '古い枠と購読が残らず、同じ 5 つの枠が再表示され、購読数が最初の表示と同じ', async () => {
+    await loadFixture(page, EMBED_NODES_FIXTURE);
+    await page.harness('h.reopen()');
+    await page.settle();
+    expectNodeEmbeds(await page.harness('h.nodeEmbeds()'));
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    expect(frames === EMBED_NODE_EXPECTED.length, `${frames} frames in the document`);
+    const now = await page.harness('h.listeners()');
+    expect(now.vault === listeners.vault && now.workspace === listeners.workspace, `listeners ${JSON.stringify(listeners)} → ${JSON.stringify(now)}`);
+    await unchanged();
+    return `枠 ${frames}、購読 vault ${now.vault}／workspace ${now.workspace}（初回と同じ）`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -1481,8 +1794,9 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- ブラウザ: ${version} (${chrome})`,
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
-    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E34）の PASS ではない。',
+    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E35）の PASS ではない。',
     '- 埋め込み（embed-*）: ホストノートをページが閲覧モード相当（ホストの区画を post-processor に渡す）とライブプレビュー相当（埋め込み先を Obsidian 風の容器に描いてから渡す）で描く。Obsidian の描画順序・ホバープレビュー・実テーマは含まない。',
+    '- マップの中の呼び出し（embed-node-*、E35 のこのページ版）: `mappy: true` のマップ `embed-nodes`／`embed-cycle` を map view で開き、`![[…]]` だけのノードが枠になることを確認する。「マップで開く」とダブルクリックはリンク解決の要求の記録だけで、実際の遷移は③。',
     '- 描画時間は「時刻の記録」の生値（1 回分）。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。繰り返し計測と p50／p95 は `node scripts/browser-harness-perf.mjs` の記録（`artifacts/performance/`）で扱う。',
     '',
     '## fixture と主要操作',
@@ -1514,11 +1828,12 @@ async function main() {
   const directory = join(outRoot, stamp);
   await mkdir(directory, { recursive: true });
   const notExecuted = [
-    'Obsidian 実機（③ E01〜E34）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
+    'Obsidian 実機（③ E01〜E35）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
     'トラックパッドのピンチ・二本指スクロール、ネイティブ IME、モバイル: headless の合成入力では確認できない。',
     '⌘Z／⌘⇧Z の連打: headless Chrome 153 は修飾キー付きのキー入力を CDP で繰り返すと応答しなくなるため、フリートピックの Undo／Redo は右クリックメニューで実行した。キー経由の Undo は edit-inline-memory の 1 回と jsdom のテストで確認する。',
     '性能計測（基準端末・条件・p50／p95）: `node scripts/browser-harness-perf.mjs` が `artifacts/performance/` に記録する。ここでは時刻の生値だけを残す。',
     '埋め込み（E34）の実機: Obsidian の閲覧モード・ライブプレビュー・ホバープレビューでの描画、テーマ、埋め込み内リンクの遷移、Mappy 無効化での復帰は、このページの閲覧モード相当／ライブプレビュー相当のケース（embed-*）では確認できない。',
+    'マップの中の呼び出し（E35）の実機: ダブルクリック・「マップで開く」での実際の遷移（マップとして開くルーティング）、別 leaf の未保存の編集での更新、実テーマ、ホストを閉じたあとの残留（DevTools）は、このページのケース（embed-node-*）では確認できない。',
   ];
   const chrome = findChrome(option('--chrome'));
   const output = await buildBrowserHarness();
@@ -1548,6 +1863,7 @@ async function main() {
       await captureTopicOperations(recorder, page);
       await captureExport(recorder, page);
       await captureEmbeds(recorder, page);
+      await captureEmbedNodes(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
   } catch (error) {

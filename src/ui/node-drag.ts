@@ -1,5 +1,6 @@
 import { Component } from "obsidian";
 import type { DropPosition, MoveCommand } from "../core/commands";
+import { nodeOf } from "./map-events";
 
 /** Pointer travel since the press, in screen pixels. */
 export interface DragDelta { x: number; y: number }
@@ -82,7 +83,7 @@ export class NodeDrag extends Component {
       const target = this.element(event.targetNode);
       // Links and images are part of the node and may start a drag; controls and text inputs keep the press.
       if (!target || target.closest("button, input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-      const element = target.closest<HTMLElement>("[data-node-id]");
+      const element = nodeOf(this.canvas, target);
       const id = element?.dataset.nodeId;
       if (!element || !id) return;
       this.press = { pointerId: event.pointerId, id, element, x: event.clientX, y: event.clientY };
@@ -166,7 +167,7 @@ export class NodeDrag extends Component {
 
   private overNode(point: { x: number; y: number }): boolean {
     const hit = this.canvas.doc.elementFromPoint(point.x, point.y);
-    return Boolean(hit && this.canvas.contains(hit) && hit.closest("[data-node-id], [data-drop-placeholder]"));
+    return Boolean(hit && this.canvas.contains(hit) && (nodeOf(this.canvas, hit) || hit.closest("[data-drop-placeholder]")));
   }
 
   private near(point: { x: number; y: number }, box: Box, margin: number): boolean {
@@ -191,7 +192,9 @@ export class NodeDrag extends Component {
   private leaveIfFar(session: Session, event: PointerEvent): void {
     const anchor = session.anchor;
     if (!anchor) return;
-    const element = this.canvas.querySelector<HTMLElement>(`[data-node-id="${anchor.id.replace(/["\\]/gu, "\\$&")}"]`);
+    // Only this canvas's own node: a map embedded in a node may carry a node of the same id.
+    const element = Array.from(this.canvas.querySelectorAll<HTMLElement>(`[data-node-id="${anchor.id.replace(/["\\]/gu, "\\$&")}"]`))
+      .find(candidate => nodeOf(this.canvas, candidate) === candidate);
     const box = element?.getBoundingClientRect();
     if (box && this.near({ x: event.clientX, y: event.clientY }, box, KEEP_DISTANCE)) return;
     this.retarget(session, null, null, event);
@@ -213,7 +216,7 @@ export class NodeDrag extends Component {
     const hit = this.canvas.doc.elementFromPoint(event.clientX, event.clientY);
     // Over the placeholder or the faint source the current slot stays; over empty canvas only while nearby.
     if (!hit || !this.canvas.contains(hit) || hit.closest("[data-drop-placeholder]")) return;
-    const node = hit.closest<HTMLElement>("[data-node-id]");
+    const node = nodeOf(this.canvas, hit);
     const id = node?.dataset.nodeId;
     if (!node || !id) { if (session.free) this.snap(session, event); else this.leaveIfFar(session, event); return; }
     if (id === session.id) return;

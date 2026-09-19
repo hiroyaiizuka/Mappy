@@ -75,6 +75,7 @@ export class HarnessApp {
         entry.content = next;
         entry.frontmatter = parseFrontmatter(next);
         this.vaultEvents.trigger("modify", file);
+        this.vaultEvents.trigger("metadata:changed", file, next, { frontmatter: entry.frontmatter });
       }
       return Promise.resolve(next);
     },
@@ -139,7 +140,10 @@ export class HarnessApp {
     generateMarkdownLink: (file: TFile): string => `[[${file.name}]]`,
   };
 
-  /** Replace or add a file; the map view observes the change like an external edit. */
+  /**
+   * Replace or add a file; the map view observes the change like an external edit, and the
+   * in-memory cache reports it the way Obsidian's metadata cache does once it has re-read the file.
+   */
   put(path: string, content: string, url?: string): TFile {
     let entry = this.entries.get(path);
     if (!entry) {
@@ -147,14 +151,28 @@ export class HarnessApp {
       file.path = path;
       entry = { file, content, url, frontmatter: parseFrontmatter(content) };
       this.entries.set(path, entry);
+      this.vaultEvents.trigger("create", file);
+      this.vaultEvents.trigger("metadata:changed", file, content, { frontmatter: entry.frontmatter });
       return file;
     }
     const changed = entry.content !== content;
     entry.content = content;
     entry.url = url;
     entry.frontmatter = parseFrontmatter(content);
-    if (changed) this.vaultEvents.trigger("modify", entry.file);
+    if (changed) {
+      this.vaultEvents.trigger("modify", entry.file);
+      this.vaultEvents.trigger("metadata:changed", entry.file, content, { frontmatter: entry.frontmatter });
+    }
     return entry.file;
+  }
+
+  /** Delete a file; open maps and embeds observe it, and the cache reports it gone. */
+  remove(path: string): void {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    this.entries.delete(path);
+    this.vaultEvents.trigger("delete", entry.file);
+    this.vaultEvents.trigger("metadata:deleted", entry.file, entry.frontmatter ? { frontmatter: entry.frontmatter } : null);
   }
 
   content(file: TFile): string { return this.entry(file).content; }

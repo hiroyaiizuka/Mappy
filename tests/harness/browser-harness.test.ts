@@ -6,7 +6,7 @@ import { readTopicPositions } from '../../src/core/topics';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost } from '../../harness/browser/fixtures';
-import { readMapFromSource } from '../../src/core/embed';
+import { embedOnlyTitle, readMapFromSource } from '../../src/core/embed';
 import { Component, Events, MarkdownRenderer } from '../../harness/browser/obsidian';
 import { performanceFixtureMatrix, performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
 
@@ -57,11 +57,12 @@ describe('browser harness fixtures', () => {
   it('uses the same vault paths as test-vault/Fixtures', () => {
     expect(FIXTURES.map(fixture => fixture.path)).toEqual([
       'Fixtures/heading-document.md', 'Fixtures/roundtrip-edge-cases.md', 'Fixtures/uneven-branches.md', 'Fixtures/free-topics.md',
+      'Fixtures/embed-nodes.md', 'Fixtures/embed-cycle.md',
       'Fixtures/performance-10.md', 'Fixtures/performance-100.md', 'Fixtures/performance-500.md', 'Fixtures/performance-2000.md',
       ...['list', 'deep', 'wide', 'japanese', 'links'].flatMap(shape => performanceNodeCounts.map(count => `Fixtures/performance-${count}-${shape}.md`)),
     ]);
     expect(FIXTURES.filter(fixture => !fixture.performance).map(fixture => fixture.id))
-      .toEqual(['heading-document', 'roundtrip-edge-cases', 'uneven-branches', 'free-topics']);
+      .toEqual(['heading-document', 'roundtrip-edge-cases', 'uneven-branches', 'free-topics', 'embed-nodes', 'embed-cycle']);
     expect(SAMPLE_IMAGE.url.startsWith('data:image/svg+xml')).toBe(true);
   });
 
@@ -81,6 +82,20 @@ describe('browser harness fixtures', () => {
     const hierarchy = parseMarkdown(EMBED_TARGETS[1]?.source ?? '', 'embed-hierarchy');
     expect(hierarchy.nodes.filter(node => node.title === '同じ名前')).toHaveLength(2);
     expect(parseMarkdown(EMBED_TARGETS[2]?.source ?? '', 'embed-2000').nodes).toHaveLength(2000);
+  });
+
+  it('keeps a map that calls other maps from its nodes, and the map that calls it back (M12, E35)', () => {
+    const host = parseMarkdown(fixtureSource('embed-nodes'), 'embed-nodes');
+    expect(readMapFromSource(host.source)).toBe('mindmap');
+    const calls = host.nodes.map(node => embedOnlyTitle(node.title)).filter((link): link is string => link !== null);
+    expect(calls).toEqual([
+      'embed-timeline', 'embed-hierarchy#同じ名前', 'embed-2000', 'embed-timeline', 'embed-cycle',
+      'embed-nodes', 'heading-document', '存在しないノート', 'embed-hierarchy#^block', 'sample-image.svg',
+    ]);
+    expect(host.nodes.some(node => node.title === '文中の ![[embed-timeline]] はリンク')).toBe(true);
+    const cycle = parseMarkdown(fixtureSource('embed-cycle'), 'embed-cycle');
+    expect(readMapFromSource(cycle.source)).toBe('mindmap');
+    expect(cycle.nodes.map(node => embedOnlyTitle(node.title))).toEqual([null, 'embed-nodes', null, 'embed-cycle', null]);
   });
 });
 

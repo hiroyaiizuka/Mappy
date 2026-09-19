@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
-import { NodeRenderer } from '../../src/ui/node-renderer';
+import { NodeRenderer, type NodeEmbedResolver } from '../../src/ui/node-renderer';
 
 vi.mock('obsidian', () => {
   class Component {
@@ -52,12 +52,13 @@ function dom<T extends HTMLElement>(element: T): T {
   return element;
 }
 
-function setup(source: string) {
+function setup(source: string, embeds?: NodeEmbedResolver) {
   const parsed = parseMarkdown(source, 'File root');
   const layer = dom(document.createElement('div'));
   document.body.append(layer);
-  const renderer = new NodeRenderer({} as App, layer, vi.fn());
-  return { parsed, renderer };
+  const changed = vi.fn();
+  const renderer = new NodeRenderer({} as App, layer, changed, embeds);
+  return { parsed, renderer, changed };
 }
 
 function id(document: MindDocument, title: string): string {
@@ -243,5 +244,50 @@ describe('NodeRenderer title rendering', () => {
     expect(labels).toEqual(['Course', '[[Other Map]] と ![[図.png|120]]', '[[doc.pdf]]']);
     // The identity key still carries the title as written, so the DOM is reused across updates.
     expect(renderer.entries.get(id(parsed, '![[doc.pdf]]'))?.key).toBe('Course.md\0![[doc.pdf]]\0');
+  });
+
+  it('draws a map in a node whose title is one embed when the resolver names one, keyed by the map, and keeps a link otherwise (§5 M12)', async () => {
+    const mount = vi.fn();
+    let answer: string | null = 'Map.md';
+    const resolve = vi.fn<NodeEmbedResolver>((linktext) => (linktext === 'Map' && answer ? { key: answer, mount } : null));
+    const { parsed, renderer } = setup('## Course\n- ![[Map]]\n- ![[Other]]\n- 文中の ![[Map]]\n- `![[Map]]`\n', resolve);
+    const appearance = { visualRootId: id(parsed, 'Course'), mode: 'mindmap' as const };
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    await Promise.resolve();
+    // Only titles that are one embed reach the resolver, with the link text and the note being drawn.
+    expect(resolve.mock.calls).toEqual([['Map', 'Course.md'], ['Other', 'Course.md']]);
+    const embed = renderer.entries.get(id(parsed, '![[Map]]'));
+    expect(embed?.element.classList.contains('is-embed')).toBe(true);
+    expect(embed?.content.querySelector('.mappy-node-label')).toBeNull();
+    expect(embed?.key).toBe('Course.md\0![[Map]]\0\0Map.md');
+    expect(mount).toHaveBeenCalledOnce();
+    const [owner, frame, changed] = mount.mock.calls[0] as [unknown, HTMLElement, () => void];
+    expect(owner).toBe(embed?.component);
+    expect(frame.parentElement).toBe(embed?.content);
+    expect(typeof changed).toBe('function');
+    for (const title of ['![[Other]]', '文中の ![[Map]]', '`![[Map]]`']) {
+      const entry = renderer.entries.get(id(parsed, title));
+      expect(entry?.element.classList.contains('is-embed')).toBe(false);
+      expect(entry?.content.querySelector('.mappy-node-label')?.textContent).toBe(title === '`![[Map]]`' ? title : title.replace('![[', '[['));
+    }
+    // The same answer keeps the frame; a different map (or none) redraws the node.
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    expect(mount).toHaveBeenCalledOnce();
+    expect(embed?.content.contains(frame)).toBe(true);
+    answer = 'Other Map.md';
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    expect(mount).toHaveBeenCalledTimes(2);
+    expect(embed?.content.contains(frame)).toBe(false);
+    answer = null;
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    await Promise.resolve();
+    expect(mount).toHaveBeenCalledTimes(2);
+    expect(embed?.element.classList.contains('is-embed')).toBe(false);
+    expect(embed?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
+    // Without a resolver (the read-only embed's own renderer) the title is a link, and nothing is asked.
+    const plain = setup('## Course\n- ![[Map]]\n');
+    plain.renderer.update(plain.parsed.nodes, plain.parsed, 'Course.md', new Set(), { visualRootId: id(plain.parsed, 'Course'), mode: 'mindmap' });
+    await Promise.resolve();
+    expect(plain.renderer.entries.get(id(plain.parsed, '![[Map]]'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
   });
 });

@@ -37,6 +37,20 @@ export function normalizeHeading(text: string): string {
   return text.replace(/[:#|^\\\r\n]|%%|\[\[|\]\]/gu, ' ').replace(/\s+/gu, ' ').trim().toLowerCase();
 }
 
+/**
+ * The link an item shows when its title is one embed and nothing else (§5 M12):
+ * `![[note]]` or `![[note#heading]]`, with only whitespace around it; an alias or
+ * size after `|` is dropped, as Obsidian drops it from the embed's `src`. Null for
+ * anything else, so an embed inside a sentence, two embeds, or an inline code span
+ * keep the rendering they have (the link, §5 M10). Whether the note is a map, and
+ * whether drawing it would recurse, is the caller's to decide.
+ */
+export function embedOnlyTitle(title: string): string | null {
+  const match = /^!\[\[([^\]\r\n|]+)(?:\|[^\]\r\n]*)?\]\]$/u.exec(title.trim());
+  const linktext = match?.[1]?.trim();
+  return linktext ? linktext : null;
+}
+
 /** Only `#^id` (anywhere in the path) is a block reference; those stay Obsidian's embeds. */
 export function isBlockReference(subpath: string): boolean {
   return subpath.split('#').some((part) => part.trimStart().startsWith('^'));
