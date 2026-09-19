@@ -331,6 +331,160 @@ export class Modal {
   setContent(content: string | DocumentFragment): this { this.contentEl.setText(content); return this; }
 }
 
+export type SearchMatches = [number, number][];
+export interface SearchResult { score: number; matches: SearchMatches }
+export interface FuzzyMatch<T> { item: T; match: SearchResult }
+export interface Instruction { command: string; purpose: string }
+
+/**
+ * A case-insensitive subsequence match: every character of the query in order, the
+ * matched runs as ranges, fewer gaps scoring higher. Enough to drive a suggest modal on
+ * this page; Obsidian's own scoring (word starts, camel case) is not modelled.
+ */
+export function prepareFuzzySearch(query: string): (text: string) => SearchResult | null {
+  const wanted = query.toLowerCase().replace(/\s+/gu, "");
+  return text => {
+    if (!wanted) return { score: 0, matches: [] };
+    const haystack = text.toLowerCase();
+    const matches: SearchMatches = [];
+    let position = 0;
+    let gaps = 0;
+    for (const char of wanted) {
+      const index = haystack.indexOf(char, position);
+      if (index === -1) return null;
+      const last = matches[matches.length - 1];
+      if (last && last[1] === index) last[1] = index + 1;
+      else { matches.push([index, index + 1]); if (matches.length > 1) gaps += 1; }
+      position = index + 1;
+    }
+    return { score: -gaps, matches };
+  };
+}
+
+/**
+ * Obsidian's prompt: a text input over a list of suggestions, re-queried on every
+ * keystroke, chosen by click or Enter, moved through with the arrow keys. The DOM
+ * classes (`prompt`, `prompt-results`, `suggestion-item`, `is-selected`,
+ * `suggestion-empty`) follow app.css so a test can read the same structure.
+ */
+export abstract class SuggestModal<T> extends Modal {
+  limit = 100;
+  emptyStateText = "No match found.";
+  readonly inputEl: HTMLInputElement;
+  readonly resultContainerEl: HTMLElement;
+  private readonly instructionsEl: HTMLElement;
+  private suggestions: T[] = [];
+  private active = 0;
+
+  constructor(app: App) {
+    super(app);
+    this.modalEl.addClass("prompt");
+    this.titleEl.remove();
+    this.contentEl.remove();
+    const container = this.modalEl.createDiv({ cls: "prompt-input-container" });
+    this.inputEl = container.createEl("input", { cls: "prompt-input", type: "text", attr: { spellcheck: "false" } });
+    this.resultContainerEl = this.modalEl.createDiv({ cls: "prompt-results" });
+    this.instructionsEl = this.modalEl.createDiv({ cls: "prompt-instructions" });
+    this.inputEl.addEventListener("input", () => { this.refresh(); });
+    this.inputEl.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown") { event.preventDefault(); this.setActive(this.active + 1); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); this.setActive(this.active - 1); }
+      else if (event.key === "Enter") { event.preventDefault(); this.selectActiveSuggestion(event); }
+    });
+  }
+
+  setPlaceholder(placeholder: string): void { this.inputEl.placeholder = placeholder; }
+
+  setInstructions(instructions: Instruction[]): void {
+    this.instructionsEl.empty();
+    for (const { command, purpose } of instructions) {
+      const item = this.instructionsEl.createDiv({ cls: "prompt-instruction" });
+      item.createSpan({ cls: "prompt-instruction-command", text: command });
+      item.createSpan({ text: purpose });
+    }
+  }
+
+  onOpen(): void {
+    this.inputEl.focus();
+    this.refresh();
+  }
+
+  onNoSuggestion(): void {
+    this.resultContainerEl.empty();
+    this.resultContainerEl.createDiv({ cls: "suggestion-empty", text: this.emptyStateText });
+  }
+
+  selectSuggestion(value: T, evt: MouseEvent | KeyboardEvent): void {
+    this.close();
+    this.onChooseSuggestion(value, evt);
+  }
+
+  selectActiveSuggestion(evt: MouseEvent | KeyboardEvent): void {
+    const value = this.suggestions[this.active];
+    if (value !== undefined) this.selectSuggestion(value, evt);
+  }
+
+  abstract getSuggestions(query: string): T[] | Promise<T[]>;
+  abstract renderSuggestion(value: T, el: HTMLElement): void;
+  abstract onChooseSuggestion(item: T, evt: MouseEvent | KeyboardEvent): void;
+
+  private refresh(): void {
+    const result = this.getSuggestions(this.inputEl.value);
+    if (result instanceof Promise) { void result.then(values => { this.show(values); }); return; }
+    this.show(result);
+  }
+
+  private show(values: T[]): void {
+    this.suggestions = values.slice(0, this.limit);
+    this.active = 0;
+    if (this.suggestions.length === 0) { this.onNoSuggestion(); return; }
+    this.resultContainerEl.empty();
+    this.suggestions.forEach((value, index) => {
+      const item = this.resultContainerEl.createDiv({ cls: "suggestion-item" });
+      item.toggleClass("is-selected", index === 0);
+      this.renderSuggestion(value, item);
+      item.addEventListener("click", event => { this.selectSuggestion(value, event); });
+      item.addEventListener("mousemove", () => { this.setActive(index); });
+    });
+  }
+
+  private setActive(index: number): void {
+    if (this.suggestions.length === 0) return;
+    this.active = (index + this.suggestions.length) % this.suggestions.length;
+    Array.from(this.resultContainerEl.children).forEach((item, position) => { item.toggleClass("is-selected", position === this.active); });
+  }
+}
+
+/** Items searched by `getItemText`; the default rendering marks the matched characters. */
+export abstract class FuzzySuggestModal<T> extends SuggestModal<FuzzyMatch<T>> {
+  getSuggestions(query: string): FuzzyMatch<T>[] {
+    const search = prepareFuzzySearch(query);
+    const matches: FuzzyMatch<T>[] = [];
+    for (const item of this.getItems()) {
+      const match = search(this.getItemText(item));
+      if (match) matches.push({ item, match });
+    }
+    return matches.sort((left, right) => right.match.score - left.match.score);
+  }
+
+  renderSuggestion(match: FuzzyMatch<T>, el: HTMLElement): void {
+    const text = this.getItemText(match.item);
+    let cursor = 0;
+    for (const [from, to] of match.match.matches) {
+      if (from > cursor) el.appendText(text.slice(cursor, from));
+      el.createSpan({ cls: "suggestion-highlight", text: text.slice(from, to) });
+      cursor = to;
+    }
+    if (cursor < text.length) el.appendText(text.slice(cursor));
+  }
+
+  onChooseSuggestion(match: FuzzyMatch<T>, evt: MouseEvent | KeyboardEvent): void { this.onChooseItem(match.item, evt); }
+
+  abstract getItems(): T[];
+  abstract getItemText(item: T): string;
+  abstract onChooseItem(item: T, evt: MouseEvent | KeyboardEvent): void;
+}
+
 export class ButtonComponent {
   readonly buttonEl: HTMLButtonElement;
   constructor(container: HTMLElement) {

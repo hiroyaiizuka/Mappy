@@ -62,6 +62,7 @@ export class HarnessApp {
     getAbstractFileByPath: (path: string): TFile | null => this.entries.get(path)?.file ?? null,
     getFileByPath: (path: string): TFile | null => this.entries.get(path)?.file ?? null,
     getFiles: (): TFile[] => Array.from(this.entries.values(), entry => entry.file),
+    getMarkdownFiles: (): TFile[] => Array.from(this.entries.values(), entry => entry.file).filter(file => file.extension === "md"),
     getResourcePath: (file: TFile): string => this.entries.get(file.path)?.url ?? "",
     read: (file: TFile): Promise<string> => Promise.resolve(this.entry(file).content),
     cachedRead: (file: TFile): Promise<string> => Promise.resolve(this.entry(file).content),
@@ -133,7 +134,8 @@ export class HarnessApp {
       this.attachmentCount += 1;
       return Promise.resolve(`Attachments/${this.attachmentCount}-${name}`);
     },
-    generateMarkdownLink: (file: TFile): string => `[[${file.name}]]`,
+    /** Obsidian's default ("shortest path when possible", extension dropped for notes) for a unique name; other formats are not modelled. */
+    generateMarkdownLink: (file: TFile): string => `[[${file.extension === "md" ? file.basename : file.name}]]`,
   };
 
   /** Replace or add a file; the map view observes the change like an external edit. */

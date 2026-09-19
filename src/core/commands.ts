@@ -10,7 +10,12 @@ export interface MoveCommand { type: 'move'; nodeId: string; parentId: string; i
 export type EditCommand =
   /** `position` stores one layout position under the new title in the same edit set (a topic added on the map). */
   | { type: 'rename'; nodeId: string; title: string; position?: TopicPlacement }
-  | { type: 'add-child' | 'add-sibling' | 'delete' | 'move-up' | 'move-down'; nodeId: string }
+  /**
+   * A new last child. Empty by default (the inline editor names it); `title` writes the item's
+   * text in the same edit, so `![[map]]` called from the search (§5 M12) is one step, as Tab is.
+   */
+  | { type: 'add-child'; nodeId: string; title?: string }
+  | { type: 'add-sibling' | 'delete' | 'move-up' | 'move-down'; nodeId: string }
   | { type: 'reparent'; nodeId: string; parentId: string }
   /** Append an empty top-level section at the end of the document: a new free topic (§5 M7). */
   | { type: 'add-topic' }
@@ -146,10 +151,15 @@ function respectEndOfFile(doc: MindDocument, text: string, to: number): string {
   return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
 }
 
-function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicPlacement): EditPlan {
+/** A node's text is one line: a break would start another block and change the tree. */
+export function assertSingleLine(title: string): void {
   if (/[\r\n\u2028\u2029]/u.test(title)) {
     throw new Error('ノード名は改行を含まない文字列にしてください。');
   }
+}
+
+function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicPlacement): EditPlan {
+  assertSingleLine(title);
   if (node.kind === 'setext' && title.trim().length === 0) {
     throw new Error('Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。');
   }
@@ -175,18 +185,19 @@ function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicP
   return { edits: [key, edit], selectionOffset: renamed.titleFrom };
 }
 
-function add(doc: MindDocument, node: MindNode, sibling: boolean): EditPlan {
+function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): EditPlan {
+  assertSingleLine(title);
   const level = sibling ? node.level : node.level + 1;
   if (level > 6) throw new Error('見出しは 6 階層までです。');
   const offset = node.to;
   const prefix = insertionPrefix(doc.source, offset, doc.eol);
   const suffix = offset < doc.source.length ? doc.eol + doc.eol : doc.source.endsWith('\n') ? doc.eol : '';
-  const text = `${prefix}${'#'.repeat(level)} ${suffix}`;
+  const text = `${prefix}${'#'.repeat(level)} ${title}${suffix}`;
   const edits = [{ from: offset, to: offset, text }];
   const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
   const added = parsed.nodes.find((candidate) => candidate.from === offset + prefix.length);
   if (parsed.nodes.length !== doc.nodes.length + 1 || added?.kind !== 'atx'
-    || added.level !== level || added.title !== '') {
+    || added.level !== level || added.title !== title.trim()) {
     throw new Error('見出し構造を安全に変更できません。Markdown の構文を確認してください。');
   }
   return { edits, selectionOffset: added.titleFrom };
@@ -342,7 +353,7 @@ function withTopicPlacement(doc: MindDocument, plan: EditPlan, title: string, pl
 
 function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {
   switch (command.type) {
-    case 'add-child': return add(doc, node, false);
+    case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true);
     case 'delete': return checkedPlan(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }],
       getNode(doc, node.parentId ?? 'root').titleFrom, doc.nodes.length - branchNodes(doc, node).length);

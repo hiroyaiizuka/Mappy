@@ -80,6 +80,22 @@ describe('partial Markdown edits', () => {
     expect(sibling.root.children.map((node) => node.title)).toEqual(['Parent', '', 'Peer']);
   });
 
+  it('adds a titled child heading at the branch end, one level deeper, with the title selected (a called map, §5 M12)', () => {
+    const doc = parseMarkdown('# Parent\r\nbody\r\n\r\n## Child\r\nchild body\r\n\r\n# Peer\r\n', 'Note');
+    const link = '![[別マップ]]';
+    const plan = planEdit(doc, { type: 'add-child', nodeId: find(doc, 'Parent').id, title: link });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`# Parent\r\nbody\r\n\r\n## Child\r\nchild body\r\n\r\n## ${link}\r\n\r\n# Peer\r\n`);
+    const parsed = parseMarkdown(result, 'Note');
+    expect(find(parsed, 'Parent').children.map((node) => node.title)).toEqual(['Child', link]);
+    expect(plan.selectionOffset).toBe(find(parsed, link).titleFrom);
+    // A second call is a second heading; the end of the file keeps its line break.
+    const twice = execute(parsed, { type: 'add-child', nodeId: find(parsed, 'Peer').id, title: link });
+    expect(twice.source).toBe(`${result}\r\n## ${link}\r\n`);
+    expect(() => planEdit(doc, { type: 'add-child', nodeId: find(doc, 'Parent').id, title: 'two\nlines' })).toThrow('改行');
+    expect(execute(doc, { type: 'add-child', nodeId: find(doc, 'Peer').id, title: ` ${link} ` }).source.endsWith(`\r\n\r\n##  ${link} \r\n`)).toBe(true);
+  });
+
   it('adds a root child after frontmatter and preamble without requiring an existing heading', () => {
     const doc = parseMarkdown('---\nauthor: person\n---\nPreamble', 'Note');
     const result = execute(doc, { type: 'add-child', nodeId: 'root' });

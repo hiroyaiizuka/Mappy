@@ -595,7 +595,26 @@ export class MindmapView extends ItemView {
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(plan.selectionOffset);
-    if (selected && (command.type === "add-child" || command.type === "add-sibling")) this.editTitle();
+    // A new empty node is named in place; one added with its text (a called map) is only selected.
+    if (selected && ((command.type === "add-child" && command.title === undefined) || command.type === "add-sibling")) this.editTitle();
+  }
+
+  /**
+   * Call another map (§5 M12): `![[map]]` becomes the last child of the selected node, or
+   * of the body root when nothing is selected (a topic's root counts as selected). One
+   * `add-child` edit with the link as its text, so the diff, the history (Undo removes the
+   * item) and the selection are those of Tab. The called map's note is not touched; the
+   * link follows the vault's link format, as an attached image does.
+   */
+  async callMap(target: TFile): Promise<void> {
+    const file = this.file;
+    if (!file || !this.document) return;
+    if (target.path === file.path) throw new Error("このマップ自身は呼び出せません。");
+    if (this.inlineEditor) throw new Error("テキストの編集を確定してから、マップを呼び出してください。");
+    const parent = this.selected() ?? this.projection()?.root;
+    if (!parent) return;
+    const link = `!${this.app.fileManager.generateMarkdownLink(target, file.path)}`;
+    await this.execute({ type: "add-child", nodeId: parent.id, title: link });
   }
 
   /** Select the node a plan points at, unfolding its parent, after the document was re-read. */
