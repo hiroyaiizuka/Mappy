@@ -3,7 +3,7 @@
  * writes stay in this page: nothing reaches a vault, so the save path,
  * link resolution and frontmatter persistence remain Obsidian-only checks.
  */
-import { Events, Notice, TFile, WorkspaceLeaf } from "./obsidian";
+import { Events, Notice, Scope, TFile, WorkspaceLeaf } from "./obsidian";
 
 interface VaultEntry {
   file: TFile;
@@ -52,6 +52,8 @@ function unquote(value: string): string {
 export class HarnessApp {
   readonly vaultEvents = new Events();
   readonly workspaceEvents = new Events();
+  /** The root scope a view's own scope names as its parent; no keymap consults it in this page. */
+  readonly scope = new Scope();
   readonly activity: HarnessActivity[] = [];
   private readonly entries = new Map<string, VaultEntry>();
   private attachmentCount = 0;

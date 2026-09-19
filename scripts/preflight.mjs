@@ -5,12 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const pluginFiles = ['main.js', 'manifest.json', 'styles.css'];
 export const markerContents = 'Mappy generated test vault v1\n';
+/** Community plugins a generated vault may enable: mappy, and Excalidraw for the M6 cases (E23–E27, E30, E33). */
+export const allowedCommunityPlugins = ['mappy', 'obsidian-excalidraw-plugin'];
 
-export function getHarnessPaths() {
-  const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
-  if (realpathSync(process.cwd()) !== root) {
-    throw new Error('Run this command from the Mappy project root.');
-  }
+export function harnessPaths(root) {
   const vault = join(root, 'test-vault');
   return {
     root,
@@ -22,6 +20,14 @@ export function getHarnessPaths() {
     fixtureSource: join(root, 'tests', 'fixtures'),
     fixtureTarget: join(vault, 'Fixtures'),
   };
+}
+
+export function getHarnessPaths() {
+  const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
+  if (realpathSync(process.cwd()) !== root) {
+    throw new Error('Run this command from the Mappy project root.');
+  }
+  return harnessPaths(root);
 }
 
 /** Check every path component, so a symlinked parent cannot redirect a write. */
@@ -64,6 +70,27 @@ export function assertGeneratedVault(paths) {
   assertSafePath(paths.root, paths.vault, 'directory');
   if (readSafeFile(paths.root, paths.marker).toString('utf8') !== markerContents) {
     throw new Error('test-vault is not a recognized Mappy generated vault.');
+  }
+}
+
+/** Read `.obsidian/community-plugins.json`; when optional, a missing file counts as nothing enabled. */
+export function readCommunityPlugins(paths, { optional = false } = {}) {
+  if (!assertSafePath(paths.root, paths.communityPlugins, 'file', { optional })) return [];
+  const enabled = JSON.parse(readFileSync(paths.communityPlugins).toString('utf8'));
+  if (!Array.isArray(enabled) || !enabled.every((id) => typeof id === 'string')) {
+    throw new Error('community-plugins.json: expected an array of plugin IDs.');
+  }
+  return enabled;
+}
+
+/** Only mappy and Excalidraw may take part in a real-vault run; anything else fails, so it cannot go unnoticed. */
+export function assertCommunityPlugins(enabled) {
+  if (!enabled.includes('mappy')) {
+    throw new Error('community-plugins.json: mappy must be enabled.');
+  }
+  const unknown = enabled.filter((id) => !allowedCommunityPlugins.includes(id));
+  if (unknown.length > 0) {
+    throw new Error(`community-plugins.json: only ${allowedCommunityPlugins.join(' and ')} may be enabled; found ${unknown.join(', ')}.`);
   }
 }
 
@@ -125,11 +152,9 @@ export function runPreflight(paths) {
   if (installedManifest.version !== build.manifest.version) {
     throw new Error('Installed and packaged manifest versions differ.');
   }
-  const enabled = JSON.parse(readSafeFile(paths.root, paths.communityPlugins).toString('utf8'));
-  if (!Array.isArray(enabled) || enabled.length !== 1 || enabled[0] !== 'mappy') {
-    throw new Error('The generated vault must enable only mappy.');
-  }
-  return { id: build.manifest.id, version: build.manifest.version, sha256: hashes };
+  const enabledPlugins = readCommunityPlugins(paths);
+  assertCommunityPlugins(enabledPlugins);
+  return { id: build.manifest.id, version: build.manifest.version, sha256: hashes, enabledPlugins };
 }
 
 const invokedAsScript = process.argv[1]
@@ -145,6 +170,7 @@ if (invokedAsScript) {
     for (const [filename, hash] of Object.entries(result.sha256)) {
       console.info(`${filename}: ${hash} (source = dist = test-vault)`);
     }
+    console.info(`Enabled community plugins: ${result.enabledPlugins.join(', ')}.`);
   } catch (error) {
     console.error(`Preflight failed: ${error.message}`);
     process.exitCode = 1;
