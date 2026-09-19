@@ -479,6 +479,32 @@ async function captureOperations(recorder, page) {
     return `項目: ${items.join(' / ')}`;
   });
 
+  await recorder.run('action-menu', '右上の歯車「操作」をクリック → Escape', '右上のボタンは歯車 1 つ。メニューがその下に右揃えで開き、項目・区切りが product-plan §5 M3 の順。ノードの項目は有効、Excalidraw（このページにはない）とリスト形式（リスト形式のノート）は無効。Escape で閉じる', async () => {
+    const labels = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-actions .mappy-button'), button => button.getAttribute('aria-label'))`);
+    expect(labels.length === 1 && labels[0] === '操作', `top-right buttons: ${labels.join(' / ')}`);
+    const gear = await page.harness('h.button("操作")');
+    await page.click(center(gear).x, center(gear).y);
+    // Each entry as its title, a disabled one in brackets, a separator as a dash.
+    const entries = await page.evaluate(`Array.from(document.querySelector('.menu')?.children ?? [], child => child.classList.contains('menu-separator') ? '—'
+      : child.classList.contains('is-disabled') ? '[' + child.querySelector('.menu-item-title')?.textContent + ']' : child.querySelector('.menu-item-title')?.textContent)`);
+    const expected = [
+      'Markdown に切り替え', '左に Markdown を開く', '—',
+      '兄弟を追加（Enter）', '子を追加（Tab）', 'トピックを追加', '—',
+      'テキストを編集（F2）', '本文・リンクを編集', '画像を追加', '折りたたみ（Space）', '削除（Delete）', '—',
+      'マップを検索して呼び出す', '[Excalidraw の図面に挿入]', 'SVG／PNG に書き出し', '[リスト形式に変更]', '—',
+    ];
+    const history = entries.slice(expected.length).map(entry => entry.replace(/^\[|\]$/gu, ''));
+    expect(JSON.stringify(entries.slice(0, expected.length)) === JSON.stringify(expected) && JSON.stringify(history) === JSON.stringify(['元に戻す', 'やり直す']),
+      `menu entries: ${entries.join(' / ')}`);
+    const menu = await page.evaluate(`JSON.parse(JSON.stringify(document.querySelector('.menu').getBoundingClientRect()))`);
+    expect(menu.y >= gear.y + gear.height, `menu top ${menu.y} is not under the button bottom ${gear.y + gear.height}`);
+    expect(Math.abs(menu.x + menu.width - (gear.x + gear.width)) <= 4, `menu right edge ${menu.x + menu.width} is not aligned with the button's ${gear.x + gear.width}`);
+    await page.screenshot(join(recorder.directory, 'action-menu-open.png'));
+    await page.key('Escape', 'Escape', 27);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open after Escape');
+    return `項目: ${entries.join(' / ')}`;
+  });
+
   await recorder.run('link-click', 'ノード内の内部リンクをクリック', '選択は変わらず、リンク解決は対象外の通知が出る', async () => {
     const selectedBefore = (await page.harness('h.nodes()')).find(item => item.selected)?.title;
     const rect = await page.evaluate(`JSON.parse(JSON.stringify(document.querySelector('.mappy-node a.internal-link')?.getBoundingClientRect() ?? null))`);

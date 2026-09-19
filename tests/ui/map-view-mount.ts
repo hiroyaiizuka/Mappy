@@ -7,7 +7,7 @@ import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { MindmapView } from '../../src/ui/mindmap-view';
+import { MindmapView, type MapMenuAction } from '../../src/ui/mindmap-view';
 
 export interface MountedMapView {
   app: HarnessApp;
@@ -30,11 +30,14 @@ export interface MountedMapView {
   close: () => Promise<void>;
 }
 
-export async function mountMapView(path: string, source: string, layout: LayoutMode = 'mindmap', app = new HarnessApp()): Promise<MountedMapView> {
+/** `menuActions` are the plugin's items of the 操作 menu (§5 M3), as src/main.ts passes them. */
+export async function mountMapView(
+  path: string, source: string, layout: LayoutMode = 'mindmap', app = new HarnessApp(), menuActions: readonly MapMenuAction[] = [],
+): Promise<MountedMapView> {
   app.put(path, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
-  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
+  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, menuActions);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   view.load();

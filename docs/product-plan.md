@@ -9,9 +9,9 @@ H0a の静的検査・テスト・配布物検証に加え、M1〜M4 の機能�
 | 領域 | 現在の実装 | 残る検証・機能 |
 | --- | --- | --- |
 | H0 | check、配布物検証、専用 Vault、純粋ロジック・DOM テスト、Obsidian 非依存のブラウザ検証ページ（fixture 切替、選択・パン・ズーム・開閉・ペインサイズ、headless Chrome での撮影と時刻の記録）、Obsidian 実機の CDP スクリプト、10/100/500/2,000 ノードの性能計測（`scripts/browser-harness-perf.mjs`: 6 つの形 × 3 レイアウトで解析・配置・描画・入力反映の p50／p95 を基準端末・条件とともに `artifacts/performance/` に記録。§6 を実測値と判断に置き換え済み。`artifacts/lev-13-performance-2026-09-18.md`）。深い一列の 2,000 ノードで配置フレームが O(n²) になっていた `NodeRenderer.place()` を読み → 書きの 2 パスにし、3 レイアウトとも 2,301〜2,811 → 65〜68 ms（p50）、開くまで 2.4〜2.9 s → 0.13 s（LEV-45。`artifacts/lev-45-place-reflow-2026-09-18.md`。読みが書きの後に来ないことを jsdom の spy で保証） | 実機（E10）でのタイムライン・階層図・パン／ズーム・深い一列の枝の計測と継続的な計測、LEV-45 後の全形の再計測（`--repeat 10`）、展開・折りたたみの繰り返し・起動時の負荷・配布サイズの計測 |
-| M1 | H2＋リスト／従来の見出し解析、マップ、分割・表裏切り替え、追従、リンク、ズーム、開閉 | テーマ・別ウィンドウ・長時間利用の確認 |
+| M1 | H2＋リスト／従来の見出し解析、マップ、分割・表裏切り替え（右上の操作メニューの先頭 2 項目とコマンド。LEV-77）、追従、リンク、ズーム、開閉 | テーマ・別ウィンドウ・長時間利用の確認 |
 | M2 | インライン編集、追加・移動・削除、原文差分、保存経路、競合拒否、マップ履歴、ドラッグによる並べ替え・親変更（ゴースト・仮ノードの枠・親からの青線で事前表示、CDP の合成・実ポインターで E02・E04・E19 を確認）、Markdown 入力のリアルタイム反映（実機で確認済み: 分割・別ウィンドウ・同一ファイルの別 leaf・IME 変換中・未保存のまま入力継続で、1 打鍵の `editor-change` からラベル反映まで p50 48〜93 ms、配置まで最大 136 ms（2,000 ノード）、欠落なし、選択と表示位置を保持。`artifacts/lev-33-realtime-verification-2026-09-18.md`）、複数ビュー × 外部変更 × Undo／Redo × 同名ノードの組み合わせ（E03〜E05。実機で確認済み: 同じノートの分割 2 leaf・別ウィンドウ・フリートピック＋階層図の文書で、改名→他方から Undo／Redo→同名ノードの移動→表裏切替→editor 経由の Undo／Redo→editor 側 ⌘Z 後の map Redo が no-op、`vault.modify` と Vault API 外の書き換えの直後の Enter／Tab／⌥↑ を拒否して古い文書で上書きせず入力を保持、7 シナリオ 111 ステップで前後の Markdown をバイト比較。競合で保持した入力をマップの自動更新後にもう一度 Enter しても永久に競合していた欠陥を修正し、更新後の文書に適用できるようにした（編集中のノードのタイトル／本文が外部で変わっていた場合・同名ノード・消えたノードは推測せず拒否。拒否時に view 自身も再読込し、inline と本文モーダルのエラー行を差し替える）。`artifacts/lev-16-multiview/record.md`）、実キーの F2（E02。map view に `Scope` を持たせて F2 を登録し、Obsidian の既定ホットキー `workspace:edit-file-title` より先にマップが受ける。実機で確認済み: CDP の `Input.dispatchKeyEvent` の F2 でインライン編集が開き Escape で閉じる、入力→Enter→実キーの ⌘Z／⌘⇧Z／⌥↑ が従来どおり、Markdown editor の F2 は従来どおりタイトル改名、編集中・浮かせたボタン上の F2 は Markdown を横に開いた状態でも何もせず隣のタブを改名しない。あわせて Shift 付きのキー（Shift+Tab など）をマップが扱わないようにした。`artifacts/lev-48-f2-scope/record.md`） | ネイティブ IME、トラックパッド・タッチでのドラッグ操作感の本人確認 |
-| M3 | 画像追加・貼り付け、本文編集（葉のリスト項目の置換・追記でも後続の改行を保ち、空行を積み上げない）、ノート・添付候補、リストの深い階層と旧形式の明示変換 | モバイル、補完機能の拡張、深い枝の実機検証 |
+| M3 | 画像追加・貼り付け、本文編集（葉のリスト項目の置換・追記でも後続の改行を保ち、空行を積み上げない）、ノート・添付候補、リストの深い階層と旧形式の明示変換、右上の歯車 1 つの操作メニュー（Markdown 切り替え・分割、ノードの操作とキーの併記、呼び出し・Excalidraw・書き出し・リスト形式、履歴。jsdom と headless Chrome で確認。LEV-77） | モバイル、補完機能の拡張、深い枝の実機検証、操作メニューの実機（LEV-80） |
 | M4 | 横軸と上下交互の枝、通常マップと共通の操作、ブラウザ検証ページでの性能計測（§6: 500 ノードの編集はマップと同等、2,000 ノードのリンク・画像では横に長い分だけ描画が重い） | 長文・画像が混在する大規模文書の実機確認 |
 | M5 | lint・manifest・配布物の自動検査。バージョン整合とリリース手順（LEV-68）: `npm version <x.y.z>` が `version` スクリプト（`scripts/version-bump.mjs`）で `manifest.json`・`versions.json` を揃えて `v` なしのタグを作り、`.github/workflows/release.yml` が `manifest.version` と同じ `x.y.z` タグの push で `npm run check` を通して `main.js`・`manifest.json`・`styles.css` を GitHub Release に添付（`0.x` は pre-release。BRAT が拾う）。`workflow_dispatch` と release 系ファイルを変える PR は Release を作らない dry-run で、配布物を workflow artifact に上げる（PR の dry-run で 3 ファイルを確認。`artifacts/lev-68-release-workflow/record.md`）。テスター向けの BRAT 導入手順は harness.md「リリース手順」。公式の審査要件のチェック（LEV-24: manifest の各項目、コマンド名にプラグイン名を含めない・ID を前置しない、既定ホットキーなし、`console.log` なし、Node／Electron の不使用、`isDesktopOnly`、`minAppVersion` の根拠、登録の解除と prototype 差し替えの復元、設定タブ、CSS のスコープ、依存の表示義務、配布物）を 47 項目にして `artifacts/lev-24-readme/record.md` に記録。公式 lint の通過は審査通過を保証しない。利用者向け README（何をするか、保存形式と frontmatter の 3 キー、BRAT での導入の要点、基本操作、対応環境、既知の制限、復旧方法、ネットワーク利用の開示、`@lezer/markdown` の同梱）。2026-09-20 の本人決定: ライセンスは MIT（LEV-23。`LICENSE`・`package.json` を置き換え。名称 `Mappy`・ID `mappy` も確定）、ベータの版は 0.1.0、リポジトリは tag の直前に public 化、`isDesktopOnly: false` のまま README に確認済み環境（macOS の Obsidian 1.14）と未確認（Windows・Linux・モバイル）を明記 | 実際のタグ push・Release の公開・public 化（tag の直前に本人セッションで）、対応環境の宣言と実機検証（LEV-25: 無効化・再有効化・ペインの閉開 E09・E25・E34、1.8.7・Windows・Linux・モバイル）、英語 UI の要否（未起票）、公開審査 |
 | M6 | 表裏切替コマンド、`mappy: true` によるマップ識別、Excalidraw への挿入（対話フレーム／Option ドロップ／コマンド） | 実際のポインターによるドラッグ、Excalidraw 無効・再読込との組み合わせ、モバイル |
@@ -122,7 +122,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 
 キー入力はマップにフォーカスがあるときだけ受け付ける。本文編集や日本語変換中の Enter／Tab を構造操作に使わない。通常のスクロールを拡大縮小へ強制的に置き換えず、カーソル中心のズームと表示領域の移動を別々に検証する。既存の Obsidian ショートカットと共存させる。
 
-上部の子追加・兄弟追加などの操作行は設けず、キーボードと右クリックメニューから操作する。キャンバスを全面に広げ、レイアウト切り替えを左下、Markdown 表示・分割を右上、ズームを右下に浮かせて配置する。通常マップは直角線を使い、ルート周囲を広めに空ける。展開中の折りたたみ操作は枝の分岐点にカーソルを合わせると丸い − を表示する。補完はノード用 textarea の独自 UI であり、標準 Markdown エディタの補完をそのまま埋め込んだものではない。
+上部の子追加・兄弟追加などの操作行は設けず、キーボードと右クリックメニューから操作する。キャンバスを全面に広げ、レイアウト切り替えを左下、操作メニュー（歯車 1 つ。Markdown 表示・分割を含む）を右上、ズームを右下に浮かせて配置する。通常マップは直角線を使い、ルート周囲を広めに空ける。展開中の折りたたみ操作は枝の分岐点にカーソルを合わせると丸い − を表示する。補完はノード用 textarea の独自 UI であり、標準 Markdown エディタの補完をそのまま埋め込んだものではない。
 
 ## 5. 段階的ロードマップと受入条件
 
@@ -156,7 +156,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 ### M1: 閲覧 MVP
 
 - H2＋箇条書き、または既存の見出しと本文からツリーを作り、右向きのマップを表示する。
-- 閲覧用の Markdown／マップ切り替えと、標準エディタとの左右分割を用意する。編集操作をまたぐ履歴の保証は M2 で検証する。
+- 閲覧用の Markdown／マップ切り替えと、標準エディタとの左右分割を用意する。編集操作をまたぐ履歴の保証は M2 で検証する。右上の 2 ボタンだった切り替えと分割は、M3 の操作メニュー（歯車 1 つ）の先頭 2 項目に移した（2026-09-20、LEV-77）。コマンド「マップと Markdown を切り替え」「マインドマップと Markdown を並べる」はそのまま。
 - Markdown の編集をマップへ反映する。
 - 内部・外部リンク、移動、拡大縮小、Fit、折りたたみを実装する。
 
@@ -180,8 +180,11 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 - バランス配置などを追加し、キーボードとドラッグの動作を磨く。
 - H2＋リスト形式で6段階を超えるツリーを扱う。旧形式の変換は明示操作で行い、原文範囲と構造を検証する。
 - タッチ操作、小さい画面、フォーカス表示、読み上げ可能な操作名を確認する。
+- 右上は歯車 1 つ。押すと Obsidian の `Menu` で、Markdown への切り替え・左に Markdown を開く／兄弟を追加（Enter）・子を追加（Tab）・トピックを追加／テキストを編集（F2）・本文・リンクを編集・画像を追加・折りたたみ（Space）・削除（Delete）／マップを検索して呼び出す・Excalidraw の図面に挿入・SVG／PNG に書き出し・リスト形式に変更／元に戻す・やり直す を区切りつきで並べる。ノードが要る項目は未選択のとき無効。項目名に対応するキーを併記する。既存のコマンド・右クリック・ショートカットは変えない。
 
 **受入条件:** 日本語や空白を含む画像パスを扱える。画像が欠けていてもノード全体が壊れない。遅い画像読込でノードが重ならず、表示位置も大きく飛ばない。貼り付けを繰り返して既存の添付を上書きしない。リストの子を移動しても、本文の箇条書きと混同しない。
+
+**現在の実装（操作メニュー、LEV-77）:** `MindmapView.onOpen` の右上は `.mappy-actions` の歯車ボタン 1 つ（アイコン `settings`、`aria-label`「操作」）。押すと `openActionMenu` が `Menu` を組み、`showAtPosition({ x: ボタンの右端, y: 下端, left: true }, contentEl.doc)` でボタンの下に右揃えで開く（別ウィンドウでもその window）。項目は上記の順・区切りで、各項目はキー・右クリック・コマンドと同じメソッドを呼ぶ（`showSource(false/true)`、`executeSelected("add-sibling"/"add-child"/"delete")`、`addTopic()`、`editTitle`、`editBody`、`chooseImage`、`fold`、`convertToList`、`historyItems`）ので差分と履歴は同じ。ノードが要る 7 項目は `selected()` がないとき（ノートを開いていない view）、Markdown の 2 項目とトピックはノートがないとき、リスト形式に変更は見出し形式でないとき、元に戻す／やり直すは履歴がないときに `setDisabled`。呼び出し・Excalidraw・書き出しはモーダルや他プラグインの判定が `src/obsidian` にあるので、`src/main.ts` が `MapMenuAction { title, icon, check, run }` の配列を `MindmapView` のコンストラクタに渡し、`check` はメニューを開くたびに評価（Excalidraw が無ければ無効）、`run` はコマンドと同じ private メソッド（`searchAndCallMap`・`insertIntoExcalidraw`・`exportMapImage`）。view から `app.commands` は呼ばない。メニューの「トピックを追加」は押した位置がないので `pendingTopic` を持たず、`mappy-topics` を書かない位置未設定の既定配置に置く（ドラッグで初めて位置を保存）。jsdom（`tests/ui/mindmap-view-menu.test.ts`: ボタンが 1 つで旧 2 ボタンがないこと、項目・区切り・キーの順、位置の引数、有効／無効、ノートなしで全項目無効、`showSource` の引数、Enter／Tab／Delete と同じ差分で Undo 1 回、トピックの追加と位置なし、F2・本文・折りたたみ・画像、見出し形式でのリスト変換、履歴）と headless Chrome（`action-menu`: 右上のボタンが 1 つ、メニューがボタンの下に右揃え、項目と無効状態、Escape）で確認（`artifacts/lev-77-action-menu/record.md`）。Obsidian 実機（メニューの見た目、Excalidraw の判定、モーダルの起動、別ウィンドウ）は Obsidian が LEV-71 で使用中のため未実施 — LEV-80（M3 配下の verification 子 issue）で行う。
 
 ### M4: 横軸タイムライン
 

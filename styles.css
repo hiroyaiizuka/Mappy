@@ -97,7 +97,7 @@
 }
 .mappy-view .mappy-modes { left: 16px; bottom: 16px; }
 .mappy-view .mappy-modes .is-active { background: var(--background-modifier-hover); color: var(--interactive-accent); }
-.mappy-view .mappy-source-tools { right: 16px; top: 16px; }
+.mappy-view .mappy-actions { right: 16px; top: 16px; }
 .mappy-view .mappy-button > .mappy-button-label { display: none; }
 .mappy-view .mappy-button { display: inline-flex; gap: 5px; align-items: center; justify-content: center; font-size: var(--font-ui-small); min-height: 32px; min-width: 32px; padding: 6px 8px; background: transparent; box-shadow: none; }
 .mappy-view .mappy-button:hover { background: var(--background-modifier-hover); }
@@ -346,6 +346,6 @@
 .mappy-link-path { display: block; font-size: var(--font-ui-smaller); color: var(--text-muted); overflow-wrap: anywhere; }
 @media (max-width: 450px) {
   .mappy-view .mappy-modes { left: 8px; bottom: 8px; }
-  .mappy-view .mappy-source-tools { right: 8px; top: 8px; }
+  .mappy-view .mappy-actions { right: 8px; top: 8px; }
   .mappy-view .mappy-zoom { right: 8px; bottom: 8px; }
 }

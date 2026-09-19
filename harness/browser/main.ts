@@ -23,7 +23,7 @@ import { isMapTheme, type MapTheme } from "../../src/obsidian/settings";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MapEmbeds } from "../../src/ui/map-embed";
 import { nodeOf } from "../../src/ui/map-events";
-import { MindmapView } from "../../src/ui/mindmap-view";
+import { MindmapView, type MapMenuAction } from "../../src/ui/mindmap-view";
 
 declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
 
@@ -54,6 +54,18 @@ const router = {
     return Promise.resolve();
   },
 } as unknown as ViewRouter;
+/**
+ * The plugin's items of the 操作 menu (§5 M3), as src/main.ts names them. Their routes (the search modal, the
+ * export modal and its attachment, Excalidraw) are not on this page: the two report the request, and with
+ * no Excalidraw here the insertion stays disabled, as it is in Obsidian without that plugin.
+ */
+const menuActions: MapMenuAction[] = [
+  { title: "マップを検索して呼び出す", icon: "search", check: map => map.file !== null,
+    run: () => { new Notice("マップの検索モーダルはこのページの対象外です（③ 実機で確認）。"); } },
+  { title: "Excalidraw の図面に挿入", icon: "pencil-ruler", check: () => false, run: () => undefined },
+  { title: "SVG／PNG に書き出し", icon: "image-down", check: map => map.file !== null,
+    run: () => { new Notice("書き出しの保存はこのページの対象外です（h.export が文字列を返すだけ。③ 実機で確認）。"); } },
+];
 
 const pane = mustFind<HTMLElement>("#harness-pane");
 const fixtureSelect = mustFind<HTMLSelectElement>("#harness-fixture");
@@ -203,7 +215,7 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
 async function openView(): Promise<MindmapView> {
   closeHost();
   const leaf = new WorkspaceLeaf(app.asApp<App>());
-  const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router);
+  const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router, menuActions);
   // MindmapView is typed against Obsidian's View; at runtime it extends the mock.
   leaf.view = opened as unknown as WorkspaceLeaf["view"];
   // The plugin applies the setting when it constructs a view (src/main.ts); the page does the same.

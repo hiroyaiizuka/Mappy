@@ -306,12 +306,21 @@ export class Menu extends Component {
     return this.showAtPosition({ x: event.clientX, y: event.clientY });
   }
 
-  showAtPosition(position: { x: number; y: number }): this {
+  /**
+   * Placement as Obsidian 1.14.2 does it: the menu opens to the right of `x` (or of `x + width`) when it
+   * fits, and to the left of `x` (or of `x + width` with `overlap`) when it does not or `left` asks for
+   * it and it fits there; below `y`, lifted when it would run off the bottom. Obsidian's second argument
+   * (a popout window's document) is not taken: this page has one document, and JS drops the extra argument.
+   */
+  showAtPosition(position: { x: number; y: number; width?: number; overlap?: boolean; left?: boolean }): this {
     document.body.appendChild(this.dom);
     this.load();
     const rect = this.dom.getBoundingClientRect();
-    const x = Math.max(4, Math.min(position.x, window.innerWidth - rect.width - 4));
-    const y = Math.max(4, Math.min(position.y, window.innerHeight - rect.height - 4));
+    const [rightward, leftward] = position.width === undefined ? [position.x + 2, position.x - 2]
+      : position.overlap ? [position.x, position.x + position.width] : [position.x + position.width, position.x];
+    const fitsLeft = leftward - rect.width >= 0;
+    const x = rightward + rect.width > window.innerWidth || (position.left && fitsLeft) ? Math.max(0, leftward - rect.width) : rightward;
+    const y = (position.y + rect.height > window.innerHeight ? Math.max(0, position.y - rect.height) : position.y) + 2;
     this.dom.style.left = `${x}px`;
     this.dom.style.top = `${y}px`;
     const onPointer = (pointer: Event): void => { if (!this.dom.contains(pointer.target as Node)) this.hide(); };
@@ -662,6 +671,13 @@ const ICON_PATHS: Record<string, string> = {
   "undo-2": "M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11",
   "redo-2": "M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 0 0 0 11H13",
   "list-tree": "M21 12h-8M21 6H8M21 18h-8M3 6v4c0 1.1.9 2 2 2h3M3 10v6c0 1.1.9 2 2 2h3",
+  settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1",
+  "square-plus": "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM8 12h8M12 8v8",
+  "chevrons-down-up": "M7 20l5-5 5 5M7 4l5 5 5-5",
+  "trash-2": "M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6",
+  search: "M21 21l-4.3-4.3M17 11a6 6 0 1 1-12 0 6 6 0 0 1 12 0z",
+  "pencil-ruler": "M13 7l4 4M3 21l4-1 11-11-3-3L4 17zM15 5l3-3 4 4-3 3",
+  "image-down": "M10.3 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v7M3 16l5-5 6 6M19 15v6M16 18l3 3 3-3M9 8a1 1 0 1 0 0 2 1 1 0 0 0 0-2z",
 };
 
 export function setIcon(parent: HTMLElement, icon: string): void {
