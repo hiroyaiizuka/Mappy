@@ -14,6 +14,7 @@
 - ランタイム依存を追加する前に、必要性・バンドル増分・モバイル互換性を記録する。
 - 他プラグインは仕様の参考。MarkMind の非公開コードを流用しない。
 - 本番 Vault をテスト対象にしない。自動準備はプロジェクト配下の `test-vault/` のみ。
+- プライマリー（`projects/Mappy` のチェックアウト）は常に `main` に置く。ブランチ作業は `orca worktree create` で作った worktree で行い、プライマリーで `git checkout -b`／`git switch` を実行しない。
 - `main.js`、`node_modules/`、`dist/`、証跡をコミットしない。公開時のライセンスと plugin ID は未確定。
 
 現在は H0（ハーネス先行）。マップ機能と実機テストの完成を先取りして報告しない。
