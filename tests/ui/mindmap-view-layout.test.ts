@@ -15,6 +15,7 @@ vi.mock("obsidian", () => {
   class ItemView {
     app: unknown;
     contentEl = document.createElement("div");
+    scope: unknown = null;
     constructor(public leaf: { app: unknown }) { this.app = leaf.app; }
     setState(): Promise<void> { return Promise.resolve(); }
   }
@@ -23,6 +24,7 @@ vi.mock("obsidian", () => {
     MarkdownView: class {},
     Menu: class {},
     Notice: class {},
+    Scope: class { register(): void { /* The view registers F2 on construction; this test does not press keys. */ } },
     TFile,
     setIcon: vi.fn(),
   };

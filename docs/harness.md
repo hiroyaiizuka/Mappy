@@ -14,12 +14,12 @@ AI エージェントと人間が同じ条件で開発・検証するため、�
 | 単体・DOM テスト | `npm test` | ハーネス検証器、Markdown と原文差分、保存・競合、配置・ズーム、操作 |
 | production bundle | `npm run build` | ブラウザ互換 CJS バンドル。Obsidian 提供 API は external |
 | 配布物 | `npm run package` | `dist/mappy/` の必要ファイルと元ビルドとの一致 |
-| Vault 初期準備 | `npm run harness:prepare` | `check` 後、生成専用 Vault に配布物・fixture を配置。既知の fixture を初期化する |
-| 実機前確認 | `npm run harness:preflight` | root / dist / 検証 Vault の SHA256、一致する ID/version、有効プラグイン |
+| Vault 初期準備 | `npm run harness:prepare` | `check` 後、生成専用 Vault に配布物・fixture を配置。既知の fixture を初期化する。有効プラグインは mappy と、すでに有効なら Excalidraw（M6 用）だけを残す |
+| 実機前確認 | `npm run harness:preflight` | root / dist / 検証 Vault の SHA256、一致する ID/version、有効プラグイン（mappy と Excalidraw（M6 用）だけを有効にする。他のプラグインが有効なら失敗） |
 | ブラウザ検証ページ | `npm run harness:browser` | Obsidian なしで製品の map view を動かす。表示崩れ、ポインター操作、ズーム、ペインサイズ（下記②） |
 | ブラウザ撮影 | `npm run harness:browser:capture` | headless Chrome で fixture 表示と主要操作を実行し、スクリーンショットと時刻を `artifacts/browser-harness/` に記録 |
 
-まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。CI は成果物を artifact に保存するだけで、公開を行わない。Git hook は任意の `npm run hooks:install` で有効にする。
+まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。ブランチと PR の CI（`check.yml`）は成果物を artifact に保存するだけで、公開を行わない。`manifest.version` と同じタグを push したときだけ `release.yml` が同じ check を通し、配布物 3 ファイルを GitHub Release に添付する（[リリース手順](#リリース手順)）。Git hook は任意の `npm run hooks:install` で有効にする。
 
 ## lint の対象を明確にする
 
@@ -60,16 +60,17 @@ Obsidian API 型は、現在の lint パッケージの peer dependency と初�
 - SVG／PNG 書き出し（M13）: 純粋部分（`tests/export/svg-document.test.ts`）は viewBox と余白、PNG の縮尺の上限（面積・一辺・希望倍率）、XML のエスケープ、スタイルの重複除去、シーン → SVG の構造（背景 → 線 → ノード → バッジの順、CDATA の終端）。DOM 部分（`tests/export/svg-capture.test.ts`、jsdom で製品の view を起動）は `foreignObject` の数と id が表示ノードと一致し座標が `LayoutResult` と一致すること、線の数、viewBox、テーマ class（body の `theme-dark`）と既定の背景色、状態クラス・開閉ボタン・`tabindex` を含まないこと、折りたたみ（枝が消え、件数バッジが `folds` の位置に出る。配置フレームが予約中でも `exportSource()` が待ってから返す）、欠落・読めない画像でノードが残り読める画像は data URL になること、タイムライン・階層図、編集中と file なしの拒否、10／100／500／2,000 ノードの完了と原文不変、画像を待つ間に DOM が壊されてもノードが欠けないこと、debounce 中の編集が書き出しに入ること、フォームフィードと `xlink:href` 付きのインライン SVG でも整形式であること、汚染された canvas が「PNG を作れません」になり probe が false を返すこと。Obsidian 側（`tests/obsidian/image-export.test.ts`）は添付パス API の有無による可否、resolver（data URL の素通し、埋め込みの link target を `readBinary`、Markdown 画像の書かれたパス、http(s) の取得と失敗時の null、PDF を読まない、`image/*` 以外の応答と応答のないホストの拒否）、`getAvailablePathForAttachment` → `vault.create` での保存とノート不変、整形式の検査、canvas のない環境で添付パスを取る前に PNG を断ること。モーダル（`tests/ui/export-modal.test.ts`）は形式の選択と PNG の無効化。
 - 埋め込み（M10）: core で原文からのマップ識別（`mappy: true` の真偽値だけ。`True`／`TRUE` も cache と同じく真偽値、`"true"`・Excalidraw・未閉の frontmatter は対象外）、`#見出し` の区画解決（文書順の最初の一致、`#A#B` の入れ子、大文字小文字・空白・`:#|^` の正規化、リスト項目は対象外、ブロック参照と見つからない見出しは null）、描く木（全体は本体＋フリートピック、見出しは部分木だけ）、開いた時点の折りたたみ（ルート直下より下の全枝）、タイトルの `![[ノート]]` のリンク化。jsdom で製品の post-processor を Obsidian 風の区画に通し、閲覧モード経路（placeholder の差し替え、Obsidian が先に読み込んだ span は claim、対象外の素通し、部分木と見つからない見出しの文言、`mappy-layout` とフリートピック、原文不変、保存と別 leaf の未保存編集での再描画、読者の折りたたみの保持（一時的な文言をはさんでも）、マップでなくなった場合の文言、区画の unload でのリスナー解放、プラグイン unload での placeholder の復元とその枠を含む閲覧モードの view だけの描き直し、「マップで開く」とノード内リンクの基準、Fit の上限 1 倍、自己埋め込みとタイトル経由の循環がないこと）とライブプレビュー経路（容器の claim が 1 度だけ、区画の中の anchor が寿命を持ち枠は容器に付くこと、Obsidian のクラスの退避と復元、自分のノートの閲覧モードは対象外、通常ノートの埋め込みの中のマップは描き claim した容器の中の placeholder は描かない、未接続の区画の見直しと unload 後の拒否）を確認する。
 - マップの検索と呼び出し（M12 の入力側）: core（`tests/core/list-commands.test.ts`・`commands.test.ts`）で `add-child` に `title` を添えたとき、子のあるノードではその最後の子の枝の直後に同じインデント・マーカーで、葉では 1 段深く、本体ルートと子のない区画では add-child と同じ位置に 1 行の項目が入り、選択はその項目の文、同じ文を 2 回足すと 2 項目、改行を含む文と項目にならない文（`[ ] task`）は拒否、文書末尾では末尾改行の流儀（あり・なし）を保つこと（最後の H2 の兄弟追加と仮想ルートへの子追加も同じ）、見出し形式では 1 段深い見出しになり CRLF を保つこと。モーダル（`tests/obsidian/map-search.test.ts`、ブラウザ検証ページのモックの `FuzzySuggestModal`）は候補が `mappy: true` の真偽値を持つ他の Markdown ノートだけ（`"true"`・Excalidraw・`.png`・自分自身は出ない）でパス順、検索文字列が拡張子なしのパス、各候補がファイル名と親フォルダ（最上位はファイル名だけ）、プレースホルダーとキーの案内、候補 0 件の「マップがありません」と検索語に一致しないときの「一致するマップがありません」、タイトルと `フォルダ/タイトル` での絞り込みと一致箇所の `suggestion-highlight`、クリックと Enter で 1 度だけ返して閉じること。view（`tests/ui/mindmap-view-call.test.ts`、jsdom で製品の view を起動）は `callMap` が未選択なら本体ルートの子の末尾、選択ノードならその子の末尾（葉は 1 段深く）、フリートピックならそのトピックの子の末尾に `- ![[別マップ]]` を書き、追加した項目が選択されインライン入力は開かず、呼び出したノートは不変、Undo 1 回で項目ごと消えて Redo で戻ること、同じマップを 2 回呼ぶと 2 項目（続けて呼ぶと選択が新しい項目に移っているのでその下に入る）、見出し形式では `### ![[別マップ]]`、自分自身・インライン編集中（右クリックの子追加も `execute` で同じ）・保存中・H2 のない文書の拒否で原文が変わらないこと。Obsidian のモーダルの見た目・`fileToLinktext` の実際の出力・ホットキーは③で見る（ブラウザ検証ページにはこのモーダルを載せていない）。
+- ハーネス: `tests/tooling/preflight.test.mjs` が一時ディレクトリに配布物と生成 Vault を組み立て、`community-plugins.json` が `["mappy"]`（生成直後）と `["mappy", "obsidian-excalidraw-plugin"]`（M6 の Vault）なら preflight が通り、他のプラグインが有効・mappy が無効・プラグイン ID の配列でない内容なら失敗すること、CLI の終了コードと表示、`prepare-test-vault.mjs` の再実行で Excalidraw が残り他のプラグインが落ちることを確認する。
 
 Vitest の Node 環境で検証する。乱択・property-based test は、保存と復元の不変条件に効果がある場合に追加する。
 
 ### DOM とブラウザ
 
-jsdom を導入し、製品の DOM 操作・インライン入力・キー操作を検証している。composition イベントを送るテストは変換中のキー制御を検証するもので、OS の日本語 IME で入力した結果ではない。DOM の実測サイズ、フォント、画像遅延、ポインター操作、ズームの見た目は、下記②のブラウザ検証ページと③の Obsidian 実機で確認する。
+jsdom を導入し、製品の DOM 操作・インライン入力・キー操作を検証している。composition イベントを送るテストは変換中のキー制御を検証するもので、OS の日本語 IME で入力した結果ではない。Obsidian のキーマップ（`window` の capture 段階で active view の `Scope` → グローバルホットキーの順）は jsdom にないので、ブラウザ検証ページの `Scope` モックに Obsidian 1.14.2 の `Scope.handleKey`（登録順に照合、キー指定のハンドラは `undefined` でも探索を終える、catch-all だけが親へ降りる）と `compileModifiers`（`Mod` の変換とソート）を写し、map view が `Scope`（親 `app.scope`）に修飾キーなしの F2 だけを登録していること、view の中（キャンバスの選択ノード・inline 入力の中・浮かせたボタン）では `false`（Obsidian の「消費」）を返して inline 編集を開く／何もしないこと、view の外では `undefined` を返し root の catch-all（HotkeyManager 相当）に F2 が渡らないこと、他のキーは root に渡ること、`false` で `preventDefault`＋`stopPropagation` するキーマップ相当のリスナーを置いてもキャンバスのリスナーが二重に編集を開かないこと（`tests/ui/mindmap-view-scope.test.ts`、`tests/ui/map-events.test.ts`。view の起動は `tests/ui/map-view-mount.ts`）を固定し、実キーは ③ の CDP で確認する。DOM の実測サイズ、フォント、画像遅延、ポインター操作、ズームの見た目は、下記②のブラウザ検証ページと③の Obsidian 実機で確認する。
 
 ### ② ブラウザ検証ページ（Obsidian 非依存）
 
-`harness/browser/` にあるページで、製品の `src/ui/mindmap-view.ts`・`node-renderer.ts`・`map-viewport.ts`・`map-events.ts`・`inline-editor.ts` と `core` / `layout` / `interaction` / `document-store.ts` をそのまま読み込む。`obsidian` モジュールだけを `harness/browser/obsidian.ts`（`tests/mocks/obsidian.ts` と同系統のモック。Component・ItemView・Menu・Modal・SuggestModal／FuzzySuggestModal（部分一致の簡易検索。Obsidian の採点は模さない）・Notice・setIcon・MarkdownRenderer の最小実装）に差し替え、Obsidian が起動時に生やす DOM ヘルパー（`createDiv`、`addClass`、`event.targetNode` など）は `harness/browser/dom.ts` が同じ形で prototype に載せる。Vault・workspace・metadataCache・fileManager は `harness/browser/app.ts` のメモリ内実装で、ファイルへは何も書かない。
+`harness/browser/` にあるページで、製品の `src/ui/mindmap-view.ts`・`node-renderer.ts`・`map-viewport.ts`・`map-events.ts`・`inline-editor.ts` と `core` / `layout` / `interaction` / `document-store.ts` をそのまま読み込む。`obsidian` モジュールだけを `harness/browser/obsidian.ts`（`tests/mocks/obsidian.ts` と同系統のモック。Component・ItemView・Scope・Menu・Modal・SuggestModal／FuzzySuggestModal（部分一致の簡易検索。Obsidian の採点は模さない）・Notice・setIcon・MarkdownRenderer の最小実装。Scope は登録を保持するだけで、キーマップはない）に差し替え、Obsidian が起動時に生やす DOM ヘルパー（`createDiv`、`addClass`、`event.targetNode` など）は `harness/browser/dom.ts` が同じ形で prototype に載せる。Vault・workspace・metadataCache・fileManager は `harness/browser/app.ts` のメモリ内実装で、ファイルへは何も書かない。
 
 - 起動: `npm run harness:browser` で `dist/harness/` をビルド・監視し、`http://127.0.0.1:8765/` で配信する（`--port` で変更）。`npm run harness:browser:build` は一度だけビルドし、`dist/harness/index.html` を `file://` で直接開ける。ビルドは製品と同じ esbuild を使い、ランタイム依存を追加しない。
 - fixture: `tests/fixtures/` の `heading-document`（従来の見出し形式・リンク・画像）、`roundtrip-edge-cases`（同名見出し・コードブロック・欠落画像）、`uneven-branches`（H2＋リスト、8 段の一列の枝、24 兄弟、長い日本語、リンク・画像・コードブロック、同名ノード）、`free-topics`（複数の H2: 本体＋フリートピック 3 つ、`mappy-topics` のレイアウト別位置・引用符付きキー・孤児キー、位置未設定の既定配置）と、`scripts/performance-fixtures.mjs` が生成する 10／100／500／2,000 ノード。`harness:prepare` が `test-vault/Fixtures/` に置く文書と同一で、ページ左の select か `?fixture=<id>` で切り替える。
@@ -85,12 +86,12 @@ jsdom を導入し、製品の DOM 操作・インライン入力・キー操作
 ### Obsidian 実機の初回準備
 
 1. まだ試用していない専用環境で `npm run harness:prepare` を実行する。生成するのはこのプロジェクト内の `test-vault/` のみ。
-2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。
-3. `npm run harness:preflight` を実行する。これはファイルと設定の検査であり、実行中プラグインが最新である証明ではない。
+2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。M6 のケース（E23〜E27・E30・E33）には Excalidraw（`obsidian-excalidraw-plugin`）をこの Vault にインストールして有効にする。
+3. `npm run harness:preflight` を実行する。これはファイルと設定の検査であり、実行中プラグインが最新である証明ではない。有効プラグインは mappy と Excalidraw（M6 用）だけを有効にする。それ以外が有効なら preflight は失敗し、実機確認の条件に含めない。
 4. プラグインを再読込し、対象 Vault と機能の挙動を画面で確認する。将来は表示する build ID も照合する。
 5. 下記ケースを再現し、UI の状態と変更後の Markdown を両方保存する。
 
-`harness:prepare` は既知の fixture を初期化するため、ユーザーが試用中の Vault には再実行しない。生成 fixture に書いたノードも利用者の変更として保持する。既存の Evergreens Vault や taskchute-plus の配布物は操作しない。
+`harness:prepare` は既知の fixture を初期化するため、ユーザーが試用中の Vault には再実行しない。生成 fixture に書いたノードも利用者の変更として保持する。再実行した場合、`community-plugins.json` は mappy と、すでに有効なら Excalidraw だけを残して書き直す（Excalidraw の配布物と設定には触れない）。既存の Evergreens Vault や taskchute-plus の配布物は操作しない。
 
 ### 試用中の更新
 
@@ -144,7 +145,7 @@ npm run harness:preflight
 | E34 | `Fixtures/embed-host.md` を閲覧モード・ライブプレビューで開き、`[[embed-host]]` のホバープレビューも出す。元ノート `embed-timeline` を別 leaf で編集。埋め込み内の開閉ボタン・リンク・右上の「マップで開く」。ホストを閉じる。Mappy を無効化 | 3 つの表示すべてで 5 つの `![[…]]` が読み取り専用のマップ（通常・タイムライン・階層図・`#同じ名前` の部分木＝回復する の下の最初の一致・2,000 ノードはルート＋13）になり、`heading-document`・存在しないノート・`#^block` は通常の埋め込みのまま。明色・暗色テーマで枠・線・件数バッジが読める。別 leaf の編集（未保存でも）で埋め込みが更新され、ホストと元ノートの原文は変わらない。開閉はマップ内だけで原文を変えず、リンクは元ノート基準、「マップで開く」で元ノートがマップで開く。ホストを閉じたあと DOM・イベントが残らず（DevTools のメモリ／`app.workspace` のリスナー）、2,000 ノードの埋め込みがあってもホストの入力・スクロールが止まらない。無効化で通常の見出し＋箇条書きの埋め込みに戻る |
 | E35 | 入力側（LEV-70）: `Fixtures/free-topics.md` をマップで開き、何も選択せずにコマンド「マップを検索して呼び出す」→ 候補を見る → `uneven` と打って絞り込む → Enter。「回復する」を選択して同じコマンドで `embed-timeline` を選ぶ。「補足: 用語」（トピック）を選択して同じマップをもう 1 度。⌘Z を 3 回。設定「新しいリンクの形式」を相対／絶対にして再度呼び出す。表示側（LEV-69）の手順はその PR が足す | コマンドは map view がアクティブなときだけパレットに出る（Markdown 側では出ない）。候補は `mappy: true` のノートだけ（`embed-host`・`heading-document`・自分自身 `free-topics` は出ない）で、ファイル名と親フォルダ `Fixtures` が並び、一致した文字が強調される。原文は `- 習慣化する` の次の行に `- ![[uneven-branches]]`、`  - 睡眠` の次に `  - ![[embed-timeline]]`、`- 用語 B` の次に `- ![[embed-timeline]]` が 1 行ずつ足され、他の行と frontmatter は不変。呼び出したノート（`uneven-branches`・`embed-timeline`）は不変。追加した項目が選択され、インライン入力は開かない。表示側が未 merge の間は項目がリンクとして描かれ、クリックで元ノートが開く。⌘Z 1 回ごとに 1 項目が丸ごと消えて 3 回で元の原文に戻る。「Wikilinks を使用」がオフでも `![[…]]` のまま、「新しいリンクの形式」の相対／絶対では `![[Fixtures/embed-timeline]]` になる（実機は未実施。LEV-71 で行う） |
 
-CDP でキー操作を再現するとき、要素へ送る合成 `keydown` は Obsidian のキーマップを通らない。Obsidian の既定ホットキーと重なるキー（F2 = `workspace:edit-file-title`）は `Input.dispatchKeyEvent` の実キーでも確認する。E03〜E05 の組み合わせ（同じノートの 2 leaf・別ウィンドウ・外部変更の直後・フリートピック＋階層図・実キー）は `artifacts/lev-16-multiview/obsidian-multiview-probe.mjs` が各ステップの前後の Markdown を 4 経路（ディスク・`cachedRead`・editor・各 map の解析元）で保存してバイト比較する。
+CDP でキー操作を再現するとき、要素へ送る合成 `keydown` は Obsidian のキーマップを通らない。Obsidian の既定ホットキーと重なるキー（F2 = `workspace:edit-file-title`）は `Input.dispatchKeyEvent` の実キーでも確認する（E02 の F2 は `artifacts/lev-48-f2-scope/f2-probe.mjs`: map view の `Scope` が F2 を受けてインライン編集が開くこと、Escape・入力→Enter・実キーの ⌘Z／⌘⇧Z／⌥↑・編集中の F2・浮かせたボタン上の F2・Markdown editor の F2・Markdown を横に開いた map での F2（編集中・ボタン上を含む）を、各ステップの前後の Markdown のバイト比較と `window` capture 段階での `defaultPrevented` で記録する）。修飾キー付きの実キー（⌘Z など）は、ページが `preventDefault` しないまま通すと macOS のメニューへ転送され、CDP の合成イベントは key equivalent が空の「Obsidian について」に一致してネイティブのダイアログを開き、閉じるまで CDP も応答しなくなる。修飾キーはマップのノードにフォーカスがありインライン入力が閉じているときだけ送る。E03〜E05 の組み合わせ（同じノートの 2 leaf・別ウィンドウ・外部変更の直後・フリートピック＋階層図・実キー）は `artifacts/lev-16-multiview/obsidian-multiview-probe.mjs` が各ステップの前後の Markdown を 4 経路（ディスク・`cachedRead`・editor・各 map の解析元）で保存してバイト比較する。
 
 記録テンプレート:
 
@@ -162,7 +163,20 @@ OS / Obsidian version / Vault / build hash:
 
 ## 公開前の追加確認
 
-現在はローカルで試用するプロトタイプであり、README・LICENSE の存在だけで公開可能とは扱わない。製品の受入条件、実機対応、公開ライセンス、作者表記、名称・ID の重複、説明文を確認する。`manifest.version` と同じタグで必要な配布物を GitHub release に添付する。
+現在はローカルで試用するプロトタイプであり、README・LICENSE の存在だけで公開可能とは扱わない。製品の受入条件、実機対応、公開ライセンス、作者表記、名称・ID の重複、説明文を確認する。`manifest.version` と同じタグで必要な配布物を GitHub release に添付する（下記「リリース手順」）。
+
+### リリース手順
+
+ベータ配布（GitHub Release ＋ [BRAT](https://github.com/TfTHacker/obsidian42-brat)）と、将来のコミュニティ公開で共通の手順。配布物は `main.js`・`manifest.json`・`styles.css` の 3 ファイルだけで、タグは `manifest.version` と同じ `x.y.z`（先頭に `v` を付けない。[公式](https://docs.obsidian.md/plugins/releasing/release-your-plugin-with-github-actions)）。`main.js` はこれまでどおりコミットせず、Release の添付ファイルとしてだけ配る。実際のタグの作成・Release の公開・リポジトリの public 化・LICENSE の確定は本人の決定（LEV-23、LEV-25）の後に行う。手順の確認記録は `artifacts/lev-68-release-workflow/record.md`。
+
+1. **バージョンを上げる**: main で `npm version <x.y.z> -m "release: %s"`。npm が `package.json`・`package-lock.json` を更新したあと `version` スクリプト（`scripts/version-bump.mjs`）が `manifest.json` の `version` と `versions.json` の `<x.y.z>: <minAppVersion>` を更新して `git add` し、npm が 4 ファイルのコミットとタグ `<x.y.z>` を作る（`.npmrc` の `tag-version-prefix=` で `v` が付かない）。`minAppVersion` を上げる版では、先に `manifest.json` の `minAppVersion` を直してから実行する。`x.y.z` 以外（`v` 付き、`-beta.1` など）はスクリプトが拒否し、npm はコミットせずに止まる（`package.json`・`package-lock.json` は書き換わっているので `git restore` で戻す）。PR で上げたい場合は worktree で `npm version <x.y.z> --no-git-tag-version` を実行して 4 ファイルの変更だけを PR にし、merge 後に main で `git tag <x.y.z> <merge commit>` する。
+2. **確認**: `npm run check`（`validate` が 4 ファイルの整合を検査する）。失敗したら `git tag -d <x.y.z>` で消し、直してから 1 をやり直す。
+3. **push**: `git push origin main <x.y.z>`。`release.yml` がタグを受け、`npm ci` → タグと `manifest.version` の一致（不一致は失敗）→ `npm run check` → `dist/mappy/` の 3 ファイルを workflow artifact に上げ → `gh release create <x.y.z> --verify-tag --generate-notes` で Release を作って 3 ファイルを添付する。`0.x` は `--prerelease`（ベータ。BRAT は pre-release も拾う。draft は push 権限のない利用者の API 応答に含まれず BRAT から見えないので使わない）、`1.0.0` 以降は通常の Release。同じタグの Release が既にあれば失敗する（タグを付け替えない。次の版を切る）。
+4. **Release の確認**: `gh release view <x.y.z>` で添付が 3 ファイルであること、`gh run view` で `release.yml` が成功していることを見る。生成されたリリースノートは必要なら GitHub で編集する。
+5. **テスターの導入（BRAT）**: リポジトリが public であることが前提（private のままなら BRAT 2.x の GitHub token 設定で Contents: Read-only の fine-grained PAT を渡す）。テスターは Obsidian に BRAT（`obsidian42-brat`。2.x は Obsidian 1.11.4 以上）を入れ、コマンド「BRAT: Add a beta plugin for testing」（設定タブでは「Add beta plugin」）にリポジトリ `hiroyaiizuka/Mappy` を入れて「Add plugin」。BRAT は semver で最大の Release（pre-release を含む）の 3 ファイルを `.obsidian/plugins/mappy/` に置く。版を固定したいテスターは「Add a beta plugin with frozen version based on a release tag」でタグを指定する。`manifest-beta.json` は不要（Release 方式では読まれない）。
+6. **更新の配り方**: 1〜3 を繰り返してタグを進めるだけ。テスター側は BRAT の「Check for updates to all beta plugins and UPDATE」か、BRAT 設定の起動時自動更新で新しい Release を取り込む。
+
+dry-run: `gh workflow run release.yml --ref <branch>`（workflow_dispatch）と、`release.yml`・`scripts/version-bump.mjs`・`package-plugin.mjs`・`validate-release.mjs` を変える PR では、同じ手順で配布物を作って workflow artifact `mappy-<manifest.version>` に上げ、Release は作らない（`release` ジョブはタグの push だけで動き、`contents: write` もそのジョブにしか渡さない）。`workflow_dispatch` は workflow ファイルが main にあるか、その workflow が一度でも走った後でないと受け付けられない（GitHub の仕様。LEV-68 では PR のトリガーで一度走らせてから `gh workflow run release.yml --ref <branch>` が通った）。専用テスト Vault は `harness:prepare` と「試用中の更新」でファイルを直接置く経路のままにし、BRAT で同じ Vault を更新しない（`harness:preflight` が root / dist と照合する対象が変わる）。
 
 提出時には公式ドキュメントで手順を再確認し、自動レビューの指摘を解決する。sample README と差がある場合は提出時点の公式ドキュメントを優先する。[提出手順](https://docs.obsidian.md/plugins/releasing/submit-plugin)、[提出要件](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)
 
