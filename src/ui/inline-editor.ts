@@ -12,6 +12,9 @@ export interface InlineEditorOptions {
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
 }
 
+/** Shown in place of a conflict line once the map has re-read the note: the same Enter now applies the draft to it. */
+export const REFRESHED_MESSAGE = "Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。";
+
 /** Edit at the node position; a failed save keeps the draft and error visible. */
 export class InlineEditor {
   private readonly input: HTMLTextAreaElement;
@@ -95,6 +98,12 @@ export class InlineEditor {
       this.busy = false;
       this.input.readOnly = false;
     }
+  }
+
+  /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */
+  refreshed(stale: string): void {
+    if (this.disposed || this.error.textContent !== stale) return;
+    this.error.setText(REFRESHED_MESSAGE);
   }
 
   dispose(): void {
