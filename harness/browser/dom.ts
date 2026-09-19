@@ -86,6 +86,27 @@ export function installObsidianDom(): void {
   for (const [name, value] of Object.entries(elementMethods)) {
     Object.defineProperty(Element.prototype, name, { value, configurable: true, writable: true });
   }
+  // Obsidian also exposes detached creation as globals (`createEl("canvas")` for scratch elements).
+  const detachedEl = (tag: string, options?: DomElementInfo | string, callback?: (element: HTMLElement) => void): HTMLElement => {
+    const element = document.createElement(tag);
+    applyInfo(element, typeof options === "string" ? { cls: options } : options, document.createDocumentFragment());
+    element.remove();
+    callback?.(element);
+    return element;
+  };
+  const globalHelpers: Record<string, unknown> = {
+    createEl: detachedEl,
+    createDiv: (options?: DomElementInfo | string, callback?: (element: HTMLElement) => void) => detachedEl("div", options, callback),
+    createSpan: (options?: DomElementInfo | string, callback?: (element: HTMLElement) => void) => detachedEl("span", options, callback),
+    createFragment: (callback?: (fragment: DocumentFragment) => void): DocumentFragment => {
+      const fragment = document.createDocumentFragment();
+      callback?.(fragment);
+      return fragment;
+    },
+  };
+  for (const [name, value] of Object.entries(globalHelpers)) {
+    Object.defineProperty(window, name, { value, configurable: true, writable: true });
+  }
   Object.defineProperty(UIEvent.prototype, "targetNode", {
     configurable: true,
     get(this: UIEvent): Node | null { return this.target instanceof Node ? this.target : null; },

@@ -21,7 +21,7 @@ H0a の静的検査・テスト・配布物検証に加え、M1〜M4 の機能�
 | M10 | 未着手 | 埋め込み表示: 別のノートの `![[マップノート]]`・`![[ノート#見出し]]` を読み取り専用のマップとして描画 |
 | M11 | 未着手 | 左右バランス配置（`mappy-layout: balanced`） |
 | M12 | 未着手 | マップから他のマップを検索して呼び出す（埋め込み項目の追加） |
-| M13 | 未着手 | PNG／SVG 書き出し |
+| M13 | コマンド「現在のマップを SVG／PNG に書き出し」（`src/main.ts` の登録 1 か所、形式はモーダルで選ぶ。添付ファイルの保存先を扱えない環境では出さない）。`src/export/svg-document.ts`（純粋: シーン → SVG 文字列、viewBox・余白・PNG の縮尺）と `svg-capture.ts`（DOM: 配置済みノードの要素を `foreignObject` の XHTML に直列化し、算出スタイルを重複除去したクラスで埋め込む。線は `LayoutResult.edges` のパスそのまま、閉じた枝は件数のバッジ、画像は差し込まれた resolver で data URL 化し、読めなければノードを保って代替テキスト。テーマは body の `theme-dark` と canvas の色）、`src/obsidian/image-export.ts`（Vault の画像を `readBinary` で data URL に、http(s) は `requestUrl`、`getAvailablePathForAttachment` + `vault.create`／`createBinary` で保存。ノートは書かない）、`MindmapView.exportSource()`（編集中・ドラッグ中は拒否、配置フレーム待ち）。jsdom（ノード数・線の数・viewBox・折りたたみ・テーマ class・欠落画像・原文不変・10〜2,000 ノード）と headless Chrome（書き出した SVG を別タブで開いて位置と画像の復号を確認、PNG の寸法、2,000 ノードの完了。`artifacts/lev-59-svg-export-2026-09-19.md`） | Obsidian 実機（テーマの色、Vault の画像、添付設定の保存先、モバイルの PNG）は未実施 — verification 子 issue で確認する |
 | M14 | 未着手 | 設定タブ（テーマ・新規マップの既定レイアウト・作成先） |
 
 最新の見た目・操作の受入条件は [interaction-revision.md](./interaction-revision.md) に記す。
@@ -284,6 +284,8 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 - 保存先を扱えない環境ではコマンドを出さない。
 
 **受入条件:** 書き出しで元ノートを書き換えない。書き出した SVG が map view と同じ配置・折りたたみになる。画像のリンク切れがあってもノード全体が欠けない。2,000 ノードで完了する。フォントが閲覧環境に依存することを README に記す。
+
+実装（2026-09-19、LEV-59）: 書き出しは view が最後に配置した `LayoutResult` と、その配置で置いたノード要素をそのまま使う（新たに配置し直さない）。ノードは `foreignObject` 内の XHTML で、選択・ドラッグなどの状態クラス、開閉ボタン、`tabindex`／ARIA を落とし、算出スタイルの白名簿（余白・枠・背景・文字・折り返し・flex）を同じ宣言ごとに 1 クラスへまとめて `<style>` に置く。閉じた枝の件数は `foreignObject` の外に SVG の丸で描く（枠からはみ出す部分が切れないため）。PNG は同じ SVG を data URL の `<img>` から canvas に描いて `toBlob`（blob URL は `file://` などの不透明なオリジンで canvas を汚染する）。ラスタの縮尺は 2 倍を上限に、デスクトップ 8,192²、モバイル 4,096² ピクセルに収める。フォントは埋め込まない。
 
 ### M14: 設定タブ
 

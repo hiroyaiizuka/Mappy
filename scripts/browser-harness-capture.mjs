@@ -16,7 +16,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
-import { CdpClosedError, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { CdpClosedError, Page, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
@@ -33,7 +33,7 @@ const worldPoint = (view, point, canvas) => ({
 });
 
 /** Runs the scenario list, recording PASS/FAIL without stopping on the first failure. */
-class Recorder {
+export class Recorder {
   constructor(page, directory) { this.page = page; this.directory = directory; this.cases = []; this.index = 0; }
 
   async run(id, operation, expectation, body) {
@@ -846,6 +846,161 @@ async function captureTopicOperations(recorder, page) {
   });
 }
 
+/** Width and height from a PNG's IHDR chunk. */
+function pngSize(buffer) {
+  expect(buffer.length > 24 && buffer.toString('latin1', 1, 4) === 'PNG', 'not a PNG');
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+/** Parse an exported SVG inside the page and report what it holds; the counts come from the file, not from the exporter. */
+async function svgFacts(page, svg) {
+  return page.evaluate(`(() => {
+    const parsed = new DOMParser().parseFromString(${JSON.stringify(svg)}, 'image/svg+xml');
+    const error = parsed.querySelector('parsererror');
+    if (error) return { error: error.textContent };
+    const images = Array.from(parsed.querySelectorAll('img'));
+    const root = parsed.documentElement;
+    return {
+      className: root.getAttribute('class'), width: Number(root.getAttribute('width')), height: Number(root.getAttribute('height')),
+      viewBox: root.getAttribute('viewBox'), objects: parsed.querySelectorAll('foreignObject').length, paths: parsed.querySelectorAll('.mappy-edges path').length,
+      badges: Array.from(parsed.querySelectorAll('.mappy-fold text'), text => text.textContent), images: images.length,
+      dataImages: images.filter(image => (image.getAttribute('src') ?? '').startsWith('data:')).length,
+      missing: parsed.querySelectorAll('.mappy-export-missing-image').length,
+      labels: Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent.trim()),
+      background: parsed.querySelector('.mappy-export-background')?.getAttribute('fill'),
+    };
+  })()`);
+}
+
+/**
+ * Open the written SVG in a second tab of the same Chrome and read back where its
+ * nodes render: at scale 1 a foreignObject sits at its layout coordinates, so the
+ * placement in the file equals the map view's (the view only pans and scales them).
+ */
+async function renderSvgFile(page, file, screenshot, expectedNodes) {
+  const cdp = page.cdp;
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  try {
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    const tab = new Page(cdp, sessionId);
+    await tab.send('Page.enable');
+    await tab.send('Runtime.enable');
+    await tab.send('Emulation.setDeviceMetricsOverride', { ...WINDOW, deviceScaleFactor: 1, mobile: false });
+    await tab.send('Page.navigate', { url: pathToFileURL(file).href });
+    const deadline = Date.now() + 15000;
+    while ((await tab.evaluate(`document.readyState`)) !== 'complete') {
+      if (Date.now() > deadline) throw new Error('The SVG tab did not finish loading.');
+      await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
+    }
+    // Let the data URL images decode before the screenshot.
+    await new Promise(resolveWait => { setTimeout(resolveWait, 500); });
+    const rendered = await tab.evaluate(`(() => {
+      const svg = document.documentElement;
+      const box = svg.viewBox.baseVal;
+      const origin = svg.getBoundingClientRect();
+      const objects = Array.from(document.querySelectorAll('foreignObject'));
+      const scale = origin.width / box.width;
+      return {
+        tag: svg.tagName, objects: objects.length, scale,
+        placed: objects.slice(0, 200).map(object => {
+          const rect = object.getBoundingClientRect();
+          return { id: object.getAttribute('data-node-id'), x: (rect.x - origin.x) / scale + box.x, y: (rect.y - origin.y) / scale + box.y,
+            declaredX: Number(object.getAttribute('x')), declaredY: Number(object.getAttribute('y')), text: object.textContent.trim().slice(0, 40) };
+        }),
+        images: Array.from(document.querySelectorAll('img')).map(image => ({ complete: image.complete, natural: image.naturalWidth })),
+      };
+    })()`);
+    expect(rendered.tag === 'svg', `document root is ${rendered.tag}`);
+    expect(rendered.objects === expectedNodes, `${rendered.objects} foreignObjects rendered, expected ${expectedNodes}`);
+    const drifted = rendered.placed.filter(item => Math.abs(item.x - item.declaredX) > 1 || Math.abs(item.y - item.declaredY) > 1);
+    expect(drifted.length === 0, `${drifted.length} nodes render away from their declared position: ${JSON.stringify(drifted.slice(0, 3))}`);
+    const empty = rendered.placed.filter(item => !item.text);
+    expect(empty.length === 0, `${empty.length} rendered nodes have no text`);
+    const broken = rendered.images.filter(image => !image.complete || image.natural === 0);
+    expect(broken.length === 0, `${broken.length} of ${rendered.images.length} images did not decode from their data URL`);
+    const { data } = await tab.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile(screenshot, Buffer.from(data, 'base64'));
+    return rendered;
+  } finally {
+    await cdp.send('Target.closeTarget', { targetId });
+  }
+}
+
+/**
+ * M13 (LEV-59): the SVG and PNG the export command would save, produced by the same
+ * capture on this page and written next to the record. The SVG is opened in Chrome
+ * to confirm foreignObject nodes and data URL images render; the PNG is checked by size.
+ */
+export async function captureExport(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  const title = '多数の兄弟';
+  const node = await nodeInfo(page, title);
+  expect(node.toggle, 'fold control missing');
+  await page.click(center(node.toggle).x, center(node.toggle).y);
+  await page.settle();
+  const shown = (await page.harness('h.nodes()')).length;
+  const original = await page.harness('h.source()');
+  const svgFile = join(recorder.directory, 'export-uneven-branches.svg');
+
+  await recorder.run('export-svg', `uneven-branches で「${title}」を閉じ、h.export.svg() で SVG を書き出す`, 'foreignObject の数が表示ノード数、線の数がノード数 − 1、閉じた枝のバッジ 24、画像はすべて data URL、欠落画像のノードも残る', async () => {
+    const exported = await page.harness('h.export.svg()');
+    await writeFile(svgFile, exported.svg);
+    const facts = await svgFacts(page, exported.svg);
+    expect(!facts.error, `SVG is not well formed: ${facts.error}`);
+    expect(facts.objects === shown, `${facts.objects} foreignObjects for ${shown} visible nodes`);
+    expect(facts.paths === shown - 1, `${facts.paths} paths for ${shown} nodes`);
+    expect(facts.badges.length === 1 && facts.badges[0] === '24', `badges: ${JSON.stringify(facts.badges)}`);
+    expect(facts.images > 0 && facts.dataImages === facts.images, `${facts.dataImages} of ${facts.images} images are data URLs`);
+    expect(facts.missing === 0, `${facts.missing} placeholders for unreadable images`);
+    expect(facts.labels.includes('画像の欠落') && facts.labels.includes('リンクと画像'), 'nodes with a missing image or links are absent');
+    expect(facts.className === 'mappy-export theme-light', `class: ${facts.className}`);
+    expect(facts.width === exported.width && facts.height === exported.height, `size ${facts.width}×${facts.height}`);
+    expect((await page.harness('h.source()')) === original, 'the note changed during the export');
+    return `${facts.objects} ノード、線 ${facts.paths}、画像 ${facts.dataImages}/${facts.images} を data URL 化、${exported.width}×${exported.height}、${(exported.svg.length / 1024).toFixed(0)} KB、${exported.ms.toFixed(0)} ms → ${relative(root, svgFile)}`;
+  });
+
+  await recorder.run('export-svg-render', '書き出した SVG を Chrome の別タブで開く', 'foreignObject のノードが宣言した座標に描かれ、文字と data URL の画像が見える', async () => {
+    const rendered = await renderSvgFile(page, svgFile, join(recorder.directory, 'export-uneven-branches-rendered.png'), shown);
+    return `${rendered.objects} ノードを描画、画像 ${rendered.images.length} 枚が復号、位置のずれ 1 px 未満 → export-uneven-branches-rendered.png`;
+  });
+
+  await recorder.run('export-png', 'h.export.png() で同じ SVG をラスタ化', 'PNG の寸法が SVG のサイズ × scale に一致する', async () => {
+    const exported = await page.harness('h.export.png()');
+    const buffer = Buffer.from(exported.dataUrl.split(',')[1] ?? '', 'base64');
+    const file = join(recorder.directory, 'export-uneven-branches.png');
+    await writeFile(file, buffer);
+    const size = pngSize(buffer);
+    expect(size.width === exported.width && size.height === exported.height, `PNG is ${size.width}×${size.height}, expected ${exported.width}×${exported.height}`);
+    expect(exported.scale === 2, `scale ${exported.scale}`);
+    return `${size.width}×${size.height} px（scale ${exported.scale}）、${(buffer.length / 1024).toFixed(0)} KB、SVG ${exported.svgMs.toFixed(0)} ms + ラスタ化 ${exported.ms.toFixed(0)} ms → ${relative(root, file)}`;
+  });
+
+  // Leave the fixture as it was loaded.
+  const collapsed = await nodeInfo(page, title);
+  if (collapsed.collapsed && collapsed.toggle) {
+    await page.click(center(collapsed.toggle).x, center(collapsed.toggle).y);
+    await page.settle();
+  }
+
+  await recorder.run('export-2000', 'performance-2000-links で SVG と PNG を書き出す', '2,000 ノードで完了する。PNG はピクセル上限に収まるよう縮小される', async () => {
+    await loadFixture(page, 'performance-2000-links');
+    const count = (await page.harness('h.nodes()')).length;
+    const svg = await page.harness('h.export.svg()');
+    const facts = await svgFacts(page, svg.svg);
+    expect(!facts.error, `SVG is not well formed: ${facts.error}`);
+    expect(facts.objects === count && facts.paths === count - 1, `${facts.objects} objects / ${facts.paths} paths for ${count} nodes`);
+    expect(facts.dataImages === facts.images && facts.images === Math.floor((count - 1) / 5), `${facts.dataImages}/${facts.images} images`);
+    await writeFile(join(recorder.directory, 'export-performance-2000-links.svg'), svg.svg);
+    const png = await page.harness('h.export.png()');
+    const buffer = Buffer.from(png.dataUrl.split(',')[1] ?? '', 'base64');
+    const size = pngSize(buffer);
+    expect(size.width === png.width && size.height === png.height, `PNG is ${size.width}×${size.height}`);
+    expect(size.width * size.height <= 8192 * 8192 + 1, `PNG area ${size.width * size.height} exceeds the desktop cap`);
+    await writeFile(join(recorder.directory, 'export-performance-2000-links.png'), buffer);
+    return `${count} ノード: SVG ${(svg.svg.length / 1024).toFixed(0)} KB を ${svg.ms.toFixed(0)} ms、PNG ${size.width}×${size.height}（scale ${png.scale.toFixed(3)}、${(buffer.length / 1024).toFixed(0)} KB）を ${png.ms.toFixed(0)} ms`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -917,6 +1072,7 @@ async function main() {
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
       await captureTopicOperations(recorder, page);
+      await captureExport(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
   } catch (error) {

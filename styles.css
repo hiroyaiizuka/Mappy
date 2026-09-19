@@ -207,6 +207,7 @@
 .mappy-edit-modal .mappy-edit-input { width: 100%; margin: 8px 0 12px; }
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }
 .mappy-edit-modal .mappy-edit-error { color: var(--text-error); }
+.mappy-export-modal .mappy-export-note { color: var(--text-muted); font-size: var(--font-ui-small); }
 .mappy-link-suggest {
   position: fixed;
   z-index: var(--layer-popover);

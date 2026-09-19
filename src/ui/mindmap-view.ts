@@ -4,6 +4,7 @@ import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, 
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
@@ -88,6 +89,23 @@ export class MindmapView extends ItemView {
   snapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
     if (!this.file) return null;
     return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
+  }
+
+  /**
+   * What is on screen, for the SVG／PNG export (§5 M13): the layout the nodes were
+   * placed with, their elements and the connector layer. A pending layout frame is
+   * awaited first, so the geometry handed out is the one the DOM shows.
+   */
+  async exportSource(): Promise<CaptureSource & { file: TFile }> {
+    const file = this.file;
+    if (!file || !this.document) throw new Error("マップを開いてから書き出してください。");
+    if (this.inlineEditor) throw new Error("テキストの編集を確定してから書き出してください。");
+    if (this.topicDrag || this.dropPreview) throw new Error("ドラッグを終えてから書き出してください。");
+    if (this.layoutFrame !== undefined) await new Promise<void>(resolve => { this.contentEl.win.requestAnimationFrame(() => { resolve(); }); });
+    const layout = this.layout;
+    if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
+    if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
+    return { file, layout, entries: this.renderer.entries, canvas: this.canvas, edges: this.svg };
   }
 
   getViewType(): string { return VIEW_TYPE; }

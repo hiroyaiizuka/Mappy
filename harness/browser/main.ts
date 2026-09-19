@@ -13,6 +13,8 @@ import {
   installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
   type EditSample, type FrameSample, type LoadSample, type MeasureContext,
 } from "./measure";
+import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
+import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import type { LayoutMode } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
@@ -180,6 +182,77 @@ const measure = {
   probes,
 };
 
+/** What `h.export.svg()` hands the capture script: the file and the counts to check it against. */
+export interface HarnessSvgExport {
+  svg: string;
+  width: number;
+  height: number;
+  nodes: number;
+  edges: number;
+  badges: number;
+  images: number;
+  theme: ExportTheme;
+  ms: number;
+}
+
+export interface HarnessPngExport {
+  dataUrl: string;
+  width: number;
+  height: number;
+  scale: number;
+  bytes: number;
+  nodes: number;
+  /** Capture and serialisation, then rasterisation. */
+  svgMs: number;
+  ms: number;
+}
+
+/** The page keeps the sample image as a data URL; attachments added on the page are blob URLs and are read back. */
+const resolveHarnessImage: ImageResolver = async image => {
+  const src = image.currentSrc || image.src;
+  if (src.startsWith("data:")) return src;
+  if (!src.startsWith("blob:")) return null;
+  const blob = await (await fetch(src)).blob();
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : null); }, { once: true });
+    reader.addEventListener("error", () => { resolve(null); }, { once: true });
+    reader.readAsDataURL(blob);
+  });
+};
+
+/** M13 in this page: the same capture and document the plugin writes, minus the vault. */
+async function exportSvg(): Promise<HarnessSvgExport> {
+  if (!view) throw new Error("No fixture is loaded");
+  const started = performance.now();
+  const source = await view.exportSource();
+  const scene = await captureScene(source, { resolveImage: resolveHarnessImage });
+  const svg = buildSvg(scene);
+  const size = svgSize(scene.bounds);
+  return {
+    svg, width: size.width, height: size.height, nodes: scene.nodes.length, edges: scene.edges.length, badges: scene.badges.length,
+    images: (svg.match(/<img /gu) ?? []).length, theme: scene.theme, ms: performance.now() - started,
+  };
+}
+
+async function exportPng(): Promise<HarnessPngExport> {
+  const exported = await exportSvg();
+  const started = performance.now();
+  const size = { width: exported.width, height: exported.height };
+  const scale = pngScale(size, DESKTOP_PNG_LIMITS);
+  const blob = await rasterizeSvg(exported.svg, size, scale);
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => { resolve(typeof reader.result === "string" ? reader.result : ""); }, { once: true });
+    reader.addEventListener("error", () => { reject(new Error("PNG を読み戻せません")); }, { once: true });
+    reader.readAsDataURL(blob);
+  });
+  return {
+    dataUrl, scale, width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)),
+    bytes: blob.size, nodes: exported.nodes, svgMs: exported.ms, ms: performance.now() - started,
+  };
+}
+
 /** Page controls report failures in the status line instead of an unhandled rejection. */
 function report(action: Promise<unknown>): void {
   action.catch((error: unknown) => { setStatus(error instanceof Error ? error.message : String(error)); });
@@ -247,6 +320,8 @@ const api = {
     return element ? nodeInfo(element) : null;
   },
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
+  /** SVG／PNG export of the view as shown (§5 M13); nothing is saved, the capture script writes the files. */
+  export: { svg: exportSvg, png: exportPng },
   /** The current fixture's Markdown as the in-memory vault holds it now (edits stay in this page). */
   source: () => {
     const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
