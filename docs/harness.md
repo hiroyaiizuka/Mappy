@@ -19,7 +19,7 @@ AI エージェントと人間が同じ条件で開発・検証するため、�
 | ブラウザ検証ページ | `npm run harness:browser` | Obsidian なしで製品の map view を動かす。表示崩れ、ポインター操作、ズーム、ペインサイズ（下記②） |
 | ブラウザ撮影 | `npm run harness:browser:capture` | headless Chrome で fixture 表示と主要操作を実行し、スクリーンショットと時刻を `artifacts/browser-harness/` に記録 |
 
-まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。CI は成果物を artifact に保存するだけで、公開を行わない。Git hook は任意の `npm run hooks:install` で有効にする。
+まとめて実行するコマンドは `npm run check`（ブラウザ検証ページのビルドまで含む。撮影は含まない）。ローカルと GitHub Actions で同じコマンドを使う。ブランチと PR の CI（`check.yml`）は成果物を artifact に保存するだけで、公開を行わない。`manifest.version` と同じタグを push したときだけ `release.yml` が同じ check を通し、配布物 3 ファイルを GitHub Release に添付する（[リリース手順](#リリース手順)）。Git hook は任意の `npm run hooks:install` で有効にする。
 
 ## lint の対象を明確にする
 
@@ -160,7 +160,20 @@ OS / Obsidian version / Vault / build hash:
 
 ## 公開前の追加確認
 
-現在はローカルで試用するプロトタイプであり、README・LICENSE の存在だけで公開可能とは扱わない。製品の受入条件、実機対応、公開ライセンス、作者表記、名称・ID の重複、説明文を確認する。`manifest.version` と同じタグで必要な配布物を GitHub release に添付する。
+現在はローカルで試用するプロトタイプであり、README・LICENSE の存在だけで公開可能とは扱わない。製品の受入条件、実機対応、公開ライセンス、作者表記、名称・ID の重複、説明文を確認する。`manifest.version` と同じタグで必要な配布物を GitHub release に添付する（下記「リリース手順」）。
+
+### リリース手順
+
+ベータ配布（GitHub Release ＋ [BRAT](https://github.com/TfTHacker/obsidian42-brat)）と、将来のコミュニティ公開で共通の手順。配布物は `main.js`・`manifest.json`・`styles.css` の 3 ファイルだけで、タグは `manifest.version` と同じ `x.y.z`（先頭に `v` を付けない。[公式](https://docs.obsidian.md/plugins/releasing/release-your-plugin-with-github-actions)）。`main.js` はこれまでどおりコミットせず、Release の添付ファイルとしてだけ配る。実際のタグの作成・Release の公開・リポジトリの public 化・LICENSE の確定は本人の決定（LEV-23、LEV-25）の後に行う。手順の確認記録は `artifacts/lev-68-release-workflow/record.md`。
+
+1. **バージョンを上げる**: main で `npm version <x.y.z> -m "release: %s"`。npm が `package.json`・`package-lock.json` を更新したあと `version` スクリプト（`scripts/version-bump.mjs`）が `manifest.json` の `version` と `versions.json` の `<x.y.z>: <minAppVersion>` を更新して `git add` し、npm が 4 ファイルのコミットとタグ `<x.y.z>` を作る（`.npmrc` の `tag-version-prefix=` で `v` が付かない）。`minAppVersion` を上げる版では、先に `manifest.json` の `minAppVersion` を直してから実行する。`x.y.z` 以外（`v` 付き、`-beta.1` など）はスクリプトが拒否し、npm はコミットせずに止まる（`package.json`・`package-lock.json` は書き換わっているので `git restore` で戻す）。PR で上げたい場合は worktree で `npm version <x.y.z> --no-git-tag-version` を実行して 4 ファイルの変更だけを PR にし、merge 後に main で `git tag <x.y.z> <merge commit>` する。
+2. **確認**: `npm run check`（`validate` が 4 ファイルの整合を検査する）。失敗したら `git tag -d <x.y.z>` で消し、直してから 1 をやり直す。
+3. **push**: `git push origin main <x.y.z>`。`release.yml` がタグを受け、`npm ci` → タグと `manifest.version` の一致（不一致は失敗）→ `npm run check` → `dist/mappy/` の 3 ファイルを workflow artifact に上げ → `gh release create <x.y.z> --verify-tag --generate-notes` で Release を作って 3 ファイルを添付する。`0.x` は `--prerelease`（ベータ。BRAT は pre-release も拾う。draft は push 権限のない利用者の API 応答に含まれず BRAT から見えないので使わない）、`1.0.0` 以降は通常の Release。同じタグの Release が既にあれば失敗する（タグを付け替えない。次の版を切る）。
+4. **Release の確認**: `gh release view <x.y.z>` で添付が 3 ファイルであること、`gh run view` で `release.yml` が成功していることを見る。生成されたリリースノートは必要なら GitHub で編集する。
+5. **テスターの導入（BRAT）**: リポジトリが public であることが前提（private のままなら BRAT 2.x の GitHub token 設定で Contents: Read-only の fine-grained PAT を渡す）。テスターは Obsidian に BRAT（`obsidian42-brat`。2.x は Obsidian 1.11.4 以上）を入れ、コマンド「BRAT: Add a beta plugin for testing」（設定タブでは「Add beta plugin」）にリポジトリ `hiroyaiizuka/Mappy` を入れて「Add plugin」。BRAT は semver で最大の Release（pre-release を含む）の 3 ファイルを `.obsidian/plugins/mappy/` に置く。版を固定したいテスターは「Add a beta plugin with frozen version based on a release tag」でタグを指定する。`manifest-beta.json` は不要（Release 方式では読まれない）。
+6. **更新の配り方**: 1〜3 を繰り返してタグを進めるだけ。テスター側は BRAT の「Check for updates to all beta plugins and UPDATE」か、BRAT 設定の起動時自動更新で新しい Release を取り込む。
+
+dry-run: `gh workflow run release.yml --ref <branch>`（workflow_dispatch）と、`release.yml`・`scripts/version-bump.mjs`・`package-plugin.mjs`・`validate-release.mjs` を変える PR では、同じ手順で配布物を作って workflow artifact `mappy-<manifest.version>` に上げ、Release は作らない（`release` ジョブはタグの push だけで動き、`contents: write` もそのジョブにしか渡さない）。`workflow_dispatch` は workflow ファイルが main にあるときだけ受け付けられる（GitHub の仕様）。専用テスト Vault は `harness:prepare` と「試用中の更新」でファイルを直接置く経路のままにし、BRAT で同じ Vault を更新しない（`harness:preflight` が root / dist と照合する対象が変わる）。
 
 提出時には公式ドキュメントで手順を再確認し、自動レビューの指摘を解決する。sample README と差がある場合は提出時点の公式ドキュメントを優先する。[提出手順](https://docs.obsidian.md/plugins/releasing/submit-plugin)、[提出要件](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)
 
