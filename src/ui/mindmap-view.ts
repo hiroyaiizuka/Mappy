@@ -10,6 +10,7 @@ import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import type { MapTheme } from "../obsidian/settings";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { NodeRenderer } from "./node-renderer";
@@ -39,6 +40,7 @@ export class MindmapView extends ItemView {
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
+  private theme: MapTheme = "follow";
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -94,6 +96,17 @@ export class MindmapView extends ItemView {
   getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
   getIcon(): string { return "git-fork"; }
 
+  /**
+   * The settings' theme (M14): Obsidian's own `theme-light` / `theme-dark` class on the map container
+   * only, where styles.css re-derives the palette; `follow` removes both so the container inherits
+   * the app's theme again. Presentation only, nothing is written to the note.
+   */
+  setTheme(theme: MapTheme): void {
+    this.theme = theme;
+    this.contentEl.toggleClass("theme-light", theme === "light");
+    this.contentEl.toggleClass("theme-dark", theme === "dark");
+  }
+
   getState(): Record<string, unknown> {
     return { file: this.file?.path, layout: this.mode, viewport: this.viewport?.value };
   }
@@ -128,6 +141,7 @@ export class MindmapView extends ItemView {
     this.closed = false;
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
+    this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
     for (const mode of LAYOUT_MODES) {
       const { label, icon } = LAYOUT_BUTTONS[mode];

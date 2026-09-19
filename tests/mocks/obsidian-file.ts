@@ -10,6 +10,8 @@ export class TFile {
   get extension(): string { return this.name.includes('.') ? this.name.split('.').pop() ?? '' : ''; }
 }
 
+/** Obsidian's rules: forward slashes, no run of slashes, none leading or trailing; the empty result is the root, `/`. */
 export function normalizePath(path: string): string {
-  return path.replace(/\\/gu, '/').replace(/\/{2,}/gu, '/').replace(/^\.\//u, '').replace(/\/$/u, '');
+  const normalized = path.replace(/[\\/]+/gu, '/').replace(/^\.\//u, '').replace(/^\/+|\/+$/gu, '');
+  return normalized === '' ? '/' : normalized;
 }

@@ -5,6 +5,8 @@ import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
 import { createMindmapFile } from "./obsidian/map-files";
+import { DEFAULT_SETTINGS, normalizeSettings, type MappySettings } from "./obsidian/settings";
+import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
 import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
@@ -12,8 +14,15 @@ import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
 export default class MappyPlugin extends Plugin {
   private router!: ViewRouter;
   private bridge!: ExcalidrawBridge;
+  private settings: MappySettings = DEFAULT_SETTINGS;
 
-  onload(): void {
+  async onload(): Promise<void> {
+    // Missing or old data falls back field by field, so an unset option behaves as before the settings existed.
+    this.settings = normalizeSettings(await this.loadData());
+    this.addSettingTab(new MappySettingTab(this.app, this, {
+      current: () => this.settings,
+      save: next => this.saveSettings(next),
+    }));
     const store = new DocumentStore(this.app);
     this.router = new ViewRouter({
       mapViewType: VIEW_TYPE,
@@ -29,14 +38,19 @@ export default class MappyPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => { this.bridge.ensureHook(); });
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.bridge.ensureHook(); }));
 
-    this.registerView(VIEW_TYPE, leaf => new MindmapView(leaf, store, this.router));
+    this.registerView(VIEW_TYPE, leaf => {
+      const view = new MindmapView(leaf, store, this.router);
+      view.setTheme(this.settings.theme);
+      return view;
+    });
     this.addCommand({
       id: "create-mindmap", name: "新しいマインドマップを作成",
       callback: () => {
         this.run(async () => {
           const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-          const file = await createMindmapFile(this.app, sourcePath);
-          await this.open(file, false, "mindmap");
+          const { defaultLayout: layout, newMapFolder: folder } = this.settings;
+          const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
+          await this.open(file, false, layout);
         }, "マインドマップを作成できませんでした。");
       },
     });
@@ -152,8 +166,17 @@ export default class MappyPlugin extends Plugin {
     void action().catch((error: unknown) => { new Notice(error instanceof Error ? error.message : fallback); });
   }
 
+  /** Settings are presentation and defaults for new maps only: saving one never touches a note. */
+  private async saveSettings(next: MappySettings): Promise<void> {
+    this.settings = next;
+    await this.saveData(next);
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      if (leaf.view instanceof MindmapView) leaf.view.setTheme(next.theme);
+    }
+  }
+
   private enableMap(file: TFile): void {
-    const layout = readPreferredMapLayout(this.app, file);
+    const layout = readPreferredMapLayout(this.app, file, this.settings.defaultLayout);
     this.run(async () => {
       await writeMapLayout(this.app, file, layout);
       await this.open(file, false, layout);

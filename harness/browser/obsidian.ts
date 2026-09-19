@@ -331,6 +331,39 @@ export class ButtonComponent {
   }
 }
 
+/** A `<select>` whose value the setting tab reads and writes; `onChange` fires on the DOM event, as in Obsidian. */
+export class DropdownComponent {
+  readonly selectEl: HTMLSelectElement;
+  constructor(container: HTMLElement) {
+    this.selectEl = container.createEl("select", { cls: "dropdown" });
+  }
+  addOption(value: string, display: string): this { this.selectEl.createEl("option", { value, text: display }); return this; }
+  addOptions(options: Record<string, string>): this { for (const [value, display] of Object.entries(options)) this.addOption(value, display); return this; }
+  getValue(): string { return this.selectEl.value; }
+  setValue(value: string): this { this.selectEl.value = value; return this; }
+  setDisabled(disabled: boolean): this { this.selectEl.disabled = disabled; return this; }
+  onChange(callback: (value: string) => unknown): this {
+    this.selectEl.addEventListener("change", () => { callback(this.selectEl.value); });
+    return this;
+  }
+}
+
+/** A text `<input>`; `onChange` fires on `input`, the way Obsidian's TextComponent reports each keystroke. */
+export class TextComponent {
+  readonly inputEl: HTMLInputElement;
+  constructor(container: HTMLElement) {
+    this.inputEl = container.createEl("input", { type: "text" });
+  }
+  getValue(): string { return this.inputEl.value; }
+  setValue(value: string): this { this.inputEl.value = value; return this; }
+  setPlaceholder(placeholder: string): this { this.inputEl.placeholder = placeholder; return this; }
+  setDisabled(disabled: boolean): this { this.inputEl.disabled = disabled; return this; }
+  onChange(callback: (value: string) => unknown): this {
+    this.inputEl.addEventListener("input", () => { callback(this.inputEl.value); });
+    return this;
+  }
+}
+
 export class Setting {
   readonly settingEl: HTMLElement;
   readonly infoEl: HTMLElement;
@@ -351,6 +384,19 @@ export class Setting {
   setHeading(): this { this.settingEl.addClass("setting-item-heading"); return this; }
   setDisabled(disabled: boolean): this { this.settingEl.toggleClass("is-disabled", disabled); return this; }
   addButton(callback: (button: ButtonComponent) => unknown): this { callback(new ButtonComponent(this.controlEl)); return this; }
+  addDropdown(callback: (dropdown: DropdownComponent) => unknown): this { callback(new DropdownComponent(this.controlEl)); return this; }
+  addText(callback: (text: TextComponent) => unknown): this { callback(new TextComponent(this.controlEl)); return this; }
+}
+
+/** The settings tab's container; Obsidian calls `display()` when the tab opens and `hide()` when it closes. */
+export abstract class PluginSettingTab {
+  readonly containerEl: HTMLElement;
+  constructor(readonly app: App, readonly plugin: unknown) {
+    this.containerEl = document.createElement("div");
+    this.containerEl.className = "vertical-tab-content";
+  }
+  abstract display(): void;
+  hide(): void { this.containerEl.empty(); }
 }
 
 /** Minimal line glyphs so the floating controls stay readable; not Lucide artwork. */
