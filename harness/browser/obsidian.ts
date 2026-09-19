@@ -39,6 +39,13 @@ export class Events {
   trigger(name: string, ...data: unknown[]): void {
     for (const ref of Array.from(this.listeners.get(name) ?? [])) ref.callback(...data);
   }
+
+  /** Live subscriptions, so a test can show that a component released every one of its own. */
+  count(): number {
+    let total = 0;
+    for (const refs of this.listeners.values()) total += refs.size;
+    return total;
+  }
 }
 
 /** Lifecycle follows the public Component contract: children load with the parent, cleanups run on unload. */
@@ -103,6 +110,17 @@ export class Component {
     this.register(() => { window.clearInterval(id); });
     return id;
   }
+}
+
+/** A component whose life is tied to an element of a rendered section; the renderer (or a test) unloads it when the element goes. */
+export class MarkdownRenderChild extends Component {
+  constructor(public containerEl: HTMLElement) { super(); }
+}
+
+/** `Note#Heading` → path and `#Heading`; the subpath keeps its leading `#`, as Obsidian's does. */
+export function parseLinktext(linktext: string): { path: string; subpath: string } {
+  const index = linktext.indexOf("#");
+  return index < 0 ? { path: linktext, subpath: "" } : { path: linktext.slice(0, index), subpath: linktext.slice(index) };
 }
 
 /** A leaf only needs to carry the app and remember the last requested state. */
@@ -465,11 +483,23 @@ function renderInline(escaped: string, app: RendererApp, sourcePath: string, ref
   const resolve = (target: string): ObsidianFile | null => app.metadataCache.getFirstLinkpathDest(unescapeHtml(target), sourcePath);
   const externalLink = (href: string, label: string): string =>
     `<a class="external-link" href="${href}" rel="noopener" target="_blank">${label}</a>`;
-  return escaped
-    .replace(/!\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]/gu, (_match, target: string, alias?: string) => {
+  // Inline code is literal, as in Obsidian: `![[note]]` in code is text, not an embed.
+  const code: string[] = [];
+  const withoutCode = escaped.replace(/`([^`]+)`/gu, (_match, text: string) => {
+    code.push(`<code>${text}</code>`);
+    return `\u0000${code.length - 1}\u0000`;
+  });
+  return withoutCode
+    .replace(/!\[\[([^\]|#]+)(#[^\]|]*)?(?:\|([^\]]*))?\]\]/gu, (_match, target: string, subpath?: string, alias?: string) => {
       const file = resolve(target);
-      if (!file || !IMAGE_EXTENSION.test(file.path)) {
+      if (!file && IMAGE_EXTENSION.test(target)) {
         return `<span class="internal-embed image-embed mod-empty" src="${target}">${target}</span>`;
+      }
+      // A note (or missing) embed stays Obsidian's placeholder span, `src` carrying the link as written; the map post
+      // processor decides what becomes of it. Obsidian would load the note into it afterwards; this page does not.
+      if (!file || !IMAGE_EXTENSION.test(file.path)) {
+        const src = `${target}${subpath ?? ""}`;
+        return `<span class="internal-embed${file ? "" : " mod-empty"}" src="${src}" alt="${alias ?? src}">${src}</span>`;
       }
       const size = alias?.match(/^(\d+)(?:x(\d+))?$/u);
       const width = size?.[1] ? ` width="${size[1]}"` : "";
@@ -492,9 +522,9 @@ function renderInline(escaped: string, app: RendererApp, sourcePath: string, ref
     })
     .replace(/&lt;(https?:\/\/[^&\s]+)&gt;/gu, (_match, href: string) => externalLink(href, href))
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/gu, (_match, lead: string, href: string) => `${lead}${externalLink(href, href)}`)
-    .replace(/`([^`]+)`/gu, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/gu, "<strong>$1</strong>")
-    .replace(/==([^=]+)==/gu, "<mark>$1</mark>");
+    .replace(/==([^=]+)==/gu, "<mark>$1</mark>")
+    .replace(/\u0000(\d+)\u0000/gu, (_match, index: string) => code[Number(index)] ?? "");
 }
 
 /**

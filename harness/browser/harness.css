@@ -143,6 +143,19 @@ code { background: var(--code-background); color: var(--code-normal); border-rad
 }
 .harness-pane .workspace-leaf-content, .harness-pane .view-content { position: absolute; inset: 0; }
 
+/* A rendered host note standing in for Obsidian's reading view (embed fixtures, M10). */
+.harness-pane .markdown-reading-view { position: absolute; inset: 0; overflow: auto; padding: 24px 32px 48px; font-size: var(--font-text-size); line-height: 1.6; }
+.harness-pane .markdown-preview-sizer { max-width: 720px; margin: 0 auto; }
+.harness-pane .markdown-preview-sizer h1 { font-size: 1.6em; margin: 0.4em 0; }
+.harness-pane .markdown-preview-sizer h2 { font-size: 1.25em; margin: 1em 0 0.3em; }
+.harness-pane .markdown-preview-sizer p { margin: 0.4em 0; }
+.harness-pane .markdown-preview-sizer code { background: var(--background-modifier-hover); padding: 0 3px; border-radius: 3px; }
+/* Obsidian's own note embed, as this page draws the placeholder it leaves (the page never loads the note into it). */
+.harness-pane .internal-embed:not(.mappy-embed-host):not(.image-embed) { display: block; margin: 4px 0; padding: 8px 12px; border-left: 2px solid var(--background-modifier-border); color: var(--text-muted); }
+.harness-pane .internal-embed.mod-empty:not(.image-embed)::before { content: "（Obsidian の通常の埋め込み: 見つからないノート）"; display: block; font-size: 12px; }
+.harness-pane .internal-embed:not(.mod-empty):not(.mappy-embed-host):not(.image-embed):not(.markdown-embed)::before { content: "（Obsidian の通常の埋め込み。このページでは中身を描かない）"; display: block; font-size: 12px; }
+.harness-pane .internal-embed .markdown-embed-content { max-height: 240px; overflow: auto; }
+
 /* Mock DOM for Notice, Menu, Modal and Setting from harness/browser/obsidian.ts. */
 .notice-container { position: fixed; right: 16px; top: 16px; z-index: var(--layer-notice); display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
 .notice { padding: 8px 12px; border-radius: 6px; background: #333; color: #fff; font-size: 13px; box-shadow: var(--shadow-s); cursor: pointer; }

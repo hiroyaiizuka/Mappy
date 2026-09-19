@@ -14,7 +14,7 @@
       製品の <code>src/ui/mindmap-view.ts</code>・<code>core</code>・<code>layout</code>・<code>interaction</code> をそのまま読み込み、
       <code>obsidian</code> モジュールだけを <code>harness/browser/obsidian.ts</code> のモックに置き換えています。
       <strong>対象外:</strong> 保存（編集はページ内メモリのみ）、リンク解決（クリックは通知のみ）、テーマの配色（CSS 変数は仮の値。明暗の切り替え機構だけを確認）、日本語 IME。
-      これらは <code>docs/harness.md</code> の ③ Obsidian 実機（E01〜E29）で確認します。ここでの成功を実機の成功と呼びません。
+      これらは <code>docs/harness.md</code> の ③ Obsidian 実機（E01〜E34）で確認します。ここでの成功を実機の成功と呼びません。
     </p>
   </header>
   <div class="harness-body">
@@ -52,7 +52,7 @@
       <section>
         <h2>ビュー</h2>
         <button id="harness-reopen" type="button">閉じて開き直す</button>
-        <p class="harness-muted">選択はクリック／矢印キー、開閉は分岐点の − か Space、パンは背景ドラッグ／スクロール、ズームは Ctrl/⌘＋ホイール・ピンチ・右下のボタン。</p>
+        <p class="harness-muted">選択はクリック／矢印キー、開閉は分岐点の − か Space、パンは背景ドラッグ／スクロール、ズームは Ctrl/⌘＋ホイール・ピンチ・右下のボタン。「埋め込み（ホストノート）」の fixture はマップではなく、マップを <code>![[…]]</code> で埋め込んだノートを閲覧モード相当／ライブプレビュー相当で描く（M10）。</p>
       </section>
       <section>
         <h2>時刻の記録</h2>

@@ -15,8 +15,19 @@ export function imageMimeType(extension: string): string | undefined {
 
 const IMAGE_EXTENSION_ALTERNATIVES = Object.keys(IMAGE_MIME_TYPES).join('|');
 const IMAGE_EXTENSION = new RegExp(`\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})$`, 'iu');
-/** `![[figure.png]]`, `![[figure.png|120]]`, `![[figure.png#anchor]]`: an embed of an image file. */
-const IMAGE_EMBED = new RegExp(`\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})(?:[|#][^\\]]*)?\\]\\]$`, 'iu');
+/** `![[figure.png]]`, `![[figure.png|120]]`, `![[figure.png#anchor]]`: an embed whose target (before any alias or heading) is an image file. */
+const IMAGE_EMBED = new RegExp(`^!\\[\\[[^\\]|#\\r\\n]*\\.(?:${IMAGE_EXTENSION_ALTERNATIVES})(?:[|#][^\\]\\r\\n]*)?\\]\\]$`, 'iu');
+
+/**
+ * Note and PDF transclusions become plain links; only image embeds stay embeds,
+ * and inline code keeps its text. Titles and body attachments share this rule, so
+ * a node never renders another note inside itself and an embedded map cannot
+ * recurse through its own nodes.
+ */
+export function transclusionsAsLinks(markdown: string): string {
+  return markdown.replace(/(`+)[^`]*\1|!\[\[[^\]\r\n]+\]\]/gu, (match) =>
+    (match.startsWith('`') || IMAGE_EMBED.test(match) ? match : match.slice(1)));
+}
 
 export interface AttachmentEntry {
   kind: 'image' | 'link';
@@ -71,12 +82,8 @@ function attachmentSnippets(body: string): AttachmentSnippets {
   let lastEnd = -1;
   for (const range of attachments.sort((left, right) => left.from - right.from || right.to - left.to)) {
     if (range.from < lastEnd || protectedRanges.some(literal => range.from < literal.to && range.to > literal.from)) continue;
-    let snippet = body.slice(range.from, range.to);
     // Note/PDF transclusions stay links; only image embeds become previews.
-    if (snippet.startsWith('![[') && !IMAGE_EMBED.test(snippet)) {
-      snippet = snippet.slice(1);
-    }
-    snippets.push(snippet);
+    snippets.push(transclusionsAsLinks(body.slice(range.from, range.to)));
     lastEnd = range.to;
   }
   return { snippets, references };

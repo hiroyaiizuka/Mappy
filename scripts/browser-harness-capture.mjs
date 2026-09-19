@@ -1267,6 +1267,211 @@ export async function captureExport(recorder, page) {
   });
 }
 
+const EMBED_HOST = 'embed-host';
+const EMBED_HOST_LIVE = 'embed-host-live';
+const EMBED_EXPECTED = [
+  { src: 'Fixtures/uneven-branches.md', layout: 'mindmap' },
+  { src: 'Fixtures/embed-timeline.md', layout: 'timeline' },
+  { src: 'Fixtures/embed-hierarchy.md', layout: 'hierarchy' },
+  { src: 'Fixtures/embed-hierarchy.md#同じ名前', layout: 'hierarchy' },
+  { src: 'Fixtures/embed-2000.md', layout: 'mindmap' },
+];
+const EMBED_PLAIN = ['heading-document', '存在しないノート', 'embed-hierarchy#^block'];
+const EMBED_NOTES = ['Fixtures/embed-host.md', 'Fixtures/uneven-branches.md', 'Fixtures/embed-timeline.md', 'Fixtures/embed-hierarchy.md', 'Fixtures/embed-2000.md'];
+
+/** Every map on the host: the expected notes in order, each layout as its own frontmatter says, every node inside its frame, never magnified. */
+function expectEmbeds(embeds) {
+  const maps = embeds.filter(embed => embed.kind === 'map');
+  const plain = embeds.filter(embed => embed.kind === 'plain');
+  expect(maps.length === EMBED_EXPECTED.length, `${maps.length} maps, expected ${EMBED_EXPECTED.length}`);
+  EMBED_EXPECTED.forEach((wanted, index) => {
+    const embed = maps[index];
+    expect(embed.src === wanted.src, `map ${index}: ${embed.src}, expected ${wanted.src}`);
+    expect(embed.layout === wanted.layout, `${embed.src}: layout ${embed.layout}, expected ${wanted.layout}`);
+    expect(embed.nodes.length > 0 && !embed.message, `${embed.src}: ${embed.nodes.length} nodes, message ${embed.message}`);
+    expect(embed.scale !== null && embed.scale <= 1.0001, `${embed.src}: scale ${embed.scale}`);
+    const outside = embed.nodes.filter(node => !inside(node.rect, embed.rect, 2));
+    expect(outside.length === 0, `${embed.src}: ${outside.length} nodes outside the frame`);
+  });
+  expect(plain.map(embed => embed.src).join(',') === EMBED_PLAIN.join(','), `plain embeds: ${plain.map(embed => embed.src).join(', ')}`);
+  return maps;
+}
+
+async function noteSources(page) {
+  const sources = {};
+  for (const path of EMBED_NOTES) sources[path] = await page.harness(`h.noteSource(${JSON.stringify(path)})`);
+  return sources;
+}
+
+function expectUnchanged(before, after) {
+  for (const path of EMBED_NOTES) expect(before[path] === after[path], `${path} changed`);
+}
+
+async function revealEmbed(page, src) {
+  await page.harness(`h.revealEmbed(${JSON.stringify(src)})`);
+  await page.settle();
+}
+
+async function embedNode(page, src, title) {
+  const embed = (await page.harness('h.embeds()')).find(candidate => candidate.src === src);
+  expect(embed, `embed missing: ${src}`);
+  const node = embed.nodes.find(candidate => candidate.title === title);
+  expect(node, `node missing in ${src}: ${title}`);
+  return { embed, node };
+}
+
+/** docs/harness.md E34 on this page: a note that embeds maps, in the reading-view path and the live-preview path. */
+async function captureEmbeds(recorder, page) {
+  // Earlier cases wrote `mappy: true` into heading-document's in-memory frontmatter (the page never rewrites the text);
+  // re-putting the notes as they are re-reads the frontmatter from the text, so the host sees the fixtures as shipped.
+  for (const path of ['Fixtures/heading-document.md', ...EMBED_NOTES]) {
+    await page.harness(`h.putNote(${JSON.stringify(path)}, h.noteSource(${JSON.stringify(path)}))`);
+  }
+  const sources = await noteSources(page);
+  let timing = null;
+
+  await recorder.run('embed-reading', `${EMBED_HOST} を読み込む（閲覧モード: ホストの区画の placeholder を差し替え）`,
+    '5 つの `![[…]]` が読み取り専用のマップ（通常・タイムライン・階層図・#見出し の部分木・2,000 ノード）になり、mappy: true のないノート・存在しないノート・ブロック参照は通常の埋め込みのまま。ホストも元ノートも変わらない', async () => {
+    timing = await loadFixture(page, EMBED_HOST);
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    expectUnchanged(sources, await noteSources(page));
+    const live = await page.harness('h.liveEmbeds()');
+    expect(live === maps.length, `${live} live embeds`);
+    const nodes = maps.map(embed => embed.nodes.length);
+    return `マップ ${maps.length}（ノード ${nodes.join(' / ')}、scale ${maps.map(embed => embed.scale.toFixed(2)).join(' / ')}）、通常の埋め込み ${EMBED_PLAIN.length}、安定まで ${timing.settledMs.toFixed(0)} ms`;
+  });
+
+  await recorder.run('embed-first-level', '階層図の埋め込みまでスクロール', 'ルートと第一階層だけが見え、第一階層の各ノードに隠れた子孫の件数（回復する 4、記録する 2、習慣化する 1）。#見出し の埋め込みは最初の「同じ名前」（回復する の下）をルートにその 2 つの子を描く', async () => {
+    await revealEmbed(page, 'Fixtures/embed-hierarchy.md');
+    const embeds = await page.harness('h.embeds()');
+    const hierarchy = embeds.find(embed => embed.src === 'Fixtures/embed-hierarchy.md');
+    const titles = hierarchy.nodes.map(node => node.title).sort();
+    expect(titles.join(',') === ['講座の構成', '回復する', '記録する', '習慣化する'].sort().join(','), `hierarchy shows ${titles.join(', ')}`);
+    const counts = {};
+    for (const node of hierarchy.nodes) if (node.collapsed) counts[node.title] = await page.evaluate(`document.querySelector('.mappy-node[data-node-id="${node.id}"] .mappy-node-toggle-mark').textContent`);
+    expect(counts['回復する'] === '4' && counts['記録する'] === '2' && counts['習慣化する'] === '1', `fold counts ${JSON.stringify(counts)}`);
+    const section = embeds.find(embed => embed.src === 'Fixtures/embed-hierarchy.md#同じ名前');
+    const sectionTitles = section.nodes.map(node => node.title).sort();
+    expect(sectionTitles.join(',') === ['同じ名前', '十分に眠る', '週に一度は休む'].sort().join(','), `section shows ${sectionTitles.join(', ')}`);
+    return `階層図: ${titles.length} ノード、件数 ${JSON.stringify(counts)}。部分木: ${sectionTitles.join(' / ')}`;
+  });
+
+  await recorder.run('embed-fold-click', '階層図の埋め込みで「回復する」の開閉ボタンをクリック → もう一度クリック', '一段だけ開いて枠に収まり直し（同じ名前・休息の取り方が見え、その下は閉じたまま）、再クリックで戻る。元ノートは変わらない', async () => {
+    const src = 'Fixtures/embed-hierarchy.md';
+    const { node } = await embedNode(page, src, '回復する');
+    expect(node.toggle, 'no toggle on 回復する');
+    await page.click(center(node.toggle).x, center(node.toggle).y);
+    await page.settle();
+    const opened = (await page.harness('h.embeds()')).find(embed => embed.src === src);
+    const titles = opened.nodes.map(item => item.title);
+    expect(titles.includes('同じ名前') && titles.includes('休息の取り方') && !titles.includes('十分に眠る'), `after opening: ${titles.join(', ')}`);
+    const outside = opened.nodes.filter(item => !inside(item.rect, opened.rect, 2));
+    expect(outside.length === 0, `${outside.length} nodes outside the frame after opening`);
+    const again = (await embedNode(page, src, '回復する')).node;
+    await page.click(center(again.toggle).x, center(again.toggle).y);
+    await page.settle();
+    const closed = (await page.harness('h.embeds()')).find(embed => embed.src === src);
+    expect(closed.nodes.length === 4, `${closed.nodes.length} nodes after closing`);
+    expectUnchanged(sources, await noteSources(page));
+    return `開いて ${opened.nodes.length} ノード（scale ${opened.scale.toFixed(2)}）、閉じて ${closed.nodes.length}`;
+  });
+
+  await recorder.run('embed-2000', '2,000 ノードの埋め込みまでスクロール', 'ルート＋第一階層の 13 ノードだけを描き（残りは件数バッジ）、ホストの読み込み全体が 1 秒以内に安定する', async () => {
+    await revealEmbed(page, 'Fixtures/embed-2000.md');
+    const embed = (await page.harness('h.embeds()')).find(candidate => candidate.src === 'Fixtures/embed-2000.md');
+    expect(embed.nodes.length === 14, `${embed.nodes.length} nodes drawn for 2,000`);
+    const total = await page.evaluate(`document.querySelectorAll('.mappy-node').length`);
+    expect(timing && timing.settledMs < 1000, `host settled in ${timing?.settledMs} ms`);
+    return `描画 ${embed.nodes.length} ノード（ページ全体 ${total}）、ホスト全体の安定まで ${timing.settledMs.toFixed(0)} ms`;
+  });
+
+  await recorder.run('embed-source-change', '元ノート embed-timeline を書き換える（第 1 週の名前を変える）→ 元に戻す', 'タイムラインの埋め込みが新しい名前で描き直され、ホストは変わらない。戻すと元の名前に戻る', async () => {
+    const path = 'Fixtures/embed-timeline.md';
+    await revealEmbed(page, path);
+    const original = sources[path];
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original.replace('- 第 1 週: 準備', '- 第 1 週: 準備（更新）'))})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    const changed = (await page.harness('h.embeds()')).find(embed => embed.src === path);
+    expect(changed.nodes.some(node => node.title === '第 1 週: 準備（更新）'), `titles after change: ${changed.nodes.map(node => node.title).join(', ')}`);
+    const after = await noteSources(page);
+    expect(after['Fixtures/embed-host.md'] === sources['Fixtures/embed-host.md'], 'host changed');
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original)})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 120); });
+    await page.settle();
+    const restored = (await page.harness('h.embeds()')).find(embed => embed.src === path);
+    expect(restored.nodes.some(node => node.title === '第 1 週: 準備'), `titles after restore: ${restored.nodes.map(node => node.title).join(', ')}`);
+    expectUnchanged(sources, await noteSources(page));
+    return `変更後 ${changed.nodes.length} ノード、復元後 ${restored.nodes.length} ノード`;
+  });
+
+  await recorder.run('embed-reopen', '「閉じて開き直す」', '古い埋め込みの Component が解放され（live の数が増えない）、同じ 5 つのマップが再表示される', async () => {
+    await page.harness('h.reopen()');
+    await page.settle();
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const live = await page.harness('h.liveEmbeds()');
+    expect(live === maps.length, `${live} live embeds after reopen`);
+    const stray = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    expect(stray === maps.length, `${stray} map frames in the document`);
+    return `live ${live}、枠 ${stray}`;
+  });
+
+  await recorder.run('embed-dark', 'ページのテーマを暗色にする（body の theme-dark、harness.css の仮の配色）', '配色の導き直しだけで枠・ノード・線が見え、崩れない（Obsidian のテーマそのものではない）', async () => {
+    await page.harness('h.setPageTheme("dark")');
+    await page.harness('h.scrollTo(0)');
+    await page.settle();
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const colors = await page.evaluate(`(() => { const node = document.querySelector('.mappy-embed .mappy-node.is-root'); const style = getComputedStyle(node); return style.color + ' on ' + style.backgroundColor; })()`);
+    return `マップ ${maps.length}、ルートの色 ${colors}`;
+  });
+
+  await recorder.run('embed-dark-hierarchy', '暗色のまま階層図の埋め込みへスクロール', '線・枠・件数バッジが暗色でも読める', async () => {
+    await revealEmbed(page, 'Fixtures/embed-hierarchy.md');
+    const embed = (await page.harness('h.embeds()')).find(candidate => candidate.src === 'Fixtures/embed-hierarchy.md');
+    expect(embed.nodes.length === 4, `${embed.nodes.length} nodes`);
+    await page.harness('h.setPageTheme("light")');
+  });
+
+  await recorder.run('embed-live', `${EMBED_HOST_LIVE} を読み込む（ライブプレビュー相当: 埋め込み先を描いた後にその区画から容器を差し替え）`,
+    '同じ 5 つのマップが Obsidian の .internal-embed 容器の中に描かれ、容器の元の内容は隠れる。通常の埋め込みは中身が見えたまま', async () => {
+    await loadFixture(page, EMBED_HOST_LIVE);
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const hosts = await page.evaluate(`document.querySelectorAll('.internal-embed.mappy-embed-host').length`);
+    expect(hosts === maps.length, `${hosts} claimed containers`);
+    const hidden = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed.mappy-embed-host > .markdown-embed-content')).every(el => getComputedStyle(el).display === 'none')`);
+    expect(hidden, 'Obsidian content still visible inside a claimed container');
+    const plainVisible = await page.evaluate(`getComputedStyle(document.querySelector('.internal-embed[src="heading-document"] .markdown-embed-content')).display !== 'none'`);
+    expect(plainVisible, 'plain embed content hidden');
+    expectUnchanged(sources, await noteSources(page));
+    return `容器 ${hosts}、マップ ${maps.length}（ノード ${maps.map(embed => embed.nodes.length).join(' / ')}）`;
+  });
+
+  await recorder.run('embed-live-dispose', 'プラグインの無効化と同じ解放（disposeEmbeds）', 'マップが消え、Obsidian の容器がそのまま（元の内容が再び見える）残る。live が 0', async () => {
+    await page.harness('h.disposeEmbeds()');
+    await page.settle();
+    const live = await page.harness('h.liveEmbeds()');
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    const claimed = await page.evaluate(`document.querySelectorAll('.mappy-embed-host').length`);
+    const visible = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed > .markdown-embed-content')).filter(el => getComputedStyle(el).display !== 'none').length`);
+    expect(live === 0 && frames === 0 && claimed === 0, `live ${live}, frames ${frames}, claimed ${claimed}`);
+    expect(visible >= EMBED_EXPECTED.length, `${visible} embed contents visible`);
+    return `live ${live}、枠 ${frames}、容器の内容が見える ${visible}`;
+  });
+
+  await recorder.run('embed-reading-dispose', `${EMBED_HOST} を読み込み直してから解放（disposeEmbeds）`, 'placeholder の span が元の src で戻り、マップの枠と Component が残らない', async () => {
+    await loadFixture(page, EMBED_HOST);
+    await page.harness('h.disposeEmbeds()');
+    await page.settle();
+    const live = await page.harness('h.liveEmbeds()');
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    const srcs = await page.evaluate(`Array.from(document.querySelectorAll('#harness-pane .internal-embed:not(.image-embed)'), el => el.getAttribute('src'))`);
+    const wanted = ['uneven-branches', 'embed-timeline', 'embed-hierarchy', 'embed-hierarchy#同じ名前', 'embed-2000', ...EMBED_PLAIN];
+    expect(live === 0 && frames === 0, `live ${live}, frames ${frames}`);
+    expect(srcs.join(',') === wanted.join(','), `placeholders: ${srcs.join(', ')}`);
+    return `placeholder ${srcs.length}`;
+  });
+}
+
 function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, notExecuted }) {
   const lines = [
     '# ブラウザ検証ページ（②）の記録',
@@ -1276,7 +1481,8 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- ブラウザ: ${version} (${chrome})`,
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
-    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
+    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E34）の PASS ではない。',
+    '- 埋め込み（embed-*）: ホストノートをページが閲覧モード相当（ホストの区画を post-processor に渡す）とライブプレビュー相当（埋め込み先を Obsidian 風の容器に描いてから渡す）で描く。Obsidian の描画順序・ホバープレビュー・実テーマは含まない。',
     '- 描画時間は「時刻の記録」の生値（1 回分）。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。繰り返し計測と p50／p95 は `node scripts/browser-harness-perf.mjs` の記録（`artifacts/performance/`）で扱う。',
     '',
     '## fixture と主要操作',
@@ -1308,10 +1514,11 @@ async function main() {
   const directory = join(outRoot, stamp);
   await mkdir(directory, { recursive: true });
   const notExecuted = [
-    'Obsidian 実機（③ E01〜E29）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
+    'Obsidian 実機（③ E01〜E34）: このページは代替ではない。実機の確認は実機を使うチケットの記録に残す。',
     'トラックパッドのピンチ・二本指スクロール、ネイティブ IME、モバイル: headless の合成入力では確認できない。',
     '⌘Z／⌘⇧Z の連打: headless Chrome 153 は修飾キー付きのキー入力を CDP で繰り返すと応答しなくなるため、フリートピックの Undo／Redo は右クリックメニューで実行した。キー経由の Undo は edit-inline-memory の 1 回と jsdom のテストで確認する。',
     '性能計測（基準端末・条件・p50／p95）: `node scripts/browser-harness-perf.mjs` が `artifacts/performance/` に記録する。ここでは時刻の生値だけを残す。',
+    '埋め込み（E34）の実機: Obsidian の閲覧モード・ライブプレビュー・ホバープレビューでの描画、テーマ、埋め込み内リンクの遷移、Mappy 無効化での復帰は、このページの閲覧モード相当／ライブプレビュー相当のケース（embed-*）では確認できない。',
   ];
   const chrome = findChrome(option('--chrome'));
   const output = await buildBrowserHarness();
@@ -1340,6 +1547,7 @@ async function main() {
       await captureThemes(recorder, page);
       await captureTopicOperations(recorder, page);
       await captureExport(recorder, page);
+      await captureEmbeds(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
   } catch (error) {

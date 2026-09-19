@@ -1,15 +1,12 @@
 import type { App, TFile } from 'obsidian';
 import { TOPICS_KEY } from '../core/topics';
-import { isLayoutMode, type LayoutMode } from '../core/layout-mode';
+import { isLayoutMode, layoutFromValue, type LayoutMode } from '../core/layout-mode';
+import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from '../core/map-keys';
 
-/** Canonical identity marker. Only the YAML boolean `true` claims a Markdown note. */
-export const MAPPY_KEY = 'mappy';
-/** Optional presentation preference. Its absence means the regular mindmap. */
-export const LAYOUT_KEY = 'mappy-layout';
+/** The keys live in core (`map-keys.ts`) so the text reader of embeds decides the same way. */
+export { MAPPY_KEY, LAYOUT_KEY };
 /** Free-topic positions by layout (M7). The topics' text stays in the note body, so removing the key loses no words. */
 export { TOPICS_KEY };
-/** Excalidraw drawings are Markdown too; never claim them. */
-const EXCALIDRAW_KEY = 'excalidraw-plugin';
 
 /** A frontmatter value naming a layout, tolerant of case and surrounding space; anything else is null. */
 function parseLayout(value: unknown): LayoutMode | null {
@@ -18,9 +15,7 @@ function parseLayout(value: unknown): LayoutMode | null {
 }
 
 /** Layout never determines whether a file is a map. Unknown values use the safe default. */
-export function layoutFromFrontmatter(value: unknown): LayoutMode {
-  return parseLayout(value) ?? 'mindmap';
-}
+export const layoutFromFrontmatter = layoutFromValue;
 
 function frontmatter(app: App, file: TFile): Record<string, unknown> | undefined {
   return app.metadataCache.getFileCache(file)?.frontmatter;

@@ -3,7 +3,7 @@ import { parseMarkdown } from '../../src/core/markdown';
 import { nodeBody } from '../../src/core/body';
 import { attachmentMarkdown } from '../../src/core/attachments';
 import {
-  DEEP_CHAIN_LEVELS, IMAGE_EVERY, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
+  DEEP_CHAIN_LEVELS, IMAGE_EVERY, makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
 } from '../../scripts/performance-fixtures.mjs';
 
 function parse(nodeCount: number, shape: string) {
@@ -29,6 +29,14 @@ describe('performance fixture shapes', () => {
       expect(doc.root.children, id).toHaveLength(1);
       expect(doc.format, id).toBe(shape.id === 'headings' ? 'headings' : 'list');
     }
+  });
+
+  it('derives the 2,000-node embed target from the balanced list shape with `mappy: true`, leaving the performance documents bare', () => {
+    const [filename, source] = makeEmbedFixture();
+    expect(filename).toBe('embed-2000.md');
+    expect(source.startsWith('---\nmappy: true\n---\n## 講座（2000ノード）\n')).toBe(true);
+    expect(parseMarkdown(source, 'embed-2000').nodes).toHaveLength(2000);
+    expect(makePerformanceFixture(2000, 'list')[1].startsWith('---')).toBe(false);
   });
 
   it('gives every shape a distinct file, and the matrix lists the heading documents first', () => {
