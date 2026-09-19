@@ -1,4 +1,4 @@
-import { isLayoutMode, type LayoutMode } from '../core/layout-mode';
+import { LAYOUT_MODES, isLayoutMode, type LayoutMode } from '../core/layout-mode';
 
 /**
  * The map's own theme (M14). `follow` leaves the container to Obsidian's theme,
@@ -19,14 +19,29 @@ export interface MappySettings {
   defaultLayout: LayoutMode;
   /** Vault-relative folder for new maps; empty follows Obsidian's own new-note location, `/` is the vault root. */
   newMapFolder: string;
+  /**
+   * The layout buttons the map shows at the bottom left, in LAYOUT_MODES order and always with the
+   * regular map. Presentation only: a hidden layout still saves, restores, embeds and exports as before.
+   */
+  visibleLayouts: LayoutMode[];
 }
 
-export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '' };
+export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '', visibleLayouts: [...LAYOUT_MODES] };
 
 export type SettingKey = keyof MappySettings;
 
 export function isSettingKey(key: string): key is SettingKey {
   return Object.keys(DEFAULT_SETTINGS).includes(key);
+}
+
+/**
+ * A stored or offered list as the bar shows it: known layouts only, each once, in LAYOUT_MODES
+ * order, and the regular map whether or not it was named. Anything but an array is not a list.
+ */
+export function readVisibleLayouts(value: unknown): LayoutMode[] | null {
+  if (!Array.isArray(value)) return null;
+  const named: unknown[] = value;
+  return LAYOUT_MODES.filter(mode => mode === 'mindmap' || named.includes(mode));
 }
 
 /**
@@ -38,6 +53,7 @@ const READERS: { [K in SettingKey]: (value: unknown) => MappySettings[K] | null 
   theme: value => isMapTheme(value) ? value : null,
   defaultLayout: value => isLayoutMode(value) ? value : null,
   newMapFolder: value => typeof value === 'string' ? value.trim() : null,
+  visibleLayouts: readVisibleLayouts,
 };
 
 export function readSettingField<K extends SettingKey>(key: K, value: unknown): MappySettings[K] | null {
@@ -54,5 +70,6 @@ export function normalizeSettings(raw: unknown): MappySettings {
     theme: readSettingField('theme', data.theme) ?? DEFAULT_SETTINGS.theme,
     defaultLayout: readSettingField('defaultLayout', data.defaultLayout) ?? DEFAULT_SETTINGS.defaultLayout,
     newMapFolder: readSettingField('newMapFolder', data.newMapFolder) ?? DEFAULT_SETTINGS.newMapFolder,
+    visibleLayouts: readSettingField('visibleLayouts', data.visibleLayouts) ?? [...DEFAULT_SETTINGS.visibleLayouts],
   };
 }

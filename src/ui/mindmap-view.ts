@@ -60,6 +60,8 @@ export class MindmapView extends ItemView {
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
   private theme: MapTheme = "follow";
+  /** The settings' bottom-left buttons (M14); the layout on screen shows its button regardless. */
+  private visibleLayouts: readonly LayoutMode[] = LAYOUT_MODES;
   private canvas!: HTMLDivElement;
   private svg!: SVGSVGElement;
   private emptyState!: HTMLDivElement;
@@ -68,7 +70,7 @@ export class MindmapView extends ItemView {
   private viewport!: MapViewport;
   /** The canvas listeners, which also answer the view's scope; set with the DOM in `onOpen`. */
   private events: MapEvents | undefined;
-  private modeButtons = new Map<string, HTMLButtonElement>();
+  private modeButtons = new Map<LayoutMode, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
   private placeholder!: HTMLDivElement;
   private edgePaths = new Map<string, SVGPathElement>();
@@ -192,6 +194,17 @@ export class MindmapView extends ItemView {
     this.theme = theme;
     this.contentEl.toggleClass("theme-light", theme === "light");
     this.contentEl.toggleClass("theme-dark", theme === "dark");
+  }
+
+  /**
+   * The settings' visible layouts (M14): which of the bottom-left buttons show. The layout on
+   * screen keeps its button whether or not it is listed, so a note opened in a hidden layout can
+   * still be switched away from it, and the button goes once another layout is chosen. Presentation
+   * only: the note, the view state and every other use of the layout are as before.
+   */
+  setVisibleLayouts(layouts: readonly LayoutMode[]): void {
+    this.visibleLayouts = layouts;
+    this.syncModeButtons();
   }
 
   getState(): Record<string, unknown> {
@@ -338,6 +351,8 @@ export class MindmapView extends ItemView {
     this.registerEvent(this.app.metadataCache.on("changed", recall));
     this.registerEvent(this.app.metadataCache.on("deleted", recall));
     this.registerEvent(this.app.vault.on("rename", recall));
+    // The settings may have reached the view before it had buttons (src/main.ts sets them at construction).
+    this.syncModeButtons();
     this.ready = true;
     return this.refresh();
   }
@@ -480,10 +495,7 @@ export class MindmapView extends ItemView {
   private draw(): void {
     const projection = this.projection();
     if (!this.document || !this.file || !projection) return;
-    for (const [mode, button] of this.modeButtons) {
-      button.toggleClass("is-active", mode === this.mode);
-      button.setAttribute("aria-pressed", String(mode === this.mode));
-    }
+    this.syncModeButtons();
     const active = this.canvas.doc.activeElement;
     const focused = active?.instanceOf(HTMLElement) && active.classList.contains("mappy-node") ? active : null;
     const nodes = this.visible();
@@ -495,6 +507,15 @@ export class MindmapView extends ItemView {
     // Undo, delete or an external change can replace the focused node's element; the keyboard stays on the map.
     if (focused && !focused.isConnected && this.selectedId) this.renderer.focus(this.selectedId);
     this.scheduleLayout();
+  }
+
+  /** The layout buttons as the settings and the current layout leave them; with every layout listed, nothing is hidden. */
+  private syncModeButtons(): void {
+    for (const [mode, button] of this.modeButtons) {
+      button.hidden = mode !== this.mode && !this.visibleLayouts.includes(mode);
+      button.toggleClass("is-active", mode === this.mode);
+      button.setAttribute("aria-pressed", String(mode === this.mode));
+    }
   }
 
   private scheduleLayout(): void {
