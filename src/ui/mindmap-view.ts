@@ -1,6 +1,6 @@
 import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
-import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
+import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
@@ -8,7 +8,7 @@ import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
-import { DocumentStore } from "../obsidian/document-store";
+import { DocumentStore, conflictMessage } from "../obsidian/document-store";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
@@ -23,6 +23,13 @@ export const VIEW_TYPE = "mappy-map";
 
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
+
+const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元のノートを開いて再実行してください。";
+
+/** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
+function draftFingerprint(document: MindDocument, node: MindNode): string {
+  return `${node.title}\n${nodeBody(document, node)}`;
+}
 
 /** One button per layout, in LAYOUT_MODES order; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
@@ -80,6 +87,8 @@ export class MindmapView extends ItemView {
   private saving = false;
   private revealId: string | null = null;
   private inlineEditor: InlineEditor | undefined;
+  /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
+  private bodyModal: EditModal | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
 
   constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
@@ -225,7 +234,10 @@ export class MindmapView extends ItemView {
       if (file === this.file) { this.scheduleRefresh(); this.app.workspace.requestSaveLayout(); }
     }));
     this.registerEvent(this.app.vault.on("delete", file => {
-      if (file === this.file) { this.file = null; this.document = undefined; this.scheduleRefresh(); }
+      if (file !== this.file) return;
+      // A kept draft outlives refreshes, but not its note.
+      this.inlineEditor?.dispose(); this.inlineEditor = undefined;
+      this.file = null; this.document = undefined; this.scheduleRefresh();
     }));
     this.ready = true;
     return this.refresh();
@@ -300,7 +312,8 @@ export class MindmapView extends ItemView {
       this.collapsed = new Set(Array.from(this.collapsed).filter(id => ids.has(id)));
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
       if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
-      this.inlineEditor?.refreshed();
+      // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that.
+      if (!this.saving) { this.inlineEditor?.refreshed(conflictMessage); this.bodyModal?.refreshed(conflictMessage); }
     }
     this.emptyState.hidden = true;
     this.draw();
@@ -728,11 +741,15 @@ export class MindmapView extends ItemView {
   }
 
   private async commit(source: string, edits: TextEdit[], file = this.file): Promise<void> {
-    if (!file || file !== this.file || this.closed) throw new Error("対象のノートが変わりました。元のノートを開いて再実行してください。");
+    if (!file || file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
     if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
     this.saving = true;
-    try { await this.store.apply(file, source, edits); await this.refresh(); }
-    finally { this.saving = false; }
+    try {
+      try { await this.store.apply(file, source, edits); }
+      // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
+      catch (error) { this.scheduleRefresh(); throw error; }
+      await this.refresh();
+    } finally { this.saving = false; }
   }
 
   private editTitle(): void {
@@ -746,6 +763,7 @@ export class MindmapView extends ItemView {
     this.inlineEditor?.dispose();
     entry.content.hidden = true;
     let renamedOffset: number | null = null;
+    const opened = draftFingerprint(document, node);
     this.inlineEditor = new InlineEditor(entry.element, {
       initial: node.title,
       suggest: input => new LinkSuggest(this.app, input, file.path),
@@ -753,7 +771,7 @@ export class MindmapView extends ItemView {
         // A topic added on the map is placed where it was pressed by the same edit set that names it.
         const pending = this.pendingTopic?.id === node.id ? this.pendingTopic : null;
         // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
-        const current = this.draftTarget(file, node.id, node.title, (_, item) => item.title);
+        const current = this.draftTarget(file, node.id, opened);
         const plan = planEdit(current, {
           type: "rename", nodeId: node.id, title: text,
           ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
@@ -784,27 +802,27 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
-    const opened = nodeBody(document, node);
-    new EditModal(this.app, opened, "本文・リンクを編集", true, async text => {
-      const current = this.draftTarget(file, node.id, opened, nodeBody);
+    const opened = draftFingerprint(document, node);
+    const modal = new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
+      const current = this.draftTarget(file, node.id, opened);
       await this.commit(current.source, [planBodyEdit(current, node.id, text)], file);
-    }).open();
+    });
+    this.bodyModal = modal;
+    modal.open();
   }
 
   /**
    * The note a kept draft applies to once the map has refreshed under it (E05): the view's current parse,
-   * provided the node is still there and the text the draft replaces is what the user saw when it opened.
-   * Ids survive a re-parse only for unique titles, so a same-named or vanished node is refused here, and an
-   * external edit to the very title or body being drafted is refused rather than overwritten.
+   * provided the node is still there with the title and body the user saw when the draft opened. Ids survive
+   * a re-parse only for unique titles, so a same-named or vanished node is refused here, and an external edit
+   * to the node being drafted is refused rather than overwritten; a node that only moved takes the draft.
    */
-  private draftTarget(
-    file: TFile, nodeId: string, opened: string, edited: (document: MindDocument, node: MindNode) => string,
-  ): MindDocument {
+  private draftTarget(file: TFile, nodeId: string, opened: string): MindDocument {
     const document = this.document;
-    if (file !== this.file || !document) throw new Error("対象のノートが変わりました。元のノートを開いて再実行してください。");
-    const node = nodeId === "root" ? document.root : document.nodes.find(item => item.id === nodeId);
-    if (!node) throw new Error("対象のノードが変更されています。再選択してください。");
-    if (edited(document, node) !== opened) throw new Error("編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。");
+    if (file !== this.file || !document) throw new Error(NOTE_CHANGED_MESSAGE);
+    if (draftFingerprint(document, getNode(document, nodeId)) !== opened) {
+      throw new Error("編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。");
+    }
     return document;
   }
 

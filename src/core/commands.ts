@@ -39,7 +39,8 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   return result;
 }
 
-function getNode(doc: MindDocument, id: string): MindNode {
+/** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
+export function getNode(doc: MindDocument, id: string): MindNode {
   const node = id === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === id);
   if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
   return node;

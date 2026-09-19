@@ -27,7 +27,8 @@ interface DocumentSession {
 }
 
 const historyLimit = 50;
-const conflictMessage = 'Markdown が変更されています。マップを更新してから再編集してください。';
+/** What a refused write says; the map view swaps it out once it has re-read the note. */
+export const conflictMessage = 'Markdown が変更されています。マップを更新してから再編集してください。';
 
 /** One file's map operations share a queue and a bounded, source-checked history. */
 export class DocumentStore {

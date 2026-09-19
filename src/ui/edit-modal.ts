@@ -1,7 +1,10 @@
 import { Modal, Setting, type App } from "obsidian";
+import { REFRESHED_MESSAGE } from "./inline-editor";
 
 /** Keep the draft open when a concurrent edit prevents saving. */
 export class EditModal extends Modal {
+  private error: HTMLDivElement | undefined;
+
   constructor(
     app: App,
     private readonly initial: string,
@@ -18,6 +21,7 @@ export class EditModal extends Modal {
       : this.contentEl.createEl("input", { cls: "mappy-edit-input", type: "text", attr: { "aria-label": this.titleText } });
     input.value = this.initial;
     const error = this.contentEl.createDiv({ cls: "mappy-edit-error", attr: { role: "alert" } });
+    this.error = error;
     let busy = false;
     const save = async (): Promise<void> => {
       if (busy) return;
@@ -47,5 +51,10 @@ export class EditModal extends Modal {
     if (!this.multiline) input.select();
   }
 
-  onClose(): void { this.contentEl.empty(); }
+  /** The map re-parsed under a draft kept by `stale` (the store's conflict line): the same save now applies to the new note. */
+  refreshed(stale: string): void {
+    if (this.error?.textContent === stale) this.error.setText(REFRESHED_MESSAGE);
+  }
+
+  onClose(): void { this.error = undefined; this.contentEl.empty(); }
 }

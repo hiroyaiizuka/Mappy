@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
+import type { App, TFile, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { WorkspaceLeaf } from '../../harness/browser/obsidian';
@@ -13,7 +13,12 @@ import { MindmapView } from '../../src/ui/mindmap-view';
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+/** Views opened by `mount`, closed after each test so their refresh timers and vault listeners do not outlive it. */
+const opened: MindmapView[] = [];
+afterEach(async () => {
+  for (const view of opened.splice(0)) { await view.onClose(); view.unload(); }
+  document.body.replaceChildren();
+});
 
 const PATH = 'Fixtures/external.md';
 /** The list note the LEV-16 probe edits on the real Obsidian: two same-named branches, each with a body and a child. */
@@ -39,7 +44,9 @@ function documentOf(view: MindmapView): MindDocument {
 }
 
 interface Mounted {
+  app: HarnessApp;
   view: MindmapView;
+  file: TFile;
   canvas: HTMLElement;
   source: () => string;
   /** Rewrite the note behind the view's back, as a sync tool or another app would. */
@@ -67,13 +74,14 @@ async function mount(source: string): Promise<Mounted> {
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
+  opened.push(view);
   view.load();
   await view.onOpen();
   await view.setState({ file: PATH, layout: 'mindmap' }, { history: false } satisfies ViewStateResult);
   await new Promise(resolve => requestAnimationFrame(resolve));
   const canvas = view.containerEl.querySelector<HTMLElement>('.mappy-canvas');
   if (!canvas) throw new Error('The view has no canvas');
-  const file = app.asApp<App>().vault.getAbstractFileByPath(PATH);
+  const file = app.asApp<App>().vault.getAbstractFileByPath(PATH) as TFile | null;
   if (!file) throw new Error('The note is missing from the harness vault');
   const settle = async (): Promise<void> => {
     for (let round = 0; round < 3; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
@@ -97,8 +105,8 @@ async function mount(source: string): Promise<Mounted> {
   };
   const editor = (): HTMLTextAreaElement | null => view.containerEl.querySelector<HTMLTextAreaElement>('textarea.mappy-inline-input');
   return {
-    view, canvas, settle, node, element, key, editor,
-    source: () => app.content(file as never),
+    app, view, file, canvas, settle, node, element, key, editor,
+    source: () => app.content(file),
     external: text => { app.put(PATH, text); },
     refreshed: async () => { await new Promise(resolve => setTimeout(resolve, 60)); await settle(); },
     labels: () => Array.from(view.containerEl.querySelectorAll('.mappy-node'), item => item.getAttribute('aria-label') ?? ''),
@@ -251,9 +259,66 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(document.contains(input)).toBe(true);
 
     await refreshed();
+    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
     key(input, 'Enter', { metaKey: true });
     await refreshed();
     expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n'));
     expect(document.contains(input)).toBe(false);
+  });
+
+  it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
+    const mounted = await mount(SOURCE);
+    const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+    await refused(mounted, input, SOURCE.replace('  - 学ぶこと\n', '  - 学ぶこと\n    外部の本文\n'), TEXT_CHANGED);
+  });
+
+  it('re-reads the note itself after a refused save, so the retry works even where no vault event reports the change', async () => {
+    const mounted = await mount(SOURCE);
+    const { app, source, key, editor, error, draft, refreshed, labels } = mounted;
+    const input = await draft('学ぶこと', '学ぶこと（編集）');
+    // The note changes on disk but the watcher stays silent (a mount Obsidian does not observe, an app that has lost focus).
+    const silent = vi.spyOn(app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    app.put(PATH, EXTERNAL);
+    silent.mockRestore();
+    key(input, 'Enter');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(source()).toBe(EXTERNAL);
+    expect(error()).toBe(CONFLICT);
+    await refreshed();
+    expect(labels()).toContain('記録する（外部）');
+    expect(error()).toBe(REFRESHED);
+    key(input, 'Enter');
+    await refreshed();
+    expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n'));
+    expect(editor()).toBeNull();
+  });
+
+  it('leaves a validation error alone when the map refreshes, since Enter would not apply that draft', async () => {
+    const mounted = await mount(SOURCE);
+    const { source, key, editor, error, draft, refreshed, external } = mounted;
+    const input = await draft('学ぶこと', '学ぶ\nこと');
+    key(input, 'Enter');
+    await refreshed();
+    const validation = error();
+    expect(validation).toBe('ノード名は改行を含まない文字列にしてください。');
+    external(EXTERNAL);
+    await refreshed();
+    expect(error()).toBe(validation);
+    expect(editor()).toBe(input);
+    expect(source()).toBe(EXTERNAL);
+  });
+
+  it('drops a kept draft when the note itself is deleted', async () => {
+    const mounted = await mount(SOURCE);
+    const { app, file, key, editor, draft, refreshed, external } = mounted;
+    const input = await draft('学ぶこと', '学ぶこと（編集）');
+    external(EXTERNAL);
+    key(input, 'Enter');
+    await refreshed();
+    expect(editor()).toBe(input);
+    app.vaultEvents.trigger('delete', file);
+    await refreshed();
+    expect(editor()).toBeNull();
+    expect(mounted.view.containerEl.querySelector('.mappy-inline-error')).toBeNull();
   });
 });
