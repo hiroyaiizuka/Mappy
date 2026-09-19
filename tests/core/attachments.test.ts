@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attachmentEntries, attachmentMarkdown } from '../../src/core/attachments';
+import { IMAGE_MIME_TYPES, attachmentEntries, attachmentMarkdown, imageMimeType } from '../../src/core/attachments';
 
 describe('attachmentMarkdown', () => {
   it('keeps only link and image syntax, in order', () => {
@@ -37,5 +37,16 @@ describe('attachmentEntries', () => {
 
   it('skips empty wiki targets and protected ranges', () => {
     expect(attachmentEntries('[[]] `[[x]]` [[ok]]')).toEqual([{ kind: 'link', target: 'ok', label: 'ok' }]);
+  });
+});
+
+describe('imageMimeType', () => {
+  it('maps the image extensions every layer shares, in any case and with or without the dot', () => {
+    expect(imageMimeType('png')).toBe('image/png');
+    expect(imageMimeType('.JPG')).toBe('image/jpeg');
+    expect(imageMimeType('svg')).toBe('image/svg+xml');
+    expect(imageMimeType('pdf')).toBeUndefined();
+    expect(imageMimeType('')).toBeUndefined();
+    expect(Object.keys(IMAGE_MIME_TYPES).sort()).toEqual(['avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
   });
 });

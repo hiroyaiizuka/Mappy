@@ -34,6 +34,9 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/interaction/viewport.ts` | パン・ズーム・Fit の座標計算 | 純粋 TypeScript |
 | `src/core/attachments.ts` / `plain-text.ts` | 本文からのリンク・画像抽出、タイトルの平文化 | `@lezer/markdown` |
 | `src/export/excalidraw-scene.ts` / `src/layout/path-points.ts` | tree＋計測 → 描画 API 非依存のシーン（ブロック・折れ線） | 純粋 TypeScript |
+| `src/export/svg-document.ts` | SVG 書き出しのシーン（ノードの XHTML・線のパス・バッジ・色）→ SVG 文字列、viewBox と余白、PNG の縮尺、スタイルの重複除去 | 純粋 TypeScript |
+| `src/export/svg-capture.ts` | 配置済みのノード要素と `LayoutResult` → シーン。算出スタイルの白名簿を直列化し、画像は差し込まれた resolver で data URL に。SVG → canvas → PNG | DOM（Obsidian の global `createEl` で作業用要素） |
+| `src/obsidian/image-export.ts` | Vault の画像を data URL に読む resolver、添付設定の保存先への `create`／`createBinary`、モバイルのピクセル上限 | Vault、metadataCache、FileManager、`requestUrl`、`Platform` |
 | `src/obsidian/document-store.ts` | Editor/Vault の一本化、原文照合、キュー、履歴 | Obsidian の公開 API |
 | `src/obsidian/frontmatter.ts` / `map-files.ts` | `mappy: true` の識別、初期レイアウト、新規マップ作成 | metadataCache、FileManager、Vault |
 | `src/obsidian/settings.ts` / `settings-tab.ts` | 設定の型・既定値・欠損／旧形式の正規化と、`PluginSettingTab`（`display()` と 1.13 以降の `getSettingDefinitions`）。保存は `main.ts` の `loadData`／`saveData` | Obsidian の Setting UI |
@@ -203,6 +206,17 @@ Excalidraw プラグインが有効なら、`window.ExcalidrawAutomate` の公�
 テーマは `MindmapView.setTheme()` が map view のコンテナ（`.mappy-view`）にだけ Obsidian の `theme-light`／`theme-dark` class を付け外しする。Obsidian の app.css は素の配色（`--color-base-*`・`--mono-rgb-*`・`--color-<名前>`・`--shadow-s`・`color-scheme`）を `.theme-light`／`.theme-dark` に、意味変数（`--background-primary`・`--text-normal`・`--link-color`…）をそこから導く形で `body` に置くため、コンテナに class を付けるだけでは意味変数が body の計算済みの値のまま継承される。そこで styles.css の `:where(.mappy-view.theme-light, .mappy-view.theme-dark)` が、マップとノード内の描画済み Markdown が読む意味変数を app.css と同じ対応で導き直す（1.6.7 と 1.14.2 で照合）。`:where()` で詳細度を 0 にしてあるので、コミュニティテーマが `.theme-dark { --background-primary: … }` と書けばそれが勝つ。「Obsidian に従う」は class を外すだけで、設定が無かったときと同じ継承になる。埋め込み表示（M10）と Excalidraw 挿入はこの class を付けないので Obsidian のテーマに従う。限界: 変数ではなく body の class で分岐する子孫規則（コミュニティテーマの `.theme-dark .markdown-rendered code { … }` のような形）は、body が暗色ならコンテナが明色でも一致する。Obsidian 本体の app.css（1.14.2）にはノード内に届くこの形の規則がないが、コミュニティテーマでは起こり得るので LEV-62 の目視項目にする。
 
 作成先フォルダは空欄で Obsidian の「新規ノートの作成場所」、`/` で最上位、それ以外は `normalizePath` した相対パス。`normalizePath` はスラッシュを整えるだけ（app.js 1.14.2 で確認）なので、`.`・`..`・`.` で始まる名前（Vault が索引しないフォルダ）はここで拒否する。大文字小文字だけが違う既存フォルダは再利用し（ファイルシステムは通常区別しない）、同名のファイルがあれば作らずにエラー、存在しなければ `Vault.createFolder`（結果が空ならエラー）。上書きはしない。
+
+## 9c. SVG／PNG 書き出し
+
+Excalidraw 挿入と並ぶ、外へ持ち出す経路（§5 M13）。図面 API を持たないので、map view が画面に置いたものをそのまま文書にする。
+
+- **入力は view の最終配置**: `MindmapView.exportSource()` は、最後の配置フレームで使った `LayoutResult`、`NodeRenderer.entries` の複製、canvas、線の `<svg>` を渡す。debounce 中の refresh があれば先に実行し、配置フレームが予約中なら 1 フレーム（隠れたウィンドウでは 100 ms）待ち、インライン編集中・ドラッグ中は拒否する。配置し直さないので、線の `d`・ノードの座標・折りたたみは画面と一致する。MarkdownRenderer の描画途中は待てない（renderer は完了を次のフレームの予約でしか知らせない。`node-renderer.ts` に手を入れる別チケット）。
+- **ノードは `foreignObject` の XHTML**: `svg-capture.ts` が要素を歩き、状態クラス（`is-selected` など）、開閉ボタン、`tabindex`／ARIA／インライン style を落として直列化する。DOM は最初の `await` の前に一度で読み切り（画像は印を置いて後から差し込む）、途中で refresh が来てもノードが欠けない。XML に書けない制御文字・孤立サロゲートは落とし、宣言していない接頭辞の属性（`foo:bar`）は捨て、`xlink:` はルートで宣言する。書き出す前に `DOMParser` で整形式を確かめる。見た目は Obsidian のスタイルシートに頼らず、`getComputedStyle` の白名簿（余白・枠・角丸・背景・文字・折り返し・flex）を宣言列ごとに 1 クラスにまとめ、`<style>` に置く（2,000 ノードでも数十クラス）。ノードのルートには配置時の幅と高さを書き、`foreignObject` は `overflow="visible"` にして、フォントが違う環境で 1 行増えても文字が切れないようにする。閉じた枝の件数は、枠からはみ出すので `foreignObject` の外に SVG の丸と文字で描く（`LayoutResult.folds` と `foldBadgeWidth`）。
+- **画像は data URL**: resolver は差し込み。Obsidian 側（`image-export.ts`）は `.internal-embed[src]` の link target（`core/wiki-link.ts` の `wikiLinkPath`）を `metadataCache` で解決し、`core/attachments.ts` の画像拡張子表にあれば `vault.readBinary`、Markdown 形式の画像は属性に残った書かれたパスで同じことを試み、`http(s)` だけ `requestUrl` で取る（15 秒で諦め、`image/*` 以外は受け付けない）。読めなければ null を返し、`<img>` は同じ大きさの `<span>`（代替テキスト）になる。ノードは残る。
+- **テーマ**: body の `theme-dark` でクラスと既定色を決め、背景は canvas の算出 `background-color`、線は最初の path の算出 `stroke`（`currentcolor` なら `color`）。
+- **PNG**: 同じ SVG を `data:image/svg+xml` の `<img>` に読み込み、canvas に `scale` 倍で描いて `toBlob`。blob URL は `file://` のような不透明オリジンで canvas を汚染するため使わない。WebKit（iOS の Obsidian）は `foreignObject` を含む SVG 画像で canvas を汚染するので、コマンド実行時に 1 ピクセルの SVG で一度だけ読み戻しを試し（`canRasterizeForeignObject`）、できなければモーダルの PNG を無効にする。それでも `SecurityError` が出れば「この環境では PNG を作れません」に言い換える。縮尺は 2 倍を上限に、`DESKTOP_PNG_LIMITS`（8,192²・一辺 16,384）／`MOBILE_PNG_LIMITS`（4,096²）に収める。`<img>` に載せた SVG は文書の Web フォントを使えないので、フォントはこの端末のものになる。
+- **保存**: `MindmapView.exportImage(format)` → `exportMap` → `getAvailablePathForAttachment(<basename>.svg|png, note.path)` → `vault.create`（SVG）／`vault.createBinary`（PNG）。パスを取るのは書き出す直前で、PNG が作れない環境はその前に断る（添付フォルダを作らない）。ノートは読まない・書かない。コマンドは `canSaveAttachments`（添付パス API と create の存在）が真のときだけ出す。
 
 ## 10. 最初に検証する順序
 

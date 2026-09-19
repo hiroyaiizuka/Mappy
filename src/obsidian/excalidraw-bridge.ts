@@ -1,5 +1,7 @@
 import type { App, TFile } from 'obsidian';
+import { imageMimeType } from '../core/attachments';
 import { parseMarkdown, type MindDocument } from '../core/markdown';
+import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
@@ -19,7 +21,6 @@ export interface ImportRequest {
   document?: MindDocument;
 }
 
-const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'jpg', 'jpeg', 'png', 'svg', 'webp']);
 /** The map view caps attachment previews; the drawing keeps the same proportions. */
 const MAX_IMAGE = { width: 240, height: 140 };
 const FILE_GAP = 40;
@@ -44,13 +45,6 @@ interface CreatedNode { label: CreatedBlock; images: CreatedBlock[] }
 /** Only the modifier that Excalidraw's own internal-drag defaults leave unused on both platforms. */
 export function isMappyDrop(event: ExcalidrawDropData['event']): boolean {
   return event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;
-}
-
-function wikiLinkPath(link: string | null | undefined): string | null {
-  if (!link) return null;
-  const value = /^\[\[([\s\S]+)\]\]$/u.exec(link.trim())?.[1] ?? link.trim();
-  const path = value.split('|', 1)[0]?.split('#', 1)[0]?.split('^', 1)[0]?.trim();
-  return path || null;
 }
 
 function mappyTarget(app: App, drawing: TFile, element: ExcalidrawElement): TFile | null {
@@ -273,7 +267,7 @@ export class ExcalidrawBridge {
 
   private async addImage(ea: ExcalidrawAutomate, target: string, source: TFile): Promise<CreatedBlock | null> {
     const file = this.app.metadataCache.getFirstLinkpathDest(target, source.path);
-    if (!file || !IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) return null;
+    if (!file || imageMimeType(file.extension) === undefined) return null;
     const id = await ea.addImage(0, 0, file, true);
     const element = id ? ea.getElement(id) : null;
     if (!id || !element) return null;
@@ -286,7 +280,7 @@ export class ExcalidrawBridge {
   /** Root boxes link back to the note; other nodes carry their first link, resolved from the note. */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile): string | null {
     if (node.link) {
-      if (/^[a-z][a-z0-9+.-]*:/iu.test(node.link)) return node.link;
+      if (hasUrlScheme(node.link)) return node.link;
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, source.path);
       return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
     }
