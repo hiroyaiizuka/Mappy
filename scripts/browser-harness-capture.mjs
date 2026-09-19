@@ -118,8 +118,9 @@ async function balancedSides(page) {
     const doc = window.__mappyHarness.view.snapshot().document;
     const parents = new Map(doc.nodes.map(node => [node.id, node.parentId]));
     const rootEl = nodes.find(node => node.classList.contains('is-root'));
-    const rootId = rootEl?.dataset.nodeId;
-    const root = rootEl?.getBoundingClientRect();
+    if (!rootEl) return { error: 'no .is-root node on screen' };
+    const rootId = rootEl.dataset.nodeId;
+    const root = rootEl.getBoundingClientRect();
     const children = new Map();
     for (const [id, parentId] of parents) { if (!children.has(parentId)) children.set(parentId, []); children.get(parentId).push(id); }
     const sideOf = rect => rect.x + rect.width / 2 < root.x + root.width / 2 ? 'left' : 'right';
@@ -140,8 +141,8 @@ async function balancedSides(page) {
     }
     // Each side is a column of subtrees centred on the root, so the extent of all its nodes is centred there too.
     const centre = column => column.length ? (Math.min(...column.map(r => r.top)) + Math.max(...column.map(r => r.bottom))) / 2 : NaN;
-    return { stages, strays, unmatched, rightCount, leftCount, rootCentre: root ? root.top + root.height / 2 : NaN, rightCentre: centre(columns.right), leftCentre: centre(columns.left) };
-  })()`);
+    return { stages, strays, unmatched, rightCount, leftCount, rootCentre: root.top + root.height / 2, rightCentre: centre(columns.right), leftCentre: centre(columns.left) };
+  })()`).then(result => { expect(!result.error, result.error); return result; });
 }
 
 /** The harness's description of the node with this title (rect, toggle, flags); missing nodes fail the case. */

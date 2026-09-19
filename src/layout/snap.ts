@@ -1,6 +1,6 @@
 import type { DropPosition } from "../core/commands";
 import type { LayoutMode } from "../core/layout-mode";
-import { TIMELINE_STEM_GAP } from "./layout";
+import { TIMELINE_STEM_GAP, balancedSide } from "./layout";
 import type { LayoutBounds, PositionedNode } from "./primitives";
 
 /**
@@ -91,6 +91,46 @@ function columnLine(side: "right" | "left"): (box: LayoutBounds) => number {
 }
 
 /**
+ * The side of a balanced tree's root a node was placed on, read from where it sits: a right branch
+ * starts a whole gap past the root's right edge, so its centre is right of the root's centre, and the
+ * mirror holds on the left. Shared with the view, which assigns every node's `NodePlace` from it.
+ */
+export function balancedSideOf(root: LayoutBounds, node: LayoutBounds): "right" | "left" {
+  return node.x + node.width / 2 < root.x + root.width / 2 ? "left" : "right";
+}
+
+/**
+ * The slot the root of a dragged tree would take among the balanced root's children, which form a
+ * column on each side. Each column is judged on its own line, and the slot resolves to the source
+ * index that keeps the topic on that side: before a kid it takes the kid's index (the kid and its
+ * followers change sides, as the dealing rule fixes); after the column's last kid it joins as the last
+ * child of all, which is only possible when the next index would be dealt to that side; an empty
+ * column takes it beside the root on that side under the same condition.
+ */
+function amongBalancedRoot(rect: LayoutBounds, root: PositionedNode, kids: readonly PositionedNode[], widen: number): SnapSlot | null {
+  const next = balancedSide(kids.length);
+  const columns = { right: kids.filter(kid => balancedSideOf(root, kid) === "right"), left: kids.filter(kid => balancedSideOf(root, kid) === "left") };
+  const slots: SnapSlot[] = [];
+  for (const side of ["right", "left"] as const) {
+    const column = columns[side];
+    if (column.length === 0) {
+      const slot = next === side ? beside(rect, root, side, widen) : null;
+      if (slot) slots.push(slot);
+      continue;
+    }
+    const slot = among(rect, column, "y", columnLine(side), widen);
+    if (!slot) continue;
+    if (slot.position === "before") { slots.push(slot); continue; }
+    if (next !== side) continue;
+    // The last child of all sits at the bottom of the other column (the last index was dealt there).
+    const other = [...columns[side === "right" ? "left" : "right"]].sort((first, second) => first.y - second.y);
+    const last = other[other.length - 1];
+    if (last) slots.push({ targetId: last.id, position: "after", distance: slot.distance });
+  }
+  return slots.sort((first, second) => first.distance - second.distance)[0] ?? null;
+}
+
+/**
  * The slot the root of a dragged tree (`rect`) would take beside `node`, whose visible children are
  * `kids`, or null when the root is not in the node's zone. The zones follow each layout's geometry.
  * With no children, the root joins as the last child when it sits where the first child would go:
@@ -98,8 +138,8 @@ function columnLine(side: "right" | "left"): (box: LayoutBounds) => number {
  * side of the axis a timeline stage's forest takes, and on a balanced node's own side (`place`).
  * With children, it slots in among them by position along the line they share (a column, a row,
  * or the timeline axis) when it lines up with them across it; the balanced root's children form
- * a column on each side, judged on its own line. `widen` stretches every zone, so the slot
- * already shown is kept a while.
+ * a column on each side (`amongBalancedRoot`). `widen` stretches every zone, so the slot already
+ * shown is kept a while.
  */
 export function snapSlot(
   mode: LayoutMode, rect: LayoutBounds, node: PositionedNode, kids: readonly PositionedNode[], widen = 1, place: NodePlace = "forest",
@@ -112,12 +152,6 @@ export function snapSlot(
   }
   if (mode === "hierarchy") return among(rect, kids, "x", box => box.y, widen);
   if (mode === "timeline" && place === "root") return among(rect, kids, "x", box => box.y + box.height / 2, widen);
-  if (mode === "balanced" && place === "root") {
-    const centre = node.x + node.width / 2;
-    const slots = (["right", "left"] as const)
-      .map(side => among(rect, kids.filter(kid => (kid.x + kid.width / 2 < centre) === (side === "left")), "y", columnLine(side), widen))
-      .filter((slot): slot is SnapSlot => slot !== null);
-    return slots.sort((first, second) => first.distance - second.distance)[0] ?? null;
-  }
+  if (mode === "balanced" && place === "root") return amongBalancedRoot(rect, node, kids, widen);
   return among(rect, kids, "y", columnLine(mode === "balanced" && place === "left" ? "left" : "right"), widen);
 }

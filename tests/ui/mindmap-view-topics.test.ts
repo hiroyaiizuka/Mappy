@@ -863,16 +863,17 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(snap(glossary.id, at(view, { x: leftLeaf.x - 30 - size.width, y: leftLeaf.y, ...size }), null))
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: review.id, index: 0 });
     expect(snap(glossary.id, at(view, { x: leftLeaf.x + leftLeaf.width + 8, y: leftLeaf.y, ...size }), null)).toBeNull();
-    // On the left column's line (right edges), centred on 記録する's top edge: before it (source index 1); on its lower half: after it (index 2).
+    // On the left column's line (right edges), centred on 記録する's top edge: before it (source index 1, the left side).
+    // On its lower half: the next index, 3, is dealt to the left, so the topic joins as the last child of all and lands under 記録する.
     expect(snap(glossary.id, at(view, { x: left.x + left.width - size.width, y: left.y - size.height / 2, ...size }), null))
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 1 });
     expect(snap(glossary.id, at(view, { x: left.x + left.width - size.width, y: left.y + left.height / 2, ...size }), null))
-      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 2 });
-    // On the right column's line (left edges), centred just above 習慣化する: before it (index 2); on its lower half: after it (index 3).
+      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
+    // On the right column's line (left edges), centred just above 習慣化する: before it (index 2, the right side).
+    // On its lower half nothing: no even index is free after the last child, and a slot that jumps to the left is not offered.
     expect(snap(glossary.id, at(view, { x: last.x, y: last.y - size.height / 2 - 4, ...size }), null))
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 2 });
-    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height / 2, ...size }), null))
-      .toEqual({ type: 'move', nodeId: glossary.id, parentId: body.id, index: 3 });
+    expect(snap(glossary.id, at(view, { x: last.x, y: last.y + last.height / 2, ...size }), null)).toBeNull();
     // Right of the right leaf 習慣化する: its child, as in the map.
     expect(snap(glossary.id, at(view, { x: last.x + last.width + 30, y: last.y, ...size }), null))
       .toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
