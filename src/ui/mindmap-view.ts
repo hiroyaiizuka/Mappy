@@ -1,4 +1,4 @@
-import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
@@ -66,6 +66,8 @@ export class MindmapView extends ItemView {
   private zoomLabel!: HTMLButtonElement;
   private renderer!: NodeRenderer;
   private viewport!: MapViewport;
+  /** The canvas listeners, which also answer the view's scope; set with the DOM in `onOpen`. */
+  private events: MapEvents | undefined;
   private modeButtons = new Map<string, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
   private placeholder!: HTMLDivElement;
@@ -109,7 +111,26 @@ export class MindmapView extends ItemView {
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
 
-  constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
+  constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) {
+    super(leaf);
+    // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
+    // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
+    // it before the canvas listener and, the map not being a navigation view, starts renaming the most recently active
+    // Markdown tab's file instead (E02, LEV-48). While the focus is in this view, F2 is the map's key: on the canvas it
+    // edits the selected node, in the inline editor or on a floating control it does nothing, and either way `false`
+    // (Obsidian's "consumed": preventDefault and stopPropagation) keeps that default from running. With the focus
+    // outside the view the handler declines (`undefined`); what Obsidian then does with F2 is its own affair (1.14.2
+    // runs no other handler for a key the active view registered, so the default stays off while the map is active).
+    // Only F2 is registered: no other map key has a default hotkey. The workspace reads `view.scope` on each key, so
+    // there is nothing to undo.
+    this.scope = new Scope(this.app.scope);
+    this.scope.register([], "F2", event => {
+      const target = event.targetNode;
+      if (!target || !this.contentEl.contains(target)) return undefined;
+      this.events?.hotkey(event);
+      return false;
+    });
+  }
 
   /** Current presentation, for exports that mirror what the user sees. */
   snapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
@@ -240,7 +261,7 @@ export class MindmapView extends ItemView {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
     }));
-    this.addChild(new MapEvents(this.canvas, {
+    this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
       fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
       command: command => { this.run(() => this.execute(command)); },
