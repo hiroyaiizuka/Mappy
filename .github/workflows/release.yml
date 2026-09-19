@@ -1,0 +1,81 @@
+# manifest.version と同じタグ（例: 0.1.0。v は付けない）を push すると、check を通した
+# 配布物 3 ファイル（main.js / manifest.json / styles.css）を GitHub Release に添付する。
+# BRAT はその Release の添付ファイルを読む（docs/harness.md「リリース手順」）。
+#
+# workflow_dispatch と、この workflow やリリース用スクリプトを変える PR では dry-run になる:
+# 同じ手順で配布物を作って workflow artifact に上げ、Release は作らない。
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/version-bump.mjs"
+      - "scripts/package-plugin.mjs"
+      - "scripts/validate-release.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Require the tag to match manifest.version
+        id: version
+        run: |
+          version="$(node -p "require('./manifest.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match manifest.json version $version"
+            exit 1
+          fi
+      - run: npm run check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mappy-${{ steps.version.outputs.version }}
+          path: |
+            dist/mappy/main.js
+            dist/mappy/manifest.json
+            dist/mappy/styles.css
+          if-no-files-found: error
+
+  release:
+    # タグの push だけ。dry-run（workflow_dispatch / pull_request）は build の artifact で終わる。
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mappy-${{ needs.build.outputs.version }}
+          path: dist/mappy
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # 0.x はベータなので pre-release。BRAT は pre-release も拾い、draft は拾えない。
+          case "$GITHUB_REF_NAME" in
+            0.*) prerelease="--prerelease" ;;
+            *) prerelease="" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" $prerelease \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
+            dist/mappy/main.js dist/mappy/manifest.json dist/mappy/styles.css
