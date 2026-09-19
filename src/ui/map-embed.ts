@@ -127,7 +127,12 @@ export class MapEmbed extends MarkdownRenderChild {
     this.release();
   }
 
-  /** The reader's folds and the links; nothing else reacts. */
+  /**
+   * The reader's folds and the links; nothing else reacts. A link is followed here and
+   * goes no further; a fold is toggled here and the click still bubbles, so a map drawn
+   * inside a node (§5 M12) lets the outer map select and focus that node, as any click
+   * in the frame does.
+   */
   private click(event: MouseEvent): void {
     const click = mapClick(event, this.canvas);
     if (!click) return;
@@ -139,7 +144,6 @@ export class MapEmbed extends MarkdownRenderChild {
     }
     if (!click.toggle) return;
     event.preventDefault();
-    event.stopPropagation();
     if (this.collapsed.has(click.nodeId)) this.collapsed.delete(click.nodeId); else this.collapsed.add(click.nodeId);
     this.draw();
   }
@@ -168,7 +172,7 @@ export class MapEmbed extends MarkdownRenderChild {
     if (text === this.drawnSource && this.document?.root.title === file.basename) return;
     const mode = readMapFromSource(text);
     if (!mode) {
-      this.show(`${file.basename} はマップではなくなりました。ノートを開き直すと通常の埋め込みに戻ります。`);
+      this.show(`${file.basename} はマップではなくなりました。開き直すと通常の表示に戻ります。`);
       return;
     }
     // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
@@ -264,6 +268,9 @@ export function nodeEmbeds(app: App, store: DocumentStore): NodeEmbedResolver {
         // A double click anywhere in the frame opens the called map, as the frame's own button does; the node's
         // text (`![[…]]`) is still edited by F2, the context menu, or a double click on the node outside the frame.
         owner.registerDomEvent(frame, "dblclick", event => {
+          // The frame's own button and the links inside answer to their clicks already.
+          const target = event.targetNode;
+          if (target?.instanceOf(Element) && target.closest("a, button")) return;
           event.preventDefault();
           event.stopPropagation();
           void app.workspace.openLinkText(source.file.path, sourcePath, event.metaKey || event.ctrlKey);

@@ -35,12 +35,13 @@ interface Mounted {
   fold: (title: string) => void;
 }
 
-async function mount(fixtureId: string, layout: LayoutMode = 'mindmap', source?: string): Promise<Mounted> {
+async function mount(fixtureId: string, layout: LayoutMode = 'mindmap', source?: string, others: Record<string, string> = {}): Promise<Mounted> {
   const fixture = findFixture(fixtureId);
   if (!fixture) throw new Error(`Missing fixture ${fixtureId}`);
   const app = new HarnessApp();
   app.put(fixture.path, source ?? fixture.source);
   app.put(SAMPLE_IMAGE.path, '', SAMPLE_IMAGE.url);
+  for (const [path, content] of Object.entries(others)) app.put(path, content);
   let modified = 0;
   app.vault.on('modify', () => { modified += 1; });
   const leaf = new WorkspaceLeaf(app.asApp<App>());
@@ -173,6 +174,25 @@ describe('SVG export of the map view (jsdom)', () => {
 
     const failing = await exportOf(mounted, () => Promise.reject(new Error('boom')));
     expect(failing.parsed.querySelectorAll('foreignObject').length).toBe(withImages.parsed.querySelectorAll('foreignObject').length);
+    expect(mounted.modified()).toBe(0);
+  });
+
+  it('exports a map drawn inside a node (§5 M12) as a box of the frame\'s size that names the map, never as its nodes (LEV-73)', async () => {
+    const map = ['---', 'mappy: true', '---', '## 講座', '- 回復する', '  - 睡眠', '- 記録する', ''].join('\n');
+    const source = ['---', 'mappy: true', '---', '## ホスト', '- ![[Called]]', '- 文', ''].join('\n');
+    const mounted = await mount('uneven-branches', 'mindmap', source, { 'Called.md': map });
+    const frame = mounted.view.containerEl.querySelector('.mappy-node.is-embed .mappy-embed');
+    expect(frame).not.toBeNull();
+    const { parsed, svg } = await exportOf(mounted);
+    const objects = Array.from(parsed.querySelectorAll('foreignObject'));
+    expect(objects).toHaveLength(3);
+    const box = parsed.querySelector('.mappy-export-embed');
+    expect(box?.textContent).toBe('マインドマップ: Called');
+    expect(box?.closest('foreignObject')?.querySelector('.mappy-node')).not.toBeNull();
+    // Nothing of the inner map leaks into the file: no nested nodes, edges or canvas, and the frame's own label only once.
+    expect(parsed.querySelectorAll('.mappy-embed .mappy-node, .mappy-canvas, .mappy-world, foreignObject .mappy-edges')).toHaveLength(0);
+    expect(svg.match(/講座/gu)).toBeNull();
+    expect(Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim())).toEqual(['ホスト', '文']);
     expect(mounted.modified()).toBe(0);
   });
 

@@ -1,7 +1,8 @@
-import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownView, Menu, Notice, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
+import { embedOnlyTitle } from "../core/embed";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
@@ -104,6 +105,8 @@ export class MindmapView extends ItemView {
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
   private bodyModal: EditModal | undefined;
+  /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
+  private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
 
   constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) { super(leaf); }
@@ -308,6 +311,12 @@ export class MindmapView extends ItemView {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.file = null; this.document = undefined; this.scheduleRefresh();
     }));
+    // A node that calls a map (§5 M12) is judged when it is drawn: when another note's cache, name or existence
+    // changes, the calls are judged again on the next draw (a note that became a map gets its frame, a lost one its link).
+    const recall = (file: TAbstractFile): void => { if (file !== this.file && this.callsMaps()) this.draw(); };
+    this.registerEvent(this.app.metadataCache.on("changed", recall));
+    this.registerEvent(this.app.metadataCache.on("deleted", recall));
+    this.registerEvent(this.app.vault.on("rename", recall));
     this.ready = true;
     return this.refresh();
   }
@@ -386,6 +395,14 @@ export class MindmapView extends ItemView {
     }
     this.emptyState.hidden = true;
     this.draw();
+  }
+
+  /** True when a node's title is one embed: only then can another note's change alter what this map shows. */
+  private callsMaps(): boolean {
+    const document = this.document;
+    if (!document) return false;
+    if (this.calls?.document !== document) this.calls = { document, any: document.nodes.some(node => embedOnlyTitle(node.title) !== null) };
+    return this.calls.any;
   }
 
   /** The body root plus the free topics beside it (§5 M7); documents without headings keep the virtual root. */

@@ -1547,19 +1547,14 @@ async function captureEmbedNodes(recorder, page) {
     const embeds = await page.harness('h.nodeEmbeds()');
     expectNodeEmbeds(embeds, own.length);
     const links = own.filter(node => EMBED_NODE_LINKS.includes(node.title));
-    expect(links.length === EMBED_NODE_LINKS.length && links.every(node => !node.embed), `link nodes: ${links.map(node => node.title).join(', ')}`);
-    const shapes = await page.evaluate(`(() => {
-      const own = Array.from(document.querySelectorAll('.mappy-node')).filter(node => !node.parentElement.closest('.mappy-embed'));
-      return {
-        frames: document.querySelectorAll('.mappy-embed').length,
-        nested: document.querySelectorAll('.mappy-embed .mappy-embed').length,
-        links: own.filter(node => !node.classList.contains('is-embed') && node.querySelector(':scope > .mappy-node-content > .mappy-node-label a.internal-link')).length,
-        image: own.filter(node => node.querySelector(':scope > .mappy-node-content > .mappy-node-label .image-embed img')).length,
-        editable: document.querySelectorAll('.mappy-embed textarea, .mappy-embed [contenteditable]').length,
-      };
-    })()`);
+    expect(links.length === EMBED_NODE_LINKS.length && links.every(node => !node.embed && node.link), `link nodes: ${links.map(node => `${node.title}→${node.link}`).join(', ')}`);
+    expect(own.filter(node => node.link).length === EMBED_NODE_LINKS.length && own.filter(node => node.image).length === 1, `links ${own.filter(node => node.link).length}, images ${own.filter(node => node.image).length}`);
+    const shapes = await page.evaluate(`({
+      frames: document.querySelectorAll('.mappy-embed').length,
+      nested: document.querySelectorAll('.mappy-embed .mappy-embed').length,
+      editable: document.querySelectorAll('.mappy-embed textarea, .mappy-embed [contenteditable]').length,
+    })`);
     expect(shapes.frames === EMBED_NODE_EXPECTED.length && shapes.nested === 0, `frames ${shapes.frames}, nested ${shapes.nested}`);
-    expect(shapes.links === EMBED_NODE_LINKS.length && shapes.image === 1, `links ${shapes.links}, images ${shapes.image}`);
     expect(shapes.editable === 0, `${shapes.editable} editable elements inside frames`);
     await unchanged();
     listeners = await page.harness('h.listeners()');
@@ -1659,6 +1654,43 @@ async function captureEmbedNodes(recorder, page) {
     expect(restored.every(embed => embed.frame.nodes.some(node => node.title === '第 1 週: 準備')), 'titles after restore');
     await unchanged();
     return `変更後 ${changed.map(embed => embed.frame.nodes.length).join(' / ')} ノード、復元後 ${restored.map(embed => embed.frame.nodes.length).join(' / ')} ノード`;
+  });
+
+  await recorder.run('embed-node-recall', '存在しなかった「存在しないノート」を mappy: true のノートとして作る → 消す', 'このノートを編集しなくても、リンクだったノードが枠になり、消すとリンクに戻る（呼び出し先の cache・存在の変化で判定し直す）', async () => {
+    const path = 'Fixtures/存在しないノート.md';
+    const title = '存在しないノート';
+    const before = await nodeInfo(page, title);
+    expect(before.link === title && !before.embed, `before: ${JSON.stringify(before)}`);
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify('---\nmappy: true\n---\n## 後から作ったマップ\n- 一\n- 二\n')})`);
+    await page.settle();
+    const embeds = await page.harness('h.nodeEmbeds()');
+    const made = embeds.find(embed => embed.frame.src === path);
+    expect(made && made.node.title === `![[${title}]]` && made.frame.nodes.length === 3, `frames after create: ${embeds.map(embed => embed.frame.src).join(', ')}`);
+    expect(embeds.length === EMBED_NODE_EXPECTED.length + 1, `${embeds.length} frames`);
+    await page.harness(`h.removeNote(${JSON.stringify(path)})`);
+    await page.settle();
+    const after = await nodeInfo(page, title);
+    expect(after.link === title && !after.embed, `after: ${JSON.stringify(after)}`);
+    expectNodeEmbeds(await page.harness('h.nodeEmbeds()'));
+    await unchanged();
+    return `リンク → 枠（${made.frame.nodes.length} ノード）→ リンク。ホスト不変`;
+  });
+
+  await recorder.run('embed-node-resize', '枠の高さを CSS 変数（--mappy-node-embed-height）で 220 → 300px に変える → 戻す', '枠を持つノードの実測が変わり、外側の配置が追従する（下のノードが下がり、線もつながったまま）。戻すと元の位置', async () => {
+    const below = '同じマップをもう一度';
+    const before = await nodeInfo(page, below);
+    const { scale } = await page.harness('h.viewport()');
+    await page.evaluate(`document.getElementById('harness-pane').style.setProperty('--mappy-node-embed-height', '300px')`);
+    await page.settle();
+    const grown = (await page.harness('h.nodeEmbeds()'))[0];
+    expect(Math.abs(grown.frame.rect.height - 300 * scale) < 2, `frame height ${grown.frame.rect.height.toFixed(1)}, expected ${(300 * scale).toFixed(1)}`);
+    const after = await nodeInfo(page, below);
+    expect(after.rect.y > before.rect.y + 20 * scale, `${below} y ${before.rect.y.toFixed(1)} → ${after.rect.y.toFixed(1)}`);
+    await page.evaluate(`document.getElementById('harness-pane').style.removeProperty('--mappy-node-embed-height')`);
+    await page.settle();
+    const restored = await nodeInfo(page, below);
+    expect(Math.abs(restored.rect.y - before.rect.y) < 1, `${below} y after restore ${restored.rect.y.toFixed(1)}, was ${before.rect.y.toFixed(1)}`);
+    return `枠 ${(220 * scale).toFixed(0)} → ${grown.frame.rect.height.toFixed(0)} px、下のノード y ${before.rect.y.toFixed(0)} → ${after.rect.y.toFixed(0)} → ${restored.rect.y.toFixed(0)}`;
   });
 
   await recorder.run('embed-node-collapse', '「呼び出したマップ」の開閉ボタンをクリック → Space で開く', '3 つの枠がノードごと消えて購読が減り（Component の解放）、再展開で同じ枠が戻り購読数も戻る', async () => {

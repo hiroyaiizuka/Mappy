@@ -167,7 +167,7 @@ export class NodeDrag extends Component {
 
   private overNode(point: { x: number; y: number }): boolean {
     const hit = this.canvas.doc.elementFromPoint(point.x, point.y);
-    return Boolean(hit && this.canvas.contains(hit) && hit.closest("[data-node-id], [data-drop-placeholder]"));
+    return Boolean(hit && this.canvas.contains(hit) && (nodeOf(this.canvas, hit) || hit.closest("[data-drop-placeholder]")));
   }
 
   private near(point: { x: number; y: number }, box: Box, margin: number): boolean {

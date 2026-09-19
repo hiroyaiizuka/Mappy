@@ -7,6 +7,7 @@ import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import type { MindDocument } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
+import { nodeOf } from '../../src/ui/map-events';
 import { MindmapView } from '../../src/ui/mindmap-view';
 
 /**
@@ -85,8 +86,9 @@ async function settleDom(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 0));
 }
 
-function ownNodes(root: ParentNode): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>('.mappy-node')).filter(node => !node.parentElement?.closest('.mappy-embed'));
+/** The view's own nodes, judged as the product judges a click: a node inside a frame answers to the frame. */
+function ownNodes(canvas: HTMLElement): HTMLElement[] {
+  return Array.from(canvas.querySelectorAll<HTMLElement>('.mappy-node')).filter(node => nodeOf(canvas, node) === node);
 }
 
 /** The title as written (the node's `aria-label`): a link node shows its link text, an embed node shows a frame. */
@@ -269,14 +271,23 @@ describe('interaction with the outer map', () => {
     expect(embed.hasClass('is-selected')).toBe(true);
     expect(embed.getAttribute('aria-selected')).toBe('true');
     expect(frame.querySelector('.mappy-node.is-selected')).toBeNull();
-    // The inner toggle acts on the embedded map only; the outer node stays as it is and the note is not written.
+    // The inner toggle folds the embedded map only, and, like any click in the frame, selects and focuses the holding
+    // node: the keyboard stays on the outer map instead of on a button the next inner redraw would throw away.
     click(node('呼び出し'));
-    innerNode(frame, '回復する').querySelector<HTMLElement>('.mappy-node-toggle')?.click();
+    const toggle = innerNode(frame, '回復する').querySelector<HTMLElement>('.mappy-node-toggle');
+    toggle?.focus();
+    toggle?.click();
     await settle();
     expect(inner(frame)).toEqual(['講座', '回復する', '記録する', '葉', '睡眠', '運動']);
-    expect(node('呼び出し').hasClass('is-selected')).toBe(true);
+    expect(embed.hasClass('is-selected')).toBe(true);
+    expect(node('呼び出し').hasClass('is-selected')).toBe(false);
+    expect(document.activeElement).toBe(embed);
     expect(embed.hasClass('is-collapsed')).toBe(false);
     expect(source()).toBe(HOST);
+    key(embed, ' ');
+    await settle();
+    expect(embed.hasClass('is-collapsed')).toBe(false);
+    expect(inner(frame)).toEqual(['講座', '回復する', '記録する', '葉', '睡眠', '運動']);
     // The outer toggle folds the outer branch: the embed node goes with it, together with its frame.
     node('呼び出し').querySelector<HTMLElement>('.mappy-node-toggle')?.click();
     await settle();
@@ -299,6 +310,13 @@ describe('interaction with the outer map', () => {
     const button = frame.querySelector<HTMLElement>('.mappy-embed-open');
     button?.click();
     expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: 'Map.md（Maps/Host.md から）' });
+    // A double click on the button or on a link is theirs (their clicks already opened); the frame does not open a third time.
+    const opens = (): number => app.activity.filter(entry => entry.kind === 'link').length;
+    const before = opens();
+    if (button) dblclick(button);
+    const anchor = frame.querySelector<HTMLElement>('a.internal-link');
+    if (anchor) dblclick(anchor);
+    expect(opens()).toBe(before);
     // F2 edits the title as written; the frame is hidden with the content while the editor shows and comes back untouched.
     key(embed, 'F2');
     expect(editor()?.value).toBe('![[Map]]');
@@ -416,7 +434,35 @@ describe('updates and release', () => {
     expect(mapFrames()).toHaveLength(2);
     app.put('Map.md', MAP.replace('mappy: true', 'mappy: false'));
     await refreshed();
-    for (const frame of mapFrames()) expect(frame.querySelector('.mappy-embed-message')?.textContent).toContain('マップではなくなりました');
+    for (const frame of mapFrames()) expect(frame.querySelector('.mappy-embed-message')?.textContent).toBe('Map はマップではなくなりました。開き直すと通常の表示に戻ります。');
+  });
+
+  it('judges the calls again when another note becomes a map, appears or goes, so the node becomes a frame or a link without editing the host', async () => {
+    const host = ['---', 'mappy: true', '---', '## ホスト', '- ![[Later]]', '- ![[Plain]]', ''].join('\n');
+    const { app, node, frames, settle, source } = await mount({ [HOST_PATH]: host, 'Plain.md': '## Plain\n- a\n' });
+    expect(frames()).toHaveLength(0);
+    expect(node('![[Later]]').querySelector<HTMLAnchorElement>('a.internal-link')?.dataset.href).toBe('Later');
+    // The missing note is created as a map: the cache reports it and the node gets its frame.
+    app.put('Later.md', MAP);
+    await settle();
+    expect(frames().map(frame => frame.dataset.mappyEmbed)).toEqual(['Later.md']);
+    expect(node('![[Later]]').hasClass('is-embed')).toBe(true);
+    // A plain note gains `mappy: true`: same again.
+    app.put('Plain.md', '---\nmappy: true\n---\n## Plain\n- a\n');
+    await settle();
+    expect(frames().map(frame => frame.dataset.mappyEmbed)).toEqual(['Later.md', 'Plain.md']);
+    // The called note is deleted: the node is a link again, no frame with a sentence lingers.
+    app.remove('Later.md');
+    await settle();
+    expect(frames().map(frame => frame.dataset.mappyEmbed)).toEqual(['Plain.md']);
+    expect(node('![[Later]]').hasClass('is-embed')).toBe(false);
+    expect(node('![[Later]]').querySelector<HTMLAnchorElement>('a.internal-link')?.dataset.href).toBe('Later');
+    expect(source()).toBe(host);
+    // A cache change of an unrelated note, or of the host itself, redraws nothing.
+    const plain = node('![[Plain]]');
+    app.put('Other.md', '## Other\n');
+    await settle();
+    expect(node('![[Plain]]')).toBe(plain);
   });
 
   it('releases the embeds with the node: folding the branch, deleting the node and closing the view drop their listeners', async () => {

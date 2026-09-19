@@ -81,7 +81,7 @@ export class MapEvents extends Component {
     this.registerDomEvent(this.canvas, "keydown", event => { this.keydown(event); });
     // Node moves use pointer events (NodeDrag); HTML5 drag and drop only brings files in.
     this.registerDomEvent(this.canvas, "dragstart", event => {
-      if (this.element(event.targetNode)?.closest("[data-node-id]")) event.preventDefault();
+      if (nodeOf(this.canvas, event.targetNode)) event.preventDefault();
     });
     this.registerDomEvent(this.canvas, "dragover", event => {
       const node = nodeOf(this.canvas, event.targetNode);

@@ -226,10 +226,24 @@ function serializeImage(image: HTMLImageElement, context: Serializer, style: CSS
   return token;
 }
 
+/**
+ * A map drawn inside a node (§5 M12) is not drawn as a map in the file (LEV-73): its nodes
+ * sit on inline transforms the style whitelist leaves out, so the frame is exported as a box
+ * of the same size that names the map, the way an unreadable image keeps its place.
+ */
+function serializeFrame(frame: Element, context: Serializer, style: CSSStyleDeclaration | null): string {
+  const size = boxOf(frame as HTMLElement);
+  const declarations = [styleDeclarations(frame, style), 'display:flex;align-items:center;justify-content:center;overflow:hidden;text-align:center'].filter(Boolean).join(';');
+  const frameClass = exportedClasses(frame, context.registry.classFor(declarations), 'mappy-export-embed');
+  const geometry = size.width > 0 && size.height > 0 ? `width:${size.width}px;height:${size.height}px` : null;
+  return `<div${serializeAttributes(frame, ['title'], { class: frameClass, style: geometry })}>${escapeText(frame.getAttribute('aria-label') ?? '')}</div>`;
+}
+
 function serializeElement(element: Element, context: Serializer, root: boolean, geometry?: { width: number; height: number }): string {
   if (element.matches(SKIPPED_SELECTOR)) return '';
   const style = computed(element);
   if (isHidden(element, style)) return '';
+  if (!root && element.classList.contains('mappy-embed')) return serializeFrame(element, context, style);
   if (element.namespaceURI === SVG_NAMESPACE) {
     // Inline SVG (icons a renderer may add) keeps its own attributes; it is already XML.
     const parent = element.parentElement;
