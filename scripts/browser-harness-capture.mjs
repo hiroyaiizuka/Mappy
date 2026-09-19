@@ -302,8 +302,8 @@ async function captureOperations(recorder, page) {
     }
   });
 
-  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('timeline-back', '左下の「通常マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy').length`);
@@ -450,8 +450,8 @@ async function captureHierarchyRows(recorder, page) {
   });
 
   // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
-  await recorder.run('hierarchy-rows-back', '左下の「マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     expect(button, 'map button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
@@ -459,6 +459,107 @@ async function captureHierarchyRows(recorder, page) {
     expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
     const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
     expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+  });
+}
+
+/** Computed colours that tell the two placeholder palettes apart: the page, the map canvas, one node and one link. */
+async function themeColors(page) {
+  return page.evaluate(`(() => {
+    const color = (element, property) => element ? getComputedStyle(element)[property] : null;
+    const pane = document.getElementById('harness-pane');
+    const node = pane.querySelector('.mappy-node:not(.is-root)');
+    return {
+      page: color(document.body, 'backgroundColor'),
+      canvas: color(pane.querySelector('.mappy-canvas'), 'backgroundColor'),
+      text: color(node, 'color'),
+      link: color(pane.querySelector('.mappy-node a.internal-link'), 'color'),
+      scheme: color(pane.querySelector('.mappy-view'), 'colorScheme'),
+    };
+  })()`);
+}
+
+/** The harness palettes (harness.css, stand-ins laid out like app.css): what each theme should resolve to. */
+const PALETTE = {
+  light: { background: 'rgb(255, 255, 255)', page: 'rgb(246, 246, 246)', text: 'rgb(34, 34, 34)' },
+  dark: { background: 'rgb(30, 30, 30)', page: 'rgb(38, 38, 38)', text: 'rgb(218, 218, 218)' },
+};
+
+/**
+ * M14 (LEV-60): the settings' theme puts `theme-light` / `theme-dark` on the map container only,
+ * and styles.css re-derives the palette there. Each combination of page theme and map theme is
+ * checked by computed colour, then left as it was (page light, map following the page).
+ */
+async function captureThemes(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  let lightLink = null;
+  await recorder.run('theme-follow-light', 'ページ明色、マップ「Obsidian に従う」（既定）', 'コンテナに theme class がなく、キャンバスはページと同じ明色の配色', async () => {
+    await page.harness('h.setPageTheme("light")');
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.length === 0, `container carries ${themes.container.join(' ')}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.light.background && colors.text === PALETTE.light.text, `canvas ${colors.canvas}, text ${colors.text}`);
+    expect(colors.link, 'no internal link rendered in a node');
+    lightLink = colors.link;
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, color-scheme ${colors.scheme}`;
+  });
+
+  await recorder.run('theme-dark-on-light', 'ページ明色のまま、マップ「暗色」→「閉じて開き直す」', 'コンテナだけが theme-dark。キャンバス・文字・リンクが暗色の配色になり、ページの背景は明色のまま。開き直しても保たれる', async () => {
+    await page.harness('h.setMapTheme("dark")');
+    await page.settle();
+    let themes = await page.harness('h.themes()');
+    expect(themes.container.join(' ') === 'theme-dark' && themes.page === 'light', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    let colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.dark.background, `canvas ${colors.canvas}`);
+    expect(colors.text === PALETTE.dark.text, `text ${colors.text}`);
+    expect(colors.page === PALETTE.light.page, `page background ${colors.page}`);
+    expect(colors.link && colors.link !== lightLink, `link ${colors.link} did not change from ${lightLink}`);
+    expect(colors.scheme === 'dark', `color-scheme ${colors.scheme}`);
+    const darkLink = colors.link;
+    await page.harness('h.reopen()');
+    await page.settle();
+    themes = await page.harness('h.themes()');
+    colors = await themeColors(page);
+    expect(themes.container.join(' ') === 'theme-dark' && colors.canvas === PALETTE.dark.background, `after reopen: ${themes.container.join(' ')}, canvas ${colors.canvas}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${darkLink}（明色時 ${lightLink}）, page ${colors.page}, color-scheme ${colors.scheme}, 開き直し後も theme-dark`;
+  });
+
+  await recorder.run('theme-light-on-dark', 'ページ暗色、マップ「明色」', 'コンテナだけが theme-light。キャンバス・文字が明色の配色になり、ページの背景は暗色', async () => {
+    await page.harness('h.setPageTheme("dark")');
+    await page.harness('h.setMapTheme("light")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.join(' ') === 'theme-light' && themes.page === 'dark', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.light.background, `canvas ${colors.canvas}`);
+    expect(colors.text === PALETTE.light.text, `text ${colors.text}`);
+    expect(colors.page === PALETTE.dark.page, `page background ${colors.page}`);
+    expect(colors.link === lightLink, `link ${colors.link} differs from the light page's ${lightLink}`);
+    expect(colors.scheme === 'light', `color-scheme ${colors.scheme}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, page ${colors.page}, color-scheme ${colors.scheme}`;
+  });
+
+  await recorder.run('theme-follow-dark', 'ページ暗色のまま、マップ「Obsidian に従う」', 'theme class が外れ、キャンバスがページと同じ暗色に戻る', async () => {
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    expect(themes.container.length === 0, `container carries ${themes.container.join(' ')}`);
+    const colors = await themeColors(page);
+    expect(colors.canvas === PALETTE.dark.background && colors.text === PALETTE.dark.text, `canvas ${colors.canvas}, text ${colors.text}`);
+    expect(colors.page === PALETTE.dark.page, `page background ${colors.page}`);
+    return `canvas ${colors.canvas}, text ${colors.text}, page ${colors.page}`;
+  });
+
+  // Runs even when a case above failed, so the later cases see the page as they always did.
+  await recorder.run('theme-back', 'ページ明色、マップ「Obsidian に従う」に戻す', '最初の状態（明色、theme class なし）に戻る', async () => {
+    await page.harness('h.setPageTheme("light")');
+    await page.harness('h.setMapTheme("follow")');
+    await page.settle();
+    const themes = await page.harness('h.themes()');
+    const colors = await themeColors(page);
+    expect(themes.container.length === 0 && themes.page === 'light', `container ${themes.container.join(' ')}, page ${themes.page}`);
+    expect(colors.canvas === PALETTE.light.background && colors.page === PALETTE.light.page, `canvas ${colors.canvas}, page ${colors.page}`);
   });
 }
 
@@ -855,7 +956,7 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
     `- ブラウザ: ${version} (${chrome})`,
     `- build: ${commit}（\`npm run harness:browser:build\` の \`dist/harness\`）`,
     `- ウィンドウ ${WINDOW.width}×${WINDOW.height}、ペイン ${PANE.width}×${PANE.height}、devicePixelRatio 1、headless`,
-    '- 対象外: 保存、リンク解決、テーマ、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
+    '- 対象外: 保存、リンク解決、Obsidian の配色（テーマのケースは harness.css の仮の配色で class と変数の切り替えだけを確認）、日本語 IME。ここでの PASS は Obsidian 実機（③ E01〜E29）の PASS ではない。',
     '- 描画時間は「時刻の記録」の生値（1 回分）。「安定」はノード位置が 3 フレーム変わらないまでの待ち（60 fps で約 50 ms）を含む。繰り返し計測と p50／p95 は `node scripts/browser-harness-perf.mjs` の記録（`artifacts/performance/`）で扱う。',
     '',
     '## fixture と主要操作',
@@ -916,6 +1017,7 @@ async function main() {
       await captureFixtures(recorder, page, timings);
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
+      await captureThemes(recorder, page);
       await captureTopicOperations(recorder, page);
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
