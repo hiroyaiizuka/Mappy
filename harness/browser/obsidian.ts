@@ -416,6 +416,27 @@ export function prepareFuzzySearch(query: string): (text: string) => SearchResul
 }
 
 /**
+ * Obsidian's own marking of matched ranges (`.suggestion-highlight`), as 1.14.2 does it: `offset` is
+ * added to each match, a match ending at or before the start of `text` is skipped, one starting past
+ * its end stops the loop, and the ranges are taken in the order given (the fuzzy search hands them sorted).
+ */
+export function renderMatches(el: HTMLElement | DocumentFragment, text: string, matches: SearchMatches | null, offset = 0): void {
+  if (!matches || matches.length === 0) { el.appendText(text); return; }
+  let cursor = 0;
+  for (const [start, end] of matches) {
+    if (cursor >= text.length) break;
+    const to = end + offset;
+    if (to <= 0) continue;
+    const from = Math.max(0, start + offset);
+    if (from >= text.length) break;
+    if (from !== cursor) el.appendText(text.slice(cursor, from));
+    el.createSpan({ cls: "suggestion-highlight", text: text.slice(from, to) });
+    cursor = to;
+  }
+  if (cursor < text.length) el.appendText(text.slice(cursor));
+}
+
+/**
  * Obsidian's prompt: a text input over a list of suggestions, re-queried on every
  * keystroke, chosen by click or Enter, moved through with the arrow keys. The DOM
  * classes (`prompt`, `prompt-results`, `suggestion-item`, `is-selected`,
@@ -527,14 +548,7 @@ export abstract class FuzzySuggestModal<T> extends SuggestModal<FuzzyMatch<T>> {
   }
 
   renderSuggestion(match: FuzzyMatch<T>, el: HTMLElement): void {
-    const text = this.getItemText(match.item);
-    let cursor = 0;
-    for (const [from, to] of match.match.matches) {
-      if (from > cursor) el.appendText(text.slice(cursor, from));
-      el.createSpan({ cls: "suggestion-highlight", text: text.slice(from, to) });
-      cursor = to;
-    }
-    if (cursor < text.length) el.appendText(text.slice(cursor));
+    renderMatches(el, this.getItemText(match.item), match.match.matches);
   }
 
   onChooseSuggestion(match: FuzzyMatch<T>, evt: MouseEvent | KeyboardEvent): void { this.onChooseItem(match.item, evt); }

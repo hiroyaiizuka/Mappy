@@ -1,4 +1,4 @@
-import { FuzzySuggestModal, type App, type FuzzyMatch, type SearchMatches, type TFile } from 'obsidian';
+import { FuzzySuggestModal, renderMatches, type App, type FuzzyMatch, type TFile } from 'obsidian';
 import { isMapNote } from './embed-target';
 
 /**
@@ -21,28 +21,11 @@ function folderOf(file: TFile): string {
 /**
  * What the fuzzy search reads: the path without its extension, so a query can name
  * the title, a folder, or `folder/title`. The title comes last, and the suggestion
- * shows it with the matches shifted by the folder's length.
+ * shows it with the matches shifted back by the folder's length.
  */
 export function searchText(file: TFile): string {
   const folder = folderOf(file);
   return folder ? `${folder}/${file.basename}` : file.basename;
-}
-
-/**
- * `text`, the slice of the searched string that starts at `offset`, with the matched
- * ranges wrapped the way Obsidian's own suggestions mark them (`.suggestion-highlight`).
- */
-function renderHighlighted(el: HTMLElement, text: string, matches: SearchMatches, offset: number): void {
-  let cursor = 0;
-  for (const [start, end] of [...matches].sort((left, right) => left[0] - right[0])) {
-    const from = Math.max(cursor, Math.min(text.length, start - offset));
-    const to = Math.max(from, Math.min(text.length, end - offset));
-    if (to === from) continue;
-    if (from > cursor) el.appendText(text.slice(cursor, from));
-    el.createSpan({ cls: 'suggestion-highlight', text: text.slice(from, to) });
-    cursor = to;
-  }
-  if (cursor < text.length) el.appendText(text.slice(cursor));
 }
 
 /**
@@ -83,8 +66,10 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
     const folder = folderOf(file);
     el.addClass('mod-complex');
     const content = el.createDiv({ cls: 'suggestion-content' });
-    renderHighlighted(content.createDiv({ cls: 'suggestion-title' }), file.basename, match.match.matches, folder ? folder.length + 1 : 0);
-    if (folder) renderHighlighted(content.createDiv({ cls: 'suggestion-note' }), folder, match.match.matches, 0);
+    // The matches index `folder/title`. Obsidian's renderMatches adds `offset` to each match and skips what falls outside
+    // the text, so the title line moves them back by the folder and the slash (Obsidian 1.14.2, LEV-71).
+    renderMatches(content.createDiv({ cls: 'suggestion-title' }), file.basename, match.match.matches, folder ? -(folder.length + 1) : 0);
+    if (folder) renderMatches(content.createDiv({ cls: 'suggestion-note' }), folder, match.match.matches);
   }
 
   onChooseItem(file: TFile): void { this.choose(file); }
