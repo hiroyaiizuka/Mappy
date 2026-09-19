@@ -5,7 +5,7 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { snapSlot, type SnapSlot, type TimelinePlace } from "../layout/snap";
 import { DocumentStore } from "../obsidian/document-store";
@@ -25,11 +25,11 @@ export const VIEW_TYPE = "mappy-map";
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
 
-/** One button per layout, in LAYOUT_MODES order; the Record keeps the list and the buttons in step. */
+/** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
-  mindmap: { label: "マップ", icon: "git-fork" },
-  timeline: { label: "タイムライン", icon: "git-commit-horizontal" },
-  hierarchy: { label: "階層図", icon: "network" },
+  mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
+  timeline: { label: LAYOUT_LABELS.timeline, icon: "git-commit-horizontal" },
+  hierarchy: { label: LAYOUT_LABELS.hierarchy, icon: "network" },
 };
 
 export class MindmapView extends ItemView {

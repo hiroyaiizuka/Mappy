@@ -1,4 +1,4 @@
-import { normalizePath, type App, type TFile, type TFolder } from 'obsidian';
+import { TFolder, normalizePath, type App, type TFile } from 'obsidian';
 import type { LayoutMode } from '../core/layout-mode';
 import { LAYOUT_KEY } from './frontmatter';
 
@@ -22,21 +22,35 @@ function childPath(folder: string, name: string): string {
   return normalizePath(folder ? `${folder}/${name}` : name);
 }
 
+function badFolder(path: string, reason: string): Error {
+  return new Error(`作成先「${path}」${reason}。設定の「新規マップの作成先フォルダ」を確認してください。`);
+}
+
 /**
  * The folder a new map goes to. An empty setting keeps Obsidian's own "default
  * location for new notes"; a path is created when missing and refused when a
- * file already has that name, so nothing is ever overwritten.
+ * file already has that name, so nothing is ever overwritten. `normalizePath`
+ * only tidies slashes, so `.`, `..` and dot-folders (which the vault does not
+ * index) are refused here: `createFolder` would otherwise make a folder the
+ * vault cannot see, or one outside it.
  */
 export async function resolveNewMapFolder(app: App, folder: string, sourcePath: string, fileName: string): Promise<TFolder> {
   const requested = folder.trim();
   if (!requested) return app.fileManager.getNewFileParent(sourcePath, fileName);
   const path = normalizePath(requested);
-  // normalizePath turns "/" into "" (and "./" likewise); a non-empty setting that ends up empty means the root.
+  // normalizePath strips leading and trailing slashes, so "/" comes back as "" or "/"; either way the user asked for the root.
   if (!path || path === '/') return app.vault.getRoot();
-  const existing = app.vault.getFolderByPath(path);
-  if (existing) return existing;
-  if (app.vault.getAbstractFileByPath(path)) throw new Error(`作成先「${path}」はフォルダではありません。設定の「新規マップの作成先フォルダ」を確認してください。`);
-  return app.vault.createFolder(path);
+  if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'に . で始まる名前は使えません');
+  // The file system is usually case-insensitive: `maps` must reuse an existing `Maps` rather than fail to create it,
+  // and a file called `Maps` blocks `maps` just as it blocks `Maps`.
+  const lower = path.toLowerCase();
+  const existing = app.vault.getAbstractFileByPath(path)
+    ?? app.vault.getAllLoadedFiles().find(candidate => candidate.path.toLowerCase() === lower);
+  if (existing instanceof TFolder) return existing;
+  if (existing) throw badFolder(path, 'はフォルダではありません');
+  const created: TFolder | null = await app.vault.createFolder(path);
+  if (!created) throw badFolder(path, 'を作成できませんでした');
+  return created;
 }
 
 /** Create without overwriting, in the configured folder (or Obsidian's), with the configured layout. */

@@ -7,7 +7,7 @@
  */
 import type { App, EventRef, TFile as ObsidianFile, ViewState } from "obsidian";
 
-export { TFile, normalizePath } from "../../tests/mocks/obsidian-file";
+export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
 
 interface HarnessEventRef extends EventRef {
   events: Events;
@@ -388,13 +388,27 @@ export class Setting {
   addText(callback: (text: TextComponent) => unknown): this { callback(new TextComponent(this.controlEl)); return this; }
 }
 
-/** The settings tab's container; Obsidian calls `display()` when the tab opens and `hide()` when it closes. */
+/**
+ * The settings tab as Obsidian 1.13+ drives it (app.js 1.14.2): `addSettingTab` calls `update()`,
+ * which stores `getSettingDefinitions()` in `settingItems`; the tab then renders those when there
+ * are any and falls back to `display()` otherwise. A subclass member named like one of these
+ * shadows the base, which is what this mock exists to catch.
+ */
 export abstract class PluginSettingTab {
   readonly containerEl: HTMLElement;
+  settingItems: unknown[] = [];
   constructor(readonly app: App, readonly plugin: unknown) {
     this.containerEl = document.createElement("div");
     this.containerEl.className = "vertical-tab-content";
   }
+  getSettingDefinitions(): unknown[] { return []; }
+  update(): void { this.settingItems = this.getSettingDefinitions(); }
+  getControlValue(key: string): unknown { return this.values[key]; }
+  setControlValue(key: string, value: unknown): void | Promise<void> { this.values[key] = value; }
+  /** Stand-in for `this.plugin.settings`, which the real default implementations read and write. */
+  private readonly values: Record<string, unknown> = {};
+  /** What Obsidian 1.13+ does when the tab is shown. */
+  renderTab(): void { if (this.settingItems.length === 0) this.display(); }
   abstract display(): void;
   hide(): void { this.containerEl.empty(); }
 }

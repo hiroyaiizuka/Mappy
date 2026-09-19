@@ -1,10 +1,10 @@
 import { Notice, PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
-import { LAYOUT_MODES, isLayoutMode, type LayoutMode } from '../core/layout-mode';
-import { MAP_THEMES, isMapTheme, type MapTheme, type MappySettings } from './settings';
+import { LAYOUT_LABELS, LAYOUT_MODES } from '../core/layout-mode';
+import {
+  DEFAULT_SETTINGS, MAP_THEMES, isSettingKey, readSettingField, type MapTheme, type MappySettings, type SettingKey,
+} from './settings';
 
-/** Dropdown labels. The Record types make a new mode (M11's `balanced`) a compile error here until it has a label. */
 export const THEME_LABELS: Record<MapTheme, string> = { follow: 'Obsidian に従う', light: '明色', dark: '暗色' };
-export const LAYOUT_LABELS: Record<LayoutMode, string> = { mindmap: '通常マップ', timeline: 'タイムライン', hierarchy: '階層図' };
 
 /** The plugin owns the settings object and `saveData`; the tab only reads and asks for a save. */
 export interface SettingsStore {
@@ -19,13 +19,16 @@ export interface SettingsStore {
  * through `getSettingDefinitions()` / `getControlValue()` / `setControlValue()`, which also puts
  * them in its settings search; earlier versions call `display()`, which builds the same three
  * from this list. Either way the note is never touched: only `loadData` / `saveData` change.
+ *
+ * With the types pinned, nothing checks these overrides against the 1.13 base class, so no
+ * other member of this class may use a `SettingTab` name (`update`, `settingItems`, `hide`, …).
  */
 export interface MapSettingDefinition {
   name: string;
   desc: string;
   control:
-    | { type: 'dropdown'; key: keyof MappySettings; options: Record<string, string>; defaultValue: string }
-    | { type: 'text'; key: keyof MappySettings; placeholder: string; defaultValue: string };
+    | { type: 'dropdown'; key: SettingKey; options: Record<string, string>; defaultValue: string }
+    | { type: 'text'; key: SettingKey; placeholder: string; defaultValue: string };
 }
 
 function options<K extends string>(keys: readonly K[], labels: Record<K, string>): Record<string, string> {
@@ -38,29 +41,19 @@ export function mapSettingDefinitions(): MapSettingDefinition[] {
     {
       name: 'テーマ',
       desc: 'マップの表示だけに適用します。Obsidian の埋め込みや Excalidraw への挿入は Obsidian のテーマに従います。',
-      control: { type: 'dropdown', key: 'theme', options: options(MAP_THEMES, THEME_LABELS), defaultValue: 'follow' },
+      control: { type: 'dropdown', key: 'theme', options: options(MAP_THEMES, THEME_LABELS), defaultValue: DEFAULT_SETTINGS.theme },
     },
     {
       name: '新規マップの既定レイアウト',
       desc: '「新しいマインドマップを作成」と「このノートをマインドマップ化」が mappy-layout に書く値です。既存のノートの表示は変わりません。',
-      control: { type: 'dropdown', key: 'defaultLayout', options: options(LAYOUT_MODES, LAYOUT_LABELS), defaultValue: 'mindmap' },
+      control: { type: 'dropdown', key: 'defaultLayout', options: options(LAYOUT_MODES, LAYOUT_LABELS), defaultValue: DEFAULT_SETTINGS.defaultLayout },
     },
     {
       name: '新規マップの作成先フォルダ',
       desc: 'Vault からの相対パスです。空欄なら Obsidian の「新規ノートの作成場所」に従い、/ で最上位を指定します。存在しないフォルダは作成時に作ります。',
-      control: { type: 'text', key: 'newMapFolder', placeholder: '例: Maps', defaultValue: '' },
+      control: { type: 'text', key: 'newMapFolder', placeholder: '例: Maps', defaultValue: DEFAULT_SETTINGS.newMapFolder },
     },
   ];
-}
-
-/** The stored form of a control's value, or null when the control cannot hold it (then nothing is saved). */
-function accept(key: string, value: unknown): Partial<MappySettings> | null {
-  switch (key) {
-    case 'theme': return isMapTheme(value) ? { theme: value } : null;
-    case 'defaultLayout': return isLayoutMode(value) ? { defaultLayout: value } : null;
-    case 'newMapFolder': return typeof value === 'string' ? { newMapFolder: value.trim() } : null;
-    default: return null;
-  }
 }
 
 export class MappySettingTab extends PluginSettingTab {
@@ -72,13 +65,14 @@ export class MappySettingTab extends PluginSettingTab {
   }
 
   getControlValue(key: string): unknown {
-    const settings = this.store.current();
-    return key in settings ? settings[key as keyof MappySettings] : undefined;
+    return isSettingKey(key) ? this.store.current()[key] : undefined;
   }
 
+  /** A value the control cannot hold (or a key that is not a setting) is not saved. */
   setControlValue(key: string, value: unknown): Promise<void> {
-    const patch = accept(key, value);
-    return patch ? this.store.save({ ...this.store.current(), ...patch }) : Promise.resolve();
+    if (!isSettingKey(key)) return Promise.resolve();
+    const accepted = readSettingField(key, value);
+    return accepted === null ? Promise.resolve() : this.store.save({ ...this.store.current(), [key]: accepted });
   }
 
   /** Obsidian before 1.13: the same three settings, built by hand. */
@@ -92,17 +86,17 @@ export class MappySettingTab extends PluginSettingTab {
       const value = settings[control.key];
       if (control.type === 'dropdown') {
         setting.addDropdown(dropdown => {
-          dropdown.addOptions(control.options).setValue(value).onChange(next => { this.update(control.key, next); });
+          dropdown.addOptions(control.options).setValue(value).onChange(next => { this.commit(control.key, next); });
         });
       } else {
         setting.addText(text => {
-          text.setPlaceholder(control.placeholder).setValue(value).onChange(next => { this.update(control.key, next); });
+          text.setPlaceholder(control.placeholder).setValue(value).onChange(next => { this.commit(control.key, next); });
         });
       }
     }
   }
 
-  private update(key: keyof MappySettings, value: string): void {
+  private commit(key: SettingKey, value: string): void {
     this.setControlValue(key, value).catch((error: unknown) => {
       new Notice(error instanceof Error ? error.message : '設定を保存できませんでした。');
     });

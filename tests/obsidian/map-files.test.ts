@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TFile, type App, type TFolder } from 'obsidian';
+import { TFile, TFolder, type App } from 'obsidian';
 import { createMindmapFile, newMindmapSource, resolveNewMapFolder } from '../../src/obsidian/map-files';
 
 describe('newMindmapSource', () => {
@@ -13,28 +13,37 @@ describe('newMindmapSource', () => {
   });
 });
 
-/** A vault of folders and files by path; `create` records what it was asked to write. */
+function folderAt(path: string): TFolder {
+  const folder = new TFolder();
+  folder.path = path;
+  return folder;
+}
+
+function fileAt(path: string): TFile {
+  const file = new TFile();
+  file.path = path;
+  return file;
+}
+
+/** A vault of folders and files by path (case-sensitive, as Obsidian's index is); `create` records what it was asked to write. */
 function vault(options: { folders?: string[]; files?: string[]; newFileParent?: string } = {}) {
-  const folders = new Map((options.folders ?? []).map(path => [path, { path } as TFolder]));
-  const files = new Set(options.files ?? []);
-  const root = { path: '/' } as TFolder;
-  const create = vi.fn((path: string) => {
-    const created = new TFile();
-    created.path = path;
-    return Promise.resolve(created);
-  });
+  const entries = new Map<string, TFolder | TFile>();
+  for (const path of options.folders ?? []) entries.set(path, folderAt(path));
+  for (const path of options.files ?? []) entries.set(path, fileAt(path));
+  const root = folderAt('/');
+  const create = vi.fn((path: string) => Promise.resolve(fileAt(path)));
   const createFolder = vi.fn((path: string) => {
-    const folder = { path } as TFolder;
-    folders.set(path, folder);
+    const folder = folderAt(path);
+    entries.set(path, folder);
     return Promise.resolve(folder);
   });
-  const getNewFileParent = vi.fn(() => ({ path: options.newFileParent ?? 'Inbox' }) as TFolder);
+  const getNewFileParent = vi.fn(() => folderAt(options.newFileParent ?? 'Inbox'));
   const app = {
     fileManager: { getNewFileParent },
     vault: {
       getRoot: () => root,
-      getFolderByPath: (path: string) => folders.get(path) ?? null,
-      getAbstractFileByPath: (path: string) => folders.get(path) ?? (files.has(path) ? { path } : null),
+      getAbstractFileByPath: (path: string) => entries.get(path) ?? null,
+      getAllLoadedFiles: () => [root, ...entries.values()],
       create,
       createFolder,
     },
@@ -80,23 +89,35 @@ describe('resolveNewMapFolder', () => {
     await expect(resolveNewMapFolder(app, 'Maps.md', '', 'x.md')).rejects.toThrow('作成先「Maps.md」はフォルダではありません');
     expect(createFolder).not.toHaveBeenCalled();
   });
+
+  it('reuses a folder whose name differs only in case, and treats a file of that name as blocking too', async () => {
+    const { app, createFolder } = vault({ folders: ['Maps'], files: ['Notes/Plan.md'] });
+    expect((await resolveNewMapFolder(app, 'maps', '', 'x.md')).path).toBe('Maps');
+    expect((await resolveNewMapFolder(app, 'MAPS/', '', 'x.md')).path).toBe('Maps');
+    await expect(resolveNewMapFolder(app, 'notes/plan.md', '', 'x.md')).rejects.toThrow('はフォルダではありません');
+    expect(createFolder).not.toHaveBeenCalled();
+  });
+
+  it('refuses ".", ".." and dot-folders, which normalizePath keeps and the vault cannot index', async () => {
+    const { app, createFolder } = vault();
+    for (const setting of ['./Maps', '../Maps', 'Maps/../Other', 'Maps/./2026', '.maps', 'Maps/.hidden', '..']) {
+      await expect(resolveNewMapFolder(app, setting, '', 'x.md')).rejects.toThrow('に . で始まる名前は使えません');
+    }
+    expect(createFolder).not.toHaveBeenCalled();
+  });
+
+  it('reports a folder the vault could not create instead of returning nothing', async () => {
+    const { app, createFolder } = vault();
+    createFolder.mockImplementationOnce(() => Promise.resolve(null as unknown as TFolder));
+    await expect(resolveNewMapFolder(app, 'Maps', '', 'x.md')).rejects.toThrow('作成先「Maps」を作成できませんでした');
+  });
 });
 
 describe('createMindmapFile', () => {
   it('uses the configured new-file folder and finds a non-conflicting name', async () => {
-    const created = new TFile();
-    created.path = 'Maps/無題のマインドマップ 2.md';
-    const create = vi.fn(() => Promise.resolve(created));
-    const getNewFileParent = vi.fn(() => ({ path: 'Maps' }));
-    const app = {
-      fileManager: { getNewFileParent },
-      vault: {
-        getAbstractFileByPath: vi.fn((path: string) => path === 'Maps/無題のマインドマップ.md' ? {} : null),
-        create,
-      },
-    } as unknown as App;
-
-    await expect(createMindmapFile(app, 'Notes/Current.md')).resolves.toBe(created);
+    const { app, create, getNewFileParent } = vault({ newFileParent: 'Maps', files: ['Maps/無題のマインドマップ.md'] });
+    const file = await createMindmapFile(app, 'Notes/Current.md');
+    expect(file.path).toBe('Maps/無題のマインドマップ 2.md');
     expect(getNewFileParent).toHaveBeenCalledWith('Notes/Current.md', '無題のマインドマップ.md');
     expect(create).toHaveBeenCalledWith(
       'Maps/無題のマインドマップ 2.md',

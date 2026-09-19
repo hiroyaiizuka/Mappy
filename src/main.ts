@@ -168,8 +168,10 @@ export default class MappyPlugin extends Plugin {
 
   /** Settings are presentation and defaults for new maps only: saving one never touches a note. */
   private async saveSettings(next: MappySettings): Promise<void> {
+    const themeChanged = next.theme !== this.settings.theme;
     this.settings = next;
     await this.saveData(next);
+    if (!themeChanged) return;
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (leaf.view instanceof MindmapView) leaf.view.setTheme(next.theme);
     }

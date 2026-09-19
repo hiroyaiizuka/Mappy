@@ -302,8 +302,8 @@ async function captureOperations(recorder, page) {
     }
   });
 
-  await recorder.run('timeline-back', '左下の「マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('timeline-back', '左下の「通常マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy').length`);
@@ -450,8 +450,8 @@ async function captureHierarchyRows(recorder, page) {
   });
 
   // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
-  await recorder.run('hierarchy-rows-back', '左下の「マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
-    const button = await page.harness('h.button("マップ")');
+  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+    const button = await page.harness('h.button("通常マップ")');
     expect(button, 'map button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();

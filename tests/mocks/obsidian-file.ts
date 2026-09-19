@@ -10,8 +10,17 @@ export class TFile {
   get extension(): string { return this.name.includes('.') ? this.name.split('.').pop() ?? '' : ''; }
 }
 
-/** Obsidian's rules: forward slashes, no run of slashes, none leading or trailing; the empty result is the root, `/`. */
+export class TFolder {
+  path = '';
+  get name(): string { return this.path.split('/').pop() ?? ''; }
+  isRoot(): boolean { return this.path === '/'; }
+}
+
+/**
+ * Obsidian's rules (app.js 1.14.2): forward slashes, no run of slashes, none leading or
+ * trailing, the empty result is the root `/`. Nothing else: `.` and `..` segments stay.
+ */
 export function normalizePath(path: string): string {
-  const normalized = path.replace(/[\\/]+/gu, '/').replace(/^\.\//u, '').replace(/^\/+|\/+$/gu, '');
+  const normalized = path.replace(/[\\/]+/gu, '/').replace(/^\/+|\/+$/gu, '');
   return normalized === '' ? '/' : normalized;
 }

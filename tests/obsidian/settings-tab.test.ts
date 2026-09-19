@@ -2,9 +2,10 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Plugin } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
-import { LAYOUT_MODES } from '../../src/core/layout-mode';
+import type { PluginSettingTab as HarnessSettingTab } from '../../harness/browser/obsidian';
+import { LAYOUT_LABELS, LAYOUT_MODES } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
-import { LAYOUT_LABELS, MappySettingTab, THEME_LABELS } from '../../src/obsidian/settings-tab';
+import { MappySettingTab, THEME_LABELS } from '../../src/obsidian/settings-tab';
 
 // The browser-harness stand-in for `obsidian`: Setting, DropdownComponent, TextComponent and PluginSettingTab on a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -101,6 +102,22 @@ describe('MappySettingTab', () => {
     expect(folder?.control.type === 'text' && folder.control.placeholder).toBe('例: Maps');
     // display() renders exactly these, so both Obsidian generations show the same tab.
     expect(Array.from(tab.containerEl.querySelectorAll('.setting-item-name'), item => item.textContent)).toEqual(definitions.map(definition => definition.name));
+  });
+
+  it('survives Obsidian 1.13+\'s addSettingTab → update() → render flow: three items stored, no save, no fallback to display()', () => {
+    const { tab, save } = mount();
+    // The 1.8.7 types know nothing of the 1.13 members; the mock models them (harness/browser/obsidian.ts).
+    const runtime = tab as unknown as HarnessSettingTab;
+    tab.containerEl.empty();
+    // update() is the base class's own method (app.js 1.14.2); a subclass member of that name would shadow it.
+    runtime.update();
+    expect(runtime.settingItems).toHaveLength(3);
+    expect(save).not.toHaveBeenCalled();
+    runtime.renderTab();
+    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(0);
+    for (const name of ['update', 'settingItems', 'hide', 'renderTab']) {
+      expect(Object.getOwnPropertyNames(MappySettingTab.prototype)).not.toContain(name);
+    }
   });
 
   it('reads and writes the controls through the store, trimming the folder and refusing unusable values', async () => {

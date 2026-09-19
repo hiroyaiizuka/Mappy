@@ -23,6 +23,27 @@ export interface MappySettings {
 
 export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '' };
 
+export type SettingKey = keyof MappySettings;
+
+export function isSettingKey(key: string): key is SettingKey {
+  return Object.keys(DEFAULT_SETTINGS).includes(key);
+}
+
+/**
+ * One reader per field: the stored form of a candidate value, or null when the
+ * field cannot hold it. The data file and the settings tab both go through these,
+ * so what the tab accepts is exactly what survives a reload.
+ */
+const READERS: { [K in SettingKey]: (value: unknown) => MappySettings[K] | null } = {
+  theme: value => isMapTheme(value) ? value : null,
+  defaultLayout: value => isLayoutMode(value) ? value : null,
+  newMapFolder: value => typeof value === 'string' ? value.trim() : null,
+};
+
+export function readSettingField<K extends SettingKey>(key: K, value: unknown): MappySettings[K] | null {
+  return READERS[key](value);
+}
+
 /**
  * Stored data may be missing, from an older version or hand-edited; anything
  * unknown falls back to the default field by field, and unknown keys are dropped.
@@ -30,8 +51,8 @@ export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout:
 export function normalizeSettings(raw: unknown): MappySettings {
   const data = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   return {
-    theme: isMapTheme(data.theme) ? data.theme : DEFAULT_SETTINGS.theme,
-    defaultLayout: isLayoutMode(data.defaultLayout) ? data.defaultLayout : DEFAULT_SETTINGS.defaultLayout,
-    newMapFolder: typeof data.newMapFolder === 'string' ? data.newMapFolder.trim() : DEFAULT_SETTINGS.newMapFolder,
+    theme: readSettingField('theme', data.theme) ?? DEFAULT_SETTINGS.theme,
+    defaultLayout: readSettingField('defaultLayout', data.defaultLayout) ?? DEFAULT_SETTINGS.defaultLayout,
+    newMapFolder: readSettingField('newMapFolder', data.newMapFolder) ?? DEFAULT_SETTINGS.newMapFolder,
   };
 }
