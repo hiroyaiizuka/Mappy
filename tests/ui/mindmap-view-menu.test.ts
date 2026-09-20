@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
+import { Notice } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import type { MapMenuAction, MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -15,6 +16,7 @@ const opened: MountedMapView[] = [];
 afterEach(async () => {
   for (const mounted of opened.splice(0)) await mounted.close();
   document.body.replaceChildren();
+  Notice.log.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -146,6 +148,18 @@ function contextMenuItems(target: EventTarget): string[] {
   return titles;
 }
 
+/** Open the context menu at a target and choose an entry; `disabled` reports the entry's state instead of choosing it. */
+function contextMenu(target: EventTarget, title: string, mode: 'choose' | 'disabled' = 'choose'): boolean {
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+  const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
+    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
+  if (!item) throw new Error(`The context menu has no entry ${title}`);
+  const state = item.classList.contains('is-disabled') && item.getAttribute('aria-disabled') === 'true';
+  if (mode === 'choose') item.click();
+  document.querySelector('.menu')?.remove();
+  return state;
+}
+
 describe('the 操作 popover at the top right (§5 M3)', () => {
   it('has one button there, the settings gear named 操作 with the menu attributes, and no popover until it is pressed', async () => {
     const { view, actions, gear, popover } = await mount();
@@ -187,9 +201,10 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
 
   it('sits under the gear with the right edges aligned, at most 320px wide, offsets taken from the pane so a popout window is the same', async () => {
     const mounted = await mount();
-    // No layout yet (every rect is empty, as in a hidden pane): the stylesheet's maximum stays.
+    // No layout yet (every rect is empty, as in a hidden pane): no cap, the content's own size.
     mounted.open();
     expect((mounted.popover() as HTMLElement).style.maxWidth).toBe('');
+    expect((mounted.popover() as HTMLElement).style.maxHeight).toBe('');
     mounted.gear().click();
     mounted.place(1280);
     mounted.open();
@@ -198,6 +213,8 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
     expect(card.style.top).toBe('58px');
     expect(card.style.right).toBe('20px');
     expect(card.style.maxWidth).toBe('320px');
+    // The room under the gear, less the margin at the bottom.
+    expect(card.style.maxHeight).toBe(`${800 - 58 - 16}px`);
     mounted.gear().click();
     // A pane that does not start at the window's origin (a split, a popout): the same offsets.
     mounted.place(900, 600, 380, 120);
@@ -206,6 +223,19 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
     expect(moved.style.top).toBe('58px');
     expect(moved.style.right).toBe('20px');
     expect(moved.style.maxWidth).toBe('320px');
+    expect(moved.style.maxHeight).toBe(`${600 - 58 - 16}px`);
+  });
+
+  it('caps its height to the room under the gear in a short pane, where the card scrolls instead of being cut', async () => {
+    const mounted = await mount();
+    mounted.place(1280, 200);
+    mounted.open();
+    const card = mounted.popover() as HTMLElement;
+    expect(card.style.maxHeight).toBe('126px');
+    expect(58 + 126 + 16).toBe(200);
+    mounted.place(1280, 800);
+    mounted.view.onResize();
+    expect(card.style.maxHeight).toBe('726px');
   });
 
   it('keeps its left edge inside a narrow pane: the full width at 400px, less below that, and follows a resize while open', async () => {
@@ -314,25 +344,79 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
     press(view.containerEl.querySelector('.mappy-zoom button') as HTMLElement);
     expect(popover()).toBeNull();
     open();
+    // Outside the view the press comes first and its target takes the focus by itself afterwards (a browser default jsdom
+    // does not run): the card only steps aside, so the focus is on nothing of the map's — the body, once the item is gone.
     const elsewhere = document.body.createDiv();
     press(elsewhere);
     expect(popover()).toBeNull();
-    expect(document.activeElement).not.toBe(canvas);
-    // The listener went with the card: a later press is nobody's business.
+    expect(document.activeElement).toBe(document.body);
+    // A press on the card itself is not outside.
     open();
     const card = popover() as HTMLElement;
     press(card);
     expect(popover()).toBe(card);
   });
 
-  it('closes with the view and releases its outside-press listener', async () => {
+  it('closes when the focus is taken outside it, leaving the focus where it went, and not when the gear takes it', async () => {
+    const { open, popover, gear, node, canvas } = await mount();
+    open();
+    // A node refocused by an inline edit that finished saving, a modal's input, another pane: the card has lost its keys.
+    const target = node('睡眠');
+    target.focus();
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(target);
+    open();
+    const elsewhere = document.body.createEl('input');
+    elsewhere.focus();
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(elsewhere);
+    // The gear takes the focus on its press (Chromium); its click is what toggles.
+    open();
+    gear().focus();
+    expect(popover()).not.toBeNull();
+    gear().click();
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(canvas);
+  });
+
+  it('closes a tick after a blur with no successor unless the focus has come back to the card', async () => {
+    const { open, popover, items, canvas } = await mount();
+    const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+    open();
+    (document.activeElement as HTMLElement).blur();
+    expect(popover()).not.toBeNull();
+    await tick();
+    expect(popover()).toBeNull();
+    expect(document.activeElement).not.toBe(canvas);
+    // The focus returning before the tick (the window regaining it): the card stays.
+    open();
+    const first = items()[0] as HTMLButtonElement;
+    first.blur();
+    first.focus();
+    await tick();
+    expect(popover()).not.toBeNull();
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('closes when the window loses the focus (a popout\'s card, the main window pressed), leaving the focus alone', async () => {
+    const { open, popover, gear, canvas } = await mount();
+    open();
+    window.dispatchEvent(new Event('blur'));
+    expect(popover()).toBeNull();
+    expect(gear().getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).not.toBe(canvas);
+  });
+
+  it('closes with the view and releases its listeners on the document and the window', async () => {
     const mounted = await mount();
     mounted.open();
     const removed = vi.spyOn(document, 'removeEventListener');
+    const removedFromWindow = vi.spyOn(window, 'removeEventListener');
     await mounted.close();
     expect(document.querySelector('.mappy-popover')).toBeNull();
     expect(mounted.gear().getAttribute('aria-expanded')).toBe('false');
     expect(removed.mock.calls.some(([type, , options]) => type === 'pointerdown' && options === true)).toBe(true);
+    expect(removedFromWindow.mock.calls.some(([type]) => type === 'blur')).toBe(true);
   });
 
   it('stays in place while the map pans and changes layout under it', async () => {
@@ -411,5 +495,37 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
     expect(contextMenuItems(canvas)).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
     const headings = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
     expect(contextMenuItems(headings.node('第 1 章'))).toEqual([...NODE_CONTEXT_MENU, 'リスト形式に変更']);
+  });
+
+  it('still converts a headings note to the list form from the context menu, with the same result as the command', async () => {
+    const { node, source, view, settle } = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
+    expect(contextMenu(node('第 1 章'), 'リスト形式に変更', 'disabled')).toBe(false);
+    contextMenu(node('第 1 章'), 'リスト形式に変更');
+    await settle();
+    expect(source()).toBe('---\nmappy: true\n---\n## 講座\n\n- 第 1 章\n\n  本文。\n\n- 第 2 章\n');
+    expect(Notice.log).toContain('H2 とリストの形式に変更しました。元に戻す操作で復元できます。');
+    expect(view.snapshot()?.document?.format).toBe('list');
+    // A list note offers no conversion.
+    expect(contextMenuItems(node('第 1 章'))).toEqual(NODE_CONTEXT_MENU);
+  });
+
+  it('still undoes and redoes from the context menu, enabled as the history allows', async () => {
+    const { node, select, key, settle, editor, source, canvas } = await mount();
+    const original = source();
+    expect(contextMenu(node('睡眠'), '元に戻す', 'disabled')).toBe(true);
+    expect(contextMenu(node('睡眠'), 'やり直す', 'disabled')).toBe(true);
+    key(select('睡眠'), 'Delete');
+    await settle();
+    expect(editor()).toBeNull();
+    const deleted = source();
+    expect(deleted).not.toBe(original);
+    expect(contextMenu(canvas, '元に戻す', 'disabled')).toBe(false);
+    contextMenu(canvas, '元に戻す');
+    await settle();
+    expect(source()).toBe(original);
+    expect(contextMenu(canvas, 'やり直す', 'disabled')).toBe(false);
+    contextMenu(canvas, 'やり直す');
+    await settle();
+    expect(source()).toBe(deleted);
   });
 });

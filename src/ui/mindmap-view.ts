@@ -131,8 +131,8 @@ export class MindmapView extends ItemView {
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
   private bodyModal: EditModal | undefined;
-  /** The 操作 popover while it is open (§5 M3): its card under the gear, its items in order, and the release of the press listener outside it. */
-  private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; items: HTMLButtonElement[]; release: () => void } | null = null;
+  /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
+  private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; release: () => void } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
@@ -447,16 +447,23 @@ export class MindmapView extends ItemView {
    * it follows the pane (a popout window, a narrow one) and never leaves it, where Obsidian's `Menu` at the
    * window's right edge did. Whether an item is enabled is judged as the card opens, as the menu did: the
    * Markdown switch needs the note and its document, the plugin's items answer their own `check`. A
-   * disabled item stays in the tab order and does nothing, so it is still found and read.
+   * disabled item is still reached with ↑↓ and Tab on the card and does nothing, so it is found and read.
    *
    * Keys, on the card: the first item takes the focus; ↑↓ (Home／End) move, Tab and Shift+Tab cycle,
    * Enter／Space run the focused item, Escape closes. A press outside the card and the gear, the gear's
    * next press, choosing an item and the view's closing close it too. Closing puts the focus back on the
    * canvas, except on a press outside the view, whose target takes the focus itself.
+   *
+   * The keys live on the focus (Obsidian's `Menu` has the keymap instead), so the card goes whenever the
+   * focus is taken outside it — a node refocused by an inline edit that finished saving, the command
+   * palette, another tab, the window losing focus to another (a popout's card, the main window pressed) —
+   * and leaves the focus where it went; a card left open without its keys would have no Escape. The gear
+   * taking the focus on its press is not that: its click toggles.
    */
   private openPopover(anchor: HTMLButtonElement): void {
     if (this.popover) return;
     const doc = this.contentEl.doc;
+    const win = this.contentEl.win;
     const element = this.contentEl.createDiv({ cls: "mappy-popover", attr: { role: "menu", "aria-label": "操作" } });
     const items: HTMLButtonElement[] = [];
     const add = (title: string, description: string, icon: string, enabled: boolean, run: () => void): void => {
@@ -479,7 +486,7 @@ export class MindmapView extends ItemView {
     for (const action of this.menuActions) add(action.title, action.description, action.icon, action.check(this), () => { action.run(this); });
     element.addEventListener("keydown", event => {
       const focused = items.findIndex(item => item === doc.activeElement);
-      const move = (to: number): void => { items[(to + items.length) % items.length]?.focus(); };
+      const move = (to: number): void => { items[(to + items.length) % items.length]?.focus({ preventScroll: true }); };
       const previous = focused < 0 ? items.length - 1 : focused - 1;
       switch (event.key) {
         case "ArrowDown": move(focused + 1); break;
@@ -499,25 +506,43 @@ export class MindmapView extends ItemView {
       const target = event.targetNode;
       if (!target?.instanceOf(Element) || !target.closest("button")) event.preventDefault();
     });
+    // The focus leaving the card (see above). A known destination decides at once; none (a blur with no successor: a
+    // touch on nothing focusable, the window) is judged a tick later, once a gear press has had its click and a
+    // focus that merely returned (the window's) has shown itself.
+    element.addEventListener("focusout", event => {
+      const next = event.relatedTarget as Node | null;
+      if (next && (element.contains(next) || anchor.contains(next))) return;
+      if (next) { this.closePopover(false); return; }
+      win.setTimeout(() => { if (this.popover?.element === element && !element.contains(doc.activeElement)) this.closePopover(false); }, 0);
+    });
     // The press outside, at the capture phase so no pane can swallow it; a press on the gear is left to its click, which toggles.
     const outside = (event: PointerEvent): void => {
       const target = event.targetNode;
       if (!target || element.contains(target) || anchor.contains(target)) return;
       this.closePopover(this.contentEl.contains(target));
     };
+    // The window losing the focus to another window (or app): the outside press of a popout's card lands in the main
+    // window, whose document has no listener, and the focus stays on the item as far as this document can tell.
+    const blurred = (): void => { this.closePopover(false); };
     doc.addEventListener("pointerdown", outside, true);
-    this.popover = { element, anchor, items, release: () => { doc.removeEventListener("pointerdown", outside, true); } };
+    win.addEventListener("blur", blurred);
+    this.popover = { element, anchor, release: () => {
+      doc.removeEventListener("pointerdown", outside, true);
+      win.removeEventListener("blur", blurred);
+    } };
     anchor.setAttribute("aria-expanded", "true");
     this.placePopover();
-    items[0]?.focus();
+    items[0]?.focus({ preventScroll: true });
   }
 
   /**
    * Under the gear, the right edges aligned: offsets from the pane's top and right edges, since the card
    * and the gear are both positioned in `.mappy-view`, so the card sits where the gear is at any pane size.
    * The width is the content's, at most POPOVER_MAX_WIDTH and less in a pane too narrow for that plus the
-   * margin on the left, so the card's left edge never leaves the pane (a 400px pane still fits the full width).
-   * A pane without a layout yet (no width) leaves the stylesheet's maximum in place until the next resize.
+   * margin on the left, so the card's left edge never leaves the pane (a 400px pane still fits the full width);
+   * the height is likewise capped to what is left under the gear, the card scrolling inside a short pane
+   * rather than being cut by the view's `overflow: hidden`. A pane without a layout yet (empty rects) sets
+   * no cap: the content's own width until the next resize.
    */
   private placePopover(): void {
     if (!this.popover) return;
@@ -525,13 +550,19 @@ export class MindmapView extends ItemView {
     const pane = this.contentEl.getBoundingClientRect();
     const gear = anchor.getBoundingClientRect();
     const right = Math.max(0, pane.right - gear.right);
-    const available = pane.width - right - POPOVER_MARGIN;
-    element.style.top = `${gear.bottom - pane.top + POPOVER_GAP}px`;
+    const top = gear.bottom - pane.top + POPOVER_GAP;
+    const width = pane.width - right - POPOVER_MARGIN;
+    const height = pane.height - top - POPOVER_MARGIN;
+    element.style.top = `${top}px`;
     element.style.right = `${right}px`;
-    element.style.maxWidth = available > 0 ? `${Math.min(POPOVER_MAX_WIDTH, available)}px` : "";
+    element.style.maxWidth = width > 0 ? `${Math.min(POPOVER_MAX_WIDTH, width)}px` : "";
+    element.style.maxHeight = height > 0 ? `${height}px` : "";
   }
 
-  /** Take the card down and, unless the focus is going elsewhere anyway, give it back to the canvas. */
+  /**
+   * Take the card down and, unless the focus is going elsewhere anyway, give it back to the canvas — without
+   * scrolling: `.mappy-view` hides its overflow, and a focus that scrolled it would shift the map and its controls.
+   */
   private closePopover(focus: boolean): void {
     const popover = this.popover;
     if (!popover) return;
@@ -539,7 +570,7 @@ export class MindmapView extends ItemView {
     popover.release();
     popover.element.remove();
     popover.anchor.setAttribute("aria-expanded", "false");
-    if (focus) this.canvas.focus();
+    if (focus) this.canvas.focus({ preventScroll: true });
   }
 
   private historyItems(menu: Menu): void {
