@@ -1,6 +1,6 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom,
-  type EditCommand, type EditPlan, type TextEdit,
+  applyEdits, assertSingleLine, checkedMove, endingBreaks, insertionPrefix, moveHeadingSection, moveTarget,
+  sectionRemovalFrom, withoutEndingBreaks, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 
@@ -110,15 +110,6 @@ function shiftedBranch(doc: MindDocument, node: MindNode, indent: string): strin
 
 function withoutEndNewline(doc: MindDocument, text: string, to: number): string {
   return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
-}
-
-/** The line breaks and blank lines that end `text`, or '' when its last line has no break. */
-function endingBreaks(text: string): string {
-  return /(?:\r?\n[ \t]*)+$/u.exec(text)?.[0] ?? '';
-}
-
-function withoutEndingBreaks(text: string): string {
-  return text.slice(0, text.length - endingBreaks(text).length);
 }
 
 /** Swap the node with its neighbour; H2 sections keep the seam between them and the later one's ending byte for byte. */

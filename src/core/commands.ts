@@ -151,8 +151,13 @@ function appendBoundary(text: string, eol: string): string {
   return text + (text.endsWith('\n') ? eol : eol + eol);
 }
 
-function respectEndOfFile(doc: MindDocument, text: string, to: number): string {
-  return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
+/** The line breaks and blank lines that end `text`, or '' when its last line has no break. */
+export function endingBreaks(text: string): string {
+  return /(?:\r?\n[ \t]*)+$/u.exec(text)?.[0] ?? '';
+}
+
+export function withoutEndingBreaks(text: string): string {
+  return text.slice(0, text.length - endingBreaks(text).length);
 }
 
 /** A node's text is one line: a break would start another block and change the tree. */
@@ -201,6 +206,7 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
   return { edits, selectionOffset: added.titleFrom };
 }
 
+/** Swap the node with its neighbour; the seam between the two sections and the later one's ending stay byte for byte. */
 function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const parent = getNode(doc, node.parentId ?? 'root');
   const index = parent.children.findIndex((child) => child.id === node.id);
@@ -210,13 +216,16 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const other = doc.source.slice(neighbor.from, neighbor.to);
   const from = Math.min(node.from, neighbor.from);
   const to = Math.max(node.to, neighbor.to);
-  const first = direction < 0 ? moved : other;
-  const second = direction < 0 ? other : moved;
-  const boundary = appendBoundary(first, doc.eol);
-  const text = respectEndOfFile(doc, boundary + second, to);
-  const movedFrom = direction < 0 ? from : from + boundary.length;
-  const movedDoc = parseMarkdown(moved, doc.root.title, undefined, doc.format);
-  return checkedPlan(doc, [{ from, to, text }], movedFrom + (movedDoc.nodes[0]?.titleFrom ?? 0), doc.nodes.length);
+  // Sibling sections are adjacent and a section's range ends with the blank lines before the next heading (or the
+  // file's ending), so only the sections' own lines change places: the earlier one's ending stays as the seam and
+  // the later one's ending stays at the end, and the swap back restores the source (AGENTS.md: 無関係な内容を再シリアライズしない).
+  const [earlier, later] = direction < 0 ? [other, moved] : [moved, other];
+  const seam = endingBreaks(earlier);
+  const first = withoutEndingBreaks(later);
+  const text = first + seam + withoutEndingBreaks(earlier) + endingBreaks(later);
+  const movedFrom = direction < 0 ? from : from + first.length + seam.length;
+  // The whole tree is compared, so lines that would join a neighbouring block (a paragraph before a Setext underline) are refused.
+  return checkedMove(doc, [{ from, to, text }], node, parent, index + direction, movedFrom);
 }
 
 /** Text placed at the very end keeps the document's own EOF convention: one newline or none. */

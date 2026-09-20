@@ -183,6 +183,73 @@ describe('partial Markdown edits', () => {
     expect(boundary.edits).toEqual([]);
   });
 
+  describe('swapping heading sections with ⌥↑／⌥↓ keeps the blank lines between sections and the file ending (LEV-88)', () => {
+    it('keeps the single newline at the end of the file when the last section moves up', () => {
+      const doc = parseMarkdown('# Root\n\n## A\n\nfirst\n\n## B\n\nsecond\n', 'Note');
+      const swapped = '# Root\n\n## B\n\nsecond\n\n## A\n\nfirst\n';
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source).toBe(swapped);
+      expect(execute(doc, { type: 'move-down', nodeId: find(doc, 'A').id }).source).toBe(swapped);
+    });
+
+    it('keeps each seam where it was, so the blank lines between the sections do not travel with them', () => {
+      const doc = parseMarkdown('# Root\n\n## A\n\nfirst\n\n\n## B\n\nsecond\n\n## C\n\nthird\n', 'Note');
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source)
+        .toBe('# Root\n\n## B\n\nsecond\n\n\n## A\n\nfirst\n\n## C\n\nthird\n');
+    });
+
+    it('selects the moved section after either move', () => {
+      const doc = parseMarkdown('# Root\n\n## A\n\nfirst\n\n## B\n\nsecond\n', 'Note');
+      for (const command of [{ type: 'move-down', nodeId: find(doc, 'A').id }, { type: 'move-up', nodeId: find(doc, 'B').id }] as const) {
+        const plan = planEdit(doc, command);
+        const result = parseMarkdown(applyEdits(doc.source, plan.edits), 'Note', doc);
+        expect(find(result, 'Root').children.map((node) => node.title)).toEqual(['B', 'A']);
+        expect(plan.selectionOffset).toBe(find(result, command.type === 'move-down' ? 'A' : 'B').titleFrom);
+      }
+    });
+
+    it('round-trips ⌥↑ then ⌥↓ byte for byte: EOF newline or none, CRLF, frontmatter, prose and sub-headings in the bodies, wider or no seams', () => {
+      const sources = [
+        '# Root\n\n## A\n\nfirst\n\n## B\n\nsecond\n',
+        '# Root\n\n## A\n\nfirst\n\n## B\n\nsecond',
+        '# Root\r\n\r\n## A\r\n\r\nfirst\r\n\r\n## B\r\n\r\nsecond\r\n',
+        '---\nname: note\n---\n\n# A\n\nfirst\n\n# B\n\nsecond\n',
+        '# Root\n\n## A\n\nProse about A [[one]].\n\n### A child\n\n- item\n\n## B\n\n![[image.png]]\n\n### B child\n\nProse about B.\n\n## C\n\nthird\n',
+        '# Root\n\n## A\n\nfirst\n\n\n## B\n\nsecond\n\n',
+        '# Root\n\n## A\n\nfirst\n  \n## B\n\nsecond\n',
+        '# Root\n## A\nfirst\n## B\nsecond\n',
+      ];
+      for (const source of sources) {
+        const doc = parseMarkdown(source, 'Note');
+        const up = execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id });
+        expect((up.nodes[0]?.title === 'Root' ? find(up, 'Root') : up.root).children.map((node) => node.title).slice(0, 2), source).toEqual(['B', 'A']);
+        expect(up.source.endsWith('\n'), source).toBe(source.endsWith('\n'));
+        expect(execute(up, { type: 'move-down', nodeId: find(up, 'B').id }).source, source).toBe(source);
+      }
+    });
+
+    it('moves only the two sections: the swap is one edit over their range', () => {
+      const doc = parseMarkdown('# Root\n\n## A\n\nfirst\n\n## B\n\nsecond\n\n## C\n\nthird\n', 'Note');
+      const plan = planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id });
+      expect(plan.edits).toEqual([{ from: find(doc, 'A').from, to: find(doc, 'B').to, text: '## B\n\nsecond\n\n## A\n\nfirst\n\n' }]);
+    });
+
+    it('writes the same bytes as dragging the section to that position when the seams are one blank line', () => {
+      const doc = parseMarkdown('# Root\n\n## A\n\nProse.\n\n## B\n\nsecond\n\n## C\n\nthird\n', 'Note');
+      const root = find(doc, 'Root');
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source)
+        .toBe(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: root.id, index: 0 }).source);
+      expect(execute(doc, { type: 'move-down', nodeId: find(doc, 'B').id }).source)
+        .toBe(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: root.id, index: 2 }).source);
+    });
+
+    it('refuses a swap whose lines would join a neighbouring block, such as a paragraph before a Setext underline', () => {
+      const doc = parseMarkdown('# Root\n\n## A\n\nProse about A.\n\n## B\n```\ncode\n```\nC\n---\n', 'Note');
+      expect(find(doc, 'Root').children.map((node) => node.title)).toEqual(['A', 'B', 'C']);
+      expect(() => planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id })).toThrow('見出し構造を安全に変更できません');
+      expect(() => planEdit(doc, { type: 'move-down', nodeId: find(doc, 'A').id })).toThrow('見出し構造を安全に変更できません');
+    });
+  });
+
   it('reparents a branch and adjusts all descendant levels while preserving body content', () => {
     const doc = parseMarkdown('# Move\nBody [[link]]\n\n## Child\n![[image.png]]\n\n# Destination\nTail', 'Note');
     const plan = planEdit(doc, { type: 'reparent', nodeId: find(doc, 'Move').id, parentId: find(doc, 'Destination').id });
