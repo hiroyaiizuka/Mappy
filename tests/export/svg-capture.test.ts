@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
-import { WorkspaceLeaf } from '../../harness/browser/obsidian';
+import { MarkdownRenderer, Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
 import {
   PNG_UNAVAILABLE, canRasterize, canRasterizeForeignObject, captureScene, rasterizeSvg, type ImageResolver,
@@ -12,7 +12,7 @@ import { EXPORT_MARGIN, XHTML_NAMESPACE, buildSvg, svgSize } from '../../src/exp
 import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { MindmapView } from '../../src/ui/mindmap-view';
+import { EXPORT_RENDER_STALLED_MESSAGE, EXPORT_RENDER_WAIT_MS, MindmapView } from '../../src/ui/mindmap-view';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view and renderer run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -262,6 +262,88 @@ describe('SVG export of the map view (jsdom)', () => {
     const { parsed } = await exportOf(mounted);
     expect(parsed.querySelectorAll('foreignObject').length).toBe(before + 1);
     expect(Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim())).toContain('直前に足した枝');
+  });
+
+  it('waits for a refresh already running (the debounce fired, the note is still being read), so the change it brings is in the file', async () => {
+    const mounted = await mount('uneven-branches');
+    const fixture = findFixture('uneven-branches');
+    const before = mounted.nodes().length;
+    // A read that takes a while (a large note, a slow disk): the debounce has fired and the refresh is waiting on it.
+    const read = mounted.app.vault.read;
+    const slow = vi.spyOn(mounted.app.vault, 'read').mockImplementation(file =>
+      new Promise<void>(resolve => { setTimeout(resolve, 60); }).then(() => read(file)));
+    try {
+      mounted.app.put(fixture?.path ?? '', `${fixture?.source ?? ''}- 読み込み中に書き出した枝\n`);
+      await new Promise(resolve => { setTimeout(resolve, 50); });
+      expect(slow).toHaveBeenCalled();
+      const { parsed } = await exportOf(mounted);
+      expect(parsed.querySelectorAll('foreignObject').length).toBe(before + 1);
+      expect(Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim())).toContain('読み込み中に書き出した枝');
+    } finally {
+      slow.mockRestore();
+    }
+  });
+
+  it('waits for the Markdown renders an external change just started, so the new label and its re-measured size are in the file', async () => {
+    const mounted = await mount('uneven-branches');
+    const fixture = findFixture('uneven-branches');
+    // jsdom has no layout: here a node is as wide as its label text, so a label rendered late widens its node.
+    const widthOf = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get(this: HTMLElement) {
+      return this.classList.contains('mappy-node') ? 16 + 8 * (this.querySelector('.mappy-node-label')?.textContent?.length ?? 0) : 0;
+    } });
+    // Obsidian's renderer resolves after its post-processors; the harness one is synchronous, so the delay is put in here.
+    const original = MarkdownRenderer.render.bind(MarkdownRenderer);
+    const render = vi.spyOn(MarkdownRenderer, 'render').mockImplementation((...args) =>
+      new Promise<void>(resolve => { setTimeout(resolve, 60); }).then(() => original(...args)));
+    try {
+      mounted.app.put(fixture?.path ?? '', `${fixture?.source ?? ''}- 外部変更で足した枝\n`);
+      // No settle: the export runs the debounced refresh itself, and the render it starts is still in flight.
+      const { source, parsed } = await exportOf(mounted);
+      expect(render).toHaveBeenCalled();
+      const added = mounted.nodes().find(node => node.getAttribute('aria-label') === '外部変更で足した枝');
+      expect(added?.querySelector('.mappy-node-label')?.textContent).toBe('外部変更で足した枝');
+      const object = parsed.querySelector(`foreignObject[data-node-id="${added?.dataset.nodeId ?? ''}"]`);
+      expect(object?.querySelector('.mappy-node-label')?.textContent?.trim()).toBe('外部変更で足した枝');
+      const placed = source.layout.nodes.find(node => node.id === added?.dataset.nodeId);
+      expect(placed?.width).toBe(16 + 8 * '外部変更で足した枝'.length);
+      expect(object?.firstElementChild?.getAttribute('style')).toBe(`width:${placed?.width ?? 0}px;height:${placed?.height ?? 0}px`);
+    } finally {
+      render.mockRestore();
+      if (widthOf) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widthOf);
+      else Reflect.deleteProperty(HTMLElement.prototype, 'offsetWidth');
+    }
+  });
+
+  it('gives up on a render that hangs after EXPORT_RENDER_WAIT_MS, says so, and exports what the map shows', async () => {
+    const mounted = await mount('uneven-branches');
+    const fixture = findFixture('uneven-branches');
+    const before = mounted.nodes().length;
+    Notice.log.length = 0;
+    // A render that never resolves (a hung post-processor): the label stays as the renderer left it.
+    const render = vi.spyOn(MarkdownRenderer, 'render').mockImplementation(() => new Promise<void>(() => undefined));
+    // Only the timers are faked: the view's frames (jsdom's requestAnimationFrame) keep running.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      mounted.app.put(fixture?.path ?? '', `${fixture?.source ?? ''}- 描画が終わらない枝\n`);
+      let done = false;
+      const pending = mounted.view.exportSource().then(source => { done = true; return source; });
+      for (let frame = 0; frame < 3; frame += 1) await new Promise(resolve => requestAnimationFrame(resolve));
+      expect(render).toHaveBeenCalled();
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(EXPORT_RENDER_WAIT_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const source = await pending;
+      expect(Notice.log).toEqual([EXPORT_RENDER_STALLED_MESSAGE]);
+      expect(source.entries.size).toBe(before + 1);
+      const added = mounted.nodes().find(node => node.getAttribute('aria-label') === '描画が終わらない枝');
+      expect(added?.querySelector('.mappy-node-label')?.textContent).toBe('');
+      expect(source.entries.get(added?.dataset.nodeId ?? '')?.element).toBe(added);
+    } finally {
+      vi.useRealTimers();
+      render.mockRestore();
+    }
   });
 
   it('keeps the file well formed when a title carries a form feed or a renderer put inline SVG with xlink:href into a node', async () => {
