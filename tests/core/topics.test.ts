@@ -573,7 +573,7 @@ describe('delete removes a topic section together with its position', () => {
     const plan = planEdit(doc, { type: 'move-up', nodeId: second.id });
     const swapped = applyEdits(doc.source, plan.edits);
     expect(swapped.slice(0, swapped.indexOf('## Root'))).toBe(`---\n${TOPICS_KEY}:\n  A (2): { mindmap: [1, 2] }\n  A: { mindmap: [3, 4] }\n---\n`);
-    expect(swapped).toContain('\n## A\n- Second\n## A\n- First\n');
+    expect(swapped).toContain('\n## A\n- Second\n\n## A\n- First\n');
     const parsed = parse(swapped);
     const moved = parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset);
     expect(moved?.children.map((node) => node.title)).toEqual(['Second']);

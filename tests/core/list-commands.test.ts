@@ -241,6 +241,56 @@ describe('source-preserving list commands', () => {
       .toBe('## Root\n- Second\n\nOutside prose\n\n- First\n');
   });
 
+  describe('swapping H2 sections with ⌥↑／⌥↓ keeps the blank lines between sections and the file ending (LEV-87)', () => {
+    it('keeps the one blank line between the swapped sections when the moved section ended the file', () => {
+      const doc = parse('## Root\n- Child\n\n## A\n- First\n\n## B\n- Second\n');
+      const swapped = '## Root\n- Child\n\n## B\n- Second\n\n## A\n- First\n';
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source).toBe(swapped);
+      expect(execute(doc, { type: 'move-down', nodeId: find(doc, 'A').id }).source).toBe(swapped);
+    });
+
+    it('keeps the blank line before the section that follows the swapped pair', () => {
+      const doc = parse('## Root\n- Child\n\n## A\n- First\n\n## B\n- Second\n\n## C\n- Third\n');
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source)
+        .toBe('## Root\n- Child\n\n## B\n- Second\n\n## A\n- First\n\n## C\n- Third\n');
+    });
+
+    it('selects the moved section after either move', () => {
+      const doc = parse('## Root\n- Child\n\n## A\n- First\n\n## B\n- Second\n\n## C\n- Third\n');
+      for (const command of [{ type: 'move-down', nodeId: find(doc, 'A').id }, { type: 'move-up', nodeId: find(doc, 'B').id }] as const) {
+        const plan = planEdit(doc, command);
+        const result = parse(applyEdits(doc.source, plan.edits), doc);
+        expect(result.root.children.map(node => node.title)).toEqual(['Root', 'B', 'A', 'C']);
+        expect(plan.selectionOffset).toBe(find(result, command.type === 'move-down' ? 'A' : 'B').titleFrom);
+      }
+    });
+
+    it('round-trips ⌥↑ then ⌥↓ byte for byte: no EOF newline, CRLF, prose in the bodies, wider or narrower seams', () => {
+      const sources = [
+        '## Root\n- Child\n\n## A\n- First\n\n## B\n- Second\n',
+        '## Root\n- Child\n\n## A\n- First\n\n## B\n- Second',
+        '## Root\r\n- Child\r\n\r\n## A\r\n- First\r\n\r\n## B\r\n- Second\r\n',
+        '## Root\n- Child\n\n## A\n- First\n  detail [[one]]\n\nProse about A.\n\n## B\n- Second\n\nProse about B.\n![[image.png]]\n\n## C\n- Third\n',
+        '## Root\n- Child\n\n## A\n- First\n\n\n## B\n- Second\n\n',
+        '## Root\n- Child\n\n## A\n- First\n  \n## B\n- Second\n',
+        '## Root\n- Child\n\n## A\n- First\n## B\n- Second\n',
+      ];
+      for (const source of sources) {
+        const doc = parse(source);
+        const up = execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id });
+        expect(up.root.children.map(node => node.title).slice(0, 3), source).toEqual(['Root', 'B', 'A']);
+        expect(up.source.endsWith('\n'), source).toBe(source.endsWith('\n'));
+        expect(execute(up, { type: 'move-down', nodeId: find(up, 'B').id }).source, source).toBe(source);
+      }
+    });
+
+    it('moves only the seam and the two sections: the swap is one edit over their range', () => {
+      const doc = parse('## Root\n- Child\n\n## A\n- First\n\n## B\n- Second\n\n## C\n- Third\n');
+      const plan = planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id });
+      expect(plan.edits).toEqual([{ from: find(doc, 'A').from, to: find(doc, 'B').to, text: '## B\n- Second\n\n## A\n- First\n\n' }]);
+    });
+  });
+
   it('reparents all source lines, including fenced code and images, under another item', () => {
     const doc = parse('## Root\n- Move\n  Body [[link]]\n\n  ```js\n  code()\n  ```\n  - Child\n    ![image](../image.png)\n- Target');
     const result = execute(doc, { type: 'reparent', nodeId: find(doc, 'Move').id, parentId: find(doc, 'Target').id });

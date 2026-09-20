@@ -112,6 +112,11 @@ function withoutEndNewline(doc: MindDocument, text: string, to: number): string 
   return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
 }
 
+/** The line breaks and blank lines that end `text`, or '' when its last line has no break. */
+function endingBreaks(text: string): string {
+  return /(?:\r?\n[ \t]*)+$/u.exec(text)?.[0] ?? '';
+}
+
 function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const parent = getNode(doc, node.parentId ?? 'root');
   const index = parent.children.findIndex(child => child.id === node.id);
@@ -127,11 +132,15 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   let second = direction < 0 ? other : moved;
   let gap = doc.source.slice(earlier.to, later.from);
   if (node.kind !== 'list') {
-    const trailing = /(?:\r?\n)+$/u.exec(first)?.[0] ?? '';
-    first = first.slice(0, first.length - trailing.length);
-    second = second.replace(/(?:\r?\n)+$/u, '');
-    gap = gap || trailing || doc.eol + doc.eol;
-    if (doc.source.slice(from, to).endsWith('\n')) second += doc.eol;
+    // An H2 section's range ends with the blank lines before the next heading (or the file's ending), so the
+    // two sections swap their lines only: the seam between them and the later section's ending stay where
+    // they are, byte for byte, and the swap back restores the source (§5 M2: 無関係な内容を再シリアライズしない).
+    const lines = (text: string): string => text.slice(0, text.length - endingBreaks(text).length);
+    const seam = endingBreaks(doc.source.slice(earlier.from, earlier.to)) + gap;
+    const ending = endingBreaks(doc.source.slice(later.from, later.to));
+    first = lines(first);
+    second = lines(second) + ending;
+    gap = seam;
   }
   if (!gap && !first.endsWith('\n')) gap = doc.eol;
   const text = withoutEndNewline(doc, first + gap + second, to);
