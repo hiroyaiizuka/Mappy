@@ -19,9 +19,10 @@ export interface SnapSlot { targetId: string; position: DropPosition; distance: 
 
 /**
  * A timeline stage: the side of the axis its forest hangs on (`placeTimeline` alternates by stage
- * index) and the half-height of the band its tree keeps clear around the axis (`axisBand`), past
- * which every forest starts. Its zone is measured from the band's edge, since a short stage beside
- * a tall one lands its first child where the tall one does, not one gap under itself.
+ * index) and the half-height of the band its tree keeps clear around the axis (`axisBand`, which
+ * folds the stage's own half-height in, so `band` is never less than it), past which every forest
+ * starts. Its zone is measured from the band's edge, since a short stage beside a tall one lands
+ * its first child where the tall one does, not one gap under itself.
  */
 export interface StagePlace { side: "upper" | "lower"; band: number }
 
@@ -44,27 +45,29 @@ function span(box: LayoutBounds, axis: Axis): { from: number; to: number; mid: n
 }
 
 /**
- * Where a leaf's first child would go: the root's near edge within the gap range past the node's far
- * edge, overlapping the node across. `reach` lets it sit that much further back still (a stage's zone
- * runs from the stage itself to past the axis band it is measured from). Competing slots rank by how
- * far the root sits from the child's landing place across the gap: centred on the node unless
- * `landing` says where the layout hangs the child's near edge instead.
+ * Where a leaf's first child would go: the root's near edge within the gap range past the line the
+ * layout hangs the child from, overlapping the node across. That line is the node's far edge, or
+ * `beyond` units past it (a stage's is the edge of the axis band); the zone then runs from the node
+ * itself to past that line. Competing slots rank by how far the root sits from the child's landing
+ * place: along the gap, from the nearer of the node's edge and the line; across, from the node's
+ * centre unless `landing` says where the layout hangs the child's near edge instead.
  */
 function beside(
-  rect: LayoutBounds, node: PositionedNode, side: Side, widen: number, landing?: (node: PositionedNode) => number, reach = 0,
+  rect: LayoutBounds, node: PositionedNode, side: Side, widen: number, landing?: (node: PositionedNode) => number, beyond = 0,
 ): SnapSlot | null {
-  const gap = side === "right" ? rect.x - (node.x + node.width)
+  const edge = side === "right" ? rect.x - (node.x + node.width)
     : side === "left" ? node.x - (rect.x + rect.width)
       : side === "below" ? rect.y - (node.y + node.height)
         : node.y - (rect.y + rect.height);
-  if (gap < -(SNAP_OVERLAP * widen + reach) || gap > SNAP_GAP * widen) return null;
+  const gap = edge - beyond;
+  if (gap < -(SNAP_OVERLAP * widen + beyond) || gap > SNAP_GAP * widen) return null;
   const across: Axis = side === "right" || side === "left" ? "y" : "x";
   const own = span(rect, across);
   const other = span(node, across);
   const pad = SNAP_PAD * widen;
   if (own.to < other.from - pad || own.from > other.to + pad) return null;
   const offset = landing ? own.from - landing(node) : own.mid - other.mid;
-  return { targetId: node.id, position: "inside", distance: Math.abs(gap) + Math.abs(offset) };
+  return { targetId: node.id, position: "inside", distance: Math.min(Math.abs(gap), Math.abs(edge)) + Math.abs(offset) };
 }
 
 /**
@@ -99,14 +102,12 @@ function stageLanding(stage: PositionedNode): number {
 
 /**
  * A childless stage's zone: where its first child would go, on its forest's side. The stage is centred
- * on the axis, so the band's edge is its centre plus the band's half-height; the gap is measured from
- * there, and the zone reaches back to the stage's own edge so a root brought up beside the stage is
- * caught before it gets to the band.
+ * on the axis, so the band's edge lies the band's half-height less the stage's own past the stage's
+ * edge; the gap is measured from there, and the zone reaches back to the stage itself so a root brought
+ * up beside the stage is caught before it gets to the band.
  */
 function besideStage(rect: LayoutBounds, stage: PositionedNode, place: StagePlace, widen: number): SnapSlot | null {
-  const half = Math.max(place.band, stage.height / 2);
-  const band: PositionedNode = { ...stage, y: stage.y + stage.height / 2 - half, height: half * 2 };
-  return beside(rect, band, place.side === "upper" ? "above" : "below", widen, stageLanding, half - stage.height / 2);
+  return beside(rect, stage, place.side === "upper" ? "above" : "below", widen, stageLanding, place.band - stage.height / 2);
 }
 
 /** A column of children growing right shares its left edge; one growing left, its right edge (the mirror image). */

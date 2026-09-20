@@ -1260,10 +1260,10 @@ async function captureTopicOperations(recorder, page) {
   const stagePath = 'Fixtures/free-topics.md';
   const tallStage = original.replace('- 回復する\n  参考: [[heading-document#回復する|回復]]\n', '- 回復する\n  参考: [[heading-document#回復する|回復]]\n  ![[sample-image.svg]]\n');
   try {
-    await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(tallStage)})`);
     await recorder.run('topic-snap-timeline-band', '「回復する」に画像を足してタイムラインに切り替え、「位置のないトピック」を「習慣化する」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「習慣化する」の最初の子が置かれる位置（軸の帯の 34 単位上。ステージ自身の上辺からは 72 単位より離れる）へ運ぶ → 離す',
       '右の空白ではスロットが出ず、段（軸）の最も高いノードを基準にした帯の端から zone を測るので、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、離すと 習慣化する の子になる', async () => {
         expect(tallStage !== original, 'the tall-stage note is the original: the stage line to add the image under was not found');
+        await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(tallStage)})`);
         await switchLayout('timeline');
         const base = await page.harness('h.source()');
         expect(base === tallStage, 'the tall-stage note did not load');

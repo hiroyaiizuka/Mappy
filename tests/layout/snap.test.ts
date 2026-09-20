@@ -266,9 +266,15 @@ describe("snapSlot on the timeline's axis band (LEV-47)", () => {
     expect(snapSlot("timeline", rect(384 + 160 + 13, 100 + 34), stage, [], 1, lower)).toBeNull();
   });
 
-  it("a band shorter than the stage itself is the stage's own half-height", () => {
-    expect(snapSlot("timeline", rect(384, 22 + 72), stage, [], 1, { side: "lower", band: 10 })?.position).toBe("inside");
-    expect(snapSlot("timeline", rect(384, 22 + 73), stage, [], 1, { side: "lower", band: 10 })).toBeNull();
+  it("between the stage and the band the distance is to the nearer of the two, so a root snug under the stage ranks close", () => {
+    const column = 384 + 80 + 20;
+    expect(snapSlot("timeline", rect(column, 22 + 10), stage, [], 1, lower)?.distance).toBe(10);
+    expect(snapSlot("timeline", rect(column, 100 - 5), stage, [], 1, lower)?.distance).toBe(5);
+    expect(snapSlot("timeline", rect(column, 22 + 39), stage, [], 1, lower)?.distance).toBe(39);
+    expect(snapSlot("timeline", rect(column, 22 + 40), stage, [], 1, lower)?.distance).toBe(38);
+    // Past the band, and with no band beyond the stage, it is the plain gap.
+    expect(snapSlot("timeline", rect(column, 100 + 50), stage, [], 1, lower)?.distance).toBe(50);
+    expect(snapSlot("timeline", rect(column, 22 + 50), stage, [], 1, { side: "lower", band: 22 })?.distance).toBe(50);
   });
 });
 
@@ -320,8 +326,10 @@ describe("snapSlot where the layout lands a first child, with nodes of different
       const landing = of(layoutTree(tree, sizes, new Set(), "timeline", [{ tree: withChild(topic, "t2"), position: { x: 0, y: 400 } }]), "new");
       expect(landing.y).toBe(of(both, "t2").y + 44 + 34);
       expect(snapSlot("timeline", landing, of(both, "t2"), [], 1, { side: "lower", band: topicBand })).toEqual({ targetId: "t2", position: "inside", distance: 34 });
-      // Judged with the body's band instead, the landing reads as 44 short of a line the topic's forest never starts from.
-      expect(snapSlot("timeline", landing, of(both, "t2"), [], 1, { side: "lower", band })?.distance).toBe(44);
+      // 100 under the stage is past the topic's zone; judged with the body's band instead, it would still count, from a line the topic's forest never starts from.
+      const far = { ...landing, y: landing.y + 66 };
+      expect(snapSlot("timeline", far, of(both, "t2"), [], 1, { side: "lower", band: topicBand })).toBeNull();
+      expect(snapSlot("timeline", far, of(both, "t2"), [], 1, { side: "lower", band })?.position).toBe("inside");
     });
   });
 
