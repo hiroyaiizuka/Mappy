@@ -54,6 +54,10 @@ export async function mountMapView(
   await new Promise(resolve => requestAnimationFrame(resolve));
   const canvas = view.containerEl.querySelector<HTMLElement>('.mappy-canvas');
   if (!canvas) throw new Error('The view has no canvas');
+  // jsdom has no pointer capture; a press on the canvas (a pan, a click on the empty canvas) asks for it.
+  canvas.setPointerCapture = () => undefined;
+  canvas.releasePointerCapture = () => undefined;
+  canvas.hasPointerCapture = () => false;
   const file = app.asApp<App>().vault.getAbstractFileByPath(path) as TFile | null;
   if (!file) throw new Error('The note is missing from the harness vault');
   const node = (title: string): HTMLElement => {

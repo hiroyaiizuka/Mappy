@@ -17,8 +17,12 @@ export type EditCommand =
   | { type: 'add-child'; nodeId: string; title?: string }
   | { type: 'add-sibling' | 'delete' | 'move-up' | 'move-down'; nodeId: string }
   | { type: 'reparent'; nodeId: string; parentId: string }
-  /** Append an empty top-level section at the end of the document: a new free topic (§5 M7). */
-  | { type: 'add-topic' }
+  /**
+   * Append a top-level section at the end of the document: a new free topic (§5 M7). Empty by default
+   * (the inline editor names it); `title` writes the heading's text in the same edit, so a map called
+   * with nothing selected (`## ![[map]]`, §5 M12) is one step, as the empty topic is.
+   */
+  | { type: 'add-topic'; title?: string }
   /** Detach a branch into a new top-level section at the end: a free topic placed at `position` (§5 M7 切り離し). */
   | { type: 'detach'; nodeId: string; position?: TopicPlacement }
   | MoveCommand;
@@ -291,20 +295,21 @@ export function resolveDrop(doc: MindDocument, draggedId: string, targetId: stri
 }
 
 /**
- * An empty top-level section at the very end of the document, at the depth of the last one
- * (`## ` for list documents). It shows as a free topic unless the document had no heading yet.
+ * A top-level section at the very end of the document, at the depth of the last one (`## ` for list
+ * documents), empty or titled. It shows as a free topic unless the document had no heading yet.
  */
-function addTopic(doc: MindDocument): EditPlan {
+function addTopic(doc: MindDocument, title = ''): EditPlan {
+  assertSingleLine(title);
   const sections = doc.root.children.filter((child) => child.kind !== 'list');
   const level = sections[sections.length - 1]?.level ?? (doc.format === 'list' ? 2 : 1);
   const offset = doc.source.length;
   const prefix = insertionPrefix(doc.source, offset, doc.eol);
   const suffix = doc.source.endsWith('\n') ? doc.eol : '';
-  const edits = [{ from: offset, to: offset, text: `${prefix}${'#'.repeat(level)} ${suffix}` }];
+  const edits = [{ from: offset, to: offset, text: `${prefix}${'#'.repeat(level)} ${title}${suffix}` }];
   const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
   const added = parsed.nodes.find((candidate) => candidate.from === offset + prefix.length);
   if (parsed.nodes.length !== doc.nodes.length + 1 || added?.kind !== 'atx' || added.level !== level
-    || added.title !== '' || added.parentId !== 'root') {
+    || added.title !== title.trim() || added.parentId !== 'root') {
     throw new Error('文書末尾にトピックを追加できません。Markdown の構文を確認してください。');
   }
   return { edits, selectionOffset: added.titleFrom };
@@ -375,7 +380,7 @@ function leavesTopics(doc: MindDocument, node: MindNode, command: EditCommand): 
 }
 
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
-  if (command.type === 'add-topic') return addTopic(doc);
+  if (command.type === 'add-topic') return addTopic(doc, command.title);
   const node = getNode(doc, command.nodeId);
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);

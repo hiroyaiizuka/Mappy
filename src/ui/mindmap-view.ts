@@ -93,6 +93,12 @@ export class MindmapView extends ItemView {
    */
   private projected: { document: MindDocument; targets: CallTargets; trees: ShownTrees; positions: TopicPositionMap } | undefined;
   private selectedId: string | null = null;
+  /**
+   * True after a click on the empty canvas: nothing is selected, and draws keep it so until a node is selected
+   * again (otherwise a draw with no valid selection falls back to the first node, as when a note opens). A call
+   * with nothing selected adds the map as a free topic (§5 M12).
+   */
+  private deselected = false;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
   private theme: MapTheme = "follow";
@@ -265,7 +271,7 @@ export class MindmapView extends ItemView {
     this.syncModeButtons();
     if (changed) {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
-      this.document = undefined; this.selectedId = null; this.collapsed.clear(); this.needsFit = true;
+      this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
       this.pendingTopic = null; this.topicDrag = null;
       this.targets = new Map(); this.knownCalled.clear();
     }
@@ -328,7 +334,7 @@ export class MindmapView extends ItemView {
     }));
     this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
-      fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
+      deselect: () => { this.deselect(); }, fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
       // A link is resolved from the note it is written in: the called note for a called map's node (§5 M12), this
@@ -821,7 +827,8 @@ export class MindmapView extends ItemView {
       visualRootId: projection.root.id, topicIds: new Set(projection.topics.map(topic => topic.id)), mode: this.mode,
       sources: projection.calls.sources, trees: [projection.root, ...projection.topics],
     });
-    if (!nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
+    // One node stays selected (the first when the selected one is gone, or the note just opened) unless the empty canvas was clicked.
+    if (!this.deselected && !nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
     // Undo, delete or an external change can replace the focused node's element; the keyboard stays on the map.
     if (focused && !focused.isConnected && this.selectedId) this.renderer.focus(this.selectedId);
@@ -943,12 +950,17 @@ export class MindmapView extends ItemView {
   }
 
   private select(id: string, focus = false): void {
-    this.selectedId = id; this.renderer.select(id);
+    this.selectedId = id; this.deselected = false; this.renderer.select(id);
     if (focus) {
       this.renderer.focus(id);
       if (this.layout?.nodes.some(node => node.id === id)) this.ensureVisible(id);
       else { this.revealId = id; this.scheduleLayout(); }
     }
+  }
+
+  /** A click on the empty canvas: nothing selected, on screen and for the keys, until a node is selected again. */
+  private deselect(): void {
+    this.selectedId = null; this.deselected = true; this.renderer.select(null);
   }
 
   private ensureVisible(id: string): void {
@@ -992,12 +1004,16 @@ export class MindmapView extends ItemView {
   }
 
   /**
-   * Call another map (§5 M12): `![[map]]` becomes the last child of the selected node, or
-   * of the body root when nothing is selected (a topic's root counts as selected). One
-   * `add-child` edit with the link as its text, so the diff, the history (Undo removes the
-   * item) and the selection are those of Tab. The called map's note is not touched. The
-   * link is always the wiki form the map and the embed display read (`![[…]]`), its path
-   * following the vault's link-path setting (`fileToLinktext`: shortest, relative or absolute).
+   * Call another map (§5 M12): `![[map]]` becomes the last child of the selected node (a topic's
+   * root counts as selected) — one `add-child` edit with the link as its text, so the diff, the
+   * history (Undo removes the item) and the selection are those of Tab. With nothing selected
+   * (the empty canvas was clicked) it becomes a free topic instead: `## ![[map]]` at the end of
+   * the note by one `add-topic` edit, with no position written, so the topic takes the default
+   * place beside the body until it is dragged (§5 M7), and Undo removes the section. The virtual
+   * root of a note without a heading section takes the same route: add-child there would write
+   * the same heading. The called map's note is not touched. The link is always the wiki form the
+   * map and the embed display read (`![[…]]`), its path following the vault's link-path setting
+   * (`fileToLinktext`: shortest, relative or absolute).
    */
   async callMap(target: TFile): Promise<void> {
     const file = this.file;
@@ -1005,12 +1021,10 @@ export class MindmapView extends ItemView {
     if (target.path === file.path) throw new Error("このマップ自身は呼び出せません。");
     // Tab stays quiet while a save is in flight; a chosen map must not vanish without a word.
     if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
-    const parent = this.selected() ?? this.projection()?.root;
-    if (!parent) return;
-    this.assertEditable(parent.id);
-    // Under the virtual root (a note without a heading section) add-child makes an H2 whose title would be the embed: not an item.
-    if (parent.kind === "root") throw new Error("本体のルートがないノートです。先に H2 の見出しを作ってから呼び出してください。");
     const link = `![[${this.app.metadataCache.fileToLinktext(target, file.path, true)}]]`;
+    const parent = this.selected();
+    if (!parent || parent.kind === "root") { await this.execute({ type: "add-topic", title: link }); return; }
+    this.assertEditable(parent.id);
     await this.execute({ type: "add-child", nodeId: parent.id, title: link });
   }
 

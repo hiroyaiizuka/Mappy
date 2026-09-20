@@ -140,6 +140,35 @@ describe('projectCalls', () => {
     expect(projected.roots.map(titles)).toEqual([{ 本体: ['a'] }, { トピック: [{ 講座: [{ 回復する: [{ 睡眠: ['昼寝'] }, '運動'] }, { 記録する: ['日誌'] }, '葉'] }] }]);
     expect(projected.roots[1]?.id).toBe(topics[0]?.id);
   });
+
+  it('makes a topic whose heading is one `![[map]]` stand in for the called root, the called tree its branches, its own items after (§5 M12 未選択の呼び出し)', () => {
+    const hostDoc = parseMarkdown('---\nmappy: true\n---\n## 本体\n- a\n\n## ![[Map]]\n- 自分の項目\n\n## ![[Headings#同じ名前]]\n', 'T');
+    const { root: body, topics } = projectMap(hostDoc);
+    const [call, section] = topics;
+    if (!call || !section) throw new Error('no topics');
+    const projected = projectCalls([body, ...topics], targetsOf(hostDoc, [
+      ['![[Map]]', { path: 'Map.md', subpath: '', document: map }],
+      ['![[Headings#同じ名前]]', { path: 'Headings.md', subpath: '#同じ名前', document: headings }],
+    ]));
+    expect(projected.roots.map(titles)).toEqual([
+      { 本体: ['a'] },
+      { 講座: [{ 回復する: [{ 睡眠: ['昼寝'] }, '運動'] }, { 記録する: ['日誌'] }, '葉', '自分の項目'] },
+      { 同じ名前: ['深い'] },
+    ]);
+    // The topic keeps its own id, range and kind (the host's heading, edited and dragged as `![[Map]]`); its source marks it the calling root.
+    expect(projected.roots[1]).toMatchObject({ id: call.id, from: call.from, to: call.to, titleFrom: call.titleFrom, kind: 'atx', parentId: 'root', title: '講座' });
+    expect(projected.sources.get(call.id)).toMatchObject({ callerId: call.id, path: 'Map.md', subpath: '', root: true });
+    expect(isCalledNode(projected, call.id)).toBe(false);
+    const grafted = projected.byId.get(calledNodeId(call.id, find(map, '回復する').id));
+    expect(grafted).toMatchObject({ parentId: call.id, level: call.level + 1 });
+    expect(isCalledNode(projected, grafted?.id ?? '')).toBe(true);
+    expect(projected.byId.get(find(hostDoc, '自分の項目').id)?.parentId).toBe(call.id);
+    expect(initialCallFolds(projected).has(grafted?.id ?? '')).toBe(true);
+    // A topic that calls nothing (no target) stays as written.
+    const unresolved = projectCalls([body, ...topics], new Map());
+    expect(unresolved.roots.map(root => root.title)).toEqual(['本体', '![[Map]]', '![[Headings#同じ名前]]']);
+    expect(unresolved.sources.size).toBe(0);
+  });
 });
 
 describe('initialCallFolds', () => {
