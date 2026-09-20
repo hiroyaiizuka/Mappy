@@ -388,7 +388,9 @@ describe('editing the node that holds a map', () => {
     click(node('![[Timeline]]'));
     key(node('![[Timeline]]'), 'Delete');
     await settle();
+    // The item and its child leave with their line breaks: no blank line stays in the list (LEV-75).
     expect(source()).not.toContain('![[Timeline]]');
+    expect(source()).toContain('  - ![[Map]]\n  - \n  - ![[Headings#同じ名前]]\n- 同じマップをもう一度\n');
     // Two nodes of one title get new identities on every edit, so their order in the DOM is not fixed.
     expect(frames().map(frame => frame.dataset.mappyEmbed).sort()).toEqual(['Headings.md#同じ名前', 'Map.md', 'Map.md']);
     expect(document.contains(timeline)).toBe(false);

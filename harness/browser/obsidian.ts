@@ -611,6 +611,40 @@ export class TextComponent {
   }
 }
 
+/**
+ * Obsidian's toggle (app.js 1.14.2): a `label.checkbox-container` holding a checkbox, `is-enabled`
+ * for the value and `is-disabled` when locked. `setValue` reports a changed value to `onChange`
+ * even while disabled; only a click (or Space / Enter) is ignored then. `setTooltip` is the
+ * accessible name, as `setTooltip()` in Obsidian sets `aria-label`.
+ */
+export class ToggleComponent {
+  readonly toggleEl: HTMLElement;
+  private on = false;
+  private disabled = false;
+  private changeCallback: ((value: boolean) => unknown) | undefined;
+  constructor(container: HTMLElement) {
+    this.toggleEl = container.createEl("label", { cls: "checkbox-container", attr: { tabIndex: "0" } });
+    this.toggleEl.createEl("input", { attr: { type: "checkbox", tabIndex: "-1" } });
+    this.toggleEl.addEventListener("change", () => { this.onClick(); });
+    this.toggleEl.addEventListener("keydown", event => {
+      if (event.key === " " || event.key === "Enter") { event.preventDefault(); this.onClick(); }
+    });
+  }
+  getValue(): boolean { return this.on; }
+  setValue(on: boolean): this {
+    if (this.on !== on) {
+      this.on = on;
+      this.toggleEl.toggleClass("is-enabled", on);
+      this.changeCallback?.(on);
+    }
+    return this;
+  }
+  setDisabled(disabled: boolean): this { this.disabled = disabled; this.toggleEl.toggleClass("is-disabled", disabled); return this; }
+  setTooltip(tooltip: string): this { this.toggleEl.setAttribute("aria-label", tooltip); return this; }
+  onClick(): void { if (!this.disabled) this.setValue(!this.on); }
+  onChange(callback: (value: boolean) => unknown): this { this.changeCallback = callback; return this; }
+}
+
 export class Setting {
   readonly settingEl: HTMLElement;
   readonly infoEl: HTMLElement;
@@ -633,17 +667,33 @@ export class Setting {
   addButton(callback: (button: ButtonComponent) => unknown): this { callback(new ButtonComponent(this.controlEl)); return this; }
   addDropdown(callback: (dropdown: DropdownComponent) => unknown): this { callback(new DropdownComponent(this.controlEl)); return this; }
   addText(callback: (text: TextComponent) => unknown): this { callback(new TextComponent(this.controlEl)); return this; }
+  addToggle(callback: (toggle: ToggleComponent) => unknown): this { callback(new ToggleComponent(this.controlEl)); this.settingEl.addClass("mod-toggle"); return this; }
+}
+
+/**
+ * A declarative setting as Obsidian 1.13+ reads it: the subset this page renders (a `dropdown`,
+ * `text` or `toggle` control bound by key, or a `render` callback that draws the row itself).
+ */
+interface DeclaredSetting {
+  name?: string;
+  desc?: string;
+  control?: { type: "dropdown"; key: string; options: Record<string, string>; defaultValue?: string }
+    | { type: "text"; key: string; placeholder?: string; defaultValue?: string }
+    | { type: "toggle"; key: string; defaultValue?: boolean };
+  render?: (setting: Setting) => void | (() => void);
 }
 
 /**
  * The settings tab as Obsidian 1.13+ drives it (app.js 1.14.2): `addSettingTab` calls `update()`,
  * which stores `getSettingDefinitions()` in `settingItems`; the tab then renders those when there
- * are any and falls back to `display()` otherwise. A subclass member named like one of these
- * shadows the base, which is what this mock exists to catch.
+ * are any (name and description first, then the bound control or the row's own `render`, whose
+ * returned cleanup runs on `hide()`) and falls back to `display()` otherwise. A subclass member
+ * named like one of these shadows the base, which is what this mock exists to catch.
  */
 export abstract class PluginSettingTab {
   readonly containerEl: HTMLElement;
   settingItems: unknown[] = [];
+  private cleanups: (() => void)[] = [];
   constructor(readonly app: App, readonly plugin: unknown) {
     this.containerEl = document.createElement("div");
     this.containerEl.className = "vertical-tab-content";
@@ -654,10 +704,36 @@ export abstract class PluginSettingTab {
   setControlValue(key: string, value: unknown): void | Promise<void> { this.values[key] = value; }
   /** Stand-in for `this.plugin.settings`, which the real default implementations read and write. */
   private readonly values: Record<string, unknown> = {};
-  /** What Obsidian 1.13+ does when the tab is shown. */
-  renderTab(): void { if (this.settingItems.length === 0) this.display(); }
+  getControlBinding(key: string): { value: unknown; onChange: (value: unknown) => Promise<void> } {
+    return { value: this.getControlValue(key), onChange: async value => { await this.setControlValue(key, value); } };
+  }
+  /** What Obsidian 1.13+ does when the tab is shown, and again on `update()` while it is open: the rows are torn down (cleanups first) and drawn afresh. */
+  renderTab(): void {
+    this.tearDown();
+    if (this.settingItems.length === 0) { this.display(); return; }
+    for (const item of this.settingItems as DeclaredSetting[]) {
+      const setting = new Setting(this.containerEl).setName(item.name ?? "").setDesc(item.desc ?? "");
+      if (item.render) {
+        const cleanup = item.render(setting);
+        if (cleanup) this.cleanups.push(cleanup);
+        continue;
+      }
+      const control = item.control;
+      if (!control) continue;
+      const binding = this.getControlBinding(control.key);
+      const value = binding.value ?? control.defaultValue;
+      const text = typeof value === "string" ? value : "";
+      if (control.type === "dropdown") setting.addDropdown(dropdown => { dropdown.addOptions(control.options).setValue(text).onChange(next => { void binding.onChange(next); }); });
+      else if (control.type === "text") setting.addText(input => { input.setPlaceholder(control.placeholder ?? "").setValue(text).onChange(next => { void binding.onChange(next); }); });
+      else setting.addToggle(toggle => { toggle.setValue(value === true).onChange(next => { void binding.onChange(next); }); });
+    }
+  }
   abstract display(): void;
-  hide(): void { this.containerEl.empty(); }
+  hide(): void { this.tearDown(); }
+  private tearDown(): void {
+    for (const cleanup of this.cleanups.splice(0)) cleanup();
+    this.containerEl.empty();
+  }
 }
 
 /** Minimal line glyphs so the floating controls stay readable; not Lucide artwork. */

@@ -46,6 +46,7 @@ export default class MappyPlugin extends Plugin {
     this.registerView(VIEW_TYPE, leaf => {
       const view = new MindmapView(leaf, store, this.router);
       view.setTheme(this.settings.theme);
+      view.setVisibleLayouts(this.settings.visibleLayouts);
       return view;
     });
     // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is
@@ -205,14 +206,28 @@ export default class MappyPlugin extends Plugin {
     void action().catch((error: unknown) => { new Notice(error instanceof Error ? error.message : fallback); });
   }
 
-  /** Settings are presentation and defaults for new maps only: saving one never touches a note. */
+  /**
+   * Settings are presentation and defaults for new maps only: saving one never touches a note. The new
+   * value is current as soon as it is asked for (the tab reads it back for its next change) and put
+   * back if the data file cannot be written, so what the tab shows after its own revert is what is stored.
+   */
   private async saveSettings(next: MappySettings): Promise<void> {
-    const themeChanged = next.theme !== this.settings.theme;
+    const previous = this.settings;
+    const themeChanged = next.theme !== previous.theme;
+    // Both lists are normalized (LAYOUT_MODES order, no repeats), so their text is their identity.
+    const layoutsChanged = next.visibleLayouts.join() !== previous.visibleLayouts.join();
     this.settings = next;
-    await this.saveData(next);
-    if (!themeChanged) return;
+    try {
+      await this.saveData(next);
+    } catch (error) {
+      if (this.settings === next) this.settings = previous;
+      throw error;
+    }
+    if (!themeChanged && !layoutsChanged) return;
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-      if (leaf.view instanceof MindmapView) leaf.view.setTheme(next.theme);
+      if (!(leaf.view instanceof MindmapView)) continue;
+      if (themeChanged) leaf.view.setTheme(next.theme);
+      if (layoutsChanged) leaf.view.setVisibleLayouts(next.visibleLayouts);
     }
   }
 
