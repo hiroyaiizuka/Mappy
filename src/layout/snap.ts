@@ -1,12 +1,12 @@
 import type { DropPosition } from "../core/commands";
 import type { LayoutMode } from "../core/layout-mode";
-import { TIMELINE_STEM_GAP, balancedSide } from "./layout";
+import { MAP_BRANCH_GAP, MAP_ROOT_GAP, TIMELINE_STEM_GAP, balancedSide } from "./layout";
 import type { LayoutBounds, PositionedNode } from "./primitives";
 
 /**
  * Snap zones for a free tree, in layout units: how far past a node its root may sit (a little
- * beyond the branch gap), how far it may overlap, and slack across. Tight on purpose: a topic
- * carried past the body must not catch on it, only one brought up beside a node.
+ * beyond the branch gap, `MAP_BRANCH_GAP`), how far it may overlap, and slack across. Tight on
+ * purpose: a topic carried past the body must not catch on it, only one brought up beside a node.
  */
 const SNAP_GAP = 72;
 const SNAP_OVERLAP = 8;
@@ -29,8 +29,9 @@ export interface StagePlace { side: "upper" | "lower"; band: number }
 /**
  * Where a node hangs in the layouts whose zones depend on it. Timeline: the root, a stage
  * (`StagePlace`), or a node inside a forest. Balanced map: the root, or a node on its right or
- * left side (`balancedSide` deals the first level; deeper nodes keep their branch's side). The
- * other layouts ignore it.
+ * left side (`balancedSide` deals the first level; deeper nodes keep their branch's side). Map:
+ * the root, whose first child hangs farther off than a branch's; every other node is "forest".
+ * The hierarchy ignores it.
  */
 export type NodePlace = "root" | "forest" | "right" | "left" | StagePlace;
 
@@ -110,6 +111,17 @@ function besideStage(rect: LayoutBounds, stage: PositionedNode, place: StagePlac
   return beside(rect, stage, place.side === "upper" ? "above" : "below", widen, stageLanding, place.band - stage.height / 2);
 }
 
+/**
+ * A childless map root's zone (the body's root, or a topic that is only its heading; the balanced root's first child
+ * goes right too): the root hangs its first level a root gap past its edge, a branch its children a branch gap, and
+ * the zone's reach is tuned to the branch gap. So the root's zone is measured from a line the difference past its
+ * edge, where its child lands the branch gap past the line as a branch's does past the branch; the zone still reaches
+ * back to the root itself, and a root at the landing ranks as a branch would at its own.
+ */
+function besideRoot(rect: LayoutBounds, root: PositionedNode, widen: number): SnapSlot | null {
+  return beside(rect, root, "right", widen, undefined, MAP_ROOT_GAP - MAP_BRANCH_GAP);
+}
+
 /** A column of children growing right shares its left edge; one growing left, its right edge (the mirror image). */
 function columnLine(side: "right" | "left"): (box: LayoutBounds) => number {
   return side === "right" ? box => box.x : box => box.x + box.width;
@@ -160,7 +172,8 @@ function amongBalancedRoot(rect: LayoutBounds, root: PositionedNode, kids: reado
  * `kids`, or null when the root is not in the node's zone. The zones follow each layout's geometry.
  * With no children, the root joins as the last child when it sits where the first child would go:
  * right of the node in the map and in the timeline's forests, below it in the hierarchy, past the
- * axis band on the side a timeline stage's forest takes, and on a balanced node's own side (`place`).
+ * axis band on the side a timeline stage's forest takes, and on a balanced node's own side (`place`);
+ * a map or balanced root hangs its first child a root gap off, farther than a branch (`besideRoot`).
  * With children, it slots in among them by position along the line they share (a column, a row,
  * or the timeline axis) when it lines up with them across it; the balanced root's children form
  * a column on each side (`amongBalancedRoot`). `widen` stretches every zone, so the slot already
@@ -173,6 +186,7 @@ export function snapSlot(
     if (mode === "hierarchy") return beside(rect, node, "below", widen);
     if (mode === "timeline" && typeof place === "object") return besideStage(rect, node, place, widen);
     if (mode === "balanced" && place === "left") return beside(rect, node, "left", widen);
+    if ((mode === "mindmap" || mode === "balanced") && place === "root") return besideRoot(rect, node, widen);
     return beside(rect, node, "right", widen);
   }
   if (mode === "hierarchy") return among(rect, kids, "x", box => box.y, widen);

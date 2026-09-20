@@ -56,8 +56,9 @@ export interface MeasuredNode extends NodeSize {
 
 const HORIZONTAL_GAP = 32;
 const VERTICAL_GAP = 14;
-const MAP_ROOT_GAP = 80;
-const MAP_BRANCH_GAP = 56;
+/** How far past its edge a map root hangs its first level, and a branch its children; exported so the snap zones can measure a root by where its child lands. */
+export const MAP_ROOT_GAP = 80;
+export const MAP_BRANCH_GAP = 56;
 const MAP_VERTICAL_GAP = 22;
 const TIMELINE_GAP = 44;
 /** How far right of a stage's centre its forest starts; exported so the snap zones can score by the landing column. */
