@@ -328,12 +328,12 @@ type TopicRole =
  * or detached on the map). A plan that changes hands between the body and its topics is left alone rather
  * than guessed; so is one that moves no entry.
  */
-function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode, role: TopicRole, place?: TopicPlacement): EditPlan {
+function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode | undefined, role: TopicRole, place?: TopicPlacement): EditPlan {
   if (plan.edits.length === 0 || (!place && readTopicPositions(doc.source).size === 0)) return plan;
   const after = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
   const settled = plan.selectionOffset === null ? undefined : after.nodes.find((candidate) => candidate.titleFrom === plan.selectionOffset);
   if (role !== 'leaves' && !settled) return plan;
-  const before = projectMap(doc).topics.filter((topic) => role === 'adds' || topic.id !== node.id);
+  const before = projectMap(doc).topics.filter((topic) => role === 'adds' || topic.id !== node?.id);
   const next = projectMap(after).topics.filter((topic) => role === 'leaves' || topic.id !== settled?.id);
   if (before.length !== next.length) return plan;
   const keysBefore = topicKeys(doc);
@@ -345,7 +345,7 @@ function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode, role: 
     if (from !== undefined && to !== undefined) rekeys.set(from, to);
   });
   // The node's own entry: carried to where it lands, dropped when it leaves the top level (joined or deleted).
-  const own = role === 'adds' ? undefined : keysBefore.get(node.id);
+  const own = role === 'adds' || !node ? undefined : keysBefore.get(node.id);
   const landed = role === 'leaves' || !settled ? undefined : keysAfter.get(settled.id);
   const dropped = new Set<string>();
   if (own !== undefined && landed !== undefined) rekeys.set(own, landed);
@@ -365,12 +365,16 @@ function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode, role: 
   return { edits, selectionOffset };
 }
 
-/** Whether a structural command can change which sections are topics, or their order: only then can keys move. */
+/**
+ * Whether a structural command can change which sections are topics, or their order: only then can keys
+ * move. A list item never does (items before the first H2 sit on the virtual root, but are not sections).
+ */
 function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): boolean {
+  const section = node.kind !== 'list' && node.parentId === 'root';
   switch (command.type) {
     case 'add-child': return node.kind === 'root';
-    case 'add-sibling': case 'delete': case 'move-up': case 'move-down': return node.parentId === 'root';
-    case 'move': case 'reparent': return node.parentId === 'root' || getNode(doc, command.parentId).kind === 'root';
+    case 'add-sibling': case 'delete': case 'move-up': case 'move-down': return section;
+    case 'move': case 'reparent': return section || (node.kind !== 'list' && getNode(doc, command.parentId).kind === 'root');
     case 'detach': return true;
   }
 }
@@ -392,7 +396,8 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
 }
 
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
-  if (command.type === 'add-topic') return addTopic(doc, command.title);
+  // A new section whose text is an ordinal key (`A (2)`) renumbers the topics of that heading: their entries follow.
+  if (command.type === 'add-topic') return withTopicKeys(doc, addTopic(doc, command.title), undefined, 'adds');
   const node = getNode(doc, command.nodeId);
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);

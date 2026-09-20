@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, planEdit, resolveDrop } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
 import {
-  TOPICS_KEY, planTopicMove, planTopicMoves, planTopicPositions, planTopicRekey, readTopicPositions,
+  TOPICS_KEY, planTopicMoves, planTopicPositions, planTopicRekey, readTopicPositions,
   serializeTopicPositions, topicKeys, topicPositionsFromValue, type TopicPositionMap,
 } from '../../src/core/topics';
 
@@ -99,6 +99,9 @@ describe('topicKeys', () => {
     expect([...topicKeys(earlier).values()]).toEqual(['A (2)', 'A', 'A (3)']);
     const both = parse('## Body\n\n## A (2)\n\n## A (2)\n\n## A\n\n## A\n\n## A (3)\n');
     expect([...topicKeys(both).values()]).toEqual(['A (2)', 'A (2) (2)', 'A', 'A (4)', 'A (3)']);
+    // The body root's heading counts too (a swap of the body and a topic is not re-keyed), the virtual root's file name does not.
+    expect([...topicKeys(parse('## A (2)\n\n## A\n\n## A\n')).values()]).toEqual(['A', 'A (3)']);
+    expect([...topicKeys(parseMarkdown('- item\n\n## A\n\n## A\n', 'A (2)')).values()]).toEqual(['A', 'A (2)']);
     // A document that starts with list items keeps every H2 as a topic, the first of a heading with the plain key.
     expect([...topicKeys(parse(listNote)).values()]).toEqual(['Body', 'Topic one', 'Topic two']);
   });
@@ -192,29 +195,38 @@ describe('serializeTopicPositions', () => {
   });
 });
 
+/** One topic (by heading) moved in one layout, as the view's drag plans it. */
+function moveTopic(doc: MindDocument, title: string, layout: string, position: { x: number; y: number }) {
+  const node = projectMap(doc).topics.find((candidate) => candidate.title === title);
+  if (!node) throw new Error(`Missing topic ${title}`);
+  return planTopicMoves(doc, layout, new Map([[node.id, position]]));
+}
+
 describe('planTopicPositions', () => {
   const note = `---\nmappy: true\ntags:\n  - keep\n${TOPICS_KEY}:\n  A:\n    mindmap:\n      - 1\n      - 2\naliases: [x]\n---\n## Root\n\n## A\n`;
 
   it('replaces only the key block, keeps other keys byte-for-byte, and yields no edit for an unchanged value', () => {
     const doc = parse(note);
-    const edit = planTopicMove(doc, 'A', 'timeline', { x: 30.5, y: -0.4 });
+    const edit = moveTopic(doc, 'A', 'timeline', { x: 30.5, y: -0.4 });
     expect(edit).not.toBeNull();
     const moved = applyEdits(doc.source, edit ? [edit] : []);
     expect(moved).toBe(`---\nmappy: true\ntags:\n  - keep\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2], timeline: [31, 0] }\naliases: [x]\n---\n## Root\n\n## A\n`);
     expect(moved.slice(moved.indexOf('---\n## Root'))).toBe(note.slice(note.indexOf('---\n## Root')));
     const again = parse(moved);
-    expect(planTopicMove(again, 'A', 'timeline', { x: 31, y: 0 })).toBeNull();
+    expect(moveTopic(again, 'A', 'timeline', { x: 31, y: 0 })).toBeNull();
     expect(planTopicPositions(again, readTopicPositions(moved))).toBeNull();
-    const second = planTopicMove(again, 'B', 'mindmap', { x: 9, y: 9 });
+    // A key written with no topic of its own yet (`placed`) is appended after the existing entries.
+    const second = planTopicRekey(again, new Map(), new Set(), { key: 'B', layout: 'mindmap', x: 9, y: 9 });
     expect(applyEdits(moved, second ? [second] : [])).toContain(`  A: { mindmap: [1, 2], timeline: [31, 0] }\n  B: { mindmap: [9, 9] }\n`);
   });
 
   it('adds the key before the closing delimiter, creates a header when missing, and honours BOM and CRLF', () => {
     const existing = parse('---\nmappy: true\n---\n## Root\n\n## A\n');
-    const added = planTopicMove(existing, 'A', 'mindmap', { x: 1, y: 2 });
+    const added = moveTopic(existing, 'A', 'mindmap', { x: 1, y: 2 });
     expect(applyEdits(existing.source, added ? [added] : [])).toBe(`---\nmappy: true\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n\n## A\n`);
+    // A BOM keeps the first heading from parsing until the header exists, so the key is written by `placed` here.
     const bare = parse('\uFEFF## Root\r\n\r\n## A\r\n');
-    const created = planTopicMove(bare, 'A', 'mindmap', { x: 1, y: 2 });
+    const created = planTopicRekey(bare, new Map(), new Set(), { key: 'A', layout: 'mindmap', x: 1, y: 2 });
     expect(applyEdits(bare.source, created ? [created] : [])).toBe(`\uFEFF---\r\n${TOPICS_KEY}:\r\n  A: { mindmap: [1, 2] }\r\n---\r\n## Root\r\n\r\n## A\r\n`);
     const parsed = parse(applyEdits(bare.source, created ? [created] : []));
     expect(parsed.nodes.map((node) => node.title)).toEqual(['Root', 'A']);
@@ -225,15 +237,23 @@ describe('planTopicPositions', () => {
     const removed = planTopicPositions(doc, new Map());
     expect(applyEdits(doc.source, removed ? [removed] : [])).toBe('---\nmappy: true\n---\n## Root\n');
     expect(planTopicPositions(parse('## Root\n'), new Map())).toBeNull();
-    expect(() => planTopicMove(parse('---\nmappy: true\n## Root'), 'A', 'mindmap', { x: 1, y: 1 })).toThrow('frontmatter');
-    expect(() => planTopicMove(doc, 'A', 'Mindmap', { x: 1, y: 1 })).toThrow('レイアウト');
-    expect(() => planTopicMove(doc, 'A', 'mindmap', { x: Number.POSITIVE_INFINITY, y: 1 })).toThrow('位置');
-    expect(() => planTopicMove(doc, 'A\nB', 'mindmap', { x: 1, y: 1 })).toThrow('1 行');
+    expect(() => planTopicRekey(parse('---\nmappy: true\n## Root\n\n## A\n'), new Map(), new Set(), { key: 'A', layout: 'mindmap', x: 1, y: 1 })).toThrow('frontmatter');
+    const withTopic = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\nmappy: true\n---\n## Root\n\n## A\n`);
+    expect(() => moveTopic(withTopic, 'A', 'Mindmap', { x: 1, y: 1 })).toThrow('レイアウト');
+    expect(() => moveTopic(withTopic, 'A', 'mindmap', { x: Number.POSITIVE_INFINITY, y: 1 })).toThrow('位置');
+    // A multi-line Setext heading has no one-line key: the move (and a body drag that includes it) is refused, the YAML never broken.
+    const setext = parse('---\nmappy: true\n---\nBody\n====\n\nFoo\nBar\n===\n');
+    const multiline = projectMap(setext).topics[0];
+    if (!multiline) throw new Error('Missing Setext topic');
+    expect(multiline.title).toBe('Foo\nBar');
+    expect(() => planTopicMoves(setext, 'mindmap', new Map([[multiline.id, { x: 1, y: 1 }]]))).toThrow('1 行');
+    expect(() => planTopicRekey(setext, new Map(), new Set(), { key: 'Foo\nBar', layout: 'mindmap', x: 1, y: 1 })).toThrow('1 行');
+    expect(() => planTopicRekey(parse(`---\n${TOPICS_KEY}:\n  X: { mindmap: [1, 1] }\n---\n## Root\n`), new Map([['X', 'Foo\nBar']]), new Set())).toThrow('1 行');
   });
 
   it('keeps entries for headings that no longer exist so a Markdown-side rename can be undone by hand', () => {
     const doc = parse(`---\n${TOPICS_KEY}:\n  Gone: { mindmap: [5, 5] }\n---\n## Root\n\n## A\n`);
-    const edit = planTopicMove(doc, 'A', 'mindmap', { x: 1, y: 1 });
+    const edit = moveTopic(doc, 'A', 'mindmap', { x: 1, y: 1 });
     expect(applyEdits(doc.source, edit ? [edit] : [])).toBe(`---\n${TOPICS_KEY}:\n  Gone: { mindmap: [5, 5] }\n  A: { mindmap: [1, 1] }\n---\n## Root\n\n## A\n`);
   });
 });
@@ -322,7 +342,7 @@ describe('rename keeps the topic key in step', () => {
 
   it('creates the header edit first when the note has no frontmatter yet and the topic is positioned by the caller', () => {
     const bare = parse('## Root\n\n## A\n');
-    const placed = planTopicMove(bare, 'A', 'mindmap', { x: 1, y: 1 });
+    const placed = moveTopic(bare, 'A', 'mindmap', { x: 1, y: 1 });
     const doc = parse(applyEdits(bare.source, placed ? [placed] : []));
     const plan = planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'B' });
     expect(applyEdits(doc.source, plan.edits)).toBe(`---\n${TOPICS_KEY}:\n  B: { mindmap: [1, 1] }\n---\n## Root\n\n## B\n`);
@@ -396,6 +416,19 @@ describe('add-topic appends an empty top-level section at the end of the documen
     expect(applyEdits(trimmed.source, planEdit(trimmed, { type: 'add-topic', title: '![[M]]' }).edits)).toBe('## Body\n- A\n\n## ![[M]]');
     const crlf = parse('## Body\r\n- A\r\n');
     expect(applyEdits(crlf.source, planEdit(crlf, { type: 'add-topic', title: '![[M]]' }).edits)).toBe('## Body\r\n- A\r\n\r\n## ![[M]]\r\n');
+  });
+
+  it('a titled section whose text is an ordinal key renumbers the topics of that heading and moves their entries along', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n  A (2): { mindmap: [2, 2] }\n---\n## Root\n\n## A\n\n## A\n`);
+    const plan = planEdit(doc, { type: 'add-topic', title: 'A (2)' });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n  A (3): { mindmap: [2, 2] }\n---\n## Root\n\n## A\n\n## A\n\n## A (2)\n`);
+    const parsed = parse(result);
+    expect([...topicKeys(parsed).values()]).toEqual(['A', 'A (3)', 'A (2)']);
+    expect(parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset)?.title).toBe('A (2)');
+    // An empty or unrelated section changes no key: the plan stays the one edit.
+    expect(planEdit(doc, { type: 'add-topic' }).edits).toHaveLength(1);
+    expect(planEdit(doc, { type: 'add-topic', title: 'B' }).edits).toHaveLength(1);
   });
 
   it('with a title, makes a topic of a note on the virtual root and the body of an empty note, and refuses a title with a line break', () => {

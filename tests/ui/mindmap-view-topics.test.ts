@@ -641,10 +641,12 @@ describe('MindmapView keeps topics with the same heading apart (LEV-86)', () => 
     expect(renamed).toContain('  別の見出し: { mindmap: [100, 600] }\n  同じ見出し: { mindmap: [400, 600] }\n---\n');
     expect(renamed).not.toContain('同じ見出し (2)');
     expect(renamed.slice(renamed.indexOf('## 講座の本体'))).toBe(source.slice(source.indexOf('## 講座の本体')).replace('## 同じ見出し\n- a', '## 別の見出し\n- a'));
-    // Both stay where they were, and the renamed one is the selection (found by the plan's offset: a heading that was one of two keeps no id through a rename).
+    // Both stay where they were; the untouched one keeps its id, the renamed one is the selection (found by the plan's
+    // offset: a heading that was one of two keeps no id through a rename that also rewrites the frontmatter).
     const renamedTopic = projectMap(documentOf(view)).topics.find(node => node.title === '別の見出し');
     const remaining = projectMap(documentOf(view)).topics.find(node => node.title === '同じ見出し');
     if (!renamedTopic || !remaining) throw new Error('Missing topics');
+    expect(remaining.id).toBe(second);
     expect(nodes().get(renamedTopic.id)?.classList.contains('is-selected')).toBe(true);
     expect(transform(renamedTopic.id)).toEqual(firstBefore);
     expect(transform(remaining.id)).toEqual(secondBefore);
@@ -668,7 +670,9 @@ describe('MindmapView keeps topics with the same heading apart (LEV-86)', () => 
     expect(deleted).not.toContain('## 同じ見出し\n- a');
     const remaining = projectMap(documentOf(view)).topics.filter(node => node.title === '同じ見出し');
     expect(remaining).toHaveLength(1);
-    expect(transform(remaining[0]?.id ?? '')).toEqual(secondBefore);
+    // Its text did not change, so it keeps its id through the re-parse (and with it any fold on its branches).
+    expect(remaining[0]?.id).toBe(second);
+    expect(transform(second)).toEqual(secondBefore);
     await undo();
     expect(current()).toBe(source);
     const [firstAgain, secondAgain] = sameTitled(view);

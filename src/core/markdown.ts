@@ -136,6 +136,19 @@ function topLevelSections(nodes: readonly MindNode[]): MindNode[] {
   });
 }
 
+/** Top-level sections grouped by their text (heading through the end of the section, trailing blank lines aside). */
+function sectionsByText(nodes: readonly MindNode[], source: string): Map<string, MindNode[]> {
+  const sections = topLevelSections(nodes);
+  const byText = new Map<string, MindNode[]>();
+  sections.forEach((node, index) => {
+    const text = source.slice(node.from, sections[index + 1]?.from ?? source.length).trimEnd();
+    const matches = byText.get(text) ?? [];
+    matches.push(node);
+    byText.set(text, matches);
+  });
+  return byText;
+}
+
 function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source: string): void {
   if (previous?.source === source && previous.nodes.length === nodes.length
     && nodes.every((node, index) => previous.nodes[index]?.kind === node.kind)) {
@@ -152,13 +165,14 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
       if (old) node.id = old.id;
     }
   }
-  // Top-level sections sharing a heading correspond by order while their count holds: their `mappy-topics`
-  // keys are ordinal too (§7), so a save that moves one keeps the map's selection on it. Other duplicate
-  // titles are not guessed after a change.
-  const oldSections = groupByTitle(topLevelSections(previous.nodes));
+  // Top-level sections whose whole text (heading and body) is unchanged keep their ids, same-titled ones
+  // included (§5 M7: a save that moves a free topic changes only the frontmatter, so both topics of a
+  // heading keep their ids and the map its selection). Identical sections correspond by order while their
+  // count holds; a section whose text changed is not guessed at by title or position (docs/architecture.md).
+  const oldSections = sectionsByText(previous.nodes, previous.source);
   const used = new Set(nodes.map((node) => node.id));
-  for (const [title, sections] of groupByTitle(topLevelSections(nodes))) {
-    const olds = oldSections.get(title);
+  for (const [text, sections] of sectionsByText(nodes, source)) {
+    const olds = oldSections.get(text);
     if (!olds || olds.length !== sections.length) continue;
     sections.forEach((section, index) => {
       const old = olds[index];

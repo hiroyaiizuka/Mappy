@@ -1146,9 +1146,11 @@ export class MindmapView extends ItemView {
       if (!document || !file || !projection || !drag) return;
       const scale = drag.viewport?.scale ?? this.viewport.value.scale;
       const sign = drag.body ? -1 : 1;
-      // By node id: the plan derives each topic's key from the heading as written (a topic that calls a map shows the called root's text instead).
+      // By node id: the plan derives each topic's key from the heading as written (a topic that calls a map shows the called
+      // root's text instead). A topic whose id an external change replaced during the drag is left out rather than refused.
       const moves = new Map<string, TopicPosition>();
       for (const [topicId, start] of drag.from) {
+        if (!projection.topics.some(topic => topic.id === topicId)) continue;
         moves.set(topicId, { x: Math.round(start.x + sign * delta.x / scale), y: Math.round(start.y + sign * delta.y / scale) });
       }
       const edit = planTopicMoves(document, this.mode, moves);

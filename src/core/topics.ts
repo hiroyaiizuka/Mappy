@@ -22,13 +22,15 @@ export type TopicPositionMap = Map<string, TopicPositions>;
 /**
  * The `mappy-topics` key of every free topic, by node id: the heading text, and for the second and
  * later topics with the same heading `<heading> (2)`, `<heading> (3)`… in source order, a number whose
- * text is itself a heading of the note being skipped. The one derivation both reading (the view, the
- * embed) and writing (moves, renames, removals) go through, so topics sharing a heading keep positions
- * of their own; the first of a heading keeps the plain key, so notes written before the ordinals read as before.
+ * text is itself a top-level heading of the note (a topic or the body root) being skipped. The one
+ * derivation both reading (the view, the embed) and writing (moves, renames, removals) go through, so
+ * topics sharing a heading keep positions of their own; the first of a heading keeps the plain key, so
+ * notes written before the ordinals read as before.
  */
 export function topicKeys(doc: MindDocument): Map<string, string> {
-  const { topics } = projectMap(doc);
+  const { root, topics } = projectMap(doc);
   const titles = new Set(topics.map((topic) => topic.title));
+  if (root.kind !== 'root') titles.add(root.title);
   const taken = new Set<string>();
   const keys = new Map<string, string>();
   for (const topic of topics) {
@@ -128,14 +130,9 @@ function assertPosition(position: TopicPosition): void {
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('トピックの位置が不正です。');
 }
 
-/** Store one layout position under a key (`topicKeys` of the note the topic is in); the note body never changes. */
-export function planTopicMove(doc: MindDocument, key: string, layout: string, position: TopicPosition): TextEdit | null {
-  assertLayout(layout);
-  assertPosition(position);
+/** A key is one line of YAML: a multi-line Setext heading cannot be written (`yamlKey` escapes no line breaks). */
+function assertKeyLine(key: string): void {
   if (/[\r\n]/u.test(key)) throw new Error('トピックの見出しは 1 行にしてください。');
-  const positions = readTopicPositions(doc.source);
-  positions.set(key, { ...(positions.get(key) ?? {}), [layout]: position });
-  return planTopicPositions(doc, positions);
 }
 
 /**
@@ -150,6 +147,7 @@ export function planTopicMoves(doc: MindDocument, layout: string, moves: Readonl
     assertPosition(position);
     const key = keys.get(id);
     if (key === undefined) throw new Error('対象のトピックが変更されています。再選択してください。');
+    assertKeyLine(key);
     positions.set(key, { ...(positions.get(key) ?? {}), [layout]: position });
   }
   return planTopicPositions(doc, positions);
@@ -169,7 +167,7 @@ export interface TopicPlacement { layout: string; x: number; y: number }
 export function planTopicRekey(
   doc: MindDocument, rekeys: ReadonlyMap<string, string>, dropped: ReadonlySet<string>, placed?: TopicPlacement & { key: string },
 ): TextEdit | null {
-  if (placed) { assertLayout(placed.layout); assertPosition(placed); }
+  if (placed) { assertLayout(placed.layout); assertPosition(placed); assertKeyLine(placed.key); }
   const positions = readTopicPositions(doc.source);
   const taken = new Set(Array.from(rekeys).filter(([from, to]) => from !== to).map(([, to]) => to));
   const result: TopicPositionMap = new Map();
@@ -177,6 +175,7 @@ export function planTopicRekey(
     if (dropped.has(key)) continue;
     const to = rekeys.get(key) ?? key;
     if (to === key && taken.has(key)) continue;
+    if (to !== key) assertKeyLine(to);
     result.set(to, layouts);
   }
   if (placed) result.set(placed.key, { ...(result.get(placed.key) ?? {}), [placed.layout]: { x: placed.x, y: placed.y } });
