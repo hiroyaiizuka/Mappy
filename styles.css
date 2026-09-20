@@ -6,6 +6,12 @@
   /* Drag preview (connector and slot frame): lighter than the selection blue so the thick line does not dominate. */
   --mappy-drop: #2cbdff;
   color: var(--text-normal);
+  /* app.css fixes both on body (`color: var(--text-normal)`, `caret-color: var(--caret-color)`), and a descendant inherits
+     body's computed colour, not the variable: the map reads each variable again so the explicit theme's re-derived value
+     (below) reaches the nodes and the inline input (LEV-93). Read here in every mode, like `color`: following the app it
+     resolves to the same colour the inherited property had. The one difference: the app hides carets during a modal's
+     open/close animation with `body.hide-cursor { caret-color: transparent !important }`, which this declaration outranks. */
+  caret-color: var(--caret-color);
   position: relative;
   height: 100%;
   padding: 0 !important;
@@ -19,9 +25,10 @@
  * for that theme applies inside it: `--color-base-*`, `--mono-rgb-*`, `--color-<name>`,
  * `--shadow-s`, `color-scheme`. Obsidian derives the semantic variables from that
  * palette on `body`, and a child inherits the already-computed body values, so the ones
- * the map and the Markdown rendered in its nodes read are derived again here, on the
- * container, with the mapping app.css uses (checked against 1.6.7 and 1.14.2; the
- * `--mono-rgb-*` / `--color-accent-hsl` helpers exist in both). `:where()` keeps this at
+ * the map and the Markdown rendered in its nodes read (`--caret-color` for the inline
+ * input among them, LEV-93) are derived again here, on the container, with the mapping
+ * app.css uses (checked against 1.6.7 and 1.14.2; the `--mono-rgb-*` /
+ * `--color-accent-hsl` helpers exist in both). `:where()` keeps this at
  * zero specificity: a theme's `.theme-dark { --background-primary: … }` still wins, and
  * Obsidian's `.theme-dark` overrides for the accent (`--text-accent`,
  * `--interactive-accent`, `--interactive-normal`, `--text-selection`) apply as they do
@@ -44,6 +51,7 @@
   --text-accent: var(--color-accent);
   --text-accent-hover: var(--color-accent-2);
   --text-selection: hsla(var(--color-accent-hsl), 0.2);
+  --caret-color: var(--text-normal);
   --interactive-normal: var(--color-base-00);
   --interactive-hover: var(--color-base-10);
   --interactive-accent-hsl: var(--color-accent-hsl);
@@ -83,6 +91,9 @@
   --scrollbar-thumb-bg: rgba(var(--mono-rgb-100), 0.1);
   --scrollbar-active-thumb-bg: rgba(var(--mono-rgb-100), 0.2);
 }
+/* app.css points the caret at the accent on mobile (`.is-mobile { --caret-color: var(--text-accent) }`), so the themed map
+   does too; `.is-mobile` is body's class, the rule still matches the container only (LEV-93). */
+:where(.is-mobile .mappy-view.theme-light, .is-mobile .mappy-view.theme-dark) { --caret-color: var(--text-accent); }
 
 .mappy-view .mappy-floating {
   position: absolute;

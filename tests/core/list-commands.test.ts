@@ -298,11 +298,18 @@ describe('source-preserving list commands', () => {
         .toBe(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: 'root', index: 3 }).source);
     });
 
-    it('refuses a swap whose lines would join a neighbouring block, such as a paragraph before a Setext underline', () => {
+    it('adds a blank line where the lines brought together would join into another block, such as a paragraph before a Setext underline (LEV-88)', () => {
       const doc = parse('## Root\n- Child\n\n## A\n- First\n\nProse about A.\n\n## B\n```\ncode\n```\nC\n---\n- Third\n');
       expect(doc.root.children.map(node => node.title)).toEqual(['Root', 'A', 'B', 'C']);
-      expect(() => planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id })).toThrow('リスト構造を安全に変更できません');
-      expect(() => planEdit(doc, { type: 'move-down', nodeId: find(doc, 'A').id })).toThrow('リスト構造を安全に変更できません');
+      const mended = '## Root\n- Child\n\n## B\n```\ncode\n```\n\n## A\n- First\n\nProse about A.\n\nC\n---\n- Third\n';
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source).toBe(mended);
+      expect(execute(doc, { type: 'move-down', nodeId: find(doc, 'A').id }).source).toBe(mended);
+    });
+
+    it('still refuses a swap that blank lines cannot mend: an H2 section over the top-level items before it', () => {
+      const doc = parse('- item\n\n## A\n- First\n');
+      expect(doc.root.children.map(node => node.title)).toEqual(['item', 'A']);
+      expect(() => planEdit(doc, { type: 'move-up', nodeId: find(doc, 'A').id })).toThrow('リスト構造を安全に変更できません');
     });
   });
 
