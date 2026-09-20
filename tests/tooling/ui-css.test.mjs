@@ -86,9 +86,26 @@ describe("map theme CSS (settings, M14)", () => {
     expect(rule).toMatch(/--interactive-accent:\s*var\(--color-accent-1\);/u);
     expect(rule).toMatch(/--link-color:\s*var\(--text-accent\);/u);
     expect(rule).toMatch(/--code-background:\s*var\(--background-primary-alt\);/u);
+    // The caret too: app.css fixes `--caret-color` on body from the text colour (1.6.7 and 1.14.2 alike).
+    expect(rule).toMatch(/--caret-color:\s*var\(--text-normal\);/u);
     // Only custom properties: the block must not restyle anything by itself.
     const declarations = rule.split(";").map(line => line.trim()).filter(Boolean);
     expect(declarations.every(line => line.startsWith("--"))).toBe(true);
+  });
+
+  it("reads the caret variable again on the map container, as body does, so the inline input's caret is the map's text colour (LEV-93)", async () => {
+    const css = (await readFile(new URL("../../styles.css", import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//gu, "");
+    // app.css fixes `caret-color: var(--caret-color)` on body, and a descendant inherits body's computed colour: the
+    // re-derived variable reaches the inline input only through a rule that reads it again, next to `color`.
+    const view = css.match(/(?:^|\n)\.mappy-view \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(view).toMatch(/(?:^|;)\s*color:\s*var\(--text-normal\);/u);
+    expect(view).toMatch(/(?:^|;)\s*caret-color:\s*var\(--caret-color\);/u);
+    // The one declaration of the property: no rule between the container and the textarea sets the caret on its own.
+    expect(css.match(/(?:^|[;{\s])caret-color:/gu)).toHaveLength(1);
+    // On mobile app.css points the caret at the accent instead; the themed container follows, still matching itself only.
+    const mobile = css.match(/:where\(\.is-mobile \.mappy-view\.theme-light, \.is-mobile \.mappy-view\.theme-dark\) \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(mobile.split(";").map(line => line.trim()).filter(Boolean)).toEqual(["--caret-color: var(--text-accent)"]);
+    expect(css.indexOf(":where(.is-mobile")).toBeGreaterThan(css.indexOf(":where(.mappy-view.theme-light"));
   });
 
   it("never selects Obsidian's theme classes outside the map container", async () => {
@@ -98,7 +115,8 @@ describe("map theme CSS (settings, M14)", () => {
     expect(themed.length).toBeGreaterThan(0);
     for (const selector of themed) {
       for (const part of selector.replace(/^:where\(|\)$/gu, "").split(",")) {
-        expect(part.trim()).toMatch(/^\.mappy-view\.theme-(?:light|dark)\b/u);
+        // `.is-mobile` is body's class; a rule may look up to it, but the element it selects is still the container.
+        expect(part.trim()).toMatch(/^(?:\.is-mobile )?\.mappy-view\.theme-(?:light|dark)\b/u);
       }
     }
   });
