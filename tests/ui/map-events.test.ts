@@ -275,7 +275,43 @@ describe('MapEvents DOM interactions', () => {
     actions.selected.mockReturnValue(undefined);
     expect(key(canvas, 'Enter').defaultPrevented).toBe(false);
     expect(key(canvas, 'Tab').defaultPrevented).toBe(false);
+    expect(key(canvas, 'Delete').defaultPrevented).toBe(false);
+    expect(key(canvas, 'F2').defaultPrevented).toBe(false);
+    expect(key(canvas, ' ').defaultPrevented).toBe(false);
+    expect(key(canvas, 'ArrowDown', { altKey: true }).defaultPrevented).toBe(false);
+    expect(key(canvas, 'ArrowDown', { shiftKey: true }).defaultPrevented).toBe(false);
+    expect(key(canvas, 'ArrowDown', { metaKey: true }).defaultPrevented).toBe(false);
     expect(actions.command).not.toHaveBeenCalled();
+    expect(actions.edit).not.toHaveBeenCalled();
+    expect(actions.select).not.toHaveBeenCalled();
+    expect(actions.visible).not.toHaveBeenCalled();
+    // The history is the map's, not a node's: ⌘Z／⌘⇧Z work with nothing selected.
+    expect(key(canvas, 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    expect(key(canvas, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true);
+    expect(actions.history.mock.calls).toEqual([['undo'], ['redo']]);
+    // A plain arrow starts again from the first node on the map (the root after a click on the empty canvas).
+    expect(key(canvas, 'ArrowDown').defaultPrevented).toBe(true);
+    expect(actions.select).toHaveBeenCalledExactlyOnceWith(actions.visible()[0]?.id, true);
+    actions.visible.mockReturnValue([]);
+    expect(key(canvas, 'ArrowRight').defaultPrevented).toBe(false);
+    expect(actions.select).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a pasted image alone with nothing selected, and attaches it to the selected node otherwise', () => {
+    const { canvas, actions, selected } = fixture();
+    const image = new File(['x'], 'a.png', { type: 'image/png' });
+    const paste = (): Event => {
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: { files: [image] } });
+      canvas.dispatchEvent(event);
+      return event;
+    };
+    actions.selected.mockReturnValue(undefined);
+    expect(paste().defaultPrevented).toBe(false);
+    expect(actions.attach).not.toHaveBeenCalled();
+    actions.selected.mockReturnValue(selected);
+    expect(paste().defaultPrevented).toBe(true);
+    expect(actions.attach).toHaveBeenCalledExactlyOnceWith(image);
   });
 
   it('does not act on a key something else already consumed', () => {

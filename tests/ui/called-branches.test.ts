@@ -6,6 +6,7 @@ import { HarnessApp } from '../../harness/browser/app';
 import { MarkdownView, Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { calledNodeId } from '../../src/core/calls';
 import type { MindDocument } from '../../src/core/markdown';
+import { readTopicPositions } from '../../src/core/topics';
 import { sceneContents } from '../../src/export/excalidraw-scene';
 import { PLACEHOLDER_ID } from '../../src/layout/drop-preview';
 import { DocumentStore } from '../../src/obsidian/document-store';
@@ -626,6 +627,63 @@ describe('the host\'s own state stays keyed to the host', () => {
     const placed = layout?.nodes.find(item => item.id === topic.dataset.nodeId);
     expect(placed && layout ? [Math.round(placed.x - layout.origin.x), Math.round(placed.y - layout.origin.y)] : null).toEqual([Number(match?.[1]), Number(match?.[2])]);
     expect(app.content(app.vault.getAbstractFileByPath('Map.md') as never)).toBe(MAP);
+  });
+
+  it('joins a topic whose heading calls a map to a node as the item `- ![[Map]]`, still the calling root, and undo makes it a topic again (§5 M7 合流)', async () => {
+    const host = ['---', 'mappy: true', 'mappy-topics:', '  "![[Map]]": { mindmap: [300, 40] }', '---', '## 本体', '- a', '  - a1', '', '## ![[Map]]', ''].join('\n');
+    const { app, node, canvas, settle, source, hit, view, titles } = await mount({ [HOST_PATH]: host, 'Map.md': MAP });
+    const topic = node('講座');
+    const target = node('a');
+    expect(topic.hasClass('is-topic')).toBe(true);
+    pointer('pointerdown', topic, 300, 300);
+    pointer('pointermove', canvas, 306, 300);
+    hit(target);
+    pointer('pointermove', canvas, 320, 310);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    pointer('pointerup', canvas, 320, 310);
+    await settle();
+    // The section became the last item under `a`; its entry left with it. The called map is still grafted under the item.
+    expect(source()).toBe(['---', 'mappy: true', '---', '## 本体', '- a', '  - a1', '  - ![[Map]]', ''].join('\n'));
+    expect(readTopicPositions(source()).size).toBe(0);
+    const item = node('講座');
+    expect(item.hasClass('is-topic')).toBe(false);
+    expect(item.hasClass('is-called-root')).toBe(true);
+    expect(view.snapshot()?.document?.nodes.find(candidate => candidate.title === '![[Map]]')?.parentId).toBe(view.snapshot()?.document?.nodes.find(candidate => candidate.title === 'a')?.id);
+    expect(titles()).toEqual(['本体', 'a', 'a1', '講座', '回復する', '記録する', '葉']);
+    expect(app.content(app.vault.getAbstractFileByPath('Map.md') as never)).toBe(MAP);
+    key(canvas, 'z', { metaKey: true });
+    await settle();
+    expect(source()).toBe(host);
+    expect(node('講座').hasClass('is-topic')).toBe(true);
+    expect(node('講座').hasClass('is-called-root')).toBe(true);
+  });
+
+  it('detaches a calling item dragged onto empty canvas into the topic `## ![[Map]]` at the drop point, still the calling root, and undo puts the item back (§5 M7 切り離し)', async () => {
+    const host = ['---', 'mappy: true', '---', '## 本体', '- a', '  - ![[Map]]', '  - a1', ''].join('\n');
+    const { app, node, canvas, settle, source, view, titles } = await mount({ [HOST_PATH]: host, 'Map.md': MAP });
+    const item = node('講座');
+    expect(item.hasClass('is-called-root')).toBe(true);
+    expect(item.hasClass('is-topic')).toBe(false);
+    pointer('pointerdown', item, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 900, 700);
+    pointer('pointerup', canvas, 900, 700);
+    await settle();
+    // The item became a section at the end, its drop point stored under the heading as written (quoted: it holds `[`).
+    expect(source()).toMatch(/^---\nmappy: true\nmappy-topics:\n {2}"!\[\[Map\]\]": \{ mindmap: \[-?\d+, -?\d+\] \}\n---\n## 本体\n- a\n {2}- a1\n\n## !\[\[Map\]\]\n$/u);
+    expect(source()).not.toContain('講座');
+    const topic = node('講座');
+    expect(topic.hasClass('is-topic')).toBe(true);
+    expect(topic.hasClass('is-called-root')).toBe(true);
+    expect(topic.hasClass('is-selected')).toBe(true);
+    expect(titles()).toEqual(['本体', 'a', 'a1', '講座', '回復する', '記録する', '葉']);
+    expect(view.snapshot()?.document?.nodes.find(candidate => candidate.title === '![[Map]]')?.parentId).toBe('root');
+    expect(app.content(app.vault.getAbstractFileByPath('Map.md') as never)).toBe(MAP);
+    key(canvas, 'z', { metaKey: true });
+    await settle();
+    expect(source()).toBe(host);
+    expect(node('講座').hasClass('is-topic')).toBe(false);
+    expect(node('講座').hasClass('is-called-root')).toBe(true);
   });
 
   it('resolves a link inside a called node from the called note, and one in the calling item\'s own body from the host', async () => {

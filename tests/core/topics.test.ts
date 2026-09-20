@@ -307,6 +307,40 @@ describe('add-topic appends an empty top-level section at the end of the documen
     const fence = parse('## Body\n\n```\ncode');
     expect(() => planEdit(fence, { type: 'add-topic' })).toThrow('トピックを追加できません');
   });
+
+  it('writes a titled section in the same edit (a map called with nothing selected, §5 M12): `## ![[map]]` at the end, no position', () => {
+    const doc = parse(listNote);
+    const plan = planEdit(doc, { type: 'add-topic', title: '![[Other map]]' });
+    expect(plan.edits).toHaveLength(1);
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`${listNote}\n## ![[Other map]]\n`);
+    const parsed = parse(result);
+    const added = parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset);
+    expect(added).toMatchObject({ title: '![[Other map]]', kind: 'atx', level: 2, parentId: 'root' });
+    expect(projectMap(parsed).topics.at(-1)).toBe(added);
+    expect(readTopicPositions(result).has('![[Other map]]')).toBe(false);
+    // The depth and the ending follow the untitled case: a heading document, no trailing newline, CRLF.
+    expect(applyEdits(parse(headingNote).source, planEdit(parse(headingNote), { type: 'add-topic', title: '![[M]]' }).edits)).toBe(`${headingNote}\n# ![[M]]\n`);
+    const trimmed = parse('## Body\n- A');
+    expect(applyEdits(trimmed.source, planEdit(trimmed, { type: 'add-topic', title: '![[M]]' }).edits)).toBe('## Body\n- A\n\n## ![[M]]');
+    const crlf = parse('## Body\r\n- A\r\n');
+    expect(applyEdits(crlf.source, planEdit(crlf, { type: 'add-topic', title: '![[M]]' }).edits)).toBe('## Body\r\n- A\r\n\r\n## ![[M]]\r\n');
+  });
+
+  it('with a title, makes a topic of a note on the virtual root and the body of an empty note, and refuses a title with a line break', () => {
+    const virtual = parse('---\nmappy: true\n---\n- 見出しより前の項目\n');
+    const topic = applyEdits(virtual.source, planEdit(virtual, { type: 'add-topic', title: '![[M]]' }).edits);
+    expect(topic).toBe('---\nmappy: true\n---\n- 見出しより前の項目\n\n## ![[M]]\n');
+    expect(projectMap(parse(topic)).root.kind).toBe('root');
+    expect(projectMap(parse(topic)).topics.map((node) => node.title)).toEqual(['![[M]]']);
+    const empty = parse('---\nmappy: true\n---\n');
+    const body = applyEdits(empty.source, planEdit(empty, { type: 'add-topic', title: '![[M]]' }).edits);
+    expect(body).toBe('---\nmappy: true\n---\n\n## ![[M]]\n');
+    expect(projectMap(parse(body)).root.title).toBe('![[M]]');
+    expect(projectMap(parse(body)).topics).toEqual([]);
+    expect(() => planEdit(virtual, { type: 'add-topic', title: '![[M]]\n- x' })).toThrow('改行');
+    expect(() => planEdit(virtual, { type: 'add-topic', title: '![[M]]\r' })).toThrow('改行');
+  });
 });
 
 describe('rename with a position places a new topic in the same edit set', () => {
@@ -464,6 +498,18 @@ describe('a topic dropped on a node joins it as a branch (合流)', () => {
     expect(parse(result).nodes.map((item) => item.title)).toEqual(['Body', 'a', 'T', 't1', 'U', 'u']);
   });
 
+  it('joins a topic whose heading is one `![[map]]` as the item `- ![[map]]`, dropping its entry keyed by that heading (§5 M12)', () => {
+    const doc = parse('---\nmappy: true\nmappy-topics:\n  "![[Map]]": { mindmap: [300, 40] }\n---\n## Body\n- a\n  - a1\n- b\n\n## ![[Map]]\n');
+    const call = topic(doc, '![[Map]]');
+    const plan = planEdit(doc, { type: 'move', nodeId: call.id, parentId: node(doc, 'a').id, index: 1 });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe('---\nmappy: true\n---\n## Body\n- a\n  - a1\n  - ![[Map]]\n- b\n');
+    const parsed = parse(result);
+    expect(parsed.nodes.find((item) => item.titleFrom === plan.selectionOffset)).toMatchObject({ title: '![[Map]]', kind: 'list', level: 4 });
+    expect(projectMap(parsed).topics).toEqual([]);
+    expect(readTopicPositions(result).size).toBe(0);
+  });
+
   it('moves a topic section under a heading in heading documents through the existing section move and drops its entry too', () => {
     const doc = parse(`---\n${TOPICS_KEY}:\n  Topic: { mindmap: [1, 2] }\n---\n# Body\n\n## Child\n\n# Topic\n\n### Deep\n`);
     const result = applyEdits(doc.source, planEdit(doc, { type: 'move', nodeId: topic(doc, 'Topic').id, parentId: node(doc, 'Child').id, index: 0 }).edits);
@@ -538,6 +584,20 @@ describe('a branch dropped on empty canvas detaches into a new topic (切り離�
     const doc = parse(fixture);
     expect(() => planEdit(doc, { type: 'detach', nodeId: projectMap(doc).root.id })).toThrow();
     expect(() => planEdit(doc, { type: 'detach', nodeId: 'root' })).toThrow();
+  });
+
+  it('detaches an item `- ![[map]]` into the section `## ![[map]]`, its position stored under the quoted heading (§5 M12)', () => {
+    const doc = parse('---\nmappy: true\n---\n## Body\n- a\n  - ![[Map]]\n  - a1\n- b\n');
+    const plan = planEdit(doc, { type: 'detach', nodeId: node(doc, '![[Map]]').id, position: { layout: 'mindmap', x: 300, y: 40 } });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe('---\nmappy: true\nmappy-topics:\n  "![[Map]]": { mindmap: [300, 40] }\n---\n## Body\n- a\n  - a1\n- b\n\n## ![[Map]]\n');
+    const parsed = parse(result);
+    expect(parsed.nodes.find((item) => item.titleFrom === plan.selectionOffset)).toMatchObject({ title: '![[Map]]', kind: 'atx', level: 2, parentId: 'root' });
+    expect(projectMap(parsed).topics.map((item) => item.title)).toEqual(['![[Map]]']);
+    expect(readTopicPositions(result).get('![[Map]]')).toEqual({ mindmap: { x: 300, y: 40 } });
+    // Without a drop point (a call added with nothing selected takes none), the section alone is written.
+    expect(applyEdits(doc.source, planEdit(doc, { type: 'detach', nodeId: node(doc, '![[Map]]').id }).edits))
+      .toBe('---\nmappy: true\n---\n## Body\n- a\n  - a1\n- b\n\n## ![[Map]]\n');
   });
 
   it('does not store a position when another current topic already has the heading, and detaches heading branches by moving them to the top level', () => {

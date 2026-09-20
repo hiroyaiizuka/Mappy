@@ -6,6 +6,7 @@ import { HarnessApp } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import { projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
+import { readTopicPositions } from '../../src/core/topics';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
@@ -45,6 +46,8 @@ interface Mounted extends MountedMapView {
   parsed: (title: string) => MindNode;
   /** The id of the node the map shows as selected. */
   selected: () => string | undefined;
+  /** A primary-button press and release on the empty canvas at one point (a click, not a pan), as a pointer makes them. */
+  clickBlank: (x?: number, y?: number) => void;
   /** ⌘Z / ⌘⇧Z on the canvas: the map's own history, then a refresh. */
   undo: () => Promise<void>;
   redo: () => Promise<void>;
@@ -68,15 +71,21 @@ async function mount(source = fixtureSource()): Promise<Mounted> {
       return found;
     },
     selected: () => mounted.view.containerEl.querySelector<HTMLElement>('.mappy-node.is-selected')?.dataset.nodeId,
+    clickBlank: (x = 400, y = 300) => {
+      mounted.canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX: x, clientY: y }));
+      mounted.canvas.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX: x, clientY: y }));
+      mounted.canvas.dispatchEvent(new MouseEvent('click', { button: 0, bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    },
     undo: () => history(false),
     redo: () => history(true),
   };
 }
 
 describe('MindmapView.callMap (§5 M12, the input side)', () => {
-  it('with nothing selected, appends the embed after the last child of the body root and selects it without opening the editor', async () => {
+  it('with the body root selected (the selection a note opens with), appends the embed after its last child and selects it without opening the editor', async () => {
     const source = fixtureSource();
     const { view, other, source: current, parsed, selected, editor, app } = await mount();
+    expect(selected()).toBe(projectMap(documentOf(view)).root.id);
     await view.callMap(other);
     const expected = source.replace('- 習慣化する\n', `- 習慣化する\n- ${LINK}\n`);
     expect(current()).toBe(expected);
@@ -100,6 +109,127 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     select('ふりかえる');
     await view.callMap(other);
     expect(current()).toContain(`  - ふりかえる\n    - ${LINK}\n`);
+  });
+
+  it('with nothing selected (the empty canvas clicked), appends `## ![[map]]` as a free topic at the end with no position, shown as the called root beside the body', async () => {
+    const source = fixtureSource();
+    const { view, other, source: current, parsed, selected, editor, app, node, clickBlank, settle } = await mount();
+    clickBlank();
+    expect(selected()).toBeUndefined();
+    await view.callMap(other);
+    await settle();
+    // One section appended; the frontmatter (the `mappy-topics` of the other topics included) and the body keep their bytes.
+    expect(current()).toBe(`${source}\n## ${LINK}\n`);
+    expect(readTopicPositions(current()).has(LINK)).toBe(false);
+    const document = documentOf(view);
+    expect(projectMap(document).topics.map(topic => topic.title)).toEqual(['参考資料', '補足: 用語', '位置のないトピック', LINK]);
+    expect(projectMap(document).root.children.map(child => child.title)).toEqual(['回復する', '記録する', '習慣化する']);
+    // The topic's root shows the called map's root and its tree as read-only branches; the heading itself is the host's own node.
+    const topic = node('別のマップ');
+    expect(topic.dataset.nodeId).toBe(parsed(LINK).id);
+    expect(topic.hasClass('is-topic')).toBe(true);
+    expect(topic.hasClass('is-called-root')).toBe(true);
+    expect(topic.hasAttribute('aria-readonly')).toBe(false);
+    expect(topic.querySelector('.mappy-node-call-mark')).not.toBeNull();
+    for (const stage of ['第 1 週', '第 2 週']) {
+      expect(node(stage).hasClass('is-called')).toBe(true);
+      expect(node(stage).getAttribute('aria-readonly')).toBe('true');
+    }
+    expect(selected()).toBe(parsed(LINK).id);
+    expect(editor()).toBeNull();
+    expect(app.content(other)).toBe(OTHER_SOURCE);
+    expect(Notice.log).toEqual([]);
+    // F2 on the topic's root edits the heading as written.
+    view.containerEl.querySelector<HTMLElement>('.mappy-canvas')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true }));
+    expect(editor()?.value).toBe(LINK);
+  });
+
+  it('a call with nothing selected is one step of the history: Undo removes the section and its branches, Redo puts them back; Delete on the topic removes the section too', async () => {
+    const source = fixtureSource();
+    const { view, other, source: current, clickBlank, undo, redo, settle, node, select, canvas, key } = await mount();
+    clickBlank();
+    await view.callMap(other);
+    await settle();
+    const called = current();
+    expect(called).toBe(`${source}\n## ${LINK}\n`);
+    await undo();
+    expect(current()).toBe(source);
+    expect(() => node('別のマップ')).toThrow();
+    expect(view.containerEl.querySelectorAll('.mappy-node')).toHaveLength(documentOf(view).nodes.length);
+    await redo();
+    expect(current()).toBe(called);
+    expect(node('別のマップ').hasClass('is-topic')).toBe(true);
+    expect(node('第 2 週').hasClass('is-called')).toBe(true);
+    // The topic's root is the host's own heading: Delete takes the section (and the called branches with it), Undo brings it back.
+    select('別のマップ');
+    key(canvas, 'Delete');
+    await settle();
+    expect(current()).toBe(source);
+    expect(() => node('別のマップ')).toThrow();
+    await undo();
+    expect(current()).toBe(called);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('a click on the empty canvas clears the selection on screen; a pan does not; an arrow key then starts from the body root, other keys do nothing', async () => {
+    const source = fixtureSource();
+    const { view, source: current, selected, select, clickBlank, canvas, key, editor, settle } = await mount();
+    const root = projectMap(documentOf(view)).root.id;
+    select('回復する');
+    expect(selected()).toBe(documentOf(view).nodes.find(node => node.title === '回復する')?.id);
+    clickBlank();
+    expect(selected()).toBeUndefined();
+    expect(canvas.querySelectorAll('.mappy-node.is-selected, .mappy-node[aria-selected="true"]')).toHaveLength(0);
+    // Structural keys and F2 have no node to act on; the note is untouched and nothing is edited.
+    for (const value of ['Tab', 'Enter', 'Delete', 'F2', ' ']) expect(key(canvas, value).defaultPrevented).toBe(false);
+    await settle();
+    expect(current()).toBe(source);
+    expect(editor()).toBeNull();
+    expect(selected()).toBeUndefined();
+    // A redraw keeps nothing selected; an arrow key selects the first node on the map.
+    expect(key(canvas, 'ArrowDown').defaultPrevented).toBe(true);
+    expect(selected()).toBe(root);
+    // A press that travelled (a pan) ends with a click on the canvas too, and keeps the selection.
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+    canvas.dispatchEvent(new MouseEvent('click', { button: 0, bubbles: true, cancelable: true, clientX: 460, clientY: 340 }));
+    expect(selected()).toBe(root);
+    // A click on a node selects it again as before.
+    select('記録する');
+    expect(selected()).toBe(documentOf(view).nodes.find(node => node.title === '記録する')?.id);
+  });
+
+  it('a click on the empty canvas that ends an inline edit saves it and leaves nothing selected, so the call then makes a topic', async () => {
+    const source = fixtureSource();
+    const { view, other, source: current, selected, select, clickBlank, canvas, key, editor, settle, parsed } = await mount();
+    select('記録する');
+    key(canvas, 'F2');
+    const input = editor();
+    expect(input).not.toBeNull();
+    if (!input) throw new Error('no editor');
+    input.value = '記録する（改）';
+    // The press focuses the canvas, which blurs the editor and saves the draft; the release is the click that deselects.
+    clickBlank();
+    await settle();
+    expect(editor()).toBeNull();
+    expect(current()).toBe(source.replace('- 記録する\n', '- 記録する（改）\n'));
+    expect(selected()).toBeUndefined();
+    await view.callMap(other);
+    await settle();
+    expect(current()).toBe(`${source.replace('- 記録する\n', '- 記録する（改）\n')}\n## ${LINK}\n`);
+    expect(selected()).toBe(parsed(LINK).id);
+  });
+
+  it('with the root of a topic that calls a map selected, appends the embed as that section\'s own item, after the called branches', async () => {
+    const source = `${fixtureSource()}\n## ${LINK}\n`;
+    const { view, other, source: current, parsed, node, select } = await mount(source);
+    select('別のマップ');
+    await view.callMap(other);
+    // The section's first item, as add-child writes it under a heading with no list yet.
+    expect(current()).toBe(`${source}\n- ${LINK}\n`);
+    expect(parsed(LINK).children.map(child => child.title)).toEqual([LINK]);
+    // The section's own item is drawn after the called map's branches, itself a calling item.
+    expect(node('別のマップ').hasClass('is-topic')).toBe(true);
+    expect(view.containerEl.querySelectorAll('.mappy-node.is-called-root')).toHaveLength(2);
   });
 
   it('with a free topic selected, appends under that topic; the body and the other topics keep their bytes', async () => {
@@ -171,7 +301,7 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     expect(current()).toBe(source);
   });
 
-  it('says so instead of dropping the choice while a save is in flight, and refuses a note whose body is the virtual root', async () => {
+  it('says so instead of dropping the choice while a save is in flight', async () => {
     const source = fixtureSource();
     const { view, other, source: current, settle } = await mount();
     const first = view.callMap(other);
@@ -179,9 +309,23 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     await first;
     await settle();
     expect(current()).toBe(source.replace('- 習慣化する\n', `- 習慣化する\n- ${LINK}\n`));
+  });
+
+  it('adds the call as a topic to a note whose body is the virtual root, whether the root is selected or nothing is (no "先に H2 を")', async () => {
     const headless = '---\nmappy: true\n---\n- 見出しより前の項目\n';
     const bare = await mount(headless);
-    await expect(bare.view.callMap(bare.other)).rejects.toThrow('H2');
-    expect(bare.source()).toBe(headless);
+    expect(bare.selected()).toBe('root');
+    await bare.view.callMap(bare.other);
+    await bare.settle();
+    expect(bare.source()).toBe(`${headless}\n## ${LINK}\n`);
+    expect(projectMap(documentOf(bare.view)).root.kind).toBe('root');
+    expect(projectMap(documentOf(bare.view)).topics.map(topic => topic.title)).toEqual([LINK]);
+    expect(bare.node('別のマップ').hasClass('is-topic')).toBe(true);
+    expect(bare.selected()).toBe(bare.parsed(LINK).id);
+    bare.clickBlank();
+    await bare.view.callMap(bare.other);
+    await bare.settle();
+    expect(bare.source()).toBe(`${headless}\n## ${LINK}\n\n## ${LINK}\n`);
+    expect(Notice.log).toEqual([]);
   });
 });

@@ -6,7 +6,7 @@
  * scope; the map's explicit theme (M14) is exercised here with placeholder colours only, and the
  * settings tab itself is not on this page (its list of visible layouts is applied to the view directly).
  */
-import type { App, MarkdownPostProcessorContext, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
+import type { App, MarkdownPostProcessorContext, TFile, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
 import { installObsidianDom } from "./dom";
 import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext } from "./obsidian";
 import { HarnessApp } from "./app";
@@ -619,6 +619,15 @@ const api = {
   putNote: (path: string, content: string) => { app.put(path, content); },
   /** Delete a note from the in-memory vault; open maps and embeds observe it, and the cache reports it gone. */
   removeNote: (path: string) => { app.remove(path); },
+  /**
+   * What choosing this note in「マップを検索して呼び出す」does (§5 M12): the view adds `![[note]]` under the selected
+   * node, or as a free topic with nothing selected. The search modal itself is not on this page (③ 実機).
+   */
+  callMap: async (path: string) => {
+    const file = app.vault.getAbstractFileByPath(path);
+    if (!view || !file || !("extension" in file) || file.extension !== "md") throw new Error(`No map view or no Markdown note at ${path}`);
+    await view.callMap(file as TFile);
+  },
   scrollTo: (top: number) => { const reading = pane.querySelector<HTMLElement>(".markdown-reading-view"); if (reading) reading.scrollTop = top; },
   /** Scroll the rendered host so the embed with this `data-mappy-embed` / `src` sits at the top of the pane. */
   revealEmbed: (src: string) => {
