@@ -482,38 +482,78 @@ async function captureOperations(recorder, page) {
     return `項目: ${items.join(' / ')}`;
   });
 
-  await recorder.run('action-menu', '右上の歯車「操作」をクリック → Escape', '右上のボタンは歯車 1 つ。メニューがその下に右揃えで開き、項目・区切りが product-plan §5 M3 の順。ノードの項目は有効、Excalidraw（このページにはない）とリスト形式（リスト形式のノート）は無効。Escape で閉じる', async () => {
+  // The 操作 popover (§5 M3): the card's items as `title（description）`, a disabled one in brackets.
+  const popoverEntries = () => page.evaluate(`Array.from(document.querySelectorAll('.mappy-view .mappy-popover [role="menuitem"]'), item => {
+    const text = item.querySelector('.mappy-popover-title')?.textContent + '（' + item.querySelector('.mappy-popover-description')?.textContent + '）';
+    return item.getAttribute('aria-disabled') === 'true' ? '[' + text + ']' : text;
+  })`);
+  const popoverRect = () => page.evaluate(`JSON.parse(JSON.stringify(document.querySelector('.mappy-view .mappy-popover')?.getBoundingClientRect() ?? null))`);
+  const popoverCount = () => page.evaluate(`document.querySelectorAll('.mappy-popover').length`);
+  const focusedTitle = () => page.evaluate(`document.activeElement?.classList.contains('mappy-canvas') ? 'canvas' : document.activeElement?.querySelector('.mappy-popover-title')?.textContent ?? document.activeElement?.tagName ?? null`);
+  /** The card under the gear, its right edge on the gear's, inside the pane and at most 320px wide. */
+  const expectPlaced = (card, gear, canvas) => {
+    expect(card, 'no popover open');
+    expect(card.y >= gear.y + gear.height, `card top ${card.y} is not under the gear's bottom ${gear.y + gear.height}`);
+    expect(Math.abs(card.x + card.width - (gear.x + gear.width)) <= 1, `card right edge ${card.x + card.width} is not aligned with the gear's ${gear.x + gear.width}`);
+    expect(card.width <= 320 && card.width >= 200, `card width ${card.width} is not within 200–320`);
+    expect(inside(card, canvas), `card ${JSON.stringify(card)} is not inside the pane ${JSON.stringify(canvas)}`);
+  };
+
+  await recorder.run('action-popover', '右上の歯車「操作」をクリック → ↓ → Escape → クリック → クリック → クリック → Escape', '右上のボタンは歯車 1 つ。歯車の直下に右辺を揃えたカード（Obsidian の .menu ではない）が開き、項目は Markdown に切り替え／マップを検索して呼び出す／書き出す の 3 つ（アイコン・項目名・1 行の説明）だけ、すべて有効。開いた直後は 1 項目目にフォーカス、↓ で 2 項目目、Escape で閉じてキャンバスにフォーカス。2 度目の押下で閉じ（aria-expanded=false）、3 度目で開く', async () => {
     const labels = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-actions .mappy-button'), button => button.getAttribute('aria-label'))`);
     expect(labels.length === 1 && labels[0] === '操作', `top-right buttons: ${labels.join(' / ')}`);
     const gear = await page.harness('h.button("操作")');
     await page.click(center(gear).x, center(gear).y);
-    // Each entry as its title, a disabled one in brackets, a separator as a dash.
-    const entries = await page.evaluate(`Array.from(document.querySelector('.menu')?.children ?? [], child => child.classList.contains('menu-separator') ? '—'
-      : child.classList.contains('is-disabled') ? '[' + child.querySelector('.menu-item-title')?.textContent + ']' : child.querySelector('.menu-item-title')?.textContent)`);
-    const expected = [
-      'Markdown に切り替え', '左に Markdown を開く', '—',
-      '兄弟を追加（Enter）', '子を追加（Tab）', 'トピックを追加', '—',
-      'テキストを編集（F2）', '本文・リンクを編集', '画像を追加', '折りたたみ（Space）', '削除（Delete）', '—',
-      'マップを検索して呼び出す', '[Excalidraw の図面に挿入]', 'SVG／PNG に書き出し', '[リスト形式に変更]', '—',
-    ];
-    const history = entries.slice(expected.length).map(entry => entry.replace(/^\[|\]$/gu, ''));
-    expect(JSON.stringify(entries.slice(0, expected.length)) === JSON.stringify(expected) && JSON.stringify(history) === JSON.stringify(['元に戻す', 'やり直す']),
-      `menu entries: ${entries.join(' / ')}`);
-    const menu = await page.evaluate(`JSON.parse(JSON.stringify(document.querySelector('.menu').getBoundingClientRect()))`);
-    expect(menu.y >= gear.y + gear.height, `menu top ${menu.y} is not under the button bottom ${gear.y + gear.height}`);
-    expect(Math.abs(menu.x + menu.width - (gear.x + gear.width)) <= 4, `menu right edge ${menu.x + menu.width} is not aligned with the button's ${gear.x + gear.width}`);
-    await page.screenshot(join(recorder.directory, 'action-menu-open.png'));
-    // The button's next press closes the menu (the mousedown outside hides it, the click must not reopen it); the one after opens it again.
+    const entries = await popoverEntries();
+    expect(JSON.stringify(entries) === JSON.stringify(['Markdown に切り替え（同じタブで本文を開く）', 'マップを検索して呼び出す（他のマップをこのマップの枝にする）', '書き出す（SVG／PNG に保存）']),
+      `popover entries: ${entries.join(' / ')}`);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'an Obsidian menu opened as well');
+    expect((await page.evaluate(`document.querySelector('.mappy-actions button')?.getAttribute('aria-expanded')`)) === 'true', 'aria-expanded is not true while open');
+    const icons = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-popover .mappy-popover-icon'), icon => icon.dataset.icon)`);
+    expect(JSON.stringify(icons) === JSON.stringify(['file-text', 'search', 'image-down']), `icons: ${icons.join(' / ')}`);
+    expectPlaced(await popoverRect(), gear, await page.harness('h.canvasRect()'));
+    expect((await focusedTitle()) === 'Markdown に切り替え', `focus after opening: ${await focusedTitle()}`);
+    await page.screenshot(join(recorder.directory, 'action-popover-open.png'));
+    await page.key('ArrowDown', 'ArrowDown', 40);
+    expect((await focusedTitle()) === 'マップを検索して呼び出す', `focus after ↓: ${await focusedTitle()}`);
+    await page.key('Escape', 'Escape', 27);
+    expect((await popoverCount()) === 0, 'popover still open after Escape');
+    expect((await focusedTitle()) === 'canvas', `focus after Escape: ${await focusedTitle()}`);
+    // The gear's next press closes the card; the one after opens it again.
     await page.click(center(gear).x, center(gear).y);
-    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open after the second press of the button');
+    expect((await popoverCount()) === 1, 'popover did not open on the second press of the gear');
+    await page.click(center(gear).x, center(gear).y);
+    expect((await popoverCount()) === 0, 'popover still open after the third press of the gear');
     expect((await page.evaluate(`document.querySelector('.mappy-actions button')?.getAttribute('aria-expanded')`)) === 'false', 'aria-expanded is not false after closing');
     await page.click(center(gear).x, center(gear).y);
-    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 1, 'menu did not open on the third press of the button');
-    // The menu's own listeners (Escape among them) are registered a timer after it opens, as Obsidian's are.
-    await page.settle();
-    await page.key('Escape', 'Escape', 27);
-    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open after Escape');
+    expect((await popoverCount()) === 1, 'popover did not open on the fourth press of the gear');
+    // A press on the map closes it and the canvas takes the focus.
+    const canvas = await page.harness('h.canvasRect()');
+    await page.click(canvas.x + 30, canvas.y + 30);
+    expect((await popoverCount()) === 0, 'popover still open after a press on the map');
+    expect((await focusedTitle()) === 'canvas', `focus after the press outside: ${await focusedTitle()}`);
     return `項目: ${entries.join(' / ')}`;
+  });
+
+  await recorder.run('action-popover-narrow', 'ペインを 400×700 にして歯車をクリック → Escape → 1280×800 に戻す', '幅 400px のペインでもカードの左辺がペインの左端を越えず、右辺は歯車の右辺に揃い、幅は 320px 以下', async () => {
+    await page.harness('h.resize(400, 700)');
+    await page.settle();
+    const canvas = await page.harness('h.canvasRect()');
+    expect(Math.abs(canvas.width - 400) <= 2, `canvas is ${canvas.width} wide`);
+    const gear = await page.harness('h.button("操作")');
+    await page.click(center(gear).x, center(gear).y);
+    const card = await popoverRect();
+    expectPlaced(card, gear, canvas);
+    expect(card.x >= canvas.x + 8, `card left edge ${card.x} is too close to the pane's ${canvas.x}`);
+    await page.screenshot(join(recorder.directory, 'action-popover-narrow-open.png'));
+    await page.key('Escape', 'Escape', 27);
+    expect((await popoverCount()) === 0, 'popover still open after Escape');
+    await page.harness(`h.resize(${PANE.width}, ${PANE.height})`);
+    await page.settle();
+    const fit = await page.harness('h.button("全体表示")');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+    return `card ${Math.round(card.width)}×${Math.round(card.height)} at x=${Math.round(card.x)} in a ${Math.round(canvas.width)}px pane`;
   });
 
   await recorder.run('link-click', 'ノード内の内部リンクをクリック', '選択は変わらず、リンク解決は対象外の通知が出る', async () => {

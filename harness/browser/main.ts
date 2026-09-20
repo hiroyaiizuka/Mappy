@@ -56,15 +56,13 @@ const router = {
   },
 } as unknown as ViewRouter;
 /**
- * The plugin's items of the 操作 menu (§5 M3), as src/main.ts names them. Their routes (the search modal, the
- * export modal and its attachment, Excalidraw) are not on this page: the two report the request, and with
- * no Excalidraw here the insertion stays disabled, as it is in Obsidian without that plugin.
+ * The plugin's items of the 操作 popover (§5 M3), as src/main.ts names them. Their routes (the search modal,
+ * the export modal and its attachment) are not on this page: both report the request.
  */
 const menuActions: MapMenuAction[] = [
-  { title: "マップを検索して呼び出す", icon: "search", check: map => map.file !== null,
+  { title: "マップを検索して呼び出す", description: "他のマップをこのマップの枝にする", icon: "search", check: map => map.file !== null,
     run: () => { new Notice("マップの検索モーダルはこのページの対象外です（③ 実機で確認）。"); } },
-  { title: "Excalidraw の図面に挿入", icon: "pencil-ruler", check: () => false, run: () => undefined },
-  { title: "SVG／PNG に書き出し", icon: "image-down", check: map => map.file !== null,
+  { title: "書き出す", description: "SVG／PNG に保存", icon: "image-down", check: map => map.file !== null,
     run: () => { new Notice("書き出しの保存はこのページの対象外です（h.export が文字列を返すだけ。③ 実機で確認）。"); } },
 ];
 

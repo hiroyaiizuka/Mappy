@@ -99,6 +99,9 @@ body {
   --font-ui-smaller: 12px;
   --font-smaller: 13px;
   --font-monospace: ui-monospace, Menlo, Consolas, monospace;
+  --radius-s: 4px;
+  --radius-m: 8px;
+  --cursor: default;
   --layer-popover: 30;
   --layer-menu: 40;
   --layer-modal: 50;
