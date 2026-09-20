@@ -6,8 +6,6 @@ export interface MapActions {
   selected: () => MindNode | undefined;
   visible: () => MindNode[];
   select: (id: string, focus?: boolean) => void;
-  /** The empty canvas was clicked (not panned): nothing is selected until a node is (§5 M12: a map called then becomes a free topic). */
-  deselect: () => void;
   fold: (id: string) => void;
   edit: () => void;
   command: (command: EditCommand) => void;
@@ -27,8 +25,8 @@ export interface MapActions {
 /** What a click on a map means: an internal link to follow (and the node it sits in), or a node (and whether its fold control was hit). */
 export type MapClick = { link: string; newLeaf: boolean; nodeId: string | null } | { nodeId: string; toggle: boolean };
 
-/** Pointer travel between the press and the release that still counts as a click on the empty canvas, not a pan (NodeDrag's own threshold). */
-const CLICK_TRAVEL = 4;
+/** Pointer travel since a press that still counts as a click: less, and a press on a node is not yet a drag (NodeDrag), one on the empty canvas not yet a pan (MapViewport). */
+export const PRESS_TRAVEL = 4;
 
 /** The node of this canvas that holds `target`; nodes are never nested (a title's `![[…]]` is a link). */
 export function nodeOf(canvas: Element, target: Node | null): HTMLElement | null {
@@ -53,23 +51,16 @@ export function mapClick(event: MouseEvent, canvas: Element): MapClick | null {
 
 export class MapEvents extends Component {
   private composing = false;
-  /** Where the primary button went down last, so the click that follows a pan is told from one that stayed put. */
-  private press: { x: number; y: number } | null = null;
 
   constructor(private readonly canvas: HTMLElement, private readonly actions: MapActions) { super(); }
 
   onload(): void {
     this.registerDomEvent(this.canvas, "compositionstart", () => { this.composing = true; });
     this.registerDomEvent(this.canvas, "compositionend", () => { this.composing = false; });
-    this.registerDomEvent(this.canvas, "pointerdown", event => {
-      this.press = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
-    });
+    // A click on the empty canvas is MapViewport's to judge (a pan ends with one too); it clears the selection there.
     this.registerDomEvent(this.canvas, "click", event => {
       const click = mapClick(event, this.canvas);
-      if (!click) {
-        if (this.blankClick(event)) this.actions.deselect();
-        return;
-      }
+      if (!click) return;
       if ("link" in click) {
         event.preventDefault();
         event.stopPropagation();
@@ -123,7 +114,8 @@ export class MapEvents extends Component {
     this.registerDomEvent(this.canvas, "paste", event => {
       if (event.defaultPrevented) return;
       const image = Array.from(event.clipboardData?.files ?? []).find(file => file.type.startsWith("image/"));
-      if (!image) return;
+      // An image goes to the selected node; with nothing selected the paste is not the map's.
+      if (!image || !this.actions.selected()) return;
       event.preventDefault();
       this.actions.attach(image);
     });
@@ -131,21 +123,6 @@ export class MapEvents extends Component {
 
   private element(target: Node | null): Element | null {
     return target?.instanceOf(Element) ? target : null;
-  }
-
-  /**
-   * A primary-button click on the empty canvas that did not pan: not on a node (a link inside one is
-   * `mapClick`'s null too), a control, an input, the drop preview or the drag ghost, and released within
-   * CLICK_TRAVEL of the press that it ends (a pan ends with a click on the canvas as well; a click with
-   * no press before it, dispatched by a script, counts).
-   */
-  private blankClick(event: MouseEvent): boolean {
-    const press = this.press;
-    this.press = null;
-    const target = this.element(event.targetNode);
-    if (!target || event.button !== 0 || nodeOf(this.canvas, target)) return false;
-    if (target.closest("a, button, input, textarea, select, [contenteditable], .mappy-floating, [data-drop-placeholder], .mappy-drag-ghost")) return false;
-    return !press || Math.hypot(event.clientX - press.x, event.clientY - press.y) < CLICK_TRAVEL;
   }
 
   private clearDrop(): void {
@@ -158,7 +135,7 @@ export class MapEvents extends Component {
    * key pressed inside the canvas is handled here exactly as the canvas listener would, and `false`
    * (Obsidian's "consumed": preventDefault and stopPropagation) reports that the map acted. Keys pressed
    * outside the canvas or in the inline editor are not acted on (`undefined`), nor, with nothing selected,
-   * any key but a plain arrow (which selects the first node); the view decides what that means for the key.
+   * any key but ⌘Z／⌘⇧Z and a plain arrow (which selects the first node); the view decides what that means for the key.
    */
   hotkey(event: KeyboardEvent): false | undefined {
     const target = event.targetNode;
@@ -174,20 +151,22 @@ export class MapEvents extends Component {
   private keydown(event: KeyboardEvent): boolean {
     if (event.defaultPrevented || event.isComposing || this.composing || event.key === "Process"
       || this.element(event.targetNode)?.closest("input,textarea,button,a,select,[contenteditable]:not([contenteditable='false'])")) return false;
-    const node = this.actions.selected();
     const modifier = event.metaKey || event.ctrlKey;
-    if (!node) {
-      // Nothing selected (the empty canvas was clicked): a plain arrow starts again from the first node on the map; every other key is left alone.
-      const first = this.actions.visible()[0];
-      if (!first || modifier || event.altKey || event.shiftKey || !event.key.startsWith("Arrow")) return false;
-      event.preventDefault();
-      this.actions.select(first.id, true);
-      return true;
-    }
+    // The map's history is not bound to a node: it answers with nothing selected too.
     if (modifier && event.key.toLowerCase() === "z") {
       event.preventDefault();
       event.stopPropagation();
       this.actions.history(event.shiftKey ? "redo" : "undo");
+      return true;
+    }
+    const node = this.actions.selected();
+    if (!node) {
+      // Nothing selected (the empty canvas was clicked): a plain arrow starts again from the first node on the map; every other key is left alone.
+      if (modifier || event.altKey || event.shiftKey || !event.key.startsWith("Arrow")) return false;
+      const first = this.actions.visible()[0];
+      if (!first) return false;
+      event.preventDefault();
+      this.actions.select(first.id, true);
       return true;
     }
     if (modifier || event.altKey) {

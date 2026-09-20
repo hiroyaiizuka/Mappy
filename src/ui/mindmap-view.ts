@@ -331,10 +331,10 @@ export class MindmapView extends ItemView {
     this.viewport = this.addChild(new MapViewport(this.canvas, world, view => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
-    }));
+    }, () => { this.deselect(); }));
     this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
-      deselect: () => { this.deselect(); }, fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
+      fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
       // A link is resolved from the note it is written in: the called note for a called map's node (§5 M12), this
@@ -958,7 +958,7 @@ export class MindmapView extends ItemView {
     }
   }
 
-  /** A click on the empty canvas: nothing selected, on screen and for the keys, until a node is selected again. */
+  /** A click on the empty canvas (MapViewport's judgement: not a pan): nothing selected, on screen and for the keys, until a node is selected again. */
   private deselect(): void {
     this.selectedId = null; this.deselected = true; this.renderer.select(null);
   }
@@ -999,8 +999,9 @@ export class MindmapView extends ItemView {
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(plan.selectionOffset);
-    // A new empty node is named in place; one added with its text (a called map) is only selected.
-    if (selected && ((command.type === "add-child" && command.title === undefined) || command.type === "add-sibling")) this.editTitle();
+    // A new empty node or topic is named in place; one added with its text (a called map) is only selected.
+    const named = "title" in command && command.title !== undefined;
+    if (selected && !named && (command.type === "add-child" || command.type === "add-sibling" || command.type === "add-topic")) this.editTitle();
   }
 
   /**
@@ -1310,7 +1311,8 @@ export class MindmapView extends ItemView {
         const current = this.document?.nodes.find(item => item.id === node.id)
           ?? (!cancelled && renamedOffset !== null ? this.document?.nodes.find(item => item.titleFrom === renamedOffset) : undefined)
           ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
-        if (current) this.select(current.id, true);
+        // A click on the empty canvas that ended the edit (the blur saved it) leaves nothing selected; the node is not taken back.
+        if (current && !this.deselected) this.select(current.id, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },

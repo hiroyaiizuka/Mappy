@@ -625,7 +625,7 @@ const api = {
    */
   callMap: async (path: string) => {
     const file = app.vault.getAbstractFileByPath(path);
-    if (!view || !file) throw new Error(`No map view or no note ${path}`);
+    if (!view || !file || !("extension" in file) || file.extension !== "md") throw new Error(`No map view or no Markdown note at ${path}`);
     await view.callMap(file as TFile);
   },
   scrollTo: (top: number) => { const reading = pane.querySelector<HTMLElement>(".markdown-reading-view"); if (reading) reading.scrollTop = top; },

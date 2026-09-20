@@ -1,6 +1,6 @@
 import { Component } from "obsidian";
 import type { DropPosition, MoveCommand } from "../core/commands";
-import { nodeOf } from "./map-events";
+import { PRESS_TRAVEL, nodeOf } from "./map-events";
 
 /** Pointer travel since the press, in screen pixels. */
 export interface DragDelta { x: number; y: number }
@@ -30,8 +30,6 @@ export interface NodeDragActions {
   snap: (draggedId: string, root: { x: number; y: number; width: number; height: number }, current: MoveCommand | null) => MoveCommand | null;
 }
 
-/** Pointer travel before a press on a node becomes a drag, so clicks and double-clicks stay untouched. */
-const DRAG_THRESHOLD = 4;
 /** Share of a node's extent on each edge that means "sibling before/after"; the middle means "last child". */
 const EDGE_ZONE = 0.3;
 /** Zone boundaries move away from the current zone, so a pointer resting near a boundary does not flicker. */
@@ -94,7 +92,8 @@ export class NodeDrag extends Component {
       if (this.session) { if (this.session.pointerId === event.pointerId) this.move(event); return; }
       const press = this.press;
       if (!press || press.pointerId !== event.pointerId) return;
-      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_THRESHOLD) return;
+      // Less travel than this is a click or a double click on the node, left untouched.
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < PRESS_TRAVEL) return;
       this.start(press, event);
     });
     this.registerDomEvent(this.canvas, "pointerup", event => {

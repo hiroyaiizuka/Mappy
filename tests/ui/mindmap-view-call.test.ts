@@ -198,6 +198,27 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     expect(selected()).toBe(documentOf(view).nodes.find(node => node.title === '記録する')?.id);
   });
 
+  it('a click on the empty canvas that ends an inline edit saves it and leaves nothing selected, so the call then makes a topic', async () => {
+    const source = fixtureSource();
+    const { view, other, source: current, selected, select, clickBlank, canvas, key, editor, settle, parsed } = await mount();
+    select('記録する');
+    key(canvas, 'F2');
+    const input = editor();
+    expect(input).not.toBeNull();
+    if (!input) throw new Error('no editor');
+    input.value = '記録する（改）';
+    // The press focuses the canvas, which blurs the editor and saves the draft; the release is the click that deselects.
+    clickBlank();
+    await settle();
+    expect(editor()).toBeNull();
+    expect(current()).toBe(source.replace('- 記録する\n', '- 記録する（改）\n'));
+    expect(selected()).toBeUndefined();
+    await view.callMap(other);
+    await settle();
+    expect(current()).toBe(`${source.replace('- 記録する\n', '- 記録する（改）\n')}\n## ${LINK}\n`);
+    expect(selected()).toBe(parsed(LINK).id);
+  });
+
   it('with the root of a topic that calls a map selected, appends the embed as that section\'s own item, after the called branches', async () => {
     const source = `${fixtureSource()}\n## ${LINK}\n`;
     const { view, other, source: current, parsed, node, select } = await mount(source);

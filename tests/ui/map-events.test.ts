@@ -37,7 +37,6 @@ function stubActions(parsed: MindDocument, selected: MindDocument['nodes'][numbe
     selected: vi.fn<MapActions['selected']>(() => selected),
     visible: vi.fn<MapActions['visible']>(() => parsed.nodes),
     select: vi.fn<MapActions['select']>(),
-    deselect: vi.fn<MapActions['deselect']>(),
     fold: vi.fn<MapActions['fold']>(),
     edit: vi.fn<MapActions['edit']>(),
     command: vi.fn<MapActions['command']>(),
@@ -279,13 +278,17 @@ describe('MapEvents DOM interactions', () => {
     expect(key(canvas, 'Delete').defaultPrevented).toBe(false);
     expect(key(canvas, 'F2').defaultPrevented).toBe(false);
     expect(key(canvas, ' ').defaultPrevented).toBe(false);
-    expect(key(canvas, 'z', { metaKey: true }).defaultPrevented).toBe(false);
     expect(key(canvas, 'ArrowDown', { altKey: true }).defaultPrevented).toBe(false);
     expect(key(canvas, 'ArrowDown', { shiftKey: true }).defaultPrevented).toBe(false);
+    expect(key(canvas, 'ArrowDown', { metaKey: true }).defaultPrevented).toBe(false);
     expect(actions.command).not.toHaveBeenCalled();
     expect(actions.edit).not.toHaveBeenCalled();
-    expect(actions.history).not.toHaveBeenCalled();
     expect(actions.select).not.toHaveBeenCalled();
+    expect(actions.visible).not.toHaveBeenCalled();
+    // The history is the map's, not a node's: ⌘Z／⌘⇧Z work with nothing selected.
+    expect(key(canvas, 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    expect(key(canvas, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true);
+    expect(actions.history.mock.calls).toEqual([['undo'], ['redo']]);
     // A plain arrow starts again from the first node on the map (the root after a click on the empty canvas).
     expect(key(canvas, 'ArrowDown').defaultPrevented).toBe(true);
     expect(actions.select).toHaveBeenCalledExactlyOnceWith(actions.visible()[0]?.id, true);
@@ -294,40 +297,21 @@ describe('MapEvents DOM interactions', () => {
     expect(actions.select).toHaveBeenCalledOnce();
   });
 
-  it('clears the selection on a click on the empty canvas, not after a pan, and not on a node, a link, a control or an input (§5 M12 未選択)', () => {
-    const { canvas, label, actions } = fixture();
-    const press = (target: EventTarget, clientX: number, clientY: number, button = 0): void => {
-      target.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, button, bubbles: true, cancelable: true, clientX, clientY }));
+  it('leaves a pasted image alone with nothing selected, and attaches it to the selected node otherwise', () => {
+    const { canvas, actions, selected } = fixture();
+    const image = new File(['x'], 'a.png', { type: 'image/png' });
+    const paste = (): Event => {
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: { files: [image] } });
+      canvas.dispatchEvent(event);
+      return event;
     };
-    press(canvas, 100, 100);
-    click(canvas, { clientX: 102, clientY: 101 });
-    expect(actions.deselect).toHaveBeenCalledOnce();
-    // A pan: the press travelled before the click that ends it.
-    press(canvas, 100, 100);
-    click(canvas, { clientX: 160, clientY: 130 });
-    expect(actions.deselect).toHaveBeenCalledOnce();
-    // A click no press preceded (dispatched by a script) counts as one that stayed put.
-    click(canvas, { clientX: 300, clientY: 300 });
-    expect(actions.deselect).toHaveBeenCalledTimes(2);
-    // The secondary button (a context menu) is not a click; a node, a link, a control, an input and the floating tools keep the selection.
-    press(canvas, 100, 100, 2);
-    click(canvas, { button: 2, clientX: 100, clientY: 100 });
-    click(label);
-    const anchor = document.createElement('a');
-    anchor.href = 'https://example.com';
-    canvas.append(anchor);
-    click(anchor);
-    const tools = document.createElement('div');
-    tools.className = 'mappy-floating';
-    const button = document.createElement('button');
-    tools.append(button);
-    canvas.append(tools);
-    click(button);
-    const input = document.createElement('textarea');
-    canvas.append(input);
-    click(input);
-    expect(actions.deselect).toHaveBeenCalledTimes(2);
-    expect(actions.select).toHaveBeenCalledOnce();
+    actions.selected.mockReturnValue(undefined);
+    expect(paste().defaultPrevented).toBe(false);
+    expect(actions.attach).not.toHaveBeenCalled();
+    actions.selected.mockReturnValue(selected);
+    expect(paste().defaultPrevented).toBe(true);
+    expect(actions.attach).toHaveBeenCalledExactlyOnceWith(image);
   });
 
   it('does not act on a key something else already consumed', () => {

@@ -12,8 +12,7 @@
  * performance runner.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
@@ -87,6 +86,28 @@ async function emptyCanvasPoint(page, margin = 24) {
     }
   }
   throw new Error('No empty canvas point found for panning.');
+}
+
+/**
+ * Right-click at `point` and choose the context-menu item titled `title`. Undo and redo go through the
+ * canvas menu in these captures: headless Chrome 153 stops responding after repeated modifier-key input
+ * (⌘Z, ⌘⇧Z) over CDP, and the menu items run the same map history as the keys.
+ */
+async function contextMenuAction(page, point, title) {
+  await page.mouse('mouseMoved', point.x, point.y);
+  await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
+  await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
+  const item = await page.evaluate(`(() => {
+    const found = Array.from(document.querySelectorAll('.menu .menu-item'))
+      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
+    if (!found) return null;
+    const rect = found.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
+  })()`);
+  expect(item, `context menu has no item ${title}`);
+  expect(!item.disabled, `menu item ${title} is disabled`);
+  await page.click(center(item).x, center(item).y);
+  await page.settle();
 }
 
 async function captureFixtures(recorder, page, timings) {
@@ -894,25 +915,7 @@ async function captureTopicOperations(recorder, page) {
     expect(node, `Topic not found: ${name}`);
     return node;
   };
-  // Undo and redo go through the canvas context menu: headless Chrome 153 stops responding after repeated
-  // modifier-key input (⌘Z, ⌘⇧Z) over CDP, and the menu items run the same map history as the keys.
-  const menuAction = async title => {
-    const point = await emptyCanvasPoint(page, 80);
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const item = await page.evaluate(`(() => {
-      const found = Array.from(document.querySelectorAll('.menu .menu-item'))
-        .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
-      if (!found) return null;
-      const rect = found.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
-    })()`);
-    expect(item, `context menu has no item ${title}`);
-    expect(!item.disabled, `menu item ${title} is disabled`);
-    await page.click(center(item).x, center(item).y);
-    await page.settle();
-  };
+  const menuAction = async title => contextMenuAction(page, await emptyCanvasPoint(page, 80), title);
   const undo = () => menuAction('元に戻す');
   const redo = () => menuAction('やり直す');
   const title = '追加した話題';
@@ -1270,25 +1273,10 @@ async function captureTopicOperations(recorder, page) {
 async function captureCallAsTopic(recorder, page) {
   const fixturePath = 'Fixtures/free-topics.md';
   const calledPath = 'Fixtures/embed-timeline.md';
-  const original = readFileSync(join(root, 'tests', 'fixtures', 'free-topics.md'), 'utf8');
+  const original = await readFile(join(root, 'tests', 'fixtures', 'free-topics.md'), 'utf8');
   const frontmatterOf = source => source.slice(0, source.indexOf('\n---\n', 4));
   const selectedTitles = async () => (await page.harness('h.nodes()')).filter(node => node.selected).map(node => node.title);
-  const menuAction = async (point, title) => {
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const item = await page.evaluate(`(() => {
-      const found = Array.from(document.querySelectorAll('.menu .menu-item'))
-        .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
-      if (!found) return null;
-      const rect = found.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
-    })()`);
-    expect(item, `context menu has no item ${title}`);
-    expect(!item.disabled, `menu item ${title} is disabled`);
-    await page.click(center(item).x, center(item).y);
-    await page.settle();
-  };
+  const menuAction = (point, title) => contextMenuAction(page, point, title);
 
   await recorder.run('call-map-topic', 'free-topics を fixture の原文に戻して開く → 「回復する」をクリック → 空白をクリック → h.callMap("Fixtures/embed-timeline.md")（「マップを検索して呼び出す」で embed-timeline を選んだのと同じ）→ 空白を右クリック「元に戻す」',
     '空白のクリックで選択が外れる（is-selected のノードなし、フォーカスはキャンバス）。呼び出しで文末に `## ![[embed-timeline]]` の 1 区画だけが足され、frontmatter（mappy-topics）と本体は不変、位置は書かれない。呼び出し先のルート「講座の進行」が link の印付きのトピックのルート（is-topic、読み取り専用ではない）として本体のそばに現れ、その子 4 つが読み取り専用の枝として並び、重なりなし。新しいトピックが選択され、インライン入力は開かない。元に戻すで区画ごと消え、embed-timeline は変わらない', async () => {
@@ -1808,22 +1796,7 @@ async function captureEmbedNodes(recorder, page) {
   const unchanged = async () => { const after = await embedNodeSources(page); for (const path of EMBED_NODE_NOTES) expect(after[path] === sources[path], `${path} changed`); };
   const menuItems = () => page.evaluate(`Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent)`);
   const closeMenu = async () => { await page.key('Escape', 'Escape', 27); await page.settle(); };
-  const menuAction = async (point, title) => {
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const item = await page.evaluate(`(() => {
-      const found = Array.from(document.querySelectorAll('.menu .menu-item'))
-        .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
-      if (!found) return null;
-      const rect = found.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
-    })()`);
-    expect(item, `context menu has no item ${title}`);
-    expect(!item.disabled, `menu item ${title} is disabled`);
-    await page.click(center(item).x, center(item).y);
-    await page.settle();
-  };
+  const menuAction = (point, title) => contextMenuAction(page, point, title);
   let listeners = null;
   let firstCount = 0;
 
