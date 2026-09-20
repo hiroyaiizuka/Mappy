@@ -103,7 +103,10 @@ export function findFixture(id: string | null | undefined): HarnessFixture | und
  * a map view. `reading` renders the host's own sections and lets the post processor
  * replace the `![[…]]` placeholders (reading view, hover preview); `live` renders each
  * embedded note inside an Obsidian-like embed container first and hands those
- * sections to the processor (live preview).
+ * sections to the processor (live preview); `live-late` does the same the way Obsidian
+ * 1.6.7 opens a note: the sections reach the processor before the container is on
+ * the document, the container joins a few frames later, and a first rendering of each
+ * embed is discarded without ever joining (LEV-91).
  */
 export interface HarnessHost {
   id: string;
@@ -111,7 +114,7 @@ export interface HarnessHost {
   label: string;
   covers: string;
   source: string;
-  mode: "reading" | "live";
+  mode: "reading" | "live" | "live-late";
 }
 
 const [embed2000Filename, embed2000Source] = makeEmbedFixture();
@@ -142,6 +145,14 @@ export const EMBED_HOSTS: readonly HarnessHost[] = [
     covers: `${HOST_COVERS}。ライブプレビューと同じく、Obsidian が埋め込み先を描いた後にその区画から post-processor が容器を差し替える`,
     source: embedHost,
     mode: "live",
+  },
+  {
+    id: "embed-host-live-late",
+    path: `${FIXTURE_DIRECTORY}/embed-host.md`,
+    label: "embed-host-live-late（ライブプレビュー相当: 容器の接続が数フレーム遅れる）",
+    covers: `${HOST_COVERS}。Obsidian 1.6.7 がノートを開くときと同じく、区画は容器が document に付く前に post-processor へ届き、容器は数フレーム後に付く。各埋め込みの 1 回目の描画は捨てられ、接続されない`,
+    source: embedHost,
+    mode: "live-late",
   },
 ];
 

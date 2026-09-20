@@ -5,7 +5,7 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Component, MarkdownRenderer, MarkdownView, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { EMBED_ANCHOR_CLASS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
+import { EMBED_ANCHOR_CLASS, EMBED_CLAIM_FRAMES, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
 
 // The browser-harness stand-in for `obsidian`, so the shipped post processor, embed component and renderer run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -62,6 +62,25 @@ async function settle(): Promise<void> {
 async function refreshed(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 60));
   await settle();
+}
+
+/** Animation frames one at a time, so a test can move a section between them the way Obsidian attaches its containers. */
+async function frames(count: number): Promise<void> {
+  for (let frame = 0; frame < count; frame += 1) await new Promise(resolve => window.requestAnimationFrame(resolve));
+}
+
+/** Counts the animation frames still waiting to fire, so a test can show a look-again has ended and left nothing scheduled. */
+function frameTracker(): { pending: () => number; restore: () => void } {
+  const request = window.requestAnimationFrame.bind(window);
+  const cancel = window.cancelAnimationFrame.bind(window);
+  const waiting = new Set<number>();
+  window.requestAnimationFrame = callback => {
+    const id = request(time => { waiting.delete(id); callback(time); });
+    waiting.add(id);
+    return id;
+  };
+  window.cancelAnimationFrame = id => { waiting.delete(id); cancel(id); };
+  return { pending: () => waiting.size, restore: () => { window.requestAnimationFrame = request; window.cancelAnimationFrame = cancel; } };
 }
 
 /** The host note rendered the way Obsidian's reading view hands a section to post processors: `![[…]]` is still a placeholder span. */
@@ -380,10 +399,9 @@ describe('MapEmbeds in the reading view (host sections)', () => {
 });
 
 describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
-  /** Obsidian's embed container as the live-preview widget builds it, with the map note already rendered inside. */
-  async function container(app: HarnessApp, src: string, mapPath: string): Promise<{ span: HTMLElement; sections: HTMLElement[] }> {
-    const span = document.body.createDiv({ cls: 'cm-embed-block' })
-      .createSpan({ cls: 'internal-embed markdown-embed inline-embed is-loaded', attr: { src } });
+  /** Obsidian's embed container as the live-preview widget builds it, with the map note already rendered inside; a `block` off the document keeps the container detached. */
+  async function container(app: HarnessApp, src: string, mapPath: string, block: HTMLElement = document.body.createDiv({ cls: 'cm-embed-block' })): Promise<{ span: HTMLElement; sections: HTMLElement[] }> {
+    const span = block.createSpan({ cls: 'internal-embed markdown-embed inline-embed is-loaded', attr: { src } });
     const content = span.createDiv({ cls: 'markdown-embed-content' });
     const preview = content.createDiv({ cls: 'markdown-preview-view markdown-rendered' });
     const sections: HTMLElement[] = [];
@@ -453,11 +471,23 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     app.put('Map.md', MAP);
     const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
     const renderer = loadedRenderer();
-    const own = document.body.createDiv({ cls: 'markdown-preview-view' }).createDiv();
+    const view = document.body.createDiv({ cls: 'markdown-preview-view' });
+    const own = view.createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 回復する', own, 'Map.md');
     embeds.process(own, context(renderer, 'Map.md'));
     await settle();
     expect(embeds.size).toBe(0);
+    // A detached section that joins the note's own view is not an embed either; the look-again ends there.
+    const tracker = frameTracker();
+    try {
+      const detached = createDiv();
+      await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', detached, 'Map.md');
+      embeds.process(detached, context(renderer, 'Map.md'));
+      view.append(detached);
+      await frames(1);
+      expect(tracker.pending()).toBe(0);
+      expect(embeds.size).toBe(0);
+    } finally { tracker.restore(); }
     const { span } = await container(app, 'Map', 'Map.md');
     const late = createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
@@ -468,6 +498,87 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(embeds.size).toBe(1);
   });
 
+  it('claims a section that arrives detached and whose container joins the document two frames later, as Obsidian 1.6.7 attaches it 17–28 ms after the section (LEV-91)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    // The section reaches the processor on its own; the container it will sit in is not on the document yet.
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    embeds.process(late, context(renderer, 'Map.md'));
+    await frames(1);
+    span.querySelector('.markdown-preview-view')?.append(late);
+    await frames(1);
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    document.body.append(block);
+    await settle();
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+    expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
+    expect(titles(span)).toEqual(['講座', '回復する', '記録する', '葉']);
+    expect(embeds.size).toBe(1);
+    expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).not.toBeNull();
+    renderer.unload();
+    expect(embeds.size).toBe(0);
+    expect(app.vaultEvents.count()).toBe(0);
+  });
+
+  it('gives up on a section whose container never joins the document, leaving no frame or listener behind, and leaves a container attached past the limit alone', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const tracker = frameTracker();
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      expect(tracker.pending()).toBe(1);
+      await frames(EMBED_CLAIM_FRAMES + 1);
+      expect(tracker.pending()).toBe(0);
+      expect(embeds.size).toBe(0);
+      expect(app.vaultEvents.count()).toBe(0);
+      expect(app.workspaceEvents.count()).toBe(0);
+      // A rendering Obsidian discarded never joins; one that joins this late is not claimed either.
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+      expect(embeds.size).toBe(0);
+      expect(tracker.pending()).toBe(0);
+    } finally { tracker.restore(); }
+  });
+
+  it('stops looking when the section is unloaded before its container joins the document', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const tracker = frameTracker();
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      await frames(1);
+      expect(tracker.pending()).toBe(1);
+      // Obsidian drops the rendering (the first of the two it draws on opening): the section's children unload.
+      renderer.unload();
+      expect(tracker.pending()).toBe(0);
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+      expect(embeds.size).toBe(0);
+      expect(tracker.pending()).toBe(0);
+    } finally { tracker.restore(); }
+  });
+
   it('does not claim anything after the plugin unloaded, even from a look-again that was already scheduled', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
@@ -476,8 +587,13 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const { span } = await container(app, 'Map', 'Map.md');
     const late = createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
-    embeds.process(late, context(renderer, 'Map.md'));
-    embeds.dispose();
+    const tracker = frameTracker();
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      expect(tracker.pending()).toBe(1);
+      embeds.dispose();
+      expect(tracker.pending()).toBe(0);
+    } finally { tracker.restore(); }
     span.querySelector('.markdown-preview-view')?.append(late);
     await settle();
     expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);

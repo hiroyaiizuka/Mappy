@@ -1592,6 +1592,7 @@ export async function captureExport(recorder, page) {
 
 const EMBED_HOST = 'embed-host';
 const EMBED_HOST_LIVE = 'embed-host-live';
+const EMBED_HOST_LIVE_LATE = 'embed-host-live-late';
 const EMBED_EXPECTED = [
   { src: 'Fixtures/uneven-branches.md', layout: 'mindmap' },
   { src: 'Fixtures/embed-timeline.md', layout: 'timeline' },
@@ -1767,6 +1768,29 @@ async function captureEmbeds(recorder, page) {
     expect(plainVisible, 'plain embed content hidden');
     expectUnchanged(sources, await noteSources(page));
     return `容器 ${hosts}、マップ ${maps.length}（ノード ${maps.map(embed => embed.nodes.length).join(' / ')}）`;
+  });
+
+  await recorder.run('embed-live-late', `${EMBED_HOST_LIVE_LATE} を読み込む（ライブプレビュー相当で、区画が届いてから容器が document に付くまで 3 フレーム空き、各埋め込みの 1 回目の描画は捨てられる。LEV-91）`,
+    '5 つとも claim されてマップになる（容器 5、live 5、枠 5）。捨てられた描画は claim されず、待ちは上限で終わって残らない', async () => {
+    await loadFixture(page, EMBED_HOST_LIVE_LATE);
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const hosts = await page.evaluate(`document.querySelectorAll('.internal-embed.mappy-embed-host').length`);
+    expect(hosts === maps.length, `${hosts} claimed containers`);
+    const live = await page.harness('h.liveEmbeds()');
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    expect(live === maps.length && frames === maps.length, `live ${live}, frames ${frames}`);
+    const hidden = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed.mappy-embed-host > .markdown-embed-content')).every(el => getComputedStyle(el).display === 'none')`);
+    expect(hidden, 'Obsidian content still visible inside a claimed container');
+    // The discarded renderings never join; their wait ends at the processor's own limit (30 frames, about 500 ms).
+    const pendingAtFirst = await page.harness('h.pendingClaims()');
+    await new Promise(resolveWait => { setTimeout(resolveWait, 800); });
+    await page.settle();
+    const pending = await page.harness('h.pendingClaims()');
+    expect(pending === 0, `${pending} sections still waiting`);
+    const liveAfter = await page.harness('h.liveEmbeds()');
+    expect(liveAfter === maps.length, `${liveAfter} live embeds after the wait`);
+    expectUnchanged(sources, await noteSources(page));
+    return `容器 ${hosts}、マップ ${maps.length}（ノード ${maps.map(embed => embed.nodes.length).join(' / ')}）、待ちの区画 ${pendingAtFirst} → ${pending}、live ${liveAfter}`;
   });
 
   await recorder.run('embed-live-dispose', 'プラグインの無効化と同じ解放（disposeEmbeds）', 'マップが消え、Obsidian の容器がそのまま（元の内容が再び見える）残る。live が 0', async () => {

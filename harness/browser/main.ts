@@ -8,7 +8,7 @@
  */
 import type { App, MarkdownPostProcessorContext, TFile, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
 import { installObsidianDom } from "./dom";
-import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext } from "./obsidian";
+import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext, type TFile as HarnessFile } from "./obsidian";
 import { HarnessApp } from "./app";
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost, type HarnessFixture, type HarnessHost } from "./fixtures";
 import {
@@ -168,12 +168,30 @@ function contextFor(renderer: Component, sourcePath: string): MarkdownPostProces
   };
 }
 
+/** The host's `![[…]]` spans that name Markdown notes, turned into the containers the live-preview widget builds, with the note each embeds. */
+function embedContainers(sizer: HTMLElement): { span: HTMLElement; file: HarnessFile }[] {
+  const containers: { span: HTMLElement; file: HarnessFile }[] = [];
+  for (const span of Array.from(sizer.querySelectorAll<HTMLElement>(".internal-embed"))) {
+    const { path } = parseLinktext(span.getAttribute("src") ?? "");
+    const file = app.metadataCache.getFirstLinkpathDest(path);
+    if (!file || file.extension !== "md") continue;
+    span.addClass("markdown-embed", "inline-embed", "is-loaded");
+    span.empty();
+    containers.push({ span, file });
+  }
+  return containers;
+}
+
 /**
  * Show a note that embeds maps. `reading` hands the host's sections to the post processor
  * (the `![[…]]` placeholders are still spans). `live` first renders every embedded note
  * inside an Obsidian-like `.internal-embed.markdown-embed` container, as the live-preview
  * widget does, and hands those inner sections to the processor with the embedded note as
- * the source path. Neither path touches the in-memory notes.
+ * the source path. `live-late` is the same path with Obsidian 1.6.7's timing on opening a
+ * note (LEV-91): a first rendering of each embed reaches the processor and is discarded
+ * without joining the document; the second one's sections reach the processor on their
+ * own, sit in the container one frame later, and the container joins the document two
+ * frames after that (17–28 ms in Obsidian). Neither path touches the in-memory notes.
  */
 async function loadHost(note: HarnessHost): Promise<HostTiming> {
   await closeView();
@@ -194,16 +212,29 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
   const started = performance.now();
   if (note.mode === "reading") {
     for (const section of sections) embeds.process(section, contextFor(renderer, note.path));
-  } else {
-    for (const span of Array.from(sizer.querySelectorAll<HTMLElement>(".internal-embed"))) {
-      const { path } = parseLinktext(span.getAttribute("src") ?? "");
-      const file = app.metadataCache.getFirstLinkpathDest(path);
-      if (!file || file.extension !== "md") continue;
-      span.addClass("markdown-embed", "inline-embed", "is-loaded");
-      span.empty();
+  } else if (note.mode === "live") {
+    for (const { span, file } of embedContainers(sizer)) {
       const inner = span.createDiv({ cls: "markdown-embed-content" }).createDiv({ cls: "markdown-preview-view markdown-rendered" });
       for (const section of await renderNote(inner, app.content(file), file.path)) embeds.process(section, contextFor(renderer, file.path));
     }
+  } else {
+    const late: { span: HTMLElement; parent: Node; next: Node | null; content: HTMLElement; inner: HTMLElement }[] = [];
+    for (const { span, file } of embedContainers(sizer)) {
+      const content = span.createDiv({ cls: "markdown-embed-content" });
+      // The discarded rendering: its sections reach the processor and never join anything. Obsidian keeps or drops
+      // their children; the page keeps them, so the processor's own limit is what ends their wait.
+      const discarded = createDiv({ cls: "markdown-preview-view markdown-rendered" });
+      for (const section of await renderNote(discarded, app.content(file), file.path)) embeds.process(section, contextFor(renderer, file.path));
+      const inner = createDiv({ cls: "markdown-preview-view markdown-rendered" });
+      for (const section of await renderNote(inner, app.content(file), file.path)) embeds.process(section, contextFor(renderer, file.path));
+      late.push({ span, parent: span.parentNode ?? sizer, next: span.nextSibling, content, inner });
+      span.remove();
+    }
+    await nextFrame();
+    for (const { content, inner } of late) content.append(inner);
+    await nextFrame();
+    await nextFrame();
+    for (const { span, parent, next } of late) parent.insertBefore(span, next);
   }
   await settle(4000);
   const maps = sizer.querySelectorAll(".mappy-embed").length;
@@ -611,6 +642,8 @@ const api = {
     .map(embedInfo),
   /** Live map embeds the post processor still owns. */
   liveEmbeds: () => embeds.size,
+  /** Sections of embedded notes still waiting for their container to join the document (LEV-91). */
+  pendingClaims: () => embeds.pending,
   /** What the plugin does on unload: every map goes back to Obsidian's placeholder. */
   disposeEmbeds: () => { embeds.dispose(); },
   /** The note a path holds now, as the in-memory vault has it. */

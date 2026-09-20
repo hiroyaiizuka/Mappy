@@ -1,6 +1,6 @@
 import {
   MarkdownRenderChild, MarkdownView, parseLinktext, setIcon,
-  type App, type MarkdownPostProcessor, type MarkdownPostProcessorContext,
+  type App, type MarkdownPostProcessor, type MarkdownPostProcessorContext, type TFile,
 } from "obsidian";
 import { embedTopicLayouts, embedTrees, initialFolds, readMapFromSource, visibleNodes, type EmbedTrees } from "../core/embed";
 import { parseMarkdown, type MindDocument } from "../core/markdown";
@@ -20,6 +20,13 @@ export const EMBED_HOST_CLASS = "mappy-embed-host";
 export const EMBED_ANCHOR_CLASS = "mappy-embed-anchor";
 /** Obsidian's classes that give a note embed its chrome; removed while a map is shown so both paths look the same, restored on release. */
 const OBSIDIAN_EMBED_CLASSES = ["markdown-embed", "inline-embed"];
+/**
+ * How many frames a section of an embedded note may wait for its container to join the
+ * document before the claim is given up: about 500 ms at 60 fps. Obsidian 1.6.7 attaches
+ * the container 17–28 ms after the section reaches the processor, and discards some
+ * renderings without ever attaching them (LEV-91).
+ */
+export const EMBED_CLAIM_FRAMES = 30;
 const EMBED_PADDING = 24;
 const REFRESH_DEBOUNCE = 45;
 
@@ -242,6 +249,43 @@ export class MapEmbed extends MarkdownRenderChild {
 }
 
 /**
+ * A section of an embedded note that reached the processor before its container joined
+ * the document. It lives in the section like a map would (`ctx.addChild`), looks again
+ * every frame for a bounded while, and reports once: attached, or given up because the
+ * frames ran out, the section was unloaded (Obsidian discarded that rendering), or the
+ * plugin unloaded. It registers nothing else, so giving up leaves nothing behind.
+ */
+class PendingClaim extends MarkdownRenderChild {
+  private frame: number | undefined;
+  private left = EMBED_CLAIM_FRAMES;
+
+  constructor(containerEl: HTMLElement, private settled: ((attached: boolean) => void) | null) { super(containerEl); }
+
+  onload(): void { this.look(); }
+
+  onunload(): void {
+    if (this.frame !== undefined) this.containerEl.win.cancelAnimationFrame(this.frame);
+    this.frame = undefined;
+    this.end(false);
+  }
+
+  private look(): void {
+    this.frame = this.containerEl.win.requestAnimationFrame(() => {
+      this.frame = undefined;
+      if (this.containerEl.isConnected) this.end(true);
+      else if ((this.left -= 1) > 0) this.look();
+      else this.end(false);
+    });
+  }
+
+  private end(attached: boolean): void {
+    const settled = this.settled;
+    this.settled = null;
+    settled?.(attached);
+  }
+}
+
+/**
  * The Markdown post processor for map embeds and the registry of the embeds it
  * created. Two ways an embed reaches it:
  *
@@ -252,7 +296,8 @@ export class MapEmbed extends MarkdownRenderChild {
  * - Live preview renders the embedded note's own sections inside Obsidian's
  *   embed container (the host paragraph is a CodeMirror widget, never a section).
  *   The container is claimed once: its own content is hidden and a map appended,
- *   with an anchor inside the section carrying the lifecycle.
+ *   with an anchor inside the section carrying the lifecycle. A section that
+ *   arrives before its container is on the document waits for it, a bounded while.
  *
  * In both cases the component is handed to the renderer (`ctx.addChild`) so it
  * unloads with the section, and every live embed is released when the plugin
@@ -260,6 +305,7 @@ export class MapEmbed extends MarkdownRenderChild {
  */
 export class MapEmbeds {
   private readonly live = new Set<MapEmbed>();
+  private readonly waiting = new Set<PendingClaim>();
   private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
@@ -268,15 +314,20 @@ export class MapEmbeds {
   process(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     // Node labels of a map (view or embed) are rendered Markdown too; they never host embeds.
     if (this.disposed || el.closest(".mappy-view")) return;
-    this.claimContainer(el, ctx, false);
+    this.claimContainer(el, ctx);
     this.replaceSpans(el, ctx);
   }
 
   get size(): number { return this.live.size; }
 
+  /** Sections of embedded notes still waiting for their container to join the document. */
+  get pending(): number { return this.waiting.size; }
+
   /** Plugin unload: every map goes back to the ordinary embed, and the reading views that showed one are redrawn. */
   dispose(): void {
     this.disposed = true;
+    for (const claim of Array.from(this.waiting)) claim.unload();
+    this.waiting.clear();
     const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
@@ -308,16 +359,27 @@ export class MapEmbeds {
     }
   }
 
-  private claimContainer(el: HTMLElement, ctx: MarkdownPostProcessorContext, retried: boolean): void {
+  private claimContainer(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     const own = this.app.vault.getFileByPath(ctx.sourcePath);
     if (!own || readMapLayout(this.app, own) === null) return;
-    const span = el.closest<HTMLElement>(".internal-embed");
-    if (!span?.isConnected) {
-      // A section can reach the processor before it is attached; look once more when it is.
-      if (!retried && !el.isConnected) el.win.requestAnimationFrame(() => { if (!this.disposed) this.claimContainer(el, ctx, true); });
+    if (el.isConnected) {
+      this.claimAround(el, ctx, own);
       return;
     }
-    if (span.hasClass(EMBED_HOST_CLASS) || span.parentElement?.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
+    // A section can reach the processor before its container is on the document, and Obsidian may take a few
+    // frames to attach it or discard the rendering instead; look again each frame until it is there, or give up.
+    const claim = new PendingClaim(el, attached => {
+      this.waiting.delete(claim);
+      if (attached && !this.disposed) this.claimAround(el, ctx, own);
+    });
+    this.waiting.add(claim);
+    ctx.addChild(claim);
+  }
+
+  /** The section is on the document: claim the container around it, unless it is the note's own view or a container already claimed. */
+  private claimAround(el: HTMLElement, ctx: MarkdownPostProcessorContext, own: TFile): void {
+    const span = el.closest<HTMLElement>(".internal-embed");
+    if (!span || span.hasClass(EMBED_HOST_CLASS) || span.parentElement?.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
     const { subpath } = parseLinktext(span.getAttribute("src") ?? "");
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
