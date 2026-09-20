@@ -26,6 +26,7 @@ afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
 /** Apply the small Obsidian DOM surface to these elements, never global prototypes. */
 function dom<T extends HTMLElement>(element: T): T {
+  Object.defineProperty(element, 'win', { value: window });
   element.empty = () => { element.replaceChildren(); };
   element.setText = value => { element.replaceChildren(value); };
   element.hasClass = value => element.classList.contains(value);
@@ -297,6 +298,8 @@ describe('NodeRenderer title rendering', () => {
 });
 
 describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight)', () => {
+  /** How long a wait tolerates no render finishing (the product passes EXPORT_RENDER_WAIT_MS). */
+  const STALL = 2000;
   /** Renders whose end the test decides: one deferred promise per call, in call order. */
   function deferRenders(): { settle: (index: number, outcome?: 'resolve' | 'reject') => Promise<void>; calls: () => number } {
     const pending: { resolve: () => void; reject: (reason: Error) => void }[] = [];
@@ -325,10 +328,10 @@ describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight
   it('resolves at once with nothing in flight, and only after every render finished otherwise, with the layout frame already asked for', async () => {
     const { parsed, renderer, changed } = setup('## Course\n- one\n- two\n');
     const renders = deferRenders();
-    await expect(settled(renderer.idle())).resolves.toBe(true);
+    await expect(renderer.idle(STALL)).resolves.toBe(true);
     renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
     expect(renders.calls()).toBe(3);
-    const idle = renderer.idle();
+    const idle = renderer.idle(STALL);
     const order: string[] = [];
     changed.mockImplementation(() => { order.push('changed'); });
     void idle.then(() => { order.push('idle'); });
@@ -337,10 +340,49 @@ describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight
     expect(await settled(idle)).toBe(false);
     await renders.settle(2);
     expect(await settled(idle)).toBe(true);
+    await expect(idle).resolves.toBe(true);
     expect(order).toEqual(['changed', 'changed', 'changed', 'idle']);
     expect(renderer.entries.get(id(parsed, 'two'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('two');
     // Nothing in flight again: the next wait is immediate.
-    await expect(settled(renderer.idle())).resolves.toBe(true);
+    await expect(renderer.idle(STALL)).resolves.toBe(true);
+  });
+
+  it('gives up (false) when no render finishes for the stall time, keeps waiting while they do, and asks for a frame when a pending node is removed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { parsed, renderer, changed } = setup('## Course\n- one\n- two\n');
+      const renders = deferRenders();
+      renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+      // Slow but alive: a render finishes within every stall window, so the wait goes on past one window.
+      const slow = renderer.idle(STALL);
+      await vi.advanceTimersByTimeAsync(STALL - 1);
+      await renders.settle(0);
+      await vi.advanceTimersByTimeAsync(STALL - 1);
+      await renders.settle(1);
+      await vi.advanceTimersByTimeAsync(STALL - 1);
+      expect(await settled(slow)).toBe(false);
+      await renders.settle(2);
+      await expect(slow).resolves.toBe(true);
+      // Stalled: nothing finishes for a whole window.
+      const again = parseMarkdown('## Course\n- one\n- two\n- three\n', 'File root', parsed);
+      renderer.update(again.nodes, again, 'Course.md', new Set(), { visualRootId: id(again, 'Course'), mode: 'mindmap' });
+      const stalled = renderer.idle(STALL);
+      await vi.advanceTimersByTimeAsync(STALL - 1);
+      expect(await settled(stalled)).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(stalled).resolves.toBe(false);
+      // The pending node is removed: that is a change (a frame is asked for), and a wait started before it ends now.
+      const waiting = renderer.idle(STALL);
+      changed.mockClear();
+      renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+      expect(changed).toHaveBeenCalledTimes(1);
+      await expect(waiting).resolves.toBe(true);
+      // The given-up wait left no waiter behind: its late render ends nothing twice, and the next wait is immediate.
+      await renders.settle(3);
+      await expect(renderer.idle(STALL)).resolves.toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not wait for a render superseded by a re-render or a removal, and a late end of it does not cut the new wait short', async () => {
@@ -352,7 +394,7 @@ describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight
     const renamed = parseMarkdown('## Course\n- uno\n', 'File root', parsed);
     renderer.update(renamed.nodes, renamed, 'Course.md', new Set(), { visualRootId: id(renamed, 'Course'), mode: 'mindmap' });
     expect(renders.calls()).toBe(4);
-    const idle = renderer.idle();
+    const idle = renderer.idle(STALL);
     expect(await settled(idle)).toBe(false);
     changed.mockClear();
     await renders.settle(1);
@@ -371,7 +413,7 @@ describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight
     const renders = deferRenders();
     renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
     await renders.settle(0);
-    const idle = renderer.idle();
+    const idle = renderer.idle(STALL);
     await renders.settle(1, 'reject');
     expect(await settled(idle)).toBe(true);
     expect(changed).toHaveBeenCalledTimes(2);
@@ -379,10 +421,10 @@ describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight
     // A render still in flight when the view closes: the export's wait must not outlive the renderer.
     const again = parseMarkdown('## Course\n- one\n- late\n', 'File root', parsed);
     renderer.update(again.nodes, again, 'Course.md', new Set(), { visualRootId: id(again, 'Course'), mode: 'mindmap' });
-    const closing = renderer.idle();
+    const closing = renderer.idle(STALL);
     expect(await settled(closing)).toBe(false);
     renderer.onunload();
-    expect(await settled(closing)).toBe(true);
+    await expect(closing).resolves.toBe(true);
     expect(renderer.entries.size).toBe(0);
   });
 });

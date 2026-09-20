@@ -33,14 +33,15 @@ export class NodeRenderer extends Component {
   readonly entries = new Map<string, NodeEntry>();
   private selectedId: string | null = null;
   /**
-   * The Markdown renders still in flight for what the map shows, by node id (the value tells one render from the
-   * next). A render only reports its end by asking for another layout frame, which the export (§5 M13) cannot wait
-   * for; this is what `idle()` waits on. A re-render or a removal supersedes the old render, whose late result no
-   * shown element receives.
+   * The Markdown renders still in flight for what the map shows, by node id: the settling of both renders of the
+   * entry (the value tells one render from the next). A render only reports its end by asking for another layout
+   * frame, which the export (§5 M13) cannot wait for; this is what `idle()` waits on. A re-render or a removal
+   * supersedes the old render, whose late result no shown element receives.
    */
-  private readonly rendering = new Map<string, number>();
-  private renders = 0;
-  private idleWaiters: (() => void)[] = [];
+  private readonly rendering = new Map<string, Promise<unknown>>();
+  /** Renders finished so far: a wait that sees this move is slow, not stalled. */
+  private finished = 0;
+  private readonly idleWaiters = new Set<() => void>();
 
   constructor(
     private readonly app: App,
@@ -57,12 +58,13 @@ export class NodeRenderer extends Component {
   ): void {
     const descendantCounts = countDescendants(appearance.trees ?? [document.root]);
     const retained = new Set(nodes.map(node => node.id));
+    let dropped = false;
     for (const [id, entry] of this.entries) {
       if (retained.has(id) || entry.element.hasClass("is-editing")) continue;
       this.removeChild(entry.component);
       entry.element.remove();
       this.entries.delete(id);
-      this.rendering.delete(id);
+      dropped = this.rendering.delete(id) || dropped;
     }
     for (const node of nodes) {
       let entry = this.entries.get(node.id);
@@ -127,12 +129,6 @@ export class NodeRenderer extends Component {
       const changed = (): void => {
         if (this.entries.get(node.id) === current && current.key === key) this.changed();
       };
-      const render = ++this.renders;
-      this.rendering.set(node.id, render);
-      const rendered = (): void => {
-        if (this.rendering.get(node.id) === render) this.rendering.delete(node.id);
-        this.settle();
-      };
       // The calling item carries a small link mark before the called root's text; the text itself (`![[…]]`) is what the inline editor shows.
       if (source?.root) setIcon(entry.content.createSpan({ cls: "mappy-node-call-mark", attr: { "aria-hidden": "true" } }), "link");
       const label = entry.content.createDiv({ cls: "mappy-node-label" });
@@ -151,6 +147,14 @@ export class NodeRenderer extends Component {
         : Promise.resolve();
       entry.component.registerDomEvent(entry.content, "load", changed, true);
       entry.component.registerDomEvent(entry.content, "error", changed, true);
+      // Both renders settled, even when the label's failure ended the pair early and the attachments still write.
+      const drawn = Promise.allSettled([labelTask, attachmentsTask]);
+      this.rendering.set(node.id, drawn);
+      const rendered = (): void => {
+        if (this.rendering.get(node.id) === drawn) this.rendering.delete(node.id);
+        this.finished += 1;
+        this.settle();
+      };
       // The layout frame is asked for before the waiters of `idle()` wake, so they find it pending.
       void Promise.all([labelTask, attachmentsTask]).then(() => {
         changed();
@@ -160,26 +164,42 @@ export class NodeRenderer extends Component {
           attachmentsEl.empty();
           this.changed();
         }
-      }).finally(rendered);
+      }).finally(() => drawn.then(rendered));
     }
+    // A removed node whose render was in flight is a change of its own, so the waiters woken here find a frame pending too.
+    if (dropped) this.changed();
     this.settle();
   }
 
   /**
-   * Resolves once no Markdown render of a shown node is in flight (at once when none is): by then every finished
-   * render has asked for its layout frame, so the sizes the next frame measures are the rendered ones. It does not
-   * wait for images still loading (they report by `load`, and a remote one may never arrive).
+   * Resolves `true` once no Markdown render of a shown node is in flight (at once when none is): by then every
+   * finished render has asked for its layout frame, so the sizes the next frame measures are the rendered ones.
+   * Resolves `false` when no render finishes for `stall` ms (a hung post-processor or embed), so a caller is not
+   * held; a slow map whose renders keep finishing is waited for. Images still loading are not waited for (they
+   * report by `load`, and a remote one may never arrive).
    */
-  idle(): Promise<void> {
-    if (this.rendering.size === 0) return Promise.resolve();
-    return new Promise(resolve => { this.idleWaiters.push(resolve); });
+  idle(stall: number): Promise<boolean> {
+    if (this.rendering.size === 0) return Promise.resolve(true);
+    const win = this.layer.win;
+    return new Promise(resolve => {
+      let seen = this.finished;
+      let timer = 0;
+      const wake = (): void => { win.clearTimeout(timer); resolve(true); };
+      const check = (): void => {
+        if (this.finished === seen) { this.idleWaiters.delete(wake); resolve(false); return; }
+        seen = this.finished;
+        timer = win.setTimeout(check, stall);
+      };
+      timer = win.setTimeout(check, stall);
+      this.idleWaiters.add(wake);
+    });
   }
 
   private settle(): void {
-    if (this.rendering.size > 0 || this.idleWaiters.length === 0) return;
-    const waiters = this.idleWaiters;
-    this.idleWaiters = [];
-    for (const resolve of waiters) resolve();
+    if (this.rendering.size > 0 || this.idleWaiters.size === 0) return;
+    const waiters = Array.from(this.idleWaiters);
+    this.idleWaiters.clear();
+    for (const wake of waiters) wake();
   }
 
   sizes(): Map<string, { width: number; height: number }> {

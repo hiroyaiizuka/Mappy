@@ -33,11 +33,12 @@ const SNAP_STICK = 16;
 
 const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元のノートを開いて再実行してください。";
 /**
- * How long the export waits for Markdown renders still in flight (§5 M13): a title renders in milliseconds, so this
- * only ends the wait when a render hangs (a post-processor, an embed that never resolves); the export then goes on
- * with what the map shows, as the map itself does.
+ * How long the export waits for Markdown renders still in flight without one of them finishing (§5 M13): a title
+ * renders in milliseconds, so this only ends the wait when a render hangs (a post-processor, an embed that never
+ * resolves); the export then goes on with what the map shows, as the map itself does, and says so.
  */
 export const EXPORT_RENDER_WAIT_MS = 2000;
+export const EXPORT_RENDER_STALLED_MESSAGE = "描画が終わらないノードがあるため、画面に見えているまま書き出します。";
 /** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
 export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り専用です。ダブルクリックで元のマップを開けます。";
 
@@ -148,6 +149,8 @@ export class MindmapView extends ItemView {
    */
   private pendingTopic: { id: string; layout: LayoutMode; position: TopicPosition } | null = null;
   private refreshTimer: number | undefined;
+  /** The refresh running now, if any: what the export waits for when the debounce has already fired. */
+  private refreshing: Promise<void> | undefined;
   private layoutFrame: number | undefined;
   private epoch = 0;
   private ready = false;
@@ -198,38 +201,33 @@ export class MindmapView extends ItemView {
 
   /**
    * What is on screen, for the SVG／PNG export (§5 M13): the layout the nodes were
-   * placed with, their elements and the connector layer. A debounced refresh is run
-   * first, Markdown renders still in flight (an external change just before the
-   * export) are awaited for up to EXPORT_RENDER_WAIT_MS, and then a pending layout
-   * frame is awaited, so the labels and the geometry handed out are the ones the DOM
-   * shows; the entries are copied, so a later refresh cannot change the set being
-   * exported.
+   * placed with, their elements and the connector layer. A debounced or running
+   * refresh is finished first, Markdown renders still in flight (an external change
+   * just before the export) are awaited until none is left or none finishes for
+   * EXPORT_RENDER_WAIT_MS, and then a pending layout frame is awaited, so the labels
+   * and the geometry handed out are the ones the DOM shows; the entries are copied,
+   * so a later refresh cannot change the set being exported.
    */
   async exportSource(): Promise<CaptureSource & { file: TFile }> {
     const file = this.file;
     if (!file || !this.document) throw new Error("マップを開いてから書き出してください。");
     if (this.inlineEditor) throw new Error("テキストの編集を確定してから書き出してください。");
     if (this.topicDrag || this.dropPreview) throw new Error("ドラッグを終えてから書き出してください。");
-    if (this.refreshTimer !== undefined) {
-      this.contentEl.win.clearTimeout(this.refreshTimer);
-      this.refreshTimer = undefined;
-      await this.refresh();
+    // A change arriving while a refresh reads (it is dropped by the epoch) leaves a new debounce behind, hence the loop.
+    while (this.refreshTimer !== undefined || this.refreshing) {
+      if (this.refreshTimer !== undefined) {
+        this.contentEl.win.clearTimeout(this.refreshTimer);
+        this.refreshTimer = undefined;
+        await this.refresh();
+      } else await this.refreshing;
     }
     // A finished render asks for its layout frame before idle() resolves, so the frame awaited next measures it.
-    await this.rendered(EXPORT_RENDER_WAIT_MS);
+    if (!await this.renderer.idle(EXPORT_RENDER_WAIT_MS)) new Notice(EXPORT_RENDER_STALLED_MESSAGE);
     if (this.layoutFrame !== undefined) await this.nextFrame();
     const layout = this.layout;
     if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
     if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
     return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
-  }
-
-  /** The renderer's idle, or `limit` ms: a render that hangs must not block the export. */
-  private rendered(limit: number): Promise<void> {
-    const win = this.contentEl.win;
-    let timer: number | undefined;
-    const expired = new Promise<void>(resolve => { timer = win.setTimeout(resolve, limit); });
-    return Promise.race([this.renderer.idle(), expired]).finally(() => { if (timer !== undefined) win.clearTimeout(timer); });
   }
 
   /** The next animation frame, or 100 ms: a hidden window never paints, and the export must not wait for it. */
@@ -667,7 +665,14 @@ export class MindmapView extends ItemView {
     this.refreshTimer = this.contentEl.win.setTimeout(() => { this.refreshTimer = undefined; this.run(() => this.refresh()); }, 45);
   }
 
-  private async refresh(): Promise<void> {
+  /** One refresh, tracked while it runs (the last one started wins, as with the epoch), so the export can wait for it. */
+  private refresh(): Promise<void> {
+    const task = this.reread().finally(() => { if (this.refreshing === task) this.refreshing = undefined; });
+    this.refreshing = task;
+    return task;
+  }
+
+  private async reread(): Promise<void> {
     if (!this.ready || this.closed) return;
     const epoch = ++this.epoch;
     const file = this.file;
