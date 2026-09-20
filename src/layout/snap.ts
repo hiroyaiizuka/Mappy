@@ -18,12 +18,20 @@ const SNAP_LINE = 24;
 export interface SnapSlot { targetId: string; position: DropPosition; distance: number }
 
 /**
- * Where a node hangs in the layouts whose zones depend on it. Timeline: the root, a stage whose
- * forest goes above or below the axis (`placeTimeline` alternates by stage index), or a node
- * inside a forest. Balanced map: the root, or a node on its right or left side (`balancedSide`
- * deals the first level; deeper nodes keep their branch's side). The other layouts ignore it.
+ * A timeline stage: the side of the axis its forest hangs on (`placeTimeline` alternates by stage
+ * index) and the half-height of the band its tree keeps clear around the axis (`axisBand`), past
+ * which every forest starts. Its zone is measured from the band's edge, since a short stage beside
+ * a tall one lands its first child where the tall one does, not one gap under itself.
  */
-export type NodePlace = "root" | "upper" | "lower" | "forest" | "right" | "left";
+export interface StagePlace { side: "upper" | "lower"; band: number }
+
+/**
+ * Where a node hangs in the layouts whose zones depend on it. Timeline: the root, a stage
+ * (`StagePlace`), or a node inside a forest. Balanced map: the root, or a node on its right or
+ * left side (`balancedSide` deals the first level; deeper nodes keep their branch's side). The
+ * other layouts ignore it.
+ */
+export type NodePlace = "root" | "forest" | "right" | "left" | StagePlace;
 
 type Axis = "x" | "y";
 /** A side of a node on which its children hang. */
@@ -36,16 +44,20 @@ function span(box: LayoutBounds, axis: Axis): { from: number; to: number; mid: n
 }
 
 /**
- * Where a leaf's first child would go: the root's near edge within the gap range, overlapping the node
- * across. Competing slots rank by how far the root sits from the child's landing place across the gap:
- * centred on the node unless `landing` says where the layout hangs the child's near edge instead.
+ * Where a leaf's first child would go: the root's near edge within the gap range past the node's far
+ * edge, overlapping the node across. `reach` lets it sit that much further back still (a stage's zone
+ * runs from the stage itself to past the axis band it is measured from). Competing slots rank by how
+ * far the root sits from the child's landing place across the gap: centred on the node unless
+ * `landing` says where the layout hangs the child's near edge instead.
  */
-function beside(rect: LayoutBounds, node: PositionedNode, side: Side, widen: number, landing?: (node: PositionedNode) => number): SnapSlot | null {
+function beside(
+  rect: LayoutBounds, node: PositionedNode, side: Side, widen: number, landing?: (node: PositionedNode) => number, reach = 0,
+): SnapSlot | null {
   const gap = side === "right" ? rect.x - (node.x + node.width)
     : side === "left" ? node.x - (rect.x + rect.width)
       : side === "below" ? rect.y - (node.y + node.height)
         : node.y - (rect.y + rect.height);
-  if (gap < -SNAP_OVERLAP * widen || gap > SNAP_GAP * widen) return null;
+  if (gap < -(SNAP_OVERLAP * widen + reach) || gap > SNAP_GAP * widen) return null;
   const across: Axis = side === "right" || side === "left" ? "y" : "x";
   const own = span(rect, across);
   const other = span(node, across);
@@ -83,6 +95,18 @@ function among(
 /** A stage's forest starts a stem's length right of its centre; the root's left edge is measured against that column. */
 function stageLanding(stage: PositionedNode): number {
   return stage.x + stage.width / 2 + TIMELINE_STEM_GAP;
+}
+
+/**
+ * A childless stage's zone: where its first child would go, on its forest's side. The stage is centred
+ * on the axis, so the band's edge is its centre plus the band's half-height; the gap is measured from
+ * there, and the zone reaches back to the stage's own edge so a root brought up beside the stage is
+ * caught before it gets to the band.
+ */
+function besideStage(rect: LayoutBounds, stage: PositionedNode, place: StagePlace, widen: number): SnapSlot | null {
+  const half = Math.max(place.band, stage.height / 2);
+  const band: PositionedNode = { ...stage, y: stage.y + stage.height / 2 - half, height: half * 2 };
+  return beside(rect, band, place.side === "upper" ? "above" : "below", widen, stageLanding, half - stage.height / 2);
 }
 
 /** A column of children growing right shares its left edge; one growing left, its right edge (the mirror image). */
@@ -134,8 +158,8 @@ function amongBalancedRoot(rect: LayoutBounds, root: PositionedNode, kids: reado
  * The slot the root of a dragged tree (`rect`) would take beside `node`, whose visible children are
  * `kids`, or null when the root is not in the node's zone. The zones follow each layout's geometry.
  * With no children, the root joins as the last child when it sits where the first child would go:
- * right of the node in the map and in the timeline's forests, below it in the hierarchy, on the
- * side of the axis a timeline stage's forest takes, and on a balanced node's own side (`place`).
+ * right of the node in the map and in the timeline's forests, below it in the hierarchy, past the
+ * axis band on the side a timeline stage's forest takes, and on a balanced node's own side (`place`).
  * With children, it slots in among them by position along the line they share (a column, a row,
  * or the timeline axis) when it lines up with them across it; the balanced root's children form
  * a column on each side (`amongBalancedRoot`). `widen` stretches every zone, so the slot already
@@ -146,7 +170,7 @@ export function snapSlot(
 ): SnapSlot | null {
   if (kids.length === 0) {
     if (mode === "hierarchy") return beside(rect, node, "below", widen);
-    if (mode === "timeline" && (place === "upper" || place === "lower")) return beside(rect, node, place === "upper" ? "above" : "below", widen, stageLanding);
+    if (mode === "timeline" && typeof place === "object") return besideStage(rect, node, place, widen);
     if (mode === "balanced" && place === "left") return beside(rect, node, "left", widen);
     return beside(rect, node, "right", widen);
   }
