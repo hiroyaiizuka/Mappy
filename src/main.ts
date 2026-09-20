@@ -67,7 +67,9 @@ export default class MappyPlugin extends Plugin {
       id: "create-mindmap", name: "新しいマインドマップを作成",
       callback: () => {
         this.run(async () => {
-          const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+          // "Same folder as current file" counts from the map's own note when a map is active: the map is a
+          // navigation view but not a FileView, so `getActiveFile()` alone is null there (LEV-74).
+          const sourcePath = this.activeFile()?.path ?? "";
           const { defaultLayout: layout, newMapFolder: folder } = this.settings;
           const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
           await this.open(file, false, layout);

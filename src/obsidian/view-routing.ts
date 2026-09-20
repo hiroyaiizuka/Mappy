@@ -2,6 +2,14 @@ import { WorkspaceLeaf, type TFile, type ViewState } from 'obsidian';
 import type { LayoutMode } from '../layout/layout';
 import { patchMethod } from './patch';
 
+/**
+ * A state `WorkspaceLeaf.history.go()` hands `setViewState` carries `popstate: true` (app.js 1.14.2, `updateState`;
+ * the flag is not in the public type, so it is read off the object without depending on it).
+ */
+function isHistoryRestore(state: ViewState): boolean {
+  return (state as { popstate?: unknown }).popstate === true;
+}
+
 export interface ViewRouterOptions {
   /** View type that replaces "markdown" for map notes. */
   mapViewType: string;
@@ -38,6 +46,15 @@ export class ViewRouter {
   /** Decide the view state a leaf should really receive. */
   route(leaf: WorkspaceLeaf, state: ViewState): ViewState {
     const path = typeof state.state?.file === 'string' ? state.state.file : null;
+    // Back／forward restore a state the leaf really showed (Obsidian 1.14.2 marks it `popstate`): the Markdown
+    // state of a map note was a deliberate switch, so it is kept and remembered as the toggle remembers it, and
+    // the next open of that note in this leaf follows it (LEV-74: the map records history now, so these entries
+    // are reachable from both sides). A restored map state takes the usual road: a map for a map note, Markdown
+    // for a note that is no longer one.
+    if (state.type === 'markdown' && path && isHistoryRestore(state)) {
+      this.markdownLeaves.set(leaf, path);
+      return state;
+    }
     if (state.type === this.options.mapViewType && path) {
       const explicit = this.explicitMapLeaves.get(leaf) === path;
       this.explicitMapLeaves.delete(leaf);
