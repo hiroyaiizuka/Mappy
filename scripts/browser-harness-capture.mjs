@@ -723,6 +723,78 @@ async function captureThemes(recorder, page) {
   });
 }
 
+/** The bar as the page reports it, in one line for the record. */
+function describeButtons(buttons) {
+  return buttons.map(button => `${button.label}${button.hidden ? '（hidden）' : ''}${button.active ? '＝選択中' : ''}`).join('・');
+}
+
+/**
+ * M14 (LEV-76): the settings' list of visible layouts hides buttons on the bottom-left bar
+ * (`hidden` plus styles.css's display rule), keeps the regular map, and keeps the button of the
+ * layout on screen until another one is chosen. The list is applied through the view's
+ * `setVisibleLayouts()`, as the plugin does; the settings tab itself is not on this page.
+ */
+async function captureVisibleLayouts(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  const original = await page.harness('h.source()');
+
+  await recorder.run('visible-layouts', '設定「左下に表示するレイアウト」を通常マップ・階層図だけにする', '左下のボタンがタイムラインと左右バランスを除く 2 つになる（hidden と display: none）。ノードと原文は変わらない', async () => {
+    const before = await page.harness('h.layoutButtons()');
+    const labels = await page.harness('h.layoutLabels');
+    expect(before.length === labels.length && before.every(button => !button.hidden && button.displayed), `before: ${describeButtons(before)}`);
+    expect(before.map(button => button.label).join() === labels.join(), `order: ${describeButtons(before)} (expected ${labels.join('・')})`);
+    const nodes = (await page.harness('h.nodes()')).length;
+    await page.harness('h.setVisibleLayouts(["mindmap", "hierarchy"])');
+    await page.settle();
+    const after = await page.harness('h.layoutButtons()');
+    expect(after.map(button => button.hidden).join() === 'false,true,false,true', `hidden: ${describeButtons(after)}`);
+    expect(after.map(button => button.displayed).join() === 'true,false,true,false', `displayed: ${after.map(button => button.displayed).join()}`);
+    expect(after[0].active, `通常マップ is not the active button: ${describeButtons(after)}`);
+    expect((await page.harness('h.nodes()')).length === nodes, 'the node count changed');
+    expect((await page.harness('h.source()')) === original, 'the source changed');
+    return `表示 ${after.filter(button => button.displayed).length} 個（${describeButtons(after)}）、ノード ${nodes}、原文不変`;
+  });
+
+  await recorder.run('visible-layouts-current', 'タイムラインを非表示のまま、同じノートをタイムラインで開く（view state。mappy-layout は書かない）', 'そのノートではタイムラインのボタンが出て選択状態。左右バランスは隠れたまま', async () => {
+    await loadFixture(page, OPERATION_FIXTURE, 'timeline');
+    const buttons = await page.harness('h.layoutButtons()');
+    expect(buttons.map(button => button.hidden).join() === 'false,false,false,true', `hidden: ${describeButtons(buttons)}`);
+    expect(buttons.map(button => button.displayed).join() === 'true,true,true,false', `displayed: ${buttons.map(button => button.displayed).join()}`);
+    expect(buttons[1].active && !buttons[0].active, `タイムライン is not the active button: ${describeButtons(buttons)}`);
+    const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline').length`);
+    expect(timeline > 0, 'no node in the timeline layout');
+    expect((await page.harness('h.source()')) === original, 'the source changed');
+    return `表示 ${buttons.filter(button => button.displayed).length} 個（${describeButtons(buttons)}）、原文不変`;
+  });
+
+  await recorder.run('visible-layouts-switch', '左下の「通常マップ」→「閉じて開き直す」', 'タイムラインのボタンが消えて 2 つに戻る。開き直した view も 2 つのまま。任意キー mappy-layout は書かれない（通常マップ選択はキーを削除する）', async () => {
+    const button = await page.harness('h.button("通常マップ")');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    let buttons = await page.harness('h.layoutButtons()');
+    expect(buttons.map(button => button.displayed).join() === 'true,false,true,false', `after the switch: ${describeButtons(buttons)}`);
+    expect(buttons[0].active, `通常マップ is not the active button: ${describeButtons(buttons)}`);
+    const activity = await page.harness('h.activity');
+    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
+    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    await page.harness('h.reopen()');
+    await page.settle();
+    buttons = await page.harness('h.layoutButtons()');
+    expect(buttons.map(button => button.displayed).join() === 'true,false,true,false', `after reopen: ${describeButtons(buttons)}`);
+    return `切替後 ${describeButtons(buttons)}、開き直し後も同じ`;
+  });
+
+  // Runs even when a case above failed, so the later cases see the bar as they always did.
+  await recorder.run('visible-layouts-back', '設定を 4 つすべてに戻す', '左下のボタンが 4 つに戻り、hidden 属性がどのボタンにもない', async () => {
+    await page.harness('h.setVisibleLayouts(["mindmap", "timeline", "hierarchy", "balanced"])');
+    await page.settle();
+    const buttons = await page.harness('h.layoutButtons()');
+    expect(buttons.length === 4 && buttons.every(button => !button.hidden && button.displayed), `after restore: ${describeButtons(buttons)}`);
+    const hidden = await page.evaluate(`document.querySelectorAll('.mappy-modes [hidden]').length`);
+    expect(hidden === 0, `${hidden} hidden elements on the bar`);
+  });
+}
+
 /** The note without its frontmatter: what the body and the topic sections say. */
 function bodyOf(source) {
   const closing = source.indexOf('\n---\n', 4);
@@ -1860,6 +1932,7 @@ async function main() {
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
       await captureThemes(recorder, page);
+      await captureVisibleLayouts(recorder, page);
       await captureTopicOperations(recorder, page);
       await captureExport(recorder, page);
       await captureEmbeds(recorder, page);
