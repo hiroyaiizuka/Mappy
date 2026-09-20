@@ -48,6 +48,23 @@ describe("the 操作 popover CSS (§5 M3)", () => {
       for (const part of selector.split(",")) expect(part.trim()).toMatch(/^\.mappy-view /u);
     }
   });
+
+  it("lines the three rows up at the card's left edge, each as wide as the card (LEV-84)", async () => {
+    const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
+    const card = css.match(/\.mappy-view \.mappy-popover \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(card).toMatch(/flex-direction:\s*column;/u);
+    expect(card).toMatch(/align-items:\s*stretch;/u);
+    const item = css.match(/\.mappy-view \.mappy-popover-item \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(item).toMatch(/width:\s*100%;/u);
+    // app.css centres a button's content; a row narrower than the card would then put its icon elsewhere.
+    expect(item).toMatch(/justify-content:\s*flex-start;/u);
+    expect(item).toMatch(/text-align:\s*left;/u);
+    // Every declaration of app.css's `button` rule that shapes a button is set again here, so the rows depend
+    // on nothing Obsidian gives them; the selector's two classes outrank the app's bare `button`.
+    for (const property of ["display", "align-items", "justify-content", "font-size", "font-weight", "border", "border-radius", "padding", "height", "background", "box-shadow", "white-space", "cursor"]) {
+      expect(item, property).toMatch(new RegExp(`(?:^|;)\\s*${property}:`, "u"));
+    }
+  });
 });
 
 describe("map theme CSS (settings, M14)", () => {

@@ -47,7 +47,7 @@ export default class MappyPlugin extends Plugin {
     // each) through the same callbacks as the commands below; the view only learns their names, lines, icons and
     // checks. The Excalidraw insertion stays a command only.
     const menuActions: MapMenuAction[] = [
-      { title: "マップを検索して呼び出す", description: "他のマップをこのマップの枝にする", icon: "search",
+      { title: "マップを検索して呼び出す", description: "他のマップを挿入する", icon: "search",
         check: map => map.file !== null, run: map => { this.searchAndCallMap(map); } },
       { title: "書き出す", description: "SVG／PNG に保存", icon: "image-down",
         check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },

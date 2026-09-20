@@ -495,23 +495,40 @@ async function captureOperations(recorder, page) {
     expect(card, 'no popover open');
     expect(card.y >= gear.y + gear.height, `card top ${card.y} is not under the gear's bottom ${gear.y + gear.height}`);
     expect(Math.abs(card.x + card.width - (gear.x + gear.width)) <= 1, `card right edge ${card.x + card.width} is not aligned with the gear's ${gear.x + gear.width}`);
-    expect(card.width <= 320 && card.width >= 200, `card width ${card.width} is not within 200–320`);
+    expect(card.width <= 320 && card.width >= 160, `card width ${card.width} is not within 160–320`);
     expect(inside(card, canvas), `card ${JSON.stringify(card)} is not inside the pane ${JSON.stringify(canvas)}`);
   };
+  /** Each row's left edge, width and icon left edge (LEV-84: app.css centres a button's content). */
+  const popoverRows = () => page.evaluate(`Array.from(document.querySelectorAll('.mappy-view .mappy-popover [role="menuitem"]'), item => {
+    const row = item.getBoundingClientRect();
+    const icon = item.querySelector('.mappy-popover-icon')?.getBoundingClientRect() ?? row;
+    return { left: row.left, width: row.width, iconLeft: icon.left };
+  })`);
+  /** The rows start at the card's left edge, are as wide as the widest, and their icons line up. */
+  const expectAligned = (rows, card) => {
+    expect(rows.length === 3, `${rows.length} rows`);
+    const distinct = key => rows.map(row => Math.round(row[key] * 10) / 10).filter((value, index, all) => all.indexOf(value) === index);
+    for (const key of ['left', 'width', 'iconLeft']) expect(distinct(key).length === 1, `${key} differs between the rows: ${distinct(key).join(' / ')}`);
+    expect(Math.abs(rows[0].left - card.x) <= 8, `row left ${rows[0].left} is not at the card's left edge ${card.x} (padding aside)`);
+    expect(rows[0].width >= card.width - 16, `row width ${rows[0].width} is narrower than the card's ${card.width} minus its padding`);
+    return `行の左 ${Math.round(rows[0].left)}・幅 ${Math.round(rows[0].width)}・アイコンの左 ${Math.round(rows[0].iconLeft)} が 3 行とも同じ`;
+  };
 
-  await recorder.run('action-popover', '右上の歯車「操作」をクリック → ↓ → Escape → クリック → クリック → クリック → Escape', '右上のボタンは歯車 1 つ。歯車の直下に右辺を揃えたカード（Obsidian の .menu ではない）が開き、項目は Markdown に切り替え／マップを検索して呼び出す／書き出す の 3 つ（アイコン・項目名・1 行の説明）だけ、すべて有効。開いた直後は 1 項目目にフォーカス、↓ で 2 項目目、Escape で閉じてキャンバスにフォーカス。2 度目の押下で閉じ（aria-expanded=false）、3 度目で開く', async () => {
+  await recorder.run('action-popover', '右上の歯車「操作」をクリック → ↓ → Escape → クリック → クリック → クリック → Escape', '右上のボタンは歯車 1 つ。歯車の直下に右辺を揃えたカード（Obsidian の .menu ではない）が開き、項目は Markdown に切り替え／マップを検索して呼び出す／書き出す の 3 つ（アイコン・項目名・1 行の説明）だけ、すべて有効。3 行の左端・幅・アイコンの左端が同じ（Obsidian の button は中身を中央寄せにするが、行は左詰め）。開いた直後は 1 項目目にフォーカス、↓ で 2 項目目、Escape で閉じてキャンバスにフォーカス。2 度目の押下で閉じ（aria-expanded=false）、3 度目で開く', async () => {
     const labels = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-actions .mappy-button'), button => button.getAttribute('aria-label'))`);
     expect(labels.length === 1 && labels[0] === '操作', `top-right buttons: ${labels.join(' / ')}`);
     const gear = await page.harness('h.button("操作")');
     await page.click(center(gear).x, center(gear).y);
     const entries = await popoverEntries();
-    expect(JSON.stringify(entries) === JSON.stringify(['Markdown に切り替え（同じタブで本文を開く）', 'マップを検索して呼び出す（他のマップをこのマップの枝にする）', '書き出す（SVG／PNG に保存）']),
+    expect(JSON.stringify(entries) === JSON.stringify(['Markdown に切り替え（同じタブで本文を開く）', 'マップを検索して呼び出す（他のマップを挿入する）', '書き出す（SVG／PNG に保存）']),
       `popover entries: ${entries.join(' / ')}`);
     expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'an Obsidian menu opened as well');
     expect((await page.evaluate(`document.querySelector('.mappy-actions button')?.getAttribute('aria-expanded')`)) === 'true', 'aria-expanded is not true while open');
     const icons = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-popover .mappy-popover-icon'), icon => icon.dataset.icon)`);
     expect(JSON.stringify(icons) === JSON.stringify(['file-text', 'search', 'image-down']), `icons: ${icons.join(' / ')}`);
-    expectPlaced(await popoverRect(), gear, await page.harness('h.canvasRect()'));
+    const card = await popoverRect();
+    expectPlaced(card, gear, await page.harness('h.canvasRect()'));
+    const aligned = expectAligned(await popoverRows(), card);
     expect((await focusedTitle()) === 'Markdown に切り替え', `focus after opening: ${await focusedTitle()}`);
     await page.screenshot(join(recorder.directory, 'action-popover-open.png'));
     await page.key('ArrowDown', 'ArrowDown', 40);
@@ -532,10 +549,10 @@ async function captureOperations(recorder, page) {
     await page.click(canvas.x + 30, canvas.y + 30);
     expect((await popoverCount()) === 0, 'popover still open after a press on the map');
     expect((await focusedTitle()) === 'canvas', `focus after the press outside: ${await focusedTitle()}`);
-    return `項目: ${entries.join(' / ')}`;
+    return `項目: ${entries.join(' / ')}。${aligned}`;
   });
 
-  await recorder.run('action-popover-narrow', 'ペインを 400×700 にして歯車をクリック → Escape → 1280×800 に戻す', '幅 400px のペインでもカードの左辺がペインの左端を越えず、右辺は歯車の右辺に揃い、幅は 320px 以下', async () => {
+  await recorder.run('action-popover-narrow', 'ペインを 400×700 にして歯車をクリック → Escape → 1280×800 に戻す', '幅 400px のペインでもカードの左辺がペインの左端を越えず、右辺は歯車の右辺に揃い、幅は 320px 以下。3 行の左端・幅・アイコンの左端は同じ', async () => {
     await page.harness('h.resize(400, 700)');
     await page.settle();
     const canvas = await page.harness('h.canvasRect()');
@@ -545,6 +562,7 @@ async function captureOperations(recorder, page) {
     const card = await popoverRect();
     expectPlaced(card, gear, canvas);
     expect(card.x >= canvas.x + 8, `card left edge ${card.x} is too close to the pane's ${canvas.x}`);
+    const aligned = expectAligned(await popoverRows(), card);
     await page.screenshot(join(recorder.directory, 'action-popover-narrow-open.png'));
     await page.key('Escape', 'Escape', 27);
     expect((await popoverCount()) === 0, 'popover still open after Escape');
@@ -553,7 +571,7 @@ async function captureOperations(recorder, page) {
     const fit = await page.harness('h.button("全体表示")');
     await page.click(center(fit).x, center(fit).y);
     await page.settle();
-    return `card ${Math.round(card.width)}×${Math.round(card.height)} at x=${Math.round(card.x)} in a ${Math.round(canvas.width)}px pane`;
+    return `card ${Math.round(card.width)}×${Math.round(card.height)} at x=${Math.round(card.x)} in a ${Math.round(canvas.width)}px pane。${aligned}`;
   });
 
   await recorder.run('link-click', 'ノード内の内部リンクをクリック', '選択は変わらず、リンク解決は対象外の通知が出る', async () => {

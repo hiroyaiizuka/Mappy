@@ -110,12 +110,15 @@
    The view sets top, right, max-width (320px at most, less in a narrow pane) and max-height from the pane's and the
    gear's rects (placePopover); the width is the content's up to that cap, and a short pane scrolls the card instead
    of cutting it. Obsidian's variables for the surface, so it reads in both themes and under the map's own theme
-   (M14), and its `button` styling is undone item by item. */
+   (M14), and its `button` styling is undone item by item: app.css centres a button's content
+   (`justify-content: center`), which put each row's icon somewhere else once the rows shared the card's width
+   (LEV-84), so every row is as wide as the card and starts at its left edge. */
 .mappy-view .mappy-popover {
   position: absolute;
   z-index: 4;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 2px;
   box-sizing: border-box;
   width: max-content;
@@ -130,6 +133,7 @@
 .mappy-view .mappy-popover-item {
   display: flex;
   align-items: flex-start;
+  justify-content: flex-start;
   gap: 10px;
   box-sizing: border-box;
   width: 100%;
