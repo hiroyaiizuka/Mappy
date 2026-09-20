@@ -1644,6 +1644,7 @@ export async function captureExport(recorder, page) {
 
 const EMBED_HOST = 'embed-host';
 const EMBED_HOST_LIVE = 'embed-host-live';
+const EMBED_HOST_LIVE_LATE = 'embed-host-live-late';
 const EMBED_EXPECTED = [
   { src: 'Fixtures/uneven-branches.md', layout: 'mindmap' },
   { src: 'Fixtures/embed-timeline.md', layout: 'timeline' },
@@ -1821,6 +1822,34 @@ async function captureEmbeds(recorder, page) {
     return `容器 ${hosts}、マップ ${maps.length}（ノード ${maps.map(embed => embed.nodes.length).join(' / ')}）`;
   });
 
+  await recorder.run('embed-live-late', `${EMBED_HOST_LIVE_LATE} を読み込む（ライブプレビュー相当で、区画が届いてから容器が document に付くまで 3 フレーム、画面の下の 2 つは 90 フレーム（約 1.5 s）空き、各埋め込みの 1 回目の描画は捨てられる。LEV-91）`,
+    '5 つとも claim されてマップになる（容器 5、live 5、枠 5）。区画を渡した直後は待ちの区画があり、捨てられた描画の区画だけが待ち続け（60 s の保持の間は数に入る）、claim も live の増加もなく、待つ間にフレームを使わない', async () => {
+    const lateTiming = await loadFixture(page, EMBED_HOST_LIVE_LATE);
+    expect(lateTiming.waiting > 0, `${lateTiming.waiting} sections waiting right after the processor received them`);
+    const maps = expectEmbeds(await page.harness('h.embeds()'));
+    const hosts = await page.evaluate(`document.querySelectorAll('.internal-embed.mappy-embed-host').length`);
+    expect(hosts === maps.length, `${hosts} claimed containers`);
+    const live = await page.harness('h.liveEmbeds()');
+    const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
+    expect(live === maps.length && frames === maps.length, `live ${live}, frames ${frames}`);
+    const hidden = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed.mappy-embed-host > .markdown-embed-content')).every(el => getComputedStyle(el).display === 'none')`);
+    expect(hidden, 'Obsidian content still visible inside a claimed container');
+    // The discarded renderings never join: only they keep waiting, through the document's watcher and without a frame of polling.
+    const framesBefore = await page.harness('h.productFrames()');
+    await new Promise(resolveWait => { setTimeout(resolveWait, 800); });
+    const framesAfter = await page.harness('h.productFrames()');
+    expect(framesAfter - framesBefore < 100, `${framesAfter - framesBefore} product frames in 800 ms while ${lateTiming.discarded} sections wait (polling would be about ${lateTiming.discarded * 48})`);
+    await page.settle();
+    const pending = await page.harness('h.pendingClaims()');
+    expect(lateTiming.discarded > 0 && pending === lateTiming.discarded, `${pending} sections waiting, expected the ${lateTiming.discarded} discarded ones`);
+    const anchors = await page.evaluate(`document.querySelectorAll('.mappy-embed-anchor').length`);
+    expect(anchors === maps.length, `${anchors} anchors left in sections (one per map expected)`);
+    const liveAfter = await page.harness('h.liveEmbeds()');
+    expect(liveAfter === maps.length, `${liveAfter} live embeds after the wait`);
+    expectUnchanged(sources, await noteSources(page));
+    return `容器 ${hosts}、マップ ${maps.length}（ノード ${maps.map(embed => embed.nodes.length).join(' / ')}）、待ちの区画 ${lateTiming.waiting} → ${pending}（捨てられた描画の区画 ${lateTiming.discarded}）、800 ms のフレーム ${framesAfter - framesBefore}、anchor ${anchors}、live ${liveAfter}、安定まで ${lateTiming.settledMs.toFixed(0)} ms`;
+  });
+
   await recorder.run('embed-live-dispose', 'プラグインの無効化と同じ解放（disposeEmbeds）', 'マップが消え、Obsidian の容器がそのまま（元の内容が再び見える）残る。live が 0', async () => {
     await page.harness('h.disposeEmbeds()');
     await page.settle();
@@ -1828,9 +1857,10 @@ async function captureEmbeds(recorder, page) {
     const frames = await page.evaluate(`document.querySelectorAll('.mappy-embed').length`);
     const claimed = await page.evaluate(`document.querySelectorAll('.mappy-embed-host').length`);
     const visible = await page.evaluate(`Array.from(document.querySelectorAll('.internal-embed > .markdown-embed-content')).filter(el => getComputedStyle(el).display !== 'none').length`);
-    expect(live === 0 && frames === 0 && claimed === 0, `live ${live}, frames ${frames}, claimed ${claimed}`);
+    const pending = await page.harness('h.pendingClaims()');
+    expect(live === 0 && frames === 0 && claimed === 0 && pending === 0, `live ${live}, frames ${frames}, claimed ${claimed}, waiting ${pending}`);
     expect(visible >= EMBED_EXPECTED.length, `${visible} embed contents visible`);
-    return `live ${live}、枠 ${frames}、容器の内容が見える ${visible}`;
+    return `live ${live}、枠 ${frames}、待ちの区画 ${pending}、容器の内容が見える ${visible}`;
   });
 
   await recorder.run('embed-reading-dispose', `${EMBED_HOST} を読み込み直してから解放（disposeEmbeds）`, 'placeholder の span が元の src で戻り、マップの枠と Component が残らない', async () => {
