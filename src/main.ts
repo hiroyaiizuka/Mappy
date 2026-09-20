@@ -43,12 +43,14 @@ export default class MappyPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => { this.bridge.ensureHook(); });
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.bridge.ensureHook(); }));
 
-    // The view's 操作 menu (§5 M3) offers the routes that live here (a modal, another plugin) through the
-    // same callbacks as the commands below; the view only learns their names, icons and checks.
+    // The view's 操作 popover (§5 M3) offers, after its own Markdown switch, the two routes that live here (a modal
+    // each) through the same callbacks as the commands below; the view only learns their names, lines, icons and
+    // checks. The Excalidraw insertion stays a command only.
     const menuActions: MapMenuAction[] = [
-      { title: "マップを検索して呼び出す", icon: "search", check: map => map.file !== null, run: map => { this.searchAndCallMap(map); } },
-      { title: "Excalidraw の図面に挿入", icon: "pencil-ruler", check: map => map.file !== null && this.bridge.available, run: map => { this.insertIntoExcalidraw(map.snapshot()); } },
-      { title: "SVG／PNG に書き出し", icon: "image-down", check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },
+      { title: "マップを検索して呼び出す", description: "他のマップをこのマップの枝にする", icon: "search",
+        check: map => map.file !== null, run: map => { this.searchAndCallMap(map); } },
+      { title: "書き出す", description: "SVG／PNG に保存", icon: "image-down",
+        check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },
     ];
     this.registerView(VIEW_TYPE, leaf => {
       const view = new MindmapView(leaf, store, this.router, menuActions);
@@ -202,7 +204,7 @@ export default class MappyPlugin extends Plugin {
     void action().catch((error: unknown) => { new Notice(error instanceof Error ? error.message : fallback); });
   }
 
-  /** The command's and the 操作 menu's route (§5 M12): pick a map, then the view adds it under the selected node. */
+  /** The command's and the 操作 popover's route (§5 M12): pick a map, then the view adds it under the selected node. */
   private searchAndCallMap(map: MindmapView): void {
     const file = map.file;
     if (!file) return;
@@ -211,13 +213,13 @@ export default class MappyPlugin extends Plugin {
     }).open();
   }
 
-  /** The command's and the 操作 menu's route (§5 M6): the map as shown goes into the last active drawing. */
+  /** The command's route (§5 M6; a command only since LEV-81): the map as shown goes into the last active drawing. */
   private insertIntoExcalidraw(snapshot: ImportRequest | null): void {
     if (!snapshot) return;
     this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), "Excalidraw への挿入に失敗しました。");
   }
 
-  /** The command's and the 操作 menu's route (§5 M13): choose the format, then the view captures what it shows. */
+  /** The command's and the 操作 popover's route (§5 M13): choose the format, then the view captures what it shows. */
   private exportMapImage(map: MindmapView): void {
     this.run(async () => {
       const png = await canRasterizeForeignObject();

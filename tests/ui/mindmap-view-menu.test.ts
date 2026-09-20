@@ -3,7 +3,6 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
-import { Menu, Notice } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import type { MapMenuAction, MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -16,14 +15,12 @@ const opened: MountedMapView[] = [];
 afterEach(async () => {
   for (const mounted of opened.splice(0)) await mounted.close();
   document.body.replaceChildren();
-  Notice.log.length = 0;
   vi.restoreAllMocks();
 });
 
 const PATH = 'Fixtures/free-topics.md';
 const HEADINGS_PATH = 'Fixtures/headings.md';
 const HEADINGS_SOURCE = '---\nmappy: true\n---\n## 講座\n\n### 第 1 章\n\n本文。\n\n### 第 2 章\n';
-const SEPARATOR = '———';
 
 function fixtureSource(): string {
   const fixture = findFixture('free-topics');
@@ -31,25 +28,40 @@ function fixtureSource(): string {
   return fixture.source;
 }
 
-/** What a test can see of the plugin's items: the calls the menu made, and the availability each reports. */
+/** What a test can see of the plugin's items: the calls the popover made, and the availability each reports. */
 interface PluginActions {
   actions: MapMenuAction[];
   ran: string[];
   /** The view each run received. */
   views: MindmapView[];
-  /** Whether「Excalidraw の図面に挿入」reports Excalidraw as present. */
-  excalidraw: boolean;
+  /** What the page showed at the moment each run started: the popover's presence and the focused element. */
+  during: { popoverOpen: boolean; focused: Element | null }[];
+  /** Whether「書き出す」reports attachments as savable (`canSaveAttachments`). */
+  exportable: boolean;
 }
 
-/** The three routes src/main.ts passes, with their checks stubbed. */
+/** The two routes src/main.ts passes, with their checks stubbed. */
 function pluginActions(): PluginActions {
-  const state: PluginActions = { actions: [], ran: [], views: [], excalidraw: false };
+  const state: PluginActions = { actions: [], ran: [], views: [], during: [], exportable: true };
+  const record = (name: string, map: MindmapView): void => {
+    state.ran.push(name); state.views.push(map);
+    state.during.push({ popoverOpen: document.querySelector('.mappy-popover') !== null, focused: document.activeElement });
+  };
   state.actions = [
-    { title: 'マップを検索して呼び出す', icon: 'search', check: map => map.file !== null, run: map => { state.ran.push('call'); state.views.push(map); } },
-    { title: 'Excalidraw の図面に挿入', icon: 'pencil-ruler', check: map => map.file !== null && state.excalidraw, run: map => { state.ran.push('excalidraw'); state.views.push(map); } },
-    { title: 'SVG／PNG に書き出し', icon: 'image-down', check: map => map.file !== null, run: map => { state.ran.push('export'); state.views.push(map); } },
+    { title: 'マップを検索して呼び出す', description: '他のマップをこのマップの枝にする', icon: 'search', check: map => map.file !== null, run: map => { record('call', map); } },
+    { title: '書き出す', description: 'SVG／PNG に保存', icon: 'image-down', check: map => map.file !== null && state.exportable, run: map => { record('export', map); } },
   ];
   return state;
+}
+
+/** A DOMRect for a mocked `getBoundingClientRect` (jsdom lays nothing out). */
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return { x: left, y: top, left, top, width, height, right: left + width, bottom: top + height, toJSON: () => undefined };
+}
+
+/** What a pane and its gear look like on screen: the gear's card at 16px from the top-right corner, 4px of padding, a 32px button. */
+function pane(width: number, height = 800, left = 0, top = 0): { pane: DOMRect; gear: DOMRect } {
+  return { pane: rect(left, top, width, height), gear: rect(left + width - 16 - 4 - 32, top + 16 + 4, 32, 32) };
 }
 
 interface Mounted extends MountedMapView {
@@ -58,14 +70,20 @@ interface Mounted extends MountedMapView {
   actions: () => HTMLElement;
   /** The single button there. */
   gear: () => HTMLButtonElement;
-  /** Close a menu left open, click the gear: the open menu's entries in order, a separator as `———`. */
-  open: () => Promise<string[]>;
-  /** An entry of the open menu. */
-  item: (title: string) => HTMLElement;
-  /** Click an entry of the open menu and let the map act. */
+  /** The popover, if open. */
+  popover: () => HTMLElement | null;
+  /** The popover's items in order. */
+  items: () => HTMLButtonElement[];
+  /** The popover's item with this title. */
+  item: (title: string) => HTMLButtonElement;
+  /** Click the gear with the popover closed: the titles of the items in order. */
+  open: () => string[];
+  /** Click an item of the open popover and let the map act. */
   choose: (title: string) => Promise<void>;
-  /** ⌘Z on the canvas: the map's own history, then a refresh. */
-  undo: () => Promise<void>;
+  /** Give the pane and the gear a place on screen, as a window would, and return the rects. */
+  place: (width: number, height?: number, left?: number, top?: number) => { pane: DOMRect; gear: DOMRect };
+  /** Press a pointer at a target, as the outside-press listener sees it. */
+  press: (target: EventTarget) => void;
 }
 
 async function mount(path = PATH, source = fixtureSource()): Promise<Mounted> {
@@ -82,26 +100,27 @@ async function mount(path = PATH, source = fixtureSource()): Promise<Mounted> {
     if (!button) throw new Error('The top-right control has no button');
     return button;
   };
-  const item = (title: string): HTMLElement => {
-    const found = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-    if (!found) throw new Error(`Menu item ${title} is not open`);
+  const popover = (): HTMLElement | null => mounted.view.contentEl.querySelector<HTMLElement>('.mappy-popover');
+  const items = (): HTMLButtonElement[] => Array.from(popover()?.querySelectorAll<HTMLButtonElement>('.mappy-popover-item') ?? []);
+  const item = (title: string): HTMLButtonElement => {
+    const found = items().find(candidate => candidate.querySelector('.mappy-popover-title')?.textContent === title);
+    if (!found) throw new Error(`Popover item ${title} is not open`);
     return found;
   };
+  let placed: { pane: DOMRect; gear: DOMRect } | null = null;
+  vi.spyOn(mounted.view.contentEl, 'getBoundingClientRect').mockImplementation(() => placed?.pane ?? rect(0, 0, 0, 0));
+  vi.spyOn(gear(), 'getBoundingClientRect').mockImplementation(() => placed?.gear ?? rect(0, 0, 0, 0));
   return {
-    ...mounted, plugin, actions, gear, item,
-    open: async () => {
-      // The mock menu listens for Escape once a timer has run, as Obsidian's does; a menu a test left open closes here.
-      await new Promise(resolve => setTimeout(resolve, 0));
-      if (document.querySelector('.menu')) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-      if (document.querySelector('.menu')) throw new Error('A menu stayed open');
+    ...mounted, plugin, actions, gear, popover, items, item,
+    open: () => {
+      if (popover()) throw new Error('A popover is already open');
       gear().click();
-      const menu = document.querySelector('.menu');
-      if (!menu) throw new Error('The menu did not open');
-      return Array.from(menu.children, child => child.classList.contains('menu-separator') ? SEPARATOR : child.querySelector('.menu-item-title')?.textContent ?? '');
+      if (!popover()) throw new Error('The popover did not open');
+      return items().map(candidate => candidate.querySelector('.mappy-popover-title')?.textContent ?? '');
     },
     choose: async title => { item(title).click(); await mounted.settle(); },
-    undo: async () => { mounted.key(mounted.canvas, 'z', { metaKey: true }); await mounted.settle(); },
+    place: (width, height, left, top) => { placed = pane(width, height, left, top); return placed; },
+    press: target => { target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, composed: true })); },
   };
 }
 
@@ -109,252 +128,288 @@ function disabled(element: HTMLElement): boolean {
   return element.classList.contains('is-disabled') && element.getAttribute('aria-disabled') === 'true';
 }
 
-/** The entries in the order and grouping of product-plan §5 M3. */
-const ENTRIES = [
-  'Markdown に切り替え', '左に Markdown を開く', SEPARATOR,
-  '兄弟を追加（Enter）', '子を追加（Tab）', 'トピックを追加', SEPARATOR,
-  'テキストを編集（F2）', '本文・リンクを編集', '画像を追加', '折りたたみ（Space）', '削除（Delete）', SEPARATOR,
-  'マップを検索して呼び出す', 'Excalidraw の図面に挿入', 'SVG／PNG に書き出し', 'リスト形式に変更', SEPARATOR,
-  '元に戻す', 'やり直す',
-];
+/** The three items in the order of product-plan §5 M3, with the line under each and its icon. */
+const ITEMS = [
+  ['Markdown に切り替え', '同じタブで本文を開く', 'file-text'],
+  ['マップを検索して呼び出す', '他のマップをこのマップの枝にする', 'search'],
+  ['書き出す', 'SVG／PNG に保存', 'image-down'],
+] as const;
+const TITLES = ITEMS.map(([title]) => title);
 
-describe('the 操作 menu at the top right (§5 M3)', () => {
-  it('has one button there, the settings gear named 操作, and the Markdown buttons are gone', async () => {
-    const { view, actions, gear } = await mount();
+/** The context menu of a node, as before the popover (LEV-77 shared its node items; the popover holds none of them). */
+const NODE_CONTEXT_MENU = ['テキストを編集', '本文・リンクを編集', '画像を追加', '子を追加', '兄弟を追加', '前へ移動', '後ろへ移動', '枝を削除', '元に戻す', 'やり直す'];
+
+function contextMenuItems(target: EventTarget): string[] {
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+  const titles = Array.from(document.querySelectorAll('.menu .menu-item-title'), title => title.textContent ?? '');
+  document.querySelector('.menu')?.remove();
+  return titles;
+}
+
+describe('the 操作 popover at the top right (§5 M3)', () => {
+  it('has one button there, the settings gear named 操作 with the menu attributes, and no popover until it is pressed', async () => {
+    const { view, actions, gear, popover } = await mount();
     expect(actions().querySelectorAll('button')).toHaveLength(1);
     expect(gear().getAttribute('aria-label')).toBe('操作');
     expect(gear().querySelector<HTMLElement>('[data-icon]')?.dataset.icon).toBe('settings');
-    expect(view.containerEl.querySelectorAll('.mappy-button[aria-label="Markdown に切り替え"], .mappy-button[aria-label="左に Markdown を開く"]')).toHaveLength(0);
+    expect(gear().getAttribute('aria-haspopup')).toBe('menu');
+    expect(gear().getAttribute('aria-expanded')).toBe('false');
+    expect(popover()).toBeNull();
     // The other floating controls are untouched.
     expect(view.containerEl.querySelector('.mappy-modes')).not.toBeNull();
     expect(view.containerEl.querySelector('.mappy-zoom')).not.toBeNull();
   });
 
-  it('opens under the button, right-aligned, in the view\'s own document, with the entries, separators and keys in order', async () => {
-    const { open, gear } = await mount();
-    const shown = vi.spyOn(Menu.prototype, 'showAtPosition');
-    // jsdom has no layout: give the button a place, as a real window would.
-    const rect = { x: 1200, y: 16, left: 1200, top: 16, right: 1232, bottom: 48, width: 32, height: 32, toJSON: () => undefined };
-    vi.spyOn(gear(), 'getBoundingClientRect').mockReturnValue(rect);
-    expect(await open()).toEqual(ENTRIES);
-    expect(shown).toHaveBeenCalledTimes(1);
-    // Obsidian's own menu right-aligns with the button (`left` with its width); a native one opens from (x, y), its left-bottom corner.
-    expect(shown.mock.calls[0]?.[0]).toEqual({ x: 1200, y: 48, width: 32, overlap: true, left: true });
-    // Obsidian takes the document as the second argument (a popout window shows the menu in its own window).
-    expect((shown.mock.calls[0] as unknown[])[1]).toBe(document);
-    expect(gear().getAttribute('aria-haspopup')).toBe('menu');
+  it('opens a menu card inside the view with the three items in order — icon, title and one line each — and focuses the first', async () => {
+    const { view, open, gear, popover, items } = await mount();
+    expect(open()).toEqual(TITLES);
+    const card = popover();
+    expect(card?.parentElement).toBe(view.contentEl);
+    expect(card?.getAttribute('role')).toBe('menu');
+    expect(card?.getAttribute('aria-label')).toBe('操作');
     expect(gear().getAttribute('aria-expanded')).toBe('true');
+    // The popover is the view's own element, not Obsidian's Menu.
+    expect(document.querySelector('.menu')).toBeNull();
+    const shown = items();
+    expect(shown).toHaveLength(3);
+    shown.forEach((item, index) => {
+      const [title, description, icon] = ITEMS[index] ?? ['', '', ''];
+      expect(item.tagName).toBe('BUTTON');
+      expect(item.getAttribute('type')).toBe('button');
+      expect(item.getAttribute('role')).toBe('menuitem');
+      expect(item.querySelector<HTMLElement>('.mappy-popover-icon')?.dataset.icon).toBe(icon);
+      expect(item.querySelector('.mappy-popover-title')?.textContent).toBe(title);
+      expect(item.querySelector('.mappy-popover-description')?.textContent).toBe(description);
+      expect(disabled(item), title).toBe(false);
+    });
+    expect(document.activeElement).toBe(shown[0]);
   });
 
-  it('closes on the button\'s next press instead of opening a second menu, and opens again on the press after that', async () => {
-    const { open, gear } = await mount();
-    await open();
-    expect(gear().getAttribute('aria-expanded')).toBe('true');
-    // Obsidian's menu hides on the window's mousedown outside it (registered once the menu has loaded), before the button's click.
-    await new Promise(resolve => setTimeout(resolve, 0));
-    gear().dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    expect(document.querySelector('.menu')).toBeNull();
-    gear().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(document.querySelector('.menu')).toBeNull();
+  it('sits under the gear with the right edges aligned, at most 320px wide, offsets taken from the pane so a popout window is the same', async () => {
+    const mounted = await mount();
+    // No layout yet (every rect is empty, as in a hidden pane): the stylesheet's maximum stays.
+    mounted.open();
+    expect((mounted.popover() as HTMLElement).style.maxWidth).toBe('');
+    mounted.gear().click();
+    mounted.place(1280);
+    mounted.open();
+    const card = mounted.popover() as HTMLElement;
+    // The gear's card is 16px in from the corner and pads the 32px button by 4px: the gear's bottom is at 52, its right edge 20px from the pane's.
+    expect(card.style.top).toBe('58px');
+    expect(card.style.right).toBe('20px');
+    expect(card.style.maxWidth).toBe('320px');
+    mounted.gear().click();
+    // A pane that does not start at the window's origin (a split, a popout): the same offsets.
+    mounted.place(900, 600, 380, 120);
+    mounted.open();
+    const moved = mounted.popover() as HTMLElement;
+    expect(moved.style.top).toBe('58px');
+    expect(moved.style.right).toBe('20px');
+    expect(moved.style.maxWidth).toBe('320px');
+  });
+
+  it('keeps its left edge inside a narrow pane: the full width at 400px, less below that, and follows a resize while open', async () => {
+    const mounted = await mount();
+    mounted.place(400);
+    mounted.open();
+    const card = mounted.popover() as HTMLElement;
+    // 400 − 20 (right) − 320 (width) leaves 60px on the left, more than the 16px margin.
+    expect(card.style.right).toBe('20px');
+    expect(card.style.maxWidth).toBe('320px');
+    // Narrower than the card and the margins: the card gives way, the margin stays.
+    mounted.place(300);
+    mounted.view.onResize();
+    expect(card.style.right).toBe('20px');
+    expect(card.style.maxWidth).toBe('264px');
+    expect(20 + 264 + 16).toBe(300);
+    mounted.place(1280);
+    mounted.view.onResize();
+    expect(card.style.maxWidth).toBe('320px');
+    expect(card.style.top).toBe('58px');
+  });
+
+  it('moves the focus with ↑↓, Home and End, wrapping, and cycles Tab and Shift+Tab inside the card', async () => {
+    const { open, items, popover, key } = await mount();
+    open();
+    const [first, second, third] = items() as [HTMLButtonElement, HTMLButtonElement, HTMLButtonElement];
+    const focused = (): Element | null => document.activeElement;
+    const pressed = (name: string, init?: KeyboardEventInit): KeyboardEvent => key(focused() ?? (popover() as HTMLElement), name, init);
+    expect(focused()).toBe(first);
+    expect(pressed('ArrowDown').defaultPrevented).toBe(true);
+    expect(focused()).toBe(second);
+    pressed('ArrowDown');
+    expect(focused()).toBe(third);
+    pressed('ArrowDown');
+    expect(focused()).toBe(first);
+    pressed('ArrowUp');
+    expect(focused()).toBe(third);
+    pressed('Home');
+    expect(focused()).toBe(first);
+    pressed('End');
+    expect(focused()).toBe(third);
+    expect(pressed('Tab').defaultPrevented).toBe(true);
+    expect(focused()).toBe(first);
+    pressed('Tab');
+    expect(focused()).toBe(second);
+    expect(pressed('Tab', { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(focused()).toBe(first);
+    pressed('Tab', { shiftKey: true });
+    expect(focused()).toBe(third);
+    // Still open, still one card.
+    expect(document.querySelectorAll('.mappy-popover')).toHaveLength(1);
+  });
+
+  it('runs the focused item on Enter and on Space, closing first so the item\'s own modal keeps the focus it takes', async () => {
+    const mounted = await mount();
+    const { open, items, popover, key, plugin, settle, canvas } = mounted;
+    open();
+    const second = items()[1] as HTMLButtonElement;
+    second.focus();
+    expect(key(second, 'Enter').defaultPrevented).toBe(true);
+    await settle();
+    expect(popover()).toBeNull();
+    expect(plugin.ran).toEqual(['call']);
+    expect(plugin.during).toEqual([{ popoverOpen: false, focused: canvas }]);
+    open();
+    (items()[2] as HTMLButtonElement).focus();
+    key(items()[2] as HTMLButtonElement, ' ');
+    await settle();
+    expect(popover()).toBeNull();
+    expect(plugin.ran).toEqual(['call', 'export']);
+    expect(plugin.views).toEqual([mounted.view, mounted.view]);
+  });
+
+  it('closes on Escape and puts the focus back on the canvas', async () => {
+    const { open, popover, key, gear, canvas } = await mount();
+    open();
+    const event = key(document.activeElement as HTMLElement, 'Escape');
+    expect(event.defaultPrevented).toBe(true);
+    expect(popover()).toBeNull();
     expect(gear().getAttribute('aria-expanded')).toBe('false');
-    // A keyboard activation is a click without a mousedown: it opens.
-    gear().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(document.querySelectorAll('.menu')).toHaveLength(1);
+    expect(document.activeElement).toBe(canvas);
+  });
+
+  it('closes on the gear\'s next press, the focus back on the canvas, and opens again on the press after that', async () => {
+    const { open, popover, gear, press, canvas } = await mount();
+    open();
+    // A pointer press on the gear is not an outside press: the click that follows is what toggles.
+    press(gear());
+    expect(popover()).not.toBeNull();
+    gear().click();
+    expect(popover()).toBeNull();
+    expect(gear().getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(canvas);
+    gear().click();
+    expect(document.querySelectorAll('.mappy-popover')).toHaveLength(1);
     expect(gear().getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('closes with the view', async () => {
+  it('closes on a press outside it: on the map the canvas takes the focus, outside the view the pressed pane does', async () => {
+    const { open, popover, press, canvas, node, view } = await mount();
+    open();
+    press(node('睡眠'));
+    expect(popover()).toBeNull();
+    expect(document.activeElement).toBe(canvas);
+    open();
+    press(view.containerEl.querySelector('.mappy-zoom button') as HTMLElement);
+    expect(popover()).toBeNull();
+    open();
+    const elsewhere = document.body.createDiv();
+    press(elsewhere);
+    expect(popover()).toBeNull();
+    expect(document.activeElement).not.toBe(canvas);
+    // The listener went with the card: a later press is nobody's business.
+    open();
+    const card = popover() as HTMLElement;
+    press(card);
+    expect(popover()).toBe(card);
+  });
+
+  it('closes with the view and releases its outside-press listener', async () => {
     const mounted = await mount();
-    await mounted.open();
+    mounted.open();
+    const removed = vi.spyOn(document, 'removeEventListener');
     await mounted.close();
-    expect(document.querySelector('.menu')).toBeNull();
+    expect(document.querySelector('.mappy-popover')).toBeNull();
+    expect(mounted.gear().getAttribute('aria-expanded')).toBe('false');
+    expect(removed.mock.calls.some(([type, , options]) => type === 'pointerdown' && options === true)).toBe(true);
   });
 
-  it('enables every entry on an open note with the selected root, except the Excalidraw item without Excalidraw, the list conversion of a list note and the empty history', async () => {
-    const { open, item } = await mount();
-    await open();
-    for (const title of ENTRIES.filter(entry => entry !== SEPARATOR)) {
-      const expected = title === 'Excalidraw の図面に挿入' || title === 'リスト形式に変更' || title === '元に戻す' || title === 'やり直す';
-      expect(disabled(item(title)), title).toBe(expected);
-    }
-  });
-
-  it('enables the Excalidraw item when the plugin reports Excalidraw, and runs the plugin\'s callbacks with the view', async () => {
+  it('stays in place while the map pans and changes layout under it', async () => {
     const mounted = await mount();
-    const { open, item, choose, plugin } = mounted;
-    plugin.excalidraw = true;
-    await open();
-    expect(disabled(item('Excalidraw の図面に挿入'))).toBe(false);
-    await choose('Excalidraw の図面に挿入');
-    expect(document.querySelector('.menu')).toBeNull();
-    await open();
-    await choose('マップを検索して呼び出す');
-    await open();
-    await choose('SVG／PNG に書き出し');
-    expect(plugin.ran).toEqual(['excalidraw', 'call', 'export']);
-    expect(plugin.views).toEqual([mounted.view, mounted.view, mounted.view]);
+    const { open, popover, canvas, view, settle } = mounted;
+    mounted.place(1280);
+    open();
+    const card = popover() as HTMLElement;
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaX: 40, deltaY: 30, bubbles: true, cancelable: true }));
+    // A keyboard activation of a layout button: a click without a press, so the card is not closed by it.
+    view.containerEl.querySelector<HTMLButtonElement>('.mappy-modes button[aria-label="タイムライン"]')?.click();
+    await settle();
+    expect(view.getState().layout).toBe('timeline');
+    expect(popover()).toBe(card);
+    expect(card.style.top).toBe('58px');
+    expect(card.style.right).toBe('20px');
+    expect(card.parentElement).toBe(view.contentEl);
   });
 
-  it('disables the node entries, the Markdown entries, the topic and the plugin\'s items while the view shows no note', async () => {
-    const { view, open, item, settle, plugin } = await mount();
-    // Excalidraw present: its item still needs a note, as the command's own check does (`snapshot()` is null without one).
-    plugin.excalidraw = true;
+  it('switches to Markdown with the same call the button made, once, with the card closed before it', async () => {
+    const { view, open, choose, popover, canvas } = await mount();
+    let during: { popoverOpen: boolean; focused: Element | null } | null = null;
+    const shown = vi.spyOn(view, 'showSource').mockImplementation(() => {
+      during = { popoverOpen: popover() !== null, focused: document.activeElement };
+      return Promise.resolve();
+    });
+    open();
+    await choose('Markdown に切り替え');
+    expect(shown.mock.calls).toEqual([[false]]);
+    expect(during).toEqual({ popoverOpen: false, focused: canvas });
+  });
+
+  it('runs the plugin\'s callbacks with the view, one per choice', async () => {
+    const mounted = await mount();
+    const { open, choose, plugin } = mounted;
+    open();
+    await choose('マップを検索して呼び出す');
+    open();
+    await choose('書き出す');
+    expect(plugin.ran).toEqual(['call', 'export']);
+    expect(plugin.views).toEqual([mounted.view, mounted.view]);
+  });
+
+  it('disables an item whose check fails, keeps it focusable and does nothing when it is chosen', async () => {
+    const { open, item, choose, plugin, popover, items } = await mount();
+    plugin.exportable = false;
+    open();
+    expect(disabled(item('書き出す'))).toBe(true);
+    expect(disabled(item('マップを検索して呼び出す'))).toBe(false);
+    expect(disabled(item('Markdown に切り替え'))).toBe(false);
+    (items()[2] as HTMLButtonElement).focus();
+    expect(document.activeElement).toBe(items()[2]);
+    await choose('書き出す');
+    expect(plugin.ran).toEqual([]);
+    expect(popover()).not.toBeNull();
+  });
+
+  it('disables all three items while the view shows no note', async () => {
+    const { view, open, items, settle, choose, plugin } = await mount();
+    const shown = vi.spyOn(view, 'showSource').mockResolvedValue();
     await view.setState({}, { history: false } satisfies ViewStateResult);
     await settle();
     expect(view.file).toBeNull();
-    expect(await open()).toEqual(ENTRIES);
-    for (const title of ENTRIES.filter(entry => entry !== SEPARATOR)) expect(disabled(item(title)), title).toBe(true);
-  });
-
-  it('on the virtual root of a note without a heading, disables the sibling, the title and the deletion the keys would refuse, and keeps the rest', async () => {
-    const { open, item, view } = await mount('Fixtures/list-only.md', '---\nmappy: true\n---\n- 項目 A\n  - 項目 A の子\n- 項目 B\n');
-    expect(view.containerEl.querySelector<HTMLElement>('.mappy-node.is-selected')?.dataset.nodeId).toBe('root');
-    await open();
-    for (const title of ['兄弟を追加（Enter）', 'テキストを編集（F2）', '削除（Delete）']) expect(disabled(item(title)), title).toBe(true);
-    for (const title of ['子を追加（Tab）', 'トピックを追加', '本文・リンクを編集', '画像を追加', '折りたたみ（Space）']) expect(disabled(item(title)), title).toBe(false);
-  });
-
-  it('folds the node selected when the entry is chosen, not the one selected when the menu opened', async () => {
-    const { open, choose, select, node, app, file, source } = await mount();
-    select('記録する');
-    await open();
-    // The selected node is removed outside while the menu is open: after the refresh its id is gone and the map selects the body root instead.
-    app.put(file.path, source().replace('- 記録する\n  - ふりかえる\n', ''));
-    await new Promise(resolve => setTimeout(resolve, 80));
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    expect(() => node('記録する')).toThrow();
-    expect(node('講座の本体').classList.contains('is-selected')).toBe(true);
-    expect(document.querySelectorAll('.menu')).toHaveLength(1);
-    await choose('折りたたみ（Space）');
-    expect(node('講座の本体').classList.contains('is-collapsed')).toBe(true);
-    expect(() => node('回復する')).toThrow();
-  });
-
-  it('switches to Markdown and opens the split with the same calls the buttons made', async () => {
-    const { view, open, choose } = await mount();
-    const shown = vi.spyOn(view, 'showSource').mockResolvedValue();
-    await open();
+    expect(open()).toEqual(TITLES);
+    for (const item of items()) expect(disabled(item), item.textContent ?? '').toBe(true);
+    expect(document.activeElement).toBe(items()[0]);
     await choose('Markdown に切り替え');
-    await open();
-    await choose('左に Markdown を開く');
-    expect(shown.mock.calls).toEqual([[false], [true]]);
+    expect(shown).not.toHaveBeenCalled();
+    expect(plugin.ran).toEqual([]);
   });
 
-  it('adds a sibling, a child and deletes with the same diff as Enter, Tab and Delete, one history step each', async () => {
-    const mounted = await mount();
-    const { select, open, choose, key, settle, editor, source, undo } = mounted;
-    const original = source();
-    /** Run one edit on the selected node, read the note, and take the edit back; a new node's editor is cancelled first. */
-    const edited = async (title: string, act: (target: HTMLElement) => Promise<void>): Promise<string> => {
-      await act(select('睡眠'));
-      const result = source();
-      expect(result, title).not.toBe(original);
-      if (title !== '削除（Delete）') {
-        // As with the key, the new empty node is named in place.
-        expect(editor()?.value, title).toBe('');
-        key(editor() as HTMLTextAreaElement, 'Escape');
-        await settle();
-      } else expect(editor(), title).toBeNull();
-      await undo();
-      expect(source(), title).toBe(original);
-      return result;
-    };
-    for (const [title, name] of [['兄弟を追加（Enter）', 'Enter'], ['子を追加（Tab）', 'Tab'], ['削除（Delete）', 'Delete']] as const) {
-      const byMenu = await edited(title, async () => { await open(); await choose(title); });
-      const byKey = await edited(title, async target => { key(target, name); await settle(); });
-      expect(byMenu, title).toBe(byKey);
-    }
-  });
-
-  it('adds a free topic at the end of the note without a stored position, named in place, and Undo removes it', async () => {
-    const { open, choose, source, editor, key, settle, undo, view } = await mount();
-    const original = source();
-    await open();
-    await choose('トピックを追加');
-    expect(source()).toBe(`${original}\n## \n`);
-    expect(editor()?.value).toBe('');
-    const input = editor() as HTMLTextAreaElement;
-    input.value = '新しい話題';
-    key(input, 'Enter');
-    await settle();
-    expect(source()).toBe(`${original}\n## 新しい話題\n`);
-    // No point was pressed, so no `mappy-topics` entry: the topic takes the default place.
-    expect(source().includes('新しい話題:')).toBe(false);
-    expect(view.snapshot()?.document?.nodes.some(node => node.title === '新しい話題')).toBe(true);
-    await undo();
-    expect(source()).toBe(`${original}\n## \n`);
-    await undo();
-    expect(source()).toBe(original);
-  });
-
-  it('edits the title, the body and folds the selected node as F2, the context menu and Space do', async () => {
-    const { open, choose, editor, key, settle, node, select, source } = await mount();
-    select('回復する');
-    await open();
-    await choose('テキストを編集（F2）');
-    expect(editor()?.value).toBe('回復する');
-    key(editor() as HTMLTextAreaElement, 'Escape');
-    await settle();
-    expect(editor()).toBeNull();
-    await open();
-    await choose('本文・リンクを編集');
-    const body = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
-    expect(body?.value).toBe('参考: [[heading-document#回復する|回復]]\n');
-    document.querySelector<HTMLElement>('.modal-close-button')?.click();
-    const before = source();
-    await open();
-    await choose('折りたたみ（Space）');
-    expect(node('回復する').classList.contains('is-collapsed')).toBe(true);
-    expect(() => node('睡眠')).toThrow();
-    expect(source()).toBe(before);
-    await open();
-    await choose('折りたたみ（Space）');
-    expect(node('回復する').classList.contains('is-collapsed')).toBe(false);
-    expect(node('睡眠')).toBeDefined();
-  });
-
-  it('opens the image chooser for the selected node', async () => {
-    const { view, open, choose, select } = await mount();
-    select('睡眠');
-    const clicked = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined);
-    await open();
-    await choose('画像を追加');
-    const input = view.containerEl.querySelector<HTMLInputElement>('input[type="file"].mappy-file-input');
-    expect(input?.getAttribute('accept')).toBe('image/*');
-    expect(clicked).toHaveBeenCalledTimes(1);
-  });
-
-  it('converts a headings note to the list form, enabled only there, with the same result as the command', async () => {
-    const { open, item, choose, source, view } = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
-    await open();
-    expect(disabled(item('リスト形式に変更'))).toBe(false);
-    await choose('リスト形式に変更');
-    expect(source()).toBe('---\nmappy: true\n---\n## 講座\n\n- 第 1 章\n\n  本文。\n\n- 第 2 章\n');
-    expect(Notice.log).toContain('H2 とリストの形式に変更しました。元に戻す操作で復元できます。');
-    expect(view.snapshot()?.document?.format).toBe('list');
-    await open();
-    expect(disabled(item('リスト形式に変更'))).toBe(true);
-  });
-
-  it('undoes and redoes through the shared history entries, enabled as the history allows', async () => {
-    const { open, item, choose, select, source, editor, key, settle } = await mount();
-    const original = source();
-    await open();
-    expect(disabled(item('元に戻す'))).toBe(true);
-    expect(disabled(item('やり直す'))).toBe(true);
-    key(select('睡眠'), 'Delete');
-    await settle();
-    expect(editor()).toBeNull();
-    const deleted = source();
-    expect(deleted).not.toBe(original);
-    await open();
-    expect(disabled(item('元に戻す'))).toBe(false);
-    expect(disabled(item('やり直す'))).toBe(true);
-    await choose('元に戻す');
-    expect(source()).toBe(original);
-    await open();
-    expect(disabled(item('やり直す'))).toBe(false);
-    await choose('やり直す');
-    expect(source()).toBe(deleted);
+  it('leaves the context menu as it was: the node items, the moves, the deletion and the history, and the list conversion on a headings note', async () => {
+    const { node, canvas } = await mount();
+    expect(contextMenuItems(node('睡眠'))).toEqual(NODE_CONTEXT_MENU);
+    expect(contextMenuItems(node('参考資料'))).toEqual(NODE_CONTEXT_MENU.map(title => title === '枝を削除' ? 'トピックを削除' : title));
+    expect(contextMenuItems(canvas)).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
+    const headings = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
+    expect(contextMenuItems(headings.node('第 1 章'))).toEqual([...NODE_CONTEXT_MENU, 'リスト形式に変更']);
   });
 });

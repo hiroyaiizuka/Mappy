@@ -52,19 +52,26 @@ const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
 };
 
 /**
- * An item the plugin adds to the view's 操作 menu (§5 M3): a command whose route (a modal, another
- * plugin) lives outside the view. `check` is asked when the menu opens and decides whether the item
- * is enabled; `run` is the command's own callback, so the menu and the palette do the same thing.
+ * An item the plugin adds to the view's 操作 popover (§5 M3): a command whose route (a modal, another
+ * plugin) lives outside the view. `description` is the one line under the title. `check` is asked when
+ * the popover opens and decides whether the item is enabled; `run` is the command's own callback, so
+ * the popover and the palette do the same thing.
  */
 export interface MapMenuAction {
   title: string;
+  description: string;
   icon: string;
   check: (view: MindmapView) => boolean;
   run: (view: MindmapView) => void;
 }
 
-/** An entry of the view's menus: the title (without a key), the icon and what choosing it runs. */
+/** An entry of the context menu: the title, the icon and what choosing it runs. */
 type MenuEntry = readonly [title: string, icon: string, run: () => void];
+
+/** The 操作 popover's card (§5 M3): its widest, the gap under the gear, and the least the pane keeps to its left. */
+const POPOVER_MAX_WIDTH = 320;
+const POPOVER_GAP = 6;
+const POPOVER_MARGIN = 16;
 
 export class MindmapView extends ItemView {
   file: TFile | null = null;
@@ -124,15 +131,15 @@ export class MindmapView extends ItemView {
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
   private bodyModal: EditModal | undefined;
-  /** The 操作 menu while it is open (§5 M3), so the button's next press closes it instead of opening another. */
-  private actionMenu: Menu | null = null;
+  /** The 操作 popover while it is open (§5 M3): its card under the gear, its items in order, and the release of the press listener outside it. */
+  private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; items: HTMLButtonElement[]; release: () => void } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
 
   constructor(
     leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter,
-    /** Items of the 操作 menu whose routes live in the plugin (§5 M3); shown between the node items and リスト形式に変更. */
+    /** Items of the 操作 popover whose routes live in the plugin (§5 M3); shown after Markdown に切り替え, in this order. */
     private readonly menuActions: readonly MapMenuAction[] = [],
   ) {
     super(leaf);
@@ -273,19 +280,16 @@ export class MindmapView extends ItemView {
       });
       this.modeButtons.set(mode, button);
     }
-    // The top-right corner holds one control (§5 M3): the 操作 menu, where the Markdown switch and the split
-    // moved to, next to the node operations the keys, the context menu and the command palette offer elsewhere.
+    // The top-right corner holds one control (§5 M3): the gear, which opens the view's own popover of three items;
+    // the node operations stay on the keys, the context menu and the command palette. The popover's outside-press
+    // listener leaves a press on the gear alone, so the click here toggles it.
     const actions = this.contentEl.createDiv({ cls: "mappy-actions mappy-floating", attr: { "aria-label": "操作" } });
-    // Obsidian hides an open menu on the mousedown outside it, which comes before this button's click; the press
-    // is remembered here so that click closes the menu (a no-op once hidden) instead of opening it again.
-    let closing = false;
-    const actionsButton = this.button(actions, "操作", "settings", () => {
-      if (closing) { closing = false; this.actionMenu?.hide(); return; }
-      this.openActionMenu(actionsButton);
+    const gear = this.button(actions, "操作", "settings", () => {
+      if (this.popover) this.closePopover(true);
+      else this.openPopover(gear);
     });
-    actionsButton.setAttribute("aria-haspopup", "menu");
-    actionsButton.setAttribute("aria-expanded", "false");
-    actionsButton.addEventListener("mousedown", () => { closing = this.actionMenu !== null; });
+    gear.setAttribute("aria-haspopup", "menu");
+    gear.setAttribute("aria-expanded", "false");
     this.canvas = this.contentEl.createDiv({ cls: "mappy-canvas", attr: {
       tabindex: "0", role: "tree", "aria-label": "マインドマップ。Enter で兄弟、Tab で子、F2 で編集。",
     } });
@@ -391,14 +395,18 @@ export class MindmapView extends ItemView {
   onClose(): Promise<void> {
     this.closed = true;
     this.inlineEditor?.dispose(); this.inlineEditor = undefined;
-    this.actionMenu?.hide();
+    this.closePopover(false);
     this.epoch += 1;
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
     if (this.layoutFrame !== undefined) this.contentEl.win.cancelAnimationFrame(this.layoutFrame);
     return Promise.resolve();
   }
 
-  onResize(): void { if (this.ready) this.scheduleLayout(); }
+  onResize(): void {
+    if (this.ready) this.scheduleLayout();
+    // The gear keeps its corner; the card under it follows, and shrinks if the pane got too narrow for it.
+    this.placePopover();
+  }
 
   private button(parent: HTMLElement, label: string, icon: string | undefined, action: () => void): HTMLButtonElement {
     const button = parent.createEl("button", { cls: "mappy-button", attr: { "aria-label": label, title: label, type: "button" } });
@@ -412,14 +420,14 @@ export class MindmapView extends ItemView {
     void action().catch(error => { new Notice(error instanceof Error ? error.message : "操作を完了できませんでした。"); });
   }
 
-  /** A menu entry both menus offer: the title without its key, the icon and the method it runs. */
-  private menuItem(menu: Menu, [title, icon, run]: MenuEntry, key?: string, enabled = true): void {
-    menu.addItem(item => item.setTitle(key ? `${title}（${key}）` : title).setIcon(icon).setDisabled(!enabled).onClick(run));
+  /** A context-menu entry: the title, the icon and the method it runs. */
+  private menuItem(menu: Menu, [title, icon, run]: MenuEntry): void {
+    menu.addItem(item => item.setTitle(title).setIcon(icon).onClick(run));
   }
 
   /**
-   * The node operations the context menu and the 操作 menu share, each running the method its key
-   * runs; the node is read when the item is chosen, as the keys do, not when the menu opened.
+   * The node operations of the context menu, each running the method its key runs; the node is read
+   * when the item is chosen, as the keys do, not when the menu opened.
    */
   private nodeEntries(): Record<"edit" | "body" | "image" | "child" | "sibling", MenuEntry> {
     return {
@@ -432,51 +440,106 @@ export class MindmapView extends ItemView {
   }
 
   /**
-   * The 操作 menu (§5 M3), opened under the top-right button: the Markdown switch and the split, then
-   * the node operations with the key each answers to, the free-topic addition, the plugin's routes and
-   * the list conversion, then the history. Every item runs the same method as its key, its context-menu
-   * entry or its command, so the diff and the history are the same. Items that act on a node are
-   * disabled while nothing is selected (a map without a note); on the virtual root of a note without a
-   * heading, which the keys refuse with a notice, the sibling, the title and the deletion are disabled
-   * too. The plugin's items are enabled on their own `check`.
+   * The 操作 popover (§5 M3), opened under the gear: a card of three items — Markdown に切り替え, then the
+   * plugin's routes (the map search, the export) in the order `src/main.ts` passes them — each an icon, a
+   * title and one line of description. Every other operation stays on the keys, the context menu and the
+   * command palette. The card is the view's own element inside `.mappy-view`, placed by `placePopover`, so
+   * it follows the pane (a popout window, a narrow one) and never leaves it, where Obsidian's `Menu` at the
+   * window's right edge did. Whether an item is enabled is judged as the card opens, as the menu did: the
+   * Markdown switch needs the note and its document, the plugin's items answer their own `check`. A
+   * disabled item stays in the tab order and does nothing, so it is still found and read.
+   *
+   * Keys, on the card: the first item takes the focus; ↑↓ (Home／End) move, Tab and Shift+Tab cycle,
+   * Enter／Space run the focused item, Escape closes. A press outside the card and the gear, the gear's
+   * next press, choosing an item and the view's closing close it too. Closing puts the focus back on the
+   * canvas, except on a press outside the view, whose target takes the focus itself.
    */
-  private openActionMenu(anchor: HTMLElement): void {
-    const menu = new Menu();
-    const node = this.selected();
+  private openPopover(anchor: HTMLButtonElement): void {
+    if (this.popover) return;
+    const doc = this.contentEl.doc;
+    const element = this.contentEl.createDiv({ cls: "mappy-popover", attr: { role: "menu", "aria-label": "操作" } });
+    const items: HTMLButtonElement[] = [];
+    const add = (title: string, description: string, icon: string, enabled: boolean, run: () => void): void => {
+      const item = element.createEl("button", { cls: "mappy-popover-item", attr: { type: "button", role: "menuitem", tabindex: "-1" } });
+      setIcon(item.createSpan({ cls: "mappy-popover-icon" }), icon);
+      const text = item.createSpan({ cls: "mappy-popover-text" });
+      text.createSpan({ cls: "mappy-popover-title", text: title });
+      text.createSpan({ cls: "mappy-popover-description", text: description });
+      if (!enabled) { item.addClass("is-disabled"); item.setAttribute("aria-disabled", "true"); }
+      item.addEventListener("click", () => {
+        // Closing takes the card down; a second activation from the same press (Enter's native click) finds it gone and does nothing.
+        if (!enabled || this.popover?.element !== element) return;
+        this.closePopover(true);
+        run();
+      });
+      items.push(item);
+    };
     const ready = this.file !== null && this.document !== undefined;
-    const onNode = node !== undefined;
-    const onItem = onNode && node.kind !== "root";
-    const entries = this.nodeEntries();
-    const add = (title: string, icon: string, enabled: boolean, run: () => void): void => { this.menuItem(menu, [title, icon, run], undefined, enabled); };
-    add("Markdown に切り替え", "file-text", ready, () => { this.run(() => this.showSource(false)); });
-    add("左に Markdown を開く", "panel-left", ready, () => { this.run(() => this.showSource(true)); });
-    menu.addSeparator();
-    this.menuItem(menu, entries.sibling, "Enter", onItem);
-    this.menuItem(menu, entries.child, "Tab", onNode);
-    // Without a pressed point the new topic takes the default place of a topic with no stored position (§5 M7).
-    add("トピックを追加", "square-plus", ready, () => { this.run(() => this.addTopic()); });
-    menu.addSeparator();
-    this.menuItem(menu, entries.edit, "F2", onItem);
-    this.menuItem(menu, entries.body, undefined, onNode);
-    this.menuItem(menu, entries.image, undefined, onNode);
-    add("折りたたみ（Space）", "chevrons-down-up", onNode, () => { const current = this.selected(); if (current) this.fold(current.id); });
-    add("削除（Delete）", "trash-2", onItem, () => { this.executeSelected("delete"); });
-    menu.addSeparator();
-    for (const action of this.menuActions) add(action.title, action.icon, action.check(this), () => { action.run(this); });
-    add("リスト形式に変更", "list-tree", this.document?.format === "headings", () => { this.run(() => this.convertToList()); });
-    menu.addSeparator();
-    this.historyItems(menu);
-    this.actionMenu = menu;
-    anchor.setAttribute("aria-expanded", "true");
-    menu.onHide(() => {
-      if (this.actionMenu === menu) this.actionMenu = null;
-      anchor.setAttribute("aria-expanded", "false");
+    add("Markdown に切り替え", "同じタブで本文を開く", "file-text", ready, () => { this.run(() => this.showSource(false)); });
+    for (const action of this.menuActions) add(action.title, action.description, action.icon, action.check(this), () => { action.run(this); });
+    element.addEventListener("keydown", event => {
+      const focused = items.findIndex(item => item === doc.activeElement);
+      const move = (to: number): void => { items[(to + items.length) % items.length]?.focus(); };
+      const previous = focused < 0 ? items.length - 1 : focused - 1;
+      switch (event.key) {
+        case "ArrowDown": move(focused + 1); break;
+        case "ArrowUp": move(previous); break;
+        case "Home": move(0); break;
+        case "End": move(items.length - 1); break;
+        case "Tab": move(event.shiftKey ? previous : focused + 1); break;
+        case "Enter": case " ": items[focused]?.click(); break;
+        case "Escape": this.closePopover(true); break;
+        default: return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
     });
-    // Below the button: Obsidian's own menu right-aligns with it (`left` with the button's width), a native
-    // menu (macOS by default) takes only `x`/`y` and opens from the button's left-bottom corner, the OS
-    // keeping it on screen. The view's own document, so a popout window gets the menu.
-    const rect = anchor.getBoundingClientRect();
-    menu.showAtPosition({ x: rect.left, y: rect.bottom, width: rect.width, overlap: true, left: true }, this.contentEl.doc);
+    // A press on the card's own padding would move the focus to the body and take the keys with it.
+    element.addEventListener("mousedown", event => {
+      const target = event.targetNode;
+      if (!target?.instanceOf(Element) || !target.closest("button")) event.preventDefault();
+    });
+    // The press outside, at the capture phase so no pane can swallow it; a press on the gear is left to its click, which toggles.
+    const outside = (event: PointerEvent): void => {
+      const target = event.targetNode;
+      if (!target || element.contains(target) || anchor.contains(target)) return;
+      this.closePopover(this.contentEl.contains(target));
+    };
+    doc.addEventListener("pointerdown", outside, true);
+    this.popover = { element, anchor, items, release: () => { doc.removeEventListener("pointerdown", outside, true); } };
+    anchor.setAttribute("aria-expanded", "true");
+    this.placePopover();
+    items[0]?.focus();
+  }
+
+  /**
+   * Under the gear, the right edges aligned: offsets from the pane's top and right edges, since the card
+   * and the gear are both positioned in `.mappy-view`, so the card sits where the gear is at any pane size.
+   * The width is the content's, at most POPOVER_MAX_WIDTH and less in a pane too narrow for that plus the
+   * margin on the left, so the card's left edge never leaves the pane (a 400px pane still fits the full width).
+   * A pane without a layout yet (no width) leaves the stylesheet's maximum in place until the next resize.
+   */
+  private placePopover(): void {
+    if (!this.popover) return;
+    const { element, anchor } = this.popover;
+    const pane = this.contentEl.getBoundingClientRect();
+    const gear = anchor.getBoundingClientRect();
+    const right = Math.max(0, pane.right - gear.right);
+    const available = pane.width - right - POPOVER_MARGIN;
+    element.style.top = `${gear.bottom - pane.top + POPOVER_GAP}px`;
+    element.style.right = `${right}px`;
+    element.style.maxWidth = available > 0 ? `${Math.min(POPOVER_MAX_WIDTH, available)}px` : "";
+  }
+
+  /** Take the card down and, unless the focus is going elsewhere anyway, give it back to the canvas. */
+  private closePopover(focus: boolean): void {
+    const popover = this.popover;
+    if (!popover) return;
+    this.popover = null;
+    popover.release();
+    popover.element.remove();
+    popover.anchor.setAttribute("aria-expanded", "false");
+    if (focus) this.canvas.focus();
   }
 
   private historyItems(menu: Menu): void {
@@ -811,8 +874,9 @@ export class MindmapView extends ItemView {
    * A new empty top-level section at the end of the note, edited in place where the canvas was
    * pressed (§5 M7). The position is stored by the edit that names it, so the title and the
    * `mappy-topics` entry are one step of the history; Escape keeps the section, Undo removes it.
-   * Without a point (the 操作 menu) no position is kept or stored: the topic takes the default
-   * place of a topic with no `mappy-topics` entry until it is dragged.
+   * Without a point no position is kept or stored: the topic takes the default place of a topic with
+   * no `mappy-topics` entry until it is dragged (the 操作 menu of LEV-77 added topics this way; no caller
+   * does now, the popover of LEV-81 having no such item).
    */
   private async addTopic(point?: { x: number; y: number }): Promise<void> {
     const document = this.document;
