@@ -116,6 +116,26 @@ function trimRange(source: string, from: number, to: number): [number, number] {
   return [from, to];
 }
 
+function groupByTitle(nodes: readonly MindNode[]): Map<string, MindNode[]> {
+  const byTitle = new Map<string, MindNode[]>();
+  for (const node of nodes) {
+    const matches = byTitle.get(node.title) ?? [];
+    matches.push(node);
+    byTitle.set(node.title, matches);
+  }
+  return byTitle;
+}
+
+/** The top-level heading sections in source order (the body root and the free topics, §5 M7): a heading no earlier heading is shallower than. */
+function topLevelSections(nodes: readonly MindNode[]): MindNode[] {
+  let shallowest = Number.POSITIVE_INFINITY;
+  return nodes.filter((node) => {
+    if (node.kind === 'list' || node.level > shallowest) return false;
+    shallowest = node.level;
+    return true;
+  });
+}
+
 function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source: string): void {
   if (previous?.source === source && previous.nodes.length === nodes.length
     && nodes.every((node, index) => previous.nodes[index]?.kind === node.kind)) {
@@ -123,15 +143,8 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
     return;
   }
   if (!previous) return;
-  const oldTitles = new Map<string, MindNode[]>();
-  const newTitles = new Map<string, MindNode[]>();
-  for (const [collection, byTitle] of [[previous.nodes, oldTitles], [nodes, newTitles]] as const) {
-    for (const node of collection) {
-      const matches = byTitle.get(node.title) ?? [];
-      matches.push(node);
-      byTitle.set(node.title, matches);
-    }
-  }
+  const oldTitles = groupByTitle(previous.nodes);
+  const newTitles = groupByTitle(nodes);
   for (const node of nodes) {
     const oldMatches = oldTitles.get(node.title);
     if (oldMatches?.length === 1 && newTitles.get(node.title)?.length === 1) {
@@ -139,7 +152,19 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
       if (old) node.id = old.id;
     }
   }
-  // Do not guess identities for duplicate titles after an external change.
+  // Top-level sections sharing a heading correspond by order while their count holds: their `mappy-topics`
+  // keys are ordinal too (§7), so a save that moves one keeps the map's selection on it. Other duplicate
+  // titles are not guessed after a change.
+  const oldSections = groupByTitle(topLevelSections(previous.nodes));
+  const used = new Set(nodes.map((node) => node.id));
+  for (const [title, sections] of groupByTitle(topLevelSections(nodes))) {
+    const olds = oldSections.get(title);
+    if (!olds || olds.length !== sections.length) continue;
+    sections.forEach((section, index) => {
+      const old = olds[index];
+      if (old && !used.has(old.id)) { section.id = old.id; used.add(old.id); }
+    });
+  }
   // A single title-only edit can be matched by its unchanged source surrounds.
   let prefix = 0;
   while (prefix < source.length && prefix < previous.source.length && source[prefix] === previous.source[prefix]) prefix++;

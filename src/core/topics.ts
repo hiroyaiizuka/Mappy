@@ -1,11 +1,12 @@
 import type { TextEdit } from './commands';
-import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
+import { frontmatterLayout, projectMap, type MindDocument } from './markdown';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
 
 /**
- * Frontmatter key holding free-topic positions as `<heading text>: { <layout>: [x, y] }`.
- * The heading text is the identity (§7 of the product plan); Mappy writes the flow
- * style and also reads the block style Obsidian's Properties editor rewrites it into.
+ * Frontmatter key holding free-topic positions as `<key>: { <layout>: [x, y] }`, the key being the
+ * heading text (§7 of the product plan) — `<heading> (2)`, `<heading> (3)`… for the second and later
+ * topics sharing one, see `topicKeys`. Mappy writes the flow style and also reads the block style
+ * Obsidian's Properties editor rewrites it into.
  */
 export const TOPICS_KEY = 'mappy-topics';
 const LAYOUT_PATTERN = /^[a-z][a-z0-9-]*$/u;
@@ -15,8 +16,29 @@ const BOM = 0xfeff;
 export interface TopicPosition { x: number; y: number }
 /** Positions by layout name; a layout without an entry uses the default placement. */
 export type TopicPositions = Record<string, TopicPosition>;
-/** Positions by heading text, in frontmatter order. */
+/** Positions by key (`topicKeys`), in frontmatter order. */
 export type TopicPositionMap = Map<string, TopicPositions>;
+
+/**
+ * The `mappy-topics` key of every free topic, by node id: the heading text, and for the second and
+ * later topics with the same heading `<heading> (2)`, `<heading> (3)`… in source order, a number whose
+ * text is itself a heading of the note being skipped. The one derivation both reading (the view, the
+ * embed) and writing (moves, renames, removals) go through, so topics sharing a heading keep positions
+ * of their own; the first of a heading keeps the plain key, so notes written before the ordinals read as before.
+ */
+export function topicKeys(doc: MindDocument): Map<string, string> {
+  const { topics } = projectMap(doc);
+  const titles = new Set(topics.map((topic) => topic.title));
+  const taken = new Set<string>();
+  const keys = new Map<string, string>();
+  for (const topic of topics) {
+    let key = topic.title;
+    for (let ordinal = 2; taken.has(key) || (key !== topic.title && titles.has(key)); ordinal++) key = `${topic.title} (${ordinal})`;
+    taken.add(key);
+    keys.set(topic.id, key);
+  }
+  return keys;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -98,68 +120,65 @@ export function planTopicPositions(doc: MindDocument, positions: TopicPositionMa
   return { from: bom, to: bom, text: `---${doc.eol}${text}---${doc.eol}` };
 }
 
-/** Store one layout position for a topic heading; the note body never changes. */
-export function planTopicMove(doc: MindDocument, title: string, layout: string, position: TopicPosition): TextEdit | null {
+function assertLayout(layout: string): void {
   if (!LAYOUT_PATTERN.test(layout)) throw new Error('レイアウト名が不正です。');
+}
+
+function assertPosition(position: TopicPosition): void {
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('トピックの位置が不正です。');
-  if (/[\r\n]/u.test(title)) throw new Error('トピックの見出しは 1 行にしてください。');
+}
+
+/** Store one layout position under a key (`topicKeys` of the note the topic is in); the note body never changes. */
+export function planTopicMove(doc: MindDocument, key: string, layout: string, position: TopicPosition): TextEdit | null {
+  assertLayout(layout);
+  assertPosition(position);
+  if (/[\r\n]/u.test(key)) throw new Error('トピックの見出しは 1 行にしてください。');
   const positions = readTopicPositions(doc.source);
-  positions.set(title, { ...(positions.get(title) ?? {}), [layout]: position });
+  positions.set(key, { ...(positions.get(key) ?? {}), [layout]: position });
   return planTopicPositions(doc, positions);
 }
 
 /**
- * Store one layout's position for several headings at once (the body root dragged against its
- * topics: every topic keeps its place on screen, so every offset changes). One edit, or null.
+ * Store one layout's position for topics given by node id (one dragged, or every one when the body root
+ * is dragged against them: each keeps its place on screen, so every offset changes). One edit, or null.
  */
 export function planTopicMoves(doc: MindDocument, layout: string, moves: ReadonlyMap<string, TopicPosition>): TextEdit | null {
-  if (!LAYOUT_PATTERN.test(layout)) throw new Error('レイアウト名が不正です。');
+  assertLayout(layout);
+  const keys = topicKeys(doc);
   const positions = readTopicPositions(doc.source);
-  for (const [title, position] of moves) {
-    if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('トピックの位置が不正です。');
-    if (/[\r\n]/u.test(title)) throw new Error('トピックの見出しは 1 行にしてください。');
-    positions.set(title, { ...(positions.get(title) ?? {}), [layout]: position });
+  for (const [id, position] of moves) {
+    assertPosition(position);
+    const key = keys.get(id);
+    if (key === undefined) throw new Error('対象のトピックが変更されています。再選択してください。');
+    positions.set(key, { ...(positions.get(key) ?? {}), [layout]: position });
   }
   return planTopicPositions(doc, positions);
 }
 
-/** One layout's position for a heading, as the rename command receives it from the view. */
+/** One layout's position for a topic, as the rename and detach commands receive it from the view. */
 export interface TopicPlacement { layout: string; x: number; y: number }
 
 /**
- * Carry a free topic's positions over to its new heading text, in place, so a rename is
- * one edit set. Another current topic that already owns the new text keeps its entry.
- * `place` also stores one layout position under the new text: a topic added on the map
- * is placed where it was pressed by the same edit set that names it.
+ * Carry entries along with their topics through an edit that changes keys (§7): `rekeys` maps the key of
+ * each topic before the edit to its key after it (a rename; the second of a heading becoming the first
+ * when the first leaves; a reorder), `dropped` lists the keys of topics that leave (a deletion, a join),
+ * and `placed` stores one layout position under a key in the same edit (a topic named or detached on
+ * the map, where it was pressed). Entries stay in frontmatter order; one whose key a topic takes over is
+ * an orphan (keys are unique among current topics) and is replaced. One edit, or null when nothing changes.
  */
-export function planTopicRename(doc: MindDocument, from: string, to: string, place?: TopicPlacement): TextEdit | null {
-  const { topics } = projectMap(doc);
-  if (!topics.some((topic) => topic.title === from)) return null;
-  if (place && !LAYOUT_PATTERN.test(place.layout)) throw new Error('レイアウト名が不正です。');
-  if (place && (!Number.isFinite(place.x) || !Number.isFinite(place.y))) throw new Error('トピックの位置が不正です。');
+export function planTopicRekey(
+  doc: MindDocument, rekeys: ReadonlyMap<string, string>, dropped: ReadonlySet<string>, placed?: TopicPlacement & { key: string },
+): TextEdit | null {
+  if (placed) { assertLayout(placed.layout); assertPosition(placed); }
   const positions = readTopicPositions(doc.source);
-  if (!positions.has(from) && !place) return null;
-  const taken = from !== to && positions.has(to) && topics.some((topic) => topic.title === to);
-  const renamed: TopicPositionMap = new Map();
-  for (const [title, layouts] of positions) {
-    if (title === from) { if (!taken) renamed.set(to, layouts); continue; }
-    if (title === to && !taken) continue;
-    renamed.set(title, layouts);
+  const taken = new Set(Array.from(rekeys).filter(([from, to]) => from !== to).map(([, to]) => to));
+  const result: TopicPositionMap = new Map();
+  for (const [key, layouts] of positions) {
+    if (dropped.has(key)) continue;
+    const to = rekeys.get(key) ?? key;
+    if (to === key && taken.has(key)) continue;
+    result.set(to, layouts);
   }
-  if (place && !taken) renamed.set(to, { ...(renamed.get(to) ?? {}), [place.layout]: { x: place.x, y: place.y } });
-  return planTopicPositions(doc, renamed);
-}
-
-/**
- * Drop the entry of a topic that is being deleted, so its section and its position leave in
- * one edit set and return together on Undo. Another current topic with the same heading keeps
- * the entry; entries of headings that no longer exist stay as they are read.
- */
-export function planTopicRemoval(doc: MindDocument, node: MindNode): TextEdit | null {
-  const { topics } = projectMap(doc);
-  if (!topics.some((topic) => topic.id === node.id)) return null;
-  if (topics.some((topic) => topic.id !== node.id && topic.title === node.title)) return null;
-  const positions = readTopicPositions(doc.source);
-  if (!positions.delete(node.title)) return null;
-  return planTopicPositions(doc, positions);
+  if (placed) result.set(placed.key, { ...(result.get(placed.key) ?? {}), [placed.layout]: { x: placed.x, y: placed.y } });
+  return planTopicPositions(doc, result);
 }

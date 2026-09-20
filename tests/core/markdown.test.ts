@@ -271,13 +271,25 @@ describe('source-preserving Markdown projection', () => {
     expect(renamed.nodes[0]?.id).toBe(moved.nodes[0]?.id);
   });
 
-  it('does not guess duplicate heading identities after a change', () => {
+  it('keeps same-titled top-level sections by order while their count holds, and guesses nothing once it changes', () => {
     const source = '# Same\nOne\n\n# Same\nTwo';
     const first = parseMarkdown(source, 'Note');
     const unchanged = parseMarkdown(source, 'Note', first);
     expect(unchanged.nodes.map((node) => node.id)).toEqual(first.nodes.map((node) => node.id));
+    // The body root and the free topics with one heading are told apart by order, as their `mappy-topics` keys are (§7).
     const changed = parseMarkdown(`${source}\n`, 'Note', first);
-    expect(changed.nodes.every((node) => !first.nodes.some((old) => old.id === node.id))).toBe(true);
-    expect(new Set(changed.nodes.map((node) => node.id)).size).toBe(2);
+    expect(changed.nodes.map((node) => node.id)).toEqual(first.nodes.map((node) => node.id));
+    const grown = parseMarkdown(`${source}\n\n# Same\nThree\n`, 'Note', first);
+    expect(grown.nodes.every((node) => !first.nodes.some((old) => old.id === node.id))).toBe(true);
+    expect(new Set(grown.nodes.map((node) => node.id)).size).toBe(3);
+    // A nested heading with the same text is not a top-level section: it is not matched, the sections still are.
+    const nested = parseMarkdown('# Same\nOne\n\n## Same\n\n# Same\nTwo\n', 'Note', first);
+    expect([nested.nodes[0]?.id, nested.nodes[2]?.id]).toEqual(first.nodes.map((node) => node.id));
+    expect(first.nodes.some((old) => old.id === nested.nodes[1]?.id)).toBe(false);
+    // List documents: the H2 sections by order, list items sharing the text never guessed.
+    const list = parseMarkdown('## Same\n- Same\n\n## Same\n- Same\n', 'Note');
+    const listChanged = parseMarkdown('## Same\n- Same\n\n## Same\n- Same\n\n', 'Note', list);
+    expect(listChanged.nodes.filter((node) => node.kind !== 'list').map((node) => node.id)).toEqual(list.nodes.filter((node) => node.kind !== 'list').map((node) => node.id));
+    expect(listChanged.nodes.filter((node) => node.kind === 'list').every((node) => !list.nodes.some((old) => old.id === node.id))).toBe(true);
   });
 });

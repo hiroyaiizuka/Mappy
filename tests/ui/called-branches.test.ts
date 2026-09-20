@@ -629,6 +629,34 @@ describe('the host\'s own state stays keyed to the host', () => {
     expect(app.content(app.vault.getAbstractFileByPath('Map.md') as never)).toBe(MAP);
   });
 
+  it('tells two topics that call the same map apart: dragging the second stores `"![[Map]] (2)"`, the first stays put, both keep their ids (LEV-86)', async () => {
+    const host = ['---', 'mappy: true', '---', '## 本体', '- a', '', '## ![[Map]]', '', '## ![[Map]]', ''].join('\n');
+    const { node, canvas, settle, source, view, nodes } = await mount({ [HOST_PATH]: host, 'Map.md': MAP });
+    const first = node('講座', 0);
+    const second = node('講座', 1);
+    expect(first.hasClass('is-topic') && second.hasClass('is-topic')).toBe(true);
+    const ids = [first.dataset.nodeId, second.dataset.nodeId];
+    const placed = (): Map<string, { x: number; y: number }> => {
+      const layout = (view as unknown as { layout?: { nodes: { id: string; x: number; y: number }[] } }).layout;
+      return new Map((layout?.nodes ?? []).map(item => [item.id, { x: item.x, y: item.y }]));
+    };
+    const before = placed();
+    pointer('pointerdown', second, 300, 300);
+    pointer('pointermove', canvas, 306, 300);
+    pointer('pointermove', canvas, 380, 340);
+    pointer('pointerup', canvas, 380, 340);
+    await settle();
+    // Only the second topic's key is written, as the heading text with its ordinal, quoted for the `[`.
+    expect(source()).toMatch(/^---\nmappy: true\nmappy-topics:\n {2}"!\[\[Map\]\] \(2\)": \{ mindmap: \[-?\d+, -?\d+\] \}\n---\n## 本体/u);
+    expect(source()).not.toMatch(/\n {2}"!\[\[Map\]\]": /u);
+    const after = placed();
+    expect(after.get(ids[0] ?? '')).toEqual(before.get(ids[0] ?? ''));
+    expect(after.get(ids[1] ?? '')).not.toEqual(before.get(ids[1] ?? ''));
+    expect([node('講座', 0).dataset.nodeId, node('講座', 1).dataset.nodeId]).toEqual(ids);
+    expect(nodes().get(ids[1] ?? '')?.hasClass('is-selected')).toBe(true);
+    expect(readTopicPositions(source()).get('![[Map]] (2)')?.mindmap).toBeDefined();
+  });
+
   it('joins a topic whose heading calls a map to a node as the item `- ![[Map]]`, still the calling root, and undo makes it a topic again (§5 M7 合流)', async () => {
     const host = ['---', 'mappy: true', 'mappy-topics:', '  "![[Map]]": { mindmap: [300, 40] }', '---', '## 本体', '- a', '  - a1', '', '## ![[Map]]', ''].join('\n');
     const { app, node, canvas, settle, source, hit, view, titles } = await mount({ [HOST_PATH]: host, 'Map.md': MAP });

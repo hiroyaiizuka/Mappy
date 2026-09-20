@@ -219,8 +219,9 @@ export class MapEmbed extends MarkdownRenderChild {
     this.layoutFrame = this.frame.win.requestAnimationFrame(() => {
       this.layoutFrame = undefined;
       const trees = this.trees;
-      if (!trees) return;
-      const layout = layoutTree(trees.root, this.renderer.sizes(), this.collapsed, this.mode, embedTopicLayouts(trees, this.positions, this.mode));
+      const document = this.document;
+      if (!trees || !document) return;
+      const layout = layoutTree(trees.root, this.renderer.sizes(), this.collapsed, this.mode, embedTopicLayouts(document, trees, this.positions, this.mode));
       this.renderer.place(layout.nodes, layout.folds);
       this.edges.update(layout.edges);
       this.bounds = layout.bounds;
