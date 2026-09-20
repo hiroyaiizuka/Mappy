@@ -7,7 +7,7 @@ import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { MindmapView } from '../../src/ui/mindmap-view';
+import { MindmapView, type MapMenuAction } from '../../src/ui/mindmap-view';
 
 export interface MountedMapView {
   app: HarnessApp;
@@ -33,6 +33,8 @@ export interface MountedMapView {
 export interface MountOptions {
   /** Runs on the constructed view before `onOpen`, where the plugin applies the settings (src/main.ts). */
   prepare?: (view: MindmapView) => void;
+  /** The plugin's items of the 操作 menu (§5 M3), as src/main.ts passes them to the constructor. */
+  menuActions?: readonly MapMenuAction[];
 }
 
 /** `layout: null` leaves the layout out of the view state, so the note's `mappy-layout` decides. */
@@ -42,7 +44,7 @@ export async function mountMapView(
   app.put(path, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
-  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
+  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, options.menuActions ?? []);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   options.prepare?.(view);

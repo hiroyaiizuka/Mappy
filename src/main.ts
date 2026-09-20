@@ -1,6 +1,6 @@
 import { MarkdownView, Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidian";
 import { DocumentStore } from "./obsidian/document-store";
-import { ExcalidrawBridge } from "./obsidian/excalidraw-bridge";
+import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
 import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
@@ -14,7 +14,7 @@ import { ViewRouter } from "./obsidian/view-routing";
 import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
 import { MapEmbeds } from "./ui/map-embed";
-import { MindmapView, VIEW_TYPE } from "./ui/mindmap-view";
+import { MindmapView, VIEW_TYPE, type MapMenuAction } from "./ui/mindmap-view";
 
 export default class MappyPlugin extends Plugin {
   private router!: ViewRouter;
@@ -43,8 +43,15 @@ export default class MappyPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => { this.bridge.ensureHook(); });
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.bridge.ensureHook(); }));
 
+    // The view's 操作 menu (§5 M3) offers the routes that live here (a modal, another plugin) through the
+    // same callbacks as the commands below; the view only learns their names, icons and checks.
+    const menuActions: MapMenuAction[] = [
+      { title: "マップを検索して呼び出す", icon: "search", check: map => map.file !== null, run: map => { this.searchAndCallMap(map); } },
+      { title: "Excalidraw の図面に挿入", icon: "pencil-ruler", check: map => map.file !== null && this.bridge.available, run: map => { this.insertIntoExcalidraw(map.snapshot()); } },
+      { title: "SVG／PNG に書き出し", icon: "image-down", check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },
+    ];
     this.registerView(VIEW_TYPE, leaf => {
-      const view = new MindmapView(leaf, store, this.router);
+      const view = new MindmapView(leaf, store, this.router, menuActions);
       view.setTheme(this.settings.theme);
       view.setVisibleLayouts(this.settings.visibleLayouts);
       return view;
@@ -124,7 +131,7 @@ export default class MappyPlugin extends Plugin {
         const snapshot = this.app.workspace.getActiveViewOfType(MindmapView)?.snapshot()
           ?? this.markdownSnapshot();
         if (!snapshot || !this.bridge.available) return false;
-        if (!checking) this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), "Excalidraw への挿入に失敗しました。");
+        if (!checking) this.insertIntoExcalidraw(snapshot);
         return true;
       },
     });
@@ -133,14 +140,7 @@ export default class MappyPlugin extends Plugin {
       checkCallback: checking => {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (!map?.file || !canSaveAttachments(this.app)) return false;
-        if (!checking) {
-          this.run(async () => {
-            const png = await canRasterizeForeignObject();
-            new ExportModal(this.app, png, format => {
-              this.run(async () => { new Notice(`${(await map.exportImage(format)).path} に書き出しました。`); }, "書き出しに失敗しました。");
-            }).open();
-          }, "書き出しを始められませんでした。");
-        }
+        if (!checking) this.exportMapImage(map);
         return true;
       },
     });
@@ -149,11 +149,7 @@ export default class MappyPlugin extends Plugin {
       checkCallback: checking => {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (!map?.file) return false;
-        if (!checking) {
-          new MapSearchModal(this.app, map.file, target => {
-            this.run(() => map.callMap(target), "マップを呼び出せませんでした。");
-          }).open();
-        }
+        if (!checking) this.searchAndCallMap(map);
         return true;
       },
     });
@@ -204,6 +200,31 @@ export default class MappyPlugin extends Plugin {
 
   private run(action: () => Promise<void>, fallback: string): void {
     void action().catch((error: unknown) => { new Notice(error instanceof Error ? error.message : fallback); });
+  }
+
+  /** The command's and the 操作 menu's route (§5 M12): pick a map, then the view adds it under the selected node. */
+  private searchAndCallMap(map: MindmapView): void {
+    const file = map.file;
+    if (!file) return;
+    new MapSearchModal(this.app, file, target => {
+      this.run(() => map.callMap(target), "マップを呼び出せませんでした。");
+    }).open();
+  }
+
+  /** The command's and the 操作 menu's route (§5 M6): the map as shown goes into the last active drawing. */
+  private insertIntoExcalidraw(snapshot: ImportRequest | null): void {
+    if (!snapshot) return;
+    this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), "Excalidraw への挿入に失敗しました。");
+  }
+
+  /** The command's and the 操作 menu's route (§5 M13): choose the format, then the view captures what it shows. */
+  private exportMapImage(map: MindmapView): void {
+    this.run(async () => {
+      const png = await canRasterizeForeignObject();
+      new ExportModal(this.app, png, format => {
+        this.run(async () => { new Notice(`${(await map.exportImage(format)).path} に書き出しました。`); }, "書き出しに失敗しました。");
+      }).open();
+    }, "書き出しを始められませんでした。");
   }
 
   /**

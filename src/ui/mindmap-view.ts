@@ -51,6 +51,21 @@ const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
   balanced: { label: LAYOUT_LABELS.balanced, icon: "unfold-horizontal" },
 };
 
+/**
+ * An item the plugin adds to the view's 操作 menu (§5 M3): a command whose route (a modal, another
+ * plugin) lives outside the view. `check` is asked when the menu opens and decides whether the item
+ * is enabled; `run` is the command's own callback, so the menu and the palette do the same thing.
+ */
+export interface MapMenuAction {
+  title: string;
+  icon: string;
+  check: (view: MindmapView) => boolean;
+  run: (view: MindmapView) => void;
+}
+
+/** An entry of the view's menus: the title (without a key), the icon and what choosing it runs. */
+type MenuEntry = readonly [title: string, icon: string, run: () => void];
+
 export class MindmapView extends ItemView {
   file: TFile | null = null;
   private document: MindDocument | undefined;
@@ -109,11 +124,17 @@ export class MindmapView extends ItemView {
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
   private bodyModal: EditModal | undefined;
+  /** The 操作 menu while it is open (§5 M3), so the button's next press closes it instead of opening another. */
+  private actionMenu: Menu | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
 
-  constructor(leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter) {
+  constructor(
+    leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter,
+    /** Items of the 操作 menu whose routes live in the plugin (§5 M3); shown between the node items and リスト形式に変更. */
+    private readonly menuActions: readonly MapMenuAction[] = [],
+  ) {
     super(leaf);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
     // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
@@ -252,9 +273,19 @@ export class MindmapView extends ItemView {
       });
       this.modeButtons.set(mode, button);
     }
-    const sourceTools = this.contentEl.createDiv({ cls: "mappy-source-tools mappy-floating" });
-    this.button(sourceTools, "Markdown に切り替え", "file-text", () => { this.run(() => this.showSource(false)); });
-    this.button(sourceTools, "左に Markdown を開く", "panel-left", () => { this.run(() => this.showSource(true)); });
+    // The top-right corner holds one control (§5 M3): the 操作 menu, where the Markdown switch and the split
+    // moved to, next to the node operations the keys, the context menu and the command palette offer elsewhere.
+    const actions = this.contentEl.createDiv({ cls: "mappy-actions mappy-floating", attr: { "aria-label": "操作" } });
+    // Obsidian hides an open menu on the mousedown outside it, which comes before this button's click; the press
+    // is remembered here so that click closes the menu (a no-op once hidden) instead of opening it again.
+    let closing = false;
+    const actionsButton = this.button(actions, "操作", "settings", () => {
+      if (closing) { closing = false; this.actionMenu?.hide(); return; }
+      this.openActionMenu(actionsButton);
+    });
+    actionsButton.setAttribute("aria-haspopup", "menu");
+    actionsButton.setAttribute("aria-expanded", "false");
+    actionsButton.addEventListener("mousedown", () => { closing = this.actionMenu !== null; });
     this.canvas = this.contentEl.createDiv({ cls: "mappy-canvas", attr: {
       tabindex: "0", role: "tree", "aria-label": "マインドマップ。Enter で兄弟、Tab で子、F2 で編集。",
     } });
@@ -314,12 +345,10 @@ export class MindmapView extends ItemView {
         return;
       }
       this.select(id);
-      menu.addItem(item => item.setTitle("テキストを編集").setIcon("pencil").onClick(() => { this.editTitle(); }));
-      menu.addItem(item => item.setTitle("本文・リンクを編集").setIcon("text").onClick(() => { this.editBody(); }));
-      menu.addItem(item => item.setTitle("画像を追加").setIcon("image-plus").onClick(() => { this.chooseImage(); }));
+      const entries = this.nodeEntries();
+      for (const entry of [entries.edit, entries.body, entries.image]) this.menuItem(menu, entry);
       menu.addSeparator();
-      menu.addItem(item => item.setTitle("子を追加").setIcon("plus").onClick(() => { this.executeSelected("add-child"); }));
-      menu.addItem(item => item.setTitle("兄弟を追加").setIcon("corner-down-right").onClick(() => { this.executeSelected("add-sibling"); }));
+      for (const entry of [entries.child, entries.sibling]) this.menuItem(menu, entry);
       const remove = this.isTopic(id) ? "トピックを削除" : "枝を削除";
       for (const [type, title] of [["move-up", "前へ移動"], ["move-down", "後ろへ移動"], ["delete", remove]] as const) {
         menu.addItem(item => item.setTitle(title).onClick(() => { this.executeSelected(type); }));
@@ -362,6 +391,7 @@ export class MindmapView extends ItemView {
   onClose(): Promise<void> {
     this.closed = true;
     this.inlineEditor?.dispose(); this.inlineEditor = undefined;
+    this.actionMenu?.hide();
     this.epoch += 1;
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
     if (this.layoutFrame !== undefined) this.contentEl.win.cancelAnimationFrame(this.layoutFrame);
@@ -380,6 +410,73 @@ export class MindmapView extends ItemView {
 
   private run(action: () => Promise<void>): void {
     void action().catch(error => { new Notice(error instanceof Error ? error.message : "操作を完了できませんでした。"); });
+  }
+
+  /** A menu entry both menus offer: the title without its key, the icon and the method it runs. */
+  private menuItem(menu: Menu, [title, icon, run]: MenuEntry, key?: string, enabled = true): void {
+    menu.addItem(item => item.setTitle(key ? `${title}（${key}）` : title).setIcon(icon).setDisabled(!enabled).onClick(run));
+  }
+
+  /**
+   * The node operations the context menu and the 操作 menu share, each running the method its key
+   * runs; the node is read when the item is chosen, as the keys do, not when the menu opened.
+   */
+  private nodeEntries(): Record<"edit" | "body" | "image" | "child" | "sibling", MenuEntry> {
+    return {
+      edit: ["テキストを編集", "pencil", () => { this.editTitle(); }],
+      body: ["本文・リンクを編集", "text", () => { this.editBody(); }],
+      image: ["画像を追加", "image-plus", () => { this.chooseImage(); }],
+      child: ["子を追加", "plus", () => { this.executeSelected("add-child"); }],
+      sibling: ["兄弟を追加", "corner-down-right", () => { this.executeSelected("add-sibling"); }],
+    };
+  }
+
+  /**
+   * The 操作 menu (§5 M3), opened under the top-right button: the Markdown switch and the split, then
+   * the node operations with the key each answers to, the free-topic addition, the plugin's routes and
+   * the list conversion, then the history. Every item runs the same method as its key, its context-menu
+   * entry or its command, so the diff and the history are the same. Items that act on a node are
+   * disabled while nothing is selected (a map without a note); on the virtual root of a note without a
+   * heading, which the keys refuse with a notice, the sibling, the title and the deletion are disabled
+   * too. The plugin's items are enabled on their own `check`.
+   */
+  private openActionMenu(anchor: HTMLElement): void {
+    const menu = new Menu();
+    const node = this.selected();
+    const ready = this.file !== null && this.document !== undefined;
+    const onNode = node !== undefined;
+    const onItem = onNode && node.kind !== "root";
+    const entries = this.nodeEntries();
+    const add = (title: string, icon: string, enabled: boolean, run: () => void): void => { this.menuItem(menu, [title, icon, run], undefined, enabled); };
+    add("Markdown に切り替え", "file-text", ready, () => { this.run(() => this.showSource(false)); });
+    add("左に Markdown を開く", "panel-left", ready, () => { this.run(() => this.showSource(true)); });
+    menu.addSeparator();
+    this.menuItem(menu, entries.sibling, "Enter", onItem);
+    this.menuItem(menu, entries.child, "Tab", onNode);
+    // Without a pressed point the new topic takes the default place of a topic with no stored position (§5 M7).
+    add("トピックを追加", "square-plus", ready, () => { this.run(() => this.addTopic()); });
+    menu.addSeparator();
+    this.menuItem(menu, entries.edit, "F2", onItem);
+    this.menuItem(menu, entries.body, undefined, onNode);
+    this.menuItem(menu, entries.image, undefined, onNode);
+    add("折りたたみ（Space）", "chevrons-down-up", onNode, () => { const current = this.selected(); if (current) this.fold(current.id); });
+    add("削除（Delete）", "trash-2", onItem, () => { this.executeSelected("delete"); });
+    menu.addSeparator();
+    for (const action of this.menuActions) add(action.title, action.icon, action.check(this), () => { action.run(this); });
+    add("リスト形式に変更", "list-tree", this.document?.format === "headings", () => { this.run(() => this.convertToList()); });
+    menu.addSeparator();
+    this.historyItems(menu);
+    this.actionMenu = menu;
+    anchor.setAttribute("aria-expanded", "true");
+    menu.onHide(() => {
+      if (this.actionMenu === menu) this.actionMenu = null;
+      anchor.setAttribute("aria-expanded", "false");
+    });
+    // Below the button: Obsidian's own menu right-aligns with it (`left` with the button's width), a native
+    // menu (macOS by default) takes only `x`/`y` and opens from the button's left-bottom corner, the OS
+    // keeping it on screen. The view's own document, so a popout window gets the menu.
+    const rect = anchor.getBoundingClientRect();
+    menu.showAtPosition({ x: rect.left, y: rect.bottom, width: rect.width, overlap: true, left: true }, this.contentEl.doc);
   }
 
   private historyItems(menu: Menu): void {
@@ -714,18 +811,20 @@ export class MindmapView extends ItemView {
    * A new empty top-level section at the end of the note, edited in place where the canvas was
    * pressed (§5 M7). The position is stored by the edit that names it, so the title and the
    * `mappy-topics` entry are one step of the history; Escape keeps the section, Undo removes it.
+   * Without a point (the 操作 menu) no position is kept or stored: the topic takes the default
+   * place of a topic with no `mappy-topics` entry until it is dragged.
    */
-  private async addTopic(point: { x: number; y: number }): Promise<void> {
+  private async addTopic(point?: { x: number; y: number }): Promise<void> {
     const document = this.document;
     const file = this.file;
     if (!document || !file || this.saving) return;
-    const position = this.topicPoint(point);
+    const position = point ? this.topicPoint(point) : null;
     const plan = planEdit(document, { type: "add-topic" });
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
     const created = this.document?.nodes.find(node => node.titleFrom === plan.selectionOffset);
     // The first heading of a note becomes its body root and has no position.
-    if (created && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
+    if (created && position && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
     if (this.reveal(plan.selectionOffset)) this.editTitle();
   }
 
