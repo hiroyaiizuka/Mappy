@@ -98,6 +98,8 @@ export interface HostTiming {
   /** Embeds the page rendered as maps / left as Obsidian's placeholders. */
   maps: number;
   plain: number;
+  /** Sections still waiting for their container once every section was handed to the processor (only `live-late` hands any over detached). */
+  waiting: number;
   /** From the first post-processor call until every map had its nodes placed and stopped moving. */
   settledMs: number;
 }
@@ -210,6 +212,7 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
   host = { note, renderer, sizer };
   const sections = await renderNote(sizer, note.source, note.path);
   const started = performance.now();
+  let waiting = 0;
   if (note.mode === "reading") {
     for (const section of sections) embeds.process(section, contextFor(renderer, note.path));
   } else if (note.mode === "live") {
@@ -230,16 +233,18 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
       late.push({ span, parent: span.parentNode ?? sizer, next: span.nextSibling, content, inner });
       span.remove();
     }
+    waiting = embeds.pending;
     await nextFrame();
     for (const { content, inner } of late) content.append(inner);
     await nextFrame();
     await nextFrame();
-    for (const { span, parent, next } of late) parent.insertBefore(span, next);
+    // Last first: a span's `next` may be a later span of the same paragraph, which must be back before it.
+    for (const { span, parent, next } of [...late].reverse()) parent.insertBefore(span, next);
   }
   await settle(4000);
   const maps = sizer.querySelectorAll(".mappy-embed").length;
   const plain = sizer.querySelectorAll(".internal-embed:not(.mappy-embed-host)").length;
-  const timing: HostTiming = { host: note.id, mode: note.mode, maps, plain, settledMs: performance.now() - started };
+  const timing: HostTiming = { host: note.id, mode: note.mode, maps, plain, waiting, settledMs: performance.now() - started };
   hostTimings.push(timing);
   openCount += 1;
   setStatus(`${note.label}: 埋め込み ${maps + plain}（マップ ${maps}、通常の埋め込み ${plain}）、安定まで ${timing.settledMs.toFixed(0)} ms、表示 ${openCount} 回目`);

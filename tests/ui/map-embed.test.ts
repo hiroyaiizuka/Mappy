@@ -509,6 +509,10 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const late = createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
     embeds.process(late, context(renderer, 'Map.md'));
+    // While it waits, a hidden anchor inside the section carries the wait's lifecycle, as the map's own anchor will.
+    expect(embeds.pending).toBe(1);
+    expect(late.querySelectorAll<HTMLElement>(`.${EMBED_ANCHOR_CLASS}`)).toHaveLength(1);
+    expect(late.querySelector<HTMLElement>(`.${EMBED_ANCHOR_CLASS}`)?.hidden).toBe(true);
     await frames(1);
     span.querySelector('.markdown-preview-view')?.append(late);
     await frames(1);
@@ -519,10 +523,12 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
     expect(titles(span)).toEqual(['講座', '回復する', '記録する', '葉']);
     expect(embeds.size).toBe(1);
-    expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).not.toBeNull();
+    expect(embeds.pending).toBe(0);
+    expect(late.querySelectorAll(`.${EMBED_ANCHOR_CLASS}`)).toHaveLength(1);
     renderer.unload();
     expect(embeds.size).toBe(0);
     expect(app.vaultEvents.count()).toBe(0);
+    expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
   });
 
   it('gives up on a section whose container never joins the document, leaving no frame or listener behind, and leaves a container attached past the limit alone', async () => {
@@ -539,11 +545,14 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
       embeds.process(late, context(renderer, 'Map.md'));
       span.querySelector('.markdown-preview-view')?.append(late);
       expect(tracker.pending()).toBe(1);
+      expect(embeds.pending).toBe(1);
       await frames(EMBED_CLAIM_FRAMES + 1);
       expect(tracker.pending()).toBe(0);
+      expect(embeds.pending).toBe(0);
       expect(embeds.size).toBe(0);
       expect(app.vaultEvents.count()).toBe(0);
       expect(app.workspaceEvents.count()).toBe(0);
+      expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
       // A rendering Obsidian discarded never joins; one that joins this late is not claimed either.
       document.body.append(block);
       await settle();
@@ -551,6 +560,52 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
       expect(embeds.size).toBe(0);
       expect(tracker.pending()).toBe(0);
     } finally { tracker.restore(); }
+  });
+
+  it('ends the wait at the limit even when the renderer never loads its component, so nothing is retained', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    // Another plugin's `MarkdownRenderer.render(…, component)` with a component it never loads: `addChild` does not load the child.
+    const unloaded = new Component();
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const tracker = frameTracker();
+    try {
+      embeds.process(late, context(unloaded, 'Map.md'));
+      expect(embeds.pending).toBe(1);
+      expect(tracker.pending()).toBe(1);
+      await frames(EMBED_CLAIM_FRAMES + 1);
+      expect(embeds.pending).toBe(0);
+      expect(tracker.pending()).toBe(0);
+      expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+    } finally { tracker.restore(); }
+  });
+
+  it('does not claim from a section that lands inside a map drawn in an ordinary note embed (a node label rendered late)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    app.put('Plain.md', '# Plain\n\n![[Map]]\n');
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    // Host embeds Plain (an ordinary note) whose section holds the map's placeholder: the map is drawn inside Plain's container.
+    const { span, sections } = await container(app, 'Plain', 'Plain.md');
+    for (const section of sections) embeds.process(section, context(renderer, 'Plain.md'));
+    await settle();
+    expect(embeds.size).toBe(1);
+    const label = span.querySelector<HTMLElement>('.mappy-view .mappy-node-label');
+    if (!label) throw new Error('no node label');
+    // A label section of the map, rendered with the map as its source, reaches the processor before it is put into the node.
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '記録する', late, 'Map.md');
+    embeds.process(late, context(renderer, 'Map.md'));
+    expect(embeds.pending).toBe(1);
+    label.append(late);
+    await frames(1);
+    expect(embeds.pending).toBe(0);
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    expect(embeds.size).toBe(1);
+    expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
   });
 
   it('stops looking when the section is unloaded before its container joins the document', async () => {

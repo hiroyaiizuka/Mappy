@@ -250,20 +250,27 @@ export class MapEmbed extends MarkdownRenderChild {
 
 /**
  * A section of an embedded note that reached the processor before its container joined
- * the document. It lives in the section like a map would (`ctx.addChild`), looks again
- * every frame for a bounded while, and reports once: attached, or given up because the
- * frames ran out, the section was unloaded (Obsidian discarded that rendering), or the
- * plugin unloaded. It registers nothing else, so giving up leaves nothing behind.
+ * the document. It lives in the section like a map would (`ctx.addChild`, on a hidden
+ * anchor inside the section, which is what Obsidian watches), looks again every frame
+ * for a bounded while, and reports once: attached, or given up because the frames ran
+ * out, the section was unloaded (Obsidian discarded that rendering), or the plugin
+ * unloaded. The anchor goes with the report, and nothing else is registered, so giving
+ * up leaves nothing behind.
  */
 class PendingClaim extends MarkdownRenderChild {
   private frame: number | undefined;
   private left = EMBED_CLAIM_FRAMES;
 
-  constructor(containerEl: HTMLElement, private settled: ((attached: boolean) => void) | null) { super(containerEl); }
+  constructor(section: HTMLElement, private settled: ((attached: boolean) => void) | null) {
+    super(section.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
+    // The wait starts now rather than on load: a renderer that never loads its component must not keep the section waiting.
+    this.look();
+  }
 
-  onload(): void { this.look(); }
+  onunload(): void { this.cancel(); }
 
-  onunload(): void {
+  /** Ends the wait without a claim; harmless once the wait has ended. */
+  cancel(): void {
     if (this.frame !== undefined) this.containerEl.win.cancelAnimationFrame(this.frame);
     this.frame = undefined;
     this.end(false);
@@ -272,16 +279,22 @@ class PendingClaim extends MarkdownRenderChild {
   private look(): void {
     this.frame = this.containerEl.win.requestAnimationFrame(() => {
       this.frame = undefined;
-      if (this.containerEl.isConnected) this.end(true);
-      else if ((this.left -= 1) > 0) this.look();
+      if (this.containerEl.isConnected) {
+        this.end(true);
+        return;
+      }
+      this.left -= 1;
+      if (this.left > 0) this.look();
       else this.end(false);
     });
   }
 
   private end(attached: boolean): void {
     const settled = this.settled;
+    if (!settled) return;
     this.settled = null;
-    settled?.(attached);
+    this.containerEl.remove();
+    settled(attached);
   }
 }
 
@@ -326,7 +339,7 @@ export class MapEmbeds {
   /** Plugin unload: every map goes back to the ordinary embed, and the reading views that showed one are redrawn. */
   dispose(): void {
     this.disposed = true;
-    for (const claim of Array.from(this.waiting)) claim.unload();
+    for (const claim of Array.from(this.waiting)) claim.cancel();
     this.waiting.clear();
     const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
@@ -376,10 +389,11 @@ export class MapEmbeds {
     ctx.addChild(claim);
   }
 
-  /** The section is on the document: claim the container around it, unless it is the note's own view or a container already claimed. */
+  /** The section is on the document: claim the container around it, unless it is the note's own view, inside a map, or in a container already claimed. */
   private claimAround(el: HTMLElement, ctx: MarkdownPostProcessorContext, own: TFile): void {
     const span = el.closest<HTMLElement>(".internal-embed");
-    if (!span || span.hasClass(EMBED_HOST_CLASS) || span.parentElement?.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
+    // The section itself may have landed inside a map (a node label) since `process` looked; the check covers the whole way up.
+    if (!span || el.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
     const { subpath } = parseLinktext(span.getAttribute("src") ?? "");
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
