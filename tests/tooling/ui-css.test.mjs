@@ -48,6 +48,29 @@ describe("the 操作 popover CSS (§5 M3)", () => {
       for (const part of selector.split(",")) expect(part.trim()).toMatch(/^\.mappy-view /u);
     }
   });
+
+  it("lines the three rows up at the card's left edge, each as wide as the card (LEV-84)", async () => {
+    const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
+    const card = css.match(/\.mappy-view \.mappy-popover \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(card).toMatch(/flex-direction:\s*column;/u);
+    expect(card).toMatch(/align-items:\s*stretch;/u);
+    const item = css.match(/\.mappy-view \.mappy-popover-item \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(item).toMatch(/width:\s*100%;/u);
+    // app.css centres a button's content; a row narrower than the card would then put its icon elsewhere.
+    expect(item).toMatch(/justify-content:\s*flex-start;/u);
+    expect(item).toMatch(/text-align:\s*left;/u);
+    // Every declaration of app.css's `button` rule that sizes, places or colours a button is set again here (its
+    // cursor too; user-select, outline and transition are left to the app), so a row's box depends on nothing
+    // Obsidian gives it. The two classes outrank the app's `button` and `button:not(.clickable-icon)`; the
+    // tablet padding rule `.is-tablet button:not(.clickable-icon)` (0,2,1) is not outranked — LEV-85.
+    for (const property of ["display", "align-items", "justify-content", "color", "font-size", "font-weight", "border", "border-radius", "padding", "height", "background", "box-shadow", "white-space", "cursor"]) {
+      expect(item, property).toMatch(new RegExp(`(?:^|;)\\s*${property}:`, "u"));
+    }
+    // A disabled row is the faint colour only; app.css would also dim `button[aria-disabled="true"]` to 0.7.
+    const disabled = css.match(/\.mappy-view \.mappy-popover-item\.is-disabled \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(disabled).toMatch(/color:\s*var\(--text-faint\);/u);
+    expect(disabled).toMatch(/opacity:\s*1;/u);
+  });
 });
 
 describe("map theme CSS (settings, M14)", () => {

@@ -50,7 +50,7 @@ function pluginActions(): PluginActions {
     state.during.push({ popoverOpen: document.querySelector('.mappy-popover') !== null, focused: document.activeElement });
   };
   state.actions = [
-    { title: 'マップを検索して呼び出す', description: '他のマップをこのマップの枝にする', icon: 'search', check: map => map.file !== null, run: map => { record('call', map); } },
+    { title: 'マップを検索して呼び出す', description: '他のマップを挿入する', icon: 'search', check: map => map.file !== null, run: map => { record('call', map); } },
     { title: '書き出す', description: 'SVG／PNG に保存', icon: 'image-down', check: map => map.file !== null && state.exportable, run: map => { record('export', map); } },
   ];
   return state;
@@ -133,7 +133,7 @@ function disabled(element: HTMLElement): boolean {
 /** The three items in the order of product-plan §5 M3, with the line under each and its icon. */
 const ITEMS = [
   ['Markdown に切り替え', '同じタブで本文を開く', 'file-text'],
-  ['マップを検索して呼び出す', '他のマップをこのマップの枝にする', 'search'],
+  ['マップを検索して呼び出す', '他のマップを挿入する', 'search'],
   ['書き出す', 'SVG／PNG に保存', 'image-down'],
 ] as const;
 const TITLES = ITEMS.map(([title]) => title);

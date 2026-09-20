@@ -60,7 +60,7 @@ const router = {
  * the export modal and its attachment) are not on this page: both report the request.
  */
 const menuActions: MapMenuAction[] = [
-  { title: "マップを検索して呼び出す", description: "他のマップをこのマップの枝にする", icon: "search", check: map => map.file !== null,
+  { title: "マップを検索して呼び出す", description: "他のマップを挿入する", icon: "search", check: map => map.file !== null,
     run: () => { new Notice("マップの検索モーダルはこのページの対象外です（③ 実機で確認）。"); } },
   { title: "書き出す", description: "SVG／PNG に保存", icon: "image-down", check: map => map.file !== null,
     run: () => { new Notice("書き出しの保存はこのページの対象外です（h.export が文字列を返すだけ。③ 実機で確認）。"); } },
