@@ -31,6 +31,8 @@
   --color-accent-1: hsl(calc(var(--accent-h) - 1), calc(var(--accent-s) * 1.01), calc(var(--accent-l) * 1.075));
   --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+  --input-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12), 0 1px 2px 0 rgba(0, 0, 0, 0.065), 0 0 0 0 transparent;
+  --input-shadow-hover: inset 0 0 0 1px rgba(0, 0, 0, 0.17), 0 1px 2px 0 rgba(0, 0, 0, 0.1), 0 0 0 0 transparent;
 }
 .theme-dark {
   color-scheme: dark;
@@ -62,6 +64,8 @@
   --interactive-accent-hover: var(--color-accent-1);
   --text-selection: hsla(var(--interactive-accent-hsl), 0.25);
   --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.25);
+  --input-shadow: inset 0 0.5px 0.5px 0.5px rgba(255, 255, 255, 0.09), 0 2px 4px 0 rgba(0, 0, 0, 0.15), 0 1px 1.5px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.2), 0 0 0 0 transparent;
+  --input-shadow-hover: inset 0 0.5px 1px 0.5px rgba(255, 255, 255, 0.16), 0 2px 3px 0 rgba(0, 0, 0, 0.3), 0 1px 1.5px 0 rgba(0, 0, 0, 0.2), 0 1px 2px 0 rgba(0, 0, 0, 0.4), 0 0 0 0 transparent;
 }
 body {
   --accent-h: 258;
@@ -106,23 +110,23 @@ body {
   --layer-menu: 40;
   --layer-modal: 50;
   --layer-notice: 60;
-  /* What app.css's `button` rule below reads (desktop values). */
+  /* What app.css's `button` rules below read (desktop values; the shadows are per theme above, as in app.css). */
   --size-4-1: 4px;
   --size-4-3: 12px;
   --input-height: 30px;
   --input-radius: 5px;
   --input-font-weight: 400;
-  --input-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12), 0 1px 2px 0 rgba(0, 0, 0, 0.065), 0 0 0 0 transparent;
-  --input-shadow-hover: inset 0 0 0 1px rgba(0, 0, 0, 0.17), 0 1px 2px 0 rgba(0, 0, 0, 0.1), 0 0 0 0 transparent;
   --button-radius: var(--input-radius);
   --button-transition: none;
 }
 
 html, body { margin: 0; background: var(--background-secondary); color: var(--text-normal); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
 code { font-family: var(--font-monospace); font-size: 0.92em; }
-/* Obsidian's `button` defaults (app.css 1.14.2, the desktop values), so the product's buttons — the popover's
-   items above all (§5 M3, LEV-84: a centred row put each icon somewhere else) — fight the same rules here as
-   in the app. Only the declarations that shape a button; the app's :hover / :focus-visible surfaces too. */
+/* Obsidian's `button` rules (app.css 1.14.2, the desktop values), with the app's selectors so the product's buttons
+   — the popover's items above all (§5 M3, LEV-84: a centred row put each icon somewhere else) — meet the same
+   specificity here as in the app: the box on the bare `button`, the surface on `button:not(.clickable-icon)`,
+   hover under `(hover: hover)`. Not copied: `.mod-macos` (no shadow, the border colour as the surface),
+   `.is-tablet` / `.is-mobile` (LEV-85), the mobile-tap and loading states. */
 button {
   --text-color: var(--text-normal);
   display: inline-flex;
@@ -136,15 +140,16 @@ button {
   border-radius: var(--button-radius);
   padding: var(--size-4-1) var(--size-4-3);
   height: var(--input-height);
-  background-color: var(--interactive-normal);
-  box-shadow: var(--input-shadow);
   cursor: var(--cursor);
   outline: none;
   user-select: none;
   white-space: nowrap;
   transition: var(--button-transition);
 }
-button:hover { background-color: var(--interactive-hover); box-shadow: var(--input-shadow-hover); }
+button:not(.clickable-icon) { color: var(--text-color); background-color: var(--interactive-normal); box-shadow: var(--input-shadow); }
+@media (hover: hover) {
+  button:hover { background-color: var(--interactive-hover); box-shadow: var(--input-shadow-hover); }
+}
 button:focus-visible { box-shadow: 0 0 0 3px var(--background-modifier-border-focus); }
 button[disabled], button[aria-disabled="true"] { cursor: not-allowed; opacity: 0.7; }
 /* The mock renderer's links and code, coloured the way app.css colours them, so a themed map shows them too. */

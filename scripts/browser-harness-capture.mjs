@@ -495,23 +495,33 @@ async function captureOperations(recorder, page) {
     expect(card, 'no popover open');
     expect(card.y >= gear.y + gear.height, `card top ${card.y} is not under the gear's bottom ${gear.y + gear.height}`);
     expect(Math.abs(card.x + card.width - (gear.x + gear.width)) <= 1, `card right edge ${card.x + card.width} is not aligned with the gear's ${gear.x + gear.width}`);
-    expect(card.width <= 320 && card.width >= 160, `card width ${card.width} is not within 160–320`);
+    expect(card.width <= 320 && card.width >= 200, `card width ${card.width} is not within 200–320`);
     expect(inside(card, canvas), `card ${JSON.stringify(card)} is not inside the pane ${JSON.stringify(canvas)}`);
   };
-  /** Each row's left edge, width and icon left edge (LEV-84: app.css centres a button's content). */
-  const popoverRows = () => page.evaluate(`Array.from(document.querySelectorAll('.mappy-view .mappy-popover [role="menuitem"]'), item => {
-    const row = item.getBoundingClientRect();
-    const icon = item.querySelector('.mappy-popover-icon')?.getBoundingClientRect() ?? row;
-    return { left: row.left, width: row.width, iconLeft: icon.left };
-  })`);
-  /** The rows start at the card's left edge, are as wide as the widest, and their icons line up. */
-  const expectAligned = (rows, card) => {
+  /**
+   * Each row's left edge, width, padding and icon left edge (null without an icon), with the card's inner width
+   * (clientWidth: no border, no scrollbar) and padding (LEV-84: app.css centres a button's content).
+   */
+  const popoverRows = () => page.evaluate(`(() => {
+    const card = document.querySelector('.mappy-view .mappy-popover');
+    const rows = Array.from(card?.querySelectorAll('[role="menuitem"]') ?? [], item => {
+      const row = item.getBoundingClientRect();
+      const icon = item.querySelector('.mappy-popover-icon')?.getBoundingClientRect() ?? null;
+      return { left: row.left, width: row.width, paddingLeft: parseFloat(getComputedStyle(item).paddingLeft), iconLeft: icon ? icon.left : null };
+    });
+    return { rows, innerWidth: card?.clientWidth ?? 0, padding: card ? parseFloat(getComputedStyle(card).paddingLeft) : 0 };
+  })()`);
+  /** Three rows, each as wide as the card's inside and starting at its left edge, every icon at the row's padding. */
+  const expectAligned = ({ rows, innerWidth, padding }, card) => {
     expect(rows.length === 3, `${rows.length} rows`);
-    const distinct = key => rows.map(row => Math.round(row[key] * 10) / 10).filter((value, index, all) => all.indexOf(value) === index);
+    expect(rows.every(row => row.iconLeft !== null), 'a row has no icon');
+    const distinct = key => [...new Set(rows.map(row => Math.round(row[key] * 10) / 10))];
     for (const key of ['left', 'width', 'iconLeft']) expect(distinct(key).length === 1, `${key} differs between the rows: ${distinct(key).join(' / ')}`);
-    expect(Math.abs(rows[0].left - card.x) <= 8, `row left ${rows[0].left} is not at the card's left edge ${card.x} (padding aside)`);
-    expect(rows[0].width >= card.width - 16, `row width ${rows[0].width} is narrower than the card's ${card.width} minus its padding`);
-    return `行の左 ${Math.round(rows[0].left)}・幅 ${Math.round(rows[0].width)}・アイコンの左 ${Math.round(rows[0].iconLeft)} が 3 行とも同じ`;
+    const [row] = rows;
+    expect(row.iconLeft - row.left <= row.paddingLeft + 1, `icon left ${row.iconLeft} is not at the row's left edge ${row.left} + padding ${row.paddingLeft} (centred?)`);
+    expect(Math.abs(row.left - card.x - padding) <= 2, `row left ${row.left} is not at the card's left edge ${card.x} + padding ${padding}`);
+    expect(row.width >= innerWidth - 2 * padding - 1, `row width ${row.width} is narrower than the card's inside ${innerWidth} minus its padding ${padding}`);
+    return `行の左 ${Math.round(row.left)}・幅 ${Math.round(row.width)}・アイコンの左 ${Math.round(row.iconLeft)} が 3 行とも同じ`;
   };
 
   await recorder.run('action-popover', '右上の歯車「操作」をクリック → ↓ → Escape → クリック → クリック → クリック → Escape', '右上のボタンは歯車 1 つ。歯車の直下に右辺を揃えたカード（Obsidian の .menu ではない）が開き、項目は Markdown に切り替え／マップを検索して呼び出す／書き出す の 3 つ（アイコン・項目名・1 行の説明）だけ、すべて有効。3 行の左端・幅・アイコンの左端が同じ（Obsidian の button は中身を中央寄せにするが、行は左詰め）。開いた直後は 1 項目目にフォーカス、↓ で 2 項目目、Escape で閉じてキャンバスにフォーカス。2 度目の押下で閉じ（aria-expanded=false）、3 度目で開く', async () => {

@@ -112,7 +112,8 @@
    of cutting it. Obsidian's variables for the surface, so it reads in both themes and under the map's own theme
    (M14), and its `button` styling is undone item by item: app.css centres a button's content
    (`justify-content: center`), which put each row's icon somewhere else once the rows shared the card's width
-   (LEV-84), so every row is as wide as the card and starts at its left edge. */
+   (LEV-84), so a row's content starts at its left edge (`justify-content: flex-start`; the card's
+   `align-items: stretch` is the column default written out). */
 .mappy-view .mappy-popover {
   position: absolute;
   z-index: 4;
@@ -156,7 +157,8 @@
 }
 .mappy-view .mappy-popover-item:hover, .mappy-view .mappy-popover-item:focus-visible { background: var(--background-modifier-hover); box-shadow: none; }
 .mappy-view .mappy-popover-item:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: -2px; }
-.mappy-view .mappy-popover-item.is-disabled { color: var(--text-faint); cursor: default; }
+/* The faint colour alone: app.css also dims `button[aria-disabled="true"]` to 0.7. */
+.mappy-view .mappy-popover-item.is-disabled { color: var(--text-faint); cursor: default; opacity: 1; }
 .mappy-view .mappy-popover-item.is-disabled:hover { background: transparent; }
 .mappy-view .mappy-popover-icon { display: inline-flex; flex: none; margin-top: 1px; color: var(--text-muted); }
 .mappy-view .mappy-popover-item.is-disabled .mappy-popover-icon { color: inherit; }
