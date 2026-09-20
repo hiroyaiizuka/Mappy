@@ -1119,6 +1119,45 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     shift(glossary.id, null);
   });
 
+  it('on the timeline a short stage beside a tall one takes the topic where its first child lands: past the tall stage\'s half, not its own', async () => {
+    const { view, topic, nodes } = await mount(THREE_STAGES, 'timeline');
+    const doc = documentOf(view);
+    const glossary = topic('補足');
+    const tall = doc.nodes.find(node => node.title === '回復する');
+    const record = doc.nodes.find(node => node.title === '記録する');
+    const habit = doc.nodes.find(node => node.title === '習慣化する');
+    if (!tall || !record || !habit) throw new Error('Missing nodes');
+    // jsdom measures every node as 0 × 0 (so 160 × 44); the first stage 回復する measures 200 tall from here on, as one with
+    // an image would, and the drag's first frame lays the map out again with it.
+    const element = nodes().get(tall.id);
+    if (!element) throw new Error('Missing the tall stage element');
+    Object.defineProperty(element, 'offsetHeight', { value: 200 });
+    const { shift, snap } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    await frame();
+    const lower = placed(view, record);
+    const upper = placed(view, habit);
+    expect(placed(view, tall).height).toBe(200);
+    expect(lower.height).toBe(44);
+    const axis = lower.y + lower.height / 2;
+    // The band around the axis is the tall stage's half-height; the forests start 34 past it, 112 past a short stage's edge.
+    const band = 100;
+    const landing = (stage: Box, side: 'above' | 'below') => ({
+      x: stage.x + stage.width / 2 + 20, y: side === 'below' ? axis + band + 34 : axis - band - 34 - size.height, ...size,
+    });
+    expect(snap(glossary.id, at(view, landing(lower, 'below')), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: record.id, index: 0 });
+    expect(snap(glossary.id, at(view, landing(upper, 'above')), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    // Just past the stage itself still counts: the zone reaches back to the stage.
+    expect(snap(glossary.id, at(view, stageSpot(lower, 'below')), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: record.id, index: 0 });
+    // Above the axis, the lower stage's landing column overlaps the upper stage 習慣化する, whose zone that is; 20 units
+    // in from the lower stage's left edge overlaps neither upper stage, and the lower stage takes nothing above the axis.
+    expect(snap(glossary.id, at(view, landing(lower, 'above')), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: habit.id, index: 0 });
+    expect(snap(glossary.id, at(view, { ...landing(lower, 'above'), x: lower.x + 20 }), null)).toBeNull();
+    // 73 past the band is out, as 73 past a stage of the band's height would be.
+    expect(snap(glossary.id, at(view, { ...landing(lower, 'below'), y: axis + band + 73 }), null)).toBeNull();
+    shift(glossary.id, null);
+  });
+
   it('keeps the slot it shows while its own placeholder shifts the hierarchy row under the root', async () => {
     const source = fixtureSource();
     const { view, topic } = await mount(source, 'hierarchy');

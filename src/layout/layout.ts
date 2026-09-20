@@ -269,6 +269,16 @@ function placeBalanced(
   });
 }
 
+/**
+ * Half the height of the band a timeline keeps clear around its axis: the root and the stages are
+ * centred on the axis, and every forest starts one axis gap past the tallest of them, so a short stage
+ * beside a tall one hangs its children where the tall one does. Shared with the snap zones, which
+ * measure a childless stage's slot from the band's edge.
+ */
+export function axisBand(root: NodeSize, stages: readonly NodeSize[]): number {
+  return stages.reduce((height, stage) => Math.max(height, stage.height / 2), root.height / 2);
+}
+
 /** Root's top-left at (x, y); the axis runs through the root's vertical center. */
 function placeTimeline(
   root: MeasuredNode, x: number, y: number,
@@ -282,7 +292,7 @@ function placeTimeline(
   let previousAxisRight = x + root.width;
   let upperNextX = -Infinity;
   let lowerNextX = -Infinity;
-  const axisHalfHeight = root.children.reduce((height, stage) => Math.max(height, stage.height / 2), root.height / 2);
+  const axisHalfHeight = axisBand(root, root.children);
   for (let index = 0; index < root.children.length; index += 1) {
     const stage = root.children[index];
     if (!stage) continue;
