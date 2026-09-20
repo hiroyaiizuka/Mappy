@@ -100,6 +100,8 @@ export interface HostTiming {
   plain: number;
   /** Sections still waiting for their container once every section was handed to the processor (only `live-late` hands any over detached). */
   waiting: number;
+  /** Sections of the renderings the page discarded without attaching (`live-late`) that wait for a container; nothing ever attaches them. */
+  discarded: number;
   /** From the first post-processor call until every map had its nodes placed and stopped moving. */
   settledMs: number;
 }
@@ -193,7 +195,9 @@ function embedContainers(sizer: HTMLElement): { span: HTMLElement; file: Harness
  * note (LEV-91): a first rendering of each embed reaches the processor and is discarded
  * without joining the document; the second one's sections reach the processor on their
  * own, sit in the container one frame later, and the container joins the document two
- * frames after that (17–28 ms in Obsidian). Neither path touches the in-memory notes.
+ * frames after that (17–28 ms in Obsidian) for the embeds on screen, or 90 frames later
+ * (about 1.5 s; 2.5 s in Obsidian, when scrolled to) for the last two, which sit below the
+ * fold. Neither path touches the in-memory notes.
  */
 async function loadHost(note: HarnessHost): Promise<HostTiming> {
   await closeView();
@@ -213,6 +217,7 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
   const sections = await renderNote(sizer, note.source, note.path);
   const started = performance.now();
   let waiting = 0;
+  let discarded = 0;
   if (note.mode === "reading") {
     for (const section of sections) embeds.process(section, contextFor(renderer, note.path));
   } else if (note.mode === "live") {
@@ -226,8 +231,11 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
       const content = span.createDiv({ cls: "markdown-embed-content" });
       // The discarded rendering: its sections reach the processor and never join anything. Obsidian keeps or drops
       // their children; the page keeps them, so the processor's own limit is what ends their wait.
-      const discarded = createDiv({ cls: "markdown-preview-view markdown-rendered" });
-      for (const section of await renderNote(discarded, app.content(file), file.path)) embeds.process(section, contextFor(renderer, file.path));
+      const dropped = createDiv({ cls: "markdown-preview-view markdown-rendered" });
+      const droppedSections = await renderNote(dropped, app.content(file), file.path);
+      const waitingBefore = embeds.pending;
+      for (const section of droppedSections) embeds.process(section, contextFor(renderer, file.path));
+      discarded += embeds.pending - waitingBefore;
       const inner = createDiv({ cls: "markdown-preview-view markdown-rendered" });
       for (const section of await renderNote(inner, app.content(file), file.path)) embeds.process(section, contextFor(renderer, file.path));
       late.push({ span, parent: span.parentNode ?? sizer, next: span.nextSibling, content, inner });
@@ -239,12 +247,16 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
     await nextFrame();
     await nextFrame();
     // Last first: a span's `next` may be a later span of the same paragraph, which must be back before it.
-    for (const { span, parent, next } of [...late].reverse()) parent.insertBefore(span, next);
+    const belowFold = late.slice(-2);
+    for (const { span, parent, next } of late.slice(0, -2).reverse()) parent.insertBefore(span, next);
+    // The last two embeds are below the fold: Obsidian attaches their container only when they scroll into view.
+    for (let frame = 0; frame < 90; frame += 1) await nextFrame();
+    for (const { span, parent, next } of belowFold.reverse()) parent.insertBefore(span, next);
   }
   await settle(4000);
   const maps = sizer.querySelectorAll(".mappy-embed").length;
   const plain = sizer.querySelectorAll(".internal-embed:not(.mappy-embed-host)").length;
-  const timing: HostTiming = { host: note.id, mode: note.mode, maps, plain, waiting, settledMs: performance.now() - started };
+  const timing: HostTiming = { host: note.id, mode: note.mode, maps, plain, waiting, discarded, settledMs: performance.now() - started };
   hostTimings.push(timing);
   openCount += 1;
   setStatus(`${note.label}: 埋め込み ${maps + plain}（マップ ${maps}、通常の埋め込み ${plain}）、安定まで ${timing.settledMs.toFixed(0)} ms、表示 ${openCount} 回目`);
@@ -647,8 +659,10 @@ const api = {
     .map(embedInfo),
   /** Live map embeds the post processor still owns. */
   liveEmbeds: () => embeds.size,
-  /** Sections of embedded notes still waiting for their container to join the document (LEV-91). */
+  /** Sections of embedded notes still waiting for their container to join the document, within the plugin's hold (LEV-91). */
   pendingClaims: () => embeds.pending,
+  /** Product animation frames run so far (the probes count them); a wait that polled would add one per waiting section per frame. */
+  productFrames: () => probes.frames.length,
   /** What the plugin does on unload: every map goes back to Obsidian's placeholder. */
   disposeEmbeds: () => { embeds.dispose(); },
   /** The note a path holds now, as the in-memory vault has it. */

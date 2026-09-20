@@ -21,12 +21,15 @@ export const EMBED_ANCHOR_CLASS = "mappy-embed-anchor";
 /** Obsidian's classes that give a note embed its chrome; removed while a map is shown so both paths look the same, restored on release. */
 const OBSIDIAN_EMBED_CLASSES = ["markdown-embed", "inline-embed"];
 /**
- * How many frames a section of an embedded note may wait for its container to join the
- * document before the claim is given up: about 500 ms at 60 fps. Obsidian 1.6.7 attaches
- * the container 17–28 ms after the section reaches the processor, and discards some
- * renderings without ever attaching them (LEV-91).
+ * How long a section of an embedded note waiting for its container to join the document is
+ * held by the plugin itself; after that it is kept only as long as Obsidian keeps the
+ * section (a weak reference), so a rendering Obsidian discarded without unloading can be
+ * collected while an embed below the fold still gets its map when it is scrolled to.
+ * Obsidian 1.6.7 attaches the container 17–28 ms after the section reaches the processor
+ * when the embed is on screen, only when it scrolls into view when it is below the fold
+ * (2.5 s seen), and never for a rendering it discarded (LEV-91).
  */
-export const EMBED_CLAIM_FRAMES = 30;
+export const EMBED_CLAIM_HOLD_MS = 60_000;
 const EMBED_PADDING = 24;
 const REFRESH_DEBOUNCE = 45;
 
@@ -251,51 +254,60 @@ export class MapEmbed extends MarkdownRenderChild {
 /**
  * A section of an embedded note that reached the processor before its container joined
  * the document. It lives in the section like a map would (`ctx.addChild`, on a hidden
- * anchor inside the section, which is what Obsidian watches), looks again every frame
- * for a bounded while, and reports once: attached, or given up because the frames ran
- * out, the section was unloaded (Obsidian discarded that rendering), or the plugin
- * unloaded. The anchor goes with the report, and nothing else is registered, so giving
- * up leaves nothing behind.
+ * anchor inside the section, which is what Obsidian watches) and reports once: attached
+ * (the watcher of the document found the anchor in it), or not, because the section was
+ * unloaded (Obsidian discarded that rendering, or the host closed) or the plugin unloaded.
+ * The anchor goes with the report, and nothing else is registered, so giving up leaves
+ * nothing behind. Nothing here polls: the document's own changes drive `check`.
  */
 class PendingClaim extends MarkdownRenderChild {
-  private frame: number | undefined;
-  private left = EMBED_CLAIM_FRAMES;
+  private timer: number | undefined;
+  /** The weak handle the watcher keeps once the hold is over; on the claim itself so it can be dropped without a strong reference. */
+  ref: WeakRef<PendingClaim> | undefined;
 
   constructor(section: HTMLElement, private settled: ((attached: boolean) => void) | null) {
     super(section.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
-    // The wait starts now rather than on load: a renderer that never loads its component must not keep the section waiting.
-    this.look();
   }
 
-  onunload(): void { this.cancel(); }
+  onunload(): void { this.settle(false); }
 
-  /** Ends the wait without a claim; harmless once the wait has ended. */
-  cancel(): void {
-    if (this.frame !== undefined) this.containerEl.win.cancelAnimationFrame(this.frame);
-    this.frame = undefined;
-    this.end(false);
+  /** Reports attached once the anchor is in the document. */
+  check(): boolean {
+    if (!this.containerEl.isConnected) return false;
+    this.settle(true);
+    return true;
   }
 
-  private look(): void {
-    this.frame = this.containerEl.win.requestAnimationFrame(() => {
-      this.frame = undefined;
-      if (this.containerEl.isConnected) {
-        this.end(true);
-        return;
-      }
-      this.left -= 1;
-      if (this.left > 0) this.look();
-      else this.end(false);
-    });
+  /** Runs `release` after `ms` unless the wait has ended by then. */
+  hold(ms: number, release: () => void): void {
+    this.timer = this.containerEl.win.setTimeout(() => {
+      this.timer = undefined;
+      release();
+    }, ms);
   }
 
-  private end(attached: boolean): void {
+  /** Ends the wait; harmless once it has ended. */
+  settle(attached: boolean): void {
+    if (this.timer !== undefined) this.containerEl.win.clearTimeout(this.timer);
+    this.timer = undefined;
     const settled = this.settled;
     if (!settled) return;
     this.settled = null;
     this.containerEl.remove();
     settled(attached);
   }
+}
+
+/**
+ * The sections of one document waiting for their container: one observer of the document's
+ * DOM changes serves them all, checking each on every change and disconnected while none
+ * waits. `held` are the plugin's own for `EMBED_CLAIM_HOLD_MS`; `kept` are then only as
+ * long as Obsidian keeps them (their section's component still holds them).
+ */
+interface Watcher {
+  observer: MutationObserver;
+  held: Set<PendingClaim>;
+  kept: Set<WeakRef<PendingClaim>>;
 }
 
 /**
@@ -310,7 +322,8 @@ class PendingClaim extends MarkdownRenderChild {
  *   embed container (the host paragraph is a CodeMirror widget, never a section).
  *   The container is claimed once: its own content is hidden and a map appended,
  *   with an anchor inside the section carrying the lifecycle. A section that
- *   arrives before its container is on the document waits for it, a bounded while.
+ *   arrives before its container is on the document waits for it (an embed below the
+ *   fold gets its container only when scrolled to) until Obsidian drops the section.
  *
  * In both cases the component is handed to the renderer (`ctx.addChild`) so it
  * unloads with the section, and every live embed is released when the plugin
@@ -318,7 +331,8 @@ class PendingClaim extends MarkdownRenderChild {
  */
 export class MapEmbeds {
   private readonly live = new Set<MapEmbed>();
-  private readonly waiting = new Set<PendingClaim>();
+  /** Sections waiting for their container, by the document they will join. */
+  private readonly watchers = new Map<Document, Watcher>();
   private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
@@ -333,14 +347,22 @@ export class MapEmbeds {
 
   get size(): number { return this.live.size; }
 
-  /** Sections of embedded notes still waiting for their container to join the document. */
-  get pending(): number { return this.waiting.size; }
+  /** Sections of embedded notes still waiting for their container to join the document, within the hold. */
+  get pending(): number {
+    let count = 0;
+    for (const watcher of this.watchers.values()) count += watcher.held.size;
+    return count;
+  }
 
   /** Plugin unload: every map goes back to the ordinary embed, and the reading views that showed one are redrawn. */
   dispose(): void {
     this.disposed = true;
-    for (const claim of Array.from(this.waiting)) claim.cancel();
-    this.waiting.clear();
+    for (const watcher of Array.from(this.watchers.values())) {
+      for (const claim of Array.from(watcher.held)) claim.settle(false);
+      for (const ref of Array.from(watcher.kept)) ref.deref()?.settle(false);
+      watcher.observer.disconnect();
+    }
+    this.watchers.clear();
     const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
@@ -379,14 +401,51 @@ export class MapEmbeds {
       this.claimAround(el, ctx, own);
       return;
     }
-    // A section can reach the processor before its container is on the document, and Obsidian may take a few
-    // frames to attach it or discard the rendering instead; look again each frame until it is there, or give up.
+    // A section can reach the processor before its container is on the document, and Obsidian attaches it a few
+    // frames later, when the embed scrolls into view, or never (a discarded rendering); wait for it.
+    const watcher = this.watcher(el.doc);
     const claim = new PendingClaim(el, attached => {
-      this.waiting.delete(claim);
+      watcher.held.delete(claim);
+      if (claim.ref) watcher.kept.delete(claim.ref);
+      this.prune(el.doc, watcher);
       if (attached && !this.disposed) this.claimAround(el, ctx, own);
     });
-    this.waiting.add(claim);
+    watcher.held.add(claim);
+    claim.hold(EMBED_CLAIM_HOLD_MS, () => {
+      watcher.held.delete(claim);
+      claim.ref = new WeakRef(claim);
+      watcher.kept.add(claim.ref);
+    });
     ctx.addChild(claim);
+  }
+
+  /** The watcher of a document, started on its first waiting section. */
+  private watcher(doc: Document): Watcher {
+    const existing = this.watchers.get(doc);
+    if (existing) return existing;
+    const held = new Set<PendingClaim>();
+    const kept = new Set<WeakRef<PendingClaim>>();
+    const observer = new MutationObserver(() => {
+      for (const claim of Array.from(held)) claim.check();
+      for (const ref of Array.from(kept)) {
+        const claim = ref.deref();
+        // Obsidian dropped the section without unloading it: gone with it.
+        if (!claim) kept.delete(ref);
+        else claim.check();
+      }
+      this.prune(doc, watcher);
+    });
+    const watcher: Watcher = { observer, held, kept };
+    observer.observe(doc.documentElement, { childList: true, subtree: true });
+    this.watchers.set(doc, watcher);
+    return watcher;
+  }
+
+  /** Stops a document's watcher once nothing waits in it. */
+  private prune(doc: Document, watcher: Watcher): void {
+    if (watcher.held.size > 0 || watcher.kept.size > 0 || this.watchers.get(doc) !== watcher) return;
+    watcher.observer.disconnect();
+    this.watchers.delete(doc);
   }
 
   /** The section is on the document: claim the container around it, unless it is the note's own view, inside a map, or in a container already claimed. */
