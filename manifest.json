@@ -1,7 +1,7 @@
 {
   "id": "mappy",
   "name": "Mappy",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.8.7",
   "description": "View and edit Markdown as linked, illustrated mind maps.",
   "author": "Hiroya Iizuka",
