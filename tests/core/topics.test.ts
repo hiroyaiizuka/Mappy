@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, planEdit, resolveDrop } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
 import {
-  TOPICS_KEY, planTopicMove, planTopicMoves, planTopicPositions, planTopicRemoval, planTopicRename, readTopicPositions,
-  serializeTopicPositions, topicPositionsFromValue, type TopicPositionMap,
+  TOPICS_KEY, planTopicMoves, planTopicPositions, planTopicRekey, readTopicPositions,
+  serializeTopicPositions, topicKeys, topicPositionsFromValue, type TopicPositionMap,
 } from '../../src/core/topics';
 
 const fixture = readFileSync(new URL('../fixtures/free-topics.md', import.meta.url), 'utf8');
@@ -80,6 +80,56 @@ describe('projectMap', () => {
   });
 });
 
+describe('topicKeys', () => {
+  it('gives the first topic of a heading the heading itself and later ones `<heading> (2)`, `(3)`… in source order', () => {
+    const doc = parse('## Body\n\n## A\n\n## B\n\n## A\n\n## A\n\n## \n\n## \n');
+    expect([...topicKeys(doc).values()]).toEqual(['A', 'B', 'A (2)', 'A (3)', '', ' (2)']);
+    expect([...topicKeys(doc).keys()]).toEqual(projectMap(doc).topics.map((node) => node.id));
+    // The body root and list items have no key, and a note without topics has none.
+    expect(topicKeys(doc).has(projectMap(doc).root.id)).toBe(false);
+    expect(topicKeys(parse('## Body\n- A\n- A\n')).size).toBe(0);
+    const headings = parse(headingNote);
+    expect(topicKeys(headings).get(projectMap(headings).topics[1]?.id ?? '')).toBe('Topic two');
+  });
+
+  it('skips an ordinal whose text is itself a heading of the note, whichever comes first', () => {
+    const later = parse('## Body\n\n## A\n\n## A\n\n## A (2)\n');
+    expect([...topicKeys(later).values()]).toEqual(['A', 'A (3)', 'A (2)']);
+    const earlier = parse('## Body\n\n## A (2)\n\n## A\n\n## A\n');
+    expect([...topicKeys(earlier).values()]).toEqual(['A (2)', 'A', 'A (3)']);
+    const both = parse('## Body\n\n## A (2)\n\n## A (2)\n\n## A\n\n## A\n\n## A (3)\n');
+    expect([...topicKeys(both).values()]).toEqual(['A (2)', 'A (2) (2)', 'A', 'A (4)', 'A (3)']);
+    // The body root's heading counts too (a swap of the body and a topic is not re-keyed), the virtual root's file name does not.
+    expect([...topicKeys(parse('## A (2)\n\n## A\n\n## A\n')).values()]).toEqual(['A', 'A (3)']);
+    expect([...topicKeys(parseMarkdown('- item\n\n## A\n\n## A\n', 'A (2)')).values()]).toEqual(['A', 'A (2)']);
+    // A document that starts with list items keeps every H2 as a topic, the first of a heading with the plain key.
+    expect([...topicKeys(parse(listNote)).values()]).toEqual(['Body', 'Topic one', 'Topic two']);
+  });
+});
+
+describe('planTopicRekey', () => {
+  it('moves entries to their new keys in place, drops the keys of topics that leave, replaces an orphan a topic takes over, and places one', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n  B: { mindmap: [2, 2] }\n  C: { mindmap: [3, 3] }\n  Orphan: { mindmap: [4, 4] }\n---\n## Root\n\n## A\n\n## B\n\n## C\n`);
+    const header = (text: string): string => text.slice(0, text.indexOf('## Root'));
+    const edit = planTopicRekey(doc, new Map([['A', 'Orphan'], ['B', 'A'], ['C', 'C']]), new Set(), { key: 'D', layout: 'timeline', x: 5.4, y: 5.6 });
+    expect(header(applyEdits(doc.source, edit ? [edit] : [])))
+      .toBe(`---\n${TOPICS_KEY}:\n  Orphan: { mindmap: [1, 1] }\n  A: { mindmap: [2, 2] }\n  C: { mindmap: [3, 3] }\n  D: { timeline: [5, 6] }\n---\n`);
+    const dropped = planTopicRekey(doc, new Map([['B', 'A']]), new Set(['A']));
+    expect(header(applyEdits(doc.source, dropped ? [dropped] : [])))
+      .toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [2, 2] }\n  C: { mindmap: [3, 3] }\n  Orphan: { mindmap: [4, 4] }\n---\n`);
+    // A swap keeps both entries; nothing to move yields no edit; a placed key adds to the entry it already has.
+    const swapped = planTopicRekey(doc, new Map([['A', 'B'], ['B', 'A']]), new Set());
+    expect(readTopicPositions(applyEdits(doc.source, swapped ? [swapped] : []))).toEqual(new Map([
+      ['B', { mindmap: { x: 1, y: 1 } }], ['A', { mindmap: { x: 2, y: 2 } }], ['C', { mindmap: { x: 3, y: 3 } }], ['Orphan', { mindmap: { x: 4, y: 4 } }],
+    ]));
+    expect(planTopicRekey(doc, new Map([['A', 'A'], ['Missing', 'Elsewhere']]), new Set(['Nothing']))).toBeNull();
+    const placed = planTopicRekey(doc, new Map(), new Set(), { key: 'A', layout: 'timeline', x: 7, y: 8 });
+    expect(readTopicPositions(applyEdits(doc.source, placed ? [placed] : [])).get('A')).toEqual({ mindmap: { x: 1, y: 1 }, timeline: { x: 7, y: 8 } });
+    expect(() => planTopicRekey(doc, new Map(), new Set(), { key: 'A', layout: 'Bad', x: 0, y: 0 })).toThrow('レイアウト名');
+    expect(() => planTopicRekey(doc, new Map(), new Set(), { key: 'A', layout: 'mindmap', x: Number.NaN, y: 0 })).toThrow('位置が不正');
+  });
+});
+
 describe('readTopicPositions', () => {
   it('reads flow and block styles, quoted keys, and the metadata-cache object shape', () => {
     const flow = `---\nmappy: true\n${TOPICS_KEY}:\n  回復する: { mindmap: [120, -40], timeline: [10, 20] }\n  "補足: 用語": {mindmap:[0,0]}\n---\n## Root\n`;
@@ -145,29 +195,38 @@ describe('serializeTopicPositions', () => {
   });
 });
 
+/** One topic (by heading) moved in one layout, as the view's drag plans it. */
+function moveTopic(doc: MindDocument, title: string, layout: string, position: { x: number; y: number }) {
+  const node = projectMap(doc).topics.find((candidate) => candidate.title === title);
+  if (!node) throw new Error(`Missing topic ${title}`);
+  return planTopicMoves(doc, layout, new Map([[node.id, position]]));
+}
+
 describe('planTopicPositions', () => {
   const note = `---\nmappy: true\ntags:\n  - keep\n${TOPICS_KEY}:\n  A:\n    mindmap:\n      - 1\n      - 2\naliases: [x]\n---\n## Root\n\n## A\n`;
 
   it('replaces only the key block, keeps other keys byte-for-byte, and yields no edit for an unchanged value', () => {
     const doc = parse(note);
-    const edit = planTopicMove(doc, 'A', 'timeline', { x: 30.5, y: -0.4 });
+    const edit = moveTopic(doc, 'A', 'timeline', { x: 30.5, y: -0.4 });
     expect(edit).not.toBeNull();
     const moved = applyEdits(doc.source, edit ? [edit] : []);
     expect(moved).toBe(`---\nmappy: true\ntags:\n  - keep\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2], timeline: [31, 0] }\naliases: [x]\n---\n## Root\n\n## A\n`);
     expect(moved.slice(moved.indexOf('---\n## Root'))).toBe(note.slice(note.indexOf('---\n## Root')));
     const again = parse(moved);
-    expect(planTopicMove(again, 'A', 'timeline', { x: 31, y: 0 })).toBeNull();
+    expect(moveTopic(again, 'A', 'timeline', { x: 31, y: 0 })).toBeNull();
     expect(planTopicPositions(again, readTopicPositions(moved))).toBeNull();
-    const second = planTopicMove(again, 'B', 'mindmap', { x: 9, y: 9 });
+    // A key written with no topic of its own yet (`placed`) is appended after the existing entries.
+    const second = planTopicRekey(again, new Map(), new Set(), { key: 'B', layout: 'mindmap', x: 9, y: 9 });
     expect(applyEdits(moved, second ? [second] : [])).toContain(`  A: { mindmap: [1, 2], timeline: [31, 0] }\n  B: { mindmap: [9, 9] }\n`);
   });
 
   it('adds the key before the closing delimiter, creates a header when missing, and honours BOM and CRLF', () => {
     const existing = parse('---\nmappy: true\n---\n## Root\n\n## A\n');
-    const added = planTopicMove(existing, 'A', 'mindmap', { x: 1, y: 2 });
+    const added = moveTopic(existing, 'A', 'mindmap', { x: 1, y: 2 });
     expect(applyEdits(existing.source, added ? [added] : [])).toBe(`---\nmappy: true\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n\n## A\n`);
+    // A BOM keeps the first heading from parsing until the header exists, so the key is written by `placed` here.
     const bare = parse('\uFEFF## Root\r\n\r\n## A\r\n');
-    const created = planTopicMove(bare, 'A', 'mindmap', { x: 1, y: 2 });
+    const created = planTopicRekey(bare, new Map(), new Set(), { key: 'A', layout: 'mindmap', x: 1, y: 2 });
     expect(applyEdits(bare.source, created ? [created] : [])).toBe(`\uFEFF---\r\n${TOPICS_KEY}:\r\n  A: { mindmap: [1, 2] }\r\n---\r\n## Root\r\n\r\n## A\r\n`);
     const parsed = parse(applyEdits(bare.source, created ? [created] : []));
     expect(parsed.nodes.map((node) => node.title)).toEqual(['Root', 'A']);
@@ -178,15 +237,23 @@ describe('planTopicPositions', () => {
     const removed = planTopicPositions(doc, new Map());
     expect(applyEdits(doc.source, removed ? [removed] : [])).toBe('---\nmappy: true\n---\n## Root\n');
     expect(planTopicPositions(parse('## Root\n'), new Map())).toBeNull();
-    expect(() => planTopicMove(parse('---\nmappy: true\n## Root'), 'A', 'mindmap', { x: 1, y: 1 })).toThrow('frontmatter');
-    expect(() => planTopicMove(doc, 'A', 'Mindmap', { x: 1, y: 1 })).toThrow('レイアウト');
-    expect(() => planTopicMove(doc, 'A', 'mindmap', { x: Number.POSITIVE_INFINITY, y: 1 })).toThrow('位置');
-    expect(() => planTopicMove(doc, 'A\nB', 'mindmap', { x: 1, y: 1 })).toThrow('1 行');
+    expect(() => planTopicRekey(parse('---\nmappy: true\n## Root\n\n## A\n'), new Map(), new Set(), { key: 'A', layout: 'mindmap', x: 1, y: 1 })).toThrow('frontmatter');
+    const withTopic = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\nmappy: true\n---\n## Root\n\n## A\n`);
+    expect(() => moveTopic(withTopic, 'A', 'Mindmap', { x: 1, y: 1 })).toThrow('レイアウト');
+    expect(() => moveTopic(withTopic, 'A', 'mindmap', { x: Number.POSITIVE_INFINITY, y: 1 })).toThrow('位置');
+    // A multi-line Setext heading has no one-line key: the move (and a body drag that includes it) is refused, the YAML never broken.
+    const setext = parse('---\nmappy: true\n---\nBody\n====\n\nFoo\nBar\n===\n');
+    const multiline = projectMap(setext).topics[0];
+    if (!multiline) throw new Error('Missing Setext topic');
+    expect(multiline.title).toBe('Foo\nBar');
+    expect(() => planTopicMoves(setext, 'mindmap', new Map([[multiline.id, { x: 1, y: 1 }]]))).toThrow('1 行');
+    expect(() => planTopicRekey(setext, new Map(), new Set(), { key: 'Foo\nBar', layout: 'mindmap', x: 1, y: 1 })).toThrow('1 行');
+    expect(() => planTopicRekey(parse(`---\n${TOPICS_KEY}:\n  X: { mindmap: [1, 1] }\n---\n## Root\n`), new Map([['X', 'Foo\nBar']]), new Set())).toThrow('1 行');
   });
 
   it('keeps entries for headings that no longer exist so a Markdown-side rename can be undone by hand', () => {
     const doc = parse(`---\n${TOPICS_KEY}:\n  Gone: { mindmap: [5, 5] }\n---\n## Root\n\n## A\n`);
-    const edit = planTopicMove(doc, 'A', 'mindmap', { x: 1, y: 1 });
+    const edit = moveTopic(doc, 'A', 'mindmap', { x: 1, y: 1 });
     expect(applyEdits(doc.source, edit ? [edit] : [])).toBe(`---\n${TOPICS_KEY}:\n  Gone: { mindmap: [5, 5] }\n  A: { mindmap: [1, 1] }\n---\n## Root\n\n## A\n`);
   });
 });
@@ -238,20 +305,44 @@ describe('rename keeps the topic key in step', () => {
     expect(placed.edits).toHaveLength(1);
   });
 
-  it('never takes the position of another current topic, but replaces an orphan entry under the new name', () => {
+  it('renamed to another current topic\'s heading it becomes the second of that heading and keeps its position under `<heading> (2)`; an orphan entry under the new name is replaced', () => {
     const doc = parse(note);
+    // `A` comes first in the note, so it is the first `Other` now and takes the plain key; the one that was `Other` becomes `Other (2)`.
     const collided = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'Other' }).edits);
-    expect(readTopicPositions(collided).get('Other')).toEqual({ timeline: { x: 3, y: 4 } });
-    expect(readTopicPositions(collided).has('A')).toBe(false);
+    expect([...readTopicPositions(collided)]).toEqual([['Other', { mindmap: { x: 1, y: 2 } }], ['Other (2)', { timeline: { x: 3, y: 4 } }]]);
+    expect(collided).toContain(`${TOPICS_KEY}:\n  Other: { mindmap: [1, 2] }\n  Other (2): { timeline: [3, 4] }\n---\n`);
+    const renamed = parse(collided);
+    expect(projectMap(renamed).topics.map((node) => node.title)).toEqual(['Other', 'Other']);
+    expect([...topicKeys(renamed).values()]).toEqual(['Other', 'Other (2)']);
     const orphaned = parse(note.replace('## Other\n', ''));
     const reused = applyEdits(orphaned.source, planEdit(orphaned, { type: 'rename', nodeId: topic(orphaned, 'A').id, title: 'Other' }).edits);
     expect([...readTopicPositions(reused)]).toEqual([['Other', { mindmap: { x: 1, y: 2 } }]]);
-    expect(planTopicRename(doc, 'Missing', 'X')).toBeNull();
+    expect(planTopicRekey(doc, new Map([['Missing', 'X']]), new Set())).toBeNull();
+  });
+
+  it('renaming the first of two same-titled topics promotes the second to the plain key, so neither loses its position', () => {
+    const twice = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  A (2): { mindmap: [3, 4] }\n---\n## Root\n\n## A\n- First\n\n## A\n- Second\n`);
+    const [first, second] = projectMap(twice).topics;
+    if (!first || !second) throw new Error('Missing topics');
+    const plan = planEdit(twice, { type: 'rename', nodeId: first.id, title: 'B' });
+    const result = applyEdits(twice.source, plan.edits);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  B: { mindmap: [1, 2] }\n  A: { mindmap: [3, 4] }\n---\n## Root\n\n## B\n- First\n\n## A\n- Second\n`);
+    expect(parse(result).nodes.find((node) => node.titleFrom === plan.selectionOffset)?.title).toBe('B');
+    // The other way: renaming the second leaves the first's key alone and moves only `A (2)`.
+    const other = applyEdits(twice.source, planEdit(twice, { type: 'rename', nodeId: second.id, title: 'B' }).edits);
+    expect(readTopicPositions(other)).toEqual(new Map([['A', { mindmap: { x: 1, y: 2 } }], ['B', { mindmap: { x: 3, y: 4 } }]]));
+    // Renaming a third topic to `A` makes it `A (3)`; renaming it to `A (2)` takes that text as a heading and bumps the second to `A (3)`.
+    const three = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  A (2): { mindmap: [3, 4] }\n  C: { mindmap: [5, 6] }\n---\n## Root\n\n## A\n\n## A\n\n## C\n`);
+    const c = topic(three, 'C');
+    expect(readTopicPositions(applyEdits(three.source, planEdit(three, { type: 'rename', nodeId: c.id, title: 'A' }).edits)))
+      .toEqual(new Map([['A', { mindmap: { x: 1, y: 2 } }], ['A (2)', { mindmap: { x: 3, y: 4 } }], ['A (3)', { mindmap: { x: 5, y: 6 } }]]));
+    expect(readTopicPositions(applyEdits(three.source, planEdit(three, { type: 'rename', nodeId: c.id, title: 'A (2)' }).edits)))
+      .toEqual(new Map([['A', { mindmap: { x: 1, y: 2 } }], ['A (3)', { mindmap: { x: 3, y: 4 } }], ['A (2)', { mindmap: { x: 5, y: 6 } }]]));
   });
 
   it('creates the header edit first when the note has no frontmatter yet and the topic is positioned by the caller', () => {
     const bare = parse('## Root\n\n## A\n');
-    const placed = planTopicMove(bare, 'A', 'mindmap', { x: 1, y: 1 });
+    const placed = moveTopic(bare, 'A', 'mindmap', { x: 1, y: 1 });
     const doc = parse(applyEdits(bare.source, placed ? [placed] : []));
     const plan = planEdit(doc, { type: 'rename', nodeId: topic(doc, 'A').id, title: 'B' });
     expect(applyEdits(doc.source, plan.edits)).toBe(`---\n${TOPICS_KEY}:\n  B: { mindmap: [1, 1] }\n---\n## Root\n\n## B\n`);
@@ -327,6 +418,19 @@ describe('add-topic appends an empty top-level section at the end of the documen
     expect(applyEdits(crlf.source, planEdit(crlf, { type: 'add-topic', title: '![[M]]' }).edits)).toBe('## Body\r\n- A\r\n\r\n## ![[M]]\r\n');
   });
 
+  it('a titled section whose text is an ordinal key renumbers the topics of that heading and moves their entries along', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n  A (2): { mindmap: [2, 2] }\n---\n## Root\n\n## A\n\n## A\n`);
+    const plan = planEdit(doc, { type: 'add-topic', title: 'A (2)' });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\n  A (3): { mindmap: [2, 2] }\n---\n## Root\n\n## A\n\n## A\n\n## A (2)\n`);
+    const parsed = parse(result);
+    expect([...topicKeys(parsed).values()]).toEqual(['A', 'A (3)', 'A (2)']);
+    expect(parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset)?.title).toBe('A (2)');
+    // An empty or unrelated section changes no key: the plan stays the one edit.
+    expect(planEdit(doc, { type: 'add-topic' }).edits).toHaveLength(1);
+    expect(planEdit(doc, { type: 'add-topic', title: 'B' }).edits).toHaveLength(1);
+  });
+
   it('with a title, makes a topic of a note on the virtual root and the body of an empty note, and refuses a title with a line break', () => {
     const virtual = parse('---\nmappy: true\n---\n- 見出しより前の項目\n');
     const topic = applyEdits(virtual.source, planEdit(virtual, { type: 'add-topic', title: '![[M]]' }).edits);
@@ -369,12 +473,13 @@ describe('rename with a position places a new topic in the same edit set', () =>
     expect(readTopicPositions(result).has('')).toBe(false);
   });
 
-  it('does not take the entry of another current topic with the new name, and ignores the position for non-topics', () => {
+  it('named like another current topic it is placed under `<heading> (2)`, leaving that topic\'s entry alone; the position is ignored for non-topics', () => {
     const doc = parse(`---\n${TOPICS_KEY}:\n  Other: { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## Other\n\n## \n`);
     const blank = projectMap(doc).topics[1];
     if (!blank) throw new Error('Missing blank topic');
     const result = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: blank.id, title: 'Other', position: { layout: 'mindmap', x: 9, y: 9 } }).edits);
-    expect([...readTopicPositions(result)]).toEqual([['Other', { mindmap: { x: 3, y: 4 } }]]);
+    expect([...readTopicPositions(result)]).toEqual([['Other', { mindmap: { x: 3, y: 4 } }], ['Other (2)', { mindmap: { x: 9, y: 9 } }]]);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  Other: { mindmap: [3, 4] }\n  Other (2): { mindmap: [9, 9] }\n---\n## Root\n- Child\n\n## Other\n\n## Other\n`);
     const child = doc.nodes.find((node) => node.title === 'Child');
     const body = projectMap(doc).root;
     for (const node of [child, body]) {
@@ -413,7 +518,7 @@ describe('delete removes a topic section together with its position', () => {
     const headingResult = applyEdits(headings.source, planEdit(headings, { type: 'delete', nodeId: topic(headings, 'A').id }).edits);
     expect(headingResult).toBe('# Root\n\n## Child\n');
     // The header held nothing else, so it goes as a whole rather than leaving an empty `---` pair.
-    expect(planTopicRemoval(headings, topic(headings, 'A'))).toEqual({ from: 0, to: `---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n`.length, text: '' });
+    expect(planTopicRekey(headings, new Map(), new Set(['A']))).toEqual({ from: 0, to: `---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n`.length, text: '' });
   });
 
   it('takes the separating blank lines of a section at the end of the file, so add-topic then delete round-trips', () => {
@@ -428,18 +533,56 @@ describe('delete removes a topic section together with its position', () => {
     expect(applyEdits(middle.source, planEdit(middle, { type: 'delete', nodeId: topic(middle, 'A').id }).edits)).toBe('## Root\n- Child\n\n## Other\n');
   });
 
-  it('keeps the entry while another current topic shares the heading, and for nodes that are not topics', () => {
-    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- First\n\n## A\n- Second\n`);
+  it('of two same-titled topics, deleting the second drops `A (2)` and deleting the first promotes `A (2)` to `A`; nodes that are not topics leave the key alone', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  A (2): { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## A\n- First\n\n## A\n- Second\n`);
     const [first, second] = projectMap(doc).topics;
     if (!first || !second) throw new Error('Missing topics');
-    const result = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: second.id }).edits);
-    expect(result).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- First\n`);
-    expect(planTopicRemoval(doc, first)).toBeNull();
+    expect(applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: second.id }).edits))
+      .toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n---\n## Root\n- Child\n\n## A\n- First\n`);
+    const plan = planEdit(doc, { type: 'delete', nodeId: first.id });
+    const promoted = applyEdits(doc.source, plan.edits);
+    expect(promoted).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## A\n- Second\n`);
+    // The selection (the parent, here the virtual root: none) is unaffected by the frontmatter shrinking.
+    expect(plan.selectionOffset).toBeNull();
+    // Without an entry of its own, the second topic's promotion just drops the first's entry.
+    const single = parse(doc.source.replace('  A (2): { mindmap: [3, 4] }\n', ''));
+    expect(applyEdits(single.source, planEdit(single, { type: 'delete', nodeId: projectMap(single).topics[0]?.id ?? '' }).edits))
+      .toBe('## Root\n- Child\n\n## A\n- Second\n');
     const child = doc.nodes.find((node) => node.title === 'Child');
     if (!child) throw new Error('Missing child');
     expect(planEdit(doc, { type: 'delete', nodeId: child.id }).edits).toHaveLength(1);
-    expect(planTopicRemoval(doc, child)).toBeNull();
-    expect(planTopicRemoval(doc, projectMap(doc).root)).toBeNull();
+    const under = doc.nodes.find((node) => node.title === 'First');
+    if (!under) throw new Error('Missing item');
+    expect(planEdit(doc, { type: 'delete', nodeId: under.id }).edits).toHaveLength(1);
+  });
+
+  it('joining the first of two same-titled topics under a node promotes the second\'s key too, and Undo of the text restores both', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  A (2): { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## A\n- First\n\n## A\n- Second\n`);
+    const [first] = projectMap(doc).topics;
+    const child = doc.nodes.find((node) => node.title === 'Child');
+    if (!first || !child) throw new Error('Missing nodes');
+    const joined = applyEdits(doc.source, planEdit(doc, { type: 'move', nodeId: first.id, parentId: child.id, index: 0 }).edits);
+    expect(joined).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [3, 4] }\n---\n## Root\n- Child\n  - A\n    - First\n\n## A\n- Second\n`);
+    expect([...topicKeys(parse(joined)).values()]).toEqual(['A']);
+  });
+
+  it('swapping two same-titled topics with ⌥↑／⌥↓ swaps their entries, so each keeps its place on the map', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  A (2): { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## A\n- First\n\n## A\n- Second\n`);
+    const [, second] = projectMap(doc).topics;
+    if (!second) throw new Error('Missing topic');
+    const plan = planEdit(doc, { type: 'move-up', nodeId: second.id });
+    const swapped = applyEdits(doc.source, plan.edits);
+    expect(swapped.slice(0, swapped.indexOf('## Root'))).toBe(`---\n${TOPICS_KEY}:\n  A (2): { mindmap: [1, 2] }\n  A: { mindmap: [3, 4] }\n---\n`);
+    expect(swapped).toContain('\n## A\n- Second\n## A\n- First\n');
+    const parsed = parse(swapped);
+    const moved = parsed.nodes.find((node) => node.titleFrom === plan.selectionOffset);
+    expect(moved?.children.map((node) => node.title)).toEqual(['Second']);
+    expect(topicKeys(parsed).get(moved?.id ?? '')).toBe('A');
+    // A topic swapped with the body root changes hands: no guess, the frontmatter stays.
+    const [first] = projectMap(doc).topics;
+    if (!first) throw new Error('Missing topic');
+    const body = applyEdits(doc.source, planEdit(doc, { type: 'move-up', nodeId: first.id }).edits);
+    expect(body.slice(0, body.indexOf('## '))).toBe(doc.source.slice(0, doc.source.indexOf('## ')));
   });
 });
 
@@ -516,17 +659,24 @@ describe('a topic dropped on a node joins it as a branch (合流)', () => {
     expect(result).toBe('# Body\n\n## Child\n\n### Topic\n\n##### Deep\n');
   });
 
-  it('planTopicMoves stores several headings at once and refuses bad input', () => {
+  it('planTopicMoves stores several topics at once by node id, under their keys, and refuses bad input', () => {
     const doc = parse(fixture);
-    const edit = planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: -460, y: 150 }], ['位置のないトピック', { x: -100, y: 300 }]]));
+    const edit = planTopicMoves(doc, 'mindmap', new Map([[topic(doc, '参考資料').id, { x: -460, y: 150 }], [topic(doc, '位置のないトピック').id, { x: -100, y: 300 }]]));
     const result = applyEdits(doc.source, edit ? [edit] : []);
     expect(readTopicPositions(result).get('参考資料')).toEqual({ mindmap: { x: -460, y: 150 }, timeline: { x: 0, y: 260 } });
     expect(readTopicPositions(result).get('位置のないトピック')).toEqual({ mindmap: { x: -100, y: 300 } });
     expect(readTopicPositions(result).get('補足: 用語')).toEqual({ mindmap: { x: 560, y: -140 } });
     expect(result.slice(result.indexOf('---\n', 4))).toBe(fixture.slice(fixture.indexOf('---\n', 4)));
-    expect(planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: -360, y: 200 }]]))).toBeNull();
+    expect(planTopicMoves(doc, 'mindmap', new Map([[topic(doc, '参考資料').id, { x: -360, y: 200 }]]))).toBeNull();
     expect(() => planTopicMoves(doc, 'Bad', new Map())).toThrow('レイアウト名');
-    expect(() => planTopicMoves(doc, 'mindmap', new Map([['参考資料', { x: Number.NaN, y: 0 }]]))).toThrow('位置が不正');
+    expect(() => planTopicMoves(doc, 'mindmap', new Map([[topic(doc, '参考資料').id, { x: Number.NaN, y: 0 }]]))).toThrow('位置が不正');
+    expect(() => planTopicMoves(doc, 'mindmap', new Map([[node(doc, '回復する').id, { x: 1, y: 1 }]]))).toThrow('トピックが変更');
+    // Two topics with one heading: the second is written as `<heading> (2)` (the body root dragged against both).
+    const twice = parse(`---\nmappy: true\n---\n## Root\n\n## A\n\n## A\n`);
+    const [first, second] = projectMap(twice).topics;
+    if (!first || !second) throw new Error('Missing topics');
+    const both = planTopicMoves(twice, 'mindmap', new Map([[first.id, { x: 1, y: 2 }], [second.id, { x: 3, y: 4 }]]));
+    expect(applyEdits(twice.source, both ? [both] : [])).toBe(`---\nmappy: true\n${TOPICS_KEY}:\n  A: { mindmap: [1, 2] }\n  A (2): { mindmap: [3, 4] }\n---\n## Root\n\n## A\n\n## A\n`);
   });
 });
 
@@ -600,15 +750,23 @@ describe('a branch dropped on empty canvas detaches into a new topic (切り離�
       .toBe('---\nmappy: true\n---\n## Body\n- a\n  - a1\n- b\n\n## ![[Map]]\n');
   });
 
-  it('does not store a position when another current topic already has the heading, and detaches heading branches by moving them to the top level', () => {
+  it('detached beside a topic with the same heading it is stored as `<heading> (2)`, and heading branches detach by moving to the top level', () => {
     const doc = parse('---\nmappy-topics:\n  a: { mindmap: [1, 1] }\n---\n## Body\n- a\n  - x\n\n## a\n- y\n');
-    const result = applyEdits(doc.source, planEdit(doc, { type: 'detach', nodeId: node(doc, 'a').id, position: { layout: 'mindmap', x: 9, y: 9 } }).edits);
-    expect(result).toBe('---\nmappy-topics:\n  a: { mindmap: [1, 1] }\n---\n## Body\n\n## a\n- y\n\n## a\n\n- x\n');
+    const plan = planEdit(doc, { type: 'detach', nodeId: node(doc, 'a').id, position: { layout: 'mindmap', x: 9, y: 9 } });
+    const result = applyEdits(doc.source, plan.edits);
+    expect(result).toBe('---\nmappy-topics:\n  a: { mindmap: [1, 1] }\n  a (2): { mindmap: [9, 9] }\n---\n## Body\n\n## a\n- y\n\n## a\n\n- x\n');
+    const parsed = parse(result);
+    const detached = parsed.nodes.find((item) => item.titleFrom === plan.selectionOffset);
+    expect(detached?.children.map((item) => item.title)).toEqual(['x']);
+    expect(topicKeys(parsed).get(detached?.id ?? '')).toBe('a (2)');
+    // Without a position the section alone is written; the keys of the topics already there do not move.
+    expect(applyEdits(doc.source, planEdit(doc, { type: 'detach', nodeId: node(doc, 'a').id }).edits))
+      .toBe('---\nmappy-topics:\n  a: { mindmap: [1, 1] }\n---\n## Body\n\n## a\n- y\n\n## a\n\n- x\n');
     const headings = parse('# Body\n\n## Child\n\n### Deep\n\n## Other\n');
-    const plan = planEdit(headings, { type: 'detach', nodeId: node(headings, 'Child').id, position: { layout: 'mindmap', x: 5, y: 6 } });
-    const moved = applyEdits(headings.source, plan.edits);
+    const headingPlan = planEdit(headings, { type: 'detach', nodeId: node(headings, 'Child').id, position: { layout: 'mindmap', x: 5, y: 6 } });
+    const moved = applyEdits(headings.source, headingPlan.edits);
     expect(moved).toBe('---\nmappy-topics:\n  Child: { mindmap: [5, 6] }\n---\n# Body\n\n## Other\n\n# Child\n\n## Deep\n');
-    expect(parse(moved).nodes.find((item) => item.titleFrom === plan.selectionOffset)?.title).toBe('Child');
+    expect(parse(moved).nodes.find((item) => item.titleFrom === headingPlan.selectionOffset)?.title).toBe('Child');
   });
 });
 

@@ -110,15 +110,15 @@ describe('embedTrees and the opening folds', () => {
     expect(Array.from(initialFolds(topicTrees), id => topics.nodes.find(node => node.id === id)?.title).sort()).toEqual(['b', 'c']);
   });
 
-  it('hands stored topic positions of the note\'s layout to the first topic of each name only', () => {
-    const source = ['---', 'mappy: true', 'mappy-topics:', '  参考資料: { mindmap: [10, 20], timeline: [1, 2] }', '---',
-      '## 本体', '', '## 参考資料', '', '## 参考資料', ''].join('\n');
+  it('hands stored topic positions of the note\'s layout to each topic by its key: the heading, `<heading> (2)` for a repeated one', () => {
+    const source = ['---', 'mappy: true', 'mappy-topics:', '  参考資料: { mindmap: [10, 20], timeline: [1, 2] }', '  参考資料 (2): { mindmap: [30, 40] }', '---',
+      '## 本体', '', '## 参考資料', '', '## 参考資料', '', '## 参考資料', ''].join('\n');
     const doc = parseMarkdown(source, 'T');
     const trees = embedTrees(doc, '');
     if (!trees) throw new Error('no trees');
     const positions = readTopicPositions(source);
-    expect(embedTopicLayouts(trees, positions, 'mindmap').map(topic => topic.position)).toEqual([{ x: 10, y: 20 }, null]);
-    expect(embedTopicLayouts(trees, positions, 'hierarchy').map(topic => topic.position)).toEqual([null, null]);
+    expect(embedTopicLayouts(doc, trees, positions, 'mindmap').map(topic => topic.position)).toEqual([{ x: 10, y: 20 }, { x: 30, y: 40 }, null]);
+    expect(embedTopicLayouts(doc, trees, positions, 'hierarchy').map(topic => topic.position)).toEqual([null, null, null]);
   });
 });
 

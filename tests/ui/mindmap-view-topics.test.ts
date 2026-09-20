@@ -559,6 +559,197 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
   });
 });
 
+describe('MindmapView keeps topics with the same heading apart (LEV-86)', () => {
+  /** The fixture with two topics `同じ見出し` (a called map twice, a repeated heading) before the unpositioned one. */
+  const duplicated = (): string => fixtureSource().replace('## 位置のないトピック', '## 同じ見出し\n- a\n\n## 同じ見出し\n- b\n\n## 位置のないトピック');
+  const sameTitled = (view: MindmapView): [string, string] => {
+    const [first, second] = projectMap(documentOf(view)).topics.filter(node => node.title === '同じ見出し').map(node => node.id);
+    if (!first || !second) throw new Error('Missing the two same-titled topics');
+    return [first, second];
+  };
+
+  it('dragging the second of two same-titled topics moves only that one, stores it under `同じ見出し (2)`, and keeps both ids and the selection', async () => {
+    const source = duplicated();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer } = await mount(source);
+    const [first, second] = sameTitled(view);
+    const origin = layout().origin;
+    const firstBefore = transform(first);
+    const secondBefore = transform(second);
+    // Both sit in the default column under the body: the second below the first.
+    expect(secondBefore.y).toBeGreaterThan(firstBefore.y);
+    const element = nodes().get(second);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 300, 300);
+    pointer('pointermove', canvas, 306, 300);
+    pointer('pointermove', canvas, 340, 280);
+    pointer('pointerup', canvas, 340, 280);
+    await settle();
+    const stored = { x: Math.round(secondBefore.x - origin.x + 40), y: Math.round(secondBefore.y - origin.y - 20) };
+    // Only the dragged one moved, to where it was dropped; the first stays where it was (looked up by order again: the ids are checked below).
+    const [firstNow, secondNow] = sameTitled(view);
+    expect(transform(firstNow)).toEqual(firstBefore);
+    expect(transform(secondNow)).toEqual({ x: secondBefore.x + 40, y: secondBefore.y - 20 });
+    // The second topic has a key of its own; the first has none yet (it was never moved).
+    const positions = readTopicPositions(current());
+    expect(positions.get('同じ見出し (2)')).toEqual({ mindmap: stored });
+    expect(positions.has('同じ見出し')).toBe(false);
+    expect(current()).toContain(`\n  同じ見出し (2): { mindmap: [${stored.x}, ${stored.y}] }\n---\n`);
+    expect(current().slice(current().indexOf('---\n', 4))).toBe(source.slice(source.indexOf('---\n', 4)));
+    // The save re-parses the note: both topics keep their ids, and the dragged one stays selected.
+    expect(sameTitled(view)).toEqual([first, second]);
+    expect(nodes().get(second)?.classList.contains('is-selected')).toBe(true);
+  });
+
+  /** The duplicated fixture with both topics positioned: the first at (100, 600), the second at (400, 600). */
+  const placed = (): string => duplicated().replace('  消えた見出し: { mindmap: [0, 0] }\n', '  消えた見出し: { mindmap: [0, 0] }\n  同じ見出し: { mindmap: [100, 600] }\n  同じ見出し (2): { mindmap: [400, 600] }\n');
+
+  it('lays each of two positioned same-titled topics out from its own entry, and a `同じ見出し (2)` heading of its own bumps the second to `(3)`', async () => {
+    const source = placed();
+    const { view, layout, transform } = await mount(source);
+    const [first, second] = sameTitled(view);
+    const origin = layout().origin;
+    expect(transform(first)).toEqual({ x: origin.x + 100, y: origin.y + 600 });
+    expect(transform(second)).toEqual({ x: origin.x + 400, y: origin.y + 600 });
+    document.body.replaceChildren();
+    // A third topic whose heading is the text `同じ見出し (2)` owns that key; the second `同じ見出し` reads `同じ見出し (3)` instead.
+    const withThird = source.replace('## 位置のないトピック', '## 同じ見出し (2)\n- c\n\n## 位置のないトピック').replace('  同じ見出し (2): { mindmap: [400, 600] }\n', '  同じ見出し (2): { mindmap: [400, 600] }\n  同じ見出し (3): { mindmap: [700, 600] }\n');
+    const other = await mount(withThird);
+    const [firstAgain, secondAgain] = sameTitled(other.view);
+    const third = other.topic('同じ見出し (2)');
+    const originAgain = other.layout().origin;
+    expect(other.transform(firstAgain)).toEqual({ x: originAgain.x + 100, y: originAgain.y + 600 });
+    expect(other.transform(secondAgain)).toEqual({ x: originAgain.x + 700, y: originAgain.y + 600 });
+    expect(other.transform(third.id)).toEqual({ x: originAgain.x + 400, y: originAgain.y + 600 });
+  });
+
+  it('renaming the first of the two promotes the second\'s `(2)` entry to the plain key, so neither moves; Undo restores the keys', async () => {
+    const source = placed();
+    const { view, nodes, transform, source: current, settle, dblclick, key, editor, undo } = await mount(source);
+    const [first, second] = sameTitled(view);
+    const firstBefore = transform(first);
+    const secondBefore = transform(second);
+    const element = nodes().get(first);
+    if (!element) throw new Error('No element');
+    dblclick(element, 300, 300);
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    input.value = '別の見出し';
+    key(input, 'Enter');
+    await settle();
+    const renamed = current();
+    expect(renamed).toContain('  別の見出し: { mindmap: [100, 600] }\n  同じ見出し: { mindmap: [400, 600] }\n---\n');
+    expect(renamed).not.toContain('同じ見出し (2)');
+    expect(renamed.slice(renamed.indexOf('## 講座の本体'))).toBe(source.slice(source.indexOf('## 講座の本体')).replace('## 同じ見出し\n- a', '## 別の見出し\n- a'));
+    // Both stay where they were; the untouched one keeps its id, the renamed one is the selection (found by the plan's
+    // offset: a heading that was one of two keeps no id through a rename that also rewrites the frontmatter).
+    const renamedTopic = projectMap(documentOf(view)).topics.find(node => node.title === '別の見出し');
+    const remaining = projectMap(documentOf(view)).topics.find(node => node.title === '同じ見出し');
+    if (!renamedTopic || !remaining) throw new Error('Missing topics');
+    expect(remaining.id).toBe(second);
+    expect(nodes().get(renamedTopic.id)?.classList.contains('is-selected')).toBe(true);
+    expect(transform(renamedTopic.id)).toEqual(firstBefore);
+    expect(transform(remaining.id)).toEqual(secondBefore);
+    await undo();
+    expect(current()).toBe(source);
+    expect(transform(sameTitled(view)[1])).toEqual(secondBefore);
+  });
+
+  it('deleting the first of the two keeps the second where it was under the promoted key; Undo brings both back in place', async () => {
+    const source = placed();
+    const { view, canvas, nodes, transform, source: current, settle, key, undo, redo } = await mount(source);
+    const [first, second] = sameTitled(view);
+    const firstBefore = transform(first);
+    const secondBefore = transform(second);
+    nodes().get(first)?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    key(canvas, 'Delete');
+    await settle();
+    const deleted = current();
+    expect(deleted).toContain('  消えた見出し: { mindmap: [0, 0] }\n  同じ見出し: { mindmap: [400, 600] }\n---\n');
+    expect(deleted).not.toContain('同じ見出し (2)');
+    expect(deleted).not.toContain('## 同じ見出し\n- a');
+    const remaining = projectMap(documentOf(view)).topics.filter(node => node.title === '同じ見出し');
+    expect(remaining).toHaveLength(1);
+    // Its text did not change, so it keeps its id through the re-parse (and with it any fold on its branches).
+    expect(remaining[0]?.id).toBe(second);
+    expect(transform(second)).toEqual(secondBefore);
+    await undo();
+    expect(current()).toBe(source);
+    const [firstAgain, secondAgain] = sameTitled(view);
+    expect(transform(firstAgain)).toEqual(firstBefore);
+    expect(transform(secondAgain)).toEqual(secondBefore);
+    await redo();
+    expect(current()).toBe(deleted);
+  });
+
+  it('dragging the body root writes both keys; joining the first to a node drops its key and promotes the second; detaching a branch beside a same-titled topic writes `(2)`', async () => {
+    const source = duplicated();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, hit, undo } = await mount(source);
+    const { root } = projectMap(documentOf(view));
+    const [first, second] = sameTitled(view);
+    const origin = layout().origin;
+    const firstBefore = transform(first);
+    const secondBefore = transform(second);
+    const body = nodes().get(root.id);
+    if (!body) throw new Error('No body element');
+    pointer('pointerdown', body, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 600, 450);
+    pointer('pointerup', canvas, 600, 450);
+    await settle();
+    const positions = readTopicPositions(current());
+    expect(positions.get('同じ見出し')).toEqual({ mindmap: { x: Math.round(firstBefore.x - origin.x - 100), y: Math.round(firstBefore.y - origin.y - 50) } });
+    expect(positions.get('同じ見出し (2)')).toEqual({ mindmap: { x: Math.round(secondBefore.x - origin.x - 100), y: Math.round(secondBefore.y - origin.y - 50) } });
+    expect(sameTitled(view)).toEqual([first, second]);
+    // Join: the first `同じ見出し` released beside 回復する becomes its child; its entry goes, the second's `(2)` entry becomes `同じ見出し`.
+    const recover = documentOf(view).nodes.find(node => node.title === '回復する');
+    const target = nodes().get(recover?.id ?? '');
+    const element = nodes().get(first);
+    if (!target || !element) throw new Error('No elements');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    hit(target);
+    pointer('pointermove', canvas, 520, 410);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    pointer('pointerup', canvas, 520, 410);
+    await settle();
+    const joined = current();
+    const afterJoin = readTopicPositions(joined);
+    expect(afterJoin.get('同じ見出し')).toEqual(positions.get('同じ見出し (2)'));
+    expect(afterJoin.has('同じ見出し (2)')).toBe(false);
+    expect(joined).toContain('  - 睡眠\n  - 同じ見出し\n    - a\n- 記録する\n');
+    const remaining = projectMap(documentOf(view)).topics.filter(node => node.title === '同じ見出し');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.children.map(node => node.title)).toEqual(['b']);
+    await undo();
+    expect(readTopicPositions(current())).toEqual(positions);
+    // Detach: a branch whose text repeats a topic's heading (the item `a` renamed to 位置のないトピック on the Markdown side)
+    // released on empty canvas becomes the second topic of that heading, stored as `位置のないトピック (2)`.
+    const withBranch = documentOf(view);
+    const item = withBranch.nodes.find(node => node.title === 'a' && node.kind === 'list');
+    if (!item) throw new Error('Missing item');
+    await (view as unknown as { commit(text: string, edits: { from: number; to: number; text: string }[]): Promise<void> })
+      .commit(withBranch.source, [{ from: item.titleFrom, to: item.titleTo, text: '位置のないトピック' }]);
+    await settle();
+    const doc = documentOf(view);
+    const renamedItem = doc.nodes.find(node => node.title === '位置のないトピック' && node.kind === 'list');
+    const itemElement = nodes().get(renamedItem?.id ?? '');
+    if (!itemElement) throw new Error('No item element');
+    hit(null);
+    pointer('pointerdown', itemElement, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 900, 700);
+    pointer('pointerup', canvas, 900, 700);
+    await settle();
+    const detached = current();
+    expect(detached.endsWith('\n## 位置のないトピック\n')).toBe(true);
+    expect(readTopicPositions(detached).get('位置のないトピック (2)')?.mindmap).toBeDefined();
+    // The topic that had the heading keeps the entry the body drag wrote for it.
+    expect(readTopicPositions(detached).get('位置のないトピック')).toEqual(positions.get('位置のないトピック'));
+    expect(projectMap(documentOf(view)).topics.filter(node => node.title === '位置のないトピック')).toHaveLength(2);
+  });
+});
+
 describe('MindmapView moves the body against its topics and joins a topic to a node', () => {
   it.each(['mindmap', 'timeline'] as const)('dragging the body root in %s shifts the viewport and stores every topic\'s new offset; undo restores them', async mode => {
     const source = fixtureSource();

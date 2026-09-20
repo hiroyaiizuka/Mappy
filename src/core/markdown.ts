@@ -116,6 +116,39 @@ function trimRange(source: string, from: number, to: number): [number, number] {
   return [from, to];
 }
 
+function groupByTitle(nodes: readonly MindNode[]): Map<string, MindNode[]> {
+  const byTitle = new Map<string, MindNode[]>();
+  for (const node of nodes) {
+    const matches = byTitle.get(node.title) ?? [];
+    matches.push(node);
+    byTitle.set(node.title, matches);
+  }
+  return byTitle;
+}
+
+/** The top-level heading sections in source order (the body root and the free topics, §5 M7): a heading no earlier heading is shallower than. */
+function topLevelSections(nodes: readonly MindNode[]): MindNode[] {
+  let shallowest = Number.POSITIVE_INFINITY;
+  return nodes.filter((node) => {
+    if (node.kind === 'list' || node.level > shallowest) return false;
+    shallowest = node.level;
+    return true;
+  });
+}
+
+/** Top-level sections grouped by their text (heading through the end of the section, trailing blank lines aside). */
+function sectionsByText(nodes: readonly MindNode[], source: string): Map<string, MindNode[]> {
+  const sections = topLevelSections(nodes);
+  const byText = new Map<string, MindNode[]>();
+  sections.forEach((node, index) => {
+    const text = source.slice(node.from, sections[index + 1]?.from ?? source.length).trimEnd();
+    const matches = byText.get(text) ?? [];
+    matches.push(node);
+    byText.set(text, matches);
+  });
+  return byText;
+}
+
 function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source: string): void {
   if (previous?.source === source && previous.nodes.length === nodes.length
     && nodes.every((node, index) => previous.nodes[index]?.kind === node.kind)) {
@@ -123,15 +156,8 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
     return;
   }
   if (!previous) return;
-  const oldTitles = new Map<string, MindNode[]>();
-  const newTitles = new Map<string, MindNode[]>();
-  for (const [collection, byTitle] of [[previous.nodes, oldTitles], [nodes, newTitles]] as const) {
-    for (const node of collection) {
-      const matches = byTitle.get(node.title) ?? [];
-      matches.push(node);
-      byTitle.set(node.title, matches);
-    }
-  }
+  const oldTitles = groupByTitle(previous.nodes);
+  const newTitles = groupByTitle(nodes);
   for (const node of nodes) {
     const oldMatches = oldTitles.get(node.title);
     if (oldMatches?.length === 1 && newTitles.get(node.title)?.length === 1) {
@@ -139,7 +165,20 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
       if (old) node.id = old.id;
     }
   }
-  // Do not guess identities for duplicate titles after an external change.
+  // Top-level sections whose whole text (heading and body) is unchanged keep their ids, same-titled ones
+  // included (§5 M7: a save that moves a free topic changes only the frontmatter, so both topics of a
+  // heading keep their ids and the map its selection). Identical sections correspond by order while their
+  // count holds; a section whose text changed is not guessed at by title or position (docs/architecture.md).
+  const oldSections = sectionsByText(previous.nodes, previous.source);
+  const used = new Set(nodes.map((node) => node.id));
+  for (const [text, sections] of sectionsByText(nodes, source)) {
+    const olds = oldSections.get(text);
+    if (!olds || olds.length !== sections.length) continue;
+    sections.forEach((section, index) => {
+      const old = olds[index];
+      if (old && !used.has(old.id)) { section.id = old.id; used.add(old.id); }
+    });
+  }
   // A single title-only edit can be matched by its unchanged source surrounds.
   let prefix = 0;
   while (prefix < source.length && prefix < previous.source.length && source[prefix] === previous.source[prefix]) prefix++;

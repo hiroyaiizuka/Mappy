@@ -166,7 +166,8 @@ describe('partial Markdown edits', () => {
     if (!last) throw new Error('Missing fixture heading');
     const up = execute(doc, { type: 'move-up', nodeId: last.id });
     expect(up.source).toContain('last body\r\n\r\n# Same');
-    expect(up.nodes.every((node) => !doc.nodes.some((old) => old.id === node.id))).toBe(true);
+    // Same-titled top-level sections keep their ids by their unchanged text, so the ids travel with the swapped sections.
+    expect(up.nodes.map((node) => node.id)).toEqual([doc.nodes[1]?.id, doc.nodes[0]?.id]);
     const first = up.nodes[0];
     if (!first) throw new Error('Missing moved heading');
     expect(execute(up, { type: 'move-down', nodeId: first.id }).source).toBe(source);

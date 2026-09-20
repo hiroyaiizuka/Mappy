@@ -271,13 +271,35 @@ describe('source-preserving Markdown projection', () => {
     expect(renamed.nodes[0]?.id).toBe(moved.nodes[0]?.id);
   });
 
-  it('does not guess duplicate heading identities after a change', () => {
+  it('keeps same-titled top-level sections whose text is unchanged, and guesses nothing from a title or a position alone', () => {
     const source = '# Same\nOne\n\n# Same\nTwo';
     const first = parseMarkdown(source, 'Note');
     const unchanged = parseMarkdown(source, 'Note', first);
     expect(unchanged.nodes.map((node) => node.id)).toEqual(first.nodes.map((node) => node.id));
+    // A change elsewhere (frontmatter, a trailing newline) leaves both sections' text as it was: both keep their ids (§5 M7).
     const changed = parseMarkdown(`${source}\n`, 'Note', first);
-    expect(changed.nodes.every((node) => !first.nodes.some((old) => old.id === node.id))).toBe(true);
-    expect(new Set(changed.nodes.map((node) => node.id)).size).toBe(2);
+    expect(changed.nodes.map((node) => node.id)).toEqual(first.nodes.map((node) => node.id));
+    const fronted = parseMarkdown(`---\nmappy-topics:\n  Same (2): { mindmap: [1, 2] }\n---\n${source}`, 'Note', first);
+    expect(fronted.nodes.map((node) => node.id)).toEqual(first.nodes.map((node) => node.id));
+    // A third section appended: the two unchanged ones keep their ids, the new one gets its own.
+    const grown = parseMarkdown(`${source}\n\n# Same\nThree\n`, 'Note', first);
+    expect(grown.nodes.slice(0, 2).map((node) => node.id)).toEqual(first.nodes.map((node) => node.id));
+    expect(first.nodes.some((old) => old.id === grown.nodes[2]?.id)).toBe(false);
+    expect(new Set(grown.nodes.map((node) => node.id)).size).toBe(3);
+    // The ids follow the text, not the position: sections swapped keep their own ids, the one deleted takes its id away.
+    const swapped = parseMarkdown('# Same\nTwo\n\n# Same\nOne', 'Note', first);
+    expect(swapped.nodes.map((node) => node.id)).toEqual([first.nodes[1]?.id, first.nodes[0]?.id]);
+    const replaced = parseMarkdown('# Same\nTwo\n\n# Same\nThree', 'Note', first);
+    expect(replaced.nodes[0]?.id).toBe(first.nodes[1]?.id);
+    expect(first.nodes.some((old) => old.id === replaced.nodes[1]?.id)).toBe(false);
+    // A section whose own text changed (a nested heading added) is not matched; the untouched one still is.
+    const nested = parseMarkdown('# Same\nOne\n\n## Same\n\n# Same\nTwo\n', 'Note', first);
+    expect(nested.nodes[2]?.id).toBe(first.nodes[1]?.id);
+    expect(first.nodes.some((old) => old.id === nested.nodes[0]?.id || old.id === nested.nodes[1]?.id)).toBe(false);
+    // List documents: the H2 sections by their text, list items sharing the text never guessed.
+    const list = parseMarkdown('## Same\n- Same\n\n## Same\n- Same\n', 'Note');
+    const listChanged = parseMarkdown('## Same\n- Same\n\n## Same\n- Same\n\n', 'Note', list);
+    expect(listChanged.nodes.filter((node) => node.kind !== 'list').map((node) => node.id)).toEqual(list.nodes.filter((node) => node.kind !== 'list').map((node) => node.id));
+    expect(listChanged.nodes.filter((node) => node.kind === 'list').every((node) => !list.nodes.some((old) => old.id === node.id))).toBe(true);
   });
 });

@@ -5,7 +5,7 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
 import { planListConversion } from "../core/list-conversion";
-import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
@@ -89,9 +89,10 @@ export class MindmapView extends ItemView {
   private recallTimer: number | undefined;
   /**
    * The trees on the map (§5 M7, M12): the body root and the free topics as written (`split`) and with the called
-   * maps grafted in (`calls`), plus the stored topic positions; derived once per document and targets, in `adopt`.
+   * maps grafted in (`calls`), plus the stored topic positions and each topic's key into them (`topicKeys`: the
+   * heading, or `<heading> (n)` for a repeated one); derived once per document and targets, in `adopt`.
    */
-  private projected: { document: MindDocument; targets: CallTargets; trees: ShownTrees; positions: TopicPositionMap } | undefined;
+  private projected: { document: MindDocument; targets: CallTargets; trees: ShownTrees; positions: TopicPositionMap; keys: Map<string, string> } | undefined;
   private selectedId: string | null = null;
   /**
    * True after a click on the empty canvas: nothing is selected, and draws keep it so until a node is selected
@@ -735,7 +736,7 @@ export class MindmapView extends ItemView {
     if (this.projected?.document === document && sameTargets(this.projected.targets, targets)) return;
     if (!sameTargets(this.targets, targets)) this.targets = targets;
     const trees = projectShown(document, this.targets);
-    this.projected = { document, targets: this.targets, trees, positions: readTopicPositions(document.source) };
+    this.projected = { document, targets: this.targets, trees, positions: readTopicPositions(document.source), keys: topicKeys(document) };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
@@ -786,16 +787,14 @@ export class MindmapView extends ItemView {
   /**
    * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
    * position comes next, then the pressed point of a topic added on the map that no save has
-   * stored yet. Topics sharing a heading share one entry; only the first uses it.
+   * stored yet. Topics sharing a heading have keys of their own (`topicKeys`), so each finds its entry.
    */
   private topicLayouts(trees?: readonly LayoutNode[]): FreeTopicLayout[] {
     const projected = this.projected;
     if (!projected) return [];
-    const used = new Set<string>();
-    // Positions are keyed by the heading as written (`split`); the tree laid out is the one shown (a topic may call a map).
+    // Keys come from the headings as written (`split`); the tree laid out is the one shown (a topic may call a map).
     return projected.trees.split.topics.map((topic, index) => {
-      const stored = used.has(topic.title) ? undefined : projected.positions.get(topic.title)?.[this.mode];
-      used.add(topic.title);
+      const stored = projected.positions.get(projected.keys.get(topic.id) ?? topic.title)?.[this.mode];
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
       const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
       return { tree: trees?.[index + 1] ?? projected.trees.calls.roots[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
@@ -1147,13 +1146,12 @@ export class MindmapView extends ItemView {
       if (!document || !file || !projection || !drag) return;
       const scale = drag.viewport?.scale ?? this.viewport.value.scale;
       const sign = drag.body ? -1 : 1;
+      // By node id: the plan derives each topic's key from the heading as written (a topic that calls a map shows the called
+      // root's text instead). A topic whose id an external change replaced during the drag is left out rather than refused.
       const moves = new Map<string, TopicPosition>();
-      // Entries are keyed by the heading as written (a topic that calls a map shows the called root's text instead).
-      for (const topic of this.projected?.trees.split.topics ?? []) {
-        const start = drag.from.get(topic.id);
-        // Topics sharing a heading share one entry; the first one owns it.
-        if (!start || moves.has(topic.title)) continue;
-        moves.set(topic.title, { x: Math.round(start.x + sign * delta.x / scale), y: Math.round(start.y + sign * delta.y / scale) });
+      for (const [topicId, start] of drag.from) {
+        if (!projection.topics.some(topic => topic.id === topicId)) continue;
+        moves.set(topicId, { x: Math.round(start.x + sign * delta.x / scale), y: Math.round(start.y + sign * delta.y / scale) });
       }
       const edit = planTopicMoves(document, this.mode, moves);
       if (edit) await this.commit(document.source, [edit], file);

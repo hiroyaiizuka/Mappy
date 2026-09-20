@@ -8,7 +8,7 @@
 import { layoutFromValue, type LayoutMode } from './layout-mode';
 import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from './map-keys';
 import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
-import type { TopicPositionMap } from './topics';
+import { topicKeys, type TopicPositionMap } from './topics';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
 
 /**
@@ -143,12 +143,11 @@ export function visibleNodes(trees: EmbedTrees, collapsed: ReadonlySet<string>):
   return result;
 }
 
-/** Stored positions for this layout, one per heading text (the first topic of a name uses it, as the map view does). */
-export function embedTopicLayouts(trees: EmbedTrees, positions: TopicPositionMap, mode: LayoutMode): { tree: MindNode; position: { x: number; y: number } | null }[] {
-  const used = new Set<string>();
+/** Stored positions for this layout, each topic by its key (`topicKeys`: the heading, or `<heading> (n)` for a repeated one, as the map view reads them). */
+export function embedTopicLayouts(doc: MindDocument, trees: EmbedTrees, positions: TopicPositionMap, mode: LayoutMode): { tree: MindNode; position: { x: number; y: number } | null }[] {
+  const keys = topicKeys(doc);
   return trees.topics.map((topic) => {
-    const stored = used.has(topic.title) ? undefined : positions.get(topic.title)?.[mode];
-    used.add(topic.title);
+    const stored = positions.get(keys.get(topic.id) ?? topic.title)?.[mode];
     return { tree: topic, position: stored ? { x: stored.x, y: stored.y } : null };
   });
 }

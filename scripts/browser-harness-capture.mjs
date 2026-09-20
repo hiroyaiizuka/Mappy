@@ -2137,6 +2137,54 @@ function recordMarkdown({ startedAt, chrome, version, commit, cases, timings, no
   return lines.join('\n');
 }
 
+/**
+ * LEV-86: two free topics with one heading (the same map called twice, a repeated heading) have keys of their
+ * own in `mappy-topics` (`同じ見出し`, `同じ見出し (2)`), so dragging one leaves the other where it is, and both keep
+ * their ids through the save.
+ */
+async function captureSameTitledTopics(recorder, page) {
+  const fixturePath = 'Fixtures/free-topics.md';
+  const original = await readFile(join(root, 'tests', 'fixtures', 'free-topics.md'), 'utf8');
+  const duplicated = original.replace('## 位置のないトピック', '## 同じ見出し\n- a\n\n## 同じ見出し\n- b\n\n## 位置のないトピック');
+  const title = '同じ見出し';
+
+  await recorder.run('topic-same-heading-drag', 'free-topics に `## 同じ見出し` の区画を 2 つ足して開く → 2 つ目の「同じ見出し」を右下へ 120×60 px ドラッグ',
+    '2 つ目だけが動き、1 つ目は画面上の位置を保つ。mappy-topics には `同じ見出し (2)` のキーだけが書かれ（`同じ見出し:` は書かれない）、保存後も 2 つの id が変わらず、動かした方が選択されたまま', async () => {
+    await page.harness(`h.putNote(${JSON.stringify(fixturePath)}, ${JSON.stringify(duplicated)})`);
+    await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
+    const base = await page.harness('h.source()');
+    expect(base === duplicated, 'the duplicated note did not load');
+    const first = await page.harness(`h.node(${JSON.stringify(title)}, 0)`);
+    const second = await page.harness(`h.node(${JSON.stringify(title)}, 1)`);
+    expect(first && second && first.id !== second.id, 'the two same-titled topics are not both shown');
+    expect(second.rect.y > first.rect.y, 'the second topic does not sit below the first in the default column');
+    const view = await page.harness('h.viewport()');
+    const from = center(second.rect);
+    await page.drag(from.x, from.y, from.x + 120, from.y + 60);
+    await page.settle();
+    const firstAfter = await page.harness(`h.node(${JSON.stringify(title)}, 0)`);
+    const secondAfter = await page.harness(`h.node(${JSON.stringify(title)}, 1)`);
+    expect(firstAfter && secondAfter, 'a same-titled topic is missing after the drag');
+    const travel = (was, now) => `${(now.rect.x - was.rect.x).toFixed(1)}, ${(now.rect.y - was.rect.y).toFixed(1)}`;
+    expect(Math.abs(firstAfter.rect.x - first.rect.x) < 1.5 && Math.abs(firstAfter.rect.y - first.rect.y) < 1.5, `the first topic moved on screen by ${travel(first, firstAfter)}`);
+    expect(Math.abs(secondAfter.rect.x - second.rect.x - 120) < 1.5 && Math.abs(secondAfter.rect.y - second.rect.y - 60) < 1.5, `the second topic moved by ${travel(second, secondAfter)}`);
+    expect(firstAfter.id === first.id && secondAfter.id === second.id, `ids changed: ${first.id}/${second.id} → ${firstAfter.id}/${secondAfter.id}`);
+    expect(secondAfter.selected && !firstAfter.selected, 'the dragged topic is not the selection');
+    const moved = await page.harness('h.source()');
+    const entry = topicEntry(moved, `${title} (2)`);
+    expect(entry && /^同じ見出し \(2\): \{ mindmap: \[-?\d+, -?\d+\] \}$/u.test(entry), `mappy-topics entry: ${entry}`);
+    expect(!topicEntry(moved, title), `an entry was written for the first topic: ${topicEntry(moved, title)}`);
+    expect(bodyOf(moved) === bodyOf(base), 'the body or the sections changed');
+    const body = await page.harness('h.node("講座の本体")');
+    const offset = { x: Math.round((secondAfter.rect.x - body.rect.x) / view.scale), y: Math.round((secondAfter.rect.y - body.rect.y) / view.scale) };
+    expect(entry === `${title} (2): { mindmap: [${offset.x}, ${offset.y}] }`, `expected [${offset.x}, ${offset.y}] from the screen, got ${entry}`);
+    return `${entry}、1 つ目の移動 0 px、id ${first.id}/${second.id} 不変`;
+  });
+  // The recorder has taken its screenshot of the moved state; the fixture goes back to its text for the cases after.
+  await page.harness(`h.putNote(${JSON.stringify(fixturePath)}, ${JSON.stringify(original)})`);
+  await page.settle();
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const option = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
@@ -2181,6 +2229,7 @@ async function main() {
       await captureVisibleLayouts(recorder, page);
       await captureTopicOperations(recorder, page);
       await captureCallAsTopic(recorder, page);
+      await captureSameTitledTopics(recorder, page);
       await captureExport(recorder, page);
       await captureEmbeds(recorder, page);
       await captureEmbedNodes(recorder, page);

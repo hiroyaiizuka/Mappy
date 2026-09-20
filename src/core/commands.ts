@@ -1,6 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
-import { planTopicMove, planTopicRemoval, planTopicRename, type TopicPlacement } from './topics';
+import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
 
@@ -176,17 +176,11 @@ function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicP
     || updated.level !== node.level || updated.title !== title.trim()) {
     throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
   }
-  // A free topic's stored position follows its heading text within the same edit set. Only the topic
-  // itself carries its entry: a list item or the body root that happens to share a topic's text does not.
-  const key = projectMap(doc).topics.some((topic) => topic.id === node.id) ? planTopicRename(doc, node.title, updated.title, place) : null;
-  if (!key) return { edits: [edit], selectionOffset: updated.titleFrom };
-  const delta = key.text.length - (key.to - key.from);
-  const combined = parseMarkdown(applyEdits(doc.source, [key, edit]), doc.root.title, undefined, doc.format);
-  const renamed = combined.nodes.find((candidate) => candidate.from === node.from + delta);
-  if (combined.nodes.length !== doc.nodes.length || renamed?.title !== updated.title) {
-    throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
-  }
-  return { edits: [key, edit], selectionOffset: renamed.titleFrom };
+  // A free topic's stored position follows its key within the same edit set (another topic of the old heading
+  // may become its first, and take the plain key). Only topics carry entries: a list item or the body root
+  // that happens to share a topic's text does not.
+  const plan = { edits: [edit], selectionOffset: updated.titleFrom };
+  return projectMap(doc).topics.some((topic) => topic.id === node.id) ? withTopicKeys(doc, plan, node, 'lands', place) : plan;
 }
 
 function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): EditPlan {
@@ -315,33 +309,48 @@ function addTopic(doc: MindDocument, title = ''): EditPlan {
   return { edits, selectionOffset: added.titleFrom };
 }
 
-/** A deleted free topic takes its `mappy-topics` entry with it in the same edit set, so Undo restores both. */
-function withTopicRemoval(doc: MindDocument, node: MindNode, plan: EditPlan): EditPlan {
-  const key = planTopicRemoval(doc, node);
-  if (!key) return plan;
-  const expected = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
-  const combined = parseMarkdown(applyEdits(doc.source, [key, ...plan.edits]), doc.root.title, undefined, doc.format);
-  if (combined.nodes.length !== expected.nodes.length
-    || combined.nodes.some((candidate, index) => candidate.title !== expected.nodes[index]?.title)) {
-    throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
-  }
-  const delta = key.text.length - (key.to - key.from);
-  const selectionOffset = plan.selectionOffset !== null && plan.selectionOffset >= key.to ? plan.selectionOffset + delta : plan.selectionOffset;
-  return { edits: [key, ...plan.edits], selectionOffset };
-}
+/** How a structural plan moves `node` with respect to the top level, for `withTopicKeys`. */
+type TopicRole =
+  /** The node is removed (a deletion). */
+  | 'leaves'
+  /** The node is at the plan's selection afterwards (a move, a detach, a rename). */
+  | 'lands'
+  /** The plan's selection is a node the plan adds; `node` itself stays. */
+  | 'adds';
 
 /**
- * Store the drop point of a branch that just became a topic, in the same edit set. Skipped when
- * the new section is the body (first heading) or another current topic already has that heading.
+ * Keep every free topic's `mappy-topics` entry with its topic through `plan` (§7). The topics of the note
+ * after the plan correspond in order to the topics of `doc`, `node` set aside as `role` says, and an entry
+ * whose key (`topicKeys`) changes moves to the new key in the same edit set: the second topic of a heading
+ * takes the plain key when the first leaves, a renamed topic keeps its position under its new key, a
+ * reordered pair swaps. The entry of a topic that leaves the top level (deleted, joined) goes with it, so
+ * Undo restores both, and `place` stores the pressed point under the node's key afterwards (a topic named
+ * or detached on the map). A plan that changes hands between the body and its topics is left alone rather
+ * than guessed; so is one that moves no entry.
  */
-function withTopicPlacement(doc: MindDocument, plan: EditPlan, title: string, place?: TopicPlacement): EditPlan {
-  const offset = plan.selectionOffset;
-  if (!place || offset === null) return plan;
-  const parsed = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
-  const moved = parsed.nodes.find((candidate) => candidate.titleFrom === offset);
-  const { topics } = projectMap(parsed);
-  if (!moved || !topics.some((topic) => topic.id === moved.id) || topics.some((topic) => topic.id !== moved.id && topic.title === title)) return plan;
-  const key = planTopicMove(doc, title, place.layout, { x: place.x, y: place.y });
+function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode | undefined, role: TopicRole, place?: TopicPlacement): EditPlan {
+  if (plan.edits.length === 0 || (!place && readTopicPositions(doc.source).size === 0)) return plan;
+  const after = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
+  const settled = plan.selectionOffset === null ? undefined : after.nodes.find((candidate) => candidate.titleFrom === plan.selectionOffset);
+  if (role !== 'leaves' && !settled) return plan;
+  const before = projectMap(doc).topics.filter((topic) => role === 'adds' || topic.id !== node?.id);
+  const next = projectMap(after).topics.filter((topic) => role === 'leaves' || topic.id !== settled?.id);
+  if (before.length !== next.length) return plan;
+  const keysBefore = topicKeys(doc);
+  const keysAfter = topicKeys(after);
+  const rekeys = new Map<string, string>();
+  before.forEach((topic, index) => {
+    const from = keysBefore.get(topic.id);
+    const to = keysAfter.get(next[index]?.id ?? '');
+    if (from !== undefined && to !== undefined) rekeys.set(from, to);
+  });
+  // The node's own entry: carried to where it lands, dropped when it leaves the top level (joined or deleted).
+  const own = role === 'adds' || !node ? undefined : keysBefore.get(node.id);
+  const landed = role === 'leaves' || !settled ? undefined : keysAfter.get(settled.id);
+  const dropped = new Set<string>();
+  if (own !== undefined && landed !== undefined) rekeys.set(own, landed);
+  else if (own !== undefined) dropped.add(own);
+  const key = planTopicRekey(doc, rekeys, dropped, place && landed !== undefined ? { ...place, key: landed } : undefined);
   if (!key) return plan;
   const delta = key.text.length - (key.to - key.from);
   // A header created at offset 0 lands where a branch removal at the top of the note starts: one edit, not two overlapping ones.
@@ -349,11 +358,25 @@ function withTopicPlacement(doc: MindDocument, plan: EditPlan, title: string, pl
     ? plan.edits.map((edit) => edit.from === key.from ? { ...edit, text: key.text + edit.text } : edit)
     : [key, ...plan.edits];
   const combined = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
-  const placed = combined.nodes.find((candidate) => candidate.titleFrom === offset + delta);
-  if (combined.nodes.length !== parsed.nodes.length || placed?.title !== title) {
+  if (combined.nodes.length !== after.nodes.length || combined.nodes.some((candidate, index) => candidate.title !== after.nodes[index]?.title)) {
     throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
   }
-  return { edits, selectionOffset: offset + delta };
+  const selectionOffset = plan.selectionOffset !== null && plan.selectionOffset >= key.to ? plan.selectionOffset + delta : plan.selectionOffset;
+  return { edits, selectionOffset };
+}
+
+/**
+ * Whether a structural command can change which sections are topics, or their order: only then can keys
+ * move. A list item never does (items before the first H2 sit on the virtual root, but are not sections).
+ */
+function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): boolean {
+  const section = node.kind !== 'list' && node.parentId === 'root';
+  switch (command.type) {
+    case 'add-child': return node.kind === 'root';
+    case 'add-sibling': case 'delete': case 'move-up': case 'move-down': return section;
+    case 'move': case 'reparent': return section || (node.kind !== 'list' && getNode(doc, command.parentId).kind === 'root');
+    case 'detach': return true;
+  }
 }
 
 function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {
@@ -372,19 +395,15 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
   }
 }
 
-/** A topic stops being one when it is deleted or moved under a node; its position leaves with it. */
-function leavesTopics(doc: MindDocument, node: MindNode, command: EditCommand): boolean {
-  if (command.type === 'delete') return true;
-  if (command.type !== 'move' && command.type !== 'reparent') return false;
-  return getNode(doc, command.parentId).kind !== 'root';
-}
-
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
-  if (command.type === 'add-topic') return addTopic(doc, command.title);
+  // A new section whose text is an ordinal key (`A (2)`) renumbers the topics of that heading: their entries follow.
+  if (command.type === 'add-topic') return withTopicKeys(doc, addTopic(doc, command.title), undefined, 'adds');
   const node = getNode(doc, command.nodeId);
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);
   const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
-  if (command.type === 'detach') return withTopicPlacement(doc, plan, node.title, command.position);
-  return leavesTopics(doc, node, command) ? withTopicRemoval(doc, node, plan) : plan;
+  if (!touchesTopLevel(doc, node, command)) return plan;
+  if (command.type === 'detach') return withTopicKeys(doc, plan, node, 'lands', command.position);
+  if (command.type === 'delete') return withTopicKeys(doc, plan, node, 'leaves');
+  return withTopicKeys(doc, plan, node, command.type === 'add-child' || command.type === 'add-sibling' ? 'adds' : 'lands');
 }
