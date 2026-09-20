@@ -143,13 +143,84 @@ describe('source-preserving list commands', () => {
     });
   });
 
-  it('deletes a branch with descendants without deleting a following outside paragraph', () => {
-    const source = '## Root\n- Delete\n  - Child\n    continuation\n\nOutside paragraph\n\n- Keep';
-    const doc = parse(source);
-    const deleted = find(doc, 'Delete');
-    const result = execute(doc, { type: 'delete', nodeId: deleted.id });
-    expect(result.source).toBe(source.slice(0, deleted.from) + source.slice(deleted.to));
+  it('deletes a branch with descendants, line break included, without deleting a following outside paragraph', () => {
+    const doc = parse('## Root\n- Delete\n  - Child\n    continuation\n\nOutside paragraph\n\n- Keep');
+    const result = execute(doc, { type: 'delete', nodeId: find(doc, 'Delete').id });
+    expect(result.source).toBe('## Root\n\nOutside paragraph\n\n- Keep');
     expect(result.nodes.map(node => node.title)).toEqual(['Root', 'Keep']);
+  });
+
+  // LEV-75: an item leaves with the line break that ends it, so no blank line is left inside the list.
+  describe('delete removes the item\'s lines without leaving a blank line', () => {
+    function remove(source: string, title: string): string {
+      const doc = parse(source);
+      return execute(doc, { type: 'delete', nodeId: find(doc, title).id }).source;
+    }
+
+    it('removes a middle item and an empty item, keeping frontmatter and the other lines byte for byte', () => {
+      expect(remove('---\nmappy: true\n---\n## R\n\n- A\n  - X\n  - Y\n- B\n', 'X')).toBe('---\nmappy: true\n---\n## R\n\n- A\n  - Y\n- B\n');
+      expect(remove('## R\n\n- A\n  - X\n  - \n  - Y\n- B\n', '')).toBe('## R\n\n- A\n  - X\n  - Y\n- B\n');
+    });
+
+    it('removes the last child, the last item, and the last item of a file without an EOF newline', () => {
+      expect(remove('## R\n- A\n  - X\n- B\n', 'X')).toBe('## R\n- A\n- B\n');
+      expect(remove('## R\n- A\n- X\n', 'X')).toBe('## R\n- A\n');
+      expect(remove('## R\n- A\n- X', 'X')).toBe('## R\n- A');
+      expect(remove('## R\n- A\n  - X', 'X')).toBe('## R\n- A');
+    });
+
+    it('keeps CRLF line endings', () => {
+      expect(remove('## R\r\n- A\r\n  - X\r\n  - Y\r\n- B\r\n', 'X')).toBe('## R\r\n- A\r\n  - Y\r\n- B\r\n');
+      expect(remove('## R\r\n- A\r\n- X\r\n', 'X')).toBe('## R\r\n- A\r\n');
+      expect(remove('## R\r\n\r\n- A\r\n\r\n- X\r\n', 'X')).toBe('## R\r\n\r\n- A\r\n');
+    });
+
+    it('keeps a single blank line at the seam of a loose list, first, middle, and last', () => {
+      expect(remove('## R\n\n- X\n\n- B\n', 'X')).toBe('## R\n\n- B\n');
+      expect(remove('## R\n\n- A\n\n- X\n\n- B\n', 'X')).toBe('## R\n\n- A\n\n- B\n');
+      expect(remove('## R\n\n- A\n\n- X\n', 'X')).toBe('## R\n\n- A\n');
+      expect(remove('## R\n\n- A\n\n  - X\n\n  - Y\n\n- B\n', 'A')).toBe('## R\n\n- B\n');
+    });
+
+    it('leaves the blank line that separated the list from prose after it, and a blank line the list already had', () => {
+      expect(remove('## R\n\n- X\n\nOutside\n', 'X')).toBe('## R\n\nOutside\n');
+      expect(remove('## R\n- A\n  - X\n\n- B\n', 'X')).toBe('## R\n- A\n\n- B\n');
+    });
+
+    // Code review of PR #39: the blank after a tight first item was its seam to the next sibling, not the parent's.
+    it('takes the seam to the next sibling with a tight first item, and leaves a blank that belongs to the parent', () => {
+      expect(remove('## R\n- A\n  - X\n\n  - Y\n- B\n', 'X')).toBe('## R\n- A\n  - Y\n- B\n');
+      expect(remove('## R\n- A\n- X\n\n- B\n- C\n', 'X')).toBe('## R\n- A\n- B\n- C\n');
+      const kept = parse('## R\n- A\n  - X\n\n  text of A\n');
+      const result = execute(kept, { type: 'delete', nodeId: find(kept, 'X').id });
+      expect(result.source).toBe('## R\n- A\n\n  text of A\n');
+      expect(find(result, 'A').children).toEqual([]);
+      const detached = parse('## R\n- A\n  - X\n\n  - Y\n- B\n');
+      expect(execute(detached, { type: 'detach', nodeId: find(detached, 'X').id }).source).toBe('## R\n- A\n  - Y\n- B\n\n## X\n');
+    });
+
+    it('treats a whitespace-only line as blank and an unclosed fence at EOF as the item\'s end', () => {
+      expect(remove('## R\n\n- A\n  \n- X', 'X')).toBe('## R\n\n- A');
+      expect(remove('## R\n\n- A\n\n- X\n  ```\n  code\n', 'X')).toBe('## R\n\n- A\n');
+    });
+
+    it('keeps the break as a blank line when the lines around the item would join into another block', () => {
+      // `Intro` + `---` would be a Setext heading; the delete still succeeds, as it did before the line break was taken.
+      const doc = parse('## R\nIntro\n- X\n---\n');
+      const result = execute(doc, { type: 'delete', nodeId: find(doc, 'X').id });
+      expect(result.source).toBe('## R\nIntro\n\n---\n');
+      expect(result.nodes.map(node => node.title)).toEqual(['R']);
+    });
+
+    it('selects the parent and keeps its descendants count, so a following outside item is untouched', () => {
+      const doc = parse('## R\n- A\n  - X\n    - deep\n  - Y\n- B\n');
+      const plan = planEdit(doc, { type: 'delete', nodeId: find(doc, 'X').id });
+      expect(plan.edits).toEqual([{ from: find(doc, 'X').from, to: find(doc, 'Y').from, text: '' }]);
+      expect(plan.selectionOffset).toBe(find(doc, 'A').titleFrom);
+      const result = parse(applyEdits(doc.source, plan.edits), doc);
+      expect(result.source).toBe('## R\n- A\n  - Y\n- B\n');
+      expect(result.nodes.map(node => node.title)).toEqual(['R', 'A', 'Y', 'B']);
+    });
   });
 
   it('round-trips sibling moves with duplicate names, CRLF, continuation bodies, and no EOF newline', () => {
