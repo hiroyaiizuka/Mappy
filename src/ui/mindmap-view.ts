@@ -32,6 +32,12 @@ export const VIEW_TYPE = "mappy-map";
 const SNAP_STICK = 16;
 
 const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元のノートを開いて再実行してください。";
+/**
+ * How long the export waits for Markdown renders still in flight (§5 M13): a title renders in milliseconds, so this
+ * only ends the wait when a render hangs (a post-processor, an embed that never resolves); the export then goes on
+ * with what the map shows, as the map itself does.
+ */
+export const EXPORT_RENDER_WAIT_MS = 2000;
 /** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
 export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り専用です。ダブルクリックで元のマップを開けます。";
 
@@ -193,10 +199,11 @@ export class MindmapView extends ItemView {
   /**
    * What is on screen, for the SVG／PNG export (§5 M13): the layout the nodes were
    * placed with, their elements and the connector layer. A debounced refresh is run
-   * first and a pending layout frame is awaited, so the geometry handed out is the
-   * one the DOM shows; the entries are copied, so a later refresh cannot change the
-   * set being exported. Markdown renders still in flight are not awaited (the
-   * renderer reports them only by scheduling another frame).
+   * first, Markdown renders still in flight (an external change just before the
+   * export) are awaited for up to EXPORT_RENDER_WAIT_MS, and then a pending layout
+   * frame is awaited, so the labels and the geometry handed out are the ones the DOM
+   * shows; the entries are copied, so a later refresh cannot change the set being
+   * exported.
    */
   async exportSource(): Promise<CaptureSource & { file: TFile }> {
     const file = this.file;
@@ -208,11 +215,21 @@ export class MindmapView extends ItemView {
       this.refreshTimer = undefined;
       await this.refresh();
     }
+    // A finished render asks for its layout frame before idle() resolves, so the frame awaited next measures it.
+    await this.rendered(EXPORT_RENDER_WAIT_MS);
     if (this.layoutFrame !== undefined) await this.nextFrame();
     const layout = this.layout;
     if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
     if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
     return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
+  }
+
+  /** The renderer's idle, or `limit` ms: a render that hangs must not block the export. */
+  private rendered(limit: number): Promise<void> {
+    const win = this.contentEl.win;
+    let timer: number | undefined;
+    const expired = new Promise<void>(resolve => { timer = win.setTimeout(resolve, limit); });
+    return Promise.race([this.renderer.idle(), expired]).finally(() => { if (timer !== undefined) win.clearTimeout(timer); });
   }
 
   /** The next animation frame, or 100 ms: a hidden window never paints, and the export must not wait for it. */

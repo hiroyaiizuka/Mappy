@@ -32,6 +32,15 @@ interface NodeAppearance {
 export class NodeRenderer extends Component {
   readonly entries = new Map<string, NodeEntry>();
   private selectedId: string | null = null;
+  /**
+   * The Markdown renders still in flight for what the map shows, by node id (the value tells one render from the
+   * next). A render only reports its end by asking for another layout frame, which the export (§5 M13) cannot wait
+   * for; this is what `idle()` waits on. A re-render or a removal supersedes the old render, whose late result no
+   * shown element receives.
+   */
+  private readonly rendering = new Map<string, number>();
+  private renders = 0;
+  private idleWaiters: (() => void)[] = [];
 
   constructor(
     private readonly app: App,
@@ -53,6 +62,7 @@ export class NodeRenderer extends Component {
       this.removeChild(entry.component);
       entry.element.remove();
       this.entries.delete(id);
+      this.rendering.delete(id);
     }
     for (const node of nodes) {
       let entry = this.entries.get(node.id);
@@ -117,6 +127,12 @@ export class NodeRenderer extends Component {
       const changed = (): void => {
         if (this.entries.get(node.id) === current && current.key === key) this.changed();
       };
+      const render = ++this.renders;
+      this.rendering.set(node.id, render);
+      const rendered = (): void => {
+        if (this.rendering.get(node.id) === render) this.rendering.delete(node.id);
+        this.settle();
+      };
       // The calling item carries a small link mark before the called root's text; the text itself (`![[…]]`) is what the inline editor shows.
       if (source?.root) setIcon(entry.content.createSpan({ cls: "mappy-node-call-mark", attr: { "aria-hidden": "true" } }), "link");
       const label = entry.content.createDiv({ cls: "mappy-node-label" });
@@ -135,6 +151,7 @@ export class NodeRenderer extends Component {
         : Promise.resolve();
       entry.component.registerDomEvent(entry.content, "load", changed, true);
       entry.component.registerDomEvent(entry.content, "error", changed, true);
+      // The layout frame is asked for before the waiters of `idle()` wake, so they find it pending.
       void Promise.all([labelTask, attachmentsTask]).then(() => {
         changed();
       }).catch(() => {
@@ -143,8 +160,26 @@ export class NodeRenderer extends Component {
           attachmentsEl.empty();
           this.changed();
         }
-      });
+      }).finally(rendered);
     }
+    this.settle();
+  }
+
+  /**
+   * Resolves once no Markdown render of a shown node is in flight (at once when none is): by then every finished
+   * render has asked for its layout frame, so the sizes the next frame measures are the rendered ones. It does not
+   * wait for images still loading (they report by `load`, and a remote one may never arrive).
+   */
+  idle(): Promise<void> {
+    if (this.rendering.size === 0) return Promise.resolve();
+    return new Promise(resolve => { this.idleWaiters.push(resolve); });
+  }
+
+  private settle(): void {
+    if (this.rendering.size > 0 || this.idleWaiters.length === 0) return;
+    const waiters = this.idleWaiters;
+    this.idleWaiters = [];
+    for (const resolve of waiters) resolve();
   }
 
   sizes(): Map<string, { width: number; height: number }> {
@@ -195,6 +230,8 @@ export class NodeRenderer extends Component {
   onunload(): void {
     for (const entry of this.entries.values()) entry.element.remove();
     this.entries.clear();
+    this.rendering.clear();
+    this.settle();
   }
 }
 

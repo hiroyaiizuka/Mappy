@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { App } from 'obsidian';
+import { MarkdownRenderer, type App } from 'obsidian';
 import { projectCalls } from '../../src/core/calls';
 import { parseMarkdown, projectMap, type MindDocument } from '../../src/core/markdown';
 import { NodeRenderer } from '../../src/ui/node-renderer';
@@ -22,7 +22,7 @@ vi.mock('obsidian', () => {
   };
 });
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
 /** Apply the small Obsidian DOM surface to these elements, never global prototypes. */
 function dom<T extends HTMLElement>(element: T): T {
@@ -293,5 +293,96 @@ describe('NodeRenderer title rendering', () => {
     expect(calling?.content.querySelector('.mappy-node-call-mark')).toBeNull();
     expect(calling?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
     expect(calling?.key).toBe('Course.md\0![[Map]]\0[[own link]]');
+  });
+});
+
+describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight)', () => {
+  /** Renders whose end the test decides: one deferred promise per call, in call order. */
+  function deferRenders(): { settle: (index: number, outcome?: 'resolve' | 'reject') => Promise<void>; calls: () => number } {
+    const pending: { resolve: () => void; reject: (reason: Error) => void }[] = [];
+    vi.spyOn(MarkdownRenderer, 'render').mockImplementation((_app: App, markdown: string, element: HTMLElement) =>
+      new Promise<void>((resolve, reject) => { pending.push({ resolve: () => { element.textContent = markdown; resolve(); }, reject }); }));
+    return {
+      settle: async (index, outcome = 'resolve') => {
+        const call = pending[index];
+        if (!call) throw new Error(`No render ${index}`);
+        if (outcome === 'resolve') call.resolve(); else call.reject(new Error('render failed'));
+        // The renderer's own then/catch/finally chain runs over a few microtasks.
+        for (let round = 0; round < 6; round += 1) await Promise.resolve();
+      },
+      calls: () => pending.length,
+    };
+  }
+
+  /** Whether `promise` has settled by now, without waiting on it. */
+  async function settled(promise: Promise<unknown>): Promise<boolean> {
+    let done = false;
+    void promise.then(() => { done = true; });
+    for (let round = 0; round < 6; round += 1) await Promise.resolve();
+    return done;
+  }
+
+  it('resolves at once with nothing in flight, and only after every render finished otherwise, with the layout frame already asked for', async () => {
+    const { parsed, renderer, changed } = setup('## Course\n- one\n- two\n');
+    const renders = deferRenders();
+    await expect(settled(renderer.idle())).resolves.toBe(true);
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+    expect(renders.calls()).toBe(3);
+    const idle = renderer.idle();
+    const order: string[] = [];
+    changed.mockImplementation(() => { order.push('changed'); });
+    void idle.then(() => { order.push('idle'); });
+    await renders.settle(0);
+    await renders.settle(1);
+    expect(await settled(idle)).toBe(false);
+    await renders.settle(2);
+    expect(await settled(idle)).toBe(true);
+    expect(order).toEqual(['changed', 'changed', 'changed', 'idle']);
+    expect(renderer.entries.get(id(parsed, 'two'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('two');
+    // Nothing in flight again: the next wait is immediate.
+    await expect(settled(renderer.idle())).resolves.toBe(true);
+  });
+
+  it('does not wait for a render superseded by a re-render or a removal, and a late end of it does not cut the new wait short', async () => {
+    const { parsed, renderer, changed } = setup('## Course\n- one\n- two\n');
+    const renders = deferRenders();
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+    await renders.settle(0);
+    // `one` is renamed (its entry re-renders, render 3), `two` is gone: renders 1 and 2 no longer hold the map's picture.
+    const renamed = parseMarkdown('## Course\n- uno\n', 'File root', parsed);
+    renderer.update(renamed.nodes, renamed, 'Course.md', new Set(), { visualRootId: id(renamed, 'Course'), mode: 'mindmap' });
+    expect(renders.calls()).toBe(4);
+    const idle = renderer.idle();
+    expect(await settled(idle)).toBe(false);
+    changed.mockClear();
+    await renders.settle(1);
+    await renders.settle(2);
+    // Their late ends neither redraw (the entry moved on) nor end the wait for the render that replaced them.
+    expect(changed).not.toHaveBeenCalled();
+    expect(await settled(idle)).toBe(false);
+    await renders.settle(3);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(await settled(idle)).toBe(true);
+    expect(renderer.entries.get(id(renamed, 'uno'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('uno');
+  });
+
+  it('ends the wait when a render fails (the title is shown as plain text) and when the renderer unloads', async () => {
+    const { parsed, renderer, changed } = setup('## Course\n- one\n');
+    const renders = deferRenders();
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+    await renders.settle(0);
+    const idle = renderer.idle();
+    await renders.settle(1, 'reject');
+    expect(await settled(idle)).toBe(true);
+    expect(changed).toHaveBeenCalledTimes(2);
+    expect(renderer.entries.get(id(parsed, 'one'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('one');
+    // A render still in flight when the view closes: the export's wait must not outlive the renderer.
+    const again = parseMarkdown('## Course\n- one\n- late\n', 'File root', parsed);
+    renderer.update(again.nodes, again, 'Course.md', new Set(), { visualRootId: id(again, 'Course'), mode: 'mindmap' });
+    const closing = renderer.idle();
+    expect(await settled(closing)).toBe(false);
+    renderer.onunload();
+    expect(await settled(closing)).toBe(true);
+    expect(renderer.entries.size).toBe(0);
   });
 });
