@@ -181,6 +181,8 @@ describe('partial Markdown edits', () => {
     ]);
     const boundary = planEdit(moved, { type: 'move-up', nodeId: find(moved, 'Shallow').id });
     expect(boundary.edits).toEqual([]);
+    // The adopted depth stays on the way back: the swap restores the order, not the skipped depth.
+    expect(execute(moved, { type: 'move-down', nodeId: find(moved, 'Shallow').id }).source).toBe('# Parent\n\n### Deep\n\n### Shallow\n');
   });
 
   describe('swapping heading sections with ⌥↑／⌥↓ keeps the blank lines between sections and the file ending (LEV-88)', () => {
@@ -224,6 +226,9 @@ describe('partial Markdown edits', () => {
         expect((up.nodes[0]?.title === 'Root' ? find(up, 'Root') : up.root).children.map((node) => node.title).slice(0, 2), source).toEqual(['B', 'A']);
         expect(up.source.endsWith('\n'), source).toBe(source.endsWith('\n'));
         expect(execute(up, { type: 'move-down', nodeId: find(up, 'B').id }).source, source).toBe(source);
+        const down = execute(doc, { type: 'move-down', nodeId: find(doc, 'A').id });
+        expect(down.source, source).toBe(up.source);
+        expect(execute(down, { type: 'move-up', nodeId: find(down, 'A').id }).source, source).toBe(source);
       }
     });
 
@@ -242,11 +247,20 @@ describe('partial Markdown edits', () => {
         .toBe(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: root.id, index: 2 }).source);
     });
 
-    it('refuses a swap whose lines would join a neighbouring block, such as a paragraph before a Setext underline', () => {
-      const doc = parseMarkdown('# Root\n\n## A\n\nProse about A.\n\n## B\n```\ncode\n```\nC\n---\n', 'Note');
-      expect(find(doc, 'Root').children.map((node) => node.title)).toEqual(['A', 'B', 'C']);
-      expect(() => planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id })).toThrow('見出し構造を安全に変更できません');
-      expect(() => planEdit(doc, { type: 'move-down', nodeId: find(doc, 'A').id })).toThrow('見出し構造を安全に変更できません');
+    it('adds a blank line where the lines brought together would join into another block, and only there', () => {
+      // A paragraph before a Setext underline: the pair's ending gets the blank line, the seam (already blank) stays.
+      const setext = parseMarkdown('# Root\n\n## A\n\nProse about A.\n\n## B\n```\ncode\n```\nC\n---\n', 'Note');
+      expect(find(setext, 'Root').children.map((node) => node.title)).toEqual(['A', 'B', 'C']);
+      const mended = '# Root\n\n## B\n```\ncode\n```\n\n## A\n\nProse about A.\n\nC\n---\n';
+      expect(execute(setext, { type: 'move-up', nodeId: find(setext, 'B').id }).source).toBe(mended);
+      expect(execute(setext, { type: 'move-down', nodeId: find(setext, 'A').id }).source).toBe(mended);
+      // An HTML block runs to the next blank line, so the heading after it needs one.
+      const html = parseMarkdown('# Root\n\n## A\n<div>\nfoo\n</div>\n\n## B\nsecond\n## C\nthird\n', 'Note');
+      expect(execute(html, { type: 'move-up', nodeId: find(html, 'B').id }).source)
+        .toBe('# Root\n\n## B\nsecond\n\n## A\n<div>\nfoo\n</div>\n\n## C\nthird\n');
+      // A Setext heading moving behind a paragraph: the seam gets the blank line; the file's ending is kept as it is.
+      const seam = parseMarkdown('A\n---\nfirst\n## B\nsecond\n', 'Note');
+      expect(execute(seam, { type: 'move-up', nodeId: find(seam, 'B').id }).source).toBe('## B\nsecond\n\nA\n---\nfirst\n');
     });
   });
 

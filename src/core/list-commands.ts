@@ -1,6 +1,6 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, endingBreaks, insertionPrefix, moveHeadingSection, moveTarget,
-  sectionRemovalFrom, withoutEndingBreaks, type EditCommand, type EditPlan, type TextEdit,
+  applyEdits, assertSingleLine, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom,
+  swapSections, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 
@@ -112,34 +112,26 @@ function withoutEndNewline(doc: MindDocument, text: string, to: number): string 
   return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
 }
 
-/** Swap the node with its neighbour; H2 sections keep the seam between them and the later one's ending byte for byte. */
+/** Swap the node with its neighbour; H2 sections swap as heading sections do (`swapSections`), items with the gap between them. */
 function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const parent = getNode(doc, node.parentId ?? 'root');
   const index = parent.children.findIndex(child => child.id === node.id);
   const neighbor = parent.children[index + direction];
   if (!neighbor) return { edits: [], selectionOffset: node.titleFrom };
+  if (node.kind !== 'list') return swapSections(doc, node, neighbor, direction, doc.source.slice(node.from, node.to));
   const earlier = direction < 0 ? neighbor : node;
   const later = direction < 0 ? node : neighbor;
   const from = earlier.from;
   const to = later.to;
-  const moved = node.kind === 'list' ? shiftedBranch(doc, node, neighbor.list?.indent ?? '') : doc.source.slice(node.from, node.to);
+  const moved = shiftedBranch(doc, node, neighbor.list?.indent ?? '');
   const other = doc.source.slice(neighbor.from, neighbor.to);
-  // In output order: `first` is the later section's text, `second` the earlier one's.
-  let first = direction < 0 ? moved : other;
-  let second = direction < 0 ? other : moved;
+  // In output order: `first` is the later item's text, `second` the earlier one's.
+  const first = direction < 0 ? moved : other;
+  const second = direction < 0 ? other : moved;
   let gap = doc.source.slice(earlier.to, later.from);
-  if (node.kind !== 'list') {
-    // A section's range ends with the blank lines before the next heading (or the file's ending), so only the
-    // sections' own lines change places: the earlier one's ending stays as the seam and the later one's ending
-    // stays at the end, and the swap back restores the source (AGENTS.md: 無関係な内容を再シリアライズしない).
-    gap = endingBreaks(second) + gap;
-    second = withoutEndingBreaks(second) + endingBreaks(first);
-    first = withoutEndingBreaks(first);
-  }
   if (!gap && !first.endsWith('\n')) gap = doc.eol;
   const text = withoutEndNewline(doc, first + gap + second, to);
   const selectedFrom = direction < 0 ? from : from + first.length + gap.length;
-  // The whole tree is compared, so lines that would join a neighbouring block (a paragraph before a Setext underline) are refused.
   return checkedMove(doc, [{ from, to, text }], node, parent, index + direction, selectedFrom);
 }
 
