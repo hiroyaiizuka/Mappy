@@ -117,6 +117,11 @@ function endingBreaks(text: string): string {
   return /(?:\r?\n[ \t]*)+$/u.exec(text)?.[0] ?? '';
 }
 
+function withoutEndingBreaks(text: string): string {
+  return text.slice(0, text.length - endingBreaks(text).length);
+}
+
+/** Swap the node with its neighbour; H2 sections keep the seam between them and the later one's ending byte for byte. */
 function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const parent = getNode(doc, node.parentId ?? 'root');
   const index = parent.children.findIndex(child => child.id === node.id);
@@ -128,25 +133,23 @@ function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const to = later.to;
   const moved = node.kind === 'list' ? shiftedBranch(doc, node, neighbor.list?.indent ?? '') : doc.source.slice(node.from, node.to);
   const other = doc.source.slice(neighbor.from, neighbor.to);
+  // In output order: `first` is the later section's text, `second` the earlier one's.
   let first = direction < 0 ? moved : other;
   let second = direction < 0 ? other : moved;
   let gap = doc.source.slice(earlier.to, later.from);
   if (node.kind !== 'list') {
-    // An H2 section's range ends with the blank lines before the next heading (or the file's ending), so the
-    // two sections swap their lines only: the seam between them and the later section's ending stay where
-    // they are, byte for byte, and the swap back restores the source (§5 M2: 無関係な内容を再シリアライズしない).
-    const lines = (text: string): string => text.slice(0, text.length - endingBreaks(text).length);
-    const seam = endingBreaks(doc.source.slice(earlier.from, earlier.to)) + gap;
-    const ending = endingBreaks(doc.source.slice(later.from, later.to));
-    first = lines(first);
-    second = lines(second) + ending;
-    gap = seam;
+    // A section's range ends with the blank lines before the next heading (or the file's ending), so only the
+    // sections' own lines change places: the earlier one's ending stays as the seam and the later one's ending
+    // stays at the end, and the swap back restores the source (AGENTS.md: 無関係な内容を再シリアライズしない).
+    gap = endingBreaks(second) + gap;
+    second = withoutEndingBreaks(second) + endingBreaks(first);
+    first = withoutEndingBreaks(first);
   }
   if (!gap && !first.endsWith('\n')) gap = doc.eol;
   const text = withoutEndNewline(doc, first + gap + second, to);
   const selectedFrom = direction < 0 ? from : from + first.length + gap.length;
-  return validate(doc, [{ from, to, text }], doc.nodes.length, selectedFrom,
-    { kind: node.kind, level: neighbor.level, title: node.title });
+  // The whole tree is compared, so lines that would join a neighbouring block (a paragraph before a Setext underline) are refused.
+  return checkedMove(doc, [{ from, to, text }], node, parent, index + direction, selectedFrom);
 }
 
 /** End of the nearest non-blank line before `offset` (a line start), without its line break. */

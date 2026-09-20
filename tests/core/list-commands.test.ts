@@ -289,6 +289,21 @@ describe('source-preserving list commands', () => {
       const plan = planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id });
       expect(plan.edits).toEqual([{ from: find(doc, 'A').from, to: find(doc, 'B').to, text: '## B\n- Second\n\n## A\n- First\n\n' }]);
     });
+
+    it('writes the same bytes as dragging the section to that position when the seams are one blank line', () => {
+      const doc = parse('## Root\n- Child\n\n## A\n- First\n\nProse.\n\n## B\n- Second\n\n## C\n- Third\n');
+      expect(execute(doc, { type: 'move-up', nodeId: find(doc, 'B').id }).source)
+        .toBe(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: 'root', index: 1 }).source);
+      expect(execute(doc, { type: 'move-down', nodeId: find(doc, 'B').id }).source)
+        .toBe(execute(doc, { type: 'move', nodeId: find(doc, 'B').id, parentId: 'root', index: 3 }).source);
+    });
+
+    it('refuses a swap whose lines would join a neighbouring block, such as a paragraph before a Setext underline', () => {
+      const doc = parse('## Root\n- Child\n\n## A\n- First\n\nProse about A.\n\n## B\n```\ncode\n```\nC\n---\n- Third\n');
+      expect(doc.root.children.map(node => node.title)).toEqual(['Root', 'A', 'B', 'C']);
+      expect(() => planEdit(doc, { type: 'move-up', nodeId: find(doc, 'B').id })).toThrow('リスト構造を安全に変更できません');
+      expect(() => planEdit(doc, { type: 'move-down', nodeId: find(doc, 'A').id })).toThrow('リスト構造を安全に変更できません');
+    });
   });
 
   it('reparents all source lines, including fenced code and images, under another item', () => {
