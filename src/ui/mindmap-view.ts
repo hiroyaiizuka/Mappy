@@ -164,17 +164,32 @@ export class MindmapView extends ItemView {
     private readonly menuActions: readonly MapMenuAction[] = [],
   ) {
     super(leaf);
+    // The map opens a note, so it is a navigation view like the Markdown editor, Kanban or a PDF (the API's own rule
+    // for `navigation`), not a static one like the file explorer (LEV-74). Obsidian 1.14.2 treats a non-navigation
+    // active leaf as "not really the current file": `getActiveFileView()` (the core file commands, `getActiveFile()`,
+    // `file-open`) resolves to the most recently active navigation leaf, and the workspace's window `keydown` for a
+    // bare Escape moves the active leaf and the focus there — on the map, Escape with no inline editor open jumped to
+    // the Markdown tab beside it, and the core commands acted on that note. As a navigation view the map keeps the
+    // active leaf on Escape (the workspace returns before choosing another leaf), `getActiveFileView()` is null while
+    // the map is active (an ItemView, not a FileView: those commands are unavailable rather than aimed at a
+    // neighbour), the leaf's back／forward history records the states the map passes through (`setState` below), and
+    // `getLeaf(false)` — a link clicked on the map, a file chosen in the explorer or the quick switcher — opens in
+    // this leaf, as it would in a Markdown tab, instead of a neighbouring tab or a new one. ⌘-click still opens a tab.
+    this.navigation = true;
     this.reader = new CallReader(this.app, store);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
     // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
-    // it before the canvas listener and, the map not being a navigation view, starts renaming the most recently active
-    // Markdown tab's file instead (E02, LEV-48). While the focus is in this view, F2 is the map's key: on the canvas it
-    // edits the selected node, in the inline editor or on a floating control it does nothing, and either way `false`
-    // (Obsidian's "consumed": preventDefault and stopPropagation) keeps that default from running. With the focus
-    // outside the view the handler declines (`undefined`); what Obsidian then does with F2 is its own affair (1.14.2
-    // runs no other handler for a key the active view registered, so the default stays off while the map is active).
-    // Only F2 is registered: no other map key has a default hotkey. The workspace reads `view.scope` on each key, so
-    // there is nothing to undo.
+    // it before the canvas listener (E02, LEV-48). Its `checkCallback` asks `getActiveFileView()`, which the navigation
+    // flag above makes null on the map (before LEV-74 it was the most recently active Markdown tab, whose file the
+    // default then started renaming), so the default no longer runs here even without this scope; the scope stays
+    // because it does not hinge on that (a map made a FileView one day would be renamed by F2 again) and keeps F2 the
+    // map's key when a user assigns it to another command. While the focus is in this view, F2 is the map's key: on
+    // the canvas it edits the selected node, in the inline editor or on a floating control it does nothing, and either
+    // way `false` (Obsidian's "consumed": preventDefault and stopPropagation) keeps that default from running. With the
+    // focus outside the view the handler declines (`undefined`); what Obsidian then does with F2 is its own affair
+    // (1.14.2 runs no other handler for a key the active view registered, so the default stays off while the map is
+    // active). Only F2 is registered: no other map key has a default hotkey. The workspace reads `view.scope` on each
+    // key, so there is nothing to undo.
     this.scope = new Scope(this.app.scope);
     this.scope.register([], "F2", event => {
       const target = event.targetNode;
@@ -275,6 +290,11 @@ export class MindmapView extends ItemView {
       this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
       this.pendingTopic = null; this.topicDrag = null;
       this.targets = new Map(); this.knownCalled.clear();
+      // Another note in this leaf (a link on the map, a called map opened from its node, the explorer) is a step of
+      // the leaf's back／forward history, as a FileView reports it; a navigation view's leaf records the state it left
+      // (LEV-74). Obsidian itself drops the flag for the states it never records: back／forward, a group sync, a
+      // deferred view waking. The layout and the viewport alone are not a step.
+      result.history = true;
     }
     if (this.ready) {
       const view = value.viewport;
