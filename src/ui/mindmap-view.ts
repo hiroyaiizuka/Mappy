@@ -335,29 +335,41 @@ export class MindmapView extends ItemView {
     await super.setState(state, result);
   }
 
-  /** The selection, for a back／forward step and a duplicated tab to restore (`setEphemeralState` below). */
+  /**
+   * What a back／forward step or a duplicated tab restores through `setEphemeralState` below (LEV-74): the selected
+   * node of this note by its place and text (node ids are handed out per parse, so the id would name nothing in the
+   * view that opens next; a called map's node has no place in this note and is not kept), and whether the focus was
+   * in the view, so the keys come back with it — as the Markdown editor reports its cursor and focus.
+   */
   getEphemeralState(): Record<string, unknown> {
-    return this.selectedId === null ? {} : { selected: this.selectedId };
+    const node = this.selected();
+    const own = node && this.document && (node.id === "root" || this.document.nodes.includes(node)) ? node : undefined;
+    const focus = this.contentEl.contains(this.contentEl.ownerDocument.activeElement);
+    return { ...(own ? { selection: { from: own.from, title: own.title } } : {}), ...(focus ? { focus: true } : {}) };
   }
 
   /**
    * What Obsidian hands a navigation view besides its state (LEV-74). `subpath`, from a link (`[[note#heading]]`,
    * `[[note#^block]]`, or `[[#heading]]` on this very note, which opens in this leaf now): the node holding that
-   * position is selected and brought into view, as the editor scrolls to the heading (E06). `selected`, this
-   * view's own `getEphemeralState`: a back／forward step or a duplicated tab keeps the selection, if the node is
-   * still there. `focus`, from `setActiveLeaf(leaf, { focus: true })` (the map opened by a command, its tab
-   * pressed, a history step): the keys work at once, on the selected node or else the canvas — never while a
-   * draft is being typed.
+   * position is selected and brought into view, as the editor scrolls to the heading (E06). `selection`, this
+   * view's own `getEphemeralState`: a back／forward step or a duplicated tab keeps the selection — the node at the
+   * same place with the same text, else the first with that text, else nothing. `focus`, from `setActiveLeaf(leaf,
+   * { focus: true })` (the map opened by a command, its tab pressed) and from `getEphemeralState` (a history step):
+   * the keys work at once, on the selected node or else the canvas — never while a draft is being typed.
    */
   setEphemeralState(state: unknown): void {
     const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
     const document = this.document;
+    const selection = value.selection && typeof value.selection === "object" ? value.selection as Record<string, unknown> : null;
     if (document && typeof value.subpath === "string" && value.subpath !== "") {
       const offset = locateSubpath(document.source, value.subpath);
       const id = offset === null ? undefined : this.nodeAt(document, offset)?.id;
       if (id !== undefined) this.select(id, true);
-    } else if (document && typeof value.selected === "string" && (value.selected === "root" || document.nodes.some(node => node.id === value.selected))) {
-      this.select(value.selected);
+    } else if (document && selection && typeof selection.from === "number" && typeof selection.title === "string") {
+      const { from, title } = selection;
+      const candidates = [document.root, ...document.nodes];
+      const node = candidates.find(item => item.from === from && item.title === title) ?? candidates.find(item => item.title === title);
+      if (node) this.select(node.id);
     }
     if (value.focus === true && this.ready && !this.inlineEditor) {
       if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);

@@ -284,21 +284,33 @@ describe('MindmapView as a navigation view (LEV-74: Escape and the current file 
     expect(intro?.classList.contains('is-selected')).toBe(true);
   });
 
-  it('hands out the selection as ephemeral state and takes it back, so a back／forward step or a duplicated tab keeps it', async () => {
-    const { view, settle, select, node } = await mount();
+  it('hands out the selection by place and text, with the focus, and takes it back: a back／forward step or a duplicated tab keeps both', async () => {
+    const { view, settle, select } = await mount();
     select('記録する');
     const state = view.getEphemeralState();
-    expect(state).toEqual({ selected: node('記録する').dataset.nodeId });
-    select('学ぶこと');
-    view.setEphemeralState(state);
-    await settle();
-    expect(node('記録する').classList.contains('is-selected')).toBe(true);
-    expect(node('学ぶこと').classList.contains('is-selected')).toBe(false);
-    // The selection is not focused unless asked; an unknown node changes nothing.
-    view.setEphemeralState({ selected: 'node-404' });
-    expect(node('記録する').classList.contains('is-selected')).toBe(true);
+    // Not the node id: ids are handed out per parse, and the view that opens next parses again.
+    expect(state).toEqual({ selection: { from: SOURCE.indexOf('- 記録する'), title: '記録する' }, focus: true });
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(view.getEphemeralState()).toEqual({ selection: { from: SOURCE.indexOf('- 記録する'), title: '記録する' } });
+    // Restored into a fresh view of the same note, whose ids differ: the node at that place with that text.
+    const again = await mountMapView(PATH, SOURCE);
+    opened.push(again);
+    again.select('学ぶこと');
+    again.view.setEphemeralState(state);
+    await again.settle();
+    expect(again.node('記録する').classList.contains('is-selected')).toBe(true);
+    expect(again.node('学ぶこと').classList.contains('is-selected')).toBe(false);
+    expect(document.activeElement).toBe(again.node('記録する'));
+    // The text moved (an edit above it): found by its text. Unknown text at an unknown place: nothing changes.
+    again.view.setEphemeralState({ selection: { from: 0, title: '学ぶこと' } });
+    expect(again.node('学ぶこと').classList.contains('is-selected')).toBe(true);
+    again.view.setEphemeralState({ selection: { from: 9999, title: 'ない' } });
+    expect(again.node('学ぶこと').classList.contains('is-selected')).toBe(true);
+    // Nothing selected: no selection is handed out (the focus still is, while it sits in the view).
     (view as unknown as { deselect(): void }).deselect();
-    expect(view.getEphemeralState()).toEqual({});
+    view.setEphemeralState({ focus: true });
+    expect(view.getEphemeralState()).toEqual({ focus: true });
+    await settle();
   });
 
   it('takes the focus onto the selected node, or the canvas, when the leaf is focused; not out of a draft', async () => {
