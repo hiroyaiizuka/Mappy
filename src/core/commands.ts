@@ -151,8 +151,50 @@ function appendBoundary(text: string, eol: string): string {
   return text + (text.endsWith('\n') ? eol : eol + eol);
 }
 
-function respectEndOfFile(doc: MindDocument, text: string, to: number): string {
-  return to === doc.source.length && !doc.source.endsWith('\n') ? text.replace(/(?:\r?\n)+$/u, '') : text;
+/** The line breaks and whitespace-only lines that end `text` (a last one without a break included), or '' when its last line has neither. */
+function endingBreaks(text: string): string {
+  return /(?:\r?\n[ \t]*)+$/u.exec(text)?.[0] ?? '';
+}
+
+function withoutEndingBreaks(text: string): string {
+  return text.slice(0, text.length - endingBreaks(text).length);
+}
+
+/** `breaks` with a blank line: itself when it already ends with one, otherwise one more line break. */
+function withBlankLine(breaks: string, eol: string): string {
+  return /\n[ \t]*\r?\n$/u.test(breaks) ? breaks : breaks + eol;
+}
+
+/**
+ * Swap `node` with `neighbor`, its sibling section `direction` away; `moved` is the node's text as it lands (its
+ * depth adjusted). Sibling sections are adjacent and a section's range ends with the blank lines before the next
+ * heading (or the file's ending), so only the sections' own lines change places: the earlier one's ending stays as
+ * the seam and the later one's ending stays at the end, and the swap back restores the source (AGENTS.md: 無関係な
+ * 内容を再シリアライズしない). The whole tree is compared; when the lines brought together would join into another
+ * block (a paragraph before a Setext underline, an HTML block before the next heading), the seam and, unless the pair
+ * ends the file, the ending get a blank line instead.
+ */
+export function swapSections(doc: MindDocument, node: MindNode, neighbor: MindNode, direction: number, moved: string): EditPlan {
+  const parent = getNode(doc, node.parentId ?? 'root');
+  const index = parent.children.findIndex((child) => child.id === node.id) + direction;
+  const other = doc.source.slice(neighbor.from, neighbor.to);
+  const from = Math.min(node.from, neighbor.from);
+  const to = Math.max(node.to, neighbor.to);
+  const [earlier, later] = direction < 0 ? [other, moved] : [moved, other];
+  const first = withoutEndingBreaks(later);
+  const second = withoutEndingBreaks(earlier);
+  const seam = endingBreaks(earlier);
+  const ending = endingBreaks(later);
+  const attempt = (seam: string, ending: string): EditPlan => checkedMove(doc, [{ from, to, text: first + seam + second + ending }],
+    node, parent, index, direction < 0 ? from : from + first.length + seam.length);
+  try {
+    return attempt(seam, ending);
+  } catch (error) {
+    const wideSeam = withBlankLine(seam, doc.eol);
+    const wideEnding = to === doc.source.length ? ending : withBlankLine(ending, doc.eol);
+    if (wideSeam === seam && wideEnding === ending) throw error;
+    return attempt(wideSeam, wideEnding);
+  }
 }
 
 /** A node's text is one line: a break would start another block and change the tree. */
@@ -201,22 +243,12 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
   return { edits, selectionOffset: added.titleFrom };
 }
 
+/** Swap the node with its neighbour; the moved section adopts the neighbour's depth, so skipped depths stay siblings. */
 function move(doc: MindDocument, node: MindNode, direction: number): EditPlan {
   const parent = getNode(doc, node.parentId ?? 'root');
-  const index = parent.children.findIndex((child) => child.id === node.id);
-  const neighbor = parent.children[index + direction];
+  const neighbor = parent.children[parent.children.findIndex((child) => child.id === node.id) + direction];
   if (!neighbor) return { edits: [], selectionOffset: node.titleFrom };
-  const moved = shiftedBranch(doc, node, neighbor.level);
-  const other = doc.source.slice(neighbor.from, neighbor.to);
-  const from = Math.min(node.from, neighbor.from);
-  const to = Math.max(node.to, neighbor.to);
-  const first = direction < 0 ? moved : other;
-  const second = direction < 0 ? other : moved;
-  const boundary = appendBoundary(first, doc.eol);
-  const text = respectEndOfFile(doc, boundary + second, to);
-  const movedFrom = direction < 0 ? from : from + boundary.length;
-  const movedDoc = parseMarkdown(moved, doc.root.title, undefined, doc.format);
-  return checkedPlan(doc, [{ from, to, text }], movedFrom + (movedDoc.nodes[0]?.titleFrom ?? 0), doc.nodes.length);
+  return swapSections(doc, node, neighbor, direction, shiftedBranch(doc, node, neighbor.level));
 }
 
 /** Text placed at the very end keeps the document's own EOF convention: one newline or none. */
