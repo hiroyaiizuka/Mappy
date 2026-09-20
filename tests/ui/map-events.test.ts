@@ -169,7 +169,7 @@ describe('MapEvents DOM interactions', () => {
   it.each([{ metaKey: false }, { metaKey: true }, { ctrlKey: true }])(
     'opens internal links without changing selection (%j)',
     (modifiers) => {
-      const { node, actions } = fixture();
+      const { node, selected, actions } = fixture();
       const anchor = document.createElement('a');
       anchor.className = 'internal-link';
       anchor.dataset.href = 'Folder/Note#Heading';
@@ -179,8 +179,9 @@ describe('MapEvents DOM interactions', () => {
       node.append(anchor);
       const event = click(child, modifiers);
       expect(event.defaultPrevented).toBe(true);
+      // The node the link sits in comes along, so the view can resolve the link from the note it is written in (§5 M12).
       expect(actions.link).toHaveBeenCalledExactlyOnceWith(
-        'Folder/Note#Heading', Boolean(modifiers.metaKey || modifiers.ctrlKey),
+        'Folder/Note#Heading', Boolean(modifiers.metaKey || modifiers.ctrlKey), selected.id,
       );
       expect(actions.select).not.toHaveBeenCalled();
       expect(actions.edit).not.toHaveBeenCalled();

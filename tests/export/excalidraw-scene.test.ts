@@ -60,8 +60,9 @@ describe('sceneContents', () => {
     const contents = sceneContents(document, new Set(), calls);
     expect(contents.nodes.map(node => node.text)).toEqual(['講座', '呼ばれた', '一', '深い', '二', '自分の子', '葉']);
     const byText = new Map(contents.nodes.map(node => [node.text, node]));
-    // The called root's own body link wins over the note link; without one the calling item links to the called note.
-    expect(byText.get('呼ばれた')).toMatchObject({ id: calling?.id, role: 'stage', link: '参考', images: [], sourcePath: 'Maps/Called.md' });
+    // The calling item keeps its own item's body (none here) and links to the called note; its links resolve from the host.
+    expect(byText.get('呼ばれた')).toMatchObject({ id: calling?.id, role: 'stage', link: 'Maps/Called.md', images: [] });
+    expect(byText.get('呼ばれた')?.sourcePath).toBeUndefined();
     expect(byText.get('一')).toMatchObject({ role: 'branch', link: null, images: ['絵.png'], sourcePath: 'Maps/Called.md' });
     expect(byText.get('自分の子')?.sourcePath).toBeUndefined();
     expect(byText.get('葉')?.sourcePath).toBeUndefined();

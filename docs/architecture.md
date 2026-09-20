@@ -174,6 +174,8 @@ interface CallSource {
 /** 継ぎ足した木: 本体ルートとフリートピック、出所（ホスト自身のノードは載らない）、id → 投影ノード。 */
 interface CallProjection { roots: MindNode[]; sources: ReadonlyMap<string, CallSource>; byId: ReadonlyMap<string, MindNode> }
 projectCalls(roots: readonly MindNode[], targets: CallTargets): CallProjection
+/** 分割（projectMap）と継ぎ足しを合成する唯一の場所: view・Excalidraw 挿入・切り離しの原点が使う。 */
+projectShown(document, targets): { split: MapProjection; calls: CallProjection }
 calledNodeId(callerId, nodeId) === `${callerId}/${nodeId}`
 initialCallFolds(projection): Set<string>
 ```
@@ -185,26 +187,30 @@ initialCallFolds(projection): Set<string>
 **データの流れ（`MindmapView`）:**
 
 ```text
-refresh():     store.read(host) → parseMarkdown → CallReader.read(document, host.path) → targets → adopt → draw
-recall:        metadataCache changed/deleted・vault modify/rename/delete・editor-change（ホスト以外のファイル。呼び出しを持つ文書に限る）
+refresh():     store.read(host) → parseMarkdown（ローカル）→ CallReader.read(document, host.path) → targets
+               → this.document と targets を同時に公開（adopt）→ draw   ※ 読み取りの待ちの間は古い文書と画面が一致したまま
+recall:        metadataCache changed/deleted・vault modify/rename/delete・editor-change（ホスト以外）
+               → callConcerns(file): 前回読んだノート（旧パス含む）か、いずれかの項目が今そのファイルに解決するときだけ
                → 45 ms debounce → CallReader.read → targets が変われば adopt → draw
-adopt:         projectCalls(projectMap(document) の root と topics, targets) を (document, targets) ごとに 1 度組み、
-               collapsed を byId に刈り、まだ見ていない呼び出し id に initialCallFolds を足す
+adopt(targets): projectShown(document, targets) を (document, targets) ごとに 1 度組み、
+               collapsed を byId に刈り、まだ見ていない呼び出し id に initialCallFolds を足す（折りたたみが変わる唯一の場所）
+projection():  adopt が組んだ木を返すだけ（副作用なし）
 draw():        visible()（投影の木を preorder、閉じた枝の下は省く）→ renderer.update(nodes, document, host.path, collapsed, { …, sources, trees })
                → scheduleLayout → layoutTree(投影の root, sizes, collapsed, mode, topics)
 ```
 
 - **読み取り**は `CallReader`（`src/obsidian/map-calls.ts`）。項目ごとに `embedOnlyTitle` → `resolveEmbedTarget`（metadataCache の `mappy: true`、ブロック参照でない、存在する）→ ホスト自身を拒む → `DocumentStore.read`（開いているエディタのバッファ優先）→ その原文でも `readMapFromSource` がマップと言う（未保存の編集で `mappy: true` を失えばリンク）→ `parseMarkdown(text, basename, previous)` をパスごとに 1 度。前回の解析を同一性の基準に渡すので、呼び出し先の編集で id が保たれ折りたたみが残る。同じマップを 2 回呼んでも解析は 1 度で、投影の id が `callerId/` で分かれる。読めないノートはリンクに戻る。`targets` の各項目は `document` の参照で比べ、原文が同じなら同じ文書を返すので、無関係な cache 変更では描き直さない。
-- **描画**は `NodeRenderer.update` の `appearance.sources`。出所のあるノードは題名と添付を `source.document`／`source.node` から、`sourcePath` を `source.path` にして描く（リンク・画像は呼び出し先のノート基準。M10 と同じ）。class は `is-called`（呼び出したマップから来たノード全部。呼び出し元の項目も）と `is-called-root`（呼び出し元の項目）、`aria-readonly="true"`、`title` 属性に「呼び出し元: パス」、呼び出し元の項目の label の前に小さな `link` アイコン（`.mappy-node-call-mark`）。文字色は `--text-muted` 寄り（styles.css）。同一性キーにパスと `is-called-root` を含めるので、呼び出しが変われば描き直す。折りたたみの件数は `appearance.trees`（投影の root とトピック）で数える。
+- **描画**は `NodeRenderer.update` の `appearance.sources`。呼び出したノードは題名と添付を `source.document`／`source.node` から、`sourcePath` を `source.path` にして描く（リンク・画像は呼び出し先のノート基準。M10 と同じ）。呼び出し元の項目は題名だけ呼び出し先のルートの文で、添付は自分の項目の本文（このマップで「本文・リンクを編集」「画像を追加」できるもの）をホストのパスで描く。呼び出し先のルートの本文は描かない。class は `is-called`（呼び出したマップから来たノード全部。呼び出し元の項目も）と `is-called-root`（呼び出し元の項目）、`aria-readonly="true"`（項目を除く）、`title` 属性に「呼び出し元: パス」、呼び出し元の項目の label の前に小さな `link` アイコン（`.mappy-node-call-mark`）。文字色は `--text-muted` 寄り（styles.css）。同一性キーにパスと `is-called-root` を含めるので、呼び出しが変われば描き直す。折りたたみの件数は `appearance.trees`（投影の root とトピック）で数える。
+- **リンク**: `MapActions.link(link, newLeaf, nodeId)` はリンクが載るノードの id を運び、view は呼び出したノードなら `source.path`、それ以外（ホストのノードと呼び出し元の項目）ならホストのパスを基準に `openLinkText` する（「内部・相対リンクの基準は元ファイル」）。
 - **読み取り専用**: `MapActions.open(id)`（ダブルクリック。呼び出したノードなら `openLinkText(source.path, host.path)` で元ノートをマップで開き true）、`NodeDragActions.readOnly(id)`（押下を始めない＝ドラッグもゴーストも切り離しもない）。view は `execute`（Enter／Tab／Delete／⌥↑↓／ドロップ）・`editTitle`（F2）・`editBody`・`attachImage`・`callMap` を呼び出したノードで Notice「呼び出したマップは読み取り専用です」と断る。ドロップ先が呼び出したノードのときは `resolveDrop` がホストの文書にそのノードを見つけないので拒み、スロットも出ない。右クリックは「元のマップを開く」「折りたたみ」と履歴だけ。Space と開閉ボタン、矢印キーは投影の木で動く（`MapEvents` は矢印を `visible()` のノードで辿る）。呼び出し元の項目自体は通常のノード: F2 は原文 `![[…]]`、Enter／Tab／Delete／ドラッグは同じ差分で、Delete で呼び出した木ごと消え、⌘Z で戻る（ホストの 1 編集）。
-- **選択**: `selected()` はホストの id ならホストの文書のノード（編集は原文の題名を使う）、呼び出しの id なら投影のノード。
-- **ドラッグの事前表示**: `previewTree(root, command, collapsed)` は投影の木から組み直すので、ドラッグ中も呼び出した枝が消えない。切り離しの原点（`originFor`）も投影で測る。
+- **選択**: `selected()` はホストの id ならホストの文書のノード（編集は原文の題名を使う）、呼び出しの id なら投影のノード。「Markdown に切り替え」のカーソルは、呼び出したノードが選ばれていればその呼び出し元の項目の位置。
+- **ドラッグの事前表示**: `previewTree(root, command, collapsed)` は投影の木から組み直すので、ドラッグ中も呼び出した枝が消えない。`resolveDrop` の `index` はホストの子の中の位置なので、移動先が呼び出し元の項目なら view が呼び出し先のルートの子の数だけずらして仮ノードを置く。切り離しの原点（`originFor`）も `projectShown` で測る。フリートピックの位置（`mappy-topics`）は見出しの原文（`split.topics` の題名）をキーにし、`## ![[Map]]` のトピックでも呼び出し先のルートの文をキーにしない。
 - **書き出し**: SVG／PNG は DOM をそのまま読むので、呼び出したノードは通常のノードとして入る（LEV-69 の `serializeFrame` はなくなった。LEV-73 はこれで解消）。Excalidraw は `sceneContents(document, collapsed, calls)` が同じ `projectCalls` で継ぎ足し、`SceneNodeContent.sourcePath` でノードのリンクと画像を呼び出し先のノートから解決し、呼び出し元の項目の要素は呼び出し先のノートへリンクする。`ImportRequest.calls` は view の `snapshot()` が渡す。Markdown view からの挿入（`calls` なし）は bridge が `CallReader` で自ら読み、呼び出し先を開いた時点と同じ折りたたみ（ルートの子まで）で入れる。
 - `nodeOf` はそのキャンバスの中でターゲットを含むノード要素。map view のノードは入れ子にならない（題名の `![[…]]` はリンク、M10 の枠は閲覧モードの区画にしかない）。`MapEmbed`（M10）は変えず、`nodeEmbeds` はなくなった。
 
 2,000 ノードのマップを呼んでも解析は 1 度（数十 ms）、投影は変更ごとに 1 度で、描くのはルートの子までなので現在のマップの操作は止まらない。
 
-再検討する条件: 呼び出し先のフリートピックを描くか（今は本体の木だけ）。呼び出し元の項目自身の本文（添付）は表示せず「本文・リンクを編集」でだけ触れる。右上の操作メニュー（LEV-81 が作り直す）は呼び出したノードでも項目が有効のままで、選ぶと同じ Notice で断る。Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。
+再検討する条件: 呼び出し先のフリートピックを描くか（今は本体の木だけ）。呼び出し先のルートの本文（添付）を項目に描くか（今は項目自身の本文だけ）。右上の操作メニュー（LEV-81 が作り直す）は呼び出したノードでも項目が有効のままで、選ぶと同じ Notice で断る。Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。
 
 ## 6. 操作とズーム
 

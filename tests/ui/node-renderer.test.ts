@@ -249,7 +249,7 @@ describe('NodeRenderer title rendering', () => {
 
   it('draws the nodes of a called map from the called note, marks them read-only, and puts the link mark on the calling item (§5 M12)', async () => {
     const called = parseMarkdown('---\nmappy: true\n---\n## 講座\n[[参考]] を見る\n- 回復する\n  - 睡眠\n- 記録する\n  ![[図.png]]\n', 'Map');
-    const { parsed, renderer } = setup('## Course\n- ![[Map]]\n  - own child\n- ![[Other]]\n');
+    const { parsed, renderer } = setup('## Course\n- ![[Map]]\n  [[own link]]\n  - own child\n- ![[Other]]\n');
     const caller = id(parsed, '![[Map]]');
     const projection = projectCalls([projectMap(parsed).root], new Map([[caller, { path: 'Maps/Map.md', subpath: '', document: called }]]));
     const root = projection.roots[0];
@@ -263,15 +263,17 @@ describe('NodeRenderer title rendering', () => {
     expect(calling?.element.classList.contains('is-called-root')).toBe(true);
     expect(calling?.element.getAttribute('aria-label')).toBe('講座');
     expect(calling?.element.getAttribute('title')).toBe('呼び出し元: Maps/Map.md');
-    expect(calling?.element.getAttribute('aria-readonly')).toBe('true');
+    // The calling item is the host's own node, edited as any other: not read-only, unlike the nodes grafted under it.
+    expect(calling?.element.hasAttribute('aria-readonly')).toBe(false);
     expect(calling?.content.querySelector('.mappy-node-call-mark')?.getAttribute('data-icon')).toBe('link');
     expect(calling?.content.querySelector('.mappy-node-label')?.textContent).toBe('講座');
-    // The called root's attachments come from the called note and render against its path (the key carries both).
-    expect(calling?.key).toBe('Maps/Map.md\0講座\0[[参考]]\0called-root');
+    // The calling item's attachments are its own item's body (what this map edits), not the called root's.
+    expect(calling?.key).toBe('Maps/Map.md\0講座\0[[own link]]\0called-root');
     const grafted = visible.find(node => node.title === '記録する');
     const entry = renderer.entries.get(grafted?.id ?? '');
     expect(entry?.element.classList.contains('is-called')).toBe(true);
     expect(entry?.element.classList.contains('is-called-root')).toBe(false);
+    expect(entry?.element.getAttribute('aria-readonly')).toBe('true');
     expect(entry?.element.getAttribute('title')).toBe('呼び出し元: Maps/Map.md');
     expect(entry?.content.querySelector('.mappy-node-call-mark')).toBeNull();
     expect(entry?.key).toBe('Maps/Map.md\0記録する\0![[図.png]]');
@@ -290,6 +292,6 @@ describe('NodeRenderer title rendering', () => {
     expect(calling?.element.hasAttribute('title')).toBe(false);
     expect(calling?.content.querySelector('.mappy-node-call-mark')).toBeNull();
     expect(calling?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
-    expect(calling?.key).toBe('Course.md\0![[Map]]\0');
+    expect(calling?.key).toBe('Course.md\0![[Map]]\0[[own link]]');
   });
 });

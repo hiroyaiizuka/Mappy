@@ -11,7 +11,8 @@ export interface MapActions {
   command: (command: EditCommand) => void;
   history: (direction: "undo" | "redo") => void;
   attach: (file: File) => void;
-  link: (link: string, newLeaf: boolean) => void;
+  /** An internal link clicked in a node's text; `nodeId` names that node, so the link is resolved from the note it is written in. */
+  link: (link: string, newLeaf: boolean, nodeId: string | null) => void;
   /** Empty canvas double-clicked at this canvas-relative point: add a free topic there (§5 M7). */
   addTopic: (point: { x: number; y: number }) => void;
   /**
@@ -21,8 +22,8 @@ export interface MapActions {
   open: (id: string, newLeaf: boolean) => boolean;
 }
 
-/** What a click on a map means: an internal link to follow, or a node (and whether its fold control was hit). */
-export type MapClick = { link: string; newLeaf: boolean } | { nodeId: string; toggle: boolean };
+/** What a click on a map means: an internal link to follow (and the node it sits in), or a node (and whether its fold control was hit). */
+export type MapClick = { link: string; newLeaf: boolean; nodeId: string | null } | { nodeId: string; toggle: boolean };
 
 /** The node of this canvas that holds `target`; nodes are never nested (a title's `![[…]]` is a link). */
 export function nodeOf(canvas: Element, target: Node | null): HTMLElement | null {
@@ -35,7 +36,9 @@ export function mapClick(event: MouseEvent, canvas: Element): MapClick | null {
   const target = event.targetNode;
   if (!target?.instanceOf(Element)) return null;
   const anchor = target.closest<HTMLAnchorElement>("a.internal-link");
-  if (anchor) return { link: anchor.dataset.href ?? anchor.getAttribute("href") ?? "", newLeaf: event.metaKey || event.ctrlKey };
+  if (anchor) {
+    return { link: anchor.dataset.href ?? anchor.getAttribute("href") ?? "", newLeaf: event.metaKey || event.ctrlKey, nodeId: nodeOf(canvas, anchor)?.dataset.nodeId ?? null };
+  }
   if (target.closest("a")) return null;
   const node = nodeOf(canvas, target);
   const nodeId = node?.dataset.nodeId;
@@ -57,7 +60,7 @@ export class MapEvents extends Component {
       if ("link" in click) {
         event.preventDefault();
         event.stopPropagation();
-        this.actions.link(click.link, click.newLeaf);
+        this.actions.link(click.link, click.newLeaf, click.nodeId);
         return;
       }
       this.actions.select(click.nodeId, true);

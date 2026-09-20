@@ -1714,7 +1714,8 @@ async function captureEmbedNodes(recorder, page) {
     expect(shapes.frames === 0, `${shapes.frames} frames`);
     expect(shapes.marks === EMBED_NODE_EXPECTED.length, `${shapes.marks} link marks`);
     expect(shapes.editable === 0, `${shapes.editable} editable elements`);
-    expect(shapes.readOnly === roots.length + called.length, `${shapes.readOnly} read-only nodes`);
+    // The calling items are the host's own, edited as any node: only the grafted nodes are read-only.
+    expect(shapes.readOnly === called.length, `${shapes.readOnly} read-only nodes, expected ${called.length}`);
     const hostColor = nodes.find(node => node.title === 'リンクのまま').color;
     const calledColor = called[0].color;
     expect(hostColor !== calledColor, `called text colour ${calledColor} equals the host's ${hostColor}`);

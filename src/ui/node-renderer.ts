@@ -70,9 +70,11 @@ export class NodeRenderer extends Component {
       const isTopic = appearance.topicIds?.has(node.id) ?? false;
       const isRoot = isTopic || node.id === appearance.visualRootId;
       const parentIsRoot = node.parentId === appearance.visualRootId || (node.parentId !== null && (appearance.topicIds?.has(node.parentId) ?? false));
-      // A node of a called map (§5 M12) reads its text and body from the called note; the calling item stands in for that map's root.
+      // A node of a called map (§5 M12) reads its text and body from the called note. The calling item stands in for
+      // that map's root: its text is the called root's, its attachments are its own item's (what this map edits).
       const source = appearance.sources?.get(node.id);
       const path = source?.path ?? sourcePath;
+      const bodyPath = source && !source.root ? source.path : sourcePath;
       entry.element.toggleClass("is-root", isRoot);
       entry.element.toggleClass("is-topic", isTopic);
       entry.element.toggleClass("is-stage", !isRoot && parentIsRoot);
@@ -85,14 +87,11 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       entry.element.setAttribute("aria-label", node.title.trim() || "空のノード");
-      // The branches of a called map are read-only on this map; every node of them names its note on hover.
-      if (source) {
-        entry.element.setAttribute("aria-readonly", "true");
-        entry.element.setAttribute("title", `呼び出し元: ${source.path}${source.subpath}`);
-      } else {
-        entry.element.removeAttribute("aria-readonly");
-        entry.element.removeAttribute("title");
-      }
+      // The branches of a called map are read-only on this map (the calling item itself is not); every node of them names its note on hover.
+      if (source && !source.root) entry.element.setAttribute("aria-readonly", "true");
+      else entry.element.removeAttribute("aria-readonly");
+      if (source) entry.element.setAttribute("title", `呼び出し元: ${source.path}${source.subpath}`);
+      else entry.element.removeAttribute("title");
       entry.toggle.hidden = node.children.length === 0;
       entry.toggleMark.empty();
       const hiddenCount = descendantCounts.get(node.id) ?? 0;
@@ -107,7 +106,7 @@ export class NodeRenderer extends Component {
       entry.toggle.setAttribute("aria-expanded", String(!isCollapsed));
       if (node.children.length > 0) entry.element.setAttribute("aria-expanded", String(!collapsed.has(node.id)));
       else entry.element.removeAttribute("aria-expanded");
-      const attachments = attachmentMarkdown(source ? nodeBody(source.document, source.node) : nodeBody(document, node));
+      const attachments = attachmentMarkdown(source && !source.root ? nodeBody(source.document, source.node) : nodeBody(document, node));
       const key = `${path}\0${node.title}\0${attachments}${source?.root ? "\0called-root" : ""}`;
       if (entry.key === key) continue;
       entry.key = key;
@@ -127,7 +126,7 @@ export class NodeRenderer extends Component {
         : Promise.resolve();
       const attachmentsEl = entry.content.createDiv({ cls: "mappy-node-attachments" });
       const attachmentsTask = attachments
-        ? MarkdownRenderer.render(this.app, attachments, attachmentsEl, path, entry.component).then(() => {
+        ? MarkdownRenderer.render(this.app, attachments, attachmentsEl, bodyPath, entry.component).then(() => {
           // Keep rendered links and images, without reference labels or prose.
           const items = Array.from(attachmentsEl.querySelectorAll("a, .image-embed, img"))
             .filter(item => !item.parentElement?.closest("a, .image-embed"));

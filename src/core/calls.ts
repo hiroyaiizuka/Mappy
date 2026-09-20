@@ -8,7 +8,7 @@
  * address `doc.root`.
  */
 import { embedOnlyTitle, embedTrees } from './embed';
-import type { MindDocument, MindNode } from './markdown';
+import { projectMap, type MapProjection, type MindDocument, type MindNode } from './markdown';
 
 /** What a `![[…]]`-only item resolved to: the called note, parsed, and the heading path it asked for (`''` for the whole note). */
 export interface CallTarget {
@@ -90,6 +90,18 @@ export function projectCalls(roots: readonly MindNode[], targets: CallTargets): 
     return projected;
   };
   return { roots: roots.map((root) => projectHost(root, root.parentId)), sources, byId };
+}
+
+/** What a document shows: its own body/topic split (`split`) and the same trees with the called maps grafted in (`calls`). */
+export interface ShownTrees {
+  split: MapProjection;
+  calls: CallProjection;
+}
+
+/** The one place the split and the grafting are composed: the body root first, then the free topics, in `calls.roots`. */
+export function projectShown(document: MindDocument, targets: CallTargets): ShownTrees {
+  const split = projectMap(document);
+  return { split, calls: projectCalls([split.root, ...split.topics], targets) };
 }
 
 /**

@@ -3,10 +3,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
-import { Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
+import { MarkdownView, Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { calledNodeId } from '../../src/core/calls';
 import type { MindDocument } from '../../src/core/markdown';
 import { sceneContents } from '../../src/export/excalidraw-scene';
+import { PLACEHOLDER_ID } from '../../src/layout/drop-preview';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { CALLED_READ_ONLY_MESSAGE, MindmapView } from '../../src/ui/mindmap-view';
@@ -94,12 +95,12 @@ function labelOf(node: HTMLElement): string {
   return node.getAttribute('aria-label') ?? '';
 }
 
-async function mount(notes: Record<string, string> = NOTES, hostPath = HOST_PATH, layout = 'mindmap'): Promise<Mounted> {
+async function mount(notes: Record<string, string> = NOTES, hostPath = HOST_PATH, layout = 'mindmap', router: ViewRouter = {} as ViewRouter): Promise<Mounted> {
   const app = new HarnessApp();
   for (const [path, content] of Object.entries(notes)) app.put(path, content);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
-  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
+  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, router);
   views.push(view);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
@@ -192,7 +193,7 @@ describe('a node whose title is one `![[map]]` (judgement and drawing)', () => {
     expect(calling.hasClass('is-called-root')).toBe(true);
     expect(calling.hasClass('is-stage')).toBe(false);
     expect(calling.getAttribute('title')).toBe('呼び出し元: Map.md');
-    expect(calling.getAttribute('aria-readonly')).toBe('true');
+    expect(calling.hasAttribute('aria-readonly')).toBe(false);
     expect(calling.querySelector(':scope > .mappy-node-content > .mappy-node-call-mark')).not.toBeNull();
     expect(calling.querySelector('.mappy-node-label')?.textContent).toBe('講座');
     // The calling item keeps its own identity: the host's node id, not a called one.
@@ -207,6 +208,7 @@ describe('a node whose title is one `![[map]]` (judgement and drawing)', () => {
     expect(recover.querySelector('.mappy-node-toggle-mark')?.textContent).toBe('3');
     expect(recover.querySelector('.mappy-node-call-mark')).toBeNull();
     expect(recover.getAttribute('title')).toBe('呼び出し元: Map.md');
+    expect(recover.getAttribute('aria-readonly')).toBe('true');
     expect(titles().slice(0, 9)).toEqual(['ホスト', '呼び出し', '講座', '回復する', '記録する', '葉', '進行', '第 1 週', '第 2 週']);
     // The called note's free topic (補足) is not drawn; the heading call draws its section only.
     expect(titles()).not.toContain('補足');
@@ -527,11 +529,21 @@ describe('updates and release', () => {
     expect(node('![[Later]]').hasClass('is-called')).toBe(false);
     expect(node('![[Later]]').querySelector<HTMLAnchorElement>('a.internal-link')?.dataset.href).toBe('Later');
     expect(source()).toBe(host);
-    // A change of an unrelated note redraws nothing: the same elements stay.
+    // A change of an unrelated note is nobody's business: no called note is read again, the same elements stay.
     const before = Array.from(nodes().values());
+    const read = app.vault.read;
+    const reads: string[] = [];
+    app.vault.read = file => { reads.push(file.path); return read(file); };
     app.put('Other.md', '## Other\n');
     await refreshed();
+    expect(reads).toEqual([]);
     expect(Array.from(nodes().values())).toEqual(before);
+    // A note an item resolves to now is: it took the link over.
+    app.put('Later.md', MAP);
+    await refreshed();
+    expect(reads).toContain('Later.md');
+    expect(node('講座').hasClass('is-called-root')).toBe(true);
+    app.vault.read = read;
   });
 
   it('starts a large called map with only its root\'s children shown, so the host stays responsive', async () => {
@@ -572,7 +584,8 @@ describe('updates and release', () => {
     expect(capture.entries.get(node('回復する').dataset.nodeId ?? '')?.element.hasClass('is-called')).toBe(true);
     const scene = sceneContents(snapshot.document, snapshot.collapsed, snapshot.calls);
     const byId = new Map(scene.nodes.map(item => [item.id, item]));
-    expect(byId.get(callingId)).toMatchObject({ text: '講座', role: 'branch', link: 'Map.md', sourcePath: 'Map.md' });
+    expect(byId.get(callingId)).toMatchObject({ text: '講座', role: 'branch', link: 'Map.md' });
+    expect(byId.get(callingId)?.sourcePath).toBeUndefined();
     expect(byId.get(node('回復する').dataset.nodeId ?? '')).toMatchObject({ text: '回復する', sourcePath: 'Map.md', link: null });
     expect(byId.has(sleep)).toBe(false);
     expect(byId.get(node('リンクのまま').dataset.nodeId ?? '')?.sourcePath).toBeUndefined();
@@ -590,5 +603,77 @@ describe('updates and release', () => {
     app.put('Map.md', MAP.replace('- 葉', '- 後で'));
     await new Promise(resolve => setTimeout(resolve, 60));
     expect(document.querySelector('.mappy-node')).toBeNull();
+  });
+});
+
+describe('the host\'s own state stays keyed to the host', () => {
+  it('stores a dragged topic that calls a map under its heading as written, and lays it out from that entry', async () => {
+    const host = ['---', 'mappy: true', '---', '## 本体', '- a', '', '## ![[Map]]', ''].join('\n');
+    const { app, node, canvas, settle, source, view } = await mount({ [HOST_PATH]: host, 'Map.md': MAP });
+    const topic = node('講座');
+    expect(topic.hasClass('is-topic')).toBe(true);
+    expect(topic.hasClass('is-called-root')).toBe(true);
+    pointer('pointerdown', topic, 300, 300);
+    pointer('pointermove', canvas, 306, 300);
+    pointer('pointermove', canvas, 380, 340);
+    pointer('pointerup', canvas, 380, 340);
+    await settle();
+    // The entry is keyed by `![[Map]]` (quoted, as the key holds `[`), never by the called root's text.
+    expect(source()).toMatch(/^---\nmappy: true\nmappy-topics:\n {2}"!\[\[Map\]\]": \{ mindmap: \[-?\d+, -?\d+\] \}\n---\n/u);
+    expect(source()).not.toContain('講座:');
+    const match = /"!\[\[Map\]\]": \{ mindmap: \[(-?\d+), (-?\d+)\] \}/u.exec(source());
+    const layout = (view as unknown as { layout?: { nodes: { id: string; x: number; y: number }[]; origin: { x: number; y: number } } }).layout;
+    const placed = layout?.nodes.find(item => item.id === topic.dataset.nodeId);
+    expect(placed && layout ? [Math.round(placed.x - layout.origin.x), Math.round(placed.y - layout.origin.y)] : null).toEqual([Number(match?.[1]), Number(match?.[2])]);
+    expect(app.content(app.vault.getAbstractFileByPath('Map.md') as never)).toBe(MAP);
+  });
+
+  it('resolves a link inside a called node from the called note, and one in the calling item\'s own body from the host', async () => {
+    const map = ['---', 'mappy: true', '---', '## 講座', '- 回復する', '  [[参考]]', ''].join('\n');
+    const host = ['---', 'mappy: true', '---', '## ホスト', '- ![[Map]]', '  [[自分の参考]]', ''].join('\n');
+    const { app, node } = await mount({ [HOST_PATH]: host, 'Sub/Map.md': map, 'Sub/参考.md': '', '自分の参考.md': '' });
+    const inner = node('回復する').querySelector<HTMLAnchorElement>('.mappy-node-attachments a.internal-link');
+    expect(inner?.dataset.href).toBe('参考');
+    click(inner ?? node('回復する'));
+    expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: '参考（Sub/Map.md から）' });
+    const own = node('講座').querySelector<HTMLAnchorElement>('.mappy-node-attachments a.internal-link');
+    expect(own?.dataset.href).toBe('自分の参考');
+    click(own ?? node('講座'), { metaKey: true });
+    expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: '自分の参考（Maps/Host.md から、新しいペイン）' });
+  });
+
+  it('previews a drop inside the calling item after the called branches, where the move will land', async () => {
+    const { canvas, node, hit, view, settle } = await mount();
+    const calling = node('講座');
+    const own = node('リンクのまま');
+    pointer('pointerdown', own, 300, 300);
+    pointer('pointermove', canvas, 320, 330);
+    hit(calling);
+    pointer('pointermove', canvas, 340, 340);
+    pointer('pointermove', canvas, 350, 345);
+    await settle();
+    const layout = (view as unknown as { layout?: { nodes: { id: string; x: number; y: number }[] } }).layout;
+    const byId = new Map(layout?.nodes.map(item => [item.id, item]));
+    const placeholder = byId.get(PLACEHOLDER_ID);
+    const leaf = byId.get(node('葉').dataset.nodeId ?? '');
+    const recover = byId.get(node('回復する').dataset.nodeId ?? '');
+    expect(placeholder && leaf && recover).toBeTruthy();
+    // The map stacks a parent's children top to bottom: the slot sits below the last called child, not among them.
+    expect((placeholder?.y ?? 0) > (leaf?.y ?? 0) && (leaf?.y ?? 0) > (recover?.y ?? 0)).toBe(true);
+    key(canvas, 'Escape');
+  });
+
+  it('opens the Markdown at the calling item when a called node is selected', async () => {
+    const cursor: number[] = [];
+    const editor = { offsetToPos: (offset: number) => { cursor.push(offset); return { line: 0, ch: offset }; }, setCursor: () => undefined, scrollIntoView: () => undefined, focus: () => undefined };
+    const router = { openMarkdown: (leaf: { view: unknown }) => { const markdown = new MarkdownView(leaf as never); Object.assign(markdown, { editor }); leaf.view = markdown; return Promise.resolve(); } } as unknown as ViewRouter;
+    const { node, view } = await mount(NOTES, HOST_PATH, 'mindmap', router);
+    click(node('葉'));
+    await view.showSource(false);
+    const calling = view.snapshot()?.document?.nodes.find(item => item.title === '![[Map]]');
+    expect(cursor.at(-1)).toBe(calling?.from);
+    click(node('リンクのまま'));
+    await view.showSource(false);
+    expect(cursor.at(-1)).toBe(view.snapshot()?.document?.nodes.find(item => item.title === 'リンクのまま')?.from);
   });
 });

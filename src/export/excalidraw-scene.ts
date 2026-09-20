@@ -65,8 +65,9 @@ function layoutNode(node: MindNode): LayoutNode {
 
 /**
  * Project the parsed document onto roles, plain text, links and images. The maps its items call
- * (§5 M12) are grafted in as the map view draws them: the calling item shows the called root's text,
- * its element links to the called note, and every called node reads its body from that note.
+ * (§5 M12) are grafted in as the map view draws them: the calling item shows the called root's text
+ * with its own item's body and links to the called note, and every called node reads its body from
+ * that note (`sourcePath`), as the view does.
  */
 export function sceneContents(document: MindDocument, collapsed: ReadonlySet<string> = new Set(), calls: CallTargets = new Map()): SceneContents {
   const { roots, sources } = projectCalls([visualRoot(document)], calls);
@@ -77,8 +78,9 @@ export function sceneContents(document: MindDocument, collapsed: ReadonlySet<str
     const node = pending.pop();
     if (!node) break;
     const source = sources.get(node.id);
+    const called = source !== undefined && !source.root;
     const title = plainTitle(node.title);
-    const entries = attachmentEntries(source ? nodeBody(source.document, source.node) : nodeBody(document, node));
+    const entries = attachmentEntries(called ? nodeBody(source.document, source.node) : nodeBody(document, node));
     const bodyLink = entries.find(entry => entry.kind === 'link')?.target ?? null;
     nodes.push({
       id: node.id,
@@ -86,7 +88,7 @@ export function sceneContents(document: MindDocument, collapsed: ReadonlySet<str
       text: title.text,
       link: title.link ?? bodyLink ?? (source?.root ? source.path : null),
       images: entries.filter(entry => entry.kind === 'image').map(entry => entry.target),
-      ...(source ? { sourcePath: source.path } : {}),
+      ...(called ? { sourcePath: source.path } : {}),
     });
     if (!collapsed.has(node.id)) pending.push(...[...node.children].reverse());
   }
