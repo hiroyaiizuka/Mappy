@@ -2,7 +2,7 @@
 
 Obsidian のノートを、そのままマインドマップとしても読み書きするプラグインです。H2 見出しと箇条書きで書いた普通のノートを、マップ・タイムライン・階層図・左右バランスの 4 つのレイアウトで表示し、ノードの追加・編集・移動をそのノートの Markdown に書き戻します。専用のファイル形式はなく、Mappy を外しても見出しと箇条書きのノートのままです。
 
-**0.1.x はベータ版です。** macOS デスクトップの Obsidian でだけ確認しており、日本語 IME の実入力、Windows・Linux、モバイルの確認は終わっていません（[対応環境](#対応環境)、[既知の制限](#既知の制限)）。日常の Vault に入れる場合は、git や Obsidian Sync などのバックアップがあることを確かめてから使ってください。
+**0.x はベータ版です。** macOS デスクトップの Obsidian でだけ確認しており、日本語 IME の実入力、Windows・Linux、モバイルの確認は終わっていません（[対応環境](#対応環境)、[既知の制限](#既知の制限)）。日常の Vault に入れる場合は、git や Obsidian Sync などのバックアップがあることを確かめてから使ってください。
 
 ## できること
 
@@ -49,7 +49,7 @@ frontmatter に書くキーは 3 つです。Mappy が扱うのは `mappy: true`
 
 ## 導入（BRAT）
 
-ベータ版（0.1.x）は、このリポジトリの GitHub Release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。コミュニティプラグイン一覧には公開していません。
+ベータ版（0.x）は、このリポジトリの GitHub Release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。コミュニティプラグイン一覧には公開していません。
 
 1. Obsidian のコミュニティプラグインから BRAT を入れて有効にする
 2. コマンド「BRAT: Add a beta plugin for testing」（設定タブでは Add beta plugin）で、リポジトリに `hiroyaiizuka/Mappy` を入れて Add plugin。BRAT が最新の Release（pre-release を含む）の 3 ファイルを `.obsidian/plugins/mappy/` に置く
@@ -222,7 +222,7 @@ npm ci
 npm run check
 ```
 
-`check` はメタデータ検証 → lint → テスト → 型検査 → production build → 配布物検証 → ブラウザ検証ページのビルドを実行します。Markdown の解析・原文差分、保存と競合、レイアウト、ズーム、DOM の操作も自動テスト対象です。Obsidian のモックを使った成功は実機の成功として扱いません。**公式 lint（`eslint-plugin-obsidianmd`）を通ることは、コミュニティ審査の通過を保証しません。** ベータ版のバージョンは 0.1.x で、タグは `manifest.version` と同じ `x.y.z`（`v` なし）です。審査要件のチェック結果は `artifacts/lev-24-readme/record.md`（git 管理外）に項目ごとに残しています。
+`check` はメタデータ検証 → lint → テスト → 型検査 → production build → 配布物検証 → ブラウザ検証ページのビルドを実行します。Markdown の解析・原文差分、保存と競合、レイアウト、ズーム、DOM の操作も自動テスト対象です。Obsidian のモックを使った成功は実機の成功として扱いません。**公式 lint（`eslint-plugin-obsidianmd`）を通ることは、コミュニティ審査の通過を保証しません。** ベータ版のバージョンは 0.x で、タグは `manifest.version` と同じ `x.y.z`（`v` なし）です。審査要件のチェック結果は `artifacts/lev-24-readme/record.md`（git 管理外）に項目ごとに残しています。
 
 ```sh
 npm run dev               # ビルド監視
