@@ -3,7 +3,8 @@
  * browser. `src/ui/mindmap-view.ts`, its renderer, viewport and events are the
  * shipped modules; only the `obsidian` module is replaced by ./obsidian.ts.
  * Saving, link resolution, Obsidian's own palette and IME are Obsidian-only and stay out of
- * scope; the map's explicit theme (M14) is exercised here with placeholder colours only.
+ * scope; the map's explicit theme (M14) is exercised here with placeholder colours only, and the
+ * settings tab itself is not on this page (its list of visible layouts is applied to the view directly).
  */
 import type { App, MarkdownPostProcessorContext, WorkspaceLeaf as ObsidianLeaf } from "obsidian";
 import { installObsidianDom } from "./dom";
@@ -17,9 +18,9 @@ import {
 import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
-import type { LayoutMode } from "../../src/layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
 import { DocumentStore } from "../../src/obsidian/document-store";
-import { isMapTheme, type MapTheme } from "../../src/obsidian/settings";
+import { isMapTheme, readVisibleLayouts, type MapTheme } from "../../src/obsidian/settings";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MapEmbeds } from "../../src/ui/map-embed";
 import { nodeOf } from "../../src/ui/map-events";
@@ -76,6 +77,7 @@ const heightInput = mustFind<HTMLInputElement>("#harness-height");
 const statusEl = mustFind<HTMLElement>("#harness-status");
 const pageThemeSelect = mustFind<HTMLSelectElement>("#harness-page-theme");
 const mapThemeSelect = mustFind<HTMLSelectElement>("#harness-map-theme");
+const visibleLayoutsEl = mustFind<HTMLElement>("#harness-visible-layouts");
 const timingsEl = mustFind<HTMLElement>("#harness-timings");
 const activityEl = mustFind<HTMLElement>("#harness-activity");
 const buildEl = mustFind<HTMLElement>("#harness-build");
@@ -85,6 +87,9 @@ let current: HarnessFixture | null = null;
 let openCount = 0;
 /** What the settings' "テーマ" would hold; applied to every view this page opens. */
 let mapTheme: MapTheme = "follow";
+/** What the settings' "左下に表示するレイアウト" would hold; applied to every view this page opens. */
+let visibleLayouts: readonly LayoutMode[] = LAYOUT_MODES;
+const visibleLayoutBoxes: HTMLInputElement[] = [];
 const timings: HarnessTiming[] = [];
 /** The rendered host note on the pane, when a host is loaded instead of a map view. */
 let host: { note: HarnessHost; renderer: Component; sizer: HTMLElement } | null = null;
@@ -218,8 +223,9 @@ async function openView(): Promise<MindmapView> {
   const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router, menuActions);
   // MindmapView is typed against Obsidian's View; at runtime it extends the mock.
   leaf.view = opened as unknown as WorkspaceLeaf["view"];
-  // The plugin applies the setting when it constructs a view (src/main.ts); the page does the same.
+  // The plugin applies the settings when it constructs a view (src/main.ts); the page does the same.
   opened.setTheme(mapTheme);
+  opened.setVisibleLayouts(visibleLayouts);
   pane.replaceChildren(opened.containerEl);
   opened.load();
   await opened.onOpen();
@@ -294,6 +300,23 @@ function setMapTheme(theme: MapTheme): void {
   mapTheme = theme;
   mapThemeSelect.value = theme;
   view?.setTheme(theme);
+}
+
+/** The layout list as the settings would store it (normalized: known layouts, LAYOUT_MODES order, always the regular map). */
+function setVisibleLayouts(layouts: readonly string[]): void {
+  visibleLayouts = readVisibleLayouts(layouts) ?? LAYOUT_MODES;
+  for (const box of visibleLayoutBoxes) box.checked = (visibleLayouts as readonly string[]).includes(box.value);
+  view?.setVisibleLayouts(visibleLayouts);
+}
+
+/** The bottom-left bar as the page shows it: each button's label, whether it is hidden and drawn, and whether it is the current layout. */
+function layoutButtons(): { label: string; hidden: boolean; displayed: boolean; active: boolean }[] {
+  return Array.from(pane.querySelectorAll<HTMLButtonElement>(".mappy-modes .mappy-button"), button => ({
+    label: button.getAttribute("aria-label") ?? "",
+    hidden: button.hidden,
+    displayed: getComputedStyle(button).display !== "none",
+    active: button.classList.contains("is-active"),
+  }));
 }
 
 const measureContext: MeasureContext = { probes, pane, vault: app.vault, settle };
@@ -533,6 +556,10 @@ const api = {
   measure,
   setPageTheme,
   setMapTheme,
+  setVisibleLayouts,
+  layoutButtons,
+  /** The bar's expected labels, in LAYOUT_MODES order, from the one definition in core. */
+  layoutLabels: LAYOUT_MODES.map(mode => LAYOUT_LABELS[mode]),
   /** Theme classes as they are now: the page's body and the map container. */
   themes: () => ({
     page: document.body.classList.contains("theme-dark") ? "dark" : document.body.classList.contains("theme-light") ? "light" : "none",
@@ -632,6 +659,16 @@ function setupPanel(): void {
   mustFind<HTMLButtonElement>("#harness-reopen").addEventListener("click", () => { report(reopen()); });
   pageThemeSelect.addEventListener("change", () => { setPageTheme(pageThemeSelect.value === "dark" ? "dark" : "light"); });
   mapThemeSelect.addEventListener("change", () => { setMapTheme(isMapTheme(mapThemeSelect.value) ? mapThemeSelect.value : "follow"); });
+  for (const mode of LAYOUT_MODES) {
+    const label = visibleLayoutsEl.createEl("label");
+    const box = label.createEl("input", { type: "checkbox", value: mode });
+    box.checked = true;
+    // The settings tab keeps the regular map on; the page's checkbox is locked the same way.
+    box.disabled = mode === "mindmap";
+    label.appendText(LAYOUT_LABELS[mode]);
+    box.addEventListener("change", () => { setVisibleLayouts(visibleLayoutBoxes.filter(other => other.checked).map(other => other.value)); });
+    visibleLayoutBoxes.push(box);
+  }
   new ResizeObserver(() => {
     widthInput.value = String(Math.round(pane.offsetWidth));
     heightInput.value = String(Math.round(pane.offsetHeight));

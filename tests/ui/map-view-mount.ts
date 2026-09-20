@@ -30,19 +30,27 @@ export interface MountedMapView {
   close: () => Promise<void>;
 }
 
-/** `menuActions` are the plugin's items of the 操作 menu (§5 M3), as src/main.ts passes them. */
+export interface MountOptions {
+  /** Runs on the constructed view before `onOpen`, where the plugin applies the settings (src/main.ts). */
+  prepare?: (view: MindmapView) => void;
+  /** The plugin's items of the 操作 menu (§5 M3), as src/main.ts passes them to the constructor. */
+  menuActions?: readonly MapMenuAction[];
+}
+
+/** `layout: null` leaves the layout out of the view state, so the note's `mappy-layout` decides. */
 export async function mountMapView(
-  path: string, source: string, layout: LayoutMode = 'mindmap', app = new HarnessApp(), menuActions: readonly MapMenuAction[] = [],
+  path: string, source: string, layout: LayoutMode | null = 'mindmap', app = new HarnessApp(), options: MountOptions = {},
 ): Promise<MountedMapView> {
   app.put(path, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
-  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, menuActions);
+  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, options.menuActions ?? []);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
+  options.prepare?.(view);
   view.load();
   await view.onOpen();
-  await view.setState({ file: path, layout }, { history: false } satisfies ViewStateResult);
+  await view.setState({ file: path, ...(layout ? { layout } : {}) }, { history: false } satisfies ViewStateResult);
   await new Promise(resolve => requestAnimationFrame(resolve));
   const canvas = view.containerEl.querySelector<HTMLElement>('.mappy-canvas');
   if (!canvas) throw new Error('The view has no canvas');

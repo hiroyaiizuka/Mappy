@@ -124,6 +124,9 @@ code { background: var(--code-background); color: var(--code-normal); border-rad
 .harness-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .harness-presets button, #harness-reopen { padding: 3px 8px; font-size: 12.5px; }
 .harness-muted { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.harness-checks { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 6px 0 0; padding: 4px 8px 6px; border: 1px solid var(--background-modifier-border); border-radius: 4px; }
+.harness-checks legend { font-size: 12px; color: var(--text-muted); padding: 0 2px; }
+.harness-checks label { display: inline-flex; align-items: center; gap: 3px; font-size: 12.5px; white-space: nowrap; }
 .harness-status { margin: 4px 0 0; font-size: 12.5px; }
 .harness-list { margin: 0; padding-left: 16px; font-size: 12px; }
 .harness-list li { margin: 2px 0; overflow-wrap: anywhere; }

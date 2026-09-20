@@ -33,7 +33,7 @@
         <p class="harness-muted">右下の角をドラッグしても変更できます。変更のたびに製品の <code>onResize()</code> を呼びます。</p>
       </section>
       <section>
-        <h2>テーマ</h2>
+        <h2>設定</h2>
         <label>ページ（Obsidian に相当）
           <select id="harness-page-theme" aria-label="ページのテーマ">
             <option value="light">明色</option>
@@ -48,6 +48,10 @@
           </select>
         </label>
         <p class="harness-muted">ページは <code>body</code> の <code>theme-light</code>／<code>theme-dark</code>、マップは製品の <code>setTheme()</code>（コンテナだけに同じ class）。CSS 変数は仮の値で、Obsidian の配色ではありません。</p>
+        <fieldset id="harness-visible-layouts" class="harness-checks">
+          <legend>左下に表示するレイアウト（設定に相当）</legend>
+        </fieldset>
+        <p class="harness-muted">製品の <code>setVisibleLayouts()</code> を呼びます。通常マップは外せず、開いているノートのレイアウトのボタンはそのノートでは残ります。設定タブそのものはこのページにありません。</p>
       </section>
       <section>
         <h2>ビュー</h2>

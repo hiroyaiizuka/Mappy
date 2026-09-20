@@ -70,7 +70,7 @@ interface Mounted extends MountedMapView {
 
 async function mount(path = PATH, source = fixtureSource()): Promise<Mounted> {
   const plugin = pluginActions();
-  const mounted = await mountMapView(path, source, 'mindmap', new HarnessApp(), plugin.actions);
+  const mounted = await mountMapView(path, source, 'mindmap', new HarnessApp(), { menuActions: plugin.actions });
   opened.push(mounted);
   const actions = (): HTMLElement => {
     const element = mounted.view.containerEl.querySelector<HTMLElement>('.mappy-actions');

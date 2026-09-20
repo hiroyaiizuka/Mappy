@@ -97,6 +97,8 @@
 }
 .mappy-view .mappy-modes { left: 16px; bottom: 16px; }
 .mappy-view .mappy-modes .is-active { background: var(--background-modifier-hover); color: var(--interactive-accent); }
+/* A layout the settings leave out (M14); the button's own display rule below would otherwise win over [hidden]. */
+.mappy-view .mappy-modes .mappy-button[hidden] { display: none; }
 .mappy-view .mappy-actions { right: 16px; top: 16px; }
 .mappy-view .mappy-button > .mappy-button-label { display: none; }
 .mappy-view .mappy-button { display: inline-flex; gap: 5px; align-items: center; justify-content: center; font-size: var(--font-ui-small); min-height: 32px; min-width: 32px; padding: 6px 8px; background: transparent; box-shadow: none; }
@@ -327,6 +329,12 @@
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }
 .mappy-edit-modal .mappy-edit-error { color: var(--text-error); }
 .mappy-export-modal .mappy-export-note { color: var(--text-muted); font-size: var(--font-ui-small); }
+/* The settings tab's「左下に表示するレイアウト」: four labelled toggles on one row, wrapping when the row is narrow. */
+.mappy-setting-layouts { display: flex; flex-wrap: wrap; gap: var(--size-4-2) var(--size-4-4); }
+.mappy-setting-layout { display: inline-flex; align-items: center; gap: var(--size-4-2); font-size: var(--font-ui-small); }
+.mappy-setting-layout > span { cursor: var(--cursor); }
+.mappy-setting-note { padding-top: var(--size-4-1); }
+.mappy-setting-note[hidden] { display: none; }
 .mappy-link-suggest {
   position: fixed;
   z-index: var(--layer-popover);
