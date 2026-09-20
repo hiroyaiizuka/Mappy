@@ -1336,11 +1336,12 @@ export class MindmapView extends ItemView {
   /**
    * What the snap reads from a placeholder-free layout: the visible children of every node (the moving
    * tree left out) and, where the zones depend on it, each node's place. Every tree's root is "root"
-   * (in the map and the balanced map its first child hangs a root gap off, farther than a branch's).
-   * On the timeline a stage's forest hangs above the axis for even stages and below for odd ones
-   * (`placeTimeline`), past the band its tree keeps clear around the axis (`axisBand`); in the balanced
-   * map a tree's first level sits right or left of its root (`balancedSideOf`) and every deeper node
-   * keeps that side.
+   * (in the map and the balanced map its first child hangs a root gap off, farther than a branch's),
+   * except in the hierarchy, whose zones read no place. On the timeline a stage's forest hangs above
+   * the axis for even stages and below for odd ones (`placeTimeline`), past the band its tree keeps
+   * clear around the axis (`axisBand`); in the balanced map a tree's first level sits right or left of
+   * its root (`balancedSideOf`) and every deeper node keeps that side. Any other layout gets its roots
+   * only.
    */
   private snapIndex(layout: LayoutResult, moving: ReadonlySet<string>): SnapIndex {
     const byId = new Map(layout.nodes.map(node => [node.id, node]));
@@ -1359,9 +1360,9 @@ export class MindmapView extends ItemView {
       for (const node of layout.nodes) {
         if (parents.has(node.id)) continue;
         places.set(node.id, "root");
-        if (this.mode === "mindmap") continue;
         const kids = children.get(node.id) ?? [];
-        if (this.mode === "timeline") { const band = axisBand(node, kids); kids.forEach((stage, index) => { places.set(stage.id, { side: index % 2 === 0 ? "upper" : "lower", band }); }); continue; }
+        if (this.mode === "timeline") { const band = axisBand(node, kids); kids.forEach((stage, index) => { places.set(stage.id, { side: index % 2 === 0 ? "upper" : "lower", band }); }); }
+        if (this.mode !== "balanced") continue;
         const pending = kids.map(kid => ({ kid, side: balancedSideOf(node, kid) }));
         for (let next = pending.pop(); next; next = pending.pop()) {
           places.set(next.kid.id, next.side);

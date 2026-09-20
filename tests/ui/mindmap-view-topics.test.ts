@@ -1184,6 +1184,13 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
       // The leaf keeps the plain zone: 80 past it is out, 56 (its landing) is in.
       expect(snap(glossary.id, at(view, level(leaf, leaf.x + leaf.width + 80)), null)).toBeNull();
       expect(snap(glossary.id, at(view, level(leaf, leaf.x + leaf.width + 56)), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 0 });
+      if (mode === 'balanced') {
+        // The body root's one child was dealt right; the second goes left, a root gap out, so that empty side is the same zone mirrored.
+        const bodyRoot = projectMap(doc).root;
+        const body = placed(view, bodyRoot);
+        expect(snap(glossary.id, at(view, level(body, body.x - 80 - size.width)), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: bodyRoot.id, index: 1 });
+        expect(snap(glossary.id, at(view, level(body, body.x - 97 - size.width)), null)).toBeNull();
+      }
       shift(glossary.id, null);
     },
   );
