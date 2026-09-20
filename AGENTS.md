@@ -17,4 +17,4 @@
 - プライマリー（`projects/Mappy` のチェックアウト）は常に `main` に置く。ブランチ作業は `orca worktree create` で作った worktree で行い、プライマリーで `git checkout -b`／`git switch` を実行しない。
 - `main.js`、`node_modules/`、`dist/`、証跡をコミットしない。公開時のライセンスと plugin ID は未確定。
 
-現在はベータ 0.1.0 を公開済み（2026-09-20、GitHub Release ＋ BRAT。コミュニティ審査は未提出）。実装の存在と受入条件の達成は分けて扱い、実機テストの完成を先取りして報告しない。
+現在はベータ（0.x）を GitHub Release ＋ BRAT で公開中（0.1.0 は 2026-09-20。コミュニティ審査は未提出）。実装の存在と受入条件の達成は分けて扱い、実機テストの完成を先取りして報告しない。
