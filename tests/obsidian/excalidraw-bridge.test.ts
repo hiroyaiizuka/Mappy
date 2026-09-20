@@ -417,4 +417,51 @@ describe('ExcalidrawBridge.insertIntoActiveDrawing', () => {
     expect(texts).toEqual(['講座', 'はじめに', '回復する']);
     expect(ea?.calls.at(-1)).toBe('destroy');
   });
+
+  const CALLED = '---\nmappy: true\n---\n## 呼ばれた\n- 一\n  ![[絵.png]] と [[別ノート]]\n  - 深い\n- 二\n';
+  const CALLER = '## 講座\n- ![[Called]]\n- 葉\n';
+
+  it('inserts the branches of a called map (§5 M12) as the view shows them, its links and images resolved from the called note', async () => {
+    const drawing = { file: file('Board.excalidraw.md') };
+    const { bridge, automate, read } = harness({
+      active: drawing, sources: { 'Note.md': CALLER, 'Called.md': CALLED, '別ノート.md': '' }, images: { '絵.png': { width: 300, height: 100 } },
+    });
+    const document = parseMarkdown(CALLER, 'Note');
+    const called = parseMarkdown(CALLED, 'Called');
+    const calling = document.nodes.find(node => node.title === '![[Called]]');
+    const deep = called.nodes.find(node => node.title === '一');
+    const calls = new Map([[calling?.id ?? '', { path: 'Called.md', subpath: '', document: called }]]);
+    // The view's folds: 一 is closed, so 深い stays behind it, as on screen.
+    await bridge.insertIntoActiveDrawing({ ...request([`${calling?.id}/${deep?.id}`]), document, calls });
+    expect(read).not.toHaveBeenCalled();
+    const ea = automate?.instances[0];
+    const elements = ea?.added[0]?.elements ?? [];
+    expect(elements.filter(element => element.type === 'text').map(element => element.text)).toEqual(['講座', '呼ばれた', '一', '二', '葉']);
+    expect(elements.filter(element => element.type === 'image')).toHaveLength(1);
+    expect(ea?.calls).toContain('addImage:絵.png');
+    // The calling item links to the called note; a called node's own link resolves from that note.
+    const links = new Map(elements.filter(element => element.link).map(element => [element.boundElements ? (elements.find(text => text.containerId === element.id)?.text ?? '') : element.text ?? '', element.link]));
+    expect(links.get('呼ばれた')).toBe('[[Called]]');
+    expect(links.get('一')).toBe('[[別ノート]]');
+  });
+
+  it('reads the called maps itself for a request without them (a Markdown view) and folds them below their roots\' children', async () => {
+    const drawing = { file: file('Board.excalidraw.md') };
+    const { bridge, automate, read } = harness({ active: drawing, sources: { 'Note.md': CALLER, 'Called.md': CALLED } });
+    await bridge.insertIntoActiveDrawing(request());
+    expect(read.mock.calls.map(([target]) => target.path)).toEqual(['Note.md', 'Called.md']);
+    const ea = automate?.instances[0];
+    const texts = (ea?.added[0]?.elements ?? []).filter(element => element.type === 'text').map(element => element.text);
+    expect(texts).toEqual(['講座', '呼ばれた', '一', '二', '葉']);
+  });
+
+  it('keeps a call a link when the called note is not a map or cannot be read', async () => {
+    const drawing = { file: file('Board.excalidraw.md') };
+    const { bridge, automate } = harness({
+      active: drawing, sources: { 'Note.md': CALLER, 'Called.md': '## Plain\n- a\n' }, frontmatter: { 'Note.md': { [MAPPY_KEY]: true }, 'Called.md': {} },
+    });
+    await bridge.insertIntoActiveDrawing(request());
+    const texts = (automate?.instances[0]?.added[0]?.elements ?? []).filter(element => element.type === 'text').map(element => element.text);
+    expect(texts).toEqual(['講座', 'Called', '葉']);
+  });
 });

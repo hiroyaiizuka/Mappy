@@ -52,6 +52,30 @@ describe('sceneContents', () => {
     expect(contents.nodes.filter(node => node.role === 'stage').map(node => node.text)).toEqual(['A', 'B']);
   });
 
+  it('grafts the called maps in (§5 M12): the calling item shows the called root\'s text and links to its note, the called nodes read their note', () => {
+    const called = parseMarkdown('---\nmappy: true\n---\n## 呼ばれた\n[[参考]]\n- 一\n  ![[絵.png]]\n  - 深い\n- 二\n', 'Called');
+    const document = parseMarkdown('## 講座\n- ![[Called]]\n  - 自分の子\n- 葉\n', 'Note');
+    const calling = document.nodes.find(node => node.title === '![[Called]]');
+    const calls = new Map([[calling?.id ?? '', { path: 'Maps/Called.md', subpath: '', document: called }]]);
+    const contents = sceneContents(document, new Set(), calls);
+    expect(contents.nodes.map(node => node.text)).toEqual(['講座', '呼ばれた', '一', '深い', '二', '自分の子', '葉']);
+    const byText = new Map(contents.nodes.map(node => [node.text, node]));
+    // The calling item keeps its own item's body (none here) and links to the called note; its links resolve from the host.
+    expect(byText.get('呼ばれた')).toMatchObject({ id: calling?.id, role: 'stage', link: 'Maps/Called.md', images: [] });
+    expect(byText.get('呼ばれた')?.sourcePath).toBeUndefined();
+    expect(byText.get('一')).toMatchObject({ role: 'branch', link: null, images: ['絵.png'], sourcePath: 'Maps/Called.md' });
+    expect(byText.get('自分の子')?.sourcePath).toBeUndefined();
+    expect(byText.get('葉')?.sourcePath).toBeUndefined();
+    const bare = parseMarkdown('## 講座\n- ![[Called]]\n', 'Note');
+    const withoutLink = sceneContents(bare, new Set(), new Map([[bare.nodes[1]?.id ?? '', { path: 'Maps/Called.md', subpath: '', document: parseMarkdown('---\nmappy: true\n---\n## 呼ばれた\n- 一\n', 'Called') }]]));
+    expect(withoutLink.nodes.map(node => [node.text, node.link])).toEqual([['講座', null], ['呼ばれた', 'Maps/Called.md'], ['一', null]]);
+    // The folds of the view apply to the called nodes by their projected ids.
+    const deep = called.nodes.find(node => node.title === '一');
+    const folded = sceneContents(document, new Set([`${calling?.id}/${deep?.id}`]), calls);
+    expect(folded.nodes.map(node => node.text)).toEqual(['講座', '呼ばれた', '一', '二', '自分の子', '葉']);
+    expect(folded.tree.children[0]?.children.map(child => child.children.length)).toEqual([1, 0, 0]);
+  });
+
   it('omits descendants of collapsed nodes but keeps them in the tree', () => {
     const document = parseMarkdown(SOURCE, 'Note');
     const recover = document.nodes.find(node => node.title === '**回復する**');

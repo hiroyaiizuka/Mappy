@@ -1,7 +1,8 @@
 import { ItemView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
-import { parseMarkdown, projectMap, type MapProjection, type MindDocument, type MindNode } from "../core/markdown";
+import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
+import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
 import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, type TopicPosition, type TopicPositionMap } from "../core/topics";
@@ -11,12 +12,13 @@ import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLa
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore, conflictMessage } from "../obsidian/document-store";
+import { resolveEmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import { CallReader, sameTargets } from "../obsidian/map-calls";
 import type { MapTheme } from "../obsidian/settings";
 import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
-import { nodeEmbeds } from "./map-embed";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
 import { MapEvents, nodeOf } from "./map-events";
@@ -30,6 +32,8 @@ export const VIEW_TYPE = "mappy-map";
 const SNAP_STICK = 16;
 
 const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元のノートを開いて再実行してください。";
+/** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
+export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り専用です。ダブルクリックで元のマップを開けます。";
 
 /** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 function draftFingerprint(document: MindDocument, node: MindNode): string {
@@ -76,8 +80,18 @@ const POPOVER_MARGIN = 16;
 export class MindmapView extends ItemView {
   file: TFile | null = null;
   private document: MindDocument | undefined;
-  /** Body/topic split and stored positions of `document`, derived once per parse. */
-  private projected: { document: MindDocument; projection: MapProjection; positions: TopicPositionMap } | undefined;
+  /** The maps the document's items call (§5 M12), as last read; the trees are projected from the document and these. */
+  private targets: CallTargets = new Map();
+  /** Reads the called notes; one parse per note, identity kept across edits of them. */
+  private readonly reader: CallReader;
+  /** Ids of the called nodes the view has shown; a call new to it starts folded below the called root's children. */
+  private knownCalled = new Set<string>();
+  private recallTimer: number | undefined;
+  /**
+   * The trees on the map (§5 M7, M12): the body root and the free topics as written (`split`) and with the called
+   * maps grafted in (`calls`), plus the stored topic positions; derived once per document and targets, in `adopt`.
+   */
+  private projected: { document: MindDocument; targets: CallTargets; trees: ShownTrees; positions: TopicPositionMap } | undefined;
   private selectedId: string | null = null;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
@@ -143,6 +157,7 @@ export class MindmapView extends ItemView {
     private readonly menuActions: readonly MapMenuAction[] = [],
   ) {
     super(leaf);
+    this.reader = new CallReader(this.app, store);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
     // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
     // it before the canvas listener and, the map not being a navigation view, starts renaming the most recently active
@@ -162,10 +177,10 @@ export class MindmapView extends ItemView {
     });
   }
 
-  /** Current presentation, for exports that mirror what the user sees. */
-  snapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string>; document?: MindDocument } | null {
+  /** Current presentation, for exports that mirror what the user sees: the folds and the called maps as drawn (§5 M12). */
+  snapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string>; document?: MindDocument; calls: CallTargets } | null {
     if (!this.file) return null;
-    return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), ...(this.document ? { document: this.document } : {}) };
+    return { file: this.file, mode: this.mode, collapsed: new Set(this.collapsed), calls: this.targets, ...(this.document ? { document: this.document } : {}) };
   }
 
   /**
@@ -252,6 +267,7 @@ export class MindmapView extends ItemView {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.document = undefined; this.selectedId = null; this.collapsed.clear(); this.needsFit = true;
       this.pendingTopic = null; this.topicDrag = null;
+      this.targets = new Map(); this.knownCalled.clear();
     }
     if (this.ready) {
       const view = value.viewport;
@@ -305,8 +321,7 @@ export class MindmapView extends ItemView {
     this.zoomLabel = this.button(zoom, "100%", undefined, () => { this.viewport.zoom(1 / this.viewport.value.scale); });
     this.button(zoom, "拡大", "plus", () => { this.viewport.zoom(1.2); });
     this.button(zoom, "全体表示", "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
-    // A node that is one `![[map]]` draws that map inside itself (§5 M12); the map's own nodes are not this view's.
-    this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }, nodeEmbeds(this.app, this.store)));
+    this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }));
     this.viewport = this.addChild(new MapViewport(this.canvas, world, view => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
@@ -316,11 +331,19 @@ export class MindmapView extends ItemView {
       fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
-      link: (link, newLeaf) => { if (this.file) this.run(() => this.app.workspace.openLinkText(link, this.file?.path ?? "", newLeaf)); },
+      // A link is resolved from the note it is written in: the called note for a called map's node (§5 M12), this
+      // one for the host's own nodes and for the calling item, whose attachments are its own item's.
+      link: (link, newLeaf, nodeId) => {
+        const source = nodeId === null ? undefined : this.calledSource(nodeId);
+        const base = source && !source.root ? source.path : this.file?.path;
+        if (base !== undefined) this.run(() => this.app.workspace.openLinkText(link, base, newLeaf));
+      },
       addTopic: point => { this.run(() => this.addTopic(point)); },
+      open: (id, newLeaf) => this.openCalled(id, newLeaf),
     }));
     this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
+      readOnly: id => this.isCalled(id),
       free: id => this.isFree(id),
       dropTarget: (dragged, target, position) => this.document && !this.topicDrag?.body ? resolveDrop(this.document, dragged, target, position) : null,
       preview: command => { this.previewDrop(command); },
@@ -349,6 +372,19 @@ export class MindmapView extends ItemView {
         return;
       }
       this.select(id);
+      // A node drawn from a called map (§5 M12) is edited in its own note: the menu opens that note and folds, nothing more.
+      if (this.calledSource(id)) {
+        menu.addItem(item => item.setTitle("元のマップを開く").setIcon("git-fork").onClick(() => { this.openCalled(id, false); }));
+        if (this.isCalled(id)) {
+          const node = this.projection()?.calls.byId.get(id);
+          if (node && node.children.length > 0) menu.addItem(item => item.setTitle("折りたたみ").setIcon("chevrons-down-up").onClick(() => { this.fold(id); }));
+          menu.addSeparator();
+          this.historyItems(menu);
+          menu.showAtMouseEvent(event);
+          return;
+        }
+        menu.addSeparator();
+      }
       const entries = this.nodeEntries();
       for (const entry of [entries.edit, entries.body, entries.image]) this.menuItem(menu, entry);
       menu.addSeparator();
@@ -380,12 +416,16 @@ export class MindmapView extends ItemView {
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
       this.file = null; this.document = undefined; this.scheduleRefresh();
     }));
-    // A node that calls a map (§5 M12) is judged when it is drawn: when another note's cache, name or existence
-    // changes, the calls are judged again on the next draw (a note that became a map gets its frame, a lost one its link).
-    const recall = (file: TAbstractFile): void => { if (file !== this.file && this.callsMaps()) this.draw(); };
-    this.registerEvent(this.app.metadataCache.on("changed", recall));
-    this.registerEvent(this.app.metadataCache.on("deleted", recall));
+    // The maps the items call (§5 M12) are read again when a note they concern changes: one read for the last draw
+    // (edited, saved or not, renamed, deleted, no longer a map), or one an item resolves to now (created, became a map,
+    // took over a link). Any other note's change is nobody's business here.
+    const recall = (file: TAbstractFile, oldPath?: string): void => { if (this.callConcerns(file, oldPath)) this.scheduleRecall(); };
+    this.registerEvent(this.app.metadataCache.on("changed", file => { recall(file); }));
+    this.registerEvent(this.app.metadataCache.on("deleted", file => { recall(file); }));
     this.registerEvent(this.app.vault.on("rename", recall));
+    this.registerEvent(this.app.vault.on("delete", file => { recall(file); }));
+    this.registerEvent(this.app.vault.on("modify", file => { recall(file); }));
+    this.registerEvent(this.app.workspace.on("editor-change", (_editor, info) => { if (info.file) recall(info.file); }));
     // The settings may have reached the view before it had buttons (src/main.ts sets them at construction).
     this.syncModeButtons();
     this.ready = true;
@@ -398,6 +438,7 @@ export class MindmapView extends ItemView {
     this.closePopover(false);
     this.epoch += 1;
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
+    if (this.recallTimer !== undefined) this.contentEl.win.clearTimeout(this.recallTimer);
     if (this.layoutFrame !== undefined) this.contentEl.win.cancelAnimationFrame(this.layoutFrame);
     return Promise.resolve();
   }
@@ -614,35 +655,117 @@ export class MindmapView extends ItemView {
     }
     const source = await this.store.read(file);
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
-    if (source !== this.document?.source || this.document.root.title !== file.basename) {
-      this.document = parseMarkdown(source, file.basename, this.document);
-      const ids = new Set([this.document.root.id, ...this.document.nodes.map(node => node.id)]);
-      this.collapsed = new Set(Array.from(this.collapsed).filter(id => ids.has(id)));
+    const changed = source !== this.document?.source || this.document.root.title !== file.basename;
+    const document = changed || !this.document ? parseMarkdown(source, file.basename, this.document) : this.document;
+    // The maps the items call are read with the note (the items may have changed), and the note is published together
+    // with them: nothing between here and the draw sees a document whose trees are not on screen.
+    const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
+    if (this.closed || epoch !== this.epoch || file !== this.file) return;
+    if (changed) {
+      this.document = document;
+      const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
       if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
       // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that.
       if (!this.saving) { this.inlineEditor?.refreshed(conflictMessage); this.bodyModal?.refreshed(conflictMessage); }
     }
+    this.adopt(targets);
     this.emptyState.hidden = true;
     this.draw();
   }
 
   /** True when a node's title is one embed: only then can another note's change alter what this map shows. */
-  private callsMaps(): boolean {
-    const document = this.document;
+  private callsMaps(document = this.document): boolean {
     if (!document) return false;
     if (this.calls?.document !== document) this.calls = { document, any: document.nodes.some(node => embedOnlyTitle(node.title) !== null) };
     return this.calls.any;
   }
 
-  /** The body root plus the free topics beside it (§5 M7); documents without headings keep the virtual root. */
-  private projection(): MapProjection | undefined {
+  /**
+   * Whether a change of `file` (renamed from `oldPath`) can alter the called maps (§5 M12): the note was read for
+   * the last draw, or an item resolves to it now (a note created or made a map, or one that a link now points to).
+   */
+  private callConcerns(file: TAbstractFile, oldPath?: string): boolean {
+    const host = this.file;
     const document = this.document;
-    if (!document) return undefined;
-    if (this.projected?.document !== document) {
-      this.projected = { document, projection: projectMap(document), positions: readTopicPositions(document.source) };
-    }
-    return this.projected.projection;
+    if (!host || !document || file === host || !this.callsMaps(document)) return false;
+    if (this.reader.reads(file.path) || (oldPath !== undefined && this.reader.reads(oldPath))) return true;
+    return document.nodes.some(node => {
+      const linktext = embedOnlyTitle(node.title);
+      return linktext !== null && resolveEmbedTarget(this.app, linktext, host.path)?.file === file;
+    });
+  }
+
+  private scheduleRecall(): void {
+    if (this.recallTimer !== undefined) this.contentEl.win.clearTimeout(this.recallTimer);
+    this.recallTimer = this.contentEl.win.setTimeout(() => { this.recallTimer = undefined; this.run(() => this.refreshCalls()); }, 45);
+  }
+
+  /**
+   * Another note changed: read the called maps again and redraw when any of them differs. The note itself is
+   * not re-read; a refresh of it in flight (a newer epoch) supersedes this one, as it reads the calls itself.
+   */
+  private async refreshCalls(): Promise<void> {
+    const document = this.document;
+    const file = this.file;
+    if (!document || !file || this.closed || !this.ready) return;
+    const epoch = this.epoch;
+    const targets = await this.reader.read(document, file.path);
+    if (this.closed || epoch !== this.epoch || this.document !== document || file !== this.file) return;
+    if (sameTargets(this.targets, targets)) return;
+    this.adopt(targets);
+    this.draw();
+  }
+
+  /**
+   * Take a document and its called maps as the trees on the map: the body root plus the free topics beside it
+   * (§5 M7; documents without headings keep the virtual root), with the called maps grafted in (§5 M12). The
+   * folds are pruned to the nodes that exist, and a call new to the view starts folded below its root's children.
+   * The only place `targets`, the projection and the fold set change together, so `projection()` stays a reader.
+   */
+  private adopt(targets: CallTargets): void {
+    const document = this.document;
+    if (!document) return;
+    if (this.projected?.document === document && sameTargets(this.projected.targets, targets)) return;
+    if (!sameTargets(this.targets, targets)) this.targets = targets;
+    const trees = projectShown(document, this.targets);
+    this.projected = { document, targets: this.targets, trees, positions: readTopicPositions(document.source) };
+    const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id)));
+    for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
+    this.collapsed = collapsed;
+    this.knownCalled = new Set(trees.calls.sources.keys());
+  }
+
+  /** The trees on the map as `adopt` made them: the body root (`root`) and the free topics with the calls grafted in, and the projection. */
+  private projection(): { root: MindNode; topics: MindNode[]; calls: ShownTrees["calls"] } | undefined {
+    const projected = this.projected;
+    if (!projected || projected.document !== this.document) return undefined;
+    const [root = projected.trees.split.root, ...topics] = projected.trees.calls.roots;
+    return { root, topics, calls: projected.trees.calls };
+  }
+
+  /** Where a node drawn from a called map comes from (§5 M12); undefined for the host's own nodes. */
+  private calledSource(id: string): CallSource | undefined {
+    return this.projection()?.calls.sources.get(id);
+  }
+
+  /** True for a node of a called map other than the calling item: read-only on this map. */
+  private isCalled(id: string): boolean {
+    return isCalledNode(this.projection()?.calls, id);
+  }
+
+  /** A double click on a node of a called map opens that note as a map; false for the host's own nodes, which are edited. */
+  private openCalled(id: string, newLeaf: boolean): boolean {
+    const source = this.calledSource(id);
+    const file = this.file;
+    if (!source || !file) return false;
+    this.run(() => this.app.workspace.openLinkText(source.path, file.path, newLeaf));
+    return true;
+  }
+
+  /** Every edit addresses the host's own nodes; a called map's node is edited in its own note. */
+  private assertEditable(id: string): void {
+    if (this.isCalled(id)) throw new Error(CALLED_READ_ONLY_MESSAGE);
   }
 
   private isTopic(id: string): boolean {
@@ -663,12 +786,13 @@ export class MindmapView extends ItemView {
     const projected = this.projected;
     if (!projected) return [];
     const used = new Set<string>();
-    return projected.projection.topics.map((topic, index) => {
+    // Positions are keyed by the heading as written (`split`); the tree laid out is the one shown (a topic may call a map).
+    return projected.trees.split.topics.map((topic, index) => {
       const stored = used.has(topic.title) ? undefined : projected.positions.get(topic.title)?.[this.mode];
       used.add(topic.title);
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
       const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
-      return { tree: trees?.[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
+      return { tree: trees?.[index + 1] ?? projected.trees.calls.roots[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
     });
   }
 
@@ -695,6 +819,7 @@ export class MindmapView extends ItemView {
     const nodes = this.visible();
     this.renderer.update(nodes, this.document, this.file.path, this.collapsed, {
       visualRootId: projection.root.id, topicIds: new Set(projection.topics.map(topic => topic.id)), mode: this.mode,
+      sources: projection.calls.sources, trees: [projection.root, ...projection.topics],
     });
     if (!nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
@@ -783,33 +908,38 @@ export class MindmapView extends ItemView {
    * `trees[0]` is the body and `trees[i + 1]` the i-th free topic; only the destination's tree is rebuilt.
    */
   private previewLayout(
-    projection: MapProjection, sizes: Map<string, { width: number; height: number }>,
+    projection: NonNullable<ReturnType<MindmapView["projection"]>>, sizes: Map<string, { width: number; height: number }>,
   ): { trees: LayoutNode[]; collapsed: ReadonlySet<string> } | null {
-    const command = this.dropPreview;
-    const size = command ? sizes.get(command.nodeId) : undefined;
-    const document = this.document;
-    if (!command || !size || !document) return null;
+    const dropped = this.dropPreview;
+    const size = dropped ? sizes.get(dropped.nodeId) : undefined;
+    if (!dropped || !size || !this.document) return null;
+    // The slot is counted among the parent's own children; on the map a calling item shows the called root's children first (§5 M12).
+    const parentSource = projection.calls.sources.get(dropped.parentId);
+    const command = parentSource?.root ? { ...dropped, index: dropped.index + parentSource.node.children.length } : dropped;
     const roots: MindNode[] = [projection.root, ...projection.topics];
     // Topics first: a virtual-root body also parents them, so it would claim their destinations.
     let previewed = -1;
     let tree: LayoutNode | null = null;
     for (let index = roots.length - 1; index >= 0 && !tree; index -= 1) {
       const root = roots[index];
-      tree = root ? previewTree(document, root, command, this.collapsed) : null;
+      tree = root ? previewTree(root, command, this.collapsed) : null;
       previewed = index;
     }
     if (!tree) return null;
     const trees = roots.map((root, index): LayoutNode => index === previewed && tree ? tree : root);
     sizes.set(PLACEHOLDER_ID, size);
     // A collapsed destination reveals only the placeholder, so it must not be measured as collapsed.
-    const collapsed = this.collapsed.has(command.parentId)
-      ? new Set(Array.from(this.collapsed).filter(id => id !== command.parentId)) : this.collapsed;
+    const collapsed = this.collapsed.has(dropped.parentId)
+      ? new Set(Array.from(this.collapsed).filter(id => id !== dropped.parentId)) : this.collapsed;
     return { trees, collapsed };
   }
 
+  /** The host's own node for the host's ids (its title as written, for editing); the node as shown for a called map's (§5 M12). */
   private selected(): MindNode | undefined {
-    if (!this.document) return undefined;
-    return this.selectedId === "root" ? this.document.root : this.document.nodes.find(node => node.id === this.selectedId);
+    const id = this.selectedId;
+    if (!this.document || id === null) return undefined;
+    if (id === "root") return this.document.root;
+    return this.document.nodes.find(node => node.id === id) ?? this.projection()?.calls.byId.get(id);
   }
 
   private select(id: string, focus = false): void {
@@ -849,6 +979,8 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!document || this.saving) return;
+    if ("nodeId" in command) this.assertEditable(command.nodeId);
+    if ("parentId" in command) this.assertEditable(command.parentId);
     // A kept draft (E05) still addresses its node; a structural edit under it would move what the draft comes back to.
     if (this.inlineEditor) throw new Error("テキストの編集を確定してから、もう一度実行してください。");
     const plan = planEdit(document, command);
@@ -875,6 +1007,7 @@ export class MindmapView extends ItemView {
     if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
     const parent = this.selected() ?? this.projection()?.root;
     if (!parent) return;
+    this.assertEditable(parent.id);
     // Under the virtual root (a note without a heading section) add-child makes an H2 whose title would be the embed: not an item.
     if (parent.kind === "root") throw new Error("本体のルートがないノートです。先に H2 の見出しを作ってから呼び出してください。");
     const link = `![[${this.app.metadataCache.fileToLinktext(target, file.path, true)}]]`;
@@ -898,7 +1031,9 @@ export class MindmapView extends ItemView {
 
   /** Where the body root will sit once `document` is laid out with the sizes on screen: what topic positions are measured from. */
   private originFor(document: MindDocument): { x: number; y: number } {
-    return layoutTree(projectMap(document).root, this.renderer.sizes(), this.collapsed, this.mode).origin;
+    // The called maps stay grafted in (their items keep their ids across the re-parse), so the body's height is as shown.
+    const trees = projectShown(document, this.targets);
+    return layoutTree(trees.calls.roots[0] ?? trees.split.root, this.renderer.sizes(), this.collapsed, this.mode).origin;
   }
 
   /**
@@ -998,7 +1133,8 @@ export class MindmapView extends ItemView {
       const scale = drag.viewport?.scale ?? this.viewport.value.scale;
       const sign = drag.body ? -1 : 1;
       const moves = new Map<string, TopicPosition>();
-      for (const topic of projection.topics) {
+      // Entries are keyed by the heading as written (a topic that calls a map shows the called root's text instead).
+      for (const topic of this.projected?.trees.split.topics ?? []) {
         const start = drag.from.get(topic.id);
         // Topics sharing a heading share one entry; the first one owns it.
         if (!start || moves.has(topic.title)) continue;
@@ -1128,6 +1264,7 @@ export class MindmapView extends ItemView {
     const file = this.file;
     if (!node || !document || !file) return;
     if (node.kind === "root") { new Notice("このノードはファイル名です。子ノードを追加できます。"); return; }
+    if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
     this.inlineEditor?.dispose();
@@ -1172,6 +1309,7 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
+    if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
     const opened = draftFingerprint(document, node);
     const modal = new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
       const current = this.draftTarget(file, node.id, opened);
@@ -1216,7 +1354,11 @@ export class MindmapView extends ItemView {
   async showSource(split: boolean): Promise<void> {
     const file = this.file;
     if (!file) return;
-    const offset = this.selected()?.from ?? 0;
+    // A called map's node has no place in this note; its calling item does (§5 M12).
+    const selected = this.selected();
+    const source = selected ? this.calledSource(selected.id) : undefined;
+    const anchor = source && !source.root && this.document ? getNode(this.document, source.callerId) : selected;
+    const offset = anchor?.from ?? 0;
     const leaf = split
       ? this.app.workspace.createLeafBySplit(this.leaf, "vertical", true)
       : this.leaf;
@@ -1231,7 +1373,9 @@ export class MindmapView extends ItemView {
   }
 
   private chooseImage(): void {
-    if (!this.selected()) return;
+    const node = this.selected();
+    if (!node) return;
+    if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
     const input = this.contentEl.createEl("input", { type: "file", cls: "mappy-file-input", attr: { accept: "image/*" } });
     input.addEventListener("change", () => {
       const file = input.files?.[0]; input.remove();
@@ -1246,6 +1390,7 @@ export class MindmapView extends ItemView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
+    this.assertEditable(node.id);
     if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
     if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
     const binary = await image.arrayBuffer();

@@ -51,9 +51,10 @@ function obsidianDom<T extends HTMLElement>(element: T): T {
 }
 
 /** Nodes are stacked 40px tall with a 20px gap in a column at x 100–300; the canvas is 0–800 × 0–600. */
-function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## B\n', free: readonly string[] = []) {
+function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## B\n', free: readonly string[] = [], readOnly: readonly string[] = []) {
   const parsed = parseMarkdown(source, 'Course');
   const freeIds = new Set(parsed.nodes.filter((node) => free.includes(node.title)).map((node) => node.id));
+  const readOnlyIds = new Set(parsed.nodes.filter((node) => readOnly.includes(node.title)).map((node) => node.id));
   const canvas = obsidianDom(document.createElement('div'));
   canvas.getBoundingClientRect = () => rectOf({ left: 0, top: 0, width: 800, height: 600 });
   const capture = { set: vi.fn(), release: vi.fn() };
@@ -95,6 +96,7 @@ function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## 
   document.body.append(canvas);
   const actions = {
     select: vi.fn<NodeDragActions['select']>(),
+    readOnly: vi.fn<NodeDragActions['readOnly']>(id => readOnlyIds.has(id)),
     free: vi.fn<NodeDragActions['free']>(id => freeIds.has(id)),
     dropTarget: vi.fn<NodeDragActions['dropTarget']>((dragged, target, position) => resolveDrop(parsed, dragged, target, position)),
     preview: vi.fn<NodeDragActions['preview']>(),
@@ -318,34 +320,23 @@ describe('NodeDrag pointer dragging', () => {
     expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('B'), parentId: id('A'), index: 2 });
   });
 
-  it('drags the node holding an embedded map from inside its frame, and targets that node under the pointer (§5 M12)', () => {
-    const { canvas, actions, node, id, pointer, ghost, rects, begin } = fixture();
-    // A2 holds a map: a frame with a node of the embedded map inside, which even shares the root's id.
-    const frame = document.createElement('div');
-    frame.className = 'mappy-embed mappy-view';
-    const inner = document.createElement('div');
-    inner.className = 'mappy-node';
-    inner.dataset.nodeId = id('Course');
-    inner.textContent = 'inner root';
-    frame.append(inner);
-    node('A2').append(frame);
-    const a2 = rects.get(node('A2'));
-    if (!a2) throw new Error('no rect');
-    inner.getBoundingClientRect = () => rectOf({ left: a2.left + 20, top: a2.top + 10, width: 100, height: 20 });
-    pointer('pointerdown', inner, a2.left + 30, a2.top + 15);
-    pointer('pointermove', canvas, a2.left + 40, a2.top + 15);
-    expect(ghost()?.textContent).toBe('A2inner root');
-    expect(node('A2').classList.contains('is-drag-source')).toBe(true);
-    expect(inner.classList.contains('is-drag-source')).toBe(false);
-    expect(actions.select).toHaveBeenCalledExactlyOnceWith(id('A2'));
-    pointer('pointercancel', canvas, a2.left + 40, a2.top + 15);
-    // Dragging A3 over the map inside A2 targets A2 (the middle of A2 is the child slot), not the embedded map's node.
-    rects.set(inner, { left: a2.left + 20, top: a2.top + 10, width: 100, height: 20 });
+  it('never starts a drag from a read-only node (a called map\'s, §5 M12), while the node can still be dropped on as the view decides', () => {
+    const { canvas, actions, node, id, pointer, ghost, begin, center } = fixture(undefined, [], ['A2']);
+    const [x, y] = center('A2');
+    pointer('pointerdown', node('A2'), x, y);
+    pointer('pointermove', canvas, x + 40, y);
+    pointer('pointermove', canvas, x + 80, y);
+    expect(ghost()).toBeNull();
+    expect(node('A2').classList.contains('is-drag-source')).toBe(false);
+    expect(actions.select).not.toHaveBeenCalled();
+    expect(actions.readOnly).toHaveBeenCalledWith(id('A2'));
+    pointer('pointerup', canvas, x + 80, y);
+    expect(actions.detach).not.toHaveBeenCalled();
+    // The view answers for drops on it (it refuses a called node); the drag only asks.
     begin('A3');
-    pointer('pointermove', canvas, a2.left + 60, a2.top + 20);
+    pointer('pointermove', canvas, x, y);
     expect(actions.dropTarget).toHaveBeenLastCalledWith(id('A3'), id('A2'), 'inside');
-    expect(actions.preview).toHaveBeenLastCalledWith({ type: 'move', nodeId: id('A3'), parentId: id('A2'), index: 0 });
-    pointer('pointercancel', canvas, a2.left + 60, a2.top + 20);
+    pointer('pointercancel', canvas, x, y);
   });
 
   it('starts from links and images but not from controls or non-primary buttons, and cleans up on unload', () => {

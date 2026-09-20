@@ -1,6 +1,6 @@
 # Mappy の設計と試作実装
 
-更新: 2026-09-19。現在の実装と、引き続き検証する条件を記す。実装済みという記述は、対応環境全体での動作保証を意味しない。
+更新: 2026-09-20。現在の実装と、引き続き検証する条件を記す。実装済みという記述は、対応環境全体での動作保証を意味しない。
 
 ## 1. 中心となる判断
 
@@ -43,14 +43,16 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/obsidian/view-routing.ts` / `patch.ts` | frontmatter を持つノートを map view へ導く `setViewState` の差し替え | WorkspaceLeaf.prototype |
 | `src/obsidian/excalidraw-bridge.ts` / `src/types/excalidraw-automate.ts` | Excalidraw の `ExcalidrawAutomate` へのドロップフック連結と要素生成 | `window.ExcalidrawAutomate`（任意） |
 | `src/ui/mindmap-view.ts` | ファイル・表示状態、描画更新、編集経路の接続 | Obsidian ItemView |
-| `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命。`![[マップ]]` だけの題名は view から渡された resolver（`NodeEmbedResolver`）で枠にし、entry の Component に寿命を合わせる | Obsidian MarkdownRenderer |
-| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付（クリックの解釈 `mapClick` は埋め込みと共有。`nodeOf` はそのキャンバスのノードだけを答え、ノードの中に描いたマップのノードを取り違えない）、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
+| `src/ui/node-renderer.ts` | ノードの差分描画、計測、MarkdownRenderer の寿命。呼び出したマップのノード（M12）は `sources` に従い、呼び出し先の文書・パスで題名と添付を描き、`is-called`／`is-called-root` と `link` の印・ツールチップを付ける | Obsidian MarkdownRenderer |
+| `src/ui/map-events.ts` / `node-drag.ts` / `map-viewport.ts` | キー・リンク・画像貼付（クリックの解釈 `mapClick` は埋め込みと共有。`nodeOf` はそのキャンバスのノード要素）、呼び出したノードのダブルクリック（`open`）と読み取り専用の遮断（`readOnly`）、pointer イベントによるノードのドラッグとゴースト、DOM のパン／ズーム | Obsidian Component、DOM |
 | `src/layout/drop-preview.ts` / `snap.ts` | ドラッグ中の移動先に仮ノードを差し込んだレイアウト用の木と、運んだトピックのルートの矩形からレイアウト別の幾何で合流先を決めるスロット判定 | 純粋 TypeScript |
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
 | `src/core/embed.ts` / `map-keys.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`（キーは `map-keys.ts` で cache 側と共有）、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード。項目が埋め込み 1 つだけかの判定（`embedOnlyTitle`、M12） | 純粋 TypeScript |
+| `src/core/calls.ts` | マップの中の呼び出し（M12）の投影: 呼び出し先の木を現在の木に継ぎ足す `projectCalls`（`callerId/nodeId` の id、各ノードの出所 `CallSource`）、開いた時点の折りたたみ `initialCallFolds` | 純粋 TypeScript |
 | `src/obsidian/embed-target.ts` | マップノートの判定 `isMapNote`（metadataCache の `mappy: true`。埋め込みと検索で共有）と、`.internal-embed` の `src` からのマップノートと見出しパスの解決（`parseLinktext`、`getFirstLinkpathDest`） | Obsidian の公開 API |
 | `src/obsidian/map-search.ts` | コマンド「マップを検索して呼び出す」の検索 UI（M12 の入力側）: 他のマップノートを候補にした `FuzzySuggestModal`。候補の列挙 `listMapNotes`、検索文字列 `searchText`、選んだファイルを返すだけで書き込みは持たない | Obsidian の FuzzySuggestModal、Vault、metadataCache |
-| `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`）。map view のノードの中に同じ枠を描く resolver（`nodeEmbeds`、M12）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
+| `src/obsidian/map-calls.ts` | 呼び出し先の読み取り `CallReader`（M12 の表示側）: `![[…]]` だけの項目を `resolveEmbedTarget` で解決し、`DocumentStore` で読んで（開いているエディタ優先）パスごとに 1 度だけ解析し、前回の解析を同一性の基準にする。view と Excalidraw 挿入が共有 | Obsidian の公開 API、DocumentStore |
+| `src/ui/map-embed.ts` / `edge-layer.ts` | post-processor（`MapEmbeds`）と、区画の寿命に合わせた読み取り専用のマップ（`MapEmbed`: `MarkdownRenderChild`、M10）。線の差分描画 | Obsidian MarkdownRenderChild、MarkdownPostProcessor |
 
 Markdown parser は原文の UTF-16 offset を得られる `@lezer/markdown` を採用した。通常の Markdown を構文解析し、frontmatter と Obsidian コメントを補助処理する。製品コードはブラウザ互換にし、Node/Electron や非公開の Obsidian parser を使わない。ランタイム依存は package.json で固定し、バンドルの実測値とハッシュは各ビルドの `dist/build-info.json` と証跡で追う。モバイル互換性は設計上の条件であり、実機では未確認。
 
@@ -152,13 +154,63 @@ Component は `MarkdownRenderChild` で `ctx.addChild` に渡し、区画が差�
 
 ### 5c. マップの中の呼び出し（M12 の表示側）
 
-map view のノードの最初の行が `![[マップノート]]`／`![[ノート#見出し]]` 1 つだけなら（core の `embedOnlyTitle`。前後の空白は許し、`|別名` は Obsidian が `src` から捨てるのと同じく捨てる）、そのノードの中に M10 と同じ枠を描く。post-processor は使わない: map view のノードの題名は `MarkdownRenderer` で描くが、`transclusionsAsLinks` が先に `![[…]]` をリンクにするので `.internal-embed` は生まれず、`MapEmbeds.process` の `.mappy-view` の除外は「ノードの中の区画をホストにしない」ためだけに残る。判定と描画は `NodeRenderer` が view から受け取る resolver（`NodeEmbedResolver`: 題名のリンクテキストと描いているノートのパス → `{ key, mount }` か null）で行う。`MindmapView` は `nodeEmbeds(app, store)`（`map-embed.ts`）を渡し、resolver は既存の `resolveEmbedTarget`（`mappy: true` のノートだけ）で解決し、自分自身（`file.path === sourcePath`）は null にする。`mount` はノードの content の中に作った枠を `containerEl`＝`frame` にした `MapEmbed` を entry の Component の子として足す（ノードの削除・題名の変更・view の閉じで unload される）。`key`（元ノートのパス＋見出し）はノードの同一性キーに入り、同じ題名が別のマップを指すようになれば描き直す。判定は描くときに読むので、view は `metadataCache` の `changed`／`deleted` と vault の `rename`（自分以外のノート）で、呼び出しを持つ文書に限って `draw()` し直す（呼び出し先が後から作られた・`mappy: true` を得た・消えた場合にノードが枠になり／リンクに戻る）。ダブルクリックで元ノートを開くのは `mount` が枠に足す 1 つのハンドラ（`openLinkText`。`stopPropagation` で view のダブルクリック編集に渡さない。枠の中のボタンとリンクはクリックで既に開いているので対象外）。枠の大きさは CSS の固定値（既定 320×220px、`--mappy-node-embed-width`／`-height`）で、`ResizeObserver` で外側の配置に伝える。
+map view のノードの題名が `![[マップノート]]`／`![[ノート#見出し]]` 1 つだけなら（core の `embedOnlyTitle`。前後の空白は許し、`|別名` は Obsidian が `src` から捨てるのと同じく捨てる）、そのノードを呼び出し先のルートとして、呼び出し先の本体の木を現在のマップの枝と同じ見た目・同じレイアウトで右に並べる（LEV-82。枠に縮小して描いた LEV-69 の形は本人の実機フィードバックで置き換えた）。枠も縮小もなく、呼び出した部分は読み取り専用で、選択・折りたたみ・ダブルクリックで元マップを開くことだけができる。
 
-再帰の遮断は 2 段で、鎖の追跡は持たない。自分自身は resolver が拒み、枠の中で描く `MapEmbed` は自分の `NodeRenderer` に resolver を渡さないので、枠の中の `![[…]]` は M10 と同じくリンクになる。A→B→A、A→B→C→A のどれも最初の枠のリンクで止まり、枠の中に枠はできない。同じマップを 2 回呼ぶと 2 つの `MapEmbed` が独立に読み込み・折りたたみを持つ（同じ題名のノードは編集のたびに id が変わるので、そのとき枠も作り直される。§3 の同一性の規則どおり）。
+**投影の型（`src/core/calls.ts`、純粋）:**
 
-枠の中のノードは外側の view のノードではない。枠の中の要素も `.mappy-node[data-node-id]` なので（id は `root` が衝突しうる）、view 側のクリック（`mapClick`）・ダブルクリック・右クリック・`NodeDrag` の押下と移動先・ファイルドロップは `nodeOf(canvas, target)`（`map-events.ts`）でそのキャンバスの最も外側のノードに帰着させる。開閉ボタンはノード直下の子だけをそのノードのものと見なす。`MapEmbed` 自身のクリックは内側のキャンバスで先に処理し、リンクは伝播を止め、開閉ボタンは折りたたみを切り替えてから伝播させる（それ以外のクリックと同じく外側に伝わり、枠を持つノードの選択とフォーカスになる。フォーカスが枠の中のボタンに残ると外側のキーボード操作が効かなくなるため）。ホイールとポインターのドラッグは枠が扱わないので外側のパン・ズーム・ノードのドラッグになる（枠内で独立にパン・ズームしない。`touch-action: none`）。`.is-root`／`.is-stage` の label の太字は `> .mappy-node-content > .mappy-node-label` に限り、枠の中の label に及ばない。
+```ts
+/** `![[…]]` だけの項目が解決した先: 呼び出し先のノート（解析済み）と、求めた見出しパス（`#A#B`。全体なら ''）。 */
+interface CallTarget { path: string; subpath: string; document: MindDocument }
+/** 呼び出し元の項目の id → 呼び出し先。解決できなかった項目（マップでない・存在しない・自分自身・ブロック参照・見出しなし）は載らず、リンクのまま。 */
+type CallTargets = ReadonlyMap<string, CallTarget>
+/** 呼び出したマップから来たノードの出所。 */
+interface CallSource {
+  callerId: string;            // 呼び出し元の項目（ホストのノード id）
+  path: string; subpath: string;
+  document: MindDocument;      // 呼び出し先の文書
+  node: MindNode;              // 呼び出し先の文書のノード（題名・本文・リンクはここから読む）
+  root: boolean;               // 呼び出し元の項目そのもの（呼び出し先のルートの代わりに立つ）なら true
+}
+/** 継ぎ足した木: 本体ルートとフリートピック、出所（ホスト自身のノードは載らない）、id → 投影ノード。 */
+interface CallProjection { roots: MindNode[]; sources: ReadonlyMap<string, CallSource>; byId: ReadonlyMap<string, MindNode> }
+projectCalls(roots: readonly MindNode[], targets: CallTargets): CallProjection
+/** 分割（projectMap）と継ぎ足しを合成する唯一の場所: view・Excalidraw 挿入・切り離しの原点が使う。 */
+projectShown(document, targets): { split: MapProjection; calls: CallProjection }
+calledNodeId(callerId, nodeId) === `${callerId}/${nodeId}`
+initialCallFolds(projection): Set<string>
+```
 
-再検討する条件: Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。ライブプレビューで Obsidian が埋め込み先の区画を post-processor に渡す順序・DOM 構造は実機（E34）で確認する。SVG／PNG 書き出し（§9c）は枠の中のマップを配置どおりに描けない（算出スタイルの白名簿に `position`／`transform` がない）ので、枠を同じ大きさの箱にしてマップ名を書く（`serializeFrame`、`mappy-export-embed`）。中のマップを描くかは LEV-73 で扱う。
+`projectCalls` は `projectMap` が分けた本体ルートとフリートピックを歩き、`targets` にある項目（題名が今も `![[…]]` 1 つだけの項目に限る）を次の複製に置き換える: 題名は呼び出し先のルート（`embedTrees(document, subpath)?.root`。全体の呼び出しなら本体ルート、`#見出し` ならその区画。呼び出し先のフリートピックは描かない）の文、子は「呼び出し先のルートの子の複製 … 自分の子」の順。呼び出し先のノードの複製は id を `callerId/nodeId` にし（同じマップを 2 回呼んでも衝突しない。文書の id は `node-N` で `/` を含まない）、`parentId` を投影の親に、`level` を呼び出し元からの深さに直し、原文範囲（`from`・`bodyFrom` など）は呼び出し先の文書のまま持つので `nodeBody(source.document, source.node)` がそのまま効く。ホスト自身のノードは `children` と `parentId` だけ差し替えた複製で id・範囲は変わらず、編集コマンドは従来どおり `doc.root` の木に対して動く。
+
+1 段だけ: 呼び出し先のノードの複製は `targets` を見ないので、呼び出し先の中の `![[…]]` は `transclusionsAsLinks` がリンクにする（M10 と同じ）。自分自身は読み取り側が拒む（`path === hostPath`）。したがって A→A、A→B→A、A→B→C→A のどれも 1 段目のリンクで止まり、鎖の追跡を持たない。`initialCallFolds` は呼び出し先の（ルート以外の）子を持つノードすべてで、「ルートの子まで開き、それより下は折りたたんだ状態」から一段ずつ開ける。
+
+**データの流れ（`MindmapView`）:**
+
+```text
+refresh():     store.read(host) → parseMarkdown（ローカル）→ CallReader.read(document, host.path) → targets
+               → this.document と targets を同時に公開（adopt）→ draw   ※ 読み取りの待ちの間は古い文書と画面が一致したまま
+recall:        metadataCache changed/deleted・vault modify/rename/delete・editor-change（ホスト以外）
+               → callConcerns(file): 前回読んだノート（旧パス含む）か、いずれかの項目が今そのファイルに解決するときだけ
+               → 45 ms debounce → CallReader.read → targets が変われば adopt → draw
+adopt(targets): projectShown(document, targets) を (document, targets) ごとに 1 度組み、
+               collapsed を byId に刈り、まだ見ていない呼び出し id に initialCallFolds を足す（折りたたみが変わる唯一の場所）
+projection():  adopt が組んだ木を返すだけ（副作用なし）
+draw():        visible()（投影の木を preorder、閉じた枝の下は省く）→ renderer.update(nodes, document, host.path, collapsed, { …, sources, trees })
+               → scheduleLayout → layoutTree(投影の root, sizes, collapsed, mode, topics)
+```
+
+- **読み取り**は `CallReader`（`src/obsidian/map-calls.ts`）。項目ごとに `embedOnlyTitle` → `resolveEmbedTarget`（metadataCache の `mappy: true`、ブロック参照でない、存在する）→ ホスト自身を拒む → `DocumentStore.read`（開いているエディタのバッファ優先）→ その原文でも `readMapFromSource` がマップと言う（未保存の編集で `mappy: true` を失えばリンク）→ `parseMarkdown(text, basename, previous)` をパスごとに 1 度。前回の解析を同一性の基準に渡すので、呼び出し先の編集で id が保たれ折りたたみが残る。同じマップを 2 回呼んでも解析は 1 度で、投影の id が `callerId/` で分かれる。読めないノートはリンクに戻る。`targets` の各項目は `document` の参照で比べ、原文が同じなら同じ文書を返すので、無関係な cache 変更では描き直さない。
+- **描画**は `NodeRenderer.update` の `appearance.sources`。呼び出したノードは題名と添付を `source.document`／`source.node` から、`sourcePath` を `source.path` にして描く（リンク・画像は呼び出し先のノート基準。M10 と同じ）。呼び出し元の項目は題名だけ呼び出し先のルートの文で、添付は自分の項目の本文（このマップで「本文・リンクを編集」「画像を追加」できるもの）をホストのパスで描く。呼び出し先のルートの本文は描かない。class は `is-called`（呼び出したマップから来たノード全部。呼び出し元の項目も）と `is-called-root`（呼び出し元の項目）、`aria-readonly="true"`（項目を除く）、`title` 属性に「呼び出し元: パス」、呼び出し元の項目の label の前に小さな `link` アイコン（`.mappy-node-call-mark`）。文字色は `--text-muted` 寄り（styles.css）。同一性キーにパスと `is-called-root` を含めるので、呼び出しが変われば描き直す。折りたたみの件数は `appearance.trees`（投影の root とトピック）で数える。
+- **リンク**: `MapActions.link(link, newLeaf, nodeId)` はリンクが載るノードの id を運び、view は呼び出したノードなら `source.path`、それ以外（ホストのノードと呼び出し元の項目）ならホストのパスを基準に `openLinkText` する（「内部・相対リンクの基準は元ファイル」）。
+- **読み取り専用**: `MapActions.open(id)`（ダブルクリック。呼び出したノードなら `openLinkText(source.path, host.path)` で元ノートをマップで開き true）、`NodeDragActions.readOnly(id)`（押下を始めない＝ドラッグもゴーストも切り離しもない）。view は `execute`（Enter／Tab／Delete／⌥↑↓／ドロップ）・`editTitle`（F2）・`editBody`・`attachImage`・`callMap` を呼び出したノードで Notice「呼び出したマップは読み取り専用です」と断る。ドロップ先が呼び出したノードのときは `resolveDrop` がホストの文書にそのノードを見つけないので拒み、スロットも出ない。右クリックは「元のマップを開く」「折りたたみ」と履歴だけ。Space と開閉ボタン、矢印キーは投影の木で動く（`MapEvents` は矢印を `visible()` のノードで辿る）。呼び出し元の項目自体は通常のノード: F2 は原文 `![[…]]`、Enter／Tab／Delete／ドラッグは同じ差分で、Delete で呼び出した木ごと消え、⌘Z で戻る（ホストの 1 編集）。
+- **選択**: `selected()` はホストの id ならホストの文書のノード（編集は原文の題名を使う）、呼び出しの id なら投影のノード。「Markdown に切り替え」のカーソルは、呼び出したノードが選ばれていればその呼び出し元の項目の位置。
+- **ドラッグの事前表示**: `previewTree(root, command, collapsed)` は投影の木から組み直すので、ドラッグ中も呼び出した枝が消えない。`resolveDrop` の `index` はホストの子の中の位置なので、移動先が呼び出し元の項目なら view が呼び出し先のルートの子の数だけずらして仮ノードを置く。切り離しの原点（`originFor`）も `projectShown` で測る。フリートピックの位置（`mappy-topics`）は見出しの原文（`split.topics` の題名）をキーにし、`## ![[Map]]` のトピックでも呼び出し先のルートの文をキーにしない。
+- **書き出し**: SVG／PNG は DOM をそのまま読むので、呼び出したノードは通常のノードとして入る（LEV-69 の `serializeFrame` はなくなった。LEV-73 はこれで解消）。Excalidraw は `sceneContents(document, collapsed, calls)` が同じ `projectCalls` で継ぎ足し、`SceneNodeContent.sourcePath` でノードのリンクと画像を呼び出し先のノートから解決し、呼び出し元の項目の要素は呼び出し先のノートへリンクする。`ImportRequest.calls` は view の `snapshot()` が渡す。Markdown view からの挿入（`calls` なし）は bridge が `CallReader` で自ら読み、呼び出し先を開いた時点と同じ折りたたみ（ルートの子まで）で入れる。
+- `nodeOf` はそのキャンバスの中でターゲットを含むノード要素。map view のノードは入れ子にならない（題名の `![[…]]` はリンク、M10 の枠は閲覧モードの区画にしかない）。`MapEmbed`（M10）は変えず、`nodeEmbeds` はなくなった。
+
+2,000 ノードのマップを呼んでも解析は 1 度（数十 ms）、投影は変更ごとに 1 度で、描くのはルートの子までなので現在のマップの操作は止まらない。
+
+再検討する条件: 呼び出し先のフリートピックを描くか（今は本体の木だけ）。呼び出し先のルートの本文（添付）を項目に描くか（今は項目自身の本文だけ）。右上のポップオーバー（LEV-81）の「マップを検索して呼び出す」は呼び出したノードが選ばれていると `callMap` が同じ Notice で断る。Obsidian が公開 API で埋め込みの種類を登録できるようになった場合（`embedRegistry` は非公開）。
 
 ## 6. 操作とズーム
 
@@ -226,7 +278,7 @@ Excalidraw プラグインが有効なら、`window.ExcalidrawAutomate` の公�
 
 `onDropHook` は代入式の 1 スロットなので、既存のフックを退避して連結し、扱わないドロップは既存へ渡す。unload 時は自分が最前なら復元し、他が上に包んでいれば素通しにする。`onLayoutReady` と `layout-change` で冪等に再確認し、Excalidraw の後読み・再読込に追従する。判定は同期で `true` を返し、挿入は非同期に行う（Excalidraw 自身と同じ）。
 
-要素の対応は map view の見た目に合わせる: 表示ルートは塗り矩形＋白文字、第一階層は枠付き矩形、下位は平文。線は `layoutTree` の `M/H/V` パスを折れ線にし、`![[画像]]` はラベル下に 240×140 以内で並べ、タイトル・本文の最初のリンクを要素の `link` に、ルートには元ノートへの `link` を付ける。1 回の挿入を 1 グループにする。サイズは DOM ではなく Excalidraw 自身の計測に従う: 全要素を原点に作成 → 実寸を読む → `buildScene` で配置 → 座標を書き戻す。フォントは図面の `currentItemFontFamily` を使う。挿入後の図面と元ノートは同期しない。
+要素の対応は map view の見た目に合わせる: 表示ルートは塗り矩形＋白文字、第一階層は枠付き矩形、下位は平文。線は `layoutTree` の `M/H/V` パスを折れ線にし、`![[画像]]` はラベル下に 240×140 以内で並べ、タイトル・本文の最初のリンクを要素の `link` に、ルートには元ノートへの `link` を付ける。1 回の挿入を 1 グループにする。呼び出したマップ（§5c）のノードは通常のノードとして入り、`![[…]]` の項目の要素は呼び出し先のノートへリンクし、呼び出したノードのリンクと画像は呼び出し先のノート基準で解決する（`SceneNodeContent.sourcePath`）。サイズは DOM ではなく Excalidraw 自身の計測に従う: 全要素を原点に作成 → 実寸を読む → `buildScene` で配置 → 座標を書き戻す。フォントは図面の `currentItemFontFamily` を使う。挿入後の図面と元ノートは同期しない。
 
 対話フレーム内では Excalidraw が `--text-normal` を空にするため、線の色は `--mappy-line: currentColor` にしている。`var()` が空文字を展開すると `stroke` は無効値になり、`border` の省略形だけが生き残る。
 
@@ -253,11 +305,11 @@ Excalidraw 挿入と並ぶ、外へ持ち出す経路（§5 M13）。図面 API 
 
 ## 9d. マップの検索と呼び出し（M12 の入力側）
 
-マップを開いたまま別のマップを `![[別マップ]]` の項目として足す経路。表示は M10 の埋め込み描画を map view の中でも使う（LEV-69）。書き込み側は通常のノード追加をそのまま使い、専用の保存経路を作らない。
+マップを開いたまま別のマップを `![[別マップ]]` の項目として足す経路。表示は §5c の投影（呼び出し先の木を枝として継ぎ足す。LEV-82）。書き込み側は通常のノード追加をそのまま使い、専用の保存経路を作らない。
 
 - **コマンド**は `src/main.ts` の登録 1 か所。`checkCallback` で map view がアクティブなときだけ出し、`MapSearchModal` を開いて、選ばれた `TFile` を `MindmapView.callMap` に渡す。名前にプラグイン名を含めず、既定ホットキーは登録しない。
 - **候補**は `listMapNotes`: `vault.getMarkdownFiles()` のうち `isMapNote`（`embed-target.ts`。metadataCache の frontmatter に真偽値の `mappy: true` があり Excalidraw でない）が真で、呼び出し元のノートでないもの。metadataCache を読むので、編集中で未保存の frontmatter は反映されない（埋め込みの解決と同じ前提）。検索文字列は拡張子なしのパス（`フォルダ/タイトル`）で、タイトル・フォルダ・`フォルダ/タイトル` のどれでも絞り込める。表示はファイル名と親フォルダの 2 行（Obsidian の `suggestion-title`／`suggestion-note` の class を使い、独自 CSS を足さない）で、一致箇所は Obsidian の `renderMatches(el, text, matches, offset)` で `suggestion-highlight` にする。`matches` は `フォルダ/タイトル` に対する位置で、`offset` は各 match の始点・終点に足される（終点が 0 以下の範囲は飛ばし、始点が文末以上で打ち切り。実機の 1.14.2 で確認、LEV-71）ので、title 行には `-(フォルダ長 + 1)`、note 行には 0 を渡す。0 件は `emptyStateText`。
-- **書き込み**は `callMap`: 選択ノード（`selected()`）がなければ本体ルート（`projectMap` の root。フリートピックのルートも選択ノードとして通る）を親に、`![[` + `app.metadataCache.fileToLinktext(target, note.path, true)` + `]]` を `add-child` コマンドの `title` に渡す。パスの形（最短・相対・絶対、同名なら完全パス）は Vault の「新しいリンクの形式」に従うが、記法は `generateMarkdownLink` に任せず Wiki 形式に固定する: ノードのタイトルを描く `transclusionsAsLinks` と表示側（LEV-69）の「`![[…]]` だけの項目」の判定が Wiki 形式しか読まないので、「Wikilinks を使用」オフの `![名前](パス.md)` を書くとノードの中にノート全体が展開されてしまう。core の `add`（両形式）は空の項目と同じ位置・同じ 1 つの挿入差分に文を含め、再解析した木で「1 ノード増え、その項目の文が `title.trim()`」であることを検証する（改行は事前に拒否）。view は空の add-child と同じく新しい項目を選択して表示するが、`title` 付きではインライン入力を開かない。差分と履歴は Tab と同じなので、Undo 1 回で項目ごと消え、`DocumentStore` の履歴・原文照合・開いているエディタ優先はそのまま効く。呼び出したマップの元ノートには触れない。
+- **書き込み**は `callMap`: 選択ノード（`selected()`）がなければ本体ルート（`projectMap` の root。フリートピックのルートも選択ノードとして通る）を親に、`![[` + `app.metadataCache.fileToLinktext(target, note.path, true)` + `]]` を `add-child` コマンドの `title` に渡す。パスの形（最短・相対・絶対、同名なら完全パス）は Vault の「新しいリンクの形式」に従うが、記法は `generateMarkdownLink` に任せず Wiki 形式に固定する: ノードのタイトルを描く `transclusionsAsLinks` と表示側（§5c）の「`![[…]]` だけの項目」の判定が Wiki 形式しか読まないので、「Wikilinks を使用」オフの `![名前](パス.md)` を書くとノードの中にノート全体が展開されてしまう。core の `add`（両形式）は空の項目と同じ位置・同じ 1 つの挿入差分に文を含め、再解析した木で「1 ノード増え、その項目の文が `title.trim()`」であることを検証する（改行は事前に拒否）。view は空の add-child と同じく新しい項目を選択して表示するが、`title` 付きではインライン入力を開かない。差分と履歴は Tab と同じなので、Undo 1 回で項目ごと消え、`DocumentStore` の履歴・原文照合・開いているエディタ優先はそのまま効く。呼び出したマップの元ノートには触れない。
 - **拒否**: 自分自身（候補には出ないが、モーダルを開いたあとに view のノートが変わった場合）、保存中（Tab は黙って捨てるが、選んだマップが消えたように見えないよう伝える）、本体が仮想ルートの文書（H2 がなく、add-child なら `## ![[別マップ]]` という見出し＝本体の名前になってしまうので「先に H2 を」と断る）、インライン編集中（`execute` 側のガードなので右クリックの子追加も同じ。下書きの確定 → 子追加の経路は `inlineEditor` を外したあとに通る）。見出し形式のノートでは add-child と同じく 1 段深い見出し `### ![[別マップ]]` になる（拒否も変換の誘導もしない）。
 - 実機（E35 の入力側、LEV-71）で確かめた前提: map view は描画のたびに 1 ノードを選択状態に保ち、開いた直後は本体ルートなので、「未選択なら本体ルート」は実機ではその既定の選択として現れる。同じノートを Markdown で開いた分割表示では `DocumentStore` が editor の `transaction`（origin `mappy`）で書き、ディスクは Obsidian の保存に任せる。`fileToLinktext` は最短で同名ノートが 2 つあると完全パス、相対は呼び出し元のフォルダからのパスを返す。
 - リスト形式の `insertion` は、改行で終わる文書の末尾に足すとき末尾の改行を保つように直した。子のない最終区画への Tab に加え、最後の H2 の Enter（兄弟）と仮想ルートへの Tab（どちらも末尾に `## ` を作る）も `## \n` で終わるようになる。

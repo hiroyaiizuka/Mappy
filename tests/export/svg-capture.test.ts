@@ -177,22 +177,23 @@ describe('SVG export of the map view (jsdom)', () => {
     expect(mounted.modified()).toBe(0);
   });
 
-  it('exports a map drawn inside a node (§5 M12) as a box of the frame\'s size that names the map, never as its nodes (LEV-73)', async () => {
+  it('exports the branches of a called map (§5 M12) as ordinary nodes: the called root\'s text on the calling item, its children, their folds (LEV-73)', async () => {
     const map = ['---', 'mappy: true', '---', '## 講座', '- 回復する', '  - 睡眠', '- 記録する', ''].join('\n');
     const source = ['---', 'mappy: true', '---', '## ホスト', '- ![[Called]]', '- 文', ''].join('\n');
     const mounted = await mount('uneven-branches', 'mindmap', source, { 'Called.md': map });
-    const frame = mounted.view.containerEl.querySelector('.mappy-node.is-embed .mappy-embed');
-    expect(frame).not.toBeNull();
+    expect(mounted.view.containerEl.querySelector('.mappy-embed')).toBeNull();
     const { parsed, svg } = await exportOf(mounted);
-    const objects = Array.from(parsed.querySelectorAll('foreignObject'));
-    expect(objects).toHaveLength(3);
-    const box = parsed.querySelector('.mappy-export-embed');
-    expect(box?.textContent).toBe('マインドマップ: Called');
-    expect(box?.closest('foreignObject')?.querySelector('.mappy-node')).not.toBeNull();
-    // Nothing of the inner map leaks into the file: no nested nodes, edges or canvas, and the frame's own label only once.
-    expect(parsed.querySelectorAll('.mappy-embed .mappy-node, .mappy-canvas, .mappy-world, foreignObject .mappy-edges')).toHaveLength(0);
-    expect(svg.match(/講座/gu)).toBeNull();
-    expect(Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim())).toEqual(['ホスト', '文']);
+    const labels = Array.from(parsed.querySelectorAll('.mappy-node-label'), label => label.textContent?.trim());
+    // The called map opens with its root's children shown and 回復する folded: 睡眠 is behind the badge.
+    expect(labels).toEqual(['ホスト', '講座', '回復する', '記録する', '文']);
+    expect(parsed.querySelectorAll('foreignObject')).toHaveLength(5);
+    expect(Array.from(parsed.querySelectorAll('.mappy-fold text'), text => text.textContent)).toEqual(['1']);
+    const calling = Array.from(parsed.querySelectorAll('.mappy-node')).find(node => node.classList.contains('is-called-root'));
+    expect(calling?.querySelector('.mappy-node-call-mark svg')).not.toBeNull();
+    expect(calling?.getAttribute('title')).toBe('呼び出し元: Called.md');
+    expect(parsed.querySelectorAll('.mappy-node.is-called')).toHaveLength(3);
+    expect(parsed.querySelectorAll('.mappy-edges path')).toHaveLength(4);
+    expect(svg).not.toContain('mappy-export-embed');
     expect(mounted.modified()).toBe(0);
   });
 

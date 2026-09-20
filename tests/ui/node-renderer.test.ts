@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
-import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
-import { NodeRenderer, type NodeEmbedResolver } from '../../src/ui/node-renderer';
+import { projectCalls } from '../../src/core/calls';
+import { parseMarkdown, projectMap, type MindDocument } from '../../src/core/markdown';
+import { NodeRenderer } from '../../src/ui/node-renderer';
 
 vi.mock('obsidian', () => {
   class Component {
@@ -52,12 +53,12 @@ function dom<T extends HTMLElement>(element: T): T {
   return element;
 }
 
-function setup(source: string, embeds?: NodeEmbedResolver) {
+function setup(source: string) {
   const parsed = parseMarkdown(source, 'File root');
   const layer = dom(document.createElement('div'));
   document.body.append(layer);
   const changed = vi.fn();
-  const renderer = new NodeRenderer({} as App, layer, changed, embeds);
+  const renderer = new NodeRenderer({} as App, layer, changed);
   return { parsed, renderer, changed };
 }
 
@@ -246,48 +247,51 @@ describe('NodeRenderer title rendering', () => {
     expect(renderer.entries.get(id(parsed, '![[doc.pdf]]'))?.key).toBe('Course.md\0![[doc.pdf]]\0');
   });
 
-  it('draws a map in a node whose title is one embed when the resolver names one, keyed by the map, and keeps a link otherwise (§5 M12)', async () => {
-    const mount = vi.fn();
-    let answer: string | null = 'Map.md';
-    const resolve = vi.fn<NodeEmbedResolver>((linktext) => (linktext === 'Map' && answer ? { key: answer, mount } : null));
-    const { parsed, renderer } = setup('## Course\n- ![[Map]]\n- ![[Other]]\n- 文中の ![[Map]]\n- `![[Map]]`\n', resolve);
-    const appearance = { visualRootId: id(parsed, 'Course'), mode: 'mindmap' as const };
-    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+  it('draws the nodes of a called map from the called note, marks them read-only, and puts the link mark on the calling item (§5 M12)', async () => {
+    const called = parseMarkdown('---\nmappy: true\n---\n## 講座\n[[参考]] を見る\n- 回復する\n  - 睡眠\n- 記録する\n  ![[図.png]]\n', 'Map');
+    const { parsed, renderer } = setup('## Course\n- ![[Map]]\n  [[own link]]\n  - own child\n- ![[Other]]\n');
+    const caller = id(parsed, '![[Map]]');
+    const projection = projectCalls([projectMap(parsed).root], new Map([[caller, { path: 'Maps/Map.md', subpath: '', document: called }]]));
+    const root = projection.roots[0];
+    if (!root) throw new Error('no root');
+    const visible = Array.from(projection.byId.values());
+    const appearance = { visualRootId: id(parsed, 'Course'), mode: 'mindmap' as const, sources: projection.sources, trees: [root] };
+    renderer.update(visible, parsed, 'Course.md', new Set(), appearance);
     await Promise.resolve();
-    // Only titles that are one embed reach the resolver, with the link text and the note being drawn.
-    expect(resolve.mock.calls).toEqual([['Map', 'Course.md'], ['Other', 'Course.md']]);
-    const embed = renderer.entries.get(id(parsed, '![[Map]]'));
-    expect(embed?.element.classList.contains('is-embed')).toBe(true);
-    expect(embed?.content.querySelector('.mappy-node-label')).toBeNull();
-    expect(embed?.key).toBe('Course.md\0![[Map]]\0\0Map.md');
-    expect(mount).toHaveBeenCalledOnce();
-    const [owner, frame, changed] = mount.mock.calls[0] as [unknown, HTMLElement, () => void];
-    expect(owner).toBe(embed?.component);
-    expect(frame.parentElement).toBe(embed?.content);
-    expect(typeof changed).toBe('function');
-    for (const title of ['![[Other]]', '文中の ![[Map]]', '`![[Map]]`']) {
-      const entry = renderer.entries.get(id(parsed, title));
-      expect(entry?.element.classList.contains('is-embed')).toBe(false);
-      expect(entry?.content.querySelector('.mappy-node-label')?.textContent).toBe(title === '`![[Map]]`' ? title : title.replace('![[', '[['));
-    }
-    // The same answer keeps the frame; a different map (or none) redraws the node.
-    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
-    expect(mount).toHaveBeenCalledOnce();
-    expect(embed?.content.contains(frame)).toBe(true);
-    answer = 'Other Map.md';
-    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
-    expect(mount).toHaveBeenCalledTimes(2);
-    expect(embed?.content.contains(frame)).toBe(false);
-    answer = null;
-    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    const calling = renderer.entries.get(caller);
+    expect(calling?.element.classList.contains('is-called')).toBe(true);
+    expect(calling?.element.classList.contains('is-called-root')).toBe(true);
+    expect(calling?.element.getAttribute('aria-label')).toBe('講座');
+    expect(calling?.element.getAttribute('title')).toBe('呼び出し元: Maps/Map.md');
+    // The calling item is the host's own node, edited as any other: not read-only, unlike the nodes grafted under it.
+    expect(calling?.element.hasAttribute('aria-readonly')).toBe(false);
+    expect(calling?.content.querySelector('.mappy-node-call-mark')?.getAttribute('data-icon')).toBe('link');
+    expect(calling?.content.querySelector('.mappy-node-label')?.textContent).toBe('講座');
+    // The calling item's attachments are its own item's body (what this map edits), not the called root's.
+    expect(calling?.key).toBe('Maps/Map.md\0講座\0[[own link]]\0called-root');
+    const grafted = visible.find(node => node.title === '記録する');
+    const entry = renderer.entries.get(grafted?.id ?? '');
+    expect(entry?.element.classList.contains('is-called')).toBe(true);
+    expect(entry?.element.classList.contains('is-called-root')).toBe(false);
+    expect(entry?.element.getAttribute('aria-readonly')).toBe('true');
+    expect(entry?.element.getAttribute('title')).toBe('呼び出し元: Maps/Map.md');
+    expect(entry?.content.querySelector('.mappy-node-call-mark')).toBeNull();
+    expect(entry?.key).toBe('Maps/Map.md\0記録する\0![[図.png]]');
+    // The host's own nodes stay as they were: the own child under the calling item, the unresolved call a link.
+    const own = renderer.entries.get(id(parsed, 'own child'));
+    expect(own?.element.classList.contains('is-called')).toBe(false);
+    expect(own?.element.hasAttribute('title')).toBe(false);
+    expect(renderer.entries.get(id(parsed, '![[Other]]'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Other]]');
+    // Fold counts come from the trees shown: the calling item hides the three called nodes and its own child.
+    renderer.update(visible.filter(node => !projection.sources.has(node.id) || node.id === caller), parsed, 'Course.md', new Set([caller]), appearance);
+    expect(calling?.toggleMark.textContent).toBe('4');
+    // Once the call is gone, the same node is redrawn as the link it is written as.
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
     await Promise.resolve();
-    expect(mount).toHaveBeenCalledTimes(2);
-    expect(embed?.element.classList.contains('is-embed')).toBe(false);
-    expect(embed?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
-    // Without a resolver (the read-only embed's own renderer) the title is a link, and nothing is asked.
-    const plain = setup('## Course\n- ![[Map]]\n');
-    plain.renderer.update(plain.parsed.nodes, plain.parsed, 'Course.md', new Set(), { visualRootId: id(plain.parsed, 'Course'), mode: 'mindmap' });
-    await Promise.resolve();
-    expect(plain.renderer.entries.get(id(plain.parsed, '![[Map]]'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
+    expect(calling?.element.classList.contains('is-called')).toBe(false);
+    expect(calling?.element.hasAttribute('title')).toBe(false);
+    expect(calling?.content.querySelector('.mappy-node-call-mark')).toBeNull();
+    expect(calling?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
+    expect(calling?.key).toBe('Course.md\0![[Map]]\0[[own link]]');
   });
 });

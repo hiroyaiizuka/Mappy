@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
-import { MapEvents, mapClick, nodeOf, type MapActions } from '../../src/ui/map-events';
+import { MapEvents, nodeOf, type MapActions } from '../../src/ui/map-events';
 import { keyAt } from './keys';
 
 const originalTargetNode = Object.getOwnPropertyDescriptor(UIEvent.prototype, 'targetNode');
@@ -44,6 +44,7 @@ function stubActions(parsed: MindDocument, selected: MindDocument['nodes'][numbe
     attach: vi.fn<MapActions['attach']>(),
     link: vi.fn<MapActions['link']>(),
     addTopic: vi.fn<MapActions['addTopic']>(),
+    open: vi.fn<MapActions['open']>(() => false),
   } satisfies MapActions;
 }
 
@@ -126,52 +127,49 @@ describe('MapEvents DOM interactions', () => {
     expect(actions.fold).toHaveBeenCalledExactlyOnceWith(selected.id);
   });
 
-  it('answers for the node that holds an embedded map, never for the nodes drawn inside it (§5 M12)', () => {
-    const { canvas, node, selected, actions } = fixture();
-    // The frame a `![[map]]` node draws: a canvas of its own with nodes, toggles and links of the embedded map.
-    const frame = document.createElement('div');
-    frame.className = 'mappy-embed mappy-view';
-    const innerCanvas = document.createElement('div');
-    innerCanvas.className = 'mappy-canvas';
-    const inner = document.createElement('div');
-    inner.className = 'mappy-node';
-    inner.dataset.nodeId = 'inner-1';
-    const innerLabel = document.createElement('span');
-    inner.append(innerLabel);
-    const innerToggle = document.createElement('button');
-    innerToggle.className = 'mappy-node-toggle';
-    inner.append(innerToggle);
-    innerCanvas.append(inner);
-    frame.append(innerCanvas);
-    node.append(frame);
-    expect(nodeOf(canvas, innerLabel)).toBe(node);
-    expect(nodeOf(canvas, innerToggle)).toBe(node);
-    expect(nodeOf(innerCanvas, innerLabel)).toBe(inner);
+  it('answers with the node element holding the target, within this canvas only', () => {
+    const { canvas, node, label } = fixture();
+    expect(nodeOf(canvas, label)).toBe(node);
+    expect(nodeOf(canvas, node)).toBe(node);
     expect(nodeOf(canvas, canvas)).toBeNull();
     expect(nodeOf(canvas, document.body)).toBeNull();
-    // What each canvas reads from the same click, taken as the event passes the inner canvas.
-    const readings: unknown[] = [];
-    innerCanvas.addEventListener('click', event => { readings.push(mapClick(event, canvas), mapClick(event, innerCanvas)); });
-    click(innerToggle);
-    // The inner toggle is the embedded map's; seen from the outer canvas it is a plain click on the holding node.
-    expect(readings).toEqual([{ nodeId: selected.id, toggle: false }, { nodeId: 'inner-1', toggle: true }]);
-    readings.length = 0;
-    actions.select.mockClear();
-    actions.fold.mockClear();
-    click(innerLabel);
-    expect(readings).toEqual([{ nodeId: selected.id, toggle: false }, { nodeId: 'inner-1', toggle: false }]);
-    expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id, true);
-    expect(actions.fold).not.toHaveBeenCalled();
-    innerLabel.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-    expect(actions.edit).toHaveBeenCalledOnce();
-    expect(actions.select).toHaveBeenLastCalledWith(selected.id);
+    const other = document.createElement('div');
+    other.dataset.nodeId = 'elsewhere';
+    document.body.append(other);
+    expect(nodeOf(canvas, other)).toBeNull();
+  });
+
+  it('opens a called map\'s node on double click instead of editing it, in a new leaf with a modifier (§5 M12)', () => {
+    const { label, selected, actions } = fixture();
+    actions.open.mockImplementation(() => true);
+    const event = new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 });
+    label.dispatchEvent(event);
+    expect(actions.select).toHaveBeenCalledExactlyOnceWith(selected.id);
+    expect(actions.open).toHaveBeenCalledExactlyOnceWith(selected.id, false);
+    expect(actions.edit).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+    label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 100, clientY: 100, metaKey: true }));
+    expect(actions.open).toHaveBeenLastCalledWith(selected.id, true);
     expect(actions.addTopic).not.toHaveBeenCalled();
+  });
+
+  it('walks the arrows along the tree on screen, so a calling item\'s first child is the called map\'s (§5 M12)', () => {
+    const { node, selected, actions } = fixture();
+    // The tree shown gives the selected node a child the document does not have (a grafted, called node).
+    const grafted = { ...selected, id: 'grafted', title: 'called', parentId: selected.id, children: [] };
+    const shown = { ...selected, children: [grafted, ...selected.children] };
+    actions.visible.mockImplementation(() => [shown, grafted, ...selected.children]);
+    key(node, 'ArrowRight');
+    expect(actions.select).toHaveBeenLastCalledWith('grafted', true);
+    actions.selected.mockImplementation(() => grafted);
+    key(node, 'ArrowLeft');
+    expect(actions.select).toHaveBeenLastCalledWith(selected.id, true);
   });
 
   it.each([{ metaKey: false }, { metaKey: true }, { ctrlKey: true }])(
     'opens internal links without changing selection (%j)',
     (modifiers) => {
-      const { node, actions } = fixture();
+      const { node, selected, actions } = fixture();
       const anchor = document.createElement('a');
       anchor.className = 'internal-link';
       anchor.dataset.href = 'Folder/Note#Heading';
@@ -181,8 +179,9 @@ describe('MapEvents DOM interactions', () => {
       node.append(anchor);
       const event = click(child, modifiers);
       expect(event.defaultPrevented).toBe(true);
+      // The node the link sits in comes along, so the view can resolve the link from the note it is written in (§5 M12).
       expect(actions.link).toHaveBeenCalledExactlyOnceWith(
-        'Folder/Note#Heading', Boolean(modifiers.metaKey || modifiers.ctrlKey),
+        'Folder/Note#Heading', Boolean(modifiers.metaKey || modifiers.ctrlKey), selected.id,
       );
       expect(actions.select).not.toHaveBeenCalled();
       expect(actions.edit).not.toHaveBeenCalled();
@@ -450,25 +449,6 @@ describe('MapEvents file drops next to pointer dragging', () => {
     drag(node('A1'), 'dragover', {}, transfer({ types: ['Files'] }));
     drag(canvas, 'dragend');
     expect(highlighted()).toEqual([]);
-  });
-
-  it('highlights and attaches to the node holding an embedded map when the file is dragged over the map inside it', () => {
-    const { actions, node, id, highlighted } = dragFixture();
-    const frame = document.createElement('div');
-    frame.className = 'mappy-embed mappy-view';
-    const inner = document.createElement('div');
-    inner.className = 'mappy-node';
-    inner.dataset.nodeId = 'inner-1';
-    inner.textContent = 'inner';
-    frame.append(inner);
-    node('A1').append(frame);
-    const image = new File(['png'], 'figure.png', { type: 'image/png' });
-    drag(inner, 'dragover', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'] }));
-    expect(highlighted()).toEqual(['A1inner']);
-    expect(inner.classList.contains('is-drop-target')).toBe(false);
-    drag(inner, 'drop', { clientX: 50, clientY: 105 }, transfer({ types: ['Files'], files: [image] }));
-    expect(actions.select).toHaveBeenCalledWith(id('A1'));
-    expect(actions.attach).toHaveBeenCalledExactlyOnceWith(image);
   });
 
   it('ignores drags that carry neither files nor an image', () => {

@@ -2,7 +2,7 @@ import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
 import { attachmentMarkdown, transclusionsAsLinks } from "../core/attachments";
-import { embedOnlyTitle } from "../core/embed";
+import type { CallSource } from "../core/calls";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
 
 interface NodeEntry {
@@ -19,22 +19,14 @@ interface NodeAppearance {
   /** Free topics are roots of their own trees: dark face, framed first level. */
   topicIds?: ReadonlySet<string>;
   mode: LayoutMode;
+  /**
+   * Nodes drawn from a called map (§5 M12), by id: their text, body and links are read from the
+   * called note (`source.document`, `source.node`, `source.path`), not from `document`.
+   */
+  sources?: ReadonlyMap<string, CallSource>;
+  /** The trees on the map (the body root and the free topics), for the fold counts; `document.root` when absent. */
+  trees?: readonly MindNode[];
 }
-
-/** A map drawn inside a node (§5 M12): `key` tells one target from another, `mount` draws it in the frame for as long as `owner` lives. */
-export interface NodeEmbed {
-  key: string;
-  mount(owner: Component, frame: HTMLElement, changed: () => void): void;
-}
-
-/**
- * What the map view lends its renderer so a node whose title is one `![[map]]` draws
- * that map inside itself instead of a link (§5 M12). `sourcePath` is the note being
- * drawn, so the resolver can refuse the note itself. A renderer without one (the
- * read-only embed) keeps every such title a link (§5 M10), which is what stops a
- * chain of calls from recursing: an embedded map never draws another.
- */
-export type NodeEmbedResolver = (linktext: string, sourcePath: string) => NodeEmbed | null;
 
 /** Each Markdown render owns a disposable child component. */
 export class NodeRenderer extends Component {
@@ -45,7 +37,6 @@ export class NodeRenderer extends Component {
     private readonly app: App,
     private readonly layer: HTMLElement,
     private readonly changed: () => void,
-    private readonly embeds?: NodeEmbedResolver,
   ) { super(); }
 
   update(
@@ -55,7 +46,7 @@ export class NodeRenderer extends Component {
     collapsed: ReadonlySet<string>,
     appearance: NodeAppearance,
   ): void {
-    const descendantCounts = countDescendants(document.root);
+    const descendantCounts = countDescendants(appearance.trees ?? [document.root]);
     const retained = new Set(nodes.map(node => node.id));
     for (const [id, entry] of this.entries) {
       if (retained.has(id) || entry.element.hasClass("is-editing")) continue;
@@ -79,20 +70,28 @@ export class NodeRenderer extends Component {
       const isTopic = appearance.topicIds?.has(node.id) ?? false;
       const isRoot = isTopic || node.id === appearance.visualRootId;
       const parentIsRoot = node.parentId === appearance.visualRootId || (node.parentId !== null && (appearance.topicIds?.has(node.parentId) ?? false));
-      // A title that is one `![[map]]` draws that map in the node when the view allows it; the frame counts as the node's size.
-      const linktext = this.embeds ? embedOnlyTitle(node.title) : null;
-      const embed = this.embeds && linktext ? this.embeds(linktext, sourcePath) : null;
+      // A node of a called map (§5 M12) reads its text and body from the called note. The calling item stands in for
+      // that map's root: its text is the called root's, its attachments are its own item's (what this map edits).
+      const source = appearance.sources?.get(node.id);
+      const path = source?.path ?? sourcePath;
+      const bodyPath = source && !source.root ? source.path : sourcePath;
       entry.element.toggleClass("is-root", isRoot);
       entry.element.toggleClass("is-topic", isTopic);
       entry.element.toggleClass("is-stage", !isRoot && parentIsRoot);
       entry.element.toggleClass("is-parent", node.children.length > 0);
-      entry.element.toggleClass("is-embed", embed !== null);
+      entry.element.toggleClass("is-called", source !== undefined);
+      entry.element.toggleClass("is-called-root", source?.root ?? false);
       entry.element.toggleClass("is-timeline", appearance.mode === "timeline");
       entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       entry.element.setAttribute("aria-label", node.title.trim() || "空のノード");
+      // The branches of a called map are read-only on this map (the calling item itself is not); every node of them names its note on hover.
+      if (source && !source.root) entry.element.setAttribute("aria-readonly", "true");
+      else entry.element.removeAttribute("aria-readonly");
+      if (source) entry.element.setAttribute("title", `呼び出し元: ${source.path}${source.subpath}`);
+      else entry.element.removeAttribute("title");
       entry.toggle.hidden = node.children.length === 0;
       entry.toggleMark.empty();
       const hiddenCount = descendantCounts.get(node.id) ?? 0;
@@ -107,8 +106,8 @@ export class NodeRenderer extends Component {
       entry.toggle.setAttribute("aria-expanded", String(!isCollapsed));
       if (node.children.length > 0) entry.element.setAttribute("aria-expanded", String(!collapsed.has(node.id)));
       else entry.element.removeAttribute("aria-expanded");
-      const attachments = attachmentMarkdown(nodeBody(document, node));
-      const key = `${sourcePath}\0${node.title}\0${attachments}${embed ? `\0${embed.key}` : ""}`;
+      const attachments = attachmentMarkdown(source && !source.root ? nodeBody(source.document, source.node) : nodeBody(document, node));
+      const key = `${path}\0${node.title}\0${attachments}${source?.root ? "\0called-root" : ""}`;
       if (entry.key === key) continue;
       entry.key = key;
       this.removeChild(entry.component);
@@ -118,16 +117,16 @@ export class NodeRenderer extends Component {
       const changed = (): void => {
         if (this.entries.get(node.id) === current && current.key === key) this.changed();
       };
-      // The map takes the label's place (§5 M12); the title itself (`![[…]]`) is what the inline editor shows.
-      const label = embed ? null : entry.content.createDiv({ cls: "mappy-node-label" });
-      if (embed) embed.mount(entry.component, entry.content.createDiv(), changed);
+      // The calling item carries a small link mark before the called root's text; the text itself (`![[…]]`) is what the inline editor shows.
+      if (source?.root) setIcon(entry.content.createSpan({ cls: "mappy-node-call-mark", attr: { "aria-hidden": "true" } }), "link");
+      const label = entry.content.createDiv({ cls: "mappy-node-label" });
       // A note transclusion in a title renders as a link (as in the body), so a node never nests another note's rendering.
-      const labelTask = label && node.title
-        ? MarkdownRenderer.render(this.app, transclusionsAsLinks(node.title), label, sourcePath, entry.component)
+      const labelTask = node.title
+        ? MarkdownRenderer.render(this.app, transclusionsAsLinks(node.title), label, path, entry.component)
         : Promise.resolve();
       const attachmentsEl = entry.content.createDiv({ cls: "mappy-node-attachments" });
       const attachmentsTask = attachments
-        ? MarkdownRenderer.render(this.app, attachments, attachmentsEl, sourcePath, entry.component).then(() => {
+        ? MarkdownRenderer.render(this.app, attachments, attachmentsEl, bodyPath, entry.component).then(() => {
           // Keep rendered links and images, without reference labels or prose.
           const items = Array.from(attachmentsEl.querySelectorAll("a, .image-embed, img"))
             .filter(item => !item.parentElement?.closest("a, .image-embed"));
@@ -140,7 +139,7 @@ export class NodeRenderer extends Component {
         changed();
       }).catch(() => {
         if (this.entries.get(node.id) === current && current.key === key) {
-          label?.setText(node.title);
+          label.setText(node.title);
           attachmentsEl.empty();
           this.changed();
         }
@@ -199,10 +198,10 @@ export class NodeRenderer extends Component {
   }
 }
 
-/** Count the whole source tree once, so nested folds still report all hidden nodes. */
-function countDescendants(root: MindNode): Map<string, number> {
+/** Count the whole trees once, so nested folds still report all hidden nodes. */
+function countDescendants(roots: readonly MindNode[]): Map<string, number> {
   const order: MindNode[] = [];
-  const pending = [root];
+  const pending = [...roots];
   while (pending.length > 0) {
     const node = pending.pop();
     if (!node) break;

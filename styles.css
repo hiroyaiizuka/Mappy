@@ -211,7 +211,6 @@
   border-radius: 7px;
   background: var(--background-primary);
 }
-/* The node's own label only: a map embedded in a node (§5 M12) carries labels of its own, weighted by their own node. */
 .mappy-view .mappy-node.is-root > .mappy-node-content > .mappy-node-label { font-weight: 700; }
 .mappy-view .mappy-node.is-stage > .mappy-node-content > .mappy-node-label { font-weight: 600; }
 .mappy-view .mappy-node.is-selected, .mappy-view .mappy-node:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
@@ -362,20 +361,13 @@
 .mappy-embed.mappy-view .mappy-embed-open:hover, .mappy-embed.mappy-view .mappy-embed-open:focus-visible { opacity: 1; }
 .mappy-embed.mappy-view .mappy-embed-message { position: absolute; inset: 50% 44px auto 16px; transform: translateY(-50%); color: var(--text-muted); font-size: var(--font-ui-small); }
 .mappy-embed.mappy-view .mappy-embed-message[hidden] { display: none; }
-/* A node whose title is one `![[map]]` (§5 M12) holds that frame at a fixed size, so the layout measures it like any
-   node and the outer map never scrolls or zooms inside it. Its text starts from the note's size, not from the outer
-   root's or stage's, and wheel and touch inside the frame belong to the outer map. */
-.mappy-view .mappy-node.is-embed { max-width: none; padding: 4px; }
-.mappy-view .mappy-node > .mappy-node-content > .mappy-embed.mappy-view {
-  width: var(--mappy-node-embed-width, 320px);
-  height: var(--mappy-node-embed-height, 220px);
-  margin: 0;
-  font-size: var(--font-text-size);
-  font-weight: 400;
-  line-height: 1.4;
-  background: var(--background-primary);
-}
-.mappy-view .mappy-node > .mappy-node-content > .mappy-embed.mappy-view .mappy-canvas { touch-action: none; }
+/* Branches called from another map (§5 M12): read-only on this map, so their text steps back a little; the calling
+   item, which stands in for the called root, carries a small link mark before its text. Every such node names its
+   note in its `title`. The dark root face keeps its own colour: a muted text on it would not read. */
+.mappy-view .mappy-node.is-called:not(.is-root) > .mappy-node-content > .mappy-node-label { color: var(--text-muted); }
+.mappy-view .mappy-node.is-called:not(.is-root) > .mappy-node-content > .mappy-node-label a { color: var(--link-color); }
+.mappy-view .mappy-node-call-mark { display: inline-flex; vertical-align: -2px; margin-right: 4px; color: var(--text-muted); }
+.mappy-view .mappy-node-call-mark svg { width: 12px; height: 12px; }
 /* Live preview renders the map inside Obsidian's own embed container: its rendered note stays hidden while the map is shown. */
 .internal-embed.mappy-embed-host { display: block; }
 .internal-embed.mappy-embed-host > :not(.mappy-embed) { display: none; }
