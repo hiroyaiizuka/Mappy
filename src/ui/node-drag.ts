@@ -7,6 +7,8 @@ export interface DragDelta { x: number; y: number }
 
 export interface NodeDragActions {
   select: (id: string) => void;
+  /** True for a node of a called map (§5 M12): read-only on this map, so a press on it never becomes a drag. */
+  readOnly: (id: string) => boolean;
   /** True for a node that moves freely (a free-topic root or the body root): its tree follows the pointer; no ghost. */
   free: (id: string) => boolean;
   /** The move a drop on `targetId` would perform, or null when the target must refuse the dragged node. */
@@ -85,7 +87,7 @@ export class NodeDrag extends Component {
       if (!target || target.closest("button, input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
       const element = nodeOf(this.canvas, target);
       const id = element?.dataset.nodeId;
-      if (!element || !id) return;
+      if (!element || !id || this.actions.readOnly(id)) return;
       this.press = { pointerId: event.pointerId, id, element, x: event.clientX, y: event.clientY };
     });
     this.registerDomEvent(this.canvas, "pointermove", event => {
@@ -192,9 +194,7 @@ export class NodeDrag extends Component {
   private leaveIfFar(session: Session, event: PointerEvent): void {
     const anchor = session.anchor;
     if (!anchor) return;
-    // Only this canvas's own node: a map embedded in a node may carry a node of the same id.
-    const element = Array.from(this.canvas.querySelectorAll<HTMLElement>(`[data-node-id="${anchor.id.replace(/["\\]/gu, "\\$&")}"]`))
-      .find(candidate => nodeOf(this.canvas, candidate) === candidate);
+    const element = this.canvas.querySelector<HTMLElement>(`[data-node-id="${anchor.id.replace(/["\\]/gu, "\\$&")}"]`);
     const box = element?.getBoundingClientRect();
     if (box && this.near({ x: event.clientX, y: event.clientY }, box, KEEP_DISTANCE)) return;
     this.retarget(session, null, null, event);

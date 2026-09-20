@@ -20,6 +20,12 @@ export class Notice {
   constructor(message: string) { Notice.messages.push(message); }
 }
 
+/** `Note#Heading` → path and `#Heading`; the subpath keeps its leading `#`, as Obsidian's does. */
+export function parseLinktext(linktext: string): { path: string; subpath: string } {
+  const index = linktext.indexOf('#');
+  return index < 0 ? { path: linktext, subpath: '' } : { path: linktext.slice(0, index), subpath: linktext.slice(index) };
+}
+
 export class MarkdownView {
   constructor(
     public file: ObsidianFile | null,

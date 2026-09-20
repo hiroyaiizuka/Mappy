@@ -1,6 +1,7 @@
 import type { MindDocument, MindNode } from '../core/markdown';
 import { nodeBody } from '../core/body';
 import { attachmentEntries } from '../core/attachments';
+import { projectCalls, type CallTargets } from '../core/calls';
 import { plainTitle } from '../core/plain-text';
 import { layoutTree, type LayoutBounds, type LayoutMode, type LayoutNode, type NodeSize } from '../layout/layout';
 import { pathToPoints, type Point } from '../layout/path-points';
@@ -16,6 +17,11 @@ export interface SceneNodeContent {
   link: string | null;
   /** Image targets as written in the body, in order. */
   images: string[];
+  /**
+   * The note the node's link and images are written in when it is not the document's own: a node
+   * drawn from a called map (§5 M12) resolves them from the called note. Absent for the host's nodes.
+   */
+  sourcePath?: string;
 }
 
 export interface SceneContents {
@@ -57,23 +63,30 @@ function layoutNode(node: MindNode): LayoutNode {
   return { id: node.id, children: node.children.map(layoutNode) };
 }
 
-/** Project the parsed document onto roles, plain text, links and images. */
-export function sceneContents(document: MindDocument, collapsed: ReadonlySet<string> = new Set()): SceneContents {
-  const root = visualRoot(document);
+/**
+ * Project the parsed document onto roles, plain text, links and images. The maps its items call
+ * (§5 M12) are grafted in as the map view draws them: the calling item shows the called root's text,
+ * its element links to the called note, and every called node reads its body from that note.
+ */
+export function sceneContents(document: MindDocument, collapsed: ReadonlySet<string> = new Set(), calls: CallTargets = new Map()): SceneContents {
+  const { roots, sources } = projectCalls([visualRoot(document)], calls);
+  const root = roots[0] ?? visualRoot(document);
   const nodes: SceneNodeContent[] = [];
   const pending = [root];
   while (pending.length > 0) {
     const node = pending.pop();
     if (!node) break;
+    const source = sources.get(node.id);
     const title = plainTitle(node.title);
-    const entries = attachmentEntries(nodeBody(document, node));
+    const entries = attachmentEntries(source ? nodeBody(source.document, source.node) : nodeBody(document, node));
     const bodyLink = entries.find(entry => entry.kind === 'link')?.target ?? null;
     nodes.push({
       id: node.id,
       role: node.id === root.id ? 'root' : node.parentId === root.id ? 'stage' : 'branch',
       text: title.text,
-      link: title.link ?? bodyLink,
+      link: title.link ?? bodyLink ?? (source?.root ? source.path : null),
       images: entries.filter(entry => entry.kind === 'image').map(entry => entry.target),
+      ...(source ? { sourcePath: source.path } : {}),
     });
     if (!collapsed.has(node.id)) pending.push(...[...node.children].reverse());
   }

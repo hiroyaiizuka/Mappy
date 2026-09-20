@@ -14,23 +14,19 @@ export interface MapActions {
   link: (link: string, newLeaf: boolean) => void;
   /** Empty canvas double-clicked at this canvas-relative point: add a free topic there (§5 M7). */
   addTopic: (point: { x: number; y: number }) => void;
+  /**
+   * A node double-clicked that is drawn from a called map (§5 M12): open the note it comes from
+   * (in a new leaf with ⌘／Ctrl) instead of editing; true when it was such a node.
+   */
+  open: (id: string, newLeaf: boolean) => boolean;
 }
 
 /** What a click on a map means: an internal link to follow, or a node (and whether its fold control was hit). */
 export type MapClick = { link: string; newLeaf: boolean } | { nodeId: string; toggle: boolean };
 
-/**
- * The node of this canvas that holds `target`. A map embedded in a node (§5 M12) draws
- * nodes of its own inside that node; those answer to the embed's canvas, never to the
- * outer map, so the outermost node under the canvas is the one meant.
- */
+/** The node of this canvas that holds `target`; nodes are never nested (a title's `![[…]]` is a link). */
 export function nodeOf(canvas: Element, target: Node | null): HTMLElement | null {
-  let node = target?.instanceOf(Element) ? target.closest<HTMLElement>("[data-node-id]") : null;
-  let outer = node?.parentElement?.closest<HTMLElement>("[data-node-id]") ?? null;
-  while (outer && canvas.contains(outer)) {
-    node = outer;
-    outer = outer.parentElement?.closest<HTMLElement>("[data-node-id]") ?? null;
-  }
+  const node = target?.instanceOf(Element) ? target.closest<HTMLElement>("[data-node-id]") : null;
   return node && canvas.contains(node) ? node : null;
 }
 
@@ -44,9 +40,7 @@ export function mapClick(event: MouseEvent, canvas: Element): MapClick | null {
   const node = nodeOf(canvas, target);
   const nodeId = node?.dataset.nodeId;
   if (!node || !nodeId) return null;
-  // A fold control inside an embedded map belongs to that map's node, not to the node that holds the embed.
-  const toggle = target.closest<HTMLElement>(".mappy-node-toggle");
-  return { nodeId, toggle: Boolean(toggle && toggle.parentElement === node) };
+  return { nodeId, toggle: Boolean(target.closest(".mappy-node-toggle")) };
 }
 
 export class MapEvents extends Component {
@@ -73,7 +67,12 @@ export class MapEvents extends Component {
       const target = this.element(event.targetNode);
       if (!target || target.closest("a, button, input, textarea, .mappy-floating, [data-drop-placeholder], .mappy-drag-ghost")) return;
       const id = nodeOf(this.canvas, target)?.dataset.nodeId;
-      if (id) { this.actions.select(id); this.actions.edit(); return; }
+      if (id) {
+        this.actions.select(id);
+        if (this.actions.open(id, event.metaKey || event.ctrlKey)) event.preventDefault();
+        else this.actions.edit();
+        return;
+      }
       event.preventDefault();
       const rect = this.canvas.getBoundingClientRect();
       this.actions.addTopic({ x: event.clientX - rect.left, y: event.clientY - rect.top });
@@ -175,11 +174,13 @@ export class MapEvents extends Component {
       event.preventDefault();
       const visible = this.actions.visible();
       const index = visible.findIndex(item => item.id === node.id);
+      // The tree on screen decides the neighbours: a calling item's children are the called map's (§5 M12).
+      const shown = visible[index] ?? node;
       let next: string | undefined;
       if (event.key === "ArrowUp") next = visible[Math.max(0, index - 1)]?.id;
       if (event.key === "ArrowDown") next = visible[Math.min(visible.length - 1, index + 1)]?.id;
-      if (event.key === "ArrowLeft") next = node.parentId ?? undefined;
-      if (event.key === "ArrowRight") next = node.children[0]?.id;
+      if (event.key === "ArrowLeft") next = shown.parentId ?? undefined;
+      if (event.key === "ArrowRight") next = shown.children[0]?.id;
       if (next && visible.some(item => item.id === next)) this.actions.select(next, true);
     } else return false;
     return true;

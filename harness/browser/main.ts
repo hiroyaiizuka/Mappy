@@ -493,51 +493,48 @@ interface NodeInfo {
   toggle: PlainRect | null;
   collapsed: boolean;
   selected: boolean;
-  /** The node holds a map drawn inside it (§5 M12). */
-  embed: boolean;
+  /** The node is drawn from a called map (§5 M12): read-only, its text from that note. */
+  called: boolean;
+  /** The node is the calling item, standing in for the called root (it carries the link mark). */
+  calledRoot: boolean;
+  /** The note a called node comes from, as its `title` names it; null for the host's own nodes. */
+  source: string | null;
+  /** The count the fold badge shows once collapsed; null while expanded or a leaf. */
+  badge: number | null;
   /** The internal link the node's own label shows, if it is one (a `![[…]]` that stayed a link, say). */
   link: string | null;
   /** The node's own label shows an image. */
   image: boolean;
+  /** The label's computed text colour, so the muted called text can be told from the host's. */
+  color: string;
 }
 
 function nodeInfo(element: HTMLElement): NodeInfo {
   const toggle = element.querySelector<HTMLElement>(":scope > .mappy-node-toggle");
   const label = element.querySelector<HTMLElement>(":scope > .mappy-node-content > .mappy-node-label");
+  const badge = element.classList.contains("is-collapsed") ? Number(toggle?.querySelector(".mappy-node-toggle-mark")?.textContent ?? "") : NaN;
   return {
     id: element.dataset.nodeId ?? "",
-    // A node that holds a map has no label of its own; its title is the text as written (`![[…]]`).
     title: label?.textContent?.trim() ?? element.getAttribute("aria-label") ?? "",
     rect: plainRect(element) ?? { x: 0, y: 0, width: 0, height: 0 },
     toggle: toggle && !toggle.hidden ? plainRect(toggle) : null,
     collapsed: element.classList.contains("is-collapsed"),
     selected: element.classList.contains("is-selected"),
-    embed: element.classList.contains("is-embed"),
+    called: element.classList.contains("is-called"),
+    calledRoot: element.classList.contains("is-called-root"),
+    source: element.getAttribute("title")?.replace(/^呼び出し元: /u, "") ?? null,
+    badge: Number.isFinite(badge) ? badge : null,
     link: label?.querySelector<HTMLAnchorElement>("a.internal-link")?.dataset.href ?? null,
     image: Boolean(label?.querySelector(".image-embed img")),
+    color: label ? getComputedStyle(label).color : "",
   };
 }
 
-/** The view's own nodes, judged as the product judges a click (`nodeOf`): the nodes of a map drawn inside a node are that frame's. */
+/** The view's own nodes, judged as the product judges a click (`nodeOf`). */
 function ownNodes(): HTMLElement[] {
   const canvas = view?.contentEl.querySelector(":scope > .mappy-canvas");
   if (!canvas) return [];
   return Array.from(canvas.querySelectorAll<HTMLElement>(".mappy-node")).filter(element => nodeOf(canvas, element) === element);
-}
-
-interface NodeEmbedInfo {
-  /** The node holding the map, as `nodes()` reports it. */
-  node: ReturnType<typeof nodeInfo>;
-  /** The frame inside it, as `embeds()` reports a note embed. */
-  frame: EmbedInfo;
-}
-
-/** Every map drawn inside a node of the open view, in DOM order (§5 M12). */
-function nodeEmbeds(): NodeEmbedInfo[] {
-  return ownNodes().filter(element => element.classList.contains("is-embed")).flatMap(element => {
-    const frame = element.querySelector<HTMLElement>(":scope > .mappy-node-content > .mappy-embed");
-    return frame ? [{ node: nodeInfo(element), frame: embedInfo(frame) }] : [];
-  });
 }
 
 /** Exposed for the capture script and manual DevTools use. */
@@ -570,14 +567,18 @@ const api = {
   get openCount() { return openCount; },
   viewport: () => view?.getState().viewport ?? null,
   canvasRect: () => plainRect(pane.querySelector(".mappy-canvas")),
-  /** The view's own nodes; the nodes of a map drawn inside a node are reported by `nodeEmbeds()`. */
+  /** The view's nodes, the called maps' branches among them (§5 M12), in DOM order. */
   nodes: () => ownNodes().map(nodeInfo),
-  node: (title: string) => {
-    const element = ownNodes().find(candidate => nodeInfo(candidate).title === title);
+  /** The n-th node of this title (the same map called twice shows the same titles twice). */
+  node: (title: string, occurrence = 0) => {
+    const element = ownNodes().filter(candidate => nodeInfo(candidate).title === title)[occurrence];
     return element ? nodeInfo(element) : null;
   },
-  /** Maps drawn inside nodes of the open view (§5 M12): the holding node and its frame. */
-  nodeEmbeds,
+  /** The node of this id. */
+  nodeById: (id: string) => {
+    const element = ownNodes().find(candidate => candidate.dataset.nodeId === id);
+    return element ? nodeInfo(element) : null;
+  },
   /** Live subscriptions on the in-memory vault and workspace: every map on the page holds some, and releases them when it goes. */
   listeners: () => ({ vault: app.vaultEvents.count(), workspace: app.workspaceEvents.count() }),
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
@@ -590,7 +591,7 @@ const api = {
   scene: () => {
     const snapshot = view?.snapshot();
     if (!snapshot?.document) return null;
-    const contents = sceneContents(snapshot.document, snapshot.collapsed);
+    const contents = sceneContents(snapshot.document, snapshot.collapsed, snapshot.calls);
     const measures = new Map(contents.nodes.map(node => {
       const element = pane.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
       return [node.id, { label: { width: element?.offsetWidth ?? 0, height: element?.offsetHeight ?? 0 }, images: [] }];

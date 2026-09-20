@@ -1,6 +1,7 @@
 import type { App, TFile } from 'obsidian';
 import { imageMimeType } from '../core/attachments';
-import { parseMarkdown, type MindDocument } from '../core/markdown';
+import { initialCallFolds, projectCalls, type CallTargets } from '../core/calls';
+import { parseMarkdown, projectMap, type MindDocument } from '../core/markdown';
 import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
@@ -12,6 +13,7 @@ import type {
 } from '../types/excalidraw-automate';
 import type { DocumentStore } from './document-store';
 import { readMapLayout } from './frontmatter';
+import { CallReader } from './map-calls';
 
 export interface ImportRequest {
   file: TFile;
@@ -19,6 +21,11 @@ export interface ImportRequest {
   /** Node IDs of `document`; a fresh parse assigns new IDs, so pass the document they belong to. */
   collapsed: ReadonlySet<string>;
   document?: MindDocument;
+  /**
+   * The maps the document's items call (§5 M12), as the map view resolved them; read here when
+   * absent (a Markdown view), with the called trees folded below their roots' children, as they open.
+   */
+  calls?: CallTargets;
 }
 
 /** The map view caps attachment previews; the drawing keeps the same proportions. */
@@ -201,9 +208,16 @@ export class ExcalidrawBridge {
 
   /** Create at the origin, measure, lay out, then move: sizes come from Excalidraw itself. */
   private async render(ea: ExcalidrawAutomate, request: ImportRequest, origin: Point | null): Promise<number> {
-    const { file, mode, collapsed } = request;
+    const { file, mode } = request;
     const document = request.document ?? parseMarkdown(await this.store.read(file), file.basename);
-    const contents = sceneContents(document, collapsed);
+    let { collapsed } = request;
+    let calls = request.calls;
+    if (!calls) {
+      calls = await new CallReader(this.app, this.store).read(document, file.path);
+      const split = projectMap(document);
+      collapsed = new Set([...collapsed, ...initialCallFolds(projectCalls([split.root, ...split.topics], calls))]);
+    }
+    const contents = sceneContents(document, collapsed, calls);
     if (contents.nodes.length === 0) throw new Error('マップにするノードがありません。');
     ea.reset();
     const fontFamily = this.drawingFontFamily(ea);
@@ -214,7 +228,7 @@ export class ExcalidrawBridge {
       const label = this.addLabel(ea, node, fontFamily, drawingPath, file);
       const images: CreatedBlock[] = [];
       for (const target of node.images) {
-        const block = await this.addImage(ea, target, file);
+        const block = await this.addImage(ea, target, node.sourcePath ?? file.path);
         if (block) images.push(block);
       }
       created.set(node.id, { label, images });
@@ -265,8 +279,8 @@ export class ExcalidrawBridge {
     };
   }
 
-  private async addImage(ea: ExcalidrawAutomate, target: string, source: TFile): Promise<CreatedBlock | null> {
-    const file = this.app.metadataCache.getFirstLinkpathDest(target, source.path);
+  private async addImage(ea: ExcalidrawAutomate, target: string, sourcePath: string): Promise<CreatedBlock | null> {
+    const file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
     if (!file || imageMimeType(file.extension) === undefined) return null;
     const id = await ea.addImage(0, 0, file, true);
     const element = id ? ea.getElement(id) : null;
@@ -277,11 +291,11 @@ export class ExcalidrawBridge {
     return { ids: [id], origin: [element.x, element.y], size: { width: element.width, height: element.height } };
   }
 
-  /** Root boxes link back to the note; other nodes carry their first link, resolved from the note. */
+  /** Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in. */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile): string | null {
     if (node.link) {
       if (hasUrlScheme(node.link)) return node.link;
-      const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, source.path);
+      const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, node.sourcePath ?? source.path);
       return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
     }
     if (node.role === 'root') return `[[${this.app.metadataCache.fileToLinktext(source, drawingPath)}]]`;
