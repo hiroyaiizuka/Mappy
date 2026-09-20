@@ -175,11 +175,14 @@ export class Scope {
   }
 }
 
-/** A leaf only needs to carry the app and remember the last requested state. */
+/** A leaf only needs to carry the app, remember the last requested state and say where it hangs (`getRoot`). */
 export class WorkspaceLeaf {
   view: View | null = null;
   states: ViewState[] = [];
+  /** The split the leaf is in; a test puts the app's `leftSplit`／`rightSplit` here for a sidebar leaf. Unset: the leaf stands for the main area. */
+  root: unknown = null;
   constructor(readonly app: App) {}
+  getRoot(): unknown { return this.root ?? this; }
   setViewState(state: ViewState): Promise<void> {
     this.states.push(state);
     return Promise.resolve();

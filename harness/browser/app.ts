@@ -90,6 +90,9 @@ export class HarnessApp {
   readonly workspace = {
     on: (name: string, callback: (...data: unknown[]) => unknown) => this.workspaceEvents.on(name, callback),
     offref: (ref: unknown) => { this.workspaceEvents.offref(ref as never); },
+    /** The sidebars, as identities a leaf's `getRoot()` can be compared with; this page has no leaf in either. */
+    leftSplit: { side: "left" },
+    rightSplit: { side: "right" },
     getLeavesOfType: (): { view: unknown }[] => [],
     requestSaveLayout: (): void => { this.record("layout-saved", "requestSaveLayout（ページ内で記録のみ）"); },
     openLinkText: (link: string, sourcePath: string, newLeaf: unknown): Promise<void> => {

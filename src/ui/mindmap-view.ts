@@ -5,6 +5,7 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
 import { planListConversion } from "../core/list-conversion";
+import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
@@ -175,6 +176,7 @@ export class MindmapView extends ItemView {
     // neighbour), the leaf's back／forward history records the states the map passes through (`setState` below), and
     // `getLeaf(false)` — a link clicked on the map, a file chosen in the explorer or the quick switcher — opens in
     // this leaf, as it would in a Markdown tab, instead of a neighbouring tab or a new one. ⌘-click still opens a tab.
+    // A map moved into a sidebar is the exception (`syncNavigation`).
     this.navigation = true;
     this.reader = new CallReader(this.app, store);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
@@ -278,9 +280,17 @@ export class MindmapView extends ItemView {
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
     const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
-    const file = typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
+    const found = typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
+    const file = found instanceof TFile && found.extension === "md" ? found : null;
     const changed = this.file !== file;
-    this.file = file instanceof TFile && file.extension === "md" ? file : null;
+    // A draft under way when a navigation replaces the note in this leaf (a link, the explorer, back／forward —
+    // LEV-74) is saved first, as a Markdown tab keeps its buffer; the save needs the note it was opened on, so it
+    // runs before anything below changes. A refused save (the note moved on, E05) cannot keep the draft here.
+    if (changed && this.inlineEditor) {
+      try { await this.inlineEditor.flush(); }
+      catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
+    }
+    this.file = file;
     if (isLayoutMode(value.layout)) this.mode = value.layout;
     else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
     // The bar follows the layout at once, before the read: draw() does not run for a note that fails to load.
@@ -310,8 +320,60 @@ export class MindmapView extends ItemView {
     await super.setState(state, result);
   }
 
+  /** The selection, for a back／forward step and a duplicated tab to restore (`setEphemeralState` below). */
+  getEphemeralState(): Record<string, unknown> {
+    return this.selectedId === null ? {} : { selected: this.selectedId };
+  }
+
+  /**
+   * What Obsidian hands a navigation view besides its state (LEV-74). `subpath`, from a link (`[[note#heading]]`,
+   * `[[note#^block]]`, or `[[#heading]]` on this very note, which opens in this leaf now): the node holding that
+   * position is selected and brought into view, as the editor scrolls to the heading (E06). `selected`, this
+   * view's own `getEphemeralState`: a back／forward step or a duplicated tab keeps the selection, if the node is
+   * still there. `focus`, from `setActiveLeaf(leaf, { focus: true })` (the map opened by a command, its tab
+   * pressed, a history step): the keys work at once, on the selected node or else the canvas — never while a
+   * draft is being typed.
+   */
+  setEphemeralState(state: unknown): void {
+    const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
+    const document = this.document;
+    if (document && typeof value.subpath === "string" && value.subpath !== "") {
+      const offset = locateSubpath(document.source, value.subpath);
+      const id = offset === null ? undefined : this.nodeAt(document, offset)?.id;
+      if (id !== undefined) this.select(id, true);
+    } else if (document && typeof value.selected === "string" && (value.selected === "root" || document.nodes.some(node => node.id === value.selected))) {
+      this.select(value.selected);
+    }
+    if (value.focus === true && this.ready && !this.inlineEditor) {
+      if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
+      else this.canvas.focus({ preventScroll: true });
+    }
+  }
+
+  /** The innermost node whose section holds the offset: children lie inside their parent's range and follow it. */
+  private nodeAt(document: MindDocument, offset: number): MindNode | undefined {
+    let found: MindNode | undefined;
+    for (const node of document.nodes) {
+      if (node.from <= offset && offset < node.to && (!found || node.from >= found.from)) found = node;
+    }
+    return found ?? (document.root.from <= offset && offset < document.root.to ? document.root : undefined);
+  }
+
+  /**
+   * A map dragged into a sidebar is a static pane there, as Obsidian's Bases view treats itself: the explorer, the
+   * quick switcher and this plugin's own open() must not put a note into it. Read when the view opens and on every
+   * layout change, since a leaf can be moved between the sidebars and the main area at any time.
+   */
+  private syncNavigation(): void {
+    const root = this.leaf.getRoot();
+    const { leftSplit, rightSplit } = this.app.workspace;
+    this.navigation = root !== leftSplit && root !== rightSplit;
+  }
+
   onOpen(): Promise<void> {
     this.closed = false;
+    this.syncNavigation();
+    this.registerEvent(this.app.workspace.on("layout-change", () => { this.syncNavigation(); }));
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
     this.setTheme(this.theme);

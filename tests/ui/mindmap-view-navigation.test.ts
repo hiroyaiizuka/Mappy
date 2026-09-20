@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, ViewStateResult } from 'obsidian';
+import { HarnessApp } from '../../harness/browser/app';
 import { installObsidianDom } from '../../harness/browser/dom';
-import { MarkdownView, WorkspaceLeaf, type View } from '../../harness/browser/obsidian';
+import { MarkdownView, Notice, WorkspaceLeaf, type View } from '../../harness/browser/obsidian';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against a real DOM.
@@ -12,6 +13,7 @@ beforeAll(() => { installObsidianDom(); });
 const opened: MountedMapView[] = [];
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
+  Notice.log.length = 0;
   for (const cleanup of cleanups.splice(0)) cleanup();
   for (const mounted of opened.splice(0)) await mounted.close();
   document.body.replaceChildren();
@@ -206,5 +208,131 @@ describe('MindmapView as a navigation view (LEV-74: Escape and the current file 
     expect(other.history).toBe(true);
     expect(view.file?.path).toBe(OTHER);
     expect(view.containerEl.querySelector('.mappy-node[aria-label="別のノート"]')).not.toBeNull();
+  });
+
+  it('reports no history step for a state naming a file that is not a note while no note is shown', async () => {
+    const { app, view, settle } = await mount();
+    const gone: ViewStateResult = { history: false };
+    await view.setState({ file: 'Fixtures/missing.md' }, gone);
+    await settle();
+    expect(gone.history).toBe(true);
+    expect(view.file).toBeNull();
+    // Still no note: an image is not one either, so nothing changed and nothing is recorded (the vault does hand
+    // the file over; the step is judged on the note the map can show).
+    app.put('Fixtures/picture.png', '');
+    const picture: ViewStateResult = { history: false };
+    await view.setState({ file: 'Fixtures/picture.png' }, picture);
+    await settle();
+    expect(picture.history).toBe(false);
+    expect(view.file).toBeNull();
+  });
+
+  it('saves a draft being typed before another note replaces this one, as a Markdown tab keeps its buffer', async () => {
+    const { view, select, key, settle, editor, source } = await mount();
+    key(select('学ぶこと'), 'F2');
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('no editor');
+    input.value = '学ぶこと（改）';
+    // ⌘⌥← (app:go-back, enabled on a navigation view), a link, the explorer: the leaf's state moves to another note.
+    await view.setState({ file: OTHER, layout: 'mindmap' }, { history: false });
+    await settle();
+    expect(editor()).toBeNull();
+    expect(source()).toBe(SOURCE.replace('  - 学ぶこと\n', '  - 学ぶこと（改）\n'));
+    expect(view.file?.path).toBe(OTHER);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('tells when the draft could not be saved on the way out, and still shows the other note', async () => {
+    const { app, view, select, key, settle, editor, source } = await mount();
+    key(select('学ぶこと'), 'F2');
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('no editor');
+    input.value = '学ぶこと（改）';
+    // The node under the draft changed outside (E05): the save is refused, and no draft can stay in a leaf that moved on.
+    const external = SOURCE.replace('  - 学ぶこと\n', '  - 学ぶこと（外部）\n');
+    app.put(PATH, external);
+    await settle();
+    await view.setState({ file: OTHER, layout: 'mindmap' }, { history: false });
+    await settle();
+    expect(editor()).toBeNull();
+    expect(source()).toBe(external);
+    expect(view.file?.path).toBe(OTHER);
+    expect(Notice.log).toHaveLength(1);
+    expect(Notice.log[0]).toContain('編集中の内容を保存できませんでした');
+  });
+
+  it('follows a link\'s subpath handed as ephemeral state: the node holding the heading or block is selected and focused', async () => {
+    const withBlock = SOURCE.replace('- はじめに\n', '- はじめに ^intro\n');
+    const mounted = await mountMapView(PATH, withBlock);
+    opened.push(mounted);
+    const { view, settle, node, select } = mounted;
+    select('記録する');
+    view.setEphemeralState({ subpath: '#講座の構成' });
+    await settle();
+    expect(node('講座の構成').classList.contains('is-selected')).toBe(true);
+    expect(document.activeElement).toBe(node('講座の構成'));
+    view.setEphemeralState({ subpath: '#^intro' });
+    await settle();
+    const intro = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).find(el => el.getAttribute('aria-label')?.startsWith('はじめに'));
+    expect(intro?.classList.contains('is-selected')).toBe(true);
+    expect(document.activeElement).toBe(intro);
+    // Nothing at that subpath: the selection is left alone.
+    view.setEphemeralState({ subpath: '#ない見出し' });
+    await settle();
+    expect(intro?.classList.contains('is-selected')).toBe(true);
+  });
+
+  it('hands out the selection as ephemeral state and takes it back, so a back／forward step or a duplicated tab keeps it', async () => {
+    const { view, settle, select, node } = await mount();
+    select('記録する');
+    const state = view.getEphemeralState();
+    expect(state).toEqual({ selected: node('記録する').dataset.nodeId });
+    select('学ぶこと');
+    view.setEphemeralState(state);
+    await settle();
+    expect(node('記録する').classList.contains('is-selected')).toBe(true);
+    expect(node('学ぶこと').classList.contains('is-selected')).toBe(false);
+    // The selection is not focused unless asked; an unknown node changes nothing.
+    view.setEphemeralState({ selected: 'node-404' });
+    expect(node('記録する').classList.contains('is-selected')).toBe(true);
+    (view as unknown as { deselect(): void }).deselect();
+    expect(view.getEphemeralState()).toEqual({});
+  });
+
+  it('takes the focus onto the selected node, or the canvas, when the leaf is focused; not out of a draft', async () => {
+    const { view, canvas, settle, select, node, key, editor } = await mount();
+    const blur = (): void => { (document.activeElement as HTMLElement | null)?.blur(); expect(document.activeElement).toBe(document.body); };
+    select('記録する');
+    blur();
+    // `setActiveLeaf(leaf, { focus: true })`: the map opened by a command, its tab pressed, a history step.
+    view.setEphemeralState({ focus: true });
+    expect(document.activeElement).toBe(node('記録する'));
+    (view as unknown as { deselect(): void }).deselect();
+    blur();
+    view.setEphemeralState({ focus: true });
+    expect(document.activeElement).toBe(canvas);
+    key(select('学ぶこと'), 'F2');
+    await settle();
+    const input = editor();
+    expect(document.activeElement).toBe(input);
+    view.setEphemeralState({ focus: true });
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('is not a navigation view in a sidebar, and becomes one again when moved to the main area', async () => {
+    const app = new HarnessApp();
+    const sidebar = await mountMapView(PATH, SOURCE, 'mindmap', app, {
+      prepare: view => { (view.leaf as unknown as WorkspaceLeaf).root = app.workspace.rightSplit; },
+    });
+    opened.push(sidebar);
+    expect(sidebar.view.navigation).toBe(false);
+    (sidebar.view.leaf as unknown as WorkspaceLeaf).root = null;
+    app.workspaceEvents.trigger('layout-change');
+    expect(sidebar.view.navigation).toBe(true);
+    (sidebar.view.leaf as unknown as WorkspaceLeaf).root = app.workspace.leftSplit;
+    app.workspaceEvents.trigger('layout-change');
+    expect(sidebar.view.navigation).toBe(false);
   });
 });

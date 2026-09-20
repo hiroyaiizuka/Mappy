@@ -100,6 +100,27 @@ export class InlineEditor {
     }
   }
 
+  /**
+   * Save the draft because the view is leaving the note under it (a navigation into this leaf: a link, the
+   * explorer, back／forward — LEV-74), the way a Markdown tab keeps its buffer. The draft is not kept afterwards,
+   * so a refused save is thrown to the caller instead of shown in place. A save already under way, or a
+   * disposed editor, has nothing to do.
+   */
+  async flush(): Promise<void> {
+    if (this.busy || this.disposed) return;
+    this.busy = true;
+    this.input.readOnly = true;
+    try {
+      await this.options.save(this.input.value);
+      if (this.disposed) return;
+      this.dispose();
+      this.options.finish("none", false);
+    } finally {
+      this.busy = false;
+      this.input.readOnly = false;
+    }
+  }
+
   /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */
   refreshed(stale: string): void {
     if (this.disposed || this.error.textContent !== stale) return;

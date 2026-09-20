@@ -84,6 +84,36 @@ describe('ViewRouter.route', () => {
     await instance.openMarkdown(chosen, file('Map.md'));
     expect(instance.route(other, { type: 'markdown', state: { file: 'Map.md' } }).type).toBe(MAP);
   });
+
+  /**
+   * LEV-74: the map is a navigation view, so the leaf's back／forward history holds its states and the Markdown
+   * states of the same note. Obsidian's `history.go()` hands them back to `setViewState` marked `popstate`; a
+   * Markdown state of a map note is what the leaf showed, not a fresh open to route to the map.
+   */
+  it('keeps a Markdown state restored by back／forward, and remembers it like the toggle', async () => {
+    const instance = router();
+    const leaf = makeLeaf();
+    // map → toggle to Markdown → toggle back to the map: the history holds [map, markdown].
+    await instance.openMarkdown(leaf, file('Map.md'));
+    await instance.openMap(leaf, file('Map.md'));
+    const restored = { type: 'markdown', state: { file: 'Map.md' }, popstate: true } as ViewState;
+    expect(instance.route(leaf, restored)).toBe(restored);
+    // The leaf is on Markdown now: opening the same note again keeps it there, as after the toggle.
+    expect(instance.route(leaf, { type: 'markdown', state: { file: 'Map.md' } }).type).toBe('markdown');
+    // Forward to the map state, then the note opens as a map again.
+    const forward = { type: MAP, state: { file: 'Map.md', layout: 'mindmap' }, popstate: true } as ViewState;
+    expect(instance.route(leaf, forward)).toBe(forward);
+    expect(instance.route(leaf, { type: 'markdown', state: { file: 'Map.md' } }).type).toBe(MAP);
+  });
+
+  it('routes a restored map state of a note that is no longer a map to Markdown, as any open would', () => {
+    const leaf = makeLeaf();
+    const restored = { type: MAP, state: { file: 'Plain.md' }, popstate: true } as ViewState;
+    expect(router().route(leaf, restored)).toEqual({ ...restored, type: 'markdown' });
+    // A restored Markdown state of a plain note is untouched too, and nothing is remembered for it that matters.
+    const plain = { type: 'markdown', state: { file: 'Plain.md' }, popstate: true } as ViewState;
+    expect(router().route(leaf, plain)).toBe(plain);
+  });
 });
 
 describe('ViewRouter.install', () => {
