@@ -1251,6 +1251,72 @@ async function captureTopicOperations(recorder, page) {
     await switchLayout('mindmap');
   }
 
+  // Timeline with stages of different heights (LEV-47): an image makes the first stage 回復する about 135 px tall, so the
+  // band the tree keeps clear around the axis is its half-height and every forest starts 34 units past that band. The
+  // leaf stage 習慣化する (the third, forest above) is a plain line of text, so its first child lands far above the stage
+  // itself: past the 72 units the zone measured from the stage's own edge reached. The root is brought exactly there
+  // from the right, level with the landing, so it never crosses the plain zone on the way (a slot once shown is kept
+  // in a widened zone, which would hide the difference).
+  const stagePath = 'Fixtures/free-topics.md';
+  const tallStage = original.replace('- 回復する\n  参考: [[heading-document#回復する|回復]]\n', '- 回復する\n  参考: [[heading-document#回復する|回復]]\n  ![[sample-image.svg]]\n');
+  try {
+    await recorder.run('topic-snap-timeline-band', '「回復する」に画像を足してタイムラインに切り替え、「位置のないトピック」を「習慣化する」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「習慣化する」の最初の子が置かれる位置（軸の帯の 34 単位上。ステージ自身の上辺からは 72 単位より離れる）へ運ぶ → 離す',
+      '右の空白ではスロットが出ず、段（軸）の最も高いノードを基準にした帯の端から zone を測るので、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、離すと 習慣化する の子になる', async () => {
+        expect(tallStage !== original, 'the tall-stage note is the original: the stage line to add the image under was not found');
+        await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(tallStage)})`);
+        await switchLayout('timeline');
+        const base = await page.harness('h.source()');
+        expect(base === tallStage, 'the tall-stage note did not load');
+        const view = await page.harness('h.viewport()');
+        const topic = await topicRect('位置のないトピック');
+        const goal = (await topicRect('習慣化する')).rect;
+        const tree = [];
+        for (const name of ['講座の本体', '回復する', '記録する', '習慣化する']) tree.push({ name, rect: (await topicRect(name)).rect });
+        const tallest = tree.reduce((best, item) => item.rect.height > best.rect.height ? item : best);
+        expect(tallest.name === '回復する' && tallest.rect.height > goal.height + 76 * view.scale, `回復する is not the tallest by more than 76 units: ${tree.map(item => `${item.name} ${item.rect.height.toFixed(1)}`).join(', ')}`);
+        const axis = goal.y + goal.height / 2;
+        const band = tallest.rect.height / 2;
+        const from = center(topic.rect);
+        // The root's bottom edge 34 units above the band, its left edge a stem's length right of the stage's centre.
+        const to = { x: goal.x + goal.width / 2 + 20 * view.scale + (from.x - topic.rect.x), y: axis - band - 34 * view.scale - topic.rect.height + (from.y - topic.rect.y) };
+        const clearance = (goal.y - (to.y - (from.y - topic.rect.y) + topic.rect.height)) / view.scale;
+        expect(clearance > 72, `the landing is only ${clearance.toFixed(1)} units above the stage, inside the plain zone`);
+        // The way in: level with the landing, the root's left edge at least 60 units right of the stage (outside any zone).
+        const canvas = await page.harness('h.canvasRect()');
+        const staging = { x: Math.min(to.x + 200 * view.scale, canvas.x + canvas.width - 24 - (topic.rect.width - (from.x - topic.rect.x))), y: to.y };
+        const stagingLeft = (staging.x - (from.x - topic.rect.x) - (goal.x + goal.width)) / view.scale;
+        expect(stagingLeft >= 60, `the staging point's left edge is only ${stagingLeft.toFixed(1)} units right of the stage`);
+        const previewState = () => page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
+          const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === '位置のないトピック');
+          return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')), merging: root?.classList.contains('is-merging') }; })()`);
+        await page.mouse('mouseMoved', from.x, from.y);
+        await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+        for (let step = 1; step <= 12; step += 1) await page.mouse('mouseMoved', from.x + (staging.x - from.x) * step / 12, from.y + (staging.y - from.y) * step / 12, { button: 'left' });
+        await page.settle();
+        const away = await previewState();
+        expect(!away.placeholder && !away.connector, `a slot is shown right of the stage: ${JSON.stringify(away)}`);
+        for (let step = 1; step <= 12; step += 1) await page.mouse('mouseMoved', staging.x + (to.x - staging.x) * step / 12, to.y, { button: 'left' });
+        await page.settle();
+        const under = await page.evaluate(`document.elementFromPoint(${Math.round(to.x)}, ${Math.round(to.y)})?.closest('[data-node-id]')?.querySelector('.mappy-node-label')?.textContent?.trim() ?? null`);
+        const preview = await previewState();
+        await page.screenshot(join(recorder.directory, 'topic-snap-timeline-band-preview.png'));
+        expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
+        expect(preview.placeholder && preview.connector && preview.merging, `preview state at the landing ${JSON.stringify(preview)}`);
+        await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+        await page.settle();
+        const source = await page.harness('h.source()');
+        expect(source.includes(habitJoined), `joined: ${JSON.stringify(source.slice(source.indexOf('- 記録する'), source.indexOf('- 記録する') + 160))}`);
+        expect(!source.includes('mappy-layout'), 'switching the layout through the view state wrote mappy-layout');
+        await undo();
+        expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
+        return `ステージの高さ ${tree.map(item => `${item.name} ${(item.rect.height / view.scale).toFixed(1)}`).join(' / ')}、帯の半分 ${(band / view.scale).toFixed(1)}、右の空白（ステージの右 ${stagingLeft.toFixed(1)} 単位）ではスロットなし、ルートの下辺が 習慣化する の上辺の ${clearance.toFixed(1)} 単位上に来るとスロット表示あり、ポインター下: なし → 習慣化する の子になる（scale ${view.scale.toFixed(3)}）`;
+      });
+  } finally {
+    // The fixture goes back to its text, in the map with its own Fit, for the cases that follow.
+    await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(original)})`);
+    await switchLayout('mindmap');
+  }
+
   await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
     const base = await page.harness('h.source()');
     const before = (await page.harness('h.nodes()')).length;

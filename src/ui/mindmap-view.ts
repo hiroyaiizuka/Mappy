@@ -8,7 +8,7 @@ import { planListConversion } from "../core/list-conversion";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_LABELS, LAYOUT_MODES, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, axisBand, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore, conflictMessage } from "../obsidian/document-store";
@@ -1242,9 +1242,9 @@ export class MindmapView extends ItemView {
   /**
    * What the snap reads from a placeholder-free layout: the visible children of every node (the moving
    * tree left out) and, where the zones depend on it, each node's place. On the timeline a stage's
-   * forest hangs above the axis for even stages and below for odd ones (`placeTimeline`); in the
-   * balanced map a tree's first level sits right or left of its root (`balancedSideOf`) and every
-   * deeper node keeps that side.
+   * forest hangs above the axis for even stages and below for odd ones (`placeTimeline`), past the
+   * band its tree keeps clear around the axis (`axisBand`); in the balanced map a tree's first level
+   * sits right or left of its root (`balancedSideOf`) and every deeper node keeps that side.
    */
   private snapIndex(layout: LayoutResult, moving: ReadonlySet<string>): SnapIndex {
     const byId = new Map(layout.nodes.map(node => [node.id, node]));
@@ -1264,7 +1264,7 @@ export class MindmapView extends ItemView {
         if (parents.has(node.id)) continue;
         places.set(node.id, "root");
         const kids = children.get(node.id) ?? [];
-        if (this.mode === "timeline") { kids.forEach((stage, index) => { places.set(stage.id, index % 2 === 0 ? "upper" : "lower"); }); continue; }
+        if (this.mode === "timeline") { const band = axisBand(node, kids); kids.forEach((stage, index) => { places.set(stage.id, { side: index % 2 === 0 ? "upper" : "lower", band }); }); continue; }
         const pending = kids.map(kid => ({ kid, side: balancedSideOf(node, kid) }));
         for (let next = pending.pop(); next; next = pending.pop()) {
           places.set(next.kid.id, next.side);
