@@ -32,6 +32,9 @@ const worldPoint = (view, point, canvas) => ({
   y: (point.y - canvas.y - view.y) / view.scale,
 });
 
+/** The pane's rect in page pixels: the clip for a screenshot of the map alone. */
+const paneRect = page => page.evaluate(`JSON.parse(JSON.stringify(document.getElementById('harness-pane').getBoundingClientRect()))`);
+
 /** Runs the scenario list, recording PASS/FAIL without stopping on the first failure. */
 export class Recorder {
   constructor(page, directory) { this.page = page; this.directory = directory; this.cases = []; this.index = 0; }
@@ -53,8 +56,7 @@ export class Recorder {
       await this.page.settle();
       await this.page.screenshot(join(this.directory, file));
       // The pane alone at 2x keeps node text legible when the map is small.
-      const pane = await this.page.evaluate(`JSON.parse(JSON.stringify(document.getElementById('harness-pane').getBoundingClientRect()))`);
-      await this.page.screenshot(join(this.directory, file.replace(/\.png$/u, '-pane.png')), pane);
+      await this.page.screenshot(join(this.directory, file.replace(/\.png$/u, '-pane.png')), await paneRect(this.page));
     } catch (error) {
       entry.result = 'FAIL';
       entry.detail += ` screenshot: ${error instanceof Error ? error.message : String(error)}`;
@@ -175,6 +177,15 @@ async function nodeInfo(page, name) {
   const node = await page.harness(`h.node(${JSON.stringify(name)})`);
   expect(node, `Node not found: ${name}`);
   return node;
+}
+
+/** Click the node with this title and press F2; the case fails unless the inline editor holds the focus. */
+async function openInlineEditor(page, name) {
+  const node = await nodeInfo(page, name);
+  await page.click(center(node.rect).x, center(node.rect).y);
+  await page.key('F2', 'F2', 113);
+  const editing = await page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input')`);
+  expect(editing, 'inline editor did not take focus');
 }
 
 async function captureOperations(recorder, page) {
@@ -621,11 +632,7 @@ async function captureOperations(recorder, page) {
 
   await recorder.run('edit-inline-memory', 'ノードを選び F2 → 入力 → Enter → ⌘Z', 'メモリ内の文書が改名され、Undo で戻る（保存経路の検証ではない）', async () => {
     const target = '空に近い枝';
-    const node = await nodeRect(target);
-    await page.click(center(node.rect).x, center(node.rect).y);
-    await page.key('F2', 'F2', 113);
-    const editing = await page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input')`);
-    expect(editing, 'inline editor did not take focus');
+    await openInlineEditor(page, target);
     await page.type('メモリ内で改名');
     await page.key('Enter', 'Enter', 13);
     await page.settle();
@@ -767,29 +774,25 @@ async function themeColors(page) {
 
 /**
  * The inline input on one node, opened with F2 (LEV-93): its computed text, caret and selection colours,
- * photographed while it is open (`<case>-inline-pane.png`), then closed with Escape so the node is unchanged.
- * The caret is a property app.css (and harness.css) fixes on body, so it shows whether the themed container
+ * photographed while it is open (`<case>-inline-pane.png`), then cancelled with Escape so the node is unchanged.
+ * The caret is a property app.css (and harness.css) fixes on body, so it shows whether the map container
  * re-reads it; the selection reads `--text-selection` from the input itself.
  */
 async function inlineInputColors(recorder, page, id) {
-  const node = await nodeInfo(page, '空に近い枝');
-  await page.click(center(node.rect).x, center(node.rect).y);
-  await page.key('F2', 'F2', 113);
-  await page.settle();
   try {
+    await openInlineEditor(page, '空に近い枝');
+    await page.settle();
     const colors = await page.evaluate(`(() => {
       const input = document.getElementById('harness-pane').querySelector('.mappy-inline-input');
-      if (!input || document.activeElement !== input) return null;
       const style = getComputedStyle(input);
       return { text: style.color, caret: style.caretColor, selection: getComputedStyle(input, '::selection').backgroundColor };
     })()`);
-    expect(colors, 'inline editor did not take focus');
-    const pane = await page.evaluate(`JSON.parse(JSON.stringify(document.getElementById('harness-pane').getBoundingClientRect()))`);
-    await page.screenshot(join(recorder.directory, `${String(recorder.index).padStart(2, '0')}-${id}-inline-pane.png`), pane);
+    await page.screenshot(join(recorder.directory, `${String(recorder.index).padStart(2, '0')}-${id}-inline-pane.png`), await paneRect(page));
     return colors;
   } finally {
-    // Whatever was measured, the later cases must not find the editor open.
-    if (await page.evaluate(`document.querySelector('.mappy-inline-input') !== null`)) {
+    // Whatever was measured, the later cases must not find the editor open, and it must cancel rather than commit on
+    // blur: Escape goes to the editor itself, which takes the focus back first if something else got it.
+    if (await page.evaluate(`(() => { const input = document.getElementById('harness-pane').querySelector('.mappy-inline-input'); if (input) input.focus(); return input !== null; })()`)) {
       await page.key('Escape', 'Escape', 27);
       await page.settle();
     }
@@ -832,7 +835,7 @@ async function captureThemes(recorder, page) {
     return `canvas ${colors.canvas}, text ${colors.text}, link ${colors.link}, color-scheme ${colors.scheme}, インライン入力 caret ${inline.caret}・selection ${inline.selection}`;
   });
 
-  await recorder.run('theme-dark-on-light', 'ページ明色のまま、マップ「暗色」→ F2 でインライン入力 → Escape →「閉じて開き直す」', 'コンテナだけが theme-dark。キャンバス・文字・リンク、インライン入力のキャレット・選択色が暗色の配色になり、ページの背景は明色のまま。開き直しても保たれる', async () => {
+  await recorder.run('theme-dark-on-light', 'ページ明色のまま、マップ「暗色」→ F2 でインライン入力 → Escape →「閉じて開き直す」→ もう一度 F2 → Escape', 'コンテナだけが theme-dark。キャンバス・文字・リンク、インライン入力のキャレット・選択色が暗色の配色になり、ページの背景は明色のまま。開き直しても class とキャンバス、インライン入力の色が保たれる', async () => {
     await page.harness('h.setMapTheme("dark")');
     await page.settle();
     let themes = await page.harness('h.themes()');
@@ -852,7 +855,9 @@ async function captureThemes(recorder, page) {
     themes = await page.harness('h.themes()');
     colors = await themeColors(page);
     expect(themes.container.join(' ') === 'theme-dark' && colors.canvas === PALETTE.dark.background, `after reopen: ${themes.container.join(' ')}, canvas ${colors.canvas}`);
-    return `canvas ${colors.canvas}, text ${colors.text}, link ${darkLink}（明色時 ${lightLink}）, page ${colors.page}, color-scheme ${colors.scheme}, インライン入力 caret ${inline.caret}・selection ${inline.selection}（ページの明色は ${PALETTE.light.text}・${PALETTE.light.selection}）, 開き直し後も theme-dark`;
+    const reopened = await inlineInputColors(recorder, page, 'theme-dark-on-light-reopened');
+    expectInlineInput(reopened, PALETTE.dark, 'dark map on a light page, after reopen');
+    return `canvas ${colors.canvas}, text ${colors.text}, link ${darkLink}（明色時 ${lightLink}）, page ${colors.page}, color-scheme ${colors.scheme}, インライン入力 caret ${inline.caret}・selection ${inline.selection}（ページの明色は ${PALETTE.light.text}・${PALETTE.light.selection}）, 開き直し後も theme-dark で caret ${reopened.caret}・selection ${reopened.selection}`;
   });
 
   await recorder.run('theme-light-on-dark', 'ページ暗色、マップ「明色」→ F2 でインライン入力 → Escape', 'コンテナだけが theme-light。キャンバス・文字、インライン入力のキャレット・選択色が明色の配色になり、ページの背景は暗色', async () => {
