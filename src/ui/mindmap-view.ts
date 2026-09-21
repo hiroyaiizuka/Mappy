@@ -178,9 +178,20 @@ export class MindmapView extends FileView {
      * pushes a timeline stage past a forest).
      */
     base: LayoutResult;
-    /** The snap's reading of `base` (tree structure and each node's place), built once per base rather than per pointer move. */
+    /**
+     * The snap's reading of `base` (tree structure and each node's place). Kept across the bases of one
+     * drag: between two of them only the carried tree moved, and the snap never reads that tree, so the
+     * reading still describes the map. `snapIndexStale` says when it does not (LEV-126).
+     */
     index: SnapIndex | null;
   } | null = null;
+  /**
+   * Whether the next base a drag takes has to be read again: set by every `scheduleLayout()` that is not
+   * just a carried tree following the pointer (a redraw, a preview, a node's size, the mode, the pane),
+   * and cleared when a drag's base is refreshed. Between two bases that share it, only the carried tree
+   * moved: everything else is held where it was (`topicLayouts`), so the reading of it still holds.
+   */
+  private snapIndexStale = true;
   /**
    * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
    * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
@@ -1056,8 +1067,16 @@ export class MindmapView extends FileView {
     }
   }
 
-  private scheduleLayout(): void {
-    if (!this.ready || this.closed || this.layoutFrame !== undefined) return;
+  /**
+   * `carried` marks the one frame whose only change is where a dragged tree sits: everything the layout
+   * reads besides that offset is the same, so the snap's reading of the map survives it. Any other caller
+   * leaves the next base to be read again. The flag outlives a coalesced frame, so a redraw asking for the
+   * same frame as a pointer move still counts (LEV-126).
+   */
+  private scheduleLayout(carried = false): void {
+    if (!this.ready || this.closed) return;
+    if (!carried) this.snapIndexStale = true;
+    if (this.layoutFrame !== undefined) return;
     this.layoutFrame = this.contentEl.win.requestAnimationFrame(() => {
       this.layoutFrame = undefined;
       const projection = this.projection();
@@ -1075,7 +1094,12 @@ export class MindmapView extends FileView {
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
         this.topicLayouts(preview?.trees, held));
       if (!preview) this.plain = { file: this.file, mode: this.mode, layout: this.layout };
-      if (this.topicDrag && !preview) { this.topicDrag.base = this.layout; this.topicDrag.index = null; }
+      // Only a base the snap actually takes clears the flag, so a change made while a placeholder was laid
+      // out still reaches the first base after it.
+      if (this.topicDrag && !preview) {
+        this.topicDrag.base = this.layout;
+        if (this.snapIndexStale) { this.topicDrag.index = null; this.snapIndexStale = false; }
+      }
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
       this.placeholder.hidden = !slot;
@@ -1348,7 +1372,8 @@ export class MindmapView extends FileView {
     const sign = drag.body ? -1 : 1;
     for (const [topicId, start] of drag.from) drag.overrides.set(topicId, { x: start.x + sign * delta.x / scale, y: start.y + sign * delta.y / scale });
     if (drag.viewport) this.viewport.set({ ...drag.viewport, x: drag.viewport.x + delta.x, y: drag.viewport.y + delta.y });
-    this.scheduleLayout();
+    // Only a topic carries one tree; the body root moves every topic at once, which is no base the snap can keep.
+    this.scheduleLayout(!drag.body);
   }
 
   /** A free tree released on the canvas: only `mappy-topics` entries for this layout change (all of them for the body). */
