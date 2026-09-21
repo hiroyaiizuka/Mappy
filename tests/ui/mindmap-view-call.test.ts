@@ -311,12 +311,22 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     expect(current()).not.toBe(source);
     expect(editor()).toBeNull();
     expect(parsed('記録する（編集）').children.map(child => child.title)).toContain(LINK);
-    // The same holds for a command run from under a draft (the shared edit path).
-    const before = parsed('記録する（編集）').children.length;
+    // The same holds for a command run from under a draft, so the editor is opened again for it: the call
+    // above closed it (a call carries its own title, so `execute` does not reopen one).
+    select('回復する');
+    key(canvas, 'F2');
+    const second = editor();
+    if (!second) throw new Error('The inline editor did not open');
+    second.value = '回復する（編集）';
+    second.dispatchEvent(new InputEvent('input', { bubbles: true }));
     const execute = (view as unknown as { execute(command: { type: 'add-child'; nodeId: string }): Promise<void> }).execute.bind(view);
     await execute({ type: 'add-child', nodeId: parsed('記録する（編集）').id });
     await settle();
-    expect(parsed('記録する（編集）').children).toHaveLength(before + 1);
+    // The draft was written on its way, and the command ran against the note it left.
+    expect(current()).toContain('- 回復する（編集）');
+    // add-child names its new node in place, so an editor is open again — on the child, not on the draft.
+    expect(editor()?.value).toBe('');
+    expect(parsed('記録する（編集）').children.some(child => child.title === '')).toBe(true);
   });
 
   it('says so instead of dropping the choice while a save is in flight', async () => {

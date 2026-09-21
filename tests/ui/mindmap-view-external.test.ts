@@ -361,4 +361,5 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(editor()).not.toBe(input);
   });
 
+
 });

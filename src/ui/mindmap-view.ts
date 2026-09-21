@@ -402,6 +402,7 @@ export class MindmapView extends FileView {
   private dropDraft(): void {
     this.inlineEditor?.dispose();
     this.inlineEditor = undefined;
+    this.inlineDraft = undefined;
   }
 
   /**
@@ -1222,8 +1223,9 @@ export class MindmapView extends FileView {
     if ("parentId" in command) this.assertEditable(command.parentId);
     // A kept draft (E05) still addresses its node and a structural edit under it would move what the draft
     // comes back to, so the draft is written first and the command plans against the note that leaves
-    // (LEV-140). A refused save throws from here, which says what actually stands in the way.
-    if (this.inlineEditor) await this.inlineEditor.flush();
+    // (LEV-140). A draft that cannot be saved keeps its reason on its own error line, where the user is
+    // typing, and the command stops rather than planning against a note the draft has not reached.
+    if (this.inlineEditor && !await this.inlineEditor.confirm()) return;
     const document = this.document;
     const file = this.file;
     if (!document || this.saving) return;
@@ -1503,9 +1505,13 @@ export class MindmapView extends FileView {
       try { await this.store.apply(file, source, edits); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
+      // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
+      // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
+      // the draft on the old note now and then, and adopting whatever came back would bless an external
+      // change that landed in between. Both are the E05 refusal this fix exists to keep (LEV-140).
+      if (drafts.length > 0) this.rebaseDrafts(drafts, applyEdits(source, edits));
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh();
-      this.rebaseDrafts(drafts);
     } finally { this.saving = false; }
   }
 
@@ -1570,6 +1576,12 @@ export class MindmapView extends FileView {
       const current = this.draftTarget(file, node.id, draft.value);
       await this.commit(current.source, [planBodyEdit(current, node.id, text)], file);
     });
+    const close = modal.onClose.bind(modal);
+    modal.onClose = () => {
+      if (this.bodyDraft === draft) this.bodyDraft = undefined;
+      if (this.bodyModal === modal) this.bodyModal = undefined;
+      close();
+    };
     this.bodyModal = modal;
     modal.open();
   }
@@ -1580,7 +1592,7 @@ export class MindmapView extends FileView {
    * a re-parse only for unique titles, so a same-named or vanished node is refused here, and an external edit
    * to the node being drafted is refused rather than overwritten; a node that only moved takes the draft.
    */
-  /** The open drafts whose node still reads as it did when the editor opened. */
+  /** The open drafts whose node still reads as it did when the editor opened; the others are already refused. */
   private currentDrafts(): DraftBase[] {
     const document = this.document;
     if (!document) return [];
@@ -1595,10 +1607,11 @@ export class MindmapView extends FileView {
    * After the map's own write, a draft that was current before it stays current: what changed is this
    * view's doing (an image pasted onto the node being edited, a command run from under the draft), not
    * another app's, and the save must not tell the user their own action changed the note (LEV-140).
+   * `written` is the text this view put on disk, parsed here rather than read back, so neither a lost
+   * re-read nor an external change that arrived in between can decide what the draft is measured against.
    */
-  private rebaseDrafts(drafts: readonly DraftBase[]): void {
-    const document = this.document;
-    if (!document) return;
+  private rebaseDrafts(drafts: readonly DraftBase[], written: string): void {
+    const document = parseMarkdown(written, this.file?.basename ?? "", this.document);
     for (const draft of drafts) {
       const node = findNode(document, draft.nodeId);
       if (node) draft.value = draftFingerprint(document, node);
