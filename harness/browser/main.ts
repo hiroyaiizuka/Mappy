@@ -25,6 +25,7 @@ import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MapEmbeds } from "../../src/ui/map-embed";
 import { nodeOf } from "../../src/ui/map-events";
 import { MindmapView, type MapMenuAction } from "../../src/ui/mindmap-view";
+import { paintMap } from "../../src/ui/offscreen-map";
 
 declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
 
@@ -653,6 +654,22 @@ const api = {
   },
   /** SVG／PNG export of the view as shown (§5 M13); nothing is saved, the capture script writes the files. */
   export: { svg: exportSvg, png: exportPng },
+  /**
+   * A note drawn without a leaf, as Excalidraw's own "Insert image / Insert as embeddable" of a map note gets it
+   * (§5 M6, `paintMap`): the SVG the bridge attaches, its size, the layout's bounds, and whether a render stalled.
+   * The view on this page is not involved, so the capture can compare the two routes' geometry.
+   */
+  paint: async (path: string) => {
+    const file = app.vault.getAbstractFileByPath(path);
+    if (!file || !("extension" in file)) throw new Error(`No note at ${path}`);
+    const started = performance.now();
+    const painted = await paintMap(app.asApp<App>(), store, file as unknown as TFile, document);
+    return {
+      ...painted, ms: performance.now() - started,
+      nodes: (painted.svg.match(/<foreignObject /gu) ?? []).length, edges: (painted.svg.match(/<path d=/gu) ?? []).length,
+      leftBehind: document.querySelectorAll(".mappy-offscreen").length,
+    };
+  },
   /** Note embeds on the rendered host note (maps and Obsidian's placeholders) in document order; images and anything inside a map are not embeds of the host. */
   embeds: () => Array.from(pane.querySelectorAll<HTMLElement>(".mappy-embed, .internal-embed:not(.mappy-embed-host):not(.image-embed)"))
     .filter(element => !element.parentElement?.closest(element.hasClass("mappy-embed") ? ".mappy-embed" : ".mappy-embed, .mappy-embed-host"))

@@ -14,6 +14,10 @@ export interface ExcalidrawElement {
   height: number;
   strokeColor?: string;
   link?: string | null;
+  /** An image element's key into the drawing's files (`imagesDict` in EA, `files` in the scene). */
+  fileId?: string | null;
+  /** Excalidraw's soft delete: a deleted element stays in the scene for undo and is drawn nowhere. */
+  isDeleted?: boolean;
   customData?: Record<string, unknown> | null;
   groupIds?: string[];
   containerId?: string | null;
@@ -71,6 +75,8 @@ export interface ExcalidrawAutomate {
   setView(view?: ExcalidrawViewLike | 'active' | 'first' | 'auto' | null): ExcalidrawViewLike | null;
   getExcalidrawAPI(): { getAppState(): Record<string, unknown> } | null;
   getViewElements(): ExcalidrawElement[];
+  /** The vault file an image element in the view shows, when it shows one (a Markdown note rendered as an image included). */
+  getViewFileForImageElement?(element: ExcalidrawElement): TFile | null;
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[], copyImages?: boolean): void;
   reset(): void;
   clear(): void;
