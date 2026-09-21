@@ -5,6 +5,17 @@ import type { PositionedNode } from "../../src/layout/primitives";
 
 const node = (id: string, x: number, y: number, width = 160, height = 44): PositionedNode => ({ id, x, y, width, height });
 const rect = (x: number, y: number, width = 120, height = 40) => ({ x, y, width, height });
+/** A node of a layout result by id, for the tests that judge a real landing place. */
+const nodeOf = (result: LayoutResult, id: string): PositionedNode => {
+  const found = result.nodes.find(item => item.id === id);
+  if (!found) throw new Error(`Missing ${id}`);
+  return found;
+};
+/** The tree with a new leaf as the last child of `parent`. */
+const withChild = (tree: LayoutNode, parent: string): LayoutNode => ({
+  id: tree.id,
+  children: tree.id === parent ? [...tree.children, { id: "new", children: [] }] : tree.children.map(child => withChild(child, parent)),
+});
 
 describe("snapSlot zones follow each layout's geometry", () => {
   const leaf = node("leaf", 100, 100);
@@ -219,11 +230,12 @@ describe("snapSlot on the balanced map's two sides", () => {
     // Before A still works: the topic takes index 0 (right) and A moves to the left, as the rule fixes.
     expect(snapSlot("balanced", rect(a3.x, a3.y - 20), rootOf(placedThree), kidsOf(placedThree), 1, "root")).toMatchObject({ targetId: "A", position: "before" });
 
-    // One child: A on the right. The second child would hang left of the root, so that empty side is a zone; the right side is not.
+    // One child: A on the right. The second child would hang left of the root, so that empty side is a zone (a root's,
+    // measured from the line 24 out, so 30 out is 6 past the line; LEV-90); the right side is not.
     const one: LayoutNode = { id: "root", children: [{ id: "A", children: [] }] };
     const placedOne = layoutTree(one, new Map([["root", { width: 200, height: 60 }]]), new Set(), "balanced");
     const root1 = rootOf(placedOne);
-    expect(snapSlot("balanced", rect(root1.x - 30 - 120, root1.y), root1, kidsOf(placedOne), 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 30 + 10 });
+    expect(snapSlot("balanced", rect(root1.x - 30 - 120, root1.y), root1, kidsOf(placedOne), 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 6 + 10 });
     expect(snapSlot("balanced", rect(at(placedOne, "A").x, at(placedOne, "A").y + 44), root1, kidsOf(placedOne), 1, "root")).toBeNull();
   });
 });
@@ -279,17 +291,6 @@ describe("snapSlot on the timeline's axis band (LEV-47)", () => {
 });
 
 describe("snapSlot where the layout lands a first child, with nodes of different heights (LEV-47)", () => {
-  const of = (result: LayoutResult, id: string): PositionedNode => {
-    const found = result.nodes.find(item => item.id === id);
-    if (!found) throw new Error(`Missing ${id}`);
-    return found;
-  };
-  /** The tree with a new leaf as the last child of `parent`. */
-  const withChild = (tree: LayoutNode, parent: string): LayoutNode => ({
-    id: tree.id,
-    children: tree.id === parent ? [...tree.children, { id: "new", children: [] }] : tree.children.map(child => withChild(child, parent)),
-  });
-
   describe("timeline: the root and the stages are centred on the axis and every forest starts one gap past the tallest", () => {
     const tree: LayoutNode = {
       id: "root",
@@ -297,21 +298,21 @@ describe("snapSlot where the layout lands a first child, with nodes of different
     };
     const sizes = new Map([["tall", { width: 160, height: 200 }]]);
     const placed = layoutTree(tree, sizes, new Set(), "timeline");
-    const stages = ["tall", "short", "third"].map(id => of(placed, id));
-    const band = axisBand(of(placed, "root"), stages);
+    const stages = ["tall", "short", "third"].map(id => nodeOf(placed, id));
+    const band = axisBand(nodeOf(placed, "root"), stages);
     const placeOf = (index: number): StagePlace => ({ side: index % 2 === 0 ? "upper" : "lower", band });
 
     it("the band is the tall stage's half-height, and the layout's forests start 34 past it on either side", () => {
       expect(band).toBe(100);
-      const below = of(layoutTree(withChild(tree, "short"), sizes, new Set(), "timeline"), "new");
-      const above = of(layoutTree(withChild(tree, "third"), sizes, new Set(), "timeline"), "new");
+      const below = nodeOf(layoutTree(withChild(tree, "short"), sizes, new Set(), "timeline"), "new");
+      const above = nodeOf(layoutTree(withChild(tree, "third"), sizes, new Set(), "timeline"), "new");
       expect(below.y).toBe(band + 34);
       expect(above.y + above.height).toBe(-band - 34);
     });
 
     it.each([["short", 1], ["third", 2], ["tall", 0]] as const)("brought to where %s's first child lands, the root is in its zone at the landing distance", (id, index) => {
-      const stage = of(placed, id);
-      const landing = of(layoutTree(withChild(tree, id), sizes, new Set(), "timeline"), "new");
+      const stage = nodeOf(placed, id);
+      const landing = nodeOf(layoutTree(withChild(tree, id), sizes, new Set(), "timeline"), "new");
       expect(snapSlot("timeline", landing, stage, [], 1, placeOf(index))).toEqual({ targetId: id, position: "inside", distance: 34 });
       // Measured from the stage's own edge (the band no taller than itself), the short stages' landings are out of reach.
       const own: StagePlace = { side: placeOf(index).side, band: stage.height / 2 };
@@ -321,15 +322,15 @@ describe("snapSlot where the layout lands a first child, with nodes of different
     it("a topic's tree keeps its own band: its stages are all 44, so its forests start 56 past its axis", () => {
       const topic: LayoutNode = { id: "topic", children: [{ id: "t1", children: [] }, { id: "t2", children: [] }] };
       const both = layoutTree(tree, sizes, new Set(), "timeline", [{ tree: topic, position: { x: 0, y: 400 } }]);
-      const topicBand = axisBand(of(both, "topic"), [of(both, "t1"), of(both, "t2")]);
+      const topicBand = axisBand(nodeOf(both, "topic"), [nodeOf(both, "t1"), nodeOf(both, "t2")]);
       expect(topicBand).toBe(22);
-      const landing = of(layoutTree(tree, sizes, new Set(), "timeline", [{ tree: withChild(topic, "t2"), position: { x: 0, y: 400 } }]), "new");
-      expect(landing.y).toBe(of(both, "t2").y + 44 + 34);
-      expect(snapSlot("timeline", landing, of(both, "t2"), [], 1, { side: "lower", band: topicBand })).toEqual({ targetId: "t2", position: "inside", distance: 34 });
+      const landing = nodeOf(layoutTree(tree, sizes, new Set(), "timeline", [{ tree: withChild(topic, "t2"), position: { x: 0, y: 400 } }]), "new");
+      expect(landing.y).toBe(nodeOf(both, "t2").y + 44 + 34);
+      expect(snapSlot("timeline", landing, nodeOf(both, "t2"), [], 1, { side: "lower", band: topicBand })).toEqual({ targetId: "t2", position: "inside", distance: 34 });
       // 100 under the stage is past the topic's zone; judged with the body's band instead, it would still count, from a line the topic's forest never starts from.
       const far = { ...landing, y: landing.y + 66 };
-      expect(snapSlot("timeline", far, of(both, "t2"), [], 1, { side: "lower", band: topicBand })).toBeNull();
-      expect(snapSlot("timeline", far, of(both, "t2"), [], 1, { side: "lower", band })?.position).toBe("inside");
+      expect(snapSlot("timeline", far, nodeOf(both, "t2"), [], 1, { side: "lower", band: topicBand })).toBeNull();
+      expect(snapSlot("timeline", far, nodeOf(both, "t2"), [], 1, { side: "lower", band })?.position).toBe("inside");
     });
   });
 
@@ -340,19 +341,104 @@ describe("snapSlot where the layout lands a first child, with nodes of different
     const placed = layoutTree(tree, sizes, new Set(), "hierarchy");
 
     it.each([["shortLeaf", 32], ["tallLeaf", 32], ["root", 48]] as const)("brought to where %s's first child lands (%i under it), the root is in its zone", (id, gap) => {
-      const parent = of(placed, id);
-      const kids = placed.edges.filter(edge => edge.from === id).map(edge => of(placed, edge.to));
-      const landing = of(layoutTree(withChild(tree, id), sizes, new Set(), "hierarchy"), "new");
+      const parent = nodeOf(placed, id);
+      const kids = placed.edges.filter(edge => edge.from === id).map(edge => nodeOf(placed, edge.to));
+      const landing = nodeOf(layoutTree(withChild(tree, id), sizes, new Set(), "hierarchy"), "new");
       expect(landing.y).toBe(parent.y + parent.height + gap);
       const slot = snapSlot("hierarchy", landing, parent, kids, 1);
       expect(slot).toMatchObject(kids.length === 0 ? { targetId: id, position: "inside" } : { position: "after" });
     });
 
     it("the tall sibling's bottom is not where the short leaf's child goes: no zone one gap under it", () => {
-      const short = of(placed, "shortLeaf");
-      const tall = of(placed, "tallLeaf");
+      const short = nodeOf(placed, "shortLeaf");
+      const tall = nodeOf(placed, "tallLeaf");
       expect(tall.y).toBe(short.y);
       expect(snapSlot("hierarchy", rect(short.x, tall.y + tall.height + 32), short, [], 1)).toBeNull();
     });
+  });
+});
+
+describe("snapSlot where the map and the balanced map land a root's first child: a root gap (80) past it, a branch's child a branch gap (56) (LEV-90)", () => {
+  // A tree of one node: the body's root with nothing under it, or a topic that is only its heading.
+  const lone: LayoutNode = { id: "root", children: [] };
+  // A branch with a leaf under it: the leaf's first child lands a branch gap past the leaf.
+  const branch: LayoutNode = { id: "root", children: [{ id: "leaf", children: [] }] };
+
+  it.each(["mindmap", "balanced"] as const)("in %s, brought to where the lone root's first child lands, the root is in its zone at the branch gap's distance", mode => {
+    const placed = layoutTree(lone, new Map(), new Set(), mode);
+    const root = nodeOf(placed, "root");
+    const grown = layoutTree(withChild(lone, "root"), new Map(), new Set(), mode);
+    expect(nodeOf(grown, "root")).toEqual(root);
+    const landing = nodeOf(grown, "new");
+    expect(landing.x).toBe(root.x + root.width + 80);
+    expect(landing.y + landing.height / 2).toBe(root.y + root.height / 2);
+    // The landing sits the branch gap past the root's line, as a branch's child does past the branch, so both rank alike.
+    expect(snapSlot(mode, landing, root, [], 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 56 });
+    // Judged as a branch (the map's default place), the landing is past the plain zone.
+    expect(snapSlot(mode, landing, root, [], 1)).toBeNull();
+  });
+
+  it.each(["mindmap", "balanced"] as const)("in %s, a leaf's child still lands a branch gap past it, inside the plain zone", mode => {
+    const placed = layoutTree(branch, new Map(), new Set(), mode);
+    const leaf = nodeOf(placed, "leaf");
+    const landing = nodeOf(layoutTree(withChild(branch, "leaf"), new Map(), new Set(), mode), "new");
+    expect(landing.x).toBe(leaf.x + leaf.width + 56);
+    expect(snapSlot(mode, landing, leaf, [], 1, mode === "balanced" ? "right" : "forest")).toEqual({ targetId: "leaf", position: "inside", distance: 56 });
+  });
+
+  it("in balanced, the root's empty left side takes the second child a root gap out too: brought to where the layout lands it, the root is in that zone", () => {
+    const one: LayoutNode = { id: "root", children: [{ id: "A", children: [] }] };
+    const placed = layoutTree(one, new Map(), new Set(), "balanced");
+    const root = nodeOf(placed, "root");
+    const kids = [nodeOf(placed, "A")];
+    const landing = nodeOf(layoutTree(withChild(one, "root"), new Map(), new Set(), "balanced"), "new");
+    expect(landing.x + landing.width).toBe(root.x - 80);
+    expect(landing.y + landing.height / 2).toBe(root.y + root.height / 2);
+    expect(snapSlot("balanced", landing, root, kids, 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 56 });
+    // 16 past the landing is the end of that zone, as on the right.
+    expect(snapSlot("balanced", { ...landing, x: landing.x - 16 }, root, kids, 1, "root")?.position).toBe("inside");
+    expect(snapSlot("balanced", { ...landing, x: landing.x - 17 }, root, kids, 1, "root")).toBeNull();
+  });
+
+  it("the root's zone runs from 8 units of overlap with the root to 16 past the landing, and widening stretches both ends", () => {
+    const root = node("root", 100, 100);
+    const right = root.x + root.width;
+    expect(snapSlot("mindmap", rect(right + 96, 100), root, [], 1, "root")?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(right + 97, 100), root, [], 1, "root")).toBeNull();
+    expect(snapSlot("mindmap", rect(right - 8, 100), root, [], 1, "root")?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(right - 9, 100), root, [], 1, "root")).toBeNull();
+    // The slack across is the root's, as for any node.
+    expect(snapSlot("mindmap", rect(right + 80, 100 - 40 - 12), root, [], 1, "root")?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(right + 80, 100 - 40 - 13), root, [], 1, "root")).toBeNull();
+    // Widened, the gap past the line and the overlap double; the reach from the line back to the root stays.
+    expect(snapSlot("mindmap", rect(right + 24 + 144, 100), root, [], 2, "root")?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(right + 24 + 145, 100), root, [], 2, "root")).toBeNull();
+    expect(snapSlot("mindmap", rect(right - 16, 100), root, [], 2, "root")?.position).toBe("inside");
+    expect(snapSlot("mindmap", rect(right - 17, 100), root, [], 2, "root")).toBeNull();
+    // The balanced root's first child goes right too, with the same zone; its left side is nothing.
+    expect(snapSlot("balanced", rect(right + 96, 100), root, [], 1, "root")?.position).toBe("inside");
+    expect(snapSlot("balanced", rect(right + 97, 100), root, [], 1, "root")).toBeNull();
+    expect(snapSlot("balanced", rect(root.x - 80 - 120, 100), root, [], 1, "root")).toBeNull();
+  });
+
+  it("between the root and its line the distance is to the nearer of the two, and past the line it is the gap from the line", () => {
+    const root = node("root", 100, 100);
+    const right = root.x + root.width;
+    expect(snapSlot("mindmap", rect(right + 6, 102), root, [], 1, "root")?.distance).toBe(6);
+    expect(snapSlot("mindmap", rect(right + 20, 102), root, [], 1, "root")?.distance).toBe(4);
+    expect(snapSlot("mindmap", rect(right + 24, 102), root, [], 1, "root")?.distance).toBe(0);
+    expect(snapSlot("mindmap", rect(right + 80, 102), root, [], 1, "root")?.distance).toBe(56);
+    expect(snapSlot("mindmap", rect(right + 96, 102), root, [], 1, "root")?.distance).toBe(72);
+  });
+
+  it("the timeline's root and the hierarchy's keep their plain zones: their first child lands 32 and 48 past them", () => {
+    const onAxis = layoutTree(lone, new Map(), new Set(), "timeline");
+    const stage = nodeOf(layoutTree(withChild(lone, "root"), new Map(), new Set(), "timeline"), "new");
+    expect(stage.x).toBe(nodeOf(onAxis, "root").x + nodeOf(onAxis, "root").width + 32);
+    expect(snapSlot("timeline", stage, nodeOf(onAxis, "root"), [], 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 32 });
+    const onTop = layoutTree(lone, new Map(), new Set(), "hierarchy");
+    const below = nodeOf(layoutTree(withChild(lone, "root"), new Map(), new Set(), "hierarchy"), "new");
+    expect(below.y).toBe(nodeOf(onTop, "root").y + nodeOf(onTop, "root").height + 48);
+    expect(snapSlot("hierarchy", below, nodeOf(onTop, "root"), [], 1, "root")).toEqual({ targetId: "root", position: "inside", distance: 48 });
   });
 });
