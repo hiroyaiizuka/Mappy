@@ -8,7 +8,7 @@ import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtu
 import {
   PNG_UNAVAILABLE, canRasterize, canRasterizeForeignObject, captureScene, rasterizeSvg, type ImageResolver,
 } from '../../src/export/svg-capture';
-import { EXPORT_MARGIN, XHTML_NAMESPACE, buildSvg, svgSize } from '../../src/export/svg-document';
+import { EXPORT_MARGIN, SVG_NAMESPACE, XHTML_NAMESPACE, buildSvg, svgSize } from '../../src/export/svg-document';
 import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
@@ -389,6 +389,58 @@ describe('SVG export of the map view (jsdom)', () => {
     const use = parsed.querySelector('use');
     expect(use?.getAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe('#g');
     expect(use?.hasAttribute('foo:bar')).toBe(false);
+  });
+
+  it('carries only the links a reader away from Obsidian may follow, and keeps the text of the ones it drops (LEV-133)', async () => {
+    // The file is written into the vault and opened outside Obsidian, where a click on `javascript:` runs it.
+    // Vault links and the schemes Obsidian opens travel; the rest lose their destination, not their text.
+    const fixture = findFixture('uneven-branches');
+    const mounted = await mount('uneven-branches', 'mindmap', `${fixture?.source ?? ''}- 出ていくリンク\n`
+      + '  [押すな](javascript:alert1) と [電話](tel:0120) と [外部](https://example.com/a)'
+      + ' と [[睡眠ノート]] と [連絡](mailto:someone@example.com)\n');
+    const { svg, parsed } = await exportOf(mounted);
+    const anchors = Array.from(parsed.querySelectorAll('a'));
+    const anchor = (label: string): Element => {
+      const found = anchors.find(item => item.textContent?.trim() === label);
+      if (!found) throw new Error(`No anchor for ${label}`);
+      return found;
+    };
+    expect(anchor('外部').getAttribute('href')).toBe('https://example.com/a');
+    expect(anchor('連絡').getAttribute('href')).toBe('mailto:someone@example.com');
+    // A vault link travels as written: it is the note's own link when the file is opened inside Obsidian.
+    expect(anchor('睡眠ノート').getAttribute('data-href')).toBe('睡眠ノート');
+    expect(anchor('睡眠ノート').getAttribute('href')).toBe('睡眠ノート');
+    // `tel:` is one Obsidian would have opened; the list is an allowlist, so it goes too.
+    for (const label of ['押すな', '電話']) {
+      expect(anchor(label).hasAttribute('href')).toBe(false);
+      expect(anchor(label).hasAttribute('data-href')).toBe(false);
+    }
+    expect(svg).not.toContain('javascript:');
+    expect(svg).not.toContain('tel:0120');
+    expect(mounted.modified()).toBe(0);
+  });
+
+  it('drops the handlers and refused links of inline SVG, and keeps the fragment a shape points at', async () => {
+    const mounted = await mount('uneven-branches');
+    // The harness renderer escapes markup, so the inline SVG (as a theme icon or raw HTML in a note would leave it) is put in by hand.
+    const label = mounted.nodes().find(node => node.querySelector('.mappy-node-label')?.textContent?.includes('空に近い枝'))?.querySelector('.mappy-node-label');
+    label?.insertAdjacentHTML('beforeend', '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" onload="alert(1)">'
+      + '<a xlink:href="javascript:alert(2)" onclick="alert(3)"><use xlink:href="#g"/></a>'
+      + '<a href="https://example.com/a"><circle cx="4" cy="4" r="2"/></a>'
+      + '<animate attributeName="href" to="javascript:alert(4)"/></svg>');
+    expect(label?.querySelector('animate')).not.toBeNull();
+    const { svg, parsed } = await exportOf(mounted);
+    expect(svg).not.toContain('alert');
+    expect(svg).not.toContain('onload');
+    expect(svg).not.toContain('onclick');
+    // An element that rewrites an attribute after the file is open would put the refused link back.
+    expect(parsed.querySelector('animate')).toBeNull();
+    // A `use` names a shape in the same file, not a destination, and keeps pointing at it.
+    expect(parsed.querySelector('use')?.getAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe('#g');
+    const links = Array.from(parsed.querySelectorAll('a')).filter(item => item.namespaceURI === SVG_NAMESPACE);
+    expect(links).toHaveLength(2);
+    expect(links[0]?.hasAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe(false);
+    expect(links[1]?.getAttribute('href')).toBe('https://example.com/a');
   });
 
   it('reports a tainted canvas as "PNG unavailable" and probes it once for the modal', async () => {

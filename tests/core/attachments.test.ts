@@ -38,6 +38,19 @@ describe('attachmentEntries', () => {
   it('skips empty wiki targets and protected ranges', () => {
     expect(attachmentEntries('[[]] `[[x]]` [[ok]]')).toEqual([{ kind: 'link', target: 'ok', label: 'ok' }]);
   });
+
+  it('gives an autolink the scheme it was written without, and keeps the label as written (LEV-134)', () => {
+    // A body link travels into the drawing (§5 M6); `www.example.com/a` read as a vault path links to
+    // a note that does not exist. The label is what the note wrote, so the node still shows the address.
+    expect(attachmentEntries('見て www.example.com/a と [[www.example.com]] と [説明](www.example.com/b)')).toEqual([
+      { kind: 'link', target: 'https://www.example.com/a', label: 'www.example.com/a' },
+      { kind: 'link', target: 'www.example.com', label: 'www.example.com' },
+      { kind: 'link', target: 'www.example.com/b', label: '説明' },
+    ]);
+    expect(attachmentEntries('[ ] <someone@example.com>').at(-1)).toEqual({
+      kind: 'link', target: 'mailto:someone@example.com', label: 'someone@example.com',
+    });
+  });
 });
 
 describe('imageMimeType', () => {

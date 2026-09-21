@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath } from "../../src/core/wiki-link";
+import {
+  autolinkUrl, exportedLink, externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath,
+} from "../../src/core/wiki-link";
 
 describe("inline wikilink completion", () => {
   it("finds the active link after surrounding Japanese text", () => {
@@ -99,4 +101,52 @@ describe("externalUrl (what a note's link may carry into another plugin's docume
     expect(externalUrl("[[睡眠ノート]]")).toBeNull();
     expect(externalUrl("")).toBeNull();
   });
+});
+
+describe("autolinkUrl (the scheme an autolink leaves for its reader to supply)", () => {
+  it.each([
+    ["www.example.com/a", "https://www.example.com/a"],
+    ["WWW.EXAMPLE.COM", "https://WWW.EXAMPLE.COM"],
+    ["someone@example.com", "mailto:someone@example.com"],
+    ["名前@example.co.jp", "mailto:名前@example.co.jp"],
+  ])("opens %s as %s", (text, url) => {
+    expect(autolinkUrl(text)).toBe(url);
+  });
+
+  it.each([
+    "https://example.com/a",
+    "mailto:someone@example.com",
+    "javascript:alert(1)",
+    "Attachments/図.png",
+    "睡眠ノート",
+    "www",
+    "",
+  ])("leaves %s as it was written", text => {
+    expect(autolinkUrl(text)).toBe(text);
+  });
+
+  it("supplies a scheme without judging it: the allowed list is still `externalUrl`'s to apply", () => {
+    // `www.` and an address are the two scheme-less forms GFM links; both land on the allowed list.
+    expect(externalUrl(autolinkUrl("www.example.com/a"))).toBe("https://www.example.com/a");
+    expect(externalUrl(autolinkUrl("someone@example.com"))).toBe("mailto:someone@example.com");
+  });
+});
+
+describe("exportedLink (what a file written out of a note may carry)", () => {
+  it("keeps a vault link as written: inside Obsidian it is the note's own link", () => {
+    expect(exportedLink("睡眠ノート")).toBe("睡眠ノート");
+    expect(exportedLink("Attachments/図.png")).toBe("Attachments/図.png");
+    expect(exportedLink("#見出し")).toBe("#見出し");
+  });
+
+  it.each(["https://example.com/a", "mailto:someone@example.com", "obsidian://open?vault=x&file=y"])("keeps %s", link => {
+    expect(exportedLink(link)).toBe(link);
+  });
+
+  it.each(["javascript:alert(1)", "data:text/html;base64,PHNjcmlwdD4=", "vbscript:msgbox(1)", "tel:0000", "file:///etc/passwd", ""])(
+    "refuses %s",
+    link => {
+      expect(exportedLink(link)).toBeNull();
+    },
+  );
 });

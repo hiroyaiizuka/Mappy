@@ -80,3 +80,35 @@ export function externalUrl(text: string): string | null {
   const scheme = urlScheme(text);
   return scheme && EXTERNAL_LINK_SCHEMES.has(scheme) ? text : null;
 }
+
+/** GFM reads an address with no scheme as a link too, leaving the scheme to whoever opens it. */
+const WWW_AUTOLINK = /^www\./iu;
+const EMAIL_AUTOLINK = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+
+/**
+ * An autolink as the URL it opens: `www.example.com/a` → `https://www.example.com/a`,
+ * `someone@example.com` → `mailto:someone@example.com`; anything else comes back as written.
+ *
+ * Only what the parser called an autolink may be passed. `[[www.example.com]]` and `[見て](www.example.com/a)`
+ * are vault paths to Obsidian and must keep naming the note they name; an autolink is the one syntax where a
+ * scheme-less string means the web. Read as written it is a vault path, so a copy of it that leaves the note
+ * links to a note that does not exist (LEV-134). The scheme written here is `https:` where GFM's own rule is
+ * `http:`: the copy is a new document rather than a transcript of the note, and its link opening matters more
+ * than its scheme matching the one the reader of the note would have supplied.
+ */
+export function autolinkUrl(text: string): string {
+  if (hasUrlScheme(text)) return text;
+  if (WWW_AUTOLINK.test(text)) return `https://${text}`;
+  return EMAIL_AUTOLINK.test(text) ? `mailto:${text}` : text;
+}
+
+/**
+ * The link a file written out of a note may keep (§5 M13), or null when it may not. A vault link travels as
+ * written — inside Obsidian it is the note's own link, outside it reaches nothing — and a link with a scheme
+ * travels only when `externalUrl` allows it: a written-out SVG is opened away from Obsidian, by a browser
+ * that runs `javascript:` on a click as readily as it opens `https:`.
+ */
+export function exportedLink(text: string): string | null {
+  if (!text) return null;
+  return hasUrlScheme(text) ? externalUrl(text) : text;
+}

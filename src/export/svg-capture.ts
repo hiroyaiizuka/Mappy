@@ -1,3 +1,4 @@
+import { exportedLink } from '../core/wiki-link';
 import { PLACEHOLDER_ID } from '../layout/drop-preview';
 import type { LayoutResult } from '../layout/layout';
 import { foldBadgeWidth } from '../layout/primitives';
@@ -12,7 +13,9 @@ import {
  * with their computed styles inlined, so the file looks like the screen in
  * the current theme without Obsidian's stylesheets. Images become data URLs
  * through a resolver the host supplies; a resolver that fails leaves the
- * node in place with the image's text. Nothing here reads Obsidian.
+ * node in place with the image's text. Links travel only when a browser away
+ * from Obsidian may follow them (`exportedLink`): the file is opened outside the
+ * vault, where a click on `javascript:` runs it. Nothing here reads Obsidian.
  *
  * The DOM is read in one synchronous pass, so a refresh that lands while the
  * images are being read cannot change what the file shows.
@@ -87,10 +90,26 @@ const STATE_CLASSES = new Set(['is-selected', 'is-drag-source', 'is-drag-moving'
 /** Attributes carried over from the node markup; everything else (handlers, ARIA, tabindex, inline style) is dropped. */
 const KEPT_ATTRIBUTES = new Set(['href', 'alt', 'title', 'width', 'height', 'dir', 'lang', 'data-href', 'data-node-id']);
 
+/**
+ * Where an attribute names somewhere a click goes, not a resource to draw. On an anchor these are the
+ * destination, so they are filtered (§5 M13, LEV-133); the same names on `<use>` or `<image>` point at a
+ * shape or a picture, and a fragment or a data URL there is what the file is made of.
+ */
+const LINK_ATTRIBUTES = new Set(['href', 'data-href', 'xlink:href']);
+
+/** `onclick`, `onload`, …: a file written out of a note carries no code, in whichever namespace it was written. */
+function isEventHandler(name: string): boolean {
+  return /^on/iu.test(name);
+}
+
 const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
 
-/** Elements that cannot be shown in a file, or that belong to editing and dragging. */
-const SKIPPED_SELECTOR = 'script,style,template,iframe,video,audio,canvas,object,embed,input,textarea,select,button,.mappy-node-toggle,.mappy-inline-input,.mappy-inline-error';
+/**
+ * Elements that cannot be shown in a file, or that belong to editing and dragging. `animate` and `set`
+ * are here because they rewrite another element's attribute after the file is open, which would put back
+ * the very links filtered out below; a still picture has no use for them either.
+ */
+const SKIPPED_SELECTOR = 'script,style,template,iframe,video,audio,canvas,object,embed,input,textarea,select,button,animate,set,.mappy-node-toggle,.mappy-inline-input,.mappy-inline-error';
 
 /** Namespace prefixes the document declares; any other prefixed attribute would leave the file ill-formed. */
 const DECLARED_PREFIXES = new Set(['xlink', 'xml', 'xmlns']);
@@ -191,13 +210,17 @@ interface Serializer {
 function serializeAttributes(element: Element, names: Iterable<string>, extra: Record<string, string | null>): string {
   const parts: string[] = [];
   const written = new Set<string>();
+  const anchor = element.localName === 'a';
   for (const [name, value] of Object.entries(extra)) {
     written.add(name);
     if (value !== null && value !== '') parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
   for (const name of names) {
-    if (written.has(name) || !isWritableAttributeName(name)) continue;
-    const value = element.getAttribute(name);
+    if (written.has(name) || !isWritableAttributeName(name) || isEventHandler(name)) continue;
+    const raw = element.getAttribute(name);
+    if (raw === null) continue;
+    // An anchor's destination leaves the vault with the file; only the links `exportedLink` allows travel.
+    const value = anchor && LINK_ATTRIBUTES.has(name) ? exportedLink(raw) : raw;
     if (value !== null) parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
   return parts.join('');
@@ -238,7 +261,7 @@ function serializeElement(element: Element, context: Serializer, root: boolean, 
   const style = computed(element);
   if (isHidden(element, style)) return '';
   if (element.namespaceURI === SVG_NAMESPACE) {
-    // Inline SVG (icons a renderer may add) keeps its own attributes; it is already XML.
+    // Inline SVG (icons a renderer may add) keeps its own attributes, minus handlers and refused links; it is already XML.
     const parent = element.parentElement;
     const xmlns = parent && parent.namespaceURI !== SVG_NAMESPACE ? { xmlns: SVG_NAMESPACE, 'xmlns:xlink': XLINK_NAMESPACE } : {};
     const tag = element.localName;

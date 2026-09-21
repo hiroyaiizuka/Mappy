@@ -22,6 +22,22 @@ describe('plainTitle', () => {
     expect(plainTitle('図 ![[folder/図.png|200]] と ![alt](a/b.jpg)')).toEqual({ text: '図 図.png と alt', link: null });
   });
 
+  it('gives an autolink written without a scheme the one it opens, and leaves the text as written', () => {
+    // GFM reads `www.…` and a bare address as links; read as written they are vault paths, and the
+    // drawing they are copied into gets a link to a note that does not exist (LEV-134).
+    expect(plainTitle('見て www.example.com/a')).toEqual({ text: '見て www.example.com/a', link: 'https://www.example.com/a' });
+    expect(plainTitle('連絡 someone@example.com')).toEqual({ text: '連絡 someone@example.com', link: 'mailto:someone@example.com' });
+    expect(plainTitle('連絡 <someone@example.com>').link).toBe('mailto:someone@example.com');
+  });
+
+  it('leaves the syntaxes Obsidian reads as vault paths alone, even when they look like an address', () => {
+    // Only an autolink means the web. A wiki link names a note, and an inline link's destination is a
+    // vault path in Obsidian (`[説明](sample-image.svg)`), so neither may gain a scheme here.
+    expect(plainTitle('[[www.example.com]]')).toEqual({ text: 'www.example.com', link: 'www.example.com' });
+    expect(plainTitle('[見て](www.example.com/a)')).toEqual({ text: '見て', link: 'www.example.com/a' });
+    expect(plainTitle('[図](Attachments/図.png)').link).toBe('Attachments/図.png');
+  });
+
   it('keeps autolinks and bare URLs as text and link', () => {
     expect(plainTitle('<https://a.example>')).toEqual({ text: 'https://a.example', link: 'https://a.example' });
     expect(plainTitle('see https://b.example now').link).toBe('https://b.example');

@@ -460,7 +460,9 @@ export class ExcalidrawBridge {
    * Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in.
    * A link that already has a scheme travels into the drawing as it was written, so only the schemes on the allowed
    * list are kept (`externalUrl`, LEV-131); a refused one is added to `refused` and the node falls back to what it
-   * would carry with no link at all, so a root still links to its note.
+   * would carry with no link at all, so a root still links to its note. An autolink the note wrote without a scheme
+   * arrives here with one (`autolinkUrl`, LEV-134), so what is left for the vault branch below is a path, never a
+   * web address dressed as one.
    */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile, refused: string[]): string | null {
     if (node.link && !hasUrlScheme(node.link)) {
