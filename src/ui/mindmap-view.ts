@@ -1553,7 +1553,9 @@ export class MindmapView extends FileView {
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
     this.inlineEditor?.dispose();
-    entry.content.hidden = true;
+    // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
+    // draft is open appears at once instead of when the draft is confirmed (報告: 2026-09-22).
+    this.renderer.editing(node.id, true);
     let renamedOffset: number | null = null;
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
@@ -1576,7 +1578,7 @@ export class MindmapView extends FileView {
       finish: (next, cancelled) => {
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
-        entry.content.hidden = false;
+        this.renderer.editing(node.id, false);
         if (this.closed || this.unloading || file !== this.file) return;
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
@@ -1588,7 +1590,7 @@ export class MindmapView extends FileView {
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
-      restore: () => { entry.content.hidden = false; },
+      restore: () => { this.renderer.editing(node.id, false); },
     });
   }
 

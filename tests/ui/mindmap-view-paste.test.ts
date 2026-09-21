@@ -187,6 +187,50 @@ describe('pasting an image onto a node while its text is being edited', () => {
   });
 });
 
+describe('what the map shows the moment an image is pasted', () => {
+  it('draws the image on the node while its text is still being edited', async () => {
+    // The node shows the inline editor in place of its text while a draft is open, and its whole content
+    // used to be hidden with it — so an image pasted during the edit appeared only after Enter or Escape,
+    // and the user waits in front of a node that looks unchanged (報告: 2026-09-22).
+    const mounted = await mount(SOURCE);
+    const { select, key, node, settle, editor } = mounted;
+    select('学ぶこと');
+    key(node('学ぶこと'), 'F2');
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('F2 did not open the inline editor');
+    const element = node('学ぶこと');
+    await pasted(mounted, input);
+    const content = element.querySelector<HTMLElement>('.mappy-node-content');
+    expect(content?.hidden).toBe(false);
+    expect(element.querySelectorAll('.mappy-node-attachments .image-embed')).toHaveLength(1);
+    // The text is the draft's business while the editor is open: the node does not show it twice.
+    expect(element.querySelector<HTMLElement>('.mappy-node-label')?.hidden).toBe(true);
+    expect(editor()).toBe(input);
+  });
+
+  it('keeps showing it once the draft is confirmed', async () => {
+    const mounted = await mount(SOURCE);
+    const { select, key, node, settle, editor, source } = mounted;
+    select('学ぶこと');
+    key(node('学ぶこと'), 'F2');
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('F2 did not open the inline editor');
+    await pasted(mounted, input);
+    input.value = '学ぶこと（編集）';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    key(input, 'Enter');
+    await settle();
+    await settle();
+    expect(errorLine(mounted)).toBe('');
+    expect(source()).toContain('![[1-shot.png]]');
+    const element = node('学ぶこと（編集）');
+    expect(element.querySelectorAll('.mappy-node-attachments .image-embed')).toHaveLength(1);
+    expect(element.querySelector<HTMLElement>('.mappy-node-content')?.hidden).toBe(false);
+  });
+});
+
 describe('pasting an image onto a node the map is only holding', () => {
   it('leaves the selection on the node that took the image, among same-named ones', async () => {
     const mounted = await mount(SAME_NAMED);

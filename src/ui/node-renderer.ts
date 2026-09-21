@@ -12,6 +12,8 @@ interface NodeEntry {
   toggleMark: HTMLSpanElement;
   component: Component;
   key: string;
+  /** Whether the inline editor stands in for this node's text; see `editing()`. */
+  editing: boolean;
 }
 
 interface NodeAppearance {
@@ -75,7 +77,7 @@ export class NodeRenderer extends Component {
         const content = element.createDiv({ cls: "mappy-node-content" });
         const toggle = element.createEl("button", { cls: "mappy-node-toggle", attr: { tabindex: "0", type: "button" } });
         const toggleMark = toggle.createSpan({ cls: "mappy-node-toggle-mark", attr: { "aria-hidden": "true" } });
-        entry = { element, content, toggle, toggleMark, component: this.addChild(new Component()), key: "" };
+        entry = { element, content, toggle, toggleMark, component: this.addChild(new Component()), key: "", editing: false };
         this.entries.set(node.id, entry);
       }
       const isCollapsed = collapsed.has(node.id) && node.children.length > 0;
@@ -137,6 +139,9 @@ export class NodeRenderer extends Component {
         ? MarkdownRenderer.render(this.app, transclusionsAsLinks(node.title), label, path, entry.component)
         : Promise.resolve();
       const attachmentsEl = entry.content.createDiv({ cls: "mappy-node-attachments" });
+      // A re-render while the node is being edited makes these elements again (an image pasted onto the node
+      // being edited is exactly that), so the editor goes on standing in for the text it replaced.
+      this.applyEditing(entry);
       const attachmentsTask = attachments
         ? MarkdownRenderer.render(this.app, attachments, attachmentsEl, bodyPath, entry.component).then(() => {
           // Keep rendered links and images, without reference labels or prose.
@@ -242,6 +247,26 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-selected", active);
       entry.element.setAttribute("aria-selected", String(active));
       entry.element.tabIndex = active ? 0 : -1;
+    }
+  }
+
+  /**
+   * The inline editor has opened on this node, or left it. While it is open the node hides the text the editor
+   * stands in for — and nothing else: its images stay on screen, so one pasted during the edit appears where the
+   * user pasted it instead of when the draft is confirmed.
+   */
+  editing(id: string, editing: boolean): void {
+    const entry = this.entries.get(id);
+    if (!entry || entry.editing === editing) return;
+    entry.editing = editing;
+    this.applyEditing(entry);
+    this.changed();
+  }
+
+  /** The node's own text: what the inline editor replaces (the calling item's link mark goes with it). */
+  private applyEditing(entry: NodeEntry): void {
+    for (const part of entry.content.querySelectorAll<HTMLElement>(".mappy-node-label, .mappy-node-call-mark")) {
+      part.hidden = entry.editing;
     }
   }
 

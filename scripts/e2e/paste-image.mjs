@@ -6,8 +6,9 @@
  * untitled node. Matched by title, every untitled node is the same node, and the ids used to be reassigned
  * on each write — the draft then lost its node and the map answered
  * 「編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。」 (LEV-146; the same
- * failure for repeated titles was LEV-142). `tests/ui/mindmap-view-paste.test.ts` holds this matrix in
- * jsdom; this case runs it through the real write path, watcher and renderer.
+ * failure for repeated titles was LEV-142). The case also watches what the map shows: the image has to be on
+ * the node the moment it is pasted, while its text is still being edited. `tests/ui/mindmap-view-paste.test.ts`
+ * holds this matrix in jsdom; this case runs it through the real write path, watcher and renderer.
  *
  * Usage (see docs/harness.md 実機検証 for the Obsidian instance):
  *   npm run harness:e2e:paste -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
@@ -28,8 +29,12 @@ const SOURCE = [
   '- はじめに', '  - 学ぶこと',
   '- 記録する', '  - 毎日のログ', '',
 ].join('\n');
-/** A one-pixel PNG, written as bytes so nothing has to reach the OS clipboard. */
-const PNG = 'new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,10,73,68,65,84,120,156,99,0,1,0,0,5,0,1,13,10,45,180,0,0,0,0,73,69,78,68,174,66,96,130])';
+/**
+ * The image the case pastes: 120x80, a blue block with a white border, written as bytes so nothing has to
+ * reach the OS clipboard. Big enough that a screenshot shows whether the node actually drew it — a one-pixel
+ * image would pass a "the node has an image" check while the map still looks empty.
+ */
+const PNG = 'new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,120,0,0,0,80,8,2,0,0,0,93,249,38,222,0,0,0,154,73,68,65,84,120,218,237,221,65,13,0,48,8,4,65,28,85,26,86,113,212,138,128,144,62,230,178,10,198,192,197,181,149,5,2,208,160,173,9,125,178,52,24,104,208,160,5,26,52,104,208,160,65,11,52,104,208,160,65,131,22,104,208,160,65,131,6,45,208,160,65,131,6,13,90,160,65,131,6,13,26,180,64,131,6,13,26,52,104,129,6,13,26,52,104,208,2,13,26,52,104,208,160,5,26,52,104,208,160,65,11,52,104,208,160,65,131,22,104,208,160,65,131,6,45,208,160,65,131,6,13,90,160,65,131,6,13,26,180,64,131,6,13,122,31,218,60,11,129,54,208,95,237,1,30,135,250,163,100,147,87,160,0,0,0,0,73,69,78,68,174,66,96,130])';
 
 /** Read out of the view under test: its nodes, its inline editor and every message on screen. */
 const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el = view.contentEl;
@@ -88,7 +93,13 @@ const paste = name => evaluate(`${VIEW}
   (document.activeElement ?? canvas).dispatchEvent(event);
   return true;`);
 const state = () => evaluate(`${VIEW}
-  return { messages: messages(), editing: !!input(), labels: nodes().map(label), source: await source() };`);
+  // What the node being edited actually shows: an image pasted onto it has to be on screen right away, not
+  // once the draft is confirmed (報告: 2026-09-22). A box with no height is drawn but not visible.
+  const editingNode = el.querySelector('.mappy-node.is-editing');
+  const shownImages = editingNode === null ? 0
+    : Array.from(editingNode.querySelectorAll('.mappy-node-attachments img, .mappy-node-attachments .image-embed'))
+      .filter(item => item.getBoundingClientRect().height >= 8).length;
+  return { messages: messages(), editing: !!input(), shownImages, labels: nodes().map(label), source: await source() };`);
 
 try {
   await step('plugin', async () => {
@@ -133,7 +144,8 @@ try {
     await wait(600);
     const settled = await state();
     check(after.messages.length === 0, `first paste showed ${JSON.stringify(after.messages)}`);
-    check(settled.source.includes('first.png'), 'the first image was not written into the note');
+    check(after.shownImages >= 1, 'the first image is not drawn on the node while its text is being edited');
+    check(/!\[\[first[^\]]*\.png\]\]/u.test(settled.source), 'the first image was not written into the note');
     check(settled.labels.includes('空のノード'), 'the node that took the image should still be untitled');
     return { after, settled };
   });
@@ -145,26 +157,28 @@ try {
     await paste('second.png');
     await wait(2500);
     const afterPaste = await state();
+    // The frame the report is about: the image on the node, the draft still open.
+    const shot = value('--shot');
+    if (shot) await cdp.screenshot(shot);
     await cdp.insertText('二枚目の話');
     await wait(300);
     await cdp.realKey('Enter');
     await wait(2000);
     const afterEnter = await state();
     check(afterPaste.messages.length === 0, `second paste showed ${JSON.stringify(afterPaste.messages)}`);
+    check(afterPaste.shownImages >= 1, 'the second image is not drawn on the node while its text is being edited');
     check(afterEnter.messages.length === 0, `confirming the title showed ${JSON.stringify(afterEnter.messages)}`);
     check(!afterEnter.editing, 'the inline editor should have closed on Enter');
     check(afterEnter.source.includes('- 二枚目の話'), 'the title was not written into the note');
-    check(afterEnter.source.includes('second.png'), 'the second image was not written into the note');
+    check(/!\[\[second[^\]]*\.png\]\]/u.test(afterEnter.source), 'the second image was not written into the note');
     check(afterEnter.labels.includes('二枚目の話'), 'the map does not show the named node');
     return { afterPaste, afterEnter };
   });
 
-  const shot = value('--shot');
-  if (shot) await step('shot', () => cdp.screenshot(shot));
-
   if (!flag('--keep')) {
     await step('clean', () => evaluate(`${VIEW}
-      const attachments = app.vault.getFiles().filter(file => /(first|second)\\.png$/u.test(file.path));
+      // "first 1.png" too: a run left with --keep makes Obsidian give the next paste a numbered name.
+      const attachments = app.vault.getFiles().filter(file => /(first|second)( \\d+)?\\.png$/u.test(file.path));
       for (const file of [...attachments, view.file]) await app.vault.delete(file, true);
       leaf.detach();
       delete window.__mappyE2E;
