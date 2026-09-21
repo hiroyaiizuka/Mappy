@@ -55,6 +55,16 @@ interface SnapIndex {
   places: ReadonlyMap<string, NodePlace>;
 }
 
+/** Where the roots of `ids` sit in `layout`, relative to its origin: the offsets `FreeTopicLayout.position` carries. One pass over the nodes. */
+function rootOffsets(layout: LayoutResult, ids: Iterable<string>): Map<string, TopicPosition> {
+  const wanted = new Set(ids);
+  const offsets = new Map<string, TopicPosition>();
+  for (const node of layout.nodes) {
+    if (wanted.has(node.id)) offsets.set(node.id, { x: node.x - layout.origin.x, y: node.y - layout.origin.y });
+  }
+  return offsets;
+}
+
 /** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
 const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
   mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
@@ -123,6 +133,13 @@ export class MindmapView extends ItemView {
   private events: MapEvents | undefined;
   private modeButtons = new Map<LayoutMode, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
+  /**
+   * The latest layout laid out without a placeholder, with the note and mode it was laid out for. While
+   * a placeholder is laid out, a topic with no position of its own keeps the slot this layout stacked it
+   * in (`topicLayouts`), so the placeholder changes only the tree it joins; a layout of another note or
+   * mode measures from a different origin and holds nothing.
+   */
+  private plain: { file: TFile | null; mode: LayoutMode; layout: LayoutResult } | undefined;
   private placeholder!: HTMLDivElement;
   private edgePaths = new Map<string, SVGPathElement>();
   private dropPreview: MoveCommand | null = null;
@@ -903,16 +920,23 @@ export class MindmapView extends ItemView {
   /**
    * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
    * position comes next, then the pressed point of a topic added on the map that no save has
-   * stored yet. Topics sharing a heading have keys of their own (`topicKeys`), so each finds its entry.
+   * stored yet. While a placeholder is laid out, a topic with none of these keeps the slot `held`
+   * (the latest layout without a placeholder, `plain`, as it was when the slot appeared) stacked it
+   * in: the placeholder widens the tree it joins, which must neither re-centre that tree under the
+   * body root nor restack it clear of a dragged tree, or the parent jumps away from the root it is
+   * about to take (LEV-95). The stack is dealt again once the slot goes or the drop lands. Topics
+   * sharing a heading have keys of their own (`topicKeys`), so each finds its entry.
    */
-  private topicLayouts(trees?: readonly LayoutNode[]): FreeTopicLayout[] {
+  private topicLayouts(trees?: readonly LayoutNode[], held?: LayoutResult): FreeTopicLayout[] {
     const projected = this.projected;
     if (!projected) return [];
+    const topics = projected.trees.split.topics;
+    const kept = held ? rootOffsets(held, topics.map(topic => topic.id)) : undefined;
     // Keys come from the headings as written (`split`); the tree laid out is the one shown (a topic may call a map).
-    return projected.trees.split.topics.map((topic, index) => {
+    return topics.map((topic, index) => {
       const stored = projected.positions.get(projected.keys.get(topic.id) ?? topic.title)?.[this.mode];
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
-      const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
+      const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending ?? kept?.get(topic.id);
       return { tree: trees?.[index + 1] ?? projected.trees.calls.roots[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
     });
   }
@@ -970,8 +994,11 @@ export class MindmapView extends ItemView {
       if (!projection || this.closed) return;
       const sizes = this.renderer.sizes();
       const preview = this.previewLayout(projection, sizes);
+      const plain = this.plain;
+      const held = preview && plain && plain.file === this.file && plain.mode === this.mode ? plain.layout : undefined;
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
-        this.topicLayouts(preview?.trees));
+        this.topicLayouts(preview?.trees, held));
+      if (!preview) this.plain = { file: this.file, mode: this.mode, layout: this.layout };
       if (this.topicDrag && !preview) { this.topicDrag.base = this.layout; this.topicDrag.index = null; }
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
@@ -1215,11 +1242,7 @@ export class MindmapView extends ItemView {
     const layout = this.layout;
     if (!projection || !layout || !this.isFree(id)) return null;
     const body = projection.root.id === id;
-    const from = new Map<string, TopicPosition>();
-    for (const topic of body ? projection.topics : projection.topics.filter(topic => topic.id === id)) {
-      const node = layout.nodes.find(item => item.id === topic.id);
-      if (node) from.set(topic.id, { x: node.x - layout.origin.x, y: node.y - layout.origin.y });
-    }
+    const from = rootOffsets(layout, (body ? projection.topics : projection.topics.filter(topic => topic.id === id)).map(topic => topic.id));
     this.topicDrag = {
       id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id), base: layout, index: null,
     };
