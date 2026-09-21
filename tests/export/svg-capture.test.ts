@@ -211,6 +211,37 @@ describe('SVG export of the map view (jsdom)', () => {
     expect(light.scene.css).toContain('.mappy-edges path{fill:none;stroke:');
   });
 
+  it('names the theme the map is shown in (settings, M14), not the body\'s, so the attributes match the copied colours (LEV-92)', async () => {
+    // A light map in a dark app: the colours come from the map's own theme, and so must the class and data-theme.
+    document.body.classList.add('theme-dark');
+    const mounted = await mount('heading-document');
+    mounted.view.setTheme('light');
+    const light = await exportOf(mounted);
+    expect(light.source.theme).toBe('light');
+    expect(light.scene.theme).toBe('light');
+    expect(light.parsed.documentElement.getAttribute('class')).toBe('mappy-export theme-light');
+    expect(light.parsed.documentElement.getAttribute('data-theme')).toBe('light');
+    expect(light.parsed.querySelector('.mappy-export-background')?.getAttribute('fill')).toBe('#ffffff');
+    // Following Obsidian again, the body decides as before.
+    mounted.view.setTheme('follow');
+    const follow = await exportOf(mounted);
+    expect(follow.source.theme).toBeUndefined();
+    expect(follow.scene.theme).toBe('dark');
+    expect(follow.parsed.documentElement.getAttribute('data-theme')).toBe('dark');
+    // A dark map in a light app.
+    document.body.classList.remove('theme-dark');
+    mounted.view.setTheme('dark');
+    const dark = await exportOf(mounted);
+    expect(dark.scene.theme).toBe('dark');
+    expect(dark.parsed.documentElement.getAttribute('class')).toBe('mappy-export theme-dark');
+    expect(dark.parsed.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(dark.parsed.querySelector('.mappy-export-background')?.getAttribute('fill')).toBe('#1e1e1e');
+    // The caller's option (exportMap's `theme`) still wins over the source.
+    const overridden = await captureScene(dark.source, { resolveImage: passthrough, theme: 'light' });
+    expect(overridden.theme).toBe('light');
+    expect(mounted.modified()).toBe(0);
+  });
+
   it.each(['timeline', 'hierarchy'] as const)('exports the %s layout with the same nodes and connectors as the view', async layout => {
     const mounted = await mount('uneven-branches', layout);
     const { source, parsed } = await exportOf(mounted);

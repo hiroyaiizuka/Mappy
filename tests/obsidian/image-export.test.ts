@@ -156,6 +156,14 @@ describe('exportMap', () => {
     expect(raw.vault.createBinary).not.toHaveBeenCalled();
   });
 
+  it('writes the theme the source is shown in, and the option overrides it (LEV-92)', async () => {
+    const { app, created } = fakeApp({});
+    await exportMap(app, file('Map.md'), { ...source(), theme: 'dark' }, 'svg');
+    await exportMap(app, file('Map.md'), { ...source(), theme: 'dark' }, 'svg', { theme: 'light' });
+    await exportMap(app, file('Map.md'), source(), 'svg');
+    expect(created.map(entry => typeof entry.data === 'string' && /data-theme="(\w+)"/.exec(entry.data)?.[1])).toEqual(['dark', 'light', 'light']);
+  });
+
   it('refuses PNG where no canvas can be drawn, before capturing or naming a file', async () => {
     const { app, raw, created } = fakeApp({});
     await expect(exportMap(app, file('Map.md'), source(), 'png')).rejects.toThrow('PNG を作れません');

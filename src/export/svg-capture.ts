@@ -32,6 +32,12 @@ export interface CaptureSource {
   canvas: HTMLElement;
   /** The connector layer; its first path gives the stroke. */
   edges: SVGSVGElement;
+  /**
+   * The theme the map is shown in when it is not the document's: the settings'
+   * theme (M14) puts `theme-light`／`theme-dark` on the map view alone, and the
+   * colours copied from the DOM follow it. Left out, the body's class decides.
+   */
+  theme?: ExportTheme;
 }
 
 /** A data URL for the image, or null when it cannot be read; the node is kept either way. */
@@ -39,7 +45,7 @@ export type ImageResolver = (image: HTMLImageElement) => Promise<string | null>;
 
 export interface CaptureOptions {
   resolveImage: ImageResolver;
-  /** Defaults to the document's `theme-dark` body class, Obsidian's convention. */
+  /** Overrides the source's theme; the default is the body's `theme-dark` class, Obsidian's convention. */
   theme?: ExportTheme;
 }
 
@@ -315,7 +321,7 @@ function badgeCss(mark: HTMLElement | undefined, fallbackColor: string, backgrou
  */
 export async function captureScene(source: CaptureSource, options: CaptureOptions): Promise<SvgScene> {
   const document = source.canvas.ownerDocument;
-  const theme = options.theme ?? themeOf(document);
+  const theme = options.theme ?? source.theme ?? themeOf(document);
   const registry = new StyleRegistry();
   const context: Serializer = { registry, images: [] };
   const drafts: SvgNode[] = [];

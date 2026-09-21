@@ -244,7 +244,8 @@ export class MindmapView extends ItemView {
     const layout = this.layout;
     if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
     if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
-    return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
+    // The settings' theme (M14) is the map's own, so the file names it; following Obsidian, the capture reads the body.
+    return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg, ...(this.theme === "follow" ? {} : { theme: this.theme }) };
   }
 
   /** The next animation frame, or 100 ms: a hidden window never paints, and the export must not wait for it. */
