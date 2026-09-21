@@ -15,12 +15,10 @@
  *   --reload  re-enable the plugin first, so a build made after Obsidian started is the one under test
  *   --keep    leave the note and its attachments in the vault
  */
-import { writeFile } from 'node:fs/promises';
 import { connect, installedVersion, VAULT, wait } from './cdp.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
 
-const args = process.argv.slice(2);
-const flag = name => args.includes(name);
-const value = name => { const at = args.indexOf(name); return at === -1 ? undefined : args[at + 1]; };
+const { flag, value } = parseArgs();
 
 const NOTE = 'Fixtures/E2E-paste-image.md';
 const SOURCE = [
@@ -48,15 +46,11 @@ const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el =
   ].filter(Boolean);
   const source = () => app.vault.read(view.file);`;
 
-const record = { vault: VAULT, note: NOTE, steps: {}, failures: [] };
+const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
-const step = async (name, run) => {
-  try { record.steps[name] = await run(); } catch (error) { record.steps[name] = { error: String(error) }; record.failures.push(`${name}: ${error}`); }
-  console.log(name, JSON.stringify(record.steps[name]).slice(0, 700));
-  return record.steps[name];
-};
-const check = (condition, failure) => { if (!condition) record.failures.push(failure); };
+const step = makeStep(record);
+const check = makeCheck(record);
 
 /** Click a node until the map shows it selected: the first click after the view opens can land mid-layout. */
 const select = async (title, index = 0) => {
@@ -193,8 +187,4 @@ try {
   cdp.close();
 }
 
-record.passed = record.failures.length === 0;
-const out = value('--json');
-if (out) await writeFile(out, `${JSON.stringify(record, null, 2)}\n`);
-console.log(record.passed ? 'PASS' : `FAIL\n- ${record.failures.join('\n- ')}`);
-process.exit(record.passed ? 0 : 1);
+process.exit(await finish(record, value('--json')));

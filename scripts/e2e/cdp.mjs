@@ -34,6 +34,7 @@ const KEYS = {
   Enter: { code: 'Enter', keyCode: 13 }, Tab: { code: 'Tab', keyCode: 9 },
   Delete: { code: 'Delete', keyCode: 46 }, Backspace: { code: 'Backspace', keyCode: 8 },
   ' ': { code: 'Space', keyCode: 32 }, ArrowUp: { code: 'ArrowUp', keyCode: 38 }, ArrowDown: { code: 'ArrowDown', keyCode: 40 },
+  z: { code: 'KeyZ', keyCode: 90 },
 };
 
 export async function connect() {
