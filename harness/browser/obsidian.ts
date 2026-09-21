@@ -202,10 +202,13 @@ export class WorkspaceLeaf {
   root: unknown = null;
   /** `getDisplayText()` as of the last `updateHeader`, the tab's title. */
   headerText = "";
+  /** True while `setViewState` runs (1.14.2 `working`): a second one returns at once, a history step refuses with a notice. */
+  working = false;
   readonly history = {
     backHistory: [] as ViewState[],
     forwardHistory: [] as ViewState[],
     back: async (): Promise<void> => {
+      if (this.working) { new Notice("Tab is busy"); return; }
       const state = this.history.backHistory.pop();
       if (!state) return;
       if (this.view) this.history.forwardHistory.push({ type: this.view.getViewType(), state: this.view.getState() });
@@ -215,13 +218,21 @@ export class WorkspaceLeaf {
   constructor(readonly app: App) {}
   getRoot(): unknown { return this.root ?? this; }
   async setViewState(state: ViewState): Promise<void> {
-    this.states.push(state);
-    const view = this.view;
-    if (!view || state.type !== view.getViewType()) return;
-    const result: HarnessStateResult = { history: false, layout: false, close: false };
-    await view.setState(state.state ?? {}, result);
-    if (result.close) await this.open(null);
-    this.updateHeader();
+    if (this.working) return;
+    this.working = true;
+    try {
+      this.states.push(state);
+      const view = this.view;
+      if (!view || state.type !== view.getViewType()) return;
+      const result: HarnessStateResult = { history: false, layout: false, close: false };
+      // A view whose `setState` throws is logged, as Obsidian logs it, and the leaf goes on.
+      try { await view.setState(state.state ?? {}, result); }
+      catch (error) { console.error(error); }
+      if (result.close) await this.open(null);
+      this.updateHeader();
+    } finally {
+      this.working = false;
+    }
   }
   /** Close the view shown; the harness registers no other view, so only the empty leaf can follow. */
   async open(view: View | null): Promise<View | null> {

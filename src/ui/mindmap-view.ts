@@ -101,7 +101,7 @@ const POPOVER_MARGIN = 16;
  * it shows, which the ` · マップ` suffix would end up in.
  */
 export class MindmapView extends FileView {
-  /** The note shown; loaded and unloaded by `FileView.setState` through `onLoadFile`／`onUnloadFile` below. */
+  /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
   file: TFile | null = null;
   private document: MindDocument | undefined;
   /** The maps the document's items call (§5 M12), as last read; the trees are projected from the document and these. */
@@ -172,6 +172,8 @@ export class MindmapView extends FileView {
   private epoch = 0;
   private ready = false;
   private closed = false;
+  /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
+  private unloading = false;
   private needsFit = true;
   private saving = false;
   private revealId: string | null = null;
@@ -200,8 +202,7 @@ export class MindmapView extends FileView {
     // records the notes the map passes through (`FileView.setState`), and `getLeaf(false)` — a link clicked on the
     // map, a file chosen in the explorer or the quick switcher — opens in this leaf, as it would in a Markdown tab,
     // instead of a neighbouring tab or a new one. ⌘-click still opens a tab. A map moved into a sidebar is the
-    // exception (`syncNavigation`).
-    this.allowNoFile = false;
+    // exception (`syncNavigation`). FileView's other default, `allowNoFile = false`, is the map's too (see the class).
     this.reader = new CallReader(this.app, store);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
     // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
@@ -329,42 +330,52 @@ export class MindmapView extends FileView {
     else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
     // The bar follows the layout at once, before the read: draw() does not run for a note that fails to load.
     this.syncModeButtons();
-    if (this.ready) {
-      const view = value.viewport;
-      if (view && typeof view === "object" && "x" in view && "y" in view && "scale" in view
-        && typeof view.x === "number" && Number.isFinite(view.x)
-        && typeof view.y === "number" && Number.isFinite(view.y)
-        && typeof view.scale === "number" && Number.isFinite(view.scale)) {
-        this.viewport.set({ x: view.x, y: view.y, scale: view.scale });
-        this.needsFit = false;
-      }
-      await this.refresh();
+    // A leaf left without a note closes (`allowNoFile` is false: FileView asked the leaf to): nothing to restore or read.
+    if (!this.ready || !this.file) return;
+    const view = value.viewport;
+    if (view && typeof view === "object" && "x" in view && "y" in view && "scale" in view
+      && typeof view.x === "number" && Number.isFinite(view.x)
+      && typeof view.y === "number" && Number.isFinite(view.y)
+      && typeof view.scale === "number" && Number.isFinite(view.scale)) {
+      this.viewport.set({ x: view.x, y: view.y, scale: view.scale });
+      this.needsFit = false;
     }
+    await this.refresh();
   }
 
   /**
    * The note shown leaves this view (`FileView.loadFile`: another note takes its place, the state names none, the
    * view closes). A draft under way when a navigation replaces the note in this leaf (a link, the explorer,
    * back／forward — LEV-74) is saved first, as a Markdown tab keeps its buffer; the save needs the note it was
-   * opened on, which `file` still is here. A refused save (the note moved on, E05) cannot keep the draft here. A
-   * note that is gone (deleted: FileView then takes the leaf back in its history or to the empty view) has nothing
-   * to save to, and a closing view drops its draft as it did. Everything the note gave the view goes with it.
+   * opened on, which `file` still is here, and skips the re-read and redraw of that note (`unloading`), since
+   * everything it gave the view goes right after. A refused save (the note moved on, E05) cannot keep the draft
+   * here. A note that is gone (deleted: FileView then takes the leaf back in its history or to the empty view)
+   * has nothing to save to; a closing view has dropped its draft already (`onClose`).
    */
   async onUnloadFile(file: TFile): Promise<void> {
-    if (this.inlineEditor && !this.closed && this.app.vault.getFileByPath(file.path) === file) {
+    if (this.inlineEditor && this.app.vault.getFileByPath(file.path) === file) {
+      this.unloading = true;
       try { await this.inlineEditor.flush(); }
       catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
+      finally { this.unloading = false; }
     }
-    this.inlineEditor?.dispose(); this.inlineEditor = undefined;
+    this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
     this.pendingTopic = null; this.topicDrag = null;
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
   }
 
+  /** A draft is dropped without a save: the note is leaving, gone or the view is closing. */
+  private dropDraft(): void {
+    this.inlineEditor?.dispose();
+    this.inlineEditor = undefined;
+  }
+
   /**
    * The note shown was renamed: FileView updates the leaf's header; the map redraws (the root node is the
-   * basename) and the workspace layout is saved with the new path (`getState`).
+   * basename) and the workspace layout is saved with the new path (`getState`) — asked for here as the API has it,
+   * though 1.14.2's FileView does so too on its own.
    */
   async onRename(file: TFile): Promise<void> {
     await super.onRename(file);
@@ -561,12 +572,25 @@ export class MindmapView extends FileView {
       if (info.file?.path === this.file?.path) this.scheduleRefresh();
     }));
     this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) this.scheduleRefresh(); }));
-    // A rename of the note is `onRename` (FileView's own subscription). Its deletion is FileView's too: the leaf goes
-    // back in its history or to the empty view (`allowNoFile` is false), which unloads the note here without a save;
-    // a kept draft outlives refreshes, but not its note, so it goes at once rather than on that navigation.
+    // A rename of the note is `onRename` (FileView's own subscription). Its deletion is FileView's too, and comes
+    // first (subscribed in `onload`): the leaf goes back in its history or to the empty view (`allowNoFile` is
+    // false), which unloads the note here without a save; a kept draft outlives refreshes, but not its note, so it
+    // goes at once rather than on that navigation. A leaf busy with a `setViewState` (a read of this very note in
+    // flight) refuses the history step instead (1.14.2: "Tab is busy"), and then nothing would unload the note: once
+    // the tick's work is done, a view still on the deleted note lets go of it itself and draws the empty state.
     this.registerEvent(this.app.vault.on("delete", file => {
-      if (file !== this.file) return;
-      this.inlineEditor?.dispose(); this.inlineEditor = undefined;
+      const note = this.file;
+      if (!note || file !== note) return;
+      this.dropDraft();
+      this.contentEl.win.setTimeout(() => {
+        if (this.closed || this.file !== note) return;
+        this.run(async () => {
+          await this.onUnloadFile(note);
+          if (this.file !== note) return;
+          this.file = null;
+          this.scheduleRefresh();
+        });
+      }, 0);
     }));
     // The maps the items call (§5 M12) are read again when a note they concern changes: one read for the last draw
     // (edited, saved or not, renamed, deleted, no longer a map), or one an item resolves to now (created, became a map,
@@ -587,7 +611,7 @@ export class MindmapView extends FileView {
   /** The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, with no save). */
   onClose(): Promise<void> {
     this.closed = true;
-    this.inlineEditor?.dispose(); this.inlineEditor = undefined;
+    this.dropDraft();
     this.closePopover(false);
     this.epoch += 1;
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
@@ -1424,7 +1448,8 @@ export class MindmapView extends FileView {
       try { await this.store.apply(file, source, edits); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
-      await this.refresh();
+      // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
+      if (!this.unloading) await this.refresh();
     } finally { this.saving = false; }
   }
 
@@ -1460,7 +1485,7 @@ export class MindmapView extends FileView {
       finish: (next, cancelled) => {
         this.inlineEditor = undefined;
         entry.content.hidden = false;
-        if (this.closed || file !== this.file) return;
+        if (this.closed || this.unloading || file !== this.file) return;
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
         const current = this.document?.nodes.find(item => item.id === node.id)

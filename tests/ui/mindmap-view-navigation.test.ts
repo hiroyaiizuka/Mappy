@@ -342,6 +342,55 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect(again.app.content(again.app.vault.getFileByPath(OTHER) as never)).not.toContain('下書き');
   });
 
+  it('lets go of a deleted note itself when the leaf is busy and FileView\'s history step is refused', async () => {
+    const { app, view, file, map, settle } = await mount();
+    map.leaf.history.backHistory.push({ type: VIEW_TYPE, state: { file: OTHER, layout: 'mindmap' } });
+    // A `setViewState` of this very note is in flight (its read is held): the leaf is `working`.
+    let release = (): void => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const read = vi.spyOn(app.vault, 'read').mockImplementation(async target => { await held; return app.content(target); });
+    const opening = map.leaf.setViewState({ type: VIEW_TYPE, state: { file: PATH, layout: 'timeline' } });
+    await vi.waitFor(() => { expect(read).toHaveBeenCalled(); });
+    expect(map.leaf.working).toBe(true);
+    // 1.14.2's `history.go` refuses with "Tab is busy" while the leaf works: FileView cannot leave the note for the map.
+    app.remove(PATH);
+    await settle();
+    expect(map.leaf.history.backHistory).toHaveLength(1);
+    expect(map.leaf.view).toBe(view);
+    // So the map lets go of it on its own: no note, the empty state (a debounced refresh), nothing written, no error of its own.
+    expect(view.file).toBeNull();
+    await vi.waitFor(() => { expect(view.containerEl.querySelector<HTMLElement>('.mappy-empty-state')?.hidden).toBe(false); });
+    expect(view.containerEl.querySelector('.mappy-node')).toBeNull();
+    expect(view.getState()).not.toHaveProperty('file');
+    expect(Notice.log).toEqual(['Tab is busy']);
+    release();
+    await opening;
+    await settle();
+    expect(view.file).toBeNull();
+    expect(file.path).toBe(PATH);
+  });
+
+  it('waits for a save the blur of the navigating click started, and tells when the draft is refused on the way out', async () => {
+    const { app, view, select, key, settle, editor, source } = await mount();
+    key(select('学ぶこと'), 'F2');
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('no editor');
+    input.value = '学ぶこと（改）';
+    // The node changed outside (E05) and the map has not re-read yet: the save under way will be refused.
+    const external = SOURCE.replace('  - 学ぶこと\n', '  - 学ぶこと（外部）\n');
+    app.put(PATH, external);
+    // A click on a link on the map: the textarea blurs (a save starts) and the leaf navigates in the same tick.
+    input.dispatchEvent(new FocusEvent('blur'));
+    await view.setState({ file: OTHER, layout: 'mindmap' }, { history: false });
+    await settle();
+    expect(editor()).toBeNull();
+    expect(source()).toBe(external);
+    expect(view.file?.path).toBe(OTHER);
+    expect(Notice.log).toHaveLength(1);
+    expect(Notice.log[0]).toContain('編集中の内容を保存できませんでした');
+  });
+
   it('keeps the active leaf and the focus on the node when Escape is pressed with no inline editor open', async () => {
     const { view, workspace, map, beside, markdown, select, key, settle, editor } = await mount();
     const node = select('学ぶこと');
