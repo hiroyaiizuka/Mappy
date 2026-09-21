@@ -16,6 +16,7 @@ export interface FixtureSummary {
   'inline-commit': Record<string, Summary>;
   pan: Summary & { over: number; handler: Summary };
   zoom: Summary & { over: number; handler: Summary };
+  'topic-drag': Summary & { over: number; handler: Summary; frame: Summary; moves: number; snapMoves: number; slots: number };
 }
 export function buildSummary(fixtures: PerformanceFixtureEntry[], samples: Record<string, unknown>[], layouts?: string[]): FixtureSummary[];
 export interface Highlight {
@@ -23,6 +24,7 @@ export interface Highlight {
   markdownEdit500: number; inlineKey500: number; inlineCommit500: number;
   markdownEdit2000: number; firstLayout2000: number; settled2000: number;
   pan2000: { over: number; n: number }; zoom2000: { over: number; n: number };
+  dragHandler2000: number; dragFrame2000: number;
 }
 export function highlights(summary: FixtureSummary[], layouts?: string[]): Highlight[];
 export interface PerfEnvironment {

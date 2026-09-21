@@ -1463,4 +1463,48 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(snap(reference.id, at(view, { x: ownLayout.x + ownLayout.width + 20, y: ownLayout.y, ...size }), null)).toBeNull();
     shift(reference.id, null);
   });
+
+  it('reads the map once per base while only the carried tree moves, and again when a node\'s size changes under it (LEV-126)', async () => {
+    // The index the snap reads is kept across the frames of one drag. Counting the reads shows both halves:
+    // carrying the tree does not rebuild it, and a size the layout was never told about does.
+    const { view, topic, nodes } = await mount(fixtureSource());
+    const doc = documentOf(view);
+    const rest = doc.nodes.find(node => node.title === '休息の取り方');
+    const recover = doc.nodes.find(node => node.title === '回復する');
+    if (!rest || !recover) throw new Error('Missing nodes');
+    const glossary = topic('補足: 用語');
+    const { shift, snap } = bind(view);
+    const inner = view as unknown as { snapIndex(...args: unknown[]) : unknown };
+    const original = inner.snapIndex.bind(view);
+    const reads = vi.fn(original);
+    inner.snapIndex = reads;
+    const beside = () => {
+      const leaf = placed(view, rest);
+      return at(view, { x: leaf.x + leaf.width + 30, y: leaf.y, width: 120, height: 40 });
+    };
+    shift(glossary.id, { x: 0, y: 0 });
+    await frame();
+    const slot = { type: 'move' as const, nodeId: glossary.id, parentId: rest.id, index: 0 };
+    expect(snap(glossary.id, beside(), null)).toEqual(slot);
+    expect(reads).toHaveBeenCalledTimes(1);
+    // Three more frames of carrying the tree, and the reading of the map still stands.
+    for (const step of [4, 8, 12]) {
+      shift(glossary.id, { x: step, y: 0 });
+      await frame();
+      expect(snap(glossary.id, beside(), null)).toEqual(slot);
+    }
+    expect(reads).toHaveBeenCalledTimes(1);
+    // A node grows without anything asking for a layout (a theme class, a font arriving): the next base is
+    // a different map, so the reading has to be taken again — and it describes the map as it now is.
+    const element = nodes().get(recover.id);
+    if (!element) throw new Error('Missing the node element');
+    Object.defineProperty(element, 'offsetHeight', { value: 200 });
+    shift(glossary.id, { x: 16, y: 0 });
+    await frame();
+    expect(placed(view, recover).height).toBe(200);
+    expect(snap(glossary.id, beside(), null)).toEqual(slot);
+    expect(reads).toHaveBeenCalledTimes(2);
+    shift(glossary.id, null);
+    inner.snapIndex = original;
+  });
 });

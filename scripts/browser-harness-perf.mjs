@@ -13,8 +13,9 @@
  *
  * Per fixture, in its own headless Chrome, and per layout: one warm-up load,
  * `repeat` loads in a fresh view, `repeat` Markdown-side edits, `repeat` inline
- * edits (`keystrokes` keystrokes in total, each followed by Enter), and two pan
- * and zoom runs of `frames` frames. The stages come from harness/browser/measure.ts;
+ * edits (`keystrokes` keystrokes in total, each followed by Enter), two pan and
+ * zoom runs of `frames` frames, and two free-topic drags of `frames` pointer
+ * moves. The stages come from harness/browser/measure.ts;
  * this script only drives the page, summarises and writes samples.json,
  * summary.json and record.md. Without Chrome it writes a record marking the run
  * as not executed and exits with 2.
@@ -33,6 +34,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
 const PANE = { width: 1280, height: 800 };
 const FRAME_RUNS = 2;
+/** Free-topic drags per fixture and layout, each `frames` pointer moves long (LEV-126). */
+const DRAG_RUNS = 2;
 /** One frame at 60 fps; intervals above it mean a frame was missed. */
 const FRAME_BUDGET_MS = 1000 / 60 + 0.5;
 /** The product's layouts (src/core/layout-mode.ts LAYOUT_MODES), in the order the record lists them. */
@@ -150,6 +153,19 @@ function summarizeFrames(samples) {
 }
 
 /**
+ * A free-topic drag: the frame pacing as pan and zoom record it, plus the view's own layout frames
+ * and how many moves ran over empty canvas (where the snap searches the map) or ended on a slot.
+ */
+function summarizeDrag(samples) {
+  const total = field => samples.reduce((sum, sample) => sum + (sample[field] ?? 0), 0);
+  return {
+    ...summarizeFrames(samples),
+    frame: summarize(samples.flatMap(sample => sample.frameMs ?? [])),
+    moves: total('moves'), snapMoves: total('snapMoves'), slots: total('slots'),
+  };
+}
+
+/**
  * One row per fixture × layout, fixtures in matrix order and layouts in LAYOUTS
  * order, so the record reads count by count within a shape. Samples without a
  * `mode` (records from before the layout dimension) count as the mind map.
@@ -168,6 +184,7 @@ export function buildSummary(fixtures, samples, layouts = LAYOUTS) {
         'inline-commit': summarizeFields(kind('inline-commit'), EDIT_FIELDS['inline-commit']),
         pan: summarizeFrames(kind('pan')),
         zoom: summarizeFrames(kind('zoom')),
+        'topic-drag': summarizeDrag(kind('topic-drag')),
       });
     }
   }
@@ -201,6 +218,8 @@ export function highlights(summary, layouts = LAYOUTS) {
       settled2000: worst(summary, 2000, layout, row => row.load.settledMs.p95),
       pan2000: frames('pan'),
       zoom2000: frames('zoom'),
+      dragHandler2000: worst(summary, 2000, layout, row => row['topic-drag'].handler.p95),
+      dragFrame2000: worst(summary, 2000, layout, row => row['topic-drag'].frame.p95),
     };
   });
 }
@@ -222,16 +241,17 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     `- Node: ${env.node}、Chrome: ${env.chrome}（${env.chromePath}）`,
     `- Chrome フラグ: ${env.chromeFlags}、ウィンドウ ${env.window.width}×${env.window.height}、ペイン ${env.pane.width}×${env.pane.height}、devicePixelRatio 1`,
     `- build: ${env.commit}${env.dirty ? '（未コミットの変更あり）' : ''}（\`npm run harness:browser:build\` の \`dist/harness\`。製品の src/ と core / layout / ui をそのまま読み込む）`,
-    `- 繰り返し: fixture ごとに新しい headless Chrome で、レイアウト（${layouts.map(layoutLabel).join('・')}）ごとに読み込み ${env.options.repeat} 回（ウォームアップ 1 回を除く）、Markdown 側の編集 ${env.options.repeat} 回、インライン編集 ${env.options.repeat} 回（キー入力 計 ${env.options.keystrokes} 回）、パン／ズーム各 ${FRAME_RUNS} 回 × ${env.options.frames} フレーム`,
+    `- 繰り返し: fixture ごとに新しい headless Chrome で、レイアウト（${layouts.map(layoutLabel).join('・')}）ごとに読み込み ${env.options.repeat} 回（ウォームアップ 1 回を除く）、Markdown 側の編集 ${env.options.repeat} 回、インライン編集 ${env.options.repeat} 回（キー入力 計 ${env.options.keystrokes} 回）、パン／ズーム各 ${FRAME_RUNS} 回 × ${env.options.frames} フレーム、フリートピックのドラッグ ${DRAG_RUNS} 回 × ${env.options.frames} 回のポインター移動`,
     '- 統計: nearest-rank の p50 / p95（ms）。値は「p50 / p95」。',
     '- テーマ: harness.css の仮の CSS 変数（Obsidian のテーマではない）。画像: `sample-image.svg` の data URL（転送なし。画像の読み込み後の再配置は「安定」に含まれ、転送時間は含まれない）。',
     '',
     '## 要点（§6 の目標に対応。各ノード数の全ての形のうち最も遅い p95、ms）',
     '',
     ...table(['レイアウト', '500: Markdown 編集 合計', '500: キー入力 合計', '500: Enter 確定 合計', '2,000: Markdown 編集 合計', '2,000: 初回配置', '2,000: 安定',
-      `2,000: パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, `2,000: ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`],
+      `2,000: パン ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, `2,000: ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, '2,000: ドラッグのハンドラ', '2,000: ドラッグの配置フレーム'],
       highlights(summary, layouts).map(row => [layoutLabel(row.layout), ms(row.markdownEdit500), ms(row.inlineKey500), ms(row.inlineCommit500),
-        ms(row.markdownEdit2000), ms(row.firstLayout2000), ms(row.settled2000), frames(row.pan2000), frames(row.zoom2000)])),
+        ms(row.markdownEdit2000), ms(row.firstLayout2000), ms(row.settled2000), frames(row.pan2000), frames(row.zoom2000),
+        ms(row.dragHandler2000), ms(row.dragFrame2000)])),
     '',
     '## 段階の定義',
     '',
@@ -239,6 +259,7 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
     '- Markdown 側の編集（vault の modify → view）: `debounce` = 変更〜45 ms の debounce 発火、`再読込〜DOM` = 発火〜編集ノードの DOM 更新（read・parse・ノード DOM）、`フレーム待ち` = DOM 更新〜配置フレーム開始（ブラウザがフレーム前に行う style／layout を含むことがある）、`配置フレーム`、`次フレーム開始`、`合計` = 変更〜配置後の次フレーム開始（画面に出せる最初のフレーム）。Obsidian のエディタ入力は editor-change → 同じ経路。',
     '- インライン編集（マップ側、実 DOM 経由）: `キー入力` = textarea への 1 文字入力〜配置後の次フレーム開始（`入力ハンドラ` は textarea の高さ再計算）、`確定` = Enter〜改名の適用・再読込・再描画・配置後の次フレーム開始（`適用〜DOM` は apply・read・parse・ノード DOM）。',
     '- パン／ズーム: 1 フレームに 1 回 wheel（パンは deltaY 12、ズームは Ctrl＋deltaY 20）を送り、requestAnimationFrame のタイムスタンプ間隔と、wheel ハンドラ（transform の更新）の同期時間を記録。間隔からハンドラを引いた残りはブラウザの合成・ラスタで、既定のソフトウェア描画では GPU 描画より重く出る。',
+    '- フリートピックのドラッグ（LEV-126）: 本体と同じ深さの区画を 1 つ足して 1 トピックのマップにし、「全体表示」で Fit したあと、その根を押したまま空白の帯を 1 フレームに 1 回ずつ往復させる。`ハンドラ` = pointermove 1 回の同期時間（運ぶ木の位置更新と、空白の上で走る合流先の探索 `snapTarget`）、`配置フレーム` = その移動が予約した view の requestAnimationFrame コールバック（layoutTree・place・線）、`フレーム間隔` = パン／ズームと同じ rAF の間隔。`空白の上` はポインターがノードに乗らず探索が走った移動の数、`スロット` はその移動で合流先が表示された数（0 なら全域で探索だけが走った）。ドラッグは Escape で終えるので原文は書き換わらず、足した区画は計測後に取り除く。',
     '',
     '## 読み込み（ms、p50 / p95）',
     '',
@@ -270,6 +291,16 @@ export function recordMarkdown({ env, fixtures, summary, notExecuted, failures }
       'ズーム p50 / p95', 'ズーム 最大', `ズーム ${FRAME_BUDGET_MS.toFixed(1)} ms 超`, 'ズーム ハンドラ p95'],
       summary.map(row => [row.fixture, row.nodes, layoutLabel(row.layout), range(row.pan), ms(row.pan.max), frames(row.pan), ms(row.pan.handler.p95),
         range(row.zoom), ms(row.zoom.max), frames(row.zoom), ms(row.zoom.handler.p95)])),
+    '',
+    '## フリートピックのドラッグ（ms、p50 / p95）',
+    '',
+    ...table(['fixture', 'ノード', 'レイアウト', '移動', '空白の上', 'スロット', 'ハンドラ p50 / p95', 'ハンドラ 最大', '配置フレーム p50 / p95', '配置フレーム 最大',
+      'フレーム間隔 p50 / p95', `${FRAME_BUDGET_MS.toFixed(1)} ms 超`],
+      summary.map(row => {
+        const drag = row['topic-drag'];
+        return [row.fixture, row.nodes, layoutLabel(row.layout), drag.moves, drag.snapMoves, drag.slots,
+          range(drag.handler), ms(drag.handler.max), range(drag.frame), ms(drag.frame.max), range(drag), frames(drag)];
+      })),
     '',
     '## 失敗',
     '',
@@ -321,10 +352,15 @@ async function runLayout(page, entry, layout, options, samples, failures) {
       await attempt(`${kind} ${index + 1}`, async () => { record(await page.harness(`h.measure.frames(${JSON.stringify(kind)}, ${options.frames})`)); });
     }
   }
+  for (let index = 0; index < DRAG_RUNS; index += 1) {
+    await attempt(`topic-drag ${index + 1}`, async () => { record(await page.harness(`h.measure.topicDrag(${options.frames})`)); });
+  }
   const own = samples.filter(sample => sample.fixture === entry.id && sample.mode === layout);
   const first = summarize(own.filter(sample => sample.kind === 'load').map(sample => sample.firstLayoutMs));
   const edit = summarize(own.filter(sample => sample.kind === 'markdown-edit').map(sample => sample.totalMs));
-  console.info(`${entry.id} ${layout}: 初回配置 ${ms(first.p50)} / ${ms(first.p95)} ms, Markdown 編集 ${ms(edit.p50)} / ${ms(edit.p95)} ms (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+  const drag = summarize(own.filter(sample => sample.kind === 'topic-drag').flatMap(sample => sample.handlerMs));
+  console.info(`${entry.id} ${layout}: 初回配置 ${ms(first.p50)} / ${ms(first.p95)} ms, Markdown 編集 ${ms(edit.p50)} / ${ms(edit.p95)} ms,`
+    + ` ドラッグのハンドラ ${ms(drag.p50)} / ${ms(drag.p95)} ms (${((Date.now() - started) / 1000).toFixed(1)} s)`);
 }
 
 async function runFixture(page, entry, layouts, options, samples, failures) {

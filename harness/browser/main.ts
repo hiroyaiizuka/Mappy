@@ -12,8 +12,8 @@ import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext, type
 import { HarnessApp } from "./app";
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost, type HarnessFixture, type HarnessHost } from "./fixtures";
 import {
-  installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
-  type EditSample, type FrameSample, type LoadSample, type MeasureContext,
+  installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit, measureTopicDrag,
+  type EditSample, type FrameSample, type LoadSample, type MeasureContext, type TopicDragSample,
 } from "./measure";
 import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
@@ -397,6 +397,10 @@ const measure = {
   frames(kind: "pan" | "zoom", frames = 60): Promise<FrameSample> {
     const { fixture, view: opened } = currentFile();
     return measureFrames(measureContext, opened, fixture, kind, frames);
+  },
+  topicDrag(moves = 60): Promise<TopicDragSample> {
+    const { fixture, file, view: opened } = currentFile();
+    return measureTopicDrag(measureContext, opened, fixture, file, moves);
   },
   /** Product frames and timers seen so far, for DevTools inspection. */
   probes,
