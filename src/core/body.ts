@@ -77,6 +77,8 @@ export function planBodyEdit(doc: MindDocument, nodeId: string, body: string): T
   const node = bodyNode(doc, nodeId);
   const before = doc.source.slice(0, node.bodyFrom);
   const normalized = indentBody(node, normalizeNewlines(body, doc.eol));
+  // Not `paragraphGap`: the body starts on the line after the heading, so an ended line needs
+  // nothing here, where a paragraph written after it would still want one break.
   const prefix = normalized && before && !before.endsWith('\n') ? doc.eol + doc.eol : '';
   const text = prefix + normalized;
   return checkedBodyEdit(doc, { from: node.bodyFrom, to: node.bodyTo, text: text + closingGap(doc, node.bodyTo, before + text) });
