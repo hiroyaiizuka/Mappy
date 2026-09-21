@@ -274,8 +274,10 @@
 .mappy-view .mappy-drop-placeholder[hidden] { display: none; }
 .mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-drop); stroke-width: 4; stroke-linecap: round; }
 .mappy-view .mappy-node-content { min-width: 0; }
-.mappy-view .mappy-node-content[hidden] { display: none; }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
+/* While the inline editor stands in for a node's text, the node hides that text and keeps its attachments on
+   screen; both parts set `display`, so the browser's own rule for `hidden` needs saying again here. */
+.mappy-view .mappy-node-label[hidden], .mappy-view .mappy-node-call-mark[hidden] { display: none; }
 .mappy-view .mappy-node-label :is(p, h1, h2, h3, h4, h5, h6) { display: inline; margin: 0; padding: 0; font: inherit; }
 .mappy-view .mappy-node-label img { display: inline-block; max-width: 240px; max-height: 140px; object-fit: contain; vertical-align: middle; }
 .mappy-view .mappy-node-attachments { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 3px; font-size: var(--font-ui-small); color: var(--text-muted); }

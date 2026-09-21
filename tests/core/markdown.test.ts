@@ -111,6 +111,40 @@ describe('source-preserving Markdown projection', () => {
     expect(changed.nodes[0]?.id).toBe(first.nodes[0]?.id);
   });
 
+  it('carries every id across the edits its writer knows, whatever the titles say (LEV-146)', () => {
+    // The caller that planned the edits knows where each node went, so nothing has to be guessed from the
+    // text: repeated titles and empty ones — a node an image was pasted onto — keep their ids as well.
+    const source = '## Root\n- Same\n  One\n- Same\n  Two\n- \n\n  ![[a.png]]\n';
+    const first = parseMarkdown(source, 'File');
+    const at = source.indexOf('  Two') + '  Two'.length;
+    const edit = { from: at, to: at, text: '\n\n  ![[b.png]]' };
+    const after = source.slice(0, at) + edit.text + source.slice(at);
+    const written = parseMarkdown(after, 'File', first, undefined, [edit]);
+    expect(written.nodes.map(node => node.title)).toEqual(first.nodes.map(node => node.title));
+    expect(written.nodes.map(node => node.id)).toEqual(first.nodes.map(node => node.id));
+    // The same text without the edits is someone else's change, and then a repeated title is not guessed at.
+    const guessed = parseMarkdown(after, 'File', first);
+    const repeated = guessed.nodes.filter(node => node.title === 'Same');
+    expect(repeated).toHaveLength(2);
+    expect(repeated.some(node => first.nodes.some(old => old.id === node.id))).toBe(false);
+    // An empty set is not a set of edits: a caller with nothing to say about the change says nothing, and
+    // the offsets alone must not carry the repeated titles either.
+    const empty = parseMarkdown(after, 'File', first, undefined, []);
+    expect(empty.nodes.filter(node => node.title === 'Same').some(node => first.nodes.some(old => old.id === node.id))).toBe(false);
+  });
+
+  it('gives a node a new id when an edit rewrites the line it began on, rather than guessing at a place', () => {
+    const source = '## Root\n- Same\n  One\n- Same\n  Two\n';
+    const first = parseMarkdown(source, 'File');
+    // A move: both items are rewritten in one edit, so neither line begins where it did; only Root carries.
+    const edit = { from: source.indexOf('- Same'), to: source.length, text: '- Same\n  Two\n- Same\n  One\n' };
+    const after = source.slice(0, edit.from) + edit.text;
+    const moved = parseMarkdown(after, 'File', first, undefined, [edit]);
+    expect(moved.nodes[0]?.id).toBe(first.nodes[0]?.id);
+    expect(moved.nodes.slice(1).some(node => first.nodes.some(old => old.id === node.id))).toBe(false);
+    expect(new Set(moved.nodes.map(node => node.id)).size).toBe(3);
+  });
+
   it('supports an explicit parsing format for safe edit validation without changing automatic detection', () => {
     const source = '## Root\n- Child';
     expect(parseMarkdown(source, 'File').format).toBe('list');

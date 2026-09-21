@@ -1,6 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
-import { endsWithBlankLine, findNode, getNode, paragraphGap } from './text-edits';
+import { endsWithBlankLine, findNode, getNode, nodeAt, paragraphGap } from './text-edits';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -345,7 +345,7 @@ type TopicRole =
 function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode | undefined, role: TopicRole, place?: TopicPlacement): EditPlan {
   if (plan.edits.length === 0 || (!place && readTopicPositions(doc.source).size === 0)) return plan;
   const after = parseMarkdown(applyEdits(doc.source, plan.edits), doc.root.title, undefined, doc.format);
-  const settled = plan.selectionOffset === null ? undefined : after.nodes.find((candidate) => candidate.titleFrom === plan.selectionOffset);
+  const settled = nodeAt(after, plan.selectionOffset);
   if (role !== 'leaves' && !settled) return plan;
   const before = projectMap(doc).topics.filter((topic) => role === 'adds' || topic.id !== node?.id);
   const next = projectMap(after).topics.filter((topic) => role === 'leaves' || topic.id !== settled?.id);

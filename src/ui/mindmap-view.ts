@@ -1,7 +1,7 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
-import { findNode, getNode } from "../core/text-edits";
+import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
@@ -54,37 +54,19 @@ function draftFingerprint(document: MindDocument, node: MindNode): string {
 /**
  * What an open draft is on: the node it edits and that node's text when the draft last agreed with the
  * note (`draftFingerprint`). A save refuses when the two no longer agree, so the draft cannot overwrite
- * someone else's edit (E05). Both are re-based after the map's own writes — an image the user pasted
- * into the node being edited is not someone else's edit (LEV-140) — and `nodeId` is re-based with them,
- * because a re-parse can only carry an id over by title: every node sharing a title is renumbered on
- * each write, so a draft that held its first id would lose its node on a map with repeated names
- * (LEV-142).
+ * someone else's edit (E05). The text is re-based after the map's own writes — an image the user pasted
+ * into the node being edited is not someone else's edit (LEV-140) — while the id needs no re-basing:
+ * a write of this view's own carries every node's id across the re-parse (`ownWrite`, LEV-146).
  */
-interface DraftBase {
-  nodeId: string;
-  value: string;
-  /**
-   * Where this view's own write left the node's title, together with the text that write produced. It
-   * answers only while the note still reads exactly like that: anything else that touches the note — an
-   * external change, another write — moves the offsets, and then an offset is a guess, which is what E05
-   * refuses to make (LEV-142).
-   */
-  anchor: { offset: number; source: string } | undefined;
-}
+interface DraftBase { nodeId: string; value: string }
 
 /**
- * Where `offset` ends up once `edits` are applied, or undefined when the answer is not a place any more:
- * an edit that starts at or before it and ends after it replaces the text the offset pointed into, so
- * nothing is carried over (a rename rewrites its own title range that way).
+ * A write this view made: what the note read before it, what it wrote, and the edits between. The re-parse
+ * that follows takes them so the nodes keep their ids — nothing else carries a node whose title repeats or
+ * is empty (LEV-146) — and it is used once, for the read that finds exactly that text: anything else means
+ * someone else has written since, and then the ids are as much of a guess as E05 says they are.
  */
-function offsetAfter(edits: readonly TextEdit[], offset: number): number | undefined {
-  let shift = 0;
-  for (const edit of edits) {
-    if (edit.to <= offset) shift += edit.text.length - (edit.to - edit.from);
-    else if (edit.from <= offset) return undefined;
-  }
-  return offset + shift;
-}
+interface OwnWrite { before: string; after: string; edits: readonly TextEdit[] }
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
 interface SnapIndex {
@@ -271,6 +253,8 @@ export class MindmapView extends FileView {
   /** The base of the open title draft and of the open body draft; see `DraftBase`. */
   private inlineDraft: DraftBase | undefined;
   private bodyDraft: DraftBase | undefined;
+  /** The write this view last made, for the re-parse that reads it back; see `OwnWrite`. */
+  private ownWrite: OwnWrite | undefined;
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
   private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; release: () => void } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
@@ -452,7 +436,7 @@ export class MindmapView extends FileView {
     }
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
-    this.pendingTopic = null; this.topicDrag = null;
+    this.pendingTopic = null; this.topicDrag = null; this.ownWrite = undefined;
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
   }
@@ -507,7 +491,7 @@ export class MindmapView extends FileView {
     const selection = value.selection && typeof value.selection === "object" ? value.selection as Record<string, unknown> : null;
     if (document && typeof value.subpath === "string" && value.subpath !== "") {
       const offset = locateSubpath(document.source, value.subpath);
-      const id = offset === null ? undefined : this.nodeAt(document, offset)?.id;
+      const id = offset === null ? undefined : this.nodeContaining(document, offset)?.id;
       if (id !== undefined) this.select(id, true);
     } else if (document && selection && typeof selection.from === "number" && typeof selection.title === "string") {
       const { from, title } = selection;
@@ -522,7 +506,7 @@ export class MindmapView extends FileView {
   }
 
   /** The innermost node whose section holds the offset: children lie inside their parent's range and follow it. */
-  private nodeAt(document: MindDocument, offset: number): MindNode | undefined {
+  private nodeContaining(document: MindDocument, offset: number): MindNode | undefined {
     let found: MindNode | undefined;
     for (const node of document.nodes) {
       if (node.from <= offset && offset < node.to && (!found || node.from >= found.from)) found = node;
@@ -935,11 +919,21 @@ export class MindmapView extends FileView {
     const source = await this.store.read(file);
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
     const changed = source !== this.document?.source || this.document.root.title !== file.basename;
-    const document = changed || !this.document ? parseMarkdown(source, file.basename, this.document) : this.document;
+    // The view's own write answers for this read while it finds exactly the text that write left on a note
+    // this view has not re-read since; the edits then carry the ids across (LEV-146). Anything else means
+    // someone else has written, and the write is of no use to any later read either.
+    const own = this.ownWrite;
+    const written = own && source === own.after && this.document?.source === own.before ? own.edits : undefined;
+    if (own && !written) this.ownWrite = undefined;
+    const document = changed || !this.document
+      ? parseMarkdown(source, file.basename, this.document, undefined, written) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
+    // Spent only now: a read superseded above leaves the write for the read that wins, which finds the same
+    // text on the same note and carries the ids after all.
+    this.ownWrite = undefined;
     if (changed) {
       this.document = document;
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
@@ -1352,7 +1346,7 @@ export class MindmapView extends FileView {
 
   /** Select the node a plan points at, unfolding its parent, after the document was re-read. */
   private reveal(offset: number | null): MindNode | undefined {
-    const selected = offset === null ? undefined : this.document?.nodes.find(node => node.titleFrom === offset);
+    const selected = this.document ? nodeAt(this.document, offset) : undefined;
     if (!selected) return undefined;
     if (selected.parentId) this.collapsed.delete(selected.parentId);
     this.draw(); this.select(selected.id, true);
@@ -1388,7 +1382,7 @@ export class MindmapView extends FileView {
     const plan = planEdit(document, { type: "add-topic" });
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
-    const created = this.document?.nodes.find(node => node.titleFrom === plan.selectionOffset);
+    const created = this.document ? nodeAt(this.document, plan.selectionOffset) : undefined;
     // The first heading of a note becomes its body root and has no position.
     if (created && position && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
     if (this.reveal(plan.selectionOffset)) this.editTitle();
@@ -1491,7 +1485,10 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!document || !file || this.saving) return;
     // Removing the branch re-centres the body root, so the drop point is measured from where the root will be.
-    const detached = parseMarkdown(applyEdits(document.source, planEdit(document, { type: "detach", nodeId: id }).edits), file.basename, document);
+    // The simulation takes its own edits, so the folds and the called maps — both held by node id — answer for
+    // the same nodes as on screen (LEV-146).
+    const removal = planEdit(document, { type: "detach", nodeId: id }).edits;
+    const detached = parseMarkdown(applyEdits(document.source, removal), file.basename, document, undefined, removal);
     const position = this.topicPoint(point, this.originFor(detached));
     const plan = planEdit(document, { type: "detach", nodeId: id, position: { layout: this.mode, x: position.x, y: position.y } });
     await this.commit(document.source, plan.edits, file);
@@ -1597,6 +1594,9 @@ export class MindmapView extends FileView {
       try { written = await this.store.apply(file, source, edits); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
+      // What the next read of this note is measured against: the folds, the selection, a drag and any open
+      // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
+      this.ownWrite = { before: source, after: written, edits };
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external
@@ -1617,9 +1617,11 @@ export class MindmapView extends FileView {
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
     this.inlineEditor?.dispose();
-    entry.content.hidden = true;
+    // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
+    // draft is open appears at once instead of when the draft is confirmed (報告: 2026-09-22).
+    this.renderer.editing(node.id, true);
     let renamedOffset: number | null = null;
-    const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node), anchor: undefined };
+    const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
     this.inlineEditor = new InlineEditor(entry.element, {
       initial: node.title,
@@ -1640,19 +1642,19 @@ export class MindmapView extends FileView {
       finish: (next, cancelled) => {
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
-        entry.content.hidden = false;
+        this.renderer.editing(node.id, false);
         if (this.closed || this.unloading || file !== this.file) return;
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
         const current = this.document?.nodes.find(item => item.id === node.id)
-          ?? (!cancelled && renamedOffset !== null ? this.document?.nodes.find(item => item.titleFrom === renamedOffset) : undefined)
+          ?? (!cancelled && this.document ? nodeAt(this.document, renamedOffset) : undefined)
           ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
         // A click on the empty canvas that ended the edit (the blur saved it) leaves nothing selected; the node is not taken back.
         if (current && !this.deselected) this.select(current.id, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
-      restore: () => { entry.content.hidden = false; },
+      restore: () => { this.renderer.editing(node.id, false); },
     });
   }
 
@@ -1662,7 +1664,7 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!node || !document || !file) return;
     if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
-    const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node), anchor: undefined };
+    const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.bodyDraft = draft;
     const modal = new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
       const { document: current, node: target } = this.draftTarget(file, draft);
@@ -1678,19 +1680,13 @@ export class MindmapView extends FileView {
     modal.open();
   }
 
-  /**
-   * The note a kept draft applies to once the map has refreshed under it (E05): the view's current parse,
-   * provided the node is still there with the title and body the user saw when the draft opened. Ids survive
-   * a re-parse only for unique titles, so a same-named or vanished node is refused here, and an external edit
-   * to the node being drafted is refused rather than overwritten; a node that only moved takes the draft.
-   */
   /** The open drafts still on their node, reading as they did when the draft was last in step with the note. */
   private currentDrafts(): DraftBase[] {
     const document = this.document;
     if (!document) return [];
     return [this.inlineDraft, this.bodyDraft].filter((draft): draft is DraftBase => {
       if (!draft) return false;
-      const node = this.draftNode(document, draft);
+      const node = findNode(document, draft.nodeId);
       return node !== undefined && draftFingerprint(document, node) === draft.value;
     });
   }
@@ -1701,44 +1697,27 @@ export class MindmapView extends FileView {
    * another app's, and the save must not tell the user their own action changed the note (LEV-140).
    * `written` is the text this view put on disk, parsed here rather than read back, so neither a lost
    * re-read nor an external change that arrived in between can decide what the draft is measured against.
+   * The parse takes the edits, as the re-read's will, so both number the nodes the same way (LEV-146).
    */
   private rebaseDrafts(drafts: readonly DraftBase[], planned: MindDocument, written: string, edits: readonly TextEdit[]): void {
-    const document = parseMarkdown(written, this.file?.basename ?? "", planned);
+    const document = parseMarkdown(written, this.file?.basename ?? "", planned, undefined, edits);
     for (const draft of drafts) {
-      const was = this.draftNode(planned, draft);
-      if (!was) continue;
-      // Where this write leaves the node's title. The view will parse this same text on its own and may
-      // number the node differently, so the draft carries the place rather than this parse's id — and
-      // only once a node is actually there, so an offset that missed is never kept (LEV-142).
-      const offset = offsetAfter(edits, was.titleFrom);
-      const moved = offset === undefined ? undefined : document.nodes.find(item => item.titleFrom === offset);
-      const node = moved ?? findNode(document, draft.nodeId);
-      if (!node) continue;
-      draft.value = draftFingerprint(document, node);
-      draft.anchor = moved && offset !== undefined ? { offset, source: written } : undefined;
+      const node = findNode(document, draft.nodeId);
+      if (node) draft.value = draftFingerprint(document, node);
     }
   }
 
   /**
-   * The node a draft is on, in `document`: the one that answers to its id, else — only right after this
-   * view's own write — the one whose title starts where that write left it (`anchor`). Ids are carried
-   * through a re-parse by title, so nodes that share a title are renumbered by every write, including
-   * this view's own; the anchor is what carries the draft across that, and it is set only where the
-   * edits are known (LEV-142). An external change never sets one, so a same-named node is still not
-   * guessed at (E05). Resolving through the anchor adopts the new id, so later looks are by id again.
+   * The note a kept draft applies to once the map has refreshed under it (E05): the view's current parse,
+   * provided the node is still there with the title and body the user saw when the draft opened. A write
+   * of this view's own carries the node's id over (LEV-146); an external change carries it only where the
+   * title is unique, so a node that vanished under one is refused here, and an external edit to the node
+   * being drafted is refused rather than overwritten. A node that only moved takes the draft.
    */
-  private draftNode(document: MindDocument, draft: DraftBase): MindNode | undefined {
-    const byId = findNode(document, draft.nodeId);
-    if (byId) return byId;
-    const anchor = draft.anchor;
-    if (!anchor || document.source !== anchor.source) return undefined;
-    return document.nodes.find(item => item.titleFrom === anchor.offset);
-  }
-
   private draftTarget(file: TFile, draft: DraftBase): { document: MindDocument; node: MindNode } {
     const document = this.document;
     if (file !== this.file || !document) throw new Error(NOTE_CHANGED_MESSAGE);
-    const node = this.draftNode(document, draft);
+    const node = findNode(document, draft.nodeId);
     if (!node) throw new Error(NODE_GONE_MESSAGE);
     if (draftFingerprint(document, node) !== draft.value) {
       throw new Error("編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。");

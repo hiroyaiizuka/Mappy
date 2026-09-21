@@ -1,15 +1,41 @@
+import type { TextEdit } from './commands';
 import type { MindDocument, MindNode } from './markdown';
 
 /**
- * The rules every text edit shares, in one place: which node an edit addresses, whether the text
- * before an insertion already ends in a blank line, and how much break an insertion needs.
- * `commands.ts`, `list-commands.ts` and `body.ts` all plan edits against the same source, so a rule
- * that lived in each of them could be corrected in one and left wrong in the others.
+ * The rules every text edit shares, in one place: which node an edit addresses, where an offset lands
+ * once the edits are applied, whether the text before an insertion already ends in a blank line, and how
+ * much break an insertion needs. `commands.ts`, `list-commands.ts` and `body.ts` all plan edits against
+ * the same source, so a rule that lived in each of them could be corrected in one and left wrong in the
+ * others.
  */
 
 /** The node of this id, or undefined; `'root'` is the body root, which is not in `doc.nodes`. */
 export function findNode(doc: MindDocument, id: string | null): MindNode | undefined {
   return id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
+}
+
+/**
+ * The node whose title starts at `offset`: what a plan's `selectionOffset` points at, and how a node
+ * written by one edit set is found in the parse of the text that edit set produced. The body root has no
+ * title of its own and is never the answer.
+ */
+export function nodeAt(doc: MindDocument, offset: number | null): MindNode | undefined {
+  return offset === null ? undefined : doc.nodes.find(node => node.titleFrom === offset);
+}
+
+/**
+ * Where `offset` ends up once `edits` are applied, or undefined when the answer is not a place any more:
+ * an edit that starts at or before it and ends after it replaces the text the offset pointed into, so
+ * nothing is carried over (a rename rewrites its own title range that way). Text inserted exactly at
+ * `offset` goes before it, so the offset moves along with what it pointed at.
+ */
+export function offsetAfter(edits: readonly TextEdit[], offset: number): number | undefined {
+  let shift = 0;
+  for (const edit of edits) {
+    if (edit.to <= offset) shift += edit.text.length - (edit.to - edit.from);
+    else if (edit.from <= offset) return undefined;
+  }
+  return offset + shift;
 }
 
 /** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
