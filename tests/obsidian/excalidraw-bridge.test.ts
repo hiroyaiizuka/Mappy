@@ -707,6 +707,35 @@ describe('ExcalidrawBridge.handleDrop', () => {
     expect(reports).toEqual([]);
   });
 
+  it('sends a bare address to mail once the vault has had its say, and keeps an attachment named like one (LEV-138)', async () => {
+    // GFM reads `someone@example.com` and `file@2x.png` as the same kind of link. The vault tells them
+    // apart: the picture is a file and keeps being linked as one, the address is not and becomes `mailto:`
+    // instead of `[[someone@example.com]]`, a link to a note that does not exist.
+    const { bridge, automate, reports } = harness({
+      sources: {
+        'Note.md': '## 講座\n- 連絡 someone@example.com\n- 図 file@2x.png\n- [[someone@example.com]]\n'
+          + '- 本文のみ\n\n  連絡 other@example.com\n- <team@example.com>\n',
+      },
+      images: { 'file@2x.png': { width: 40, height: 40 } },
+    });
+    expect(bridge.handleDrop(drop())).toBe(true);
+    await flush();
+    const elements = automate?.instances[0]?.added[0]?.elements ?? [];
+    const linkOf = (label: string): string | null => {
+      const text = elements.find(element => element.text === label);
+      if (!text) throw new Error(`No element for ${label}`);
+      return (elements.find(element => element.id === text.containerId) ?? text).link ?? null;
+    };
+    expect(linkOf('連絡 someone@example.com')).toBe('mailto:someone@example.com');
+    expect(linkOf('team@example.com')).toBe('mailto:team@example.com');
+    // A body address takes the same route as a title's; the body used to hand back no link at all.
+    expect(linkOf('本文のみ')).toBe('mailto:other@example.com');
+    // The picture in the vault is what the note meant, and `[[…]]` still names a note whatever it looks like.
+    expect(linkOf('図 file@2x.png')).toBe('[[file@2x]]');
+    expect(linkOf('someone@example.com')).toBe('[[someone@example.com]]');
+    expect(reports).toEqual([]);
+  });
+
   it('stacks several dropped notes vertically and uses frontmatter layouts', async () => {
     const { bridge, automate } = harness({
       sources: { 'A.md': '## A\n- a1\n- a2\n', 'B.md': '## B\n- b1\n' },

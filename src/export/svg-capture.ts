@@ -37,7 +37,10 @@ export interface CaptureSource {
   edges: SVGSVGElement;
 }
 
-/** A data URL for the image, or null when it cannot be read; the node is kept either way. */
+/**
+ * A data URL for the image, or null when it cannot be read; the node is kept either way. Anything that is
+ * not a data URL is taken as unreadable, so the file never leaves an address for a viewer to fetch.
+ */
 export type ImageResolver = (image: HTMLImageElement) => Promise<string | null>;
 
 export interface CaptureOptions {
@@ -92,12 +95,32 @@ const KEPT_ATTRIBUTES = new Set(['href', 'alt', 'title', 'width', 'height', 'dir
 
 /**
  * Attributes that name where something outside this file is, whichever element carries one (§5 M13,
- * LEV-133): they are filtered rather than copied. A same-document fragment (`<use xlink:href="#g">`) and a
- * relative path name no scheme and travel unchanged; a resource written with one (`<image href="data:…">`)
- * is dropped along with the destinations a click would run. The export's own images are written separately
- * and are not affected.
+ * LEV-133): they are filtered rather than copied, by what the element does with them.
  */
 const LINK_ATTRIBUTES = new Set(['href', 'data-href', 'xlink:href']);
+
+/** The two elements whose link is a destination a reader may choose; on anything else it is a resource the file loads. */
+function isDestination(element: Element): boolean {
+  return element.localName === 'a' || element.localName === 'area';
+}
+
+/**
+ * A reference the file follows by itself, kept only when it points inside the file. `<use xlink:href="#g">`
+ * is how an icon reuses a shape it carries; `<image href="https://…">` would have the file fetch a picture
+ * from a host as soon as it is opened, which tells that host who opened it (§5 M13, LEV-139).
+ */
+function sameDocumentReference(value: string): string | null {
+  return value.startsWith('#') ? value : null;
+}
+
+/** Every `url(…)` in a value, as a style or a presentation attribute writes it. */
+const URL_VALUE = /url\(\s*(['"]?)\s*([^)'"]*)/giu;
+
+/** `fill="url(https://…)"`, `style="…url(…)"`: the same fetch as above, written as a paint server. */
+function fetchesFromOutside(value: string): boolean {
+  for (const match of value.matchAll(URL_VALUE)) if (!(match[2] ?? '').startsWith('#')) return true;
+  return false;
+}
 
 /** `onclick`, `onload`, …: a file written out of a note carries no code, in whichever namespace it was written. */
 function isEventHandler(name: string): boolean {
@@ -212,6 +235,9 @@ interface Serializer {
 function serializeAttributes(element: Element, names: Iterable<string>, extra: Record<string, string | null>): string {
   const parts: string[] = [];
   const written = new Set<string>();
+  const destination = isDestination(element);
+  // Paint servers and inline style reach the file through the SVG branch alone; `KEPT_ATTRIBUTES` admits neither.
+  const paints = element.namespaceURI === SVG_NAMESPACE;
   for (const [name, value] of Object.entries(extra)) {
     written.add(name);
     if (value !== null && value !== '') parts.push(` ${name}="${escapeAttribute(value)}"`);
@@ -220,8 +246,9 @@ function serializeAttributes(element: Element, names: Iterable<string>, extra: R
     if (written.has(name) || !isWritableAttributeName(name) || isEventHandler(name)) continue;
     const raw = element.getAttribute(name);
     if (raw === null) continue;
+    if (paints && fetchesFromOutside(raw)) continue;
     // A destination leaves the vault with the file; only the links `exportedLink` allows travel with it.
-    const value = LINK_ATTRIBUTES.has(name) ? exportedLink(raw) : raw;
+    const value = LINK_ATTRIBUTES.has(name) ? (destination ? exportedLink(raw) : sameDocumentReference(raw)) : raw;
     if (value !== null) parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
   return parts.join('');
@@ -292,7 +319,9 @@ async function resolveImages(pending: readonly PendingImage[], resolve: ImageRes
     const key = imageKey(entry.image);
     let request = bySource.get(key);
     if (!request) {
-      request = resolve(entry.image).catch(() => null);
+      // The bytes travel in the file or the image does not: a resolver that hands back an address
+      // instead of a data URL would leave the file fetching it from a host (§5 M13, LEV-139).
+      request = resolve(entry.image).then(url => (url?.startsWith('data:') ? url : null)).catch(() => null);
       bySource.set(key, request);
     }
     results.set(entry.token, await request);

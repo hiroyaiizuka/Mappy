@@ -2,7 +2,7 @@ import type { App, TFile } from 'obsidian';
 import { imageMimeType } from '../core/attachments';
 import { initialCallFolds, projectCalls, type CallTargets } from '../core/calls';
 import { parseMarkdown, projectMap, type MindDocument } from '../core/markdown';
-import { externalUrl, hasUrlScheme, urlScheme, wikiLinkPath } from '../core/wiki-link';
+import { addressUrl, externalUrl, hasUrlScheme, urlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
@@ -460,14 +460,21 @@ export class ExcalidrawBridge {
    * Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in.
    * A link that already has a scheme travels into the drawing as it was written, so only the schemes on the allowed
    * list are kept (`externalUrl`, LEV-131); a refused one is added to `refused` and the node falls back to what it
-   * would carry with no link at all, so a root still links to its note. An autolink the note wrote without a scheme
-   * arrives here with one (`autolinkUrl`, LEV-134), so what is left for the vault branch below is a path, never a
-   * web address dressed as one.
+   * would carry with no link at all, so a root still links to its note. A `www.` autolink the note wrote without a
+   * scheme arrives here with one (`autolinkUrl`, LEV-134).
+   *
+   * What is left without a scheme is read as a vault path, and an unresolved one still travels as `[[…]]`: that is
+   * the note's own link, and clicking it in the drawing offers the note Obsidian would offer to create. The one
+   * exception is a bare address, which GFM reads as a link and Obsidian reads as an address. The vault decides
+   * first — `file@2x.png` is a picture, and a link to it must keep reaching it — and an address the vault cannot
+   * place becomes the `mailto:` the map opens, instead of a link to a note that does not exist (LEV-138).
    */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile, refused: string[]): string | null {
     if (node.link && !hasUrlScheme(node.link)) {
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, node.sourcePath ?? source.path);
-      return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
+      if (dest) return `[[${this.app.metadataCache.fileToLinktext(dest, drawingPath)}]]`;
+      const address = node.linkSyntax === 'autolink' ? addressUrl(node.link) : null;
+      return address ?? `[[${node.link}]]`;
     }
     if (node.link) {
       const external = externalUrl(node.link);

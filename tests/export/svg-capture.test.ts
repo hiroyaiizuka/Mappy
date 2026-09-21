@@ -478,6 +478,58 @@ describe('SVG export of the map view (jsdom)', () => {
     expect(links[1]?.getAttribute('href')).toBe('https://example.com/a');
   });
 
+  it('asks no host for anything: an inline SVG\'s external references and paint servers do not travel (LEV-139)', async () => {
+    // The file is opened away from Obsidian. A reference it follows by itself tells the host who opened it,
+    // so only what points inside the file travels; a shape an icon reuses (`#g`) is exactly that.
+    const mounted = await mount('uneven-branches');
+    const label = mounted.nodes().find(node => node.querySelector('.mappy-node-label')?.textContent?.includes('空に近い枝'))?.querySelector('.mappy-node-label');
+    label?.insertAdjacentHTML('beforeend', '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">'
+      + '<image href="https://tracker.invalid/x.png" width="8" height="8"/>'
+      + '<image xlink:href="https://tracker.invalid/y.png" width="8" height="8"/>'
+      + '<circle cx="4" cy="4" r="2" style="fill:url(https://tracker.invalid/g);stroke:red"/>'
+      + '<rect width="4" height="4" fill="url(https://tracker.invalid/p)" filter="url(https://tracker.invalid/f)"/>'
+      + '<use xlink:href="https://tracker.invalid/s.svg#g"/>'
+      + '<use xlink:href="#g"/><rect width="2" height="2" fill="url(#local)" mask="url(\'#soft\')"/>'
+      + '</svg>');
+    const { svg, parsed } = await exportOf(mounted);
+    expect(svg).not.toContain('tracker.invalid');
+    expect(parsed.querySelectorAll('image')).toHaveLength(2);
+    for (const image of Array.from(parsed.querySelectorAll('image'))) {
+      expect(image.hasAttribute('href')).toBe(false);
+      expect(image.hasAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe(false);
+    }
+    // What points inside the file is what the picture is made of, and it stays.
+    const uses = Array.from(parsed.querySelectorAll('use'));
+    expect(uses.map(item => item.getAttributeNS('http://www.w3.org/1999/xlink', 'href'))).toEqual([null, '#g']);
+    const local = Array.from(parsed.querySelectorAll('rect')).find(item => item.getAttribute('fill') === 'url(#local)');
+    expect(local?.getAttribute('mask')).toBe("url('#soft')");
+    const outward = Array.from(parsed.querySelectorAll('rect')).find(item => item.getAttribute('width') === '4');
+    expect(outward?.hasAttribute('fill')).toBe(false);
+    expect(outward?.hasAttribute('filter')).toBe(false);
+    expect(parsed.querySelector('circle')?.hasAttribute('style')).toBe(false);
+  });
+
+  it('embeds image bytes or nothing: a resolver that answers with an address leaves the node, not the address (LEV-139)', async () => {
+    const mounted = await mount('uneven-branches');
+    const external = await exportOf(mounted, () => Promise.resolve('https://tracker.invalid/x.png'));
+    expect(external.svg).not.toContain('tracker.invalid');
+    expect(external.parsed.querySelectorAll('img')).toHaveLength(0);
+    // The node is kept whole, as it is for an image that cannot be read at all.
+    expect(external.parsed.querySelectorAll('.mappy-export-missing-image').length).toBeGreaterThan(0);
+    expect(Array.from(external.parsed.querySelectorAll('.mappy-node-label'), item => item.textContent?.trim()))
+      .toEqual(expect.arrayContaining(['リンクと画像', 'Markdown 形式の画像']));
+  });
+
+  it('writes a stylesheet that fetches nothing: no fonts, no paint servers, no images', async () => {
+    const mounted = await mount('uneven-branches');
+    const { parsed } = await exportOf(mounted);
+    const css = Array.from(parsed.querySelectorAll('style'), style => style.textContent ?? '').join('\n');
+    expect(css.length).toBeGreaterThan(0);
+    expect(css).not.toContain('url(');
+    expect(css).not.toContain('@import');
+    expect(css).not.toContain('@font-face');
+  });
+
   it('reports a tainted canvas as "PNG unavailable" and probes it once for the modal', async () => {
     const win = window as unknown as { createEl: (tag: string) => unknown };
     const original = win.createEl;

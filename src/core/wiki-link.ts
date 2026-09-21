@@ -106,8 +106,18 @@ export function externalUrl(text: string): string | null {
   return scheme && EXTERNAL_LINK_SCHEMES.has(scheme) ? value : null;
 }
 
+/**
+ * How a link was written, which decides what a copy of it may become. `[[…]]` and `[見て](path)` name
+ * something in the vault, so they keep naming it; an `autolink` is text GFM read as a link on its own,
+ * and only there does a string with no scheme mean the web rather than a path.
+ */
+export type LinkSyntax = 'vault' | 'autolink';
+
 /** GFM reads a web address with no scheme as a link too, leaving the scheme to whoever opens it. */
 const WWW_AUTOLINK = /^www\./iu;
+
+/** And an address: `someone@example.com`, with no `mailto:` in front of it. */
+const ADDRESS_AUTOLINK = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 
 /**
  * An autolink as the URL it opens: `www.example.com/a` → `https://www.example.com/a`; anything else comes
@@ -120,12 +130,24 @@ const WWW_AUTOLINK = /^www\./iu;
  * rule is `http:`: the copy is a new document rather than a transcript of the note, and its link opening
  * matters more than its scheme matching the one the reader of the note would have supplied.
  *
- * GFM also autolinks a bare address (`someone@example.com`), and that one is left alone: it linkifies an
- * attachment written the way a retina image is named (`file@2x.png`), so a blanket `mailto:` would turn a
- * link to a picture in the vault into a mail window (LEV-138).
+ * GFM also autolinks a bare address (`someone@example.com`), and that one is not decided here: it reads an
+ * attachment named the way a retina image is (`file@2x.png`) as an address too, and only the vault knows
+ * which it is. `addressUrl` is what the caller reaches for once the vault has had its say.
  */
 export function autolinkUrl(text: string): string {
   return !hasUrlScheme(text) && WWW_AUTOLINK.test(text) ? `https://${text}` : text;
+}
+
+/**
+ * A bare address autolink as the URL it opens (`someone@example.com` → `mailto:someone@example.com`), or
+ * null when the text is not one.
+ *
+ * Pass only an autolink the vault could not place. GFM calls `file@2x.png` an address as readily as it
+ * calls `someone@example.com` one, and that first one is a picture a note links to; a copy of it must
+ * keep reaching the picture, so the file in the vault decides first and this decides the rest (LEV-138).
+ */
+export function addressUrl(text: string): string | null {
+  return !hasUrlScheme(text) && ADDRESS_AUTOLINK.test(text) ? `mailto:${text}` : null;
 }
 
 /**
