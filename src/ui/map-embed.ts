@@ -1,6 +1,6 @@
 import {
   MarkdownRenderChild, MarkdownView, parseLinktext, setIcon,
-  type App, type MarkdownPostProcessor, type MarkdownPostProcessorContext,
+  type App, type MarkdownPostProcessor, type MarkdownPostProcessorContext, type TFile,
 } from "obsidian";
 import { embedTopicLayouts, embedTrees, initialFolds, readMapFromSource, visibleNodes, type EmbedTrees } from "../core/embed";
 import { parseMarkdown, type MindDocument } from "../core/markdown";
@@ -20,6 +20,16 @@ export const EMBED_HOST_CLASS = "mappy-embed-host";
 export const EMBED_ANCHOR_CLASS = "mappy-embed-anchor";
 /** Obsidian's classes that give a note embed its chrome; removed while a map is shown so both paths look the same, restored on release. */
 const OBSIDIAN_EMBED_CLASSES = ["markdown-embed", "inline-embed"];
+/**
+ * How long a section of an embedded note waiting for its container to join the document is
+ * held by the plugin itself; after that it is kept only as long as Obsidian keeps the
+ * section (a weak reference), so a rendering Obsidian discarded without unloading can be
+ * collected while an embed below the fold still gets its map when it is scrolled to.
+ * Obsidian 1.6.7 attaches the container 17–28 ms after the section reaches the processor
+ * when the embed is on screen, only when it scrolls into view when it is below the fold
+ * (2.5 s seen), and never for a rendering it discarded (LEV-91).
+ */
+export const EMBED_CLAIM_HOLD_MS = 60_000;
 const EMBED_PADDING = 24;
 const REFRESH_DEBOUNCE = 45;
 
@@ -242,6 +252,65 @@ export class MapEmbed extends MarkdownRenderChild {
 }
 
 /**
+ * A section of an embedded note that reached the processor before its container joined
+ * the document. It lives in the section like a map would (`ctx.addChild`, on a hidden
+ * anchor inside the section, which is what Obsidian watches) and reports once: attached
+ * (the watcher of the document found the anchor in it), or not, because the section was
+ * unloaded (Obsidian discarded that rendering, or the host closed) or the plugin unloaded.
+ * The anchor goes with the report, and nothing else is registered, so giving up leaves
+ * nothing behind. Nothing here polls: the document's own changes drive `check`.
+ */
+class PendingClaim extends MarkdownRenderChild {
+  private timer: number | undefined;
+  /** The weak handle the watcher keeps once the hold is over; on the claim itself so it can be dropped without a strong reference. */
+  ref: WeakRef<PendingClaim> | undefined;
+
+  constructor(section: HTMLElement, private settled: ((attached: boolean) => void) | null) {
+    super(section.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
+  }
+
+  onunload(): void { this.settle(false); }
+
+  /** Reports attached once the anchor is in the document. */
+  check(): boolean {
+    if (!this.containerEl.isConnected) return false;
+    this.settle(true);
+    return true;
+  }
+
+  /** Runs `release` after `ms` unless the wait has ended by then. */
+  hold(ms: number, release: () => void): void {
+    this.timer = this.containerEl.win.setTimeout(() => {
+      this.timer = undefined;
+      release();
+    }, ms);
+  }
+
+  /** Ends the wait; harmless once it has ended. */
+  settle(attached: boolean): void {
+    if (this.timer !== undefined) this.containerEl.win.clearTimeout(this.timer);
+    this.timer = undefined;
+    const settled = this.settled;
+    if (!settled) return;
+    this.settled = null;
+    this.containerEl.remove();
+    settled(attached);
+  }
+}
+
+/**
+ * The sections of one document waiting for their container: one observer of the document's
+ * DOM changes serves them all, checking each on every change and disconnected while none
+ * waits. `held` are the plugin's own for `EMBED_CLAIM_HOLD_MS`; `kept` are then only as
+ * long as Obsidian keeps them (their section's component still holds them).
+ */
+interface Watcher {
+  observer: MutationObserver;
+  held: Set<PendingClaim>;
+  kept: Set<WeakRef<PendingClaim>>;
+}
+
+/**
  * The Markdown post processor for map embeds and the registry of the embeds it
  * created. Two ways an embed reaches it:
  *
@@ -252,7 +321,9 @@ export class MapEmbed extends MarkdownRenderChild {
  * - Live preview renders the embedded note's own sections inside Obsidian's
  *   embed container (the host paragraph is a CodeMirror widget, never a section).
  *   The container is claimed once: its own content is hidden and a map appended,
- *   with an anchor inside the section carrying the lifecycle.
+ *   with an anchor inside the section carrying the lifecycle. A section that
+ *   arrives before its container is on the document waits for it (an embed below the
+ *   fold gets its container only when scrolled to) until Obsidian drops the section.
  *
  * In both cases the component is handed to the renderer (`ctx.addChild`) so it
  * unloads with the section, and every live embed is released when the plugin
@@ -260,6 +331,8 @@ export class MapEmbed extends MarkdownRenderChild {
  */
 export class MapEmbeds {
   private readonly live = new Set<MapEmbed>();
+  /** Sections waiting for their container, by the document they will join. */
+  private readonly watchers = new Map<Document, Watcher>();
   private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
@@ -268,15 +341,28 @@ export class MapEmbeds {
   process(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     // Node labels of a map (view or embed) are rendered Markdown too; they never host embeds.
     if (this.disposed || el.closest(".mappy-view")) return;
-    this.claimContainer(el, ctx, false);
+    this.claimContainer(el, ctx);
     this.replaceSpans(el, ctx);
   }
 
   get size(): number { return this.live.size; }
 
+  /** Sections of embedded notes still waiting for their container to join the document, within the hold. */
+  get pending(): number {
+    let count = 0;
+    for (const watcher of this.watchers.values()) count += watcher.held.size;
+    return count;
+  }
+
   /** Plugin unload: every map goes back to the ordinary embed, and the reading views that showed one are redrawn. */
   dispose(): void {
     this.disposed = true;
+    for (const watcher of Array.from(this.watchers.values())) {
+      for (const claim of Array.from(watcher.held)) claim.settle(false);
+      for (const ref of Array.from(watcher.kept)) ref.deref()?.settle(false);
+      watcher.observer.disconnect();
+    }
+    this.watchers.clear();
     const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
@@ -308,16 +394,65 @@ export class MapEmbeds {
     }
   }
 
-  private claimContainer(el: HTMLElement, ctx: MarkdownPostProcessorContext, retried: boolean): void {
+  private claimContainer(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     const own = this.app.vault.getFileByPath(ctx.sourcePath);
     if (!own || readMapLayout(this.app, own) === null) return;
-    const span = el.closest<HTMLElement>(".internal-embed");
-    if (!span?.isConnected) {
-      // A section can reach the processor before it is attached; look once more when it is.
-      if (!retried && !el.isConnected) el.win.requestAnimationFrame(() => { if (!this.disposed) this.claimContainer(el, ctx, true); });
+    if (el.isConnected) {
+      this.claimAround(el, ctx, own);
       return;
     }
-    if (span.hasClass(EMBED_HOST_CLASS) || span.parentElement?.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
+    // A section can reach the processor before its container is on the document, and Obsidian attaches it a few
+    // frames later, when the embed scrolls into view, or never (a discarded rendering); wait for it.
+    const watcher = this.watcher(el.doc);
+    const claim = new PendingClaim(el, attached => {
+      watcher.held.delete(claim);
+      if (claim.ref) watcher.kept.delete(claim.ref);
+      this.prune(el.doc, watcher);
+      if (attached && !this.disposed) this.claimAround(el, ctx, own);
+    });
+    watcher.held.add(claim);
+    claim.hold(EMBED_CLAIM_HOLD_MS, () => {
+      watcher.held.delete(claim);
+      claim.ref = new WeakRef(claim);
+      watcher.kept.add(claim.ref);
+    });
+    ctx.addChild(claim);
+  }
+
+  /** The watcher of a document, started on its first waiting section. */
+  private watcher(doc: Document): Watcher {
+    const existing = this.watchers.get(doc);
+    if (existing) return existing;
+    const held = new Set<PendingClaim>();
+    const kept = new Set<WeakRef<PendingClaim>>();
+    const observer = new MutationObserver(() => {
+      for (const claim of Array.from(held)) claim.check();
+      for (const ref of Array.from(kept)) {
+        const claim = ref.deref();
+        // Obsidian dropped the section without unloading it: gone with it.
+        if (!claim) kept.delete(ref);
+        else claim.check();
+      }
+      this.prune(doc, watcher);
+    });
+    const watcher: Watcher = { observer, held, kept };
+    observer.observe(doc.documentElement, { childList: true, subtree: true });
+    this.watchers.set(doc, watcher);
+    return watcher;
+  }
+
+  /** Stops a document's watcher once nothing waits in it. */
+  private prune(doc: Document, watcher: Watcher): void {
+    if (watcher.held.size > 0 || watcher.kept.size > 0 || this.watchers.get(doc) !== watcher) return;
+    watcher.observer.disconnect();
+    this.watchers.delete(doc);
+  }
+
+  /** The section is on the document: claim the container around it, unless it is the note's own view, inside a map, or in a container already claimed. */
+  private claimAround(el: HTMLElement, ctx: MarkdownPostProcessorContext, own: TFile): void {
+    const span = el.closest<HTMLElement>(".internal-embed");
+    // The section itself may have landed inside a map (a node label) since `process` looked; the check covers the whole way up.
+    if (!span || el.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
     const { subpath } = parseLinktext(span.getAttribute("src") ?? "");
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;

@@ -5,7 +5,7 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Component, MarkdownRenderer, MarkdownView, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { EMBED_ANCHOR_CLASS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
+import { EMBED_ANCHOR_CLASS, EMBED_CLAIM_HOLD_MS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
 
 // The browser-harness stand-in for `obsidian`, so the shipped post processor, embed component and renderer run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -62,6 +62,54 @@ async function settle(): Promise<void> {
 async function refreshed(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 60));
   await settle();
+}
+
+/** Animation frames one at a time, so a test can move a section between them the way Obsidian attaches its containers. */
+async function frames(count: number): Promise<void> {
+  for (let frame = 0; frame < count; frame += 1) await new Promise(resolve => window.requestAnimationFrame(resolve));
+}
+
+/** Counts the animation frames still waiting to fire, so a test can show a look-again has ended and left nothing scheduled. */
+function frameTracker(): { pending: () => number; restore: () => void } {
+  const request = window.requestAnimationFrame.bind(window);
+  const cancel = window.cancelAnimationFrame.bind(window);
+  const waiting = new Set<number>();
+  window.requestAnimationFrame = callback => {
+    const id = request(time => { waiting.delete(id); callback(time); });
+    waiting.add(id);
+    return id;
+  };
+  window.cancelAnimationFrame = id => { waiting.delete(id); cancel(id); };
+  return { pending: () => waiting.size, restore: () => { window.requestAnimationFrame = request; window.cancelAnimationFrame = cancel; } };
+}
+
+/** Records the timers still pending and lets a test fire the long ones (the wait's time limit) without waiting for them. */
+function timerTracker(): { pending: (minDelay?: number) => number; fire: (minDelay: number) => void; restore: () => void } {
+  const set = window.setTimeout.bind(window);
+  const clear = window.clearTimeout.bind(window);
+  // Keyed by whatever the environment's setTimeout returns (a number in browsers, an object under Node).
+  const waiting = new Map<unknown, { delay: number; run: () => void }>();
+  window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+    if (typeof handler !== 'function') return set(handler, delay);
+    const callback = handler as (...data: unknown[]) => void;
+    const run = (): void => { callback(...args); };
+    const id: unknown = set(() => { waiting.delete(id); run(); }, delay);
+    waiting.set(id, { delay: delay ?? 0, run });
+    return id as number;
+  }) as unknown as typeof window.setTimeout;
+  window.clearTimeout = id => { waiting.delete(id); clear(id); };
+  return {
+    pending: (minDelay = 0) => Array.from(waiting.values()).filter(timer => timer.delay >= minDelay).length,
+    fire: minDelay => {
+      for (const [id, timer] of Array.from(waiting)) {
+        if (timer.delay < minDelay) continue;
+        waiting.delete(id);
+        clear(id as number);
+        timer.run();
+      }
+    },
+    restore: () => { window.setTimeout = set; window.clearTimeout = clear; },
+  };
 }
 
 /** The host note rendered the way Obsidian's reading view hands a section to post processors: `![[…]]` is still a placeholder span. */
@@ -380,10 +428,9 @@ describe('MapEmbeds in the reading view (host sections)', () => {
 });
 
 describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
-  /** Obsidian's embed container as the live-preview widget builds it, with the map note already rendered inside. */
-  async function container(app: HarnessApp, src: string, mapPath: string): Promise<{ span: HTMLElement; sections: HTMLElement[] }> {
-    const span = document.body.createDiv({ cls: 'cm-embed-block' })
-      .createSpan({ cls: 'internal-embed markdown-embed inline-embed is-loaded', attr: { src } });
+  /** Obsidian's embed container as the live-preview widget builds it, with the map note already rendered inside; a `block` off the document keeps the container detached. */
+  async function container(app: HarnessApp, src: string, mapPath: string, block: HTMLElement = document.body.createDiv({ cls: 'cm-embed-block' })): Promise<{ span: HTMLElement; sections: HTMLElement[] }> {
+    const span = block.createSpan({ cls: 'internal-embed markdown-embed inline-embed is-loaded', attr: { src } });
     const content = span.createDiv({ cls: 'markdown-embed-content' });
     const preview = content.createDiv({ cls: 'markdown-preview-view markdown-rendered' });
     const sections: HTMLElement[] = [];
@@ -448,16 +495,27 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(hidden.querySelector('.internal-embed')).not.toBeNull();
   });
 
-  it("leaves the note's own reading view alone and looks again once a detached section is attached", async () => {
+  it("leaves the note's own reading view alone and stops waiting once a detached section joins it", async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
     const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
     const renderer = loadedRenderer();
-    const own = document.body.createDiv({ cls: 'markdown-preview-view' }).createDiv();
+    const view = document.body.createDiv({ cls: 'markdown-preview-view' });
+    const own = view.createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 回復する', own, 'Map.md');
     embeds.process(own, context(renderer, 'Map.md'));
     await settle();
     expect(embeds.size).toBe(0);
+    // A detached section that joins the note's own view is not an embed either; the wait ends there.
+    const detached = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', detached, 'Map.md');
+    embeds.process(detached, context(renderer, 'Map.md'));
+    expect(embeds.pending).toBe(1);
+    view.append(detached);
+    await settle();
+    expect(embeds.pending).toBe(0);
+    expect(embeds.size).toBe(0);
+    expect(detached.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
     const { span } = await container(app, 'Map', 'Map.md');
     const late = createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
@@ -468,7 +526,232 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(embeds.size).toBe(1);
   });
 
-  it('does not claim anything after the plugin unloaded, even from a look-again that was already scheduled', async () => {
+  it('claims a section that arrives detached and whose container joins the document two frames later, as Obsidian 1.6.7 attaches it 17–28 ms after the section (LEV-91)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    // The section reaches the processor on its own; the container it will sit in is not on the document yet.
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const timers = timerTracker();
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      // While it waits, a hidden anchor inside the section carries the wait's lifecycle, as the map's own anchor will; the hold is one timer.
+      expect(embeds.pending).toBe(1);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      expect(late.querySelectorAll<HTMLElement>(`.${EMBED_ANCHOR_CLASS}`)).toHaveLength(1);
+      expect(late.querySelector<HTMLElement>(`.${EMBED_ANCHOR_CLASS}`)?.hidden).toBe(true);
+      await frames(1);
+      span.querySelector('.markdown-preview-view')?.append(late);
+      await frames(1);
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
+      expect(titles(span)).toEqual(['講座', '回復する', '記録する', '葉']);
+      expect(embeds.size).toBe(1);
+      expect(embeds.pending).toBe(0);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
+      expect(late.querySelectorAll(`.${EMBED_ANCHOR_CLASS}`)).toHaveLength(1);
+      renderer.unload();
+      expect(embeds.size).toBe(0);
+      expect(app.vaultEvents.count()).toBe(0);
+      expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+    } finally { timers.restore(); }
+  });
+
+  it('waits without polling, through one watcher of the document for every section, for a container that joins seconds later (an embed below the fold is attached when scrolled to)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const first = createDiv({ cls: 'cm-embed-block' });
+    const second = createDiv({ cls: 'cm-embed-block' });
+    const one = await container(app, 'Map', 'Map.md', first);
+    const two = await container(app, 'Map#講座', 'Map.md', second);
+    const sections = [createDiv(), createDiv()];
+    for (const section of sections) await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', section, 'Map.md');
+    const tracker = frameTracker();
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    try {
+      for (const section of sections) embeds.process(section, context(renderer, 'Map.md'));
+      one.span.querySelector('.markdown-preview-view')?.append(sections[0] ?? '');
+      two.span.querySelector('.markdown-preview-view')?.append(sections[1] ?? '');
+      expect(embeds.pending).toBe(2);
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(observe.mock.calls[0]?.[0]).toBe(document.documentElement);
+      // Far longer than any frame budget would have allowed for, and not one frame is scheduled meanwhile.
+      await frames(40);
+      expect(tracker.pending()).toBe(0);
+      expect(embeds.pending).toBe(2);
+      expect(one.span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+      document.body.append(first);
+      await settle();
+      expect(one.span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(embeds.pending).toBe(1);
+      expect(disconnect).not.toHaveBeenCalled();
+      document.body.append(second);
+      await settle();
+      expect(two.span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(titles(two.span)).toEqual(['講座', '回復する', '記録する', '葉']);
+      expect(two.span.querySelector('.mappy-embed')?.getAttribute('aria-label')).toBe('マインドマップ: Map › 講座');
+      expect(embeds.size).toBe(2);
+      expect(embeds.pending).toBe(0);
+      // Nothing waits any more: the watcher is gone until the next detached section.
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      observe.mockRestore();
+      disconnect.mockRestore();
+      tracker.restore();
+    }
+  });
+
+  it('keeps a section past the hold only through Obsidian: a container that joins later is still claimed, and an unloaded section is let go', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const tracker = frameTracker();
+    const timers = timerTracker();
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      expect(embeds.pending).toBe(1);
+      // The hold ends: the plugin no longer counts or holds the section, but the anchor stays for a later join.
+      timers.fire(EMBED_CLAIM_HOLD_MS);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
+      expect(embeds.pending).toBe(0);
+      expect(tracker.pending()).toBe(0);
+      expect(late.querySelectorAll(`.${EMBED_ANCHOR_CLASS}`)).toHaveLength(1);
+      expect(disconnect).not.toHaveBeenCalled();
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(embeds.size).toBe(1);
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      // A discarded rendering: past the hold, Obsidian unloading the section is what ends its wait.
+      const dropped = createDiv({ cls: 'cm-embed-block' });
+      const other = await container(app, 'Map#記録する', 'Map.md', dropped);
+      const discarded = createDiv();
+      await MarkdownRenderer.render(app.asApp<App>(), '- 葉', discarded, 'Map.md');
+      const droppedRenderer = loadedRenderer();
+      embeds.process(discarded, context(droppedRenderer, 'Map.md'));
+      other.span.querySelector('.markdown-preview-view')?.append(discarded);
+      timers.fire(EMBED_CLAIM_HOLD_MS);
+      expect(embeds.pending).toBe(0);
+      droppedRenderer.unload();
+      expect(discarded.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+      expect(disconnect).toHaveBeenCalledTimes(2);
+      document.body.append(dropped);
+      await settle();
+      expect(other.span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+      expect(embeds.size).toBe(1);
+    } finally {
+      disconnect.mockRestore();
+      timers.restore();
+      tracker.restore();
+    }
+  });
+
+  it('waits and claims even when the renderer never loads its component, since nothing depends on onload', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    // Another plugin's `MarkdownRenderer.render(…, component)` with a component it never loads: `addChild` does not load the child.
+    const unloaded = new Component();
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const timers = timerTracker();
+    try {
+      embeds.process(late, context(unloaded, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      expect(embeds.pending).toBe(1);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(embeds.pending).toBe(0);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
+    } finally { timers.restore(); }
+  });
+
+
+  it('does not claim from a section that lands inside a map drawn in an ordinary note embed (a node label rendered late)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    app.put('Plain.md', '# Plain\n\n![[Map]]\n');
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    // Host embeds Plain (an ordinary note) whose section holds the map's placeholder: the map is drawn inside Plain's container.
+    const { span, sections } = await container(app, 'Plain', 'Plain.md');
+    for (const section of sections) embeds.process(section, context(renderer, 'Plain.md'));
+    await settle();
+    expect(embeds.size).toBe(1);
+    const label = span.querySelector<HTMLElement>('.mappy-view .mappy-node-label');
+    if (!label) throw new Error('no node label');
+    // A label section of the map, rendered with the map as its source, reaches the processor before it is put into the node.
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '記録する', late, 'Map.md');
+    embeds.process(late, context(renderer, 'Map.md'));
+    expect(embeds.pending).toBe(1);
+    label.append(late);
+    await settle();
+    expect(embeds.pending).toBe(0);
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    expect(embeds.size).toBe(1);
+    expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+  });
+
+  it('stops waiting when the section is unloaded before its container joins the document, and the watcher goes with the last one', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const renderer = loadedRenderer();
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const tracker = frameTracker();
+    const timers = timerTracker();
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      await frames(1);
+      expect(tracker.pending()).toBe(0);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      // Obsidian drops the rendering (the first of the two it draws on opening): the section's children unload.
+      renderer.unload();
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
+      expect(embeds.pending).toBe(0);
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);
+      expect(embeds.size).toBe(0);
+      expect(tracker.pending()).toBe(0);
+    } finally {
+      disconnect.mockRestore();
+      timers.restore();
+      tracker.restore();
+    }
+  });
+
+  it('does not claim anything after the plugin unloaded, even from a section that was still waiting', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
     const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
@@ -476,8 +759,28 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const { span } = await container(app, 'Map', 'Map.md');
     const late = createDiv();
     await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
-    embeds.process(late, context(renderer, 'Map.md'));
-    embeds.dispose();
+    const timers = timerTracker();
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    try {
+      // One section past its hold, one still within it: dispose lets go of both.
+      const kept = createDiv();
+      await MarkdownRenderer.render(app.asApp<App>(), '- 葉', kept, 'Map.md');
+      embeds.process(kept, context(renderer, 'Map.md'));
+      timers.fire(EMBED_CLAIM_HOLD_MS);
+      expect(embeds.pending).toBe(0);
+      embeds.process(late, context(renderer, 'Map.md'));
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      expect(embeds.pending).toBe(1);
+      embeds.dispose();
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
+      expect(embeds.pending).toBe(0);
+      expect(disconnect).toHaveBeenCalled();
+      expect(late.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+      expect(kept.querySelector(`.${EMBED_ANCHOR_CLASS}`)).toBeNull();
+    } finally {
+      disconnect.mockRestore();
+      timers.restore();
+    }
     span.querySelector('.markdown-preview-view')?.append(late);
     await settle();
     expect(span.hasClass(EMBED_HOST_CLASS)).toBe(false);

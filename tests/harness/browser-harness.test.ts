@@ -69,8 +69,10 @@ describe('browser harness fixtures', () => {
   it('keeps the embed host and its map notes beside the map-view fixtures, in the same vault folder (E31)', () => {
     expect(EMBED_HOSTS.map(host => [host.id, host.path, host.mode])).toEqual([
       ['embed-host', 'Fixtures/embed-host.md', 'reading'], ['embed-host-live', 'Fixtures/embed-host.md', 'live'],
+      ['embed-host-live-late', 'Fixtures/embed-host.md', 'live-late'],
     ]);
     expect(findHost('embed-host-live')?.source).toBe(findHost('embed-host')?.source);
+    expect(findHost('embed-host-live-late')?.source).toBe(findHost('embed-host')?.source);
     expect(findFixture('embed-host')).toBeUndefined();
     const host = findHost('embed-host');
     if (!host) throw new Error('no host');
