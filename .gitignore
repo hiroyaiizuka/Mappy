@@ -5,6 +5,7 @@ build-meta.json
 dist/
 coverage/
 artifacts/
+memory/
 test-vault/
 .vitest/
 .DS_Store
