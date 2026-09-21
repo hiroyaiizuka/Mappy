@@ -2,7 +2,7 @@ import type { App, TFile } from 'obsidian';
 import { imageMimeType } from '../core/attachments';
 import { initialCallFolds, projectCalls, type CallTargets } from '../core/calls';
 import { parseMarkdown, projectMap, type MindDocument } from '../core/markdown';
-import { externalUrl, hasUrlScheme, urlScheme, wikiLinkPath } from '../core/wiki-link';
+import { addressUrl, externalUrl, hasUrlScheme, urlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
@@ -460,16 +460,25 @@ export class ExcalidrawBridge {
    * Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in.
    * A link that already has a scheme travels into the drawing as it was written, so only the schemes on the allowed
    * list are kept (`externalUrl`, LEV-131); a refused one is added to `refused` and the node falls back to what it
-   * would carry with no link at all, so a root still links to its note. An autolink the note wrote without a scheme
-   * arrives here with one (`autolinkUrl`, LEV-134), so what is left for the vault branch below is a path, never a
-   * web address dressed as one.
+   * would carry with no link at all, so a root still links to its note. A `www.` autolink the note wrote without a
+   * scheme arrives here with one (`autolinkUrl`, LEV-134).
+   *
+   * What is left without a scheme is read as a vault path. A link the note wrote as one travels as `[[…]]` even
+   * unresolved: that is the note's own link, and clicking it in the drawing offers the note Obsidian would offer
+   * to create. An autolink is not a path the note wrote, so an unresolved one never becomes `[[…]]`: it is the
+   * `mailto:` the map opens when it reads as an address, and no link at all when it does not (LEV-138). The vault
+   * decides first either way, because GFM reads `file@2x.png` as an address too and a link to that picture has to
+   * keep reaching it; a name ending in an image extension is a picture even when the vault has lost it.
    */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile, refused: string[]): string | null {
     if (node.link && !hasUrlScheme(node.link)) {
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, node.sourcePath ?? source.path);
-      return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
-    }
-    if (node.link) {
+      if (dest) return `[[${this.app.metadataCache.fileToLinktext(dest, drawingPath)}]]`;
+      if (node.linkSyntax !== 'autolink') return `[[${node.link}]]`;
+      const named = imageMimeType(node.link.slice(node.link.lastIndexOf('.') + 1)) !== undefined;
+      const address = named ? null : addressUrl(node.link);
+      if (address) return address;
+    } else if (node.link) {
       const external = externalUrl(node.link);
       if (external) return external;
       refused.push(node.link);

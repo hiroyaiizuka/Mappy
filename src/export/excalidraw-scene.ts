@@ -1,8 +1,9 @@
 import type { MindDocument, MindNode } from '../core/markdown';
 import { nodeBody } from '../core/body';
-import { attachmentEntries } from '../core/attachments';
-import { projectCalls, type CallTargets } from '../core/calls';
-import { plainTitle } from '../core/plain-text';
+import { attachmentEntries, type AttachmentEntry } from '../core/attachments';
+import { projectCalls, type CallSource, type CallTargets } from '../core/calls';
+import { plainTitle, type PlainTitle } from '../core/plain-text';
+import type { LinkSyntax } from '../core/wiki-link';
 import { layoutTree, type LayoutBounds, type LayoutMode, type LayoutNode, type NodeSize } from '../layout/layout';
 import { pathToPoints, type Point } from '../layout/path-points';
 
@@ -15,6 +16,8 @@ export interface SceneNodeContent {
   text: string;
   /** First link of the title, else of the body; the node becomes clickable. */
   link: string | null;
+  /** How that link was written; a copy of it may only become what its syntax allows (`src/core/wiki-link.ts`). */
+  linkSyntax: LinkSyntax | null;
   /** Image targets as written in the body, in order. */
   images: string[];
   /**
@@ -54,6 +57,18 @@ export interface ExcalidrawScene {
 export const IMAGE_GAP = 8;
 export const IMAGE_ROW_GAP = 6;
 
+/**
+ * The one link a node carries and how it was written, chosen once: the title's, else the body's first, else
+ * — for the item that calls a map (§5 M12) — the called note itself, which is a vault link like any other.
+ */
+function chosenLink(
+  title: PlainTitle, body: AttachmentEntry | null, source: CallSource | undefined,
+): { link: string | null; linkSyntax: LinkSyntax | null } {
+  if (title.link) return { link: title.link, linkSyntax: title.linkSyntax };
+  if (body) return { link: body.target, linkSyntax: body.syntax };
+  return source?.root ? { link: source.path, linkSyntax: 'vault' } : { link: null, linkSyntax: null };
+}
+
 function visualRoot(document: MindDocument): MindNode {
   const root = document.root;
   return root.children.length === 1 ? root.children[0] ?? root : root;
@@ -81,12 +96,12 @@ export function sceneContents(document: MindDocument, collapsed: ReadonlySet<str
     const called = source !== undefined && !source.root;
     const title = plainTitle(node.title);
     const entries = attachmentEntries(called ? nodeBody(source.document, source.node) : nodeBody(document, node));
-    const bodyLink = entries.find(entry => entry.kind === 'link')?.target ?? null;
+    const body = entries.find(entry => entry.kind === 'link') ?? null;
     nodes.push({
       id: node.id,
       role: node.id === root.id ? 'root' : node.parentId === root.id ? 'stage' : 'branch',
       text: title.text,
-      link: title.link ?? bodyLink ?? (source?.root ? source.path : null),
+      ...chosenLink(title, body, source),
       images: entries.filter(entry => entry.kind === 'image').map(entry => entry.target),
       ...(called ? { sourcePath: source.path } : {}),
     });

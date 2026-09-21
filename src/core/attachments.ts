@@ -1,5 +1,5 @@
 import { GFM, parser } from '@lezer/markdown';
-import { autolinkUrl } from './wiki-link';
+import { autolinkUrl, type LinkSyntax } from './wiki-link';
 
 const attachmentParser = parser.configure(GFM);
 
@@ -36,6 +36,8 @@ export interface AttachmentEntry {
   target: string;
   /** Visible label when the syntax provides one. */
   label: string;
+  /** How the target was written, which decides what may become of it (`src/core/wiki-link.ts`). */
+  syntax: LinkSyntax;
 }
 
 interface AttachmentSnippets {
@@ -45,7 +47,10 @@ interface AttachmentSnippets {
 
 /** Collect only link/image syntax from a body; never body code blocks or prose. */
 function attachmentSnippets(body: string): AttachmentSnippets {
-  if (!body.includes('[') && !body.includes('<') && !/(?:https?:\/\/|www\.)/u.test(body)) {
+  // `@` is here because GFM autolinks a bare address: leaving it out made a body's address unreachable
+  // while the same text in a title was a link (LEV-138). The parser's autolink pattern is case-sensitive,
+  // so an upper-case `WWW.`／`HTTP://` is not a link in either place and nothing is missed by matching case.
+  if (!body.includes('[') && !body.includes('<') && !body.includes('@') && !/(?:https?:\/\/|www\.)/u.test(body)) {
     return { snippets: [], references: [] };
   }
   const protectedRanges: { from: number; to: number }[] = [];
@@ -110,7 +115,7 @@ export function attachmentEntries(body: string): AttachmentEntry[] {
     if (wiki) {
       const { target, label } = wikiTarget(wiki[2] ?? '');
       if (!target) continue;
-      entries.push({ kind: wiki[1] ? 'image' : 'link', target, label });
+      entries.push({ kind: wiki[1] ? 'image' : 'link', target, label, syntax: 'vault' });
       continue;
     }
     const inline = snippet.match(/^(!?)\[([^\]]*)\]\(\s*<?([^\s>)]+)>?(?:\s+"[^"]*")?\s*\)$/u);
@@ -118,14 +123,14 @@ export function attachmentEntries(body: string): AttachmentEntry[] {
       const target = inline[3] ?? '';
       const label = inline[2]?.trim() ?? '';
       const isImage = Boolean(inline[1]) && IMAGE_EXTENSION.test(target.split(/[?#]/u, 1)[0] ?? '');
-      entries.push({ kind: isImage ? 'image' : 'link', target, label: label || target });
+      entries.push({ kind: isImage ? 'image' : 'link', target, label: label || target, syntax: 'vault' });
       continue;
     }
     const auto = snippet.match(/^<([^>]+)>$/u);
     const target = auto ? auto[1] ?? '' : snippet;
     // Remaining snippets are autolinks or bare URLs; bracket syntax that failed above is not a target.
     // The label stays what the note wrote; only the target gains the scheme an autolink leaves out.
-    if (target && !/[\s[\]<>]/u.test(target)) entries.push({ kind: 'link', target: autolinkUrl(target), label: target });
+    if (target && !/[\s[\]<>]/u.test(target)) entries.push({ kind: 'link', target: autolinkUrl(target), label: target, syntax: 'autolink' });
   }
   return entries;
 }
