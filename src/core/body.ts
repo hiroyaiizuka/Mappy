@@ -1,9 +1,9 @@
 import { applyEdits, type TextEdit } from './commands';
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
+import { getNode, paragraphGap } from './text-edits';
 
 function bodyNode(doc: MindDocument, nodeId: string): MindNode {
-  const node = nodeId === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === nodeId);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
+  const node = getNode(doc, nodeId);
   if (node.kind === 'root' && node.bodyFrom === doc.source.length && node.bodyFrom > 0
     && !/\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/u.test(doc.source)) {
     throw new Error('先に Markdown 側で frontmatter を閉じてください。');
@@ -34,11 +34,6 @@ export function nodeBody(doc: MindDocument, node: MindNode): string {
 function indentBody(node: MindNode, text: string): string {
   const indent = node.list?.contentIndent;
   return indent ? text.replace(/^(?=[^\r\n])/gmu, indent) : text;
-}
-
-function paragraphGap(before: string, eol: string): string {
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
 }
 
 /**
@@ -82,6 +77,8 @@ export function planBodyEdit(doc: MindDocument, nodeId: string, body: string): T
   const node = bodyNode(doc, nodeId);
   const before = doc.source.slice(0, node.bodyFrom);
   const normalized = indentBody(node, normalizeNewlines(body, doc.eol));
+  // Not `paragraphGap`: the body starts on the line after the heading, so an ended line needs
+  // nothing here, where a paragraph written after it would still want one break.
   const prefix = normalized && before && !before.endsWith('\n') ? doc.eol + doc.eol : '';
   const text = prefix + normalized;
   return checkedBodyEdit(doc, { from: node.bodyFrom, to: node.bodyTo, text: text + closingGap(doc, node.bodyTo, before + text) });

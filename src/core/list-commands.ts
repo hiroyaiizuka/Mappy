@@ -1,16 +1,11 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom,
+  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom,
   swapSections, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
+import { endsWithBlankLine, getNode, lineGap, paragraphGap } from './text-edits';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
-
-function getNode(doc: MindDocument, id: string): MindNode {
-  const node = id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
-  return node;
-}
 
 function branchSize(node: MindNode): number {
   const pending = [node];
@@ -40,16 +35,11 @@ function validate(
   return { edits, selectionOffset: selected?.titleFrom ?? null };
 }
 
-function paragraphGap(before: string, eol: string): string {
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
-}
-
 /** Text placed at `offset`, separated from what surrounds it; at the very end of a file that ends with a line break, the break is kept. */
 function insertion(source: string, offset: number, body: string, eol: string, paragraph: boolean): { text: string; prefix: string } {
   const before = source.slice(0, offset);
   const after = source.slice(offset);
-  const prefix = paragraph ? paragraphGap(before, eol) : before && !before.endsWith('\n') ? eol : '';
+  const prefix = paragraph ? paragraphGap(before, eol) : lineGap(before, eol);
   const suffix = after ? (/^[\r\n]/u.test(after) ? '' : paragraph ? eol + eol : eol) : before.endsWith('\n') ? eol : '';
   return { text: prefix + body + suffix, prefix };
 }
@@ -170,7 +160,7 @@ function removalRange(doc: MindDocument, node: MindNode): { from: number; to: nu
   }
   let from = node.from;
   let to = Math.min(source.length, node.to + (source.startsWith('\r\n', node.to) ? 2 : source.charAt(node.to) === '\n' ? 1 : 0));
-  const blankBefore = from === 0 || /\n[ \t]*\r?\n$/u.test(before);
+  const blankBefore = from === 0 || endsWithBlankLine(before);
   const blankAfter = /^[ \t]*\r?\n/u.exec(source.slice(to));
   if (blankAfter && (blankBefore || nextSibling(doc, node)?.from === to + blankAfter[0].length)) to += blankAfter[0].length;
   else if (blankBefore && to === source.length && from > 0) from -= /[ \t]*\r?\n$/u.exec(before)?.[0].length ?? 0;
@@ -223,7 +213,7 @@ function detach(doc: MindDocument, node: MindNode): EditPlan {
   if (node.kind !== 'list') throw new Error('切り離せるのはリストの枝だけです。');
   const removal = removalRange(doc, node);
   const remaining = doc.source.slice(0, removal.from) + doc.source.slice(removal.to);
-  const prefix = insertionPrefix(remaining, remaining.length, doc.eol);
+  const prefix = paragraphGap(remaining, doc.eol);
   const text = `${prefix}${branchAsSection(doc, node)}${remaining.endsWith('\n') ? doc.eol : ''}`;
   const edits: TextEdit[] = [{ from: removal.from, to: removal.to, text: '' }, { from: doc.source.length, to: doc.source.length, text }];
   const index = doc.root.children.filter(child => child.id !== node.id).length;

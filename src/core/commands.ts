@@ -1,5 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
+import { endsWithBlankLine, findNode, getNode, paragraphGap } from './text-edits';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -46,13 +47,6 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   let result = source;
   for (const edit of ordered.reverse()) result = result.slice(0, edit.from) + edit.text + result.slice(edit.to);
   return result;
-}
-
-/** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
-export function getNode(doc: MindDocument, id: string): MindNode {
-  const node = id === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === id);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
-  return node;
 }
 
 function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: number | null, count: number): EditPlan {
@@ -140,17 +134,6 @@ function shiftedBranch(doc: MindDocument, node: MindNode, level: number): string
   return applyEdits(doc.source.slice(node.from, node.to), edits);
 }
 
-export function insertionPrefix(source: string, offset: number, eol: string): string {
-  const before = source.slice(0, offset);
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
-}
-
-function appendBoundary(text: string, eol: string): string {
-  if (/\n[ \t]*\r?\n$/u.test(text)) return text;
-  return text + (text.endsWith('\n') ? eol : eol + eol);
-}
-
 /** The line breaks and whitespace-only lines that end `text` (a last one without a break included), or '' when its last line has neither. */
 function endingBreaks(text: string): string {
   return /(?:\r?\n[ \t]*)+$/u.exec(text)?.[0] ?? '';
@@ -162,7 +145,7 @@ function withoutEndingBreaks(text: string): string {
 
 /** `breaks` with a blank line: itself when it already ends with one, otherwise one more line break. */
 function withBlankLine(breaks: string, eol: string): string {
-  return /\n[ \t]*\r?\n$/u.test(breaks) ? breaks : breaks + eol;
+  return endsWithBlankLine(breaks) ? breaks : breaks + eol;
 }
 
 /**
@@ -230,7 +213,7 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
   const level = sibling ? node.level : node.level + 1;
   if (level > 6) throw new Error('見出しは 6 階層までです。');
   const offset = node.to;
-  const prefix = insertionPrefix(doc.source, offset, doc.eol);
+  const prefix = paragraphGap(doc.source.slice(0, offset), doc.eol);
   const suffix = offset < doc.source.length ? doc.eol + doc.eol : doc.source.endsWith('\n') ? doc.eol : '';
   const text = `${prefix}${'#'.repeat(level)} ${title}${suffix}`;
   const edits = [{ from: offset, to: offset, text }];
@@ -273,8 +256,8 @@ export function moveHeadingSection(doc: MindDocument, node: MindNode, parentId: 
   const removalFrom = target < node.from ? sectionRemovalFrom(doc, node) : node.from;
   const remaining = doc.source.slice(0, removalFrom) + doc.source.slice(node.to);
   const offset = target >= node.to ? target - (node.to - removalFrom) : target;
-  const prefix = insertionPrefix(remaining, offset, doc.eol);
-  const body = offset < remaining.length ? appendBoundary(moved, doc.eol) : moved;
+  const prefix = paragraphGap(remaining.slice(0, offset), doc.eol);
+  const body = offset < remaining.length ? moved + paragraphGap(moved, doc.eol) : moved;
   const text = matchEndOfFile(doc, prefix + body, target);
   const edits: TextEdit[] = offset === removalFrom
     ? [{ from: removalFrom, to: node.to, text }]
@@ -298,8 +281,7 @@ function branchDepth(doc: MindDocument, node: MindNode): number {
 
 /** Translate a pointer drop on `targetId` into a move, or null when the drop must be refused. */
 export function resolveDrop(doc: MindDocument, draggedId: string, targetId: string, position: DropPosition): MoveCommand | null {
-  const lookup = (id: string | null): MindNode | undefined =>
-    id === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === id);
+  const lookup = (id: string | null): MindNode | undefined => findNode(doc, id);
   const node = doc.nodes.find((candidate) => candidate.id === draggedId);
   const target = lookup(targetId);
   if (!node || !target || node.id === target.id) return null;
@@ -329,7 +311,7 @@ function addTopic(doc: MindDocument, title = ''): EditPlan {
   const sections = doc.root.children.filter((child) => child.kind !== 'list');
   const level = sections[sections.length - 1]?.level ?? (doc.format === 'list' ? 2 : 1);
   const offset = doc.source.length;
-  const prefix = insertionPrefix(doc.source, offset, doc.eol);
+  const prefix = paragraphGap(doc.source.slice(0, offset), doc.eol);
   const suffix = doc.source.endsWith('\n') ? doc.eol : '';
   const edits = [{ from: offset, to: offset, text: `${prefix}${'#'.repeat(level)} ${title}${suffix}` }];
   const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);

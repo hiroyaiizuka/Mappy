@@ -1,6 +1,7 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
-import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
+import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
+import { getNode } from "../core/text-edits";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
