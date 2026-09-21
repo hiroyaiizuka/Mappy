@@ -5,7 +5,7 @@ import {
   PNG_UNAVAILABLE, canRasterize, captureScene, rasterizeSvg, type CaptureSource, type ImageResolver,
 } from '../export/svg-capture';
 import {
-  DESKTOP_PNG_LIMITS, MOBILE_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme, type PngScaleLimits,
+  DESKTOP_PNG_LIMITS, MOBILE_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme, type PngScaleLimits, type SvgSize,
 } from '../export/svg-document';
 
 /**
@@ -117,6 +117,32 @@ export interface ExportOptions {
   limits?: PngScaleLimits;
 }
 
+/** The captured map as one SVG document, checked to be well formed, and its size. */
+export interface RenderedSvg {
+  svg: string;
+  size: SvgSize;
+}
+
+/**
+ * Capture and encode: the map's images are read from the vault (relative to `note`)
+ * and the document is checked before anyone writes it. Shared by the export command
+ * and the Excalidraw bridge's "Insert image" (§5 M6), which attaches the same SVG.
+ */
+export async function renderSvg(app: App, note: TFile, source: CaptureSource, options: ExportOptions = {}): Promise<RenderedSvg> {
+  const scene = await captureScene(source, {
+    resolveImage: vaultImageResolver(app, note.path), ...(options.theme ? { theme: options.theme } : {}),
+  });
+  if (scene.nodes.length === 0) throw new Error('書き出すノードがありません。');
+  const svg = buildSvg(scene);
+  assertWellFormed(svg);
+  return { svg, size: svgSize(scene.bounds) };
+}
+
+/** `<name>.svg` where Obsidian's attachment setting puts `owner`'s attachments; the path is taken only now, right before the write. */
+export function createSvgAttachment(app: App, name: string, owner: TFile, svg: string): Promise<TFile> {
+  return app.fileManager.getAvailablePathForAttachment(`${name}.svg`, owner.path).then(path => app.vault.create(path, svg));
+}
+
 /**
  * Capture, encode and create the attachment. SVG is written as text; PNG is the
  * same SVG rasterised at a scale the canvas limits allow, so a 2,000-node map
@@ -125,17 +151,8 @@ export interface ExportOptions {
  */
 export async function exportMap(app: App, note: TFile, source: CaptureSource, format: ExportFormat, options: ExportOptions = {}): Promise<TFile> {
   if (format === 'png' && !canRasterize()) throw new Error(PNG_UNAVAILABLE);
-  const scene = await captureScene(source, {
-    resolveImage: vaultImageResolver(app, note.path), ...(options.theme ? { theme: options.theme } : {}),
-  });
-  if (scene.nodes.length === 0) throw new Error('書き出すノードがありません。');
-  const svg = buildSvg(scene);
-  assertWellFormed(svg);
-  if (format === 'svg') {
-    const path = await app.fileManager.getAvailablePathForAttachment(`${note.basename}.svg`, note.path);
-    return app.vault.create(path, svg);
-  }
-  const size = svgSize(scene.bounds);
+  const { svg, size } = await renderSvg(app, note, source, options);
+  if (format === 'svg') return createSvgAttachment(app, note.basename, note, svg);
   const png = await rasterizeSvg(svg, size, pngScale(size, options.limits ?? pixelLimits()));
   const path = await app.fileManager.getAvailablePathForAttachment(`${note.basename}.png`, note.path);
   return app.vault.createBinary(path, await png.blob.arrayBuffer());

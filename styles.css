@@ -388,6 +388,11 @@
 /* Live preview renders the map inside Obsidian's own embed container: its rendered note stays hidden while the map is shown. */
 .internal-embed.mappy-embed-host { display: block; }
 .internal-embed.mappy-embed-host > :not(.mappy-embed) { display: none; }
+/* A map drawn off screen for Excalidraw's own "Insert image / Insert as embeddable" (§5 M6): on the document so the
+   SVG capture can read computed styles and sizes, but a pixel large, invisible and inert. Nodes are `max-content`
+   wide, so the host's size does not change how they wrap. */
+.mappy-offscreen { position: fixed; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; visibility: hidden; pointer-events: none; }
+.mappy-offscreen .mappy-view { width: 1px; height: 1px; }
 .mappy-view .mappy-file-input { display: none; }
 .mappy-edit-modal .mappy-edit-input { width: 100%; margin: 8px 0 12px; }
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }

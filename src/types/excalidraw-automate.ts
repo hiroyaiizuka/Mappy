@@ -71,6 +71,10 @@ export interface ExcalidrawAutomate {
   setView(view?: ExcalidrawViewLike | 'active' | 'first' | 'auto' | null): ExcalidrawViewLike | null;
   getExcalidrawAPI(): { getAppState(): Record<string, unknown> } | null;
   getViewElements(): ExcalidrawElement[];
+  /** The vault file an image element in the view shows, when it shows one (a Markdown note rendered as an image included). */
+  getViewFileForImageElement?(element: ExcalidrawElement): TFile | null;
+  /** Removes elements from the view's scene in one undoable step; false when the view is gone. */
+  deleteViewElements?(elements: ExcalidrawElement[]): boolean;
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[], copyImages?: boolean): void;
   reset(): void;
   clear(): void;
