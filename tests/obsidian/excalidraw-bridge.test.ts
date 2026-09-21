@@ -3,8 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import { parseMarkdown } from '../../src/core/markdown';
 import {
-  DEFAULT_DROP_STALLED_MESSAGE, EMBEDDABLE_MAX_SIDE, ExcalidrawBridge, embeddableFrameSize, findBorderedMappyEmbeddables, isMappyDrop,
-  type MapPainter, type PaintedMap,
+  DEFAULT_DROP_STALLED_MESSAGE, EMBEDDABLE_MAX_SIDE, ExcalidrawBridge, embeddableFrameSize, isMappyDrop, type MapPainter, type PaintedMap,
 } from '../../src/obsidian/excalidraw-bridge';
 import { MAPPY_KEY } from '../../src/obsidian/frontmatter';
 import type { DocumentStore } from '../../src/obsidian/document-store';
@@ -18,6 +17,8 @@ interface FakeElement extends ExcalidrawElement {
   points?: [number, number][];
   style: Partial<ExcalidrawStyle>;
   fontSize?: number;
+  /** An image element's key into the drawing's files, as Excalidraw keeps it. */
+  fileId?: string;
 }
 
 function file(path: string): TFile {
@@ -38,6 +39,8 @@ class FakeAutomate implements ExcalidrawAutomate {
   instances: FakeAutomate[] = [];
   /** The vault file behind each image file id, as Excalidraw's own mapping answers for the view. */
   imageFiles = new Map<string, TFile>();
+  /** Ids removed from the view through `deleteViewElements`, one entry per call. */
+  deleted: string[][] = [];
   private counter = 0;
 
   constructor(
@@ -73,7 +76,14 @@ class FakeAutomate implements ExcalidrawAutomate {
 
   getViewElements(): ExcalidrawElement[] { return this.getElements(); }
   getViewFileForImageElement(element: ExcalidrawElement): TFile | null {
-    return element.fileId ? this.imageFiles.get(element.fileId) ?? null : null;
+    const fileId = (element as FakeElement).fileId;
+    return fileId ? this.imageFiles.get(fileId) ?? null : null;
+  }
+  deleteViewElements(elements: ExcalidrawElement[]): boolean {
+    this.calls.push('deleteViewElements');
+    this.deleted.push(elements.map(element => element.id));
+    for (const element of elements) this.elements.delete(element.id);
+    return true;
   }
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[]): void {
     this.elements.clear();
@@ -164,8 +174,9 @@ function harness(options: {
   const files = new Map(Object.keys(sources).map(path => [path, file(path)]));
   const images = new Map(Object.entries(options.images ?? {}));
   for (const path of images.keys()) files.set(path, file(path));
-  /** Attachments the bridge created: the SVG of a map drawn for "Insert image". */
+  /** Attachments the bridge created: the SVG of a map drawn for "Insert image"; and the ones it removed again. */
   const created: { path: string; data: string }[] = [];
+  const removed: string[] = [];
   const attachmentRequests: { name: string; owner: string }[] = [];
   const app = {
     metadataCache: {
@@ -181,6 +192,7 @@ function harness(options: {
     },
     fileManager: {
       getAvailablePathForAttachment: (name: string, owner: string) => { attachmentRequests.push({ name, owner }); return Promise.resolve(`attachments/${name}`); },
+      trashFile: (target: TFile) => { removed.push(target.path); return Promise.resolve(); },
     },
     vault: {
       create: (path: string, data: string) => { created.push({ path, data }); return Promise.resolve(file(path)); },
@@ -194,13 +206,18 @@ function harness(options: {
   const automate = 'automate' in options ? options.automate : new FakeAutomate(images, options.active ?? null);
   const reports: string[] = [];
   const bridge = new ExcalidrawBridge(app, store, () => automate, message => reports.push(message), options.paint ?? null);
-  return { bridge, automate, reports, files, read, created, attachmentRequests };
+  return { bridge, automate, reports, files, read, created, removed, attachmentRequests };
 }
 
-/** What the painter answers for a note: a map SVG of the note's title, sized as the export would size it. */
-function painted(title: string, bounds = { x: 0, y: 0, width: 1000, height: 400 }, stalled = false): PaintedMap {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${bounds.width + 48}" height="${bounds.height + 48}"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">${title}</div></foreignObject></svg>`;
-  return { svg, size: { width: bounds.width + 48, height: bounds.height + 48 }, bounds, stalled };
+/** What the painter answers for a note: a map SVG of the note's title (when asked for), sized as the export would size it. */
+function painted(title: string, bounds = { x: 0, y: 0, width: 1000, height: 400 }, stalled = false, svg = true): PaintedMap {
+  const document = `<svg xmlns="http://www.w3.org/2000/svg" width="${bounds.width + 48}" height="${bounds.height + 48}"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">${title}</div></foreignObject></svg>`;
+  return { svg: svg ? document : null, bounds, stalled };
+}
+
+/** A painter that answers as `painted` does, the SVG only when asked for, as the real one. */
+function painter(bounds?: { x: number; y: number; width: number; height: number }, stalled = false): MapPainter {
+  return (target, options) => Promise.resolve(painted(target.basename, bounds, stalled, options.svg));
 }
 
 function drop(overrides: Partial<ExcalidrawDropData> = {}): ExcalidrawDropData {
@@ -228,29 +245,6 @@ describe('isMappyDrop', () => {
     expect(isMappyDrop({ altKey: false, shiftKey: false, ctrlKey: false, metaKey: false })).toBe(false);
     expect(isMappyDrop({ altKey: true, shiftKey: true, ctrlKey: false, metaKey: false })).toBe(false);
     expect(isMappyDrop({ altKey: true, shiftKey: false, ctrlKey: true, metaKey: false })).toBe(false);
-  });
-});
-
-describe('findBorderedMappyEmbeddables', () => {
-  it('finds only bordered Excalidraw embeds whose links resolve to Mappy notes', () => {
-    const { files } = harness({
-      sources: { 'Map.md': SOURCE, 'Plain.md': '# Plain\n' },
-      frontmatter: { 'Map.md': { [MAPPY_KEY]: true }, 'Plain.md': {} },
-    });
-    const app = {
-      metadataCache: {
-        getFileCache: (target: TFile) => target.path === 'Map.md' ? { frontmatter: { [MAPPY_KEY]: true } } : { frontmatter: {} },
-        getFirstLinkpathDest: (target: string) => files.get(target.replace(/\.md$/u, '')) ?? files.get(target) ?? null,
-      },
-    } as unknown as App;
-    const elements = [
-      { id: 'map', type: 'embeddable', link: '[[Map.md]]', strokeColor: '#000000' },
-      { id: 'plain', type: 'embeddable', link: '[[Plain.md]]', strokeColor: '#000000' },
-      { id: 'clear', type: 'embeddable', link: '[[Map.md]]', strokeColor: 'transparent' },
-      { id: 'text', type: 'text', link: '[[Map.md]]', strokeColor: '#000000' },
-    ] as ExcalidrawElement[];
-
-    expect(findBorderedMappyEmbeddables(app, file('Drawing.excalidraw.md'), elements).map(element => element.id)).toEqual(['map']);
   });
 });
 
@@ -315,6 +309,9 @@ describe('ExcalidrawBridge.ensureHook', () => {
       link: '[[Note.md]]', strokeColor: '#000000', style: {},
     });
 
+    // The first poll finds the element, the second sees nothing more arrive and edits.
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ea?.added).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(200);
 
     expect(ea?.added).toHaveLength(1);
@@ -340,6 +337,8 @@ describe('embeddableFrameSize', () => {
 /** Excalidraw's built-in "Insert image / Insert as embeddable" of a map note, watched after the drop dialog (§5 M6). */
 describe('ExcalidrawBridge default drop', () => {
   const ordinary = () => drop({ event: { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false } });
+  /** Two polls: one that finds the drop's elements, one that sees nothing more arrive. */
+  const SETTLE_MS = 400;
 
   /** The bridge hooked, the drop declined to Excalidraw, and the EA instance the watcher polls. */
   function watched(options: Parameters<typeof harness>[0] = {}) {
@@ -349,7 +348,9 @@ describe('ExcalidrawBridge default drop', () => {
     expect(result.automate?.onDropHook?.(ordinary())).toBe(false);
     const ea = result.automate?.instances[0];
     if (!ea) throw new Error('no EA instance');
-    return { ...result, ea };
+    const note = result.files.get('Note.md');
+    if (!note) throw new Error('no note');
+    return { ...result, ea, note };
   }
 
   /** What Excalidraw's "Insert image" of a Markdown note leaves in the view: the note's text as an SVG image, its file the note. */
@@ -361,85 +362,113 @@ describe('ExcalidrawBridge default drop', () => {
     ea.imageFiles.set(`md:${note.path}`, note);
   }
 
+  function embeddable(ea: FakeAutomate, id: string, link: string, x = 0, y = 0, strokeColor = '#000000'): void {
+    ea.elements.set(id, { id, type: 'embeddable', x, y, width: 500, height: 500, link, strokeColor, style: {} });
+  }
+
   it('replaces the Markdown image of "Insert image" with the map drawn as an SVG attachment, linked to the note', async () => {
-    const paint = vi.fn((target: TFile) => Promise.resolve(painted(target.basename)));
-    const { ea, files, created, attachmentRequests, read, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
-    const note = files.get('Note.md');
-    if (!note) throw new Error('no note');
+    const paint = vi.fn(painter());
+    const { ea, note, created, removed, attachmentRequests, read, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
     markdownImage(ea, 'md-image', note);
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
     expect(paint).toHaveBeenCalledTimes(1);
-    expect(paint.mock.calls[0]?.[0]).toBe(note);
+    expect(paint.mock.calls[0]).toEqual([note, { svg: true }]);
     // The SVG is attached where the drawing's attachments go, named after the note; the note itself is never read or written by this route.
     expect(attachmentRequests).toEqual([{ name: 'Note.svg', owner: 'Drawing.excalidraw.md' }]);
     expect(created).toHaveLength(1);
     expect(created[0]?.path).toBe('attachments/Note.svg');
     expect(created[0]?.data).toContain('<foreignObject><div xmlns="http://www.w3.org/1999/xhtml">Note</div></foreignObject>');
+    expect(removed).toEqual([]);
     expect(read).not.toHaveBeenCalled();
     expect(ea.calls).toContain('addImage:attachments/Note.svg');
     expect(ea.added).toHaveLength(1);
     expect(ea.added[0]?.args).toEqual([false, true, true]);
     const elements = ea.added[0]?.elements ?? [];
-    const old = elements.find(element => element.id === 'md-image');
-    const image = elements.find(element => element.id !== 'md-image');
-    // Excalidraw's own element is deleted in place; the new image sits where it was, scaled by EA to 500 on its longer side.
-    expect(old?.isDeleted).toBe(true);
+    // Only the new image is added, where the Markdown image sat, scaled by EA to 500 on its longer side; the Markdown image is then removed.
+    expect(elements).toHaveLength(1);
+    const image = elements[0];
     expect(image).toMatchObject({ type: 'image', x: 40, y: 60, width: 500, fileId: 'file:attachments/Note.svg', link: '[[Note]]' });
     expect(image?.height).toBeCloseTo(500 * (448 / 1048), 6);
     expect(image?.customData).toBeUndefined();
+    expect(ea.deleted).toEqual([['md-image']]);
+    expect(ea.calls.indexOf('deleteViewElements')).toBeGreaterThan(ea.calls.indexOf('addElementsToView'));
     expect(ea.selected.at(-1)).toEqual([image?.id]);
     expect(reports).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
   });
 
-  it('gives the embeddable of "Insert as embeddable" the map\'s proportions at the same place, and no border', async () => {
-    const paint = vi.fn(() => Promise.resolve(painted('Note', { x: -20, y: -10, width: 1000, height: 400 })));
-    const { ea } = watched({ paint });
-    ea.elements.set('embed-1', {
-      id: 'embed-1', type: 'embeddable', x: 600, y: 0, width: 500, height: 500,
-      link: '[[Note.md]]', strokeColor: '#000000', style: {},
-    });
+  it('gives the embeddable of "Insert as embeddable" the map\'s proportions at the same place, and no border, without asking for the SVG', async () => {
+    const paint = vi.fn(painter({ x: -20, y: -10, width: 1000, height: 400 }));
+    const { ea, note, created } = watched({ paint });
+    embeddable(ea, 'embed-1', '[[Note.md]]', 600, 0);
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
     expect(paint).toHaveBeenCalledTimes(1);
+    expect(paint.mock.calls[0]).toEqual([note, { svg: false }]);
+    expect(created).toHaveLength(0);
     expect(ea.added).toHaveLength(1);
     const frame = ea.added[0]?.elements.find(element => element.id === 'embed-1');
     expect(frame).toMatchObject({ x: 600, y: 0, strokeColor: 'transparent', link: '[[Note.md]]', width: 800, height: Math.round(520 * (800 / 1120)) });
     expect(ea.calls).not.toContain('addImage:attachments/Note.svg');
+    expect(ea.deleted).toEqual([]);
   });
 
-  it('resizes an embeddable Excalidraw already made borderless and paints each note once for several elements', async () => {
-    const paint = vi.fn((target: TFile) => Promise.resolve(painted(target.basename, { x: 0, y: 0, width: 100, height: 50 })));
-    const { ea, files } = watched({ paint, images: { 'attachments/Note.svg': { width: 148, height: 98 } } });
-    const note = files.get('Note.md');
-    if (!note) throw new Error('no note');
-    ea.elements.set('embed-1', { id: 'embed-1', type: 'embeddable', x: 0, y: 0, width: 500, height: 500, link: '[[Note.md]]', strokeColor: 'transparent', style: {} });
+  it('resizes an embeddable Excalidraw already made borderless and paints each note once, with the SVG, for several elements', async () => {
+    const paint = vi.fn(painter({ x: 0, y: 0, width: 100, height: 50 }));
+    const { ea, note } = watched({ paint, images: { 'attachments/Note.svg': { width: 148, height: 98 } } });
+    embeddable(ea, 'embed-1', '[[Note.md]]', 0, 0, 'transparent');
     markdownImage(ea, 'md-image', note, 700, 0);
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
     expect(paint).toHaveBeenCalledTimes(1);
+    expect(paint.mock.calls[0]?.[1]).toEqual({ svg: true });
     const elements = ea.added[0]?.elements ?? [];
     expect(elements.find(element => element.id === 'embed-1')).toMatchObject({ width: 220, height: 170, strokeColor: 'transparent' });
-    expect(elements.find(element => element.id === 'md-image')?.isDeleted).toBe(true);
-    expect(elements.find(element => element.type === 'image' && element.id !== 'md-image')).toMatchObject({ x: 700, y: 0, width: 148, height: 98 });
+    expect(elements.find(element => element.type === 'image')).toMatchObject({ x: 700, y: 0, width: 148, height: 98 });
+    expect(ea.deleted).toEqual([['md-image']]);
+  });
+
+  it('waits for the images of a multi-file drop, which Excalidraw adds one after another', async () => {
+    const paint = vi.fn(painter({ x: 0, y: 0, width: 100, height: 50 }));
+    const { ea, files, created } = watched({
+      paint, sources: { 'Note.md': SOURCE, 'Other.md': SOURCE },
+      images: { 'attachments/Note.svg': { width: 148, height: 98 }, 'attachments/Other.svg': { width: 148, height: 98 } },
+    });
+    const note = files.get('Note.md');
+    const other = files.get('Other.md');
+    if (!note || !other) throw new Error('no notes');
+    markdownImage(ea, 'md-note', note);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(paint).not.toHaveBeenCalled();
+    // The second note's image lands between two polls; the watcher sees the count change and waits one more.
+    markdownImage(ea, 'md-other', other, 600, 0);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(paint).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(paint).toHaveBeenCalledTimes(2);
+    expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg', 'attachments/Other.svg']);
+    expect(ea.added).toHaveLength(1);
+    expect(ea.added[0]?.elements.filter(element => element.type === 'image')).toHaveLength(2);
+    expect(ea.deleted).toEqual([['md-note', 'md-other']]);
   });
 
   it('leaves images and embeddables of other notes, and other new elements, alone', async () => {
-    const paint = vi.fn(() => Promise.resolve(painted('Plain')));
+    const paint = vi.fn(painter());
     const { ea, files, created } = watched({
       paint, sources: { 'Note.md': SOURCE, 'Plain.md': '# Plain\n' }, frontmatter: { 'Note.md': { [MAPPY_KEY]: true }, 'Plain.md': {} },
     });
     const plain = files.get('Plain.md');
     if (!plain) throw new Error('no plain note');
     markdownImage(ea, 'plain-image', plain);
-    ea.elements.set('plain-embed', { id: 'plain-embed', type: 'embeddable', x: 0, y: 0, width: 500, height: 500, link: '[[Plain.md]]', strokeColor: '#000000', style: {} });
+    embeddable(ea, 'plain-embed', '[[Plain.md]]');
     ea.elements.set('rect', { id: 'rect', type: 'rectangle', x: 0, y: 0, width: 10, height: 10, strokeColor: '#000000', style: {} });
 
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(800);
 
     expect(paint).not.toHaveBeenCalled();
     expect(created).toHaveLength(0);
@@ -449,81 +478,119 @@ describe('ExcalidrawBridge default drop', () => {
 
   it('reports a map that cannot be painted and still removes the border; the Markdown image stays as Excalidraw made it', async () => {
     const paint = vi.fn(() => Promise.reject(new Error('描けません')));
-    const { ea, files, created, reports } = watched({ paint });
-    const note = files.get('Note.md');
-    if (!note) throw new Error('no note');
+    const { ea, note, created, reports } = watched({ paint });
     markdownImage(ea, 'md-image', note);
-    ea.elements.set('embed-1', { id: 'embed-1', type: 'embeddable', x: 0, y: 0, width: 500, height: 500, link: '[[Note.md]]', strokeColor: '#000000', style: {} });
+    embeddable(ea, 'embed-1', '[[Note.md]]');
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
+    expect(paint).toHaveBeenCalledTimes(1);
     expect(reports).toEqual(['描けません']);
     expect(created).toHaveLength(0);
     const elements = ea.added[0]?.elements ?? [];
     expect(elements.map(element => element.id)).toEqual(['embed-1']);
     expect(elements[0]).toMatchObject({ strokeColor: 'transparent', width: 500, height: 500 });
+    expect(ea.deleted).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
   });
 
-  it('says when a render stalled and inserts the map as far as it got', async () => {
-    const paint = vi.fn(() => Promise.resolve(painted('Note', undefined, true)));
-    const { ea, files, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
-    const note = files.get('Note.md');
-    if (!note) throw new Error('no note');
+  it('says when a render stalled and fits the map as far as it got', async () => {
+    const paint = vi.fn(painter(undefined, true));
+    const { ea, note, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
     markdownImage(ea, 'md-image', note);
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
     expect(reports).toEqual([DEFAULT_DROP_STALLED_MESSAGE]);
     expect(ea.added).toHaveLength(1);
     expect(ea.calls).toContain('addImage:attachments/Note.svg');
   });
 
-  it('reports an SVG Excalidraw cannot load and keeps the Markdown image', async () => {
-    const paint = vi.fn(() => Promise.resolve(painted('Note')));
-    const { ea, files, created, reports } = watched({ paint });
-    const note = files.get('Note.md');
-    if (!note) throw new Error('no note');
+  it('removes the attachment again and keeps the Markdown image when Excalidraw cannot load the SVG', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note, created, removed, reports } = watched({ paint });
     markdownImage(ea, 'md-image', note);
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
-    expect(created).toHaveLength(1);
+    expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg']);
+    expect(removed).toEqual(['attachments/Note.svg']);
     expect(reports).toEqual(['Note の画像を Excalidraw に読み込めませんでした。']);
-    const elements = ea.added[0]?.elements ?? [];
-    expect(elements).toHaveLength(1);
-    expect(elements[0]).toMatchObject({ id: 'md-image', type: 'image' });
-    expect(elements[0]?.isDeleted).toBeUndefined();
+    expect(ea.added).toHaveLength(0);
+    expect(ea.deleted).toEqual([]);
   });
 
-  it('keeps a move made while the map was being painted', async () => {
-    let release: (map: PaintedMap) => void = () => {};
-    const paint = vi.fn(() => new Promise<PaintedMap>(resolve => { release = resolve; }));
-    const { ea } = watched({ paint });
-    ea.elements.set('embed-1', { id: 'embed-1', type: 'embeddable', x: 0, y: 0, width: 500, height: 500, link: '[[Note.md]]', strokeColor: '#000000', style: {} });
+  it('removes the attachments again when the edit itself fails, and reports it', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note, created, removed, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    markdownImage(ea, 'md-image', note);
+    ea.addElementsToView = () => { ea.calls.push('addElementsToView'); return Promise.resolve(false); };
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg']);
+    expect(removed).toEqual(['attachments/Note.svg']);
+    expect(reports).toEqual(['Excalidraw の要素を更新できませんでした。']);
+    expect(ea.deleted).toEqual([]);
+    expect(ea.calls.at(-1)).toBe('destroy');
+  });
+
+  it('keeps a move made while the map was being painted, and leaves an element deleted meanwhile deleted', async () => {
+    let release: (map: PaintedMap) => void = () => {};
+    const paint = vi.fn((target: TFile, options: { svg: boolean }) => new Promise<PaintedMap>(resolve => {
+      release = map => { resolve({ ...map, svg: options.svg ? map.svg : null }); };
+    }));
+    const { ea, note, created } = watched({ paint, images: { 'attachments/Note.svg': { width: 148, height: 98 } } });
+    embeddable(ea, 'embed-1', '[[Note.md]]');
+    markdownImage(ea, 'md-image', note, 700, 0);
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
     expect(paint).toHaveBeenCalledTimes(1);
     const moved = ea.elements.get('embed-1');
     if (moved) { moved.x = 250; moved.y = 125; }
+    // The user removed the Markdown image (or undid the insert) while the map was being painted.
+    ea.elements.delete('md-image');
     release(painted('Note', { x: 0, y: 0, width: 100, height: 50 }));
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(ea.added[0]?.elements.find(element => element.id === 'embed-1')).toMatchObject({ x: 250, y: 125, width: 220, height: 170 });
+    const elements = ea.added[0]?.elements ?? [];
+    expect(elements.map(element => element.id)).toEqual(['embed-1']);
+    expect(elements[0]).toMatchObject({ x: 250, y: 125, width: 220, height: 170 });
+    expect(created).toHaveLength(0);
+    expect(ea.deleted).toEqual([]);
   });
 
-  it('does not treat an image as a map when this Excalidraw cannot name its file', async () => {
-    const paint = vi.fn(() => Promise.resolve(painted('Note')));
-    const { ea, files } = watched({ paint });
-    const note = files.get('Note.md');
-    if (!note) throw new Error('no note');
+  it('changes nothing once the plugin was disposed while painting', async () => {
+    let release: (map: PaintedMap) => void = () => {};
+    const paint = vi.fn(() => new Promise<PaintedMap>(resolve => { release = resolve; }));
+    const { ea, note, bridge, created } = watched({ paint });
     markdownImage(ea, 'md-image', note);
-    (ea as unknown as { getViewFileForImageElement: unknown }).getViewFileForImageElement = undefined;
+    embeddable(ea, 'embed-1', '[[Note.md]]');
 
-    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    expect(paint).toHaveBeenCalledTimes(1);
+    bridge.dispose();
+    release(painted('Note'));
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(paint).not.toHaveBeenCalled();
+    expect(created).toHaveLength(0);
     expect(ea.added).toHaveLength(0);
+    expect(ea.deleted).toEqual([]);
+    expect(ea.calls.at(-1)).toBe('destroy');
+  });
+
+  it('does not treat an image as a map when this Excalidraw cannot name its file or delete an element', async () => {
+    for (const missing of ['getViewFileForImageElement', 'deleteViewElements']) {
+      const paint = vi.fn(painter());
+      const { ea, note } = watched({ paint });
+      markdownImage(ea, 'md-image', note);
+      (ea as unknown as Record<string, unknown>)[missing] = undefined;
+
+      await vi.advanceTimersByTimeAsync(800);
+
+      expect(paint).not.toHaveBeenCalled();
+      expect(ea.added).toHaveLength(0);
+    }
   });
 });
 

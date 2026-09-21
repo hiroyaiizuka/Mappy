@@ -5,7 +5,7 @@ import {
   PNG_UNAVAILABLE, canRasterize, captureScene, rasterizeSvg, type CaptureSource, type ImageResolver,
 } from '../export/svg-capture';
 import {
-  DESKTOP_PNG_LIMITS, MOBILE_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme, type PngScaleLimits, type SvgScene, type SvgSize,
+  DESKTOP_PNG_LIMITS, MOBILE_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme, type PngScaleLimits, type SvgSize,
 } from '../export/svg-document';
 
 /**
@@ -117,11 +117,10 @@ export interface ExportOptions {
   limits?: PngScaleLimits;
 }
 
-/** The captured map as one SVG document, checked to be well formed, with its size and the scene it came from. */
+/** The captured map as one SVG document, checked to be well formed, and its size. */
 export interface RenderedSvg {
   svg: string;
   size: SvgSize;
-  scene: SvgScene;
 }
 
 /**
@@ -136,7 +135,7 @@ export async function renderSvg(app: App, note: TFile, source: CaptureSource, op
   if (scene.nodes.length === 0) throw new Error('書き出すノードがありません。');
   const svg = buildSvg(scene);
   assertWellFormed(svg);
-  return { svg, size: svgSize(scene.bounds), scene };
+  return { svg, size: svgSize(scene.bounds) };
 }
 
 /** `<name>.svg` where Obsidian's attachment setting puts `owner`'s attachments; the path is taken only now, right before the write. */

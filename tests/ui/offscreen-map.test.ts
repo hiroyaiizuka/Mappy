@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { App, TFile } from 'obsidian';
+import type { App, Component as ObsidianComponent, TFile } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
-import { MarkdownRenderer } from '../../harness/browser/obsidian';
+import { Component, MarkdownRenderer } from '../../harness/browser/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { OFFSCREEN_CLASS, OFFSCREEN_IMAGE_WAIT_MS, OFFSCREEN_RENDER_STALL_MS, OffscreenMap, paintMap } from '../../src/ui/offscreen-map';
 
@@ -32,22 +32,25 @@ function vault(files: Record<string, string>): { app: HarnessApp; store: Documen
   return { app, store, file: path => { const file = created.get(path); if (!file) throw new Error(`no ${path}`); return file; } };
 }
 
-function titles(svg: string): string[] {
-  const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+function titles(svg: string | null): string[] {
+  const parsed = new DOMParser().parseFromString(svg ?? '', 'image/svg+xml');
   return Array.from(parsed.querySelectorAll('foreignObject .mappy-node-label'), label => label.textContent?.trim() ?? '');
+}
+
+/** The painter as the bridge calls it for an image: with the SVG, in this test's document. */
+function paint(app: HarnessApp, store: DocumentStore, file: TFile, svg = true): ReturnType<typeof paintMap> {
+  return paintMap(app.asApp<App>(), store, file, { svg, doc: document });
 }
 
 describe('paintMap', () => {
   it('draws the whole map open, in the light theme, and leaves nothing on the document', async () => {
     const { app, store, file } = vault({ 'Map.md': MAP });
-    const painted = await paintMap(app.asApp<App>(), store, file('Map.md'), document);
+    const painted = await paint(app, store, file('Map.md'));
     expect(painted.stalled).toBe(false);
-    expect(painted.svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true);
+    expect(painted.svg?.startsWith('<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true);
     expect(painted.svg).toContain('class="mappy-export theme-light" data-theme="light" data-nodes="8" data-edges="7"');
     expect(titles(painted.svg)).toEqual(['講座', '回復する', '睡眠', '昼寝', '運動', '記録する', '日誌', '葉 <A & B>']);
     expect(painted.svg).toContain('葉 &lt;A &amp; B&gt;');
-    expect(painted.size.width).toBeGreaterThan(0);
-    expect(painted.size.height).toBeGreaterThan(0);
     expect(Object.keys(painted.bounds).sort()).toEqual(['height', 'width', 'x', 'y']);
     expect(Object.values(painted.bounds).every(value => Number.isFinite(value))).toBe(true);
     expect(document.querySelector(`.${OFFSCREEN_CLASS}`)).toBeNull();
@@ -59,15 +62,15 @@ describe('paintMap', () => {
 
   it('places a free topic at its stored position and calls another map as the view would, folded below its root\'s children', async () => {
     const { app, store, file } = vault({ 'Topics.md': TOPICS, 'Host.md': HOST, 'Called.md': CALLED });
-    const topics = await paintMap(app.asApp<App>(), store, file('Topics.md'), document);
+    const topics = await paint(app, store, file('Topics.md'));
     expect(titles(topics.svg)).toEqual(['講座', '回復する', '補足', '用語']);
-    const parsed = new DOMParser().parseFromString(topics.svg, 'image/svg+xml');
+    const parsed = new DOMParser().parseFromString(topics.svg ?? '', 'image/svg+xml');
     const supplement = Array.from(parsed.querySelectorAll('foreignObject')).find(node => node.textContent?.includes('補足'));
     // The stored position is an offset from the body root's top-left; jsdom's nodes are zero-sized, so it is the position itself.
     expect(supplement?.getAttribute('x')).toBe('300');
     expect(supplement?.getAttribute('y')).toBe('200');
 
-    const host = await paintMap(app.asApp<App>(), store, file('Host.md'), document);
+    const host = await paint(app, store, file('Host.md'));
     // The calling item shows the called root's text; 深い stays behind the initial fold of 一.
     expect(titles(host.svg)).toEqual(['ホスト', '呼ばれた', '一', '二', '葉']);
     expect(host.svg).toContain('data-nodes="5"');
@@ -76,17 +79,47 @@ describe('paintMap', () => {
     expect(app.content(file('Called.md'))).toBe(CALLED);
   });
 
+  it('answers the bounds alone when the SVG is not wanted (an embeddable), without touching the images', async () => {
+    const { app, store, file } = vault({ 'Map.md': MAP.replace('- 葉 <A & B>', '- 図\n  ![[figure.png]]'), 'figure.png': '' });
+    const readBinary = vi.fn();
+    (app as unknown as { vault: { readBinary: unknown } }).vault.readBinary = readBinary;
+    const painted = await paint(app, store, file('Map.md'), false);
+    expect(painted.svg).toBeNull();
+    expect(painted.bounds.width).toBeGreaterThanOrEqual(0);
+    expect(readBinary).not.toHaveBeenCalled();
+    expect(document.querySelector(`.${OFFSCREEN_CLASS}`)).toBeNull();
+  });
+
   it('refuses a note that is not a map, and releases the frame', async () => {
     const { app, store, file } = vault({ 'Plain.md': '## Plain\n- a\n' });
-    await expect(paintMap(app.asApp<App>(), store, file('Plain.md'), document)).rejects.toThrow('Plain はマップではありません。');
+    await expect(paint(app, store, file('Plain.md'))).rejects.toThrow('Plain はマップではありません。');
     expect(document.querySelector(`.${OFFSCREEN_CLASS}`)).toBeNull();
   });
 
   it('reads the open editor buffer first, as every reader does', async () => {
     const { app, store, file } = vault({ 'Map.md': MAP });
     const read = vi.spyOn(store, 'read');
-    await paintMap(app.asApp<App>(), store, file('Map.md'), document);
+    await paint(app, store, file('Map.md'));
     expect(read).toHaveBeenCalledWith(file('Map.md'));
+  });
+
+  it('lives as a child of its owner, so the owner unloading ends the paint and removes the frame', async () => {
+    const { app, store, file } = vault({ 'Map.md': MAP });
+    const owner = new Component();
+    owner.load();
+    const original = MarkdownRenderer.render.bind(MarkdownRenderer);
+    let hang = (): void => {};
+    vi.spyOn(MarkdownRenderer, 'render').mockImplementation((app, markdown, element, sourcePath) =>
+      markdown === '睡眠' ? new Promise<void>(resolve => { hang = resolve; }) : original(app, markdown, element, sourcePath));
+    // The product sees Obsidian's `Component`; at runtime the harness Component stands in.
+    const painting = paintMap(app.asApp<App>(), store, file('Map.md'), { svg: true, owner: owner as unknown as ObsidianComponent, doc: document });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(document.querySelector(`.${OFFSCREEN_CLASS}`)).not.toBeNull();
+    owner.unload();
+    expect(document.querySelector(`.${OFFSCREEN_CLASS}`)).toBeNull();
+    hang();
+    await expect(painting).rejects.toThrow('Map の描画は中断されました。');
+    expect(document.querySelector(`.${OFFSCREEN_CLASS}`)).toBeNull();
   });
 });
 

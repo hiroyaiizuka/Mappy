@@ -6,6 +6,7 @@ import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
+import { FIT_PADDING } from '../interaction/viewport';
 import type { LayoutBounds, LayoutMode, NodeSize } from '../layout/layout';
 import type { Point } from '../layout/path-points';
 import type {
@@ -30,20 +31,20 @@ export interface ImportRequest {
 }
 
 /**
- * A map drawn without a leaf (§5 M6, the built-in insert routes): the SVG the export
- * would write (§5 M13), its size, and the layout's bounds the map view would fit.
- * `stalled` says a Markdown render never finished, so the SVG shows the map as far as
- * it got, as the export does.
+ * A map drawn without a leaf (§5 M6, the built-in insert routes): the layout's bounds the
+ * map view would fit and, when asked for, the SVG the export would write (§5 M13). `stalled`
+ * says a Markdown render never finished, so the map is shown as far as it got, as the export
+ * shows it.
  */
 export interface PaintedMap {
-  svg: string;
-  size: NodeSize;
+  /** Null when the painter was not asked for it (an embeddable needs only the bounds). */
+  svg: string | null;
   bounds: LayoutBounds;
   stalled: boolean;
 }
 
 /** Draws a map note off screen; the plugin wires `src/ui/offscreen-map.ts` in, the bridge only asks. */
-export type MapPainter = (file: TFile) => Promise<PaintedMap>;
+export type MapPainter = (file: TFile, options: { svg: boolean }) => Promise<PaintedMap>;
 
 /** The map view caps attachment previews; the drawing keeps the same proportions. */
 const MAX_IMAGE = { width: 240, height: 140 };
@@ -53,9 +54,7 @@ const DEFAULT_DROP_POLL_MS = 200;
 const DEFAULT_DROP_TIMEOUT_MS = 60_000;
 /** An "Insert as embeddable" frame is no longer than this on its longer side; the live view inside fits the map to it. */
 export const EMBEDDABLE_MAX_SIDE = 800;
-/** What `MapViewport.fit` keeps around the map (`fitToBounds`' default), so a frame of bounds plus padding shows the map at 100%. */
-const FIT_PADDING = 60;
-export const DEFAULT_DROP_STALLED_MESSAGE = '描画が終わらないノードがあるため、マップを描けたところまでで挿入します。';
+export const DEFAULT_DROP_STALLED_MESSAGE = '描画が終わらないノードがあるため、描けたところまでのマップに合わせます。';
 
 const BASE_STYLE: Partial<ExcalidrawStyle> = {
   strokeColor: '#1e1e1e', backgroundColor: 'transparent', fillStyle: 'solid', strokeWidth: 1, strokeStyle: 'solid',
@@ -86,20 +85,19 @@ function mappyTarget(app: App, drawing: TFile, element: ExcalidrawElement): TFil
 
 /**
  * The map note a built-in "Insert image" drew as Markdown text: an image element whose
- * vault file (Excalidraw's own mapping from the element's file id) is a map. Only EA
- * versions that expose the mapping can tell; older ones leave the image as it is.
+ * vault file (Excalidraw's own mapping from the element's file id) is a map. Only an EA
+ * that exposes the mapping and can delete a view element can replace the image; an older
+ * one leaves it as it is.
  */
 function mappyImageSource(app: App, ea: ExcalidrawAutomate, element: ExcalidrawElement): TFile | null {
-  if (element.type !== 'image' || typeof ea.getViewFileForImageElement !== 'function') return null;
+  if (element.type !== 'image' || typeof ea.getViewFileForImageElement !== 'function' || typeof ea.deleteViewElements !== 'function') return null;
   const file = ea.getViewFileForImageElement(element);
   return file && readMapLayout(app, file) !== null ? file : null;
 }
 
 /** Excalidraw stores the visible outer frame as the embeddable element's stroke. */
-export function findBorderedMappyEmbeddables(
-  app: App, drawing: TFile, elements: readonly ExcalidrawElement[],
-): ExcalidrawElement[] {
-  return elements.filter(element => element.strokeColor !== 'transparent' && mappyTarget(app, drawing, element) !== null);
+function isBordered(element: ExcalidrawElement): boolean {
+  return element.strokeColor !== 'transparent';
 }
 
 /**
@@ -118,6 +116,12 @@ export function embeddableFrameSize(bounds: NodeSize, maxSide = EMBEDDABLE_MAX_S
 interface DroppedMap {
   element: ExcalidrawElement;
   file: TFile;
+}
+
+/** What a poll of the view found: the drop's new elements from map notes, embeddables and Markdown images apart. */
+interface DroppedMaps {
+  embeds: DroppedMap[];
+  images: DroppedMap[];
 }
 
 /**
@@ -204,22 +208,21 @@ export class ExcalidrawBridge {
     });
   }
 
+  /**
+   * Polls until the drop's elements are there and no more arrive in a poll (Excalidraw adds
+   * the Markdown images of a multi-file drop one at a time, each after its render), fits
+   * them once, and stops: a later drop starts a watcher of its own.
+   */
   private async adoptDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, before: ReadonlySet<string>): Promise<void> {
     const started = Date.now();
+    let seen = 0;
     try {
       while (!this.disposed && Date.now() - started < DEFAULT_DROP_TIMEOUT_MS) {
         await new Promise<void>(resolve => { window.setTimeout(resolve, DEFAULT_DROP_POLL_MS); });
-        const created = ea.getViewElements().filter(element => !before.has(element.id));
-        const embeds: DroppedMap[] = [];
-        const images: DroppedMap[] = [];
-        for (const element of created) {
-          const target = mappyTarget(this.app, drawing, element);
-          if (target) { embeds.push({ element, file: target }); continue; }
-          const source = mappyImageSource(this.app, ea, element);
-          if (source) images.push({ element, file: source });
-        }
-        if (embeds.length === 0 && images.length === 0) continue;
-        await this.fitDefaultDrop(ea, drawing, embeds, images);
+        const dropped = this.droppedMaps(ea, drawing, before);
+        const count = dropped.embeds.length + dropped.images.length;
+        if (count === 0 || count !== seen) { seen = count; continue; }
+        await this.fitDefaultDrop(ea, drawing, dropped);
         return;
       }
     } finally {
@@ -228,22 +231,41 @@ export class ExcalidrawBridge {
     }
   }
 
+  private droppedMaps(ea: ExcalidrawAutomate, drawing: TFile, before: ReadonlySet<string>): DroppedMaps {
+    const dropped: DroppedMaps = { embeds: [], images: [] };
+    for (const element of ea.getViewElements()) {
+      if (before.has(element.id)) continue;
+      const target = mappyTarget(this.app, drawing, element);
+      if (target) { dropped.embeds.push({ element, file: target }); continue; }
+      const source = mappyImageSource(this.app, ea, element);
+      if (source) dropped.images.push({ element, file: source });
+    }
+    return dropped;
+  }
+
   /**
    * One edit for everything the drop created. The maps are painted first (one paint per
-   * note, a failure reported and that element left as Excalidraw made it), then the
-   * embeddables are edited in place and each Markdown image is deleted in favour of a new
-   * image element showing the map's SVG, attached beside the drawing and linked to the note.
-   * The elements are read again after the paint, so a move made meanwhile is kept.
+   * note, the SVG only for the images; a failure is reported and that element is left as
+   * Excalidraw made it), then the embeddables are edited in place and a new image element
+   * showing each map's SVG, attached beside the drawing and linked to the note, is added
+   * where its Markdown image sits; the Markdown image is removed once the new one is in.
+   * The view is read again after the paint: an element moved meanwhile is edited where it
+   * is now, one deleted meanwhile is left deleted, and an unloaded plugin changes nothing.
+   * An attachment the edit could not use is removed again.
    */
-  private async fitDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, embeds: DroppedMap[], images: DroppedMap[]): Promise<void> {
-    const maps = await this.paintMaps([...embeds, ...images].map(dropped => dropped.file));
-    const bordered = embeds.filter(({ element }) => element.strokeColor !== 'transparent');
-    const painted = images.filter(({ file }) => maps.has(file.path));
-    if (bordered.length === 0 && maps.size === 0) return;
+  private async fitDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, dropped: DroppedMaps): Promise<void> {
+    const maps = await this.paintMaps(dropped);
+    if (this.disposed) return;
     const current = new Map(ea.getViewElements().map(element => [element.id, element]));
-    const latest = ({ element }: DroppedMap): ExcalidrawElement => current.get(element.id) ?? element;
+    const still = ({ element, file }: DroppedMap): DroppedMap | null => {
+      const now = current.get(element.id);
+      return now ? { element: now, file } : null;
+    };
+    const embeds = dropped.embeds.map(still).filter((item): item is DroppedMap => item !== null);
+    const images = dropped.images.map(still).filter((item): item is DroppedMap => item !== null && maps.get(item.file.path)?.svg != null);
+    if (!embeds.some(({ element }) => isBordered(element)) && !embeds.some(({ file }) => maps.has(file.path)) && images.length === 0) return;
     ea.clear();
-    ea.copyViewElementsToEAforEditing([...embeds, ...painted].map(latest));
+    ea.copyViewElementsToEAforEditing(embeds.map(({ element }) => element));
     for (const { element, file } of embeds) {
       const copy = ea.getElement(element.id);
       if (!copy) continue;
@@ -251,42 +273,67 @@ export class ExcalidrawBridge {
       const map = maps.get(file.path);
       if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
     }
-    const selection: string[] = [];
-    for (const { element, file } of painted) {
-      const copy = ea.getElement(element.id);
-      const map = maps.get(file.path);
-      if (!copy || !map) continue;
-      const attachment = await createSvgAttachment(this.app, file.basename, drawing, map.svg);
-      const id = await ea.addImage(copy.x, copy.y, attachment, true);
-      const image = id ? ea.getElement(id) : null;
-      if (!id || !image) { this.report(`${file.basename} の画像を Excalidraw に読み込めませんでした。`); continue; }
-      image.link = `[[${this.app.metadataCache.fileToLinktext(file, drawing.path)}]]`;
-      copy.isDeleted = true;
-      selection.push(id);
+    const attachments: TFile[] = [];
+    const replaced: { original: ExcalidrawElement; id: string }[] = [];
+    try {
+      for (const { element, file } of images) {
+        const svg = maps.get(file.path)?.svg;
+        if (svg == null) continue;
+        const attachment = await createSvgAttachment(this.app, file.basename, drawing, svg);
+        attachments.push(attachment);
+        const id = await ea.addImage(element.x, element.y, attachment, true);
+        const image = id ? ea.getElement(id) : null;
+        if (!id || !image) {
+          this.report(`${file.basename} の画像を Excalidraw に読み込めませんでした。`);
+          await this.discard(attachments.pop());
+          continue;
+        }
+        image.link = `[[${this.app.metadataCache.fileToLinktext(file, drawing.path)}]]`;
+        replaced.push({ original: element, id });
+      }
+      if (embeds.length === 0 && replaced.length === 0) return;
+      if (!await ea.addElementsToView(false, true, true)) throw new Error('Excalidraw の要素を更新できませんでした。');
+    } catch (error: unknown) {
+      for (const attachment of attachments) await this.discard(attachment);
+      throw error;
     }
-    if (!await ea.addElementsToView(false, true, true)) throw new Error('Excalidraw の要素を更新できませんでした。');
-    if (selection.length > 0) ea.selectElementsInView?.(selection);
+    if (replaced.length > 0) {
+      if (!ea.deleteViewElements?.(replaced.map(({ original }) => original))) this.report('元の Markdown の画像を消せませんでした。');
+      ea.selectElementsInView?.(replaced.map(({ id }) => id));
+    }
   }
 
-  /** Each note painted once; a note that cannot be painted is reported and left out. */
-  private async paintMaps(files: readonly TFile[]): Promise<Map<string, PaintedMap>> {
+  /** Removes (as the user's deletion setting says) an attachment this edit created and could not use; a failure to remove it is not worth an error of its own. */
+  private async discard(attachment: TFile | undefined): Promise<void> {
+    if (!attachment) return;
+    try {
+      await this.app.fileManager.trashFile(attachment);
+    } catch {
+      this.report(`使わなかった添付ファイルを消せませんでした: ${attachment.path}`);
+    }
+  }
+
+  /** Each note painted once, with its SVG only when an image of it is being replaced; a note that cannot be painted is reported and left out. */
+  private async paintMaps(dropped: DroppedMaps): Promise<Map<string, PaintedMap>> {
     const maps = new Map<string, PaintedMap>();
     const paint = this.paint;
     if (!paint) return maps;
+    const needsSvg = new Set(dropped.images.map(({ file }) => file.path));
     const tried = new Set<string>();
     let stalled = false;
-    for (const file of files) {
+    for (const { file } of [...dropped.embeds, ...dropped.images]) {
       if (tried.has(file.path)) continue;
       tried.add(file.path);
       try {
-        const map = await paint(file);
+        const map = await paint(file, { svg: needsSvg.has(file.path) });
         maps.set(file.path, map);
         stalled = stalled || map.stalled;
       } catch (error: unknown) {
         this.report(error instanceof Error ? error.message : `${file.basename} のマップを描けませんでした。`);
       }
+      if (this.disposed) break;
     }
-    if (stalled) this.report(DEFAULT_DROP_STALLED_MESSAGE);
+    if (stalled && !this.disposed) this.report(DEFAULT_DROP_STALLED_MESSAGE);
     return maps;
   }
 

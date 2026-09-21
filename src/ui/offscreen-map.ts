@@ -44,6 +44,8 @@ export class OffscreenMap extends Component {
   private nodes!: HTMLDivElement;
   private renderer!: NodeRenderer;
   private edges!: EdgeLayer;
+  /** Set when the component unloads (the owner went, or the paint was released); a capture in flight stops at its next wait. */
+  private released = false;
 
   constructor(
     private readonly app: App,
@@ -66,21 +68,25 @@ export class OffscreenMap extends Component {
   }
 
   onunload(): void {
+    this.released = true;
     this.host.remove();
   }
 
   /**
    * Read, project, render, wait, lay out: what the export captures from a view. `stalled`
    * is true when a render never finished (or the budget ran out) and the map shows as far
-   * as it got. The entries are copied, as the view's export hands them out.
+   * as it got. The entries are copied, as the view's export hands them out. Throws once the
+   * component has unloaded, so an owner that goes (the plugin unloading) ends the paint.
    */
   async capture(): Promise<{ source: CaptureSource; stalled: boolean }> {
     const file = this.file;
     const text = await this.store.read(file);
+    this.assertLive();
     const mode = readMapFromSource(text);
     if (mode === null) throw new Error(`${file.basename} はマップではありません。`);
     const document = parseMarkdown(text, file.basename);
     const targets = await new CallReader(this.app, this.store).read(document, file.path);
+    this.assertLive();
     const trees = projectShown(document, targets);
     const collapsed = initialCallFolds(trees.calls);
     const [root = trees.split.root, ...topics] = trees.calls.roots;
@@ -90,6 +96,7 @@ export class OffscreenMap extends Component {
     });
     const stalled = !await this.rendered();
     await this.imagesLoaded(OFFSCREEN_IMAGE_WAIT_MS);
+    this.assertLive();
     // Keys come from the headings as written (`split`); the tree laid out is the one shown (a topic may call a map).
     const positions = readTopicPositions(text);
     const keys = topicKeys(document);
@@ -101,6 +108,10 @@ export class OffscreenMap extends Component {
     this.renderer.place(layout.nodes, layout.folds);
     this.edges.update(layout.edges);
     return { source: { layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg }, stalled };
+  }
+
+  private assertLive(): void {
+    if (this.released) throw new Error(`${this.file.basename} の描画は中断されました。`);
   }
 
   /** True once every render finished; false when one stalled or the budget ran out. */
@@ -132,19 +143,28 @@ export class OffscreenMap extends Component {
   }
 }
 
+export interface PaintOptions {
+  /** Whether the SVG is wanted; an embeddable needs only the bounds, and skips the capture's image reads. */
+  svg?: boolean;
+  /** The component whose unload ends the paint (the plugin); without one the map lives only for the paint. */
+  owner?: Component;
+  /** The document to draw in; the main window's unless given. */
+  doc?: Document;
+}
+
 /**
  * The painter the Excalidraw bridge asks for a map note: draws it off screen, captures
  * it as the export would, and releases the frame. The SVG is the one the export writes
  * (§5 M13) in the light theme; the bounds are the layout's, for the embeddable's frame.
  */
-export async function paintMap(app: App, store: DocumentStore, file: TFile, doc: Document = document): Promise<PaintedMap> {
-  const map = new OffscreenMap(app, store, doc, file);
-  map.load();
+export async function paintMap(app: App, store: DocumentStore, file: TFile, options: PaintOptions = {}): Promise<PaintedMap> {
+  const map = new OffscreenMap(app, store, options.doc ?? document, file);
+  if (options.owner) options.owner.addChild(map); else map.load();
   try {
     const { source, stalled } = await map.capture();
-    const { svg, size } = await renderSvg(app, file, source, { theme: "light" });
-    return { svg, size: { width: size.width, height: size.height }, bounds: { ...source.layout.bounds }, stalled };
+    const svg = options.svg === false ? null : (await renderSvg(app, file, source, { theme: "light" })).svg;
+    return { svg, bounds: { ...source.layout.bounds }, stalled };
   } finally {
-    map.unload();
+    if (options.owner) options.owner.removeChild(map); else map.unload();
   }
 }

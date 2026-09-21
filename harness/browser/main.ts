@@ -663,10 +663,13 @@ const api = {
     const file = app.vault.getAbstractFileByPath(path);
     if (!file || !("extension" in file)) throw new Error(`No note at ${path}`);
     const started = performance.now();
-    const painted = await paintMap(app.asApp<App>(), store, file as unknown as TFile, document);
+    const painted = await paintMap(app.asApp<App>(), store, file as unknown as TFile, { svg: true, doc: document });
+    const svg = painted.svg ?? "";
+    const size = svg.match(/<svg [^>]*width="(\d+)" height="(\d+)"/u);
     return {
-      ...painted, ms: performance.now() - started,
-      nodes: (painted.svg.match(/<foreignObject /gu) ?? []).length, edges: (painted.svg.match(/<path d=/gu) ?? []).length,
+      ...painted, svg, ms: performance.now() - started,
+      size: { width: Number(size?.[1] ?? 0), height: Number(size?.[2] ?? 0) },
+      nodes: (svg.match(/<foreignObject /gu) ?? []).length, edges: (svg.match(/<path d=/gu) ?? []).length,
       leftBehind: document.querySelectorAll(".mappy-offscreen").length,
     };
   },

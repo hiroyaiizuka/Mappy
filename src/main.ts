@@ -38,7 +38,8 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.register(this.router.install());
-    this.bridge = new ExcalidrawBridge(this.app, store, undefined, message => { new Notice(message); }, file => paintMap(this.app, store, file));
+    this.bridge = new ExcalidrawBridge(this.app, store, undefined, message => { new Notice(message); },
+      (file, options) => paintMap(this.app, store, file, { ...options, owner: this }));
     this.register(() => { this.bridge.dispose(); });
     // Excalidraw may load after Mappy or be reloaded; re-check on every layout change.
     this.app.workspace.onLayoutReady(() => { this.bridge.ensureHook(); });

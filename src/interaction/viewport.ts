@@ -31,10 +31,13 @@ export function zoomAt(view: Viewport, point: Point, nextScale: number): Viewpor
   };
 }
 
-export function fitToBounds(bounds: Bounds, width: number, height: number, padding = 60): Viewport {
+/** What Fit keeps around the map on every side, in viewport px; the Excalidraw bridge sizes an embeddable frame with the same room. */
+export const FIT_PADDING = 60;
+
+export function fitToBounds(bounds: Bounds, width: number, height: number, padding = FIT_PADDING): Viewport {
   const viewportWidth = Number.isFinite(width) ? Math.max(0, width) : 0;
   const viewportHeight = Number.isFinite(height) ? Math.max(0, height) : 0;
-  const inset = Number.isFinite(padding) ? Math.max(0, padding) : 60;
+  const inset = Number.isFinite(padding) ? Math.max(0, padding) : FIT_PADDING;
   const contentWidth = Number.isFinite(bounds.width) ? Math.max(1, bounds.width) : 1;
   const contentHeight = Number.isFinite(bounds.height) ? Math.max(1, bounds.height) : 1;
   const scale = clampScale(Math.min(
