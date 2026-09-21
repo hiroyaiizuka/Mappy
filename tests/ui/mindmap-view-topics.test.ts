@@ -1356,6 +1356,28 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     },
   );
 
+  it('drops the hold when the layout is switched during a topic drag, so the topics re-stack in the new layout', async () => {
+    // No button reaches a held pointer, but `setState` switches layouts (a restored workspace, a pane opened on the
+    // same note): the hold measures from the layout it was taken in, so it must not survive into another one.
+    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+    // The layout node carries its id; the two mounts number their nodes apart, so compare the box alone.
+    const rect = ({ x, y, width, height }: Box): Box => ({ x, y, width, height });
+    const balanced = await mount(source, 'balanced');
+    const settled = rect(placed(balanced.view, balanced.topic('資料')));
+    document.body.replaceChildren();
+    const { view, topic } = await mount(source, 'mindmap');
+    const parent = topic('資料');
+    const { shift } = bind(view);
+    // Far clear of the stack, so the only thing that can move 資料 is the layout it is measured in.
+    shift(topic('補足').id, { x: 900, y: 40 });
+    await frame();
+    expect(placed(view, parent).y).toBe(125);
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await frame();
+    // Held from the map's layout, 資料 would sit at y 103: its map offset measured from the balanced origin.
+    expect(rect(placed(view, parent))).toEqual(settled);
+  });
+
   it('in the map a topic with no position and two children keeps its slot while a third is previewed under them', async () => {
     // The stack is flush left in the map, so no column moves; but the placeholder adds a row to the forest, on which
     // placeSideways re-centres the root, and the widened bounds reach the dragged tree stacked below, which used to push
