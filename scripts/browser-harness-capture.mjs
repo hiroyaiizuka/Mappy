@@ -1394,6 +1394,11 @@ async function captureTopicOperations(recorder, page) {
   // read before the drag, at the staging point and with the slot shown, and must not move (LEV-95: the placeholder that
   // widens its tree used to re-centre the stack's column and restack it clear of the dragged tree, so the parent jumped).
   const leafReference = original.replace('\n\n- [[heading-document|講座ノート]]\n- ![[sample-image.svg]]\n- [外部の資料](https://example.com)\n', '\n');
+  // The hierarchy runs on a note of its own: the stack is held for the whole drag now (LEV-125), so 補足: 用語 stays
+  // where it was stacked — directly under 参考資料, over the spot its first child lands on — and the pointer would come
+  // down on it. Giving it a position takes it out of the stack, so the case keeps landing on plain canvas. The case
+  // checks that the position it was given is clear of the map before it drags anything.
+  const leafReferenceHierarchy = leafReference.replace('"補足: 用語": { mindmap: [560, -140] }', '"補足: 用語": { mindmap: [560, -140], hierarchy: [700, 380] }');
   const referenceJoined = '本文には何も書かない。\n\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n\n## 補足: 用語\n';
   /** Where a root of `topic`'s size lands as the first child of `goal` (pointer coordinates, from the grab point), and how the joined child is read back. */
   const rootGapCases = [
@@ -1406,6 +1411,7 @@ async function captureTopicOperations(recorder, page) {
     })),
     {
       mode: 'hierarchy', id: 'topic-snap-root-gap-hierarchy', name: '階層図',
+      note: leafReferenceHierarchy, variant: '「補足: 用語」に `hierarchy` の位置を与えて列から外した変種',
       where: '下辺の 48 単位下、中心を揃える', landing: 'ルートの上辺が 参考資料 の下辺の 48 単位下（中心を揃えて）',
       // The root's top edge 48 units under the goal's bottom edge, horizontally centred on it.
       to: (topic, goal, from, scale) => ({ x: goal.x + goal.width / 2 + (from.x - (topic.x + topic.width / 2)), y: goal.y + goal.height + 48 * scale + (from.y - topic.y) }),
@@ -1413,14 +1419,15 @@ async function captureTopicOperations(recorder, page) {
     },
   ];
   await withFixtureRestored(async () => {
-    for (const { mode, id, name, where, landing, to: landingPoint, hung: hungOf } of rootGapCases) {
-      await recorder.run(id, `「参考資料」の項目を消して見出しだけのトピックにし、${name}で「位置のないトピック」を「参考資料」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「参考資料」の最初の子が置かれる位置（${where}）へ運ぶ → 離す`,
+    for (const { mode, id, name, where, landing, note = leafReference, variant, to: landingPoint, hung: hungOf } of rootGapCases) {
+      await recorder.run(id, `「参考資料」の項目を消して見出しだけのトピックにし${variant ? `、${variant}を` : ''}、${name}で「位置のないトピック」を「参考資料」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「参考資料」の最初の子が置かれる位置（${where}）へ運ぶ → 離す`,
         `右の空白ではスロットが出ず、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、その間 参考資料 の矩形は動かず（LEV-95）、離すと 参考資料 の子になり、親から最初の子の隙間（${where.split('。')[0]}）だけ離れて付く。位置未設定の親（左右バランス・階層図）は離した時点で列に積み直される（左右バランスは広がった幅で中央に揃い直すので親ごと左へ動く）`, async () => {
           expect(leafReference !== original, 'the lone-heading note is the original: the items to remove were not found');
-          await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(leafReference)})`);
+          expect(!variant || note !== leafReference, 'the line this case rewrites was not found in the fixture');
+          await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(note)})`);
           await switchLayout(mode);
           const base = await page.harness('h.source()');
-          expect(base === leafReference, 'the lone-heading note did not load');
+          expect(base === note, 'the lone-heading note did not load');
           const view = await page.harness('h.viewport()');
           const topic = await topicRect('位置のないトピック');
           const goal = (await topicRect('参考資料')).rect;
@@ -1433,6 +1440,14 @@ async function captureTopicOperations(recorder, page) {
           const staging = { x: Math.min(Math.max(to.x, goal.x + goal.width + grab) + 200 * view.scale, canvas.x + canvas.width - 24 - (topic.rect.width - grab)), y: to.y };
           const stagingLeft = (staging.x - grab - (goal.x + goal.width)) / view.scale;
           expect(stagingLeft >= 120, `the staging point's left edge is only ${stagingLeft.toFixed(1)} units right of the root`);
+          // A case that moves a topic out of the stack (the hierarchy) must put it somewhere the drag never visits:
+          // the whole sweep, from the grab point through the staging point to the landing, stays off that topic.
+          if (variant) {
+            const moved = (await topicRect('補足: 用語')).rect;
+            const on = point => point.x >= moved.x && point.x <= moved.x + moved.width && point.y >= moved.y && point.y <= moved.y + moved.height;
+            const hit = [from, staging, to].find(on);
+            expect(!hit, `補足: 用語 was given a position the drag passes through (${JSON.stringify(moved)}); the sweep point ${JSON.stringify(hit)} is on it`);
+          }
           await page.mouse('mouseMoved', from.x, from.y);
           await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
           await sweep(from, staging);
@@ -1472,20 +1487,25 @@ async function captureTopicOperations(recorder, page) {
     }
   });
 
-  // LEV-117: the child column of an unpositioned parent with children of its own. 補足: 用語 is already unpositioned in
-  // the balanced map; the ordinary map holds a `mindmap` entry for it, so that half runs on a note with that line out.
+  // LEV-117 (map, balanced) and LEV-125 (timeline, hierarchy): the child column of an unpositioned parent with children
+  // of its own. 補足: 用語 is already unpositioned in every layout but the ordinary map, which holds a `mindmap` entry for
+  // it, so that one half runs on a note with that line out.
   const unplacedGlossary = original.replace('  "補足: 用語": { mindmap: [560, -140] }\n', '');
+  if (unplacedGlossary === original) throw new Error('the `mindmap` entry of 補足: 用語 was not found in the fixture');
   const frontmatterOf = source => source.slice(0, source.indexOf('\n---\n', 4));
+  // `axis` is how the parent deals its children: a column hangs them under one another, so the trailing slot is past the
+  // last child's lower half; a row lays them side by side, so it is past its far half.
   const childColumnCases = [
-    { mode: 'balanced', layout: '左右バランス', note: original, child: '用語 A', column: '右の子列', variant: 'そのまま' },
-    { mode: 'mindmap', layout: '通常マップ', note: unplacedGlossary, child: '用語 B', column: '子列', variant: '「補足: 用語」の mindmap の位置を外した変種' },
+    { mode: 'balanced', layout: '左右バランス', note: original, child: '用語 A', column: '右の子列', variant: 'そのまま', axis: 'column' },
+    { mode: 'mindmap', layout: '通常マップ', note: unplacedGlossary, child: '用語 B', column: '子列', variant: '「補足: 用語」の mindmap の位置を外した変種', axis: 'column' },
+    { mode: 'timeline', layout: 'タイムライン', note: original, child: '用語 B', column: '軸の子の並び', variant: 'そのまま', axis: 'row' },
+    { mode: 'hierarchy', layout: '階層図', note: original, child: '用語 B', column: '子の行', variant: 'そのまま', axis: 'row' },
   ];
-  for (const { mode, layout, note, child: childTitle, column, variant } of childColumnCases) {
+  for (const { mode, layout, note, child: childTitle, column, variant, axis } of childColumnCases) {
     await withFixtureRestored(async () => {
       await recorder.run(`topic-snap-unplaced-child-column-${mode}`,
-        `free-topics（${variant}）を${layout}で開き、「位置のないトピック」を位置未設定の親「補足: 用語」の子「${childTitle}」の下半分（${column}の末尾）へ運ぶ → 離す → 元に戻す → やり直す`,
+        `free-topics（${variant}）を${layout}で開き、「位置のないトピック」を位置未設定の親「補足: 用語」の子「${childTitle}」の${axis === 'row' ? '右半分' : '下半分'}（${column}の末尾）へ運ぶ → 離す → 元に戻す → やり直す`,
         `運ぶ間ずっと（12 段階のどこでも）「補足: 用語」のルートが逃げず、${column}の末尾に仮ノードと青線が出る。離すと原文順で 用語 B の後ろに合流し、frontmatter は 1 バイトも変わらず、Undo/Redo で原文と合流後を往復する`, async () => {
-          expect(unplacedGlossary !== original, 'the `mindmap` entry of 補足: 用語 was not found in the fixture');
           await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(note)})`);
           await switchLayout(mode);
           const base = await page.harness('h.source()');
@@ -1494,17 +1514,25 @@ async function captureTopicOperations(recorder, page) {
           const topic = await topicRect('位置のないトピック');
           const parent = (await topicRect('補足: 用語')).rect;
           const child = (await topicRect(childTitle)).rect;
-          // Held low in its own root (three quarters down), so that with the root's top edge on the child's middle the
-          // pointer itself is below the child, on plain canvas: what is under the pointer must not decide the slot.
-          const from = { x: center(topic.rect).x, y: topic.rect.y + topic.rect.height * 0.75 };
-          // Index 2 is dealt to the end of the column. Put the moving root on the column's shared left edge and its top
-          // edge on the child's middle, where the trailing slot resolves after the child.
-          const to = {
-            x: child.x + (from.x - topic.rect.x),
-            y: child.y + child.height / 2 + (from.y - topic.rect.y),
-          };
-          const clearance = to.y - (child.y + child.height);
-          expect(clearance > 4, `the pointer lands ${clearance.toFixed(1)} px below ${childTitle}: too close to its edge to tell the snap from a hit`);
+          // Index 2 is dealt to the end of the column. A column is judged on the line its children share, so the moving
+          // root goes on that shared left edge with its top edge on the child's middle; a row is judged on the root's
+          // own centre along the row, so it goes three quarters along the last child, on the line the row shares (the
+          // top edge in the hierarchy, the axis in the timeline). That is where the trailing slot resolves.
+          const landing = axis === 'row'
+            ? {
+              x: child.x + child.width * 0.75 - topic.rect.width / 2,
+              y: mode === 'hierarchy' ? child.y : child.y + (child.height - topic.rect.height) / 2,
+            }
+            : { x: child.x, y: child.y + child.height / 2 };
+          // Held off-centre in its own root (towards the far end along the axis the children are dealt on, and clear of
+          // the fold control on the edge its own child hangs from, which takes hits back), so that at the landing the
+          // pointer itself is past the child, on plain canvas: what is under the pointer must not decide the slot.
+          const from = axis === 'row'
+            ? { x: topic.rect.x + topic.rect.width * 0.75, y: topic.rect.y + topic.rect.height * 0.85 }
+            : { x: center(topic.rect).x, y: topic.rect.y + topic.rect.height * 0.75 };
+          const to = { x: landing.x + (from.x - topic.rect.x), y: landing.y + (from.y - topic.rect.y) };
+          const clearance = axis === 'row' ? to.x - (child.x + child.width) : to.y - (child.y + child.height);
+          expect(clearance > 4, `the pointer lands ${clearance.toFixed(1)} px ${axis === 'row' ? 'right of' : 'below'} ${childTitle}: too close to its edge to tell the snap from a hit`);
           await page.mouse('mouseMoved', from.x, from.y);
           await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
           // The parent must stay put through the whole approach, not only once the slot is up: the defect moved it out

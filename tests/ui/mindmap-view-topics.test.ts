@@ -1311,7 +1311,7 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(placed(view, empty)).toEqual(root);
   });
 
-  it.each(['mindmap', 'balanced'] as const)(
+  it.each(['mindmap', 'timeline', 'hierarchy', 'balanced'] as const)(
     'in %s, dragging a topic into an unpositioned topic\'s child column keeps the parent in place and exposes the trailing slot',
     async mode => {
       const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
@@ -1328,7 +1328,14 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
       const child = placed(view, mode === 'balanced' ? right : trailing);
       const moving = placed(view, glossary);
       const viewport = view.getState().viewport as { x: number; y: number; scale: number };
-      const landing = { x: child.x, y: child.y + child.height / 2, width: moving.width, height: moving.height };
+      // Each layout judges the slot on the line its children share, so the landing is measured against that line
+      // (`snapSlot`): the column's left edge in the map and the balanced map, where the trailing slot is under the
+      // last child's lower half; the row's top edge in the hierarchy and the axis (the children's centre) in the
+      // timeline, where it is three quarters along the last child — the root's own centre decides a row (LEV-125).
+      const along = { x: child.x + child.width * 0.75 - moving.width / 2, width: moving.width, height: moving.height };
+      const landing = mode === 'hierarchy' ? { ...along, y: child.y }
+        : mode === 'timeline' ? { ...along, y: child.y + (child.height - moving.height) / 2 }
+          : { x: child.x, y: child.y + child.height / 2, width: moving.width, height: moving.height };
       shift(glossary.id, {
         x: (landing.x - moving.x) * viewport.scale,
         y: (landing.y - moving.y) * viewport.scale,
@@ -1353,6 +1360,33 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
       expect(current()).toBe(source);
       await redo();
       expect(current()).toBe(joined);
+    },
+  );
+
+  it.each(['mindmap', 'timeline', 'hierarchy', 'balanced'] as const)(
+    'in %s the stack does not part for the tree being dragged: the topic stacked under it keeps its slot while the two overlap, and takes it again when the drag is dropped',
+    async mode => {
+      // The price of the hold, written down (LEV-117 for the map and the balanced map, LEV-125 for the other two):
+      // while a topic is carried, the unpositioned topics no longer restack around it, so the trees may overlap on
+      // screen. Carrying 補足 onto 余談 is the plainest case of it; without the hold, 余談 rose into the slot 補足
+      // had left the moment the drag began (timeline y 162 → 70, hierarchy 368 → 184).
+      const { view, topic } = await mount('## 本体\n\n- 回復する\n\n## 補足\n\n- 用語\n\n## 余談\n\n- 補遺\n', mode);
+      const glossary = topic('補足');
+      const aside = topic('余談');
+      const { shift } = bind(view);
+      const moving = placed(view, glossary);
+      const stacked = placed(view, aside);
+      const { scale } = view.getState().viewport as { scale: number };
+      shift(glossary.id, { x: (stacked.x - moving.x) * scale, y: (stacked.y - moving.y) * scale });
+      await frame();
+      expect(placed(view, glossary).x).toBeCloseTo(stacked.x, 6);
+      expect(placed(view, glossary).y).toBeCloseTo(stacked.y, 6);
+      expect(placed(view, aside)).toEqual(stacked);
+      // Dropped without a slot under it, the topic keeps where it was left and the stack is dealt again from there.
+      shift(glossary.id, null);
+      await frame();
+      expect(placed(view, glossary)).toEqual(moving);
+      expect(placed(view, aside)).toEqual(stacked);
     },
   );
 
