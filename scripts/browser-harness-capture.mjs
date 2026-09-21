@@ -1002,9 +1002,15 @@ async function captureTopicOperations(recorder, page) {
     return { placeholder: !host.querySelector('.mappy-drop-placeholder').hidden, connector: Boolean(host.querySelector('.mappy-edges path.is-preview')), merging: root?.classList.contains('is-merging') }; })()`);
   /** The label of the node under a screen point, or null over empty canvas (a dragged tree lets hits through). */
   const labelUnder = point => page.evaluate(`document.elementFromPoint(${Math.round(point.x)}, ${Math.round(point.y)})?.closest('[data-node-id]')?.querySelector('.mappy-node-label')?.textContent?.trim() ?? null`);
-  /** Moves the held button from `from` to `to` in 12 steps and lets the map settle; the press and the release stay with the caller. */
-  const sweep = async (from, to) => {
-    for (let step = 1; step <= 12; step += 1) await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 12, from.y + (to.y - from.y) * step / 12, { button: 'left' });
+  /**
+   * Moves the held button from `from` to `to` in 12 steps and lets the map settle; the press and the release stay with
+   * the caller. `onStep`, when given, is awaited after each step, for a case that watches the map during the approach.
+   */
+  const sweep = async (from, to, onStep) => {
+    for (let step = 1; step <= 12; step += 1) {
+      await page.mouse('mouseMoved', from.x + (to.x - from.x) * step / 12, from.y + (to.y - from.y) * step / 12, { button: 'left' });
+      if (onStep) await onStep(step);
+    }
     await page.settle();
   };
   const undo = () => menuAction('元に戻す');
@@ -1465,6 +1471,77 @@ async function captureTopicOperations(recorder, page) {
         });
     }
   });
+
+  // LEV-117: the child column of an unpositioned parent with children of its own. 補足: 用語 is already unpositioned in
+  // the balanced map; the ordinary map holds a `mindmap` entry for it, so that half runs on a note with that line out.
+  const unplacedGlossary = original.replace('  "補足: 用語": { mindmap: [560, -140] }\n', '');
+  const frontmatterOf = source => source.slice(0, source.indexOf('\n---\n', 4));
+  const childColumnCases = [
+    { mode: 'balanced', layout: '左右バランス', note: original, child: '用語 A', column: '右の子列', variant: 'そのまま' },
+    { mode: 'mindmap', layout: '通常マップ', note: unplacedGlossary, child: '用語 B', column: '子列', variant: '「補足: 用語」の mindmap の位置を外した変種' },
+  ];
+  for (const { mode, layout, note, child: childTitle, column, variant } of childColumnCases) {
+    await withFixtureRestored(async () => {
+      await recorder.run(`topic-snap-unplaced-child-column-${mode}`,
+        `free-topics（${variant}）を${layout}で開き、「位置のないトピック」を位置未設定の親「補足: 用語」の子「${childTitle}」の下半分（${column}の末尾）へ運ぶ → 離す → 元に戻す → やり直す`,
+        `運ぶ間ずっと（12 段階のどこでも）「補足: 用語」のルートが逃げず、${column}の末尾に仮ノードと青線が出る。離すと原文順で 用語 B の後ろに合流し、frontmatter は 1 バイトも変わらず、Undo/Redo で原文と合流後を往復する`, async () => {
+          expect(unplacedGlossary !== original, 'the `mindmap` entry of 補足: 用語 was not found in the fixture');
+          await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(note)})`);
+          await switchLayout(mode);
+          const base = await page.harness('h.source()');
+          expect(base === note, 'the child-column note did not load');
+          const view = await page.harness('h.viewport()');
+          const topic = await topicRect('位置のないトピック');
+          const parent = (await topicRect('補足: 用語')).rect;
+          const child = (await topicRect(childTitle)).rect;
+          // Held low in its own root (three quarters down), so that with the root's top edge on the child's middle the
+          // pointer itself is below the child, on plain canvas: what is under the pointer must not decide the slot.
+          const from = { x: center(topic.rect).x, y: topic.rect.y + topic.rect.height * 0.75 };
+          // Index 2 is dealt to the end of the column. Put the moving root on the column's shared left edge and its top
+          // edge on the child's middle, where the trailing slot resolves after the child.
+          const to = {
+            x: child.x + (from.x - topic.rect.x),
+            y: child.y + child.height / 2 + (from.y - topic.rect.y),
+          };
+          const clearance = to.y - (child.y + child.height);
+          expect(clearance > 4, `the pointer lands ${clearance.toFixed(1)} px below ${childTitle}: too close to its edge to tell the snap from a hit`);
+          await page.mouse('mouseMoved', from.x, from.y);
+          await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+          // The parent must stay put through the whole approach, not only once the slot is up: the defect moved it out
+          // of reach before any slot appeared, so every step of the sweep is measured.
+          const worst = { x: 0, y: 0 };
+          await sweep(from, to, async () => {
+            const now = (await topicRect('補足: 用語')).rect;
+            if (Math.abs(now.x - parent.x) > Math.abs(worst.x)) worst.x = now.x - parent.x;
+            if (Math.abs(now.y - parent.y) > Math.abs(worst.y)) worst.y = now.y - parent.y;
+          });
+          const under = await labelUnder(to);
+          const preview = await snapPreview();
+          const parentShown = (await topicRect('補足: 用語')).rect;
+          await page.screenshot(join(recorder.directory, `topic-snap-unplaced-child-column-${mode}-preview.png`));
+          expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
+          expect(preview.placeholder && preview.connector && preview.merging, `preview state ${JSON.stringify(preview)}`);
+          expect(Math.abs(worst.x) < 1.5 && Math.abs(worst.y) < 1.5,
+            `補足: 用語 moved by up to ${worst.x.toFixed(1)}, ${worst.y.toFixed(1)} px while the topic was brought to its child column`);
+          const travel = { x: parentShown.x - parent.x, y: parentShown.y - parent.y };
+          expect(Math.abs(travel.x) < 1.5 && Math.abs(travel.y) < 1.5,
+            `補足: 用語 moved by ${travel.x.toFixed(1)}, ${travel.y.toFixed(1)} px while the slot was shown`);
+          await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+          await page.settle();
+          const joined = await page.harness('h.source()');
+          const joinedTail = '- 用語 B\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n';
+          expect(joined.includes(joinedTail), `joined: ${JSON.stringify(joined.slice(joined.indexOf('## 補足: 用語'), joined.indexOf('## 補足: 用語') + 320))}`);
+          expect(!joined.includes('\n## 位置のないトピック\n'), 'the joined topic section is still present');
+          // The join moves a heading, not a position: every entry of the note's frontmatter survives it byte for byte.
+          expect(frontmatterOf(joined) === frontmatterOf(base), `the frontmatter changed: ${JSON.stringify(frontmatterOf(joined))}`);
+          await undo();
+          expect((await page.harness('h.source()')) === base, 'undo did not restore the original Markdown bytes');
+          await redo();
+          expect((await page.harness('h.source()')) === joined, 'redo did not restore the joined Markdown bytes');
+          return `運ぶ間の 補足: 用語 の移動は最大 ${worst.x.toFixed(1)}, ${worst.y.toFixed(1)} px（スロット表示中 ${travel.x.toFixed(1)}, ${travel.y.toFixed(1)} px）、${column}にスロット表示あり、ポインター下: なし、${childTitle} の後ろ（原文 index 2）へ合流、frontmatter 不変、Undo/Redo でバイト一致（scale ${view.scale.toFixed(3)}）`;
+        });
+    });
+  }
 
   await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
     const base = await page.harness('h.source()');

@@ -1311,6 +1311,73 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(placed(view, empty)).toEqual(root);
   });
 
+  it.each(['mindmap', 'balanced'] as const)(
+    'in %s, dragging a topic into an unpositioned topic\'s child column keeps the parent in place and exposes the trailing slot',
+    async mode => {
+      const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+      const { view, topic, source: current, settle, undo, redo } = await mount(source, mode);
+      const doc = documentOf(view);
+      const parent = topic('資料');
+      const glossary = topic('補足');
+      const trailing = doc.nodes.find(node => node.title === '乙');
+      const right = doc.nodes.find(node => node.title === '甲');
+      if (!trailing || !right) throw new Error('Missing node');
+      const { shift, snap, preview } = bind(view);
+      const root = placed(view, parent);
+      // Balanced appends index 2 on the right column (after 甲); the ordinary map has one column (after 乙).
+      const child = placed(view, mode === 'balanced' ? right : trailing);
+      const moving = placed(view, glossary);
+      const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+      const landing = { x: child.x, y: child.y + child.height / 2, width: moving.width, height: moving.height };
+      shift(glossary.id, {
+        x: (landing.x - moving.x) * viewport.scale,
+        y: (landing.y - moving.y) * viewport.scale,
+      });
+      await frame();
+      expect(placed(view, parent)).toEqual(root);
+      const command = snap(glossary.id, at(view, landing), null);
+      expect(command).toEqual({ type: 'move', nodeId: glossary.id, parentId: parent.id, index: 2 });
+      if (!command) throw new Error('Missing trailing slot');
+      preview(command);
+      await frame();
+      expect(placed(view, parent)).toEqual(root);
+      preview(null);
+      await (view as unknown as { executeDrop(command: MoveCommand): Promise<void> }).executeDrop(command);
+      await settle();
+      const joined = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n- 補足\n  - 用語\n';
+      expect(current()).toBe(joined);
+      const joinedSource = projectMap(documentOf(view)).topics.find(node => node.title === '資料');
+      expect(joinedSource?.children.map(node => node.title)).toEqual(['甲', '乙', '補足']);
+      expect(joinedSource?.children[2]?.children.map(node => node.title)).toEqual(['用語']);
+      await undo();
+      expect(current()).toBe(source);
+      await redo();
+      expect(current()).toBe(joined);
+    },
+  );
+
+  it('drops the hold when the layout is switched during a topic drag, so the topics re-stack in the new layout', async () => {
+    // No button reaches a held pointer, but `setState` switches layouts (a restored workspace, a pane opened on the
+    // same note): the hold measures from the layout it was taken in, so it must not survive into another one.
+    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+    // The layout node carries its id; the two mounts number their nodes apart, so compare the box alone.
+    const rect = ({ x, y, width, height }: Box): Box => ({ x, y, width, height });
+    const balanced = await mount(source, 'balanced');
+    const settled = rect(placed(balanced.view, balanced.topic('資料')));
+    document.body.replaceChildren();
+    const { view, topic } = await mount(source, 'mindmap');
+    const parent = topic('資料');
+    const { shift } = bind(view);
+    // Far clear of the stack, so the only thing that can move 資料 is the layout it is measured in.
+    shift(topic('補足').id, { x: 900, y: 40 });
+    await frame();
+    expect(placed(view, parent).y).toBe(125);
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await frame();
+    // Held from the map's layout, 資料 would sit at y 103: its map offset measured from the balanced origin.
+    expect(rect(placed(view, parent))).toEqual(settled);
+  });
+
   it('in the map a topic with no position and two children keeps its slot while a third is previewed under them', async () => {
     // The stack is flush left in the map, so no column moves; but the placeholder adds a row to the forest, on which
     // placeSideways re-centres the root, and the widened bounds reach the dragged tree stacked below, which used to push
