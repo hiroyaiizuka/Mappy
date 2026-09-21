@@ -1409,7 +1409,7 @@ async function captureTopicOperations(recorder, page) {
   await withFixtureRestored(async () => {
     for (const { mode, id, name, where, landing, to: landingPoint, hung: hungOf } of rootGapCases) {
       await recorder.run(id, `「参考資料」の項目を消して見出しだけのトピックにし、${name}で「位置のないトピック」を「参考資料」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「参考資料」の最初の子が置かれる位置（${where}）へ運ぶ → 離す`,
-        `右の空白ではスロットが出ず、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、その間 参考資料 の矩形は動かず（LEV-95）、離すと 参考資料 の子になり、その子は運んだ位置に置かれる`, async () => {
+        `右の空白ではスロットが出ず、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、その間 参考資料 の矩形は動かず（LEV-95）、離すと 参考資料 の子になり、親から最初の子の隙間（${where.split('。')[0]}）だけ離れて付く。位置未設定の親（左右バランス・階層図）は離した時点で列に積み直される（左右バランスは広がった幅で中央に揃い直すので親ごと左へ動く）`, async () => {
           expect(leafReference !== original, 'the lone-heading note is the original: the items to remove were not found');
           await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(leafReference)})`);
           await switchLayout(mode);
@@ -1451,14 +1451,17 @@ async function captureTopicOperations(recorder, page) {
           const source = await page.harness('h.source()');
           expect(source.includes(referenceJoined), `joined: ${JSON.stringify(source.slice(source.indexOf('## 参考資料'), source.indexOf('## 参考資料') + 200))}`);
           expect(!source.includes('mappy-layout'), 'switching the layout through the view state wrote mappy-layout');
-          // The joined node hangs where the root was released: the layout's root gap past the parent, centred on it.
+          // The joined node hangs the layout's root gap past its parent, centred on it. That is relative: a parent with no
+          // position is dealt into the stack again once the drop lands (in the balanced map its widened tree re-centres,
+          // so parent and child move left together), which the record reports rather than asserts.
           const parent = (await topicRect('参考資料')).rect;
           const child = (await topicRect('位置のないトピック')).rect;
           const hung = hungOf(parent, child, view.scale);
+          const settled = travel(goal, parent);
           expect(Math.abs(hung.gap - hung.expected) < 1.5 && Math.abs(hung.drift) < 1.5, `the joined node hangs ${hung.gap.toFixed(1)} units past its parent, ${hung.drift.toFixed(1)} off its centre`);
           await undo();
           expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
-          return `右の空白（ルートの右 ${stagingLeft.toFixed(1)} 単位）ではスロットなし、${landing}に来るとスロット表示あり、その間の 参考資料 の移動 ${shown.x.toFixed(1)}, ${shown.y.toFixed(1)} px、ポインター下: なし → 参考資料 の子になり、その子は親の${hung.side}の ${hung.gap.toFixed(1)} 単位先・中心のずれ ${hung.drift.toFixed(1)} に置かれる（scale ${view.scale.toFixed(3)}）`;
+          return `右の空白（ルートの右 ${stagingLeft.toFixed(1)} 単位）ではスロットなし、${landing}に来るとスロット表示あり、その間の 参考資料 の移動 ${shown.x.toFixed(1)}, ${shown.y.toFixed(1)} px、ポインター下: なし → 参考資料 の子になり、その子は親の${hung.side}の ${hung.gap.toFixed(1)} 単位先・中心のずれ ${hung.drift.toFixed(1)} に付く。離した後の 参考資料 の移動 ${settled.x.toFixed(1)}, ${settled.y.toFixed(1)} px（${(settled.x / view.scale).toFixed(1)}, ${(settled.y / view.scale).toFixed(1)} 単位。scale ${view.scale.toFixed(3)}）`;
         });
     }
   });
