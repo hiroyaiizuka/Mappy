@@ -34,7 +34,9 @@ const SOURCE = [
 const EXTERNAL = SOURCE.replace('- 記録する\n', '- 記録する（外部）\n');
 const CONFLICT = 'Markdown が変更されています。マップを更新してから再編集してください。';
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
-const NODE_CHANGED = '対象のノードが変更されています。再選択してください。';
+// The draft's own answer when its node is gone from the note: `getNode`'s wording is for a plan that
+// addresses a node by id, which is not what the user did (LEV-142).
+const NODE_CHANGED = '編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。';
 const TEXT_CHANGED = '編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。';
 
 function documentOf(view: MindmapView): MindDocument {
@@ -361,5 +363,33 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(editor()).not.toBe(input);
   });
 
+
+
+  it('follows the node being edited when the map\'s own write renumbers the same-named nodes', async () => {
+    // LEV-142: ids are carried through a re-parse by title, so every node sharing a title gets a fresh one
+    // whenever the note is written — including by the map itself. A draft that remembers its node by id then
+    // fails to find it and shows 「対象のノードが変更されています。再選択してください。」 although nothing moved.
+    const mounted = await mount(SOURCE);
+    const { canvas, source, key, editor, error, draft, refreshed, settle, view } = mounted;
+    const input = await draft('同じ名前', '同じ名前（編集）', '一つ目の本文');
+    const before = documentOf(view).nodes.filter(node => node.title === '同じ名前').map(node => node.id);
+    const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+    canvas.dispatchEvent(paste);
+    await settle();
+    await settle();
+    expect(source()).toContain('![[1-shot.png]]');
+    // The write renumbered them, which is what makes an id-only draft lose its node.
+    const after = documentOf(view).nodes.filter(node => node.title === '同じ名前').map(node => node.id);
+    expect(after).not.toEqual(before);
+    // The draft is still on the node it was opened on, so Enter writes it.
+    key(input, 'Enter');
+    await refreshed();
+    expect(error()).toBe('');
+    expect(editor()).toBeNull();
+    expect(source()).toContain('- 同じ名前（編集）');
+    expect(source()).toContain('![[1-shot.png]]');
+  });
 
 });
