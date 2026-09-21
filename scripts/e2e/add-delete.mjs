@@ -9,8 +9,9 @@
  *
  * Usage: npm run harness:e2e:add-delete -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, installedVersion, VAULT, wait } from './cdp.mjs';
+import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -22,41 +23,13 @@ const SOURCE = [
   '- 記録する', '  - 毎日のログ', '',
 ].join('\n');
 
-const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el = view.contentEl;
-  const nodes = () => Array.from(el.querySelectorAll('.mappy-node'));
-  const label = node => node.getAttribute('aria-label') ?? '';
-  const nth = (title, index) => nodes().filter(node => label(node) === title)[index];
-  const input = () => el.querySelector('textarea.mappy-inline-input');
-  const messages = () => [
-    ...Array.from(el.querySelectorAll('.mappy-inline-error'), item => item.textContent.trim()),
-    ...Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
-  ].filter(Boolean);
-  const source = () => app.vault.read(view.file);`;
-
 const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
-
-/** Click a node until the map shows it selected: the first click after the view opens can land mid-layout. */
-const select = async (title, index = 0) => {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const box = await evaluate(`${VIEW}
-      const node = nth(${JSON.stringify(title)}, ${index});
-      if (!node) throw new Error('No node ' + ${JSON.stringify(title)} + ' #' + ${index});
-      const rect = node.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-    }
-    await wait(400);
-    const selected = await evaluate(`${VIEW}
-      return nth(${JSON.stringify(title)}, ${index})?.classList.contains('is-selected') ?? false;`);
-    if (selected) return;
-  }
-  throw new Error(`The map would not select ${title} #${index}`);
-};
+const select = makeSelect(cdp, evaluate);
+const state = makeState(evaluate);
 
 /** Enter or Tab on the selected node, answered by the inline editor opening on the new empty node, then a title and Enter to confirm it. */
 const addNamed = async (key, title) => {
@@ -71,36 +44,9 @@ const addNamed = async (key, title) => {
   return state();
 };
 
-const state = () => evaluate(`${VIEW}
-  return { messages: messages(), editing: !!input(), labels: nodes().map(label), source: await source() };`);
-
 try {
-  await step('plugin', async () => {
-    if (flag('--reload')) {
-      await evaluate(`
-        if (document.querySelector('.mappy-inline-input')) throw new Error('A draft is open in this window');
-        if (typeof app.plugins.loadManifests === 'function') await app.plugins.loadManifests();
-        await app.plugins.disablePlugin('mappy'); await app.plugins.enablePlugin('mappy');
-        await new Promise(resolve => setTimeout(resolve, 800));
-        return true;`);
-    }
-    const version = await installedVersion(cdp);
-    if (version === null) throw new Error('Mappy is not loaded in this window (restricted mode?). Turn community plugins on and retry.');
-    return { version, reloaded: flag('--reload') };
-  });
-
-  const opened = await step('open', () => evaluate(`
-    const existing = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)});
-    if (existing) await app.vault.modify(existing, ${JSON.stringify(SOURCE)});
-    else await app.vault.create(${JSON.stringify(NOTE)}, ${JSON.stringify(SOURCE)});
-    await new Promise(resolve => setTimeout(resolve, 400));
-    const opened = app.workspace.getLeaf('tab');
-    await opened.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: true });
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    app.workspace.setActiveLeaf(opened, { focus: true });
-    window.__mappyE2E = opened;
-    ${VIEW}
-    return { labels: nodes().map(label), source: await source() };`));
+  await step('plugin', makePluginStep(cdp, evaluate, flag));
+  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
   const initial = opened.source;
 
   // 1. Enter on 子1: a new sibling between 子1 and 子2, named in place. A tight list, so the only
@@ -161,6 +107,7 @@ try {
       leaf.detach();
       if (file) await app.vault.delete(file, true);
       delete window.__mappyE2E;
+      delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
 } finally {

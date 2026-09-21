@@ -13,8 +13,9 @@
  *
  * Usage: npm run harness:e2e:undo-redo -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, installedVersion, VAULT, wait } from './cdp.mjs';
+import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -26,40 +27,14 @@ const SOURCE = [
   '- 記録する', '',
 ].join('\n');
 
-const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el = view.contentEl;
-  const nodes = () => Array.from(el.querySelectorAll('.mappy-node'));
-  const label = node => node.getAttribute('aria-label') ?? '';
-  const nth = (title, index) => nodes().filter(node => label(node) === title)[index];
-  const input = () => el.querySelector('textarea.mappy-inline-input');
-  const messages = () => [
-    ...Array.from(el.querySelectorAll('.mappy-inline-error'), item => item.textContent.trim()),
-    ...Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
-  ].filter(Boolean);`;
-
 const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
-
-/** Click a node until the map shows it selected: the first click after the view opens can land mid-layout. */
-const select = async (title, index = 0) => {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const box = await evaluate(`${VIEW}
-      const node = nth(${JSON.stringify(title)}, ${index});
-      if (!node) throw new Error('No node ' + ${JSON.stringify(title)} + ' #' + ${index});
-      const rect = node.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-    }
-    await wait(400);
-    const selected = await evaluate(`${VIEW}
-      return nth(${JSON.stringify(title)}, ${index})?.classList.contains('is-selected') ?? false;`);
-    if (selected) return;
-  }
-  throw new Error(`The map would not select ${title} #${index}`);
-};
+const select = makeSelect(cdp, evaluate);
+const focusCanvas = makeFocusCanvas(cdp, evaluate);
+const mapState = makeState(evaluate);
 
 /**
  * F2 on the selected node: the inline editor opens with its current title selected (`InlineEditor`'s
@@ -77,12 +52,15 @@ const rename = async title => {
   return mapState();
 };
 
-/** What the map view shows: read from the note on disk, not a simulated diff (AGENTS.md: 実機で確かめる). */
-const mapState = () => evaluate(`${VIEW}
-  return { messages: messages(), editing: !!input(), labels: nodes().map(label), source: await app.vault.read(view.file) };`);
-
-/** ⌘Z / ⌘⇧Z, on the canvas rather than a specific node (`MapEvents.keydown`: the history answers with nothing selected too). Only sent with no draft open (docs/harness.md 実機検証). */
+/**
+ * ⌘Z / ⌘⇧Z, on the canvas rather than a specific node (`MapEvents.keydown`: the history answers with
+ * nothing selected too). A blank click first puts focus back in the canvas — after a toggle round trip
+ * (`showSource`'s `editor.focus()`, then the map's own async refocus) it is not guaranteed to be there,
+ * and the chord is only ever caught by the map's `keydown` listener while it is (docs/harness.md 実機検証:
+ * otherwise it reaches macOS and CDP hangs on the native dialog). Only sent with no draft open.
+ */
 const history = async direction => {
+  await focusCanvas();
   const before = await mapState();
   if (before.editing) throw new Error(`${direction} sent while a draft was open`);
   await cdp.realKey('z', direction === 'redo' ? 12 : 4);
@@ -102,41 +80,20 @@ const toggle = () => evaluate(`
   };`);
 
 try {
-  await step('plugin', async () => {
-    if (flag('--reload')) {
-      await evaluate(`
-        if (document.querySelector('.mappy-inline-input')) throw new Error('A draft is open in this window');
-        if (typeof app.plugins.loadManifests === 'function') await app.plugins.loadManifests();
-        await app.plugins.disablePlugin('mappy'); await app.plugins.enablePlugin('mappy');
-        await new Promise(resolve => setTimeout(resolve, 800));
-        return true;`);
-    }
-    const version = await installedVersion(cdp);
-    if (version === null) throw new Error('Mappy is not loaded in this window (restricted mode?). Turn community plugins on and retry.');
-    return { version, reloaded: flag('--reload') };
-  });
-
-  const opened = await step('open', () => evaluate(`
-    const existing = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)});
-    if (existing) await app.vault.modify(existing, ${JSON.stringify(SOURCE)});
-    else await app.vault.create(${JSON.stringify(NOTE)}, ${JSON.stringify(SOURCE)});
-    await new Promise(resolve => setTimeout(resolve, 400));
-    const opened = app.workspace.getLeaf('tab');
-    await opened.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: true });
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    app.workspace.setActiveLeaf(opened, { focus: true });
-    window.__mappyE2E = opened;
-    ${VIEW}
-    return { labels: nodes().map(label), source: await app.vault.read(opened.view.file) };`));
+  await step('plugin', makePluginStep(cdp, evaluate, flag));
+  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
   const initial = opened.source;
 
-  // 編集 (F2 rename, one history entry).
+  // 編集 (F2 rename, one history entry). The expected text is computed independently of what the map
+  // reports, so a rename that corrupts something other than the title (indentation, the EOF newline,
+  // frontmatter) still fails here instead of quietly becoming the new "expected" for every later step.
   const afterEdit = await step('edit', async () => {
     await select('子1');
     const result = await rename('子1改');
     check(result.messages.length === 0, `F2 rename showed ${JSON.stringify(result.messages)}`);
     check(result.labels.includes('子1改') && !result.labels.includes('子1'), 'the map does not show the renamed node');
-    check(result.source !== initial, 'the rename did not change the note');
+    const expected = initial.replace('  - 子1\n', '  - 子1改\n');
+    check(result.source === expected, `unexpected diff renaming the node:\nbefore: ${JSON.stringify(initial)}\nafter:  ${JSON.stringify(result.source)}`);
     return result;
   });
 
@@ -193,11 +150,12 @@ try {
   });
 
   if (!flag('--keep')) {
-    await step('clean', () => evaluate(`
-      const leaf = window.__mappyE2E; const file = leaf.view.file;
+    await step('clean', () => evaluate(`${VIEW}
+      const file = view.file;
       leaf.detach();
       if (file) await app.vault.delete(file, true);
       delete window.__mappyE2E;
+      delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
 } finally {

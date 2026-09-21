@@ -23,7 +23,11 @@ export function createRecord(vault, note) {
 export function makeStep(record) {
   return async (name, run) => {
     try { record.steps[name] = await run(); } catch (error) { record.steps[name] = { error: String(error) }; record.failures.push(`${name}: ${error}`); }
-    console.log(name, JSON.stringify(record.steps[name]).slice(0, 700));
+    // A step that returns undefined (a bug, not a case's expected shape) must not crash the logging
+    // itself: JSON.stringify(undefined) is the value undefined, not a string, and undefined.slice would
+    // throw here, uncaught — before `finish()` writes this case's JSON (run.mjs then has nothing of this
+    // run's to read back, which is the point: never a stale file mistaken for this one).
+    console.log(name, JSON.stringify(record.steps[name] ?? null).slice(0, 700));
     return record.steps[name];
   };
 }
