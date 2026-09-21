@@ -25,4 +25,13 @@
 - 1 セッションで複数のチケットを渡り歩かない。長いセッションほど、序盤に読んだ規約が行動の直前に思い出されなくなる。
 - `main.js`、`node_modules/`、`dist/`、証跡をコミットしない。公開時のライセンスと plugin ID は未確定。
 
+## 開発メモリ
+
+- 置き場は `memory/`（git 管理外）。`artifacts/` は 1 回の実行の証跡、`memory/` は残す知識（何をしたか・なぜか・何が壊れていたか）。
+- カテゴリ: `events/`（実装・リリース）・`bugfixes/`・`investigations/`・`designs/`・`reviews/`・`corrections/`・`archive/`。`memory/` 直下には置かない。
+- セッション開始時に `memory/corrections/lessons.md` を読む。
+- 作業が終わったらメモリに残す。書き込みは `bm tool write-note --project mappy-memory`（ワークツリーからでも同じコマンドでプライマリーの `memory/` に入る）。検索は `bm tool search-notes "..." --project mappy-memory`。
+- ミスをしたら `memory/corrections/inbox.md` に追記する。AGENTS.md やテストに仕組み化できたら `graduated.md` へ送る。
+- 詳細は `.claude/skills/memory-manager/SKILL.md`。
+
 現在はベータ（0.x）を GitHub Release ＋ BRAT で公開中（0.1.0〜0.2.1 は 2026-09-20。コミュニティ審査は未提出）。実装の存在と受入条件の達成は分けて扱い、実機テストの完成を先取りして報告しない。
