@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath } from "../../src/core/wiki-link";
+import { externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath } from "../../src/core/wiki-link";
 
 describe("inline wikilink completion", () => {
   it("finds the active link after surrounding Japanese text", () => {
@@ -69,5 +69,34 @@ describe("wikiLinkPath and hasUrlScheme (shared by the Excalidraw bridge and the
     expect(hasUrlScheme("Attachments/図.png")).toBe(false);
     expect(hasUrlScheme("C-drive:not a scheme?")).toBe(true);
     expect(hasUrlScheme("時間: 10:00")).toBe(false);
+  });
+});
+
+describe("externalUrl (what a note's link may carry into another plugin's document)", () => {
+  it.each([
+    "https://example.com/a",
+    "HTTPS://EXAMPLE.COM/a",
+    "http://example.com",
+    "mailto:someone@example.com",
+    "obsidian://open?vault=x&file=y",
+  ])("keeps %s", link => {
+    expect(externalUrl(link)).toBe(link);
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "JavaScript:alert(1)",
+    "data:text/html;base64,PHNjcmlwdD4=",
+    "file:///etc/passwd",
+    "app://obsidian.md/x",
+    "vbscript:msgbox(1)",
+  ])("refuses %s", link => {
+    expect(externalUrl(link)).toBeNull();
+  });
+
+  it("refuses text with no scheme at all: a vault path is not an external URL", () => {
+    expect(externalUrl("Attachments/図.png")).toBeNull();
+    expect(externalUrl("[[睡眠ノート]]")).toBeNull();
+    expect(externalUrl("")).toBeNull();
   });
 });

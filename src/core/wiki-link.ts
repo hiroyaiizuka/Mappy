@@ -51,7 +51,32 @@ export function wikiLinkPath(link: string | null | undefined): string | null {
   return path || null;
 }
 
+/** The scheme a link is written with, lower case, or null for a vault path. One parser for both readers below. */
+export function urlScheme(text: string): string | null {
+  return text.match(/^([A-Za-z][A-Za-z0-9+.-]*):/u)?.[1]?.toLowerCase() ?? null;
+}
+
 /** `https://…`, `app://…`, `data:…`: a URL with a scheme, as opposed to a vault path. */
 export function hasUrlScheme(text: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/iu.test(text);
+  return urlScheme(text) !== null;
+}
+
+/**
+ * The schemes a link written in a note may keep when it leaves for another plugin's document.
+ * `obsidian:` is on the list because a vault link is what it usually is, and clicking one in the map
+ * view does the same thing; the rest of the world's schemes are left out on purpose (see `externalUrl`).
+ */
+const EXTERNAL_LINK_SCHEMES = new Set(["http", "https", "mailto", "obsidian"]);
+
+/**
+ * A note's link as an external URL, or null when its scheme is not on the short allowed list. The list
+ * is an allowlist, not a list of known-bad schemes: a link copied out of a note lands in a document
+ * another plugin opens (an Excalidraw drawing), where a click runs it, so `javascript:` and `data:` must
+ * not travel — and so must nothing else that turns out to run. The cost is that a link Obsidian would
+ * have opened (`tel:`, `zotero:`, `vscode:`) is dropped instead; the caller says so rather than
+ * dropping it silently.
+ */
+export function externalUrl(text: string): string | null {
+  const scheme = urlScheme(text);
+  return scheme && EXTERNAL_LINK_SCHEMES.has(scheme) ? text : null;
 }

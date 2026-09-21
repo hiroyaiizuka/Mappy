@@ -2,7 +2,7 @@ import type { App, TFile } from 'obsidian';
 import { imageMimeType } from '../core/attachments';
 import { initialCallFolds, projectCalls, type CallTargets } from '../core/calls';
 import { parseMarkdown, projectMap, type MindDocument } from '../core/markdown';
-import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
+import { externalUrl, hasUrlScheme, urlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
@@ -384,8 +384,10 @@ export class ExcalidrawBridge {
     const drawingPath = ea.targetView?.file?.path ?? file.path;
     const created = new Map<string, CreatedNode>();
     const measures = new Map<string, NodeMeasure>();
+    /** Links left out of the drawing because their scheme is not on the allowed list; reported once, not per node. */
+    const refused: string[] = [];
     for (const node of contents.nodes) {
-      const label = this.addLabel(ea, node, fontFamily, drawingPath, file);
+      const label = this.addLabel(ea, node, fontFamily, drawingPath, file, refused);
       const images: CreatedBlock[] = [];
       for (const target of node.images) {
         const block = await this.addImage(ea, target, node.sourcePath ?? file.path);
@@ -413,11 +415,14 @@ export class ExcalidrawBridge {
     ea.addToGroup(ids);
     if (!await ea.addElementsToView(origin === null, true, true)) throw new Error('Excalidraw に要素を追加できませんでした。');
     ea.selectElementsInView?.(ids);
+    if (refused.length > 0) {
+      this.report(`図面に入れられないリンクを ${refused.length} 件外しました（${[...new Set(refused.map(link => urlScheme(link) ?? link))].join('、')}）。`);
+    }
     return scene.bounds.height;
   }
 
   private addLabel(
-    ea: ExcalidrawAutomate, node: SceneNodeContent, fontFamily: number, drawingPath: string, source: TFile,
+    ea: ExcalidrawAutomate, node: SceneNodeContent, fontFamily: number, drawingPath: string, source: TFile, refused: string[],
   ): CreatedBlock {
     const role = ROLE_STYLE[node.role];
     this.applyStyle(ea, {
@@ -430,7 +435,7 @@ export class ExcalidrawBridge {
     const outer = ea.getElement(id);
     const ids = [id];
     if (outer?.boundElements) for (const bound of outer.boundElements) if (bound.type === 'text') ids.push(bound.id);
-    const link = this.linkFor(node, drawingPath, source);
+    const link = this.linkFor(node, drawingPath, source, refused);
     if (link && outer) outer.link = link;
     return {
       ids,
@@ -451,12 +456,21 @@ export class ExcalidrawBridge {
     return { ids: [id], origin: [element.x, element.y], size: { width: element.width, height: element.height } };
   }
 
-  /** Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in. */
-  private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile): string | null {
-    if (node.link) {
-      if (hasUrlScheme(node.link)) return node.link;
+  /**
+   * Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in.
+   * A link that already has a scheme travels into the drawing as it was written, so only the schemes on the allowed
+   * list are kept (`externalUrl`, LEV-131); a refused one is added to `refused` and the node falls back to what it
+   * would carry with no link at all, so a root still links to its note.
+   */
+  private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile, refused: string[]): string | null {
+    if (node.link && !hasUrlScheme(node.link)) {
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, node.sourcePath ?? source.path);
       return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
+    }
+    if (node.link) {
+      const external = externalUrl(node.link);
+      if (external) return external;
+      refused.push(node.link);
     }
     if (node.role === 'root') return `[[${this.app.metadataCache.fileToLinktext(source, drawingPath)}]]`;
     return null;
