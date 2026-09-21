@@ -5,7 +5,8 @@
  * run unchanged. Everything below is a mock: Markdown rendering, link
  * resolution, notices and menus approximate Obsidian's DOM, they do not prove it.
  */
-import type { App, EventRef, KeymapContext, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState } from "obsidian";
+import type { App, EventRef, KeymapContext, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState, ViewStateResult } from "obsidian";
+import { TFile } from "../../tests/mocks/obsidian-file";
 
 export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
 
@@ -175,18 +176,72 @@ export class Scope {
   }
 }
 
-/** A leaf only needs to carry the app, remember the last requested state and say where it hangs (`getRoot`). */
+/** What `WorkspaceLeaf.setViewState` hands a view's `setState` (1.14.2): `layout` and `close` are not in the public type. */
+export interface HarnessStateResult extends ViewStateResult {
+  layout: boolean;
+  close: boolean;
+}
+
+/** The parts of the workspace a FileView reaches (1.14.2 `loadFile`); a test's workspace model provides them on the app. */
+interface HarnessWorkspace {
+  activeLeaf?: WorkspaceLeaf | null;
+  requestActiveLeafEvents?: () => void;
+}
+
+/**
+ * A leaf carries the app, remembers the states it was asked for and says where it hangs (`getRoot`). It also has
+ * what a FileView asks of it (1.14.2): a back／forward history whose `back()` restores the last state through
+ * `setViewState` marked `popstate` (as `WorkspaceLeaf.history.go` marks it), `open(null)` for the empty view, and a
+ * header to update. `setViewState` reaches the view only for its own type — this page has no view registry — and
+ * closes the leaf when the view asks (`close`, a FileView left without a note), as Obsidian does.
+ */
 export class WorkspaceLeaf {
   view: View | null = null;
   states: ViewState[] = [];
   /** The split the leaf is in; a test puts the app's `leftSplit`／`rightSplit` here for a sidebar leaf. Unset: the leaf stands for the main area. */
   root: unknown = null;
+  /** `getDisplayText()` as of the last `updateHeader`, the tab's title. */
+  headerText = "";
+  /** True while `setViewState` runs (1.14.2 `working`): a second one returns at once, a history step refuses with a notice. */
+  working = false;
+  readonly history = {
+    backHistory: [] as ViewState[],
+    forwardHistory: [] as ViewState[],
+    back: async (): Promise<void> => {
+      if (this.working) { new Notice("Tab is busy"); return; }
+      const state = this.history.backHistory.pop();
+      if (!state) return;
+      if (this.view) this.history.forwardHistory.push({ type: this.view.getViewType(), state: this.view.getState() });
+      await this.setViewState({ ...state, popstate: true } as ViewState);
+    },
+  };
   constructor(readonly app: App) {}
   getRoot(): unknown { return this.root ?? this; }
-  setViewState(state: ViewState): Promise<void> {
-    this.states.push(state);
-    return Promise.resolve();
+  async setViewState(state: ViewState): Promise<void> {
+    if (this.working) return;
+    this.working = true;
+    try {
+      this.states.push(state);
+      const view = this.view;
+      if (!view || state.type !== view.getViewType()) return;
+      const result: HarnessStateResult = { history: false, layout: false, close: false };
+      // A view whose `setState` throws is logged, as Obsidian logs it, and the leaf goes on.
+      try { await view.setState(state.state ?? {}, result); }
+      catch (error) { console.error(error); }
+      if (result.close) await this.open(null);
+      this.updateHeader();
+    } finally {
+      this.working = false;
+    }
   }
+  /** Close the view shown; the harness registers no other view, so only the empty leaf can follow. */
+  async open(view: View | null): Promise<View | null> {
+    if (view === this.view) return view;
+    await this.view?.close();
+    this.view = view;
+    return view;
+  }
+  updateHeader(): void { this.headerText = this.view?.getDisplayText() ?? ""; }
 }
 
 export abstract class View extends Component {
@@ -201,13 +256,20 @@ export abstract class View extends Component {
     this.containerEl = document.createElement("div");
     this.containerEl.className = "workspace-leaf-content";
   }
+  /** `View.close` (1.14.2): the container leaves the DOM, the component unloads, then `onClose`. */
+  async close(): Promise<void> {
+    this.containerEl.detach();
+    this.unload();
+    await this.onClose();
+  }
   onOpen(): Promise<void> { return Promise.resolve(); }
   onClose(): Promise<void> { return Promise.resolve(); }
   abstract getViewType(): string;
   abstract getDisplayText(): string;
   getIcon(): string { return "document"; }
   getState(): Record<string, unknown> { return {}; }
-  setState(): Promise<void> { return Promise.resolve(); }
+  /** The state and the result are the subclass's to read; the base view keeps nothing. */
+  setState(state: unknown, result: ViewStateResult): Promise<void> { void state; void result; return Promise.resolve(); }
   getEphemeralState(): Record<string, unknown> { return {}; }
   setEphemeralState(): void { /* Not needed in the harness. */ }
   onResize(): void { /* Subclasses re-measure. */ }
@@ -221,9 +283,93 @@ export abstract class ItemView extends View {
   }
 }
 
-/** Only used for `instanceof` checks; the harness never opens a Markdown editor. */
-export class MarkdownView extends ItemView {
+/**
+ * Obsidian 1.14.2's FileView (app.js), as far as a view built on it depends on it. `setState` hands the state's
+ * `file` (when the key is present) to `loadFile`, which unloads the note shown (`onUnloadFile`, with the note still
+ * in `file`) and loads the next (`onLoadFile`; a failure leaves no note and a notice), reports a change as
+ * `history` and `layout`, asks the leaf to close when no note is shown and `allowNoFile` is false, and, when the
+ * leaf is active, has the workspace fire its active-leaf events (`file-open`). `onload` subscribes to the vault's
+ * `rename` (the header) and `delete` (the leaf goes back in its history, else to the empty view; with `allowNoFile`,
+ * the note is unloaded instead). `onClose` empties the content and unloads the note. `getState` adds `file`.
+ * `canAcceptExtension` declines. Obsidian leaves `file` unset until the first `loadFile`; here it starts null, so
+ * only a first `loadFile(null)` differs (a change there, none here). Breadcrumbs and the group sync are left out.
+ */
+export abstract class FileView extends ItemView {
+  allowNoFile = false;
   file: ObsidianFile | null = null;
+  constructor(leaf: WorkspaceLeaf) {
+    super(leaf);
+    this.navigation = true;
+  }
+  getDisplayText(): string { return this.file?.basename ?? "No file"; }
+  onload(): void {
+    super.onload();
+    const vault = this.app.vault;
+    this.registerEvent(vault.on("rename", file => { void this.onRename(file as ObsidianFile); }));
+    this.registerEvent(vault.on("delete", file => { void this.onDelete(file as ObsidianFile); }));
+  }
+  getState(): Record<string, unknown> {
+    const state = super.getState();
+    if (this.file) state.file = this.file.path;
+    return state;
+  }
+  async setState(state: unknown, result: ViewStateResult): Promise<void> {
+    const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
+    let changed = false;
+    if (Object.prototype.hasOwnProperty.call(value, "file")) {
+      const found = typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
+      changed = await this.loadFile(found instanceof TFile ? found as unknown as ObsidianFile : null);
+    }
+    const outcome = result as Partial<HarnessStateResult>;
+    if (!this.file && !this.allowNoFile) outcome.close = true;
+    if (changed) { outcome.layout = true; result.history = true; }
+    await super.setState(state, result);
+  }
+  async onClose(): Promise<void> {
+    this.contentEl.empty();
+    await this.loadFile(null);
+  }
+  async loadFile(file: ObsidianFile | null): Promise<boolean> {
+    const previous = this.file;
+    if (previous === file) return false;
+    if (previous) await this.onUnloadFile(previous);
+    this.file = null;
+    if (file) {
+      try {
+        this.file = file;
+        await this.onLoadFile(file);
+      } catch (error) {
+        this.file = null;
+        new Notice(`Failed to load file: ${file.path}`);
+        console.error(error);
+      }
+    }
+    const workspace = this.app.workspace as HarnessWorkspace;
+    if (workspace.activeLeaf === this.leaf) workspace.requestActiveLeafEvents?.();
+    this.leaf.updateHeader();
+    return true;
+  }
+  onLoadFile(file: ObsidianFile): Promise<void> { void file; return Promise.resolve(); }
+  onUnloadFile(file: ObsidianFile): Promise<void> { void file; return Promise.resolve(); }
+  onRename(file: ObsidianFile): Promise<void> {
+    if (file === this.file) this.leaf.updateHeader();
+    return Promise.resolve();
+  }
+  async onDelete(file: ObsidianFile): Promise<void> {
+    if (file !== this.file) return;
+    if (this.allowNoFile) { await this.loadFile(null); return; }
+    const leaf = this.leaf;
+    if (leaf.history.backHistory.length > 0) await leaf.history.back();
+    else await leaf.open(null);
+  }
+  canAcceptExtension(extension: string): boolean { void extension; return false; }
+}
+
+/** A FileView whose header title renames the note (1.14.2); only the class distinction matters here: `workspace:edit-file-title` wants one. */
+export abstract class EditableFileView extends FileView {}
+
+/** Only used for `instanceof` checks; the harness never opens a Markdown editor. */
+export class MarkdownView extends EditableFileView {
   getViewType(): string { return "markdown"; }
   getDisplayText(): string { return this.file?.basename ?? "Markdown"; }
 }

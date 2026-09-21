@@ -12,15 +12,29 @@ vi.mock("obsidian", () => {
     get basename(): string { return this.name.replace(/\.[^.]+$/u, ""); }
     get extension(): string { return this.name.includes(".") ? this.name.split(".").pop() ?? "" : ""; }
   }
-  class ItemView {
-    app: unknown;
+  /** The FileView members the layout preference passes through: `setState` resolves the state's `file`, `getState` reports it. */
+  class FileView {
+    app: { vault: { getAbstractFileByPath(path: string): TFile | null } };
     contentEl = document.createElement("div");
     scope: unknown = null;
-    constructor(public leaf: { app: unknown }) { this.app = leaf.app; }
-    setState(): Promise<void> { return Promise.resolve(); }
+    allowNoFile = false;
+    navigation = true;
+    file: TFile | null = null;
+    constructor(public leaf: { app: unknown }) { this.app = leaf.app as FileView["app"]; }
+    getState(): Record<string, unknown> { return this.file ? { file: this.file.path } : {}; }
+    setState(state: { file?: string | null }): Promise<void> {
+      if (Object.prototype.hasOwnProperty.call(state, "file")) {
+        const found = typeof state.file === "string" ? this.app.vault.getAbstractFileByPath(state.file) : null;
+        this.file = found instanceof TFile ? found : null;
+      }
+      return Promise.resolve();
+    }
+    onClose(): Promise<void> { return Promise.resolve(); }
+    onUnloadFile(): Promise<void> { return Promise.resolve(); }
+    onRename(): Promise<void> { return Promise.resolve(); }
   }
   return {
-    ItemView,
+    FileView,
     MarkdownView: class {},
     Menu: class {},
     Notice: class {},

@@ -20,6 +20,8 @@ export class InlineEditor {
   private readonly input: HTMLTextAreaElement;
   private readonly error: HTMLDivElement;
   private busy = false;
+  /** The save under way (`commit`), for a `flush` that must wait for it. */
+  private pending: Promise<void> | undefined;
   private composing = false;
   private blurAfterComposition = false;
   private compositionBlurTimer: number | undefined;
@@ -81,8 +83,15 @@ export class InlineEditor {
     this.options.resize();
   }
 
-  private async commit(next: "none" | "child"): Promise<void> {
-    if (this.busy || this.disposed) return;
+  private commit(next: "none" | "child"): Promise<void> {
+    if (this.busy || this.disposed) return Promise.resolve();
+    const task = this.settle(next).finally(() => { if (this.pending === task) this.pending = undefined; });
+    this.pending = task;
+    return task;
+  }
+
+  /** One save: the editor closes on success, keeps the draft with the error on refusal. */
+  private async settle(next: "none" | "child"): Promise<void> {
     this.busy = true;
     this.input.readOnly = true;
     try {
@@ -103,10 +112,12 @@ export class InlineEditor {
   /**
    * Save the draft because the view is leaving the note under it (a navigation into this leaf: a link, the
    * explorer, back／forward — LEV-74), the way a Markdown tab keeps its buffer. The draft is not kept afterwards,
-   * so a refused save is thrown to the caller instead of shown in place. A save already under way, or a
-   * disposed editor, has nothing to do.
+   * so a refused save is thrown to the caller instead of shown in place. A save already under way (the blur of
+   * the click that navigates commits first) is waited for: it either closes the editor, or keeps the draft with
+   * its error, which is then saved here or refused to the caller. A disposed editor has nothing to do.
    */
   async flush(): Promise<void> {
+    if (this.pending) await this.pending;
     if (this.busy || this.disposed) return;
     this.busy = true;
     this.input.readOnly = true;

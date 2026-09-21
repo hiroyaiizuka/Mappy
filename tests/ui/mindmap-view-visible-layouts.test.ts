@@ -112,16 +112,23 @@ describe('MindmapView visible layouts (settings, M14)', () => {
   it('follows a layout change even when nothing can be drawn: no note loaded, or a button pressed before the note is read', async () => {
     const { app, view } = await mount(REGULAR, null, ['mindmap']);
     app.put(TIMELINE, SOURCES[TIMELINE] ?? '');
-    // The bar is not tied to draw(): with the note gone the view has no document, yet the state's layout still shows its button.
-    await view.setState({ layout: 'timeline' }, { history: false } satisfies ViewStateResult);
+    // The bar is not tied to draw(): with the note gone (a state naming one that is not there; FileView keeps the note
+    // for a state without `file`) the view has no document, yet the state's layout still shows its button.
+    await view.setState({ file: 'Fixtures/gone.md', layout: 'timeline' }, { history: false } satisfies ViewStateResult);
     expect(view.file).toBeNull();
     expect(buttons(view).map(entry => [entry.hidden, entry.active])).toEqual([[false, false], [false, true], [true, false], [true, false]]);
     // A button press on that empty view moves the bar the same way, and writes nothing (there is no note).
     button(view, 'mindmap').click();
     expect(buttons(view).map(entry => [entry.hidden, entry.active])).toEqual([[false, true], [true, false], [true, false], [true, false]]);
-    // Switching to the note again: the bar follows the frontmatter layout at once, before the read completes.
+    // Switching to the note again: the bar follows the frontmatter layout once the note is the view's (FileView's own
+    // load, a few microtasks), before the read of the note completes — held here until the bar has been checked.
+    let release = (): void => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const read = vi.spyOn(app.vault, 'read').mockImplementation(async file => { await held; return app.content(file); });
     const opening = view.setState({ file: TIMELINE }, { history: false } satisfies ViewStateResult);
+    await vi.waitFor(() => { expect(read).toHaveBeenCalled(); });
     expect(buttons(view).map(entry => [entry.hidden, entry.active])).toEqual([[false, false], [false, true], [true, false], [true, false]]);
+    release();
     await opening;
   });
 
