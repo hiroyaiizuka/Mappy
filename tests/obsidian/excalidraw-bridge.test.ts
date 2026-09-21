@@ -736,6 +736,27 @@ describe('ExcalidrawBridge.handleDrop', () => {
     expect(reports).toEqual([]);
   });
 
+  it('carries no link rather than a wrong one when an autolink is neither a file nor an address (LEV-138)', async () => {
+    // The parser reads `react@18.2.0` and a picture the vault has lost as addresses. Neither is one, and a
+    // link the drawing cannot place goes nowhere at all — `[[…]]` would be a link to a note that never existed.
+    const { bridge, automate, reports } = harness({
+      sources: { 'Note.md': '## 講座\n- npm i react@18.2.0\n- 消えた図 gone@2x.png\n- 連絡 someone@example.com\n' },
+    });
+    expect(bridge.handleDrop(drop())).toBe(true);
+    await flush();
+    const elements = automate?.instances[0]?.added[0]?.elements ?? [];
+    const linkOf = (label: string): string | null => {
+      const text = elements.find(element => element.text === label);
+      if (!text) throw new Error(`No element for ${label}`);
+      return (elements.find(element => element.id === text.containerId) ?? text).link ?? null;
+    };
+    expect(linkOf('npm i react@18.2.0')).toBeNull();
+    // A name ending in an image extension is a picture even when the vault has lost it, never an address.
+    expect(linkOf('消えた図 gone@2x.png')).toBeNull();
+    expect(linkOf('連絡 someone@example.com')).toBe('mailto:someone@example.com');
+    expect(reports).toEqual([]);
+  });
+
   it('stacks several dropped notes vertically and uses frontmatter layouts', async () => {
     const { bridge, automate } = harness({
       sources: { 'A.md': '## A\n- a1\n- a2\n', 'B.md': '## B\n- b1\n' },

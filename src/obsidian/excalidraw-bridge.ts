@@ -463,20 +463,22 @@ export class ExcalidrawBridge {
    * would carry with no link at all, so a root still links to its note. A `www.` autolink the note wrote without a
    * scheme arrives here with one (`autolinkUrl`, LEV-134).
    *
-   * What is left without a scheme is read as a vault path, and an unresolved one still travels as `[[…]]`: that is
-   * the note's own link, and clicking it in the drawing offers the note Obsidian would offer to create. The one
-   * exception is a bare address, which GFM reads as a link and Obsidian reads as an address. The vault decides
-   * first — `file@2x.png` is a picture, and a link to it must keep reaching it — and an address the vault cannot
-   * place becomes the `mailto:` the map opens, instead of a link to a note that does not exist (LEV-138).
+   * What is left without a scheme is read as a vault path. A link the note wrote as one travels as `[[…]]` even
+   * unresolved: that is the note's own link, and clicking it in the drawing offers the note Obsidian would offer
+   * to create. An autolink is not a path the note wrote, so an unresolved one never becomes `[[…]]`: it is the
+   * `mailto:` the map opens when it reads as an address, and no link at all when it does not (LEV-138). The vault
+   * decides first either way, because GFM reads `file@2x.png` as an address too and a link to that picture has to
+   * keep reaching it; a name ending in an image extension is a picture even when the vault has lost it.
    */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile, refused: string[]): string | null {
     if (node.link && !hasUrlScheme(node.link)) {
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, node.sourcePath ?? source.path);
       if (dest) return `[[${this.app.metadataCache.fileToLinktext(dest, drawingPath)}]]`;
-      const address = node.linkSyntax === 'autolink' ? addressUrl(node.link) : null;
-      return address ?? `[[${node.link}]]`;
-    }
-    if (node.link) {
+      if (node.linkSyntax !== 'autolink') return `[[${node.link}]]`;
+      const named = imageMimeType(node.link.slice(node.link.lastIndexOf('.') + 1)) !== undefined;
+      const address = named ? null : addressUrl(node.link);
+      if (address) return address;
+    } else if (node.link) {
       const external = externalUrl(node.link);
       if (external) return external;
       refused.push(node.link);

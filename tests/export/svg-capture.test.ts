@@ -490,23 +490,68 @@ describe('SVG export of the map view (jsdom)', () => {
       + '<rect width="4" height="4" fill="url(https://tracker.invalid/p)" filter="url(https://tracker.invalid/f)"/>'
       + '<use xlink:href="https://tracker.invalid/s.svg#g"/>'
       + '<use xlink:href="#g"/><rect width="2" height="2" fill="url(#local)" mask="url(\'#soft\')"/>'
+      + '<image href="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="1" height="1"/>'
+      + '<a href="https://example.com/s?q=url(x)" aria-label="url(x) の検索"><circle cx="1" cy="1" r="1"/></a>'
       + '</svg>');
     const { svg, parsed } = await exportOf(mounted);
     expect(svg).not.toContain('tracker.invalid');
-    expect(parsed.querySelectorAll('image')).toHaveLength(2);
-    for (const image of Array.from(parsed.querySelectorAll('image'))) {
+    const images = Array.from(parsed.querySelectorAll('image'));
+    expect(images).toHaveLength(3);
+    for (const image of images.slice(0, 2)) {
       expect(image.hasAttribute('href')).toBe(false);
       expect(image.hasAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe(false);
     }
+    // Bytes written into the value fetch nothing, so a self-contained picture is kept whole.
+    expect(images[2]?.getAttribute('href')).toBe('data:image/gif;base64,R0lGODlhAQABAAAAACw=');
     // What points inside the file is what the picture is made of, and it stays.
     const uses = Array.from(parsed.querySelectorAll('use'));
     expect(uses.map(item => item.getAttributeNS('http://www.w3.org/1999/xlink', 'href'))).toEqual([null, '#g']);
     const local = Array.from(parsed.querySelectorAll('rect')).find(item => item.getAttribute('fill') === 'url(#local)');
     expect(local?.getAttribute('mask')).toBe("url('#soft')");
+    // A paint that named an outside server becomes `none`: an absent `fill` would draw a black shape.
     const outward = Array.from(parsed.querySelectorAll('rect')).find(item => item.getAttribute('width') === '4');
-    expect(outward?.hasAttribute('fill')).toBe(false);
-    expect(outward?.hasAttribute('filter')).toBe(false);
-    expect(parsed.querySelector('circle')?.hasAttribute('style')).toBe(false);
+    expect(outward?.getAttribute('fill')).toBe('none');
+    expect(outward?.getAttribute('filter')).toBe('none');
+    // Only the declaration that reached outside goes; the rest of the style stays.
+    expect(parsed.querySelector('circle')?.getAttribute('style')).toBe('stroke:red');
+    // `url(` in text is text: a destination the allowed list keeps is not read as a paint server.
+    const link = Array.from(parsed.querySelectorAll('a')).find(item => item.namespaceURI === SVG_NAMESPACE);
+    expect(link?.getAttribute('href')).toBe('https://example.com/s?q=url(x)');
+    expect(link?.getAttribute('aria-label')).toBe('url(x) の検索');
+  });
+
+  it('keeps every image apart once a map has more than ten of them (the token of one is the start of another)', async () => {
+    // `image1` is the first six characters of `image10`, so a plain-substring splice used to put the
+    // eleventh picture's markup inside the second one's token and leave the rest as stray text.
+    const fixture = findFixture('uneven-branches');
+    // Each picture is told apart by its alt text, so a node that took another node's image is visible.
+    const many = Array.from({ length: 12 }, (_, index) => `- 画像 ${index}\n  ![画像 ${index}](sample-image.svg)\n`).join('');
+    const mounted = await mount('uneven-branches', 'mindmap', `${fixture?.source ?? ''}${many}`);
+    const { parsed } = await exportOf(mounted);
+    const shown = new Map(Array.from(parsed.querySelectorAll('foreignObject'), object => [
+      object.querySelector('.mappy-node-label')?.textContent?.trim() ?? '',
+      {
+        alts: Array.from(object.querySelectorAll('img'), image => image.getAttribute('alt')),
+        // Nothing of a token is left behind, neither the token nor the digits a partial splice leaves.
+        text: object.querySelector('.mappy-node-attachments')?.textContent ?? '',
+      },
+    ]));
+    for (let index = 0; index < 12; index += 1) {
+      expect(shown.get(`画像 ${index}`)).toEqual({ alts: [`画像 ${index}`], text: '' });
+    }
+    for (const image of Array.from(parsed.querySelectorAll('img'))) {
+      expect(image.getAttribute('src')?.startsWith('data:image/svg+xml')).toBe(true);
+    }
+  });
+
+  it('writes a note\'s own text into the markup, never as a replacement pattern', async () => {
+    // `String.replace` with a string pattern expands `$&` in the replacement; an unreadable image's
+    // alt text is a note's text, so it has to be spliced as text.
+    const fixture = findFixture('uneven-branches');
+    const mounted = await mount('uneven-branches', 'mindmap', `${fixture?.source ?? ''}- 記号の別名\n  ![a$&b$\`c](missing.png)\n`);
+    const { parsed } = await exportOf(mounted, () => Promise.resolve(null));
+    const placeholders = Array.from(parsed.querySelectorAll('.mappy-export-missing-image'), item => item.textContent);
+    expect(placeholders).toContain('a$&b$`c');
   });
 
   it('embeds image bytes or nothing: a resolver that answers with an address leaves the node, not the address (LEV-139)', async () => {

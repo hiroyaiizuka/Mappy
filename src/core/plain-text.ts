@@ -16,7 +16,7 @@ const MARKER_NODES = new Set([
   'EmphasisMark', 'CodeMark', 'StrikethroughMark', 'HeaderMark', 'QuoteMark', 'ListMark', 'LinkMark', 'HardBreak',
 ]);
 
-interface Replacement { from: number; to: number; text: string; link: string | null; syntax?: LinkSyntax }
+interface Replacement { from: number; to: number; text: string; link: string | null; syntax: LinkSyntax | null }
 
 function wikiReplacement(match: RegExpMatchArray): Replacement {
   const whole = match[0];
@@ -59,14 +59,14 @@ export function plainTitle(title: string): PlainTitle {
       return true;
     },
   });
-  const edits: Replacement[] = [...replacements, ...removed.map(range => ({ ...range, text: '', link: null }))]
+  const edits: Replacement[] = [...replacements, ...removed.map(range => ({ ...range, text: '', link: null, syntax: null }))]
     .sort((left, right) => left.from - right.from || right.to - left.to);
   const parts: string[] = [];
   let cursor = 0;
   for (const edit of edits) {
     if (edit.from < cursor) continue;
     parts.push(title.slice(cursor, edit.from), edit.text);
-    if (edit.link && firstLink === null) { firstLink = edit.link; firstSyntax = edit.syntax ?? null; }
+    if (edit.link && firstLink === null) { firstLink = edit.link; firstSyntax = edit.syntax; }
     cursor = edit.to;
   }
   parts.push(title.slice(cursor));

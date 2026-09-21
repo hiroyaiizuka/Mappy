@@ -47,9 +47,10 @@ interface AttachmentSnippets {
 
 /** Collect only link/image syntax from a body; never body code blocks or prose. */
 function attachmentSnippets(body: string): AttachmentSnippets {
-  // `@` and the case-insensitive forms are here because GFM autolinks a bare address and a bare URL:
-  // leaving them out made a body's address unreachable while the same text in a title was a link (LEV-138).
-  if (!body.includes('[') && !body.includes('<') && !body.includes('@') && !/(?:https?:\/\/|www\.)/iu.test(body)) {
+  // `@` is here because GFM autolinks a bare address: leaving it out made a body's address unreachable
+  // while the same text in a title was a link (LEV-138). The parser's autolink pattern is case-sensitive,
+  // so an upper-case `WWW.`／`HTTP://` is not a link in either place and nothing is missed by matching case.
+  if (!body.includes('[') && !body.includes('<') && !body.includes('@') && !/(?:https?:\/\/|www\.)/u.test(body)) {
     return { snippets: [], references: [] };
   }
   const protectedRanges: { from: number; to: number }[] = [];

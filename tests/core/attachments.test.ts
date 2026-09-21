@@ -15,6 +15,13 @@ describe('attachmentMarkdown', () => {
   it('returns nothing for prose without links', () => {
     expect(attachmentMarkdown('ただの文章')).toBe('');
   });
+
+  it('now hands a body address to the renderer as well, so the map shows it like any other body link (LEV-138)', () => {
+    // A visible change: a node whose body holds an address gains a link in the map view, where it had none.
+    expect(attachmentMarkdown('連絡 someone@example.com')).toBe('someone@example.com');
+    // Text that only looks like one is still prose in both places; the map has nothing to render.
+    expect(attachmentMarkdown('npm i react@18.2.0')).toBe('react@18.2.0');
+  });
 });
 
 describe('attachmentEntries', () => {

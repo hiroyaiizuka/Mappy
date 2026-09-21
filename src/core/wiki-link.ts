@@ -113,11 +113,18 @@ export function externalUrl(text: string): string | null {
  */
 export type LinkSyntax = 'vault' | 'autolink';
 
-/** GFM reads a web address with no scheme as a link too, leaving the scheme to whoever opens it. */
-const WWW_AUTOLINK = /^www\./iu;
+/**
+ * GFM reads a web address with no scheme as a link too, leaving the scheme to whoever opens it. Lower case
+ * only: the parser's own autolink pattern is case-sensitive, so `WWW.` never reaches this (`plain-text` pins it).
+ */
+const WWW_AUTOLINK = /^www\./u;
 
-/** And an address: `someone@example.com`, with no `mailto:` in front of it. */
-const ADDRESS_AUTOLINK = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+/**
+ * And an address. The shape is the parser's own (`[\w.+-]+@[\w-]+(\.[\w.-]+)+`) with one thing added: the last
+ * label must read like a top-level domain. Without it `npm i react@18.2.0`, which the parser does call an
+ * autolink, would leave a note as a link to someone's mail.
+ */
+const ADDRESS_AUTOLINK = /^[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}$/u;
 
 /**
  * An autolink as the URL it opens: `www.example.com/a` → `https://www.example.com/a`; anything else comes

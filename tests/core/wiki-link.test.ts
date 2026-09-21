@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  autolinkUrl, exportedLink, externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath,
+  addressUrl, autolinkUrl, exportedLink, externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath,
 } from "../../src/core/wiki-link";
 
 describe("inline wikilink completion", () => {
@@ -130,8 +130,41 @@ describe("autolinkUrl (the scheme an autolink leaves for its reader to supply)",
     expect(autolinkUrl("someone@example.com")).toBe("someone@example.com");
   });
 
+  it("leaves an upper-case `WWW.` as written: the parser never calls one a link", () => {
+    expect(autolinkUrl("WWW.EXAMPLE.COM")).toBe("WWW.EXAMPLE.COM");
+  });
+
   it("supplies a scheme without judging it: the allowed list is still `externalUrl`'s to apply", () => {
     expect(externalUrl(autolinkUrl("www.example.com/a"))).toBe("https://www.example.com/a");
+  });
+});
+
+describe("addressUrl (a bare address autolink, once the vault has had its say)", () => {
+  it.each([
+    ["someone@example.com", "mailto:someone@example.com"],
+    ["first.last+tag@mail.example.co.jp", "mailto:first.last+tag@mail.example.co.jp"],
+  ])("opens %s as %s", (text, url) => {
+    expect(addressUrl(text)).toBe(url);
+  });
+
+  it.each([
+    // The parser calls these autolinks; the last label is no top-level domain, so they are versions, not mail.
+    "react@18.2.0",
+    "v2@1.0.1",
+    // Not an address at all.
+    "someone@example",
+    "@example.com",
+    "睡眠ノート",
+    "",
+    // Already carries a scheme of its own.
+    "mailto:someone@example.com",
+  ])("refuses %s", text => {
+    expect(addressUrl(text)).toBeNull();
+  });
+
+  it("cannot tell an attachment from an address by itself: that is the vault's to answer", () => {
+    // The shape is the same, so the caller resolves the name first and only then asks (`linkFor`).
+    expect(addressUrl("file@2x.png")).toBe("mailto:file@2x.png");
   });
 });
 

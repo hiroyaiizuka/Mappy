@@ -105,13 +105,17 @@ function isDestination(element: Element): boolean {
 }
 
 /**
- * A reference the file follows by itself, kept only when it points inside the file. `<use xlink:href="#g">`
- * is how an icon reuses a shape it carries; `<image href="https://…">` would have the file fetch a picture
- * from a host as soon as it is opened, which tells that host who opened it (§5 M13, LEV-139).
+ * A reference the file follows by itself, kept only when nothing is fetched to follow it: a shape in the
+ * same file (`<use xlink:href="#g">`, how an icon reuses what it carries) or bytes written into the value
+ * (`data:`, what the export puts in its own images). `<image href="https://…">` would have the file ask a
+ * host for a picture as soon as it is opened, which tells that host who opened it (§5 M13, LEV-139).
  */
-function sameDocumentReference(value: string): string | null {
-  return value.startsWith('#') ? value : null;
+function selfContainedReference(value: string): string | null {
+  return value.startsWith('#') || value.startsWith('data:') ? value : null;
 }
+
+/** Attributes whose value can name a paint server or another resource; `none` is a valid value for each. */
+const PAINT_ATTRIBUTES = new Set(['fill', 'stroke', 'filter', 'mask', 'clip-path', 'marker', 'marker-start', 'marker-mid', 'marker-end']);
 
 /** Every `url(…)` in a value, as a style or a presentation attribute writes it. */
 const URL_VALUE = /url\(\s*(['"]?)\s*([^)'"]*)/giu;
@@ -120,6 +124,28 @@ const URL_VALUE = /url\(\s*(['"]?)\s*([^)'"]*)/giu;
 function fetchesFromOutside(value: string): boolean {
   for (const match of value.matchAll(URL_VALUE)) if (!(match[2] ?? '').startsWith('#')) return true;
   return false;
+}
+
+/** The declarations of an inline style that fetch nothing; null when none is left. */
+function selfContainedStyle(value: string): string | null {
+  const kept = value.split(';').filter(declaration => declaration.trim() && !fetchesFromOutside(declaration));
+  return kept.length > 0 ? kept.join(';') : null;
+}
+
+/**
+ * What an attribute may carry into the file, or null when it may not travel at all. A destination is a
+ * reader's choice and keeps the allowed schemes (`exportedLink`, LEV-133); everything else the file resolves
+ * by itself, so it must fetch nothing. A paint that named an outside server becomes `none` rather than
+ * disappearing: an absent `fill` is black, and a picture should not gain a shape it never had.
+ */
+function exportedValue(name: string, raw: string, element: Element): string | null {
+  if (LINK_ATTRIBUTES.has(name)) return isDestination(element) ? exportedLink(raw) : selfContainedReference(raw);
+  // Paint servers and inline style reach the file through the SVG branch alone; `KEPT_ATTRIBUTES` admits neither.
+  if (element.namespaceURI !== SVG_NAMESPACE) return raw;
+  if (name === 'style') return selfContainedStyle(raw);
+  if (PAINT_ATTRIBUTES.has(name)) return fetchesFromOutside(raw) ? 'none' : raw;
+  if (name === 'cursor') return fetchesFromOutside(raw) ? null : raw;
+  return raw;
 }
 
 /** `onclick`, `onload`, …: a file written out of a note carries no code, in whichever namespace it was written. */
@@ -217,10 +243,19 @@ function boxOf(element: HTMLElement): { width: number; height: number } {
 
 /**
  * An image met while serializing: the markup is finished later, once its data URL
- * is known, from what was read now. The token never collides with content because
- * escaping strips control characters.
+ * is known, from what was read now. The token is wrapped in a character escaping
+ * strips from content (`dropUnwritable`), so it can neither collide with the text
+ * of a node nor be the start of another token (`image1` inside `image10`).
  */
+/**
+ * The character a token is wrapped in. Escaping drops every control character from content
+ * (`dropUnwritable`), so a token can neither collide with the text of a node nor be the start
+ * of another token — `image1` is otherwise the first six characters of `image10`.
+ */
+const TOKEN_MARK = String.fromCharCode(0);
+
 interface PendingImage {
+  /** The mark, `image`, the index, the mark. */
   token: string;
   image: HTMLImageElement;
   present: (src: string) => string;
@@ -235,9 +270,6 @@ interface Serializer {
 function serializeAttributes(element: Element, names: Iterable<string>, extra: Record<string, string | null>): string {
   const parts: string[] = [];
   const written = new Set<string>();
-  const destination = isDestination(element);
-  // Paint servers and inline style reach the file through the SVG branch alone; `KEPT_ATTRIBUTES` admits neither.
-  const paints = element.namespaceURI === SVG_NAMESPACE;
   for (const [name, value] of Object.entries(extra)) {
     written.add(name);
     if (value !== null && value !== '') parts.push(` ${name}="${escapeAttribute(value)}"`);
@@ -246,9 +278,7 @@ function serializeAttributes(element: Element, names: Iterable<string>, extra: R
     if (written.has(name) || !isWritableAttributeName(name) || isEventHandler(name)) continue;
     const raw = element.getAttribute(name);
     if (raw === null) continue;
-    if (paints && fetchesFromOutside(raw)) continue;
-    // A destination leaves the vault with the file; only the links `exportedLink` allows travel with it.
-    const value = LINK_ATTRIBUTES.has(name) ? (destination ? exportedLink(raw) : sameDocumentReference(raw)) : raw;
+    const value = exportedValue(name, raw, element);
     if (value !== null) parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
   return parts.join('');
@@ -275,7 +305,7 @@ function serializeImage(image: HTMLImageElement, context: Serializer, style: CSS
   const imageClass = exportedClasses(image, context.registry.classFor(declarations));
   const spanDeclarations = [declarations, 'display:inline-block;overflow:hidden'].filter(Boolean).join(';');
   const spanClass = exportedClasses(image, context.registry.classFor(spanDeclarations), 'mappy-export-missing-image');
-  const token = `image${context.images.length}`;
+  const token = `${TOKEN_MARK}image${context.images.length}${TOKEN_MARK}`;
   context.images.push({
     token, image,
     present: src => `<img${serializeAttributes(image, KEPT_ATTRIBUTES, { class: imageClass, src, style: geometry })}/>`,
@@ -411,7 +441,9 @@ export async function captureScene(source: CaptureSource, options: CaptureOption
     for (const entry of context.images) {
       if (!html.includes(entry.token)) continue;
       const src = resolved.get(entry.token) ?? null;
-      html = html.replace(entry.token, src === null ? entry.missing : entry.present(src));
+      const markup = src === null ? entry.missing : entry.present(src);
+      // A function replacement: the markup carries a note's own text, and `$&` in it is text, not a pattern.
+      html = html.replace(entry.token, () => markup);
     }
     return { ...draft, html };
   });
