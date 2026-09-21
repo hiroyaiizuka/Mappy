@@ -994,12 +994,18 @@ export class MindmapView extends FileView {
     const projected = this.projected;
     if (!projected) return [];
     const topics = projected.trees.split.topics;
-    const kept = held ? rootOffsets(held, topics.map(topic => topic.id)) : undefined;
     // Keys come from the headings as written (`split`); the tree laid out is the one shown (a topic may call a map).
-    return topics.map((topic, index) => {
+    const own = topics.map(topic => {
       const stored = projected.positions.get(projected.keys.get(topic.id) ?? topic.title)?.[this.mode];
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
-      const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending ?? kept?.get(topic.id);
+      return this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
+    });
+    // Only a topic with no position of its own reads the hold, so a note whose topics all have one (the common case,
+    // and every frame outside a drag or a placeholder) never walks the held layout's nodes.
+    const unplaced = topics.filter((topic, index) => !own[index]).map(topic => topic.id);
+    const kept = held && unplaced.length > 0 ? rootOffsets(held, unplaced) : undefined;
+    return topics.map((topic, index) => {
+      const position = own[index] ?? kept?.get(topic.id);
       return { tree: trees?.[index + 1] ?? projected.trees.calls.roots[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
     });
   }
