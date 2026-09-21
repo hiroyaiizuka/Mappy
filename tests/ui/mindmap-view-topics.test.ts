@@ -432,6 +432,50 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(transform(blank.id)).toEqual(pressed);
   });
 
+  it('keeps a still-unnamed topic where it was pressed after a drag crossing a layout switch is cancelled with Escape (LEV-129, code review\'s sharper repro)', async () => {
+    // The code review found a tighter case than the one above: rather than switching after the inline
+    // editor closes, drag the still-unnamed topic itself, switch layout mid-drag (which also rebases the
+    // drag, per the case before this one), then Escape the drag (`endTopicDrag` never touches
+    // `pendingTopic`). Without rebasing `pendingTopic` on every mode change — not only when no drag is
+    // active — its `layout` tag would still read the mode it was pressed in, not the one the cancelled
+    // drag leaves the view in, and it would fall back to the default slot once the drag lets go of it.
+    const source = fixtureSource();
+    const { view, canvas, transform, dblclick, settle } = await mount(source, 'mindmap');
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    const blank = projectMap(documentOf(view)).topics.at(-1);
+    if (!blank) throw new Error('No blank topic');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    shift(blank.id, { x: 0, y: 0 });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    view.containerEl.querySelector<HTMLButtonElement>('.mappy-modes button[aria-label="左右バランス"]')?.click();
+    await settle();
+    shift(blank.id, null); // Escape-equivalent: cancels the drag and restores it (`endTopicDrag(id, true)`).
+    await settle();
+    expect(transform(blank.id)).toEqual(pressed);
+  });
+
+  it('composes two layout switches ahead of a single frame without an extra drift (LEV-129, code review\'s double-switch case)', async () => {
+    // applyMode reads `originFor()` fresh on both sides of every switch rather than a frame-cached origin
+    // (`topicDrag.base.origin`, only refreshed by the next `requestAnimationFrame`), so a second switch
+    // ahead of any frame still rebases from the true preceding origin instead of the one before that.
+    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+    const { view, transform, topic } = await mount(source, 'mindmap');
+    const dragged = topic('資料');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    shift(dragged.id, { x: 40, y: -40 });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const beforeSwitch = transform(dragged.id);
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await view.setState({ file: PATH, layout: 'hierarchy' }, { history: false } satisfies ViewStateResult);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    // Neither switch was a pointer move: the tree must be exactly where it was, not off by the first switch's origin delta.
+    expect(transform(dragged.id)).toEqual(beforeSwitch);
+    shift(dragged.id, null);
+  });
+
   it('the context menu on empty canvas offers トピックを追加 and on a topic トピックを削除', async () => {
     const source = fixtureSource();
     const { view, canvas, nodes, source: current, settle, contextmenu, editor, transform } = await mount(source);
