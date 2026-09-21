@@ -677,6 +677,36 @@ describe('ExcalidrawBridge.handleDrop', () => {
     expect(reports).toEqual(['図面に入れられないリンクを 3 件外しました（javascript、data）。']);
   });
 
+  it('opens a scheme-less autolink where the map opens it, instead of making a vault link that goes nowhere', async () => {
+    // `www.example.com/a` is a link to GFM and a vault path when read as written, so the drawing used to
+    // carry `[[www.example.com/a]]`, a link to a note that does not exist (LEV-134). Wiki links keep
+    // naming notes, address or not, because `[[…]]` is the one syntax that always means the vault.
+    const { bridge, automate, reports } = harness({
+      sources: {
+        'Note.md': '## 講座\n- 見て www.example.com/a\n- [[www.example.com]]\n- 図 file@2x.png\n'
+          + '- 本文のみ\n\n  参考 www.example.org/b\n',
+      },
+      images: { 'file@2x.png': { width: 40, height: 40 } },
+    });
+    expect(bridge.handleDrop(drop())).toBe(true);
+    await flush();
+    const elements = automate?.instances[0]?.added[0]?.elements ?? [];
+    const linkOf = (label: string): string | null => {
+      const text = elements.find(element => element.text === label);
+      if (!text) throw new Error(`No element for ${label}`);
+      return (elements.find(element => element.id === text.containerId) ?? text).link ?? null;
+    };
+    // The node still shows the address as the note wrote it; only where it goes has changed.
+    expect(linkOf('見て www.example.com/a')).toBe('https://www.example.com/a');
+    // A body link takes the same route as a title's (§5 M6: the first link of the body).
+    expect(linkOf('本文のみ')).toBe('https://www.example.org/b');
+    expect(linkOf('www.example.com')).toBe('[[www.example.com]]');
+    // The parser reads `file@2x.png` as an address; it is a picture in the vault and keeps reaching it (LEV-138).
+    expect(linkOf('図 file@2x.png')).toBe('[[file@2x]]');
+    // Nothing was refused: these are links the drawing keeps, not links it drops.
+    expect(reports).toEqual([]);
+  });
+
   it('stacks several dropped notes vertically and uses frontmatter layouts', async () => {
     const { bridge, automate } = harness({
       sources: { 'A.md': '## A\n- a1\n- a2\n', 'B.md': '## B\n- b1\n' },

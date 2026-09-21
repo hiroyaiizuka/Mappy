@@ -1,11 +1,12 @@
 import { GFM, parser } from '@lezer/markdown';
+import { autolinkUrl } from './wiki-link';
 
 const inlineParser = parser.configure(GFM);
 
 export interface PlainTitle {
   /** Visible text without Markdown markers. */
   text: string;
-  /** First link target in the title, as written, or null. */
+  /** First link target in the title, or null; an autolink carries the scheme it was written without. */
   link: string | null;
 }
 
@@ -46,7 +47,8 @@ export function plainTitle(title: string): PlainTitle {
       if (node.name === 'Autolink' || node.name === 'URL') {
         const raw = title.slice(node.from, node.to);
         const url = raw.replace(/^<|>$/gu, '');
-        replacements.push({ from: node.from, to: node.to, text: url, link: url });
+        // The title shows what the note wrote; the link carries the scheme an autolink leaves out.
+        replacements.push({ from: node.from, to: node.to, text: url, link: autolinkUrl(url) });
         return false;
       }
       if (MARKER_NODES.has(node.name)) removed.push({ from: node.from, to: node.to });

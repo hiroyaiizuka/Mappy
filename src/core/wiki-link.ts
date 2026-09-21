@@ -51,9 +51,32 @@ export function wikiLinkPath(link: string | null | undefined): string | null {
   return path || null;
 }
 
+/** Deleted from a URL wherever it appears: a reader takes `java\tscript:…` as `javascript:…`. */
+const URL_STRIPPED = /[\t\n\r]/gu;
+
+/** The controls and spaces a reader trims from both ends of a URL before it reads the scheme. */
+function isUrlBlank(code: number): boolean {
+  return code <= 0x20 || code === 0x7f;
+}
+
+/**
+ * A link as its reader will see it. A browser deletes every tab and line break inside a URL and trims the
+ * C0 controls and spaces around it before it reads the scheme, and the writers a copied link passes through
+ * drop the same characters, so ` javascript:…` and `java&#9;script:…` reach a click as `javascript:…`. Reading
+ * the scheme from anything else would let a space hide it from the allowed list below.
+ */
+function urlText(text: string): string {
+  const value = text.replace(URL_STRIPPED, '');
+  let start = 0;
+  let end = value.length;
+  while (start < end && isUrlBlank(value.charCodeAt(start))) start += 1;
+  while (end > start && isUrlBlank(value.charCodeAt(end - 1))) end -= 1;
+  return value.slice(start, end);
+}
+
 /** The scheme a link is written with, lower case, or null for a vault path. One parser for both readers below. */
 export function urlScheme(text: string): string | null {
-  return text.match(/^([A-Za-z][A-Za-z0-9+.-]*):/u)?.[1]?.toLowerCase() ?? null;
+  return urlText(text).match(/^([A-Za-z][A-Za-z0-9+.-]*):/u)?.[1]?.toLowerCase() ?? null;
 }
 
 /** `https://…`, `app://…`, `data:…`: a URL with a scheme, as opposed to a vault path. */
@@ -74,9 +97,51 @@ const EXTERNAL_LINK_SCHEMES = new Set(["http", "https", "mailto", "obsidian"]);
  * another plugin opens (an Excalidraw drawing), where a click runs it, so `javascript:` and `data:` must
  * not travel — and so must nothing else that turns out to run. The cost is that a link Obsidian would
  * have opened (`tel:`, `zotero:`, `vscode:`) is dropped instead; the caller says so rather than
- * dropping it silently.
+ * dropping it silently. What travels is the URL its reader will see (`urlText`), so a link cannot be
+ * judged in one form and written in another.
  */
 export function externalUrl(text: string): string | null {
-  const scheme = urlScheme(text);
-  return scheme && EXTERNAL_LINK_SCHEMES.has(scheme) ? text : null;
+  const value = urlText(text);
+  const scheme = urlScheme(value);
+  return scheme && EXTERNAL_LINK_SCHEMES.has(scheme) ? value : null;
+}
+
+/** GFM reads a web address with no scheme as a link too, leaving the scheme to whoever opens it. */
+const WWW_AUTOLINK = /^www\./iu;
+
+/**
+ * An autolink as the URL it opens: `www.example.com/a` → `https://www.example.com/a`; anything else comes
+ * back as written.
+ *
+ * Only what the parser called an autolink may be passed. `[[www.example.com]]` and `[見て](www.example.com/a)`
+ * are vault paths to Obsidian and must keep naming the note they name; a `www.` autolink is the one syntax
+ * where a scheme-less string means the web. Read as written it is a vault path, so a copy of it that leaves
+ * the note links to a note that does not exist (LEV-134). The scheme written here is `https:` where GFM's own
+ * rule is `http:`: the copy is a new document rather than a transcript of the note, and its link opening
+ * matters more than its scheme matching the one the reader of the note would have supplied.
+ *
+ * GFM also autolinks a bare address (`someone@example.com`), and that one is left alone: it linkifies an
+ * attachment written the way a retina image is named (`file@2x.png`), so a blanket `mailto:` would turn a
+ * link to a picture in the vault into a mail window (LEV-138).
+ */
+export function autolinkUrl(text: string): string {
+  return !hasUrlScheme(text) && WWW_AUTOLINK.test(text) ? `https://${text}` : text;
+}
+
+/**
+ * The link a file written out of a note may keep (§5 M13), or null when it may not. A vault link travels as
+ * written — inside Obsidian it is the note's own link, outside it reaches nothing — and a link with a scheme
+ * travels only when `externalUrl` allows it: a written-out SVG is opened away from Obsidian, by a browser
+ * that runs `javascript:` on a click as readily as it opens `https:`. `//host/path` names no scheme and no
+ * note either; it would take a file served over http(s) straight out to that host, so it does not travel.
+ *
+ * The cost, as on the Excalidraw side: a note whose name begins with letters and a colon reads as a scheme
+ * and loses its link. Obsidian does not allow `:` in a file name, so this can only be a link written by hand
+ * to a note that cannot exist.
+ */
+export function exportedLink(text: string): string | null {
+  const value = urlText(text);
+  if (!value) return null;
+  if (hasUrlScheme(value)) return externalUrl(value);
+  return value.startsWith('//') ? null : value;
 }

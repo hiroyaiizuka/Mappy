@@ -1,4 +1,5 @@
 import { GFM, parser } from '@lezer/markdown';
+import { autolinkUrl } from './wiki-link';
 
 const attachmentParser = parser.configure(GFM);
 
@@ -31,7 +32,7 @@ export function transclusionsAsLinks(markdown: string): string {
 
 export interface AttachmentEntry {
   kind: 'image' | 'link';
-  /** Link target as written, without alias, size or heading suffix. */
+  /** Link target as written, without alias, size or heading suffix; an autolink carries the scheme it left out. */
   target: string;
   /** Visible label when the syntax provides one. */
   label: string;
@@ -123,7 +124,8 @@ export function attachmentEntries(body: string): AttachmentEntry[] {
     const auto = snippet.match(/^<([^>]+)>$/u);
     const target = auto ? auto[1] ?? '' : snippet;
     // Remaining snippets are autolinks or bare URLs; bracket syntax that failed above is not a target.
-    if (target && !/[\s[\]<>]/u.test(target)) entries.push({ kind: 'link', target, label: target });
+    // The label stays what the note wrote; only the target gains the scheme an autolink leaves out.
+    if (target && !/[\s[\]<>]/u.test(target)) entries.push({ kind: 'link', target: autolinkUrl(target), label: target });
   }
   return entries;
 }
