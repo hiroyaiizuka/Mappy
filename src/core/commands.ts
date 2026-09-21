@@ -1,5 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
+import { getNode, insertionPrefix } from './text-edits';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -46,13 +47,6 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   let result = source;
   for (const edit of ordered.reverse()) result = result.slice(0, edit.from) + edit.text + result.slice(edit.to);
   return result;
-}
-
-/** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
-export function getNode(doc: MindDocument, id: string): MindNode {
-  const node = id === 'root' ? doc.root : doc.nodes.find((candidate) => candidate.id === id);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
-  return node;
 }
 
 function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: number | null, count: number): EditPlan {
@@ -138,12 +132,6 @@ function shiftedBranch(doc: MindDocument, node: MindNode, level: number): string
     }
   }
   return applyEdits(doc.source.slice(node.from, node.to), edits);
-}
-
-export function insertionPrefix(source: string, offset: number, eol: string): string {
-  const before = source.slice(0, offset);
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
 }
 
 function appendBoundary(text: string, eol: string): string {

@@ -1,16 +1,11 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, insertionPrefix, moveHeadingSection, moveTarget, sectionRemovalFrom,
+  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom,
   swapSections, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
+import { getNode, insertionPrefix, paragraphGap } from './text-edits';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
-
-function getNode(doc: MindDocument, id: string): MindNode {
-  const node = id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
-  return node;
-}
 
 function branchSize(node: MindNode): number {
   const pending = [node];
@@ -38,11 +33,6 @@ function validate(
     throw new Error('リスト構造を安全に変更できません。Markdown の構文を確認してください。');
   }
   return { edits, selectionOffset: selected?.titleFrom ?? null };
-}
-
-function paragraphGap(before: string, eol: string): string {
-  if (!before || /\n[ \t]*\r?\n$/u.test(before)) return '';
-  return before.endsWith('\n') ? eol : eol + eol;
 }
 
 /** Text placed at `offset`, separated from what surrounds it; at the very end of a file that ends with a line break, the break is kept. */
