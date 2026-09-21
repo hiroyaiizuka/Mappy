@@ -6,7 +6,7 @@ const inlineParser = parser.configure(GFM);
 export interface PlainTitle {
   /** Visible text without Markdown markers. */
   text: string;
-  /** First link target in the title, as written, or null. */
+  /** First link target in the title, or null; an autolink carries the scheme it was written without. */
   link: string | null;
 }
 

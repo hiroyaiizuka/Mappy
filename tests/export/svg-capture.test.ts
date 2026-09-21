@@ -420,6 +420,41 @@ describe('SVG export of the map view (jsdom)', () => {
     expect(mounted.modified()).toBe(0);
   });
 
+  it('refuses a scheme hidden behind spaces or control characters, and a destination on any element', async () => {
+    // The file's own escaping drops control characters, and a browser trims spaces and deletes tabs before it
+    // reads a URL, so a filter that judged the text as written would hand back a working `javascript:` link.
+    const mounted = await mount('uneven-branches');
+    const label = mounted.nodes().find(node => node.querySelector('.mappy-node-label')?.textContent?.includes('空に近い枝'))?.querySelector('.mappy-node-label');
+    // Set through the DOM, not parsed from markup: the HTML parser replaces a NUL, and what has to be
+    // refused is the value an element actually carries.
+    const hidden: [string, string][] = [
+      ['空白', ' javascript:alert(1)'],
+      ['制御', '\u0000javascript:alert(2)'],
+      ['タブ', 'java\tscript:alert(3)'],
+      ['改行', 'java\nscript:alert(4)'],
+      ['スキーム相対', '//example.com/x'],
+    ];
+    for (const [text, href] of hidden) {
+      const anchor = label?.ownerDocument.createElement('a');
+      if (!anchor || !label) throw new Error('No label to add a link to');
+      anchor.textContent = text;
+      anchor.setAttribute('href', href);
+      label.append(anchor);
+    }
+    // `href` on something that is not an anchor is a destination too (`KEPT_ATTRIBUTES` carries it over).
+    label?.insertAdjacentHTML('beforeend', '<map><area alt="area"/></map>');
+    label?.querySelector('area')?.setAttribute('href', 'javascript:alert(5)');
+    const { svg, parsed } = await exportOf(mounted);
+    expect(svg).not.toContain('javascript');
+    expect(svg).not.toContain('alert');
+    expect(parsed.querySelector('area')?.getAttribute('href') ?? null).toBeNull();
+    for (const [text] of hidden) {
+      const anchor = Array.from(parsed.querySelectorAll('a')).find(item => item.textContent?.trim() === text);
+      expect(anchor).toBeDefined();
+      expect(anchor?.hasAttribute('href')).toBe(false);
+    }
+  });
+
   it('drops the handlers and refused links of inline SVG, and keeps the fragment a shape points at', async () => {
     const mounted = await mount('uneven-branches');
     // The harness renderer escapes markup, so the inline SVG (as a theme icon or raw HTML in a note would leave it) is put in by hand.

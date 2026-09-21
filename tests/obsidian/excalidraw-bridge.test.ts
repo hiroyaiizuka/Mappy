@@ -683,9 +683,10 @@ describe('ExcalidrawBridge.handleDrop', () => {
     // naming notes, address or not, because `[[…]]` is the one syntax that always means the vault.
     const { bridge, automate, reports } = harness({
       sources: {
-        'Note.md': '## 講座\n- 見て www.example.com/a\n- [[www.example.com]]\n- 連絡 someone@example.com\n'
+        'Note.md': '## 講座\n- 見て www.example.com/a\n- [[www.example.com]]\n- 図 file@2x.png\n'
           + '- 本文のみ\n\n  参考 www.example.org/b\n',
       },
+      images: { 'file@2x.png': { width: 40, height: 40 } },
     });
     expect(bridge.handleDrop(drop())).toBe(true);
     await flush();
@@ -697,10 +698,11 @@ describe('ExcalidrawBridge.handleDrop', () => {
     };
     // The node still shows the address as the note wrote it; only where it goes has changed.
     expect(linkOf('見て www.example.com/a')).toBe('https://www.example.com/a');
-    expect(linkOf('連絡 someone@example.com')).toBe('mailto:someone@example.com');
     // A body link takes the same route as a title's (§5 M6: the first link of the body).
     expect(linkOf('本文のみ')).toBe('https://www.example.org/b');
     expect(linkOf('www.example.com')).toBe('[[www.example.com]]');
+    // The parser reads `file@2x.png` as an address; it is a picture in the vault and keeps reaching it (LEV-138).
+    expect(linkOf('図 file@2x.png')).toBe('[[file@2x]]');
     // Nothing was refused: these are links the drawing keeps, not links it drops.
     expect(reports).toEqual([]);
   });

@@ -22,12 +22,20 @@ describe('plainTitle', () => {
     expect(plainTitle('図 ![[folder/図.png|200]] と ![alt](a/b.jpg)')).toEqual({ text: '図 図.png と alt', link: null });
   });
 
-  it('gives an autolink written without a scheme the one it opens, and leaves the text as written', () => {
-    // GFM reads `www.…` and a bare address as links; read as written they are vault paths, and the
-    // drawing they are copied into gets a link to a note that does not exist (LEV-134).
+  it('gives a `www.` autolink the scheme it opens with, and leaves the text as written', () => {
+    // GFM reads `www.…` as a link; read as written it is a vault path, and the drawing it is copied into
+    // gets a link to a note that does not exist (LEV-134).
     expect(plainTitle('見て www.example.com/a')).toEqual({ text: '見て www.example.com/a', link: 'https://www.example.com/a' });
-    expect(plainTitle('連絡 someone@example.com')).toEqual({ text: '連絡 someone@example.com', link: 'mailto:someone@example.com' });
-    expect(plainTitle('連絡 <someone@example.com>').link).toBe('mailto:someone@example.com');
+  });
+
+  it('leaves a bare address as written: the parser calls an attachment name an address too', () => {
+    // `file@2x.png` is an email autolink to GFM and a picture in the vault to Obsidian (LEV-138).
+    expect(plainTitle('図 file@2x.png').link).toBe('file@2x.png');
+    expect(plainTitle('連絡 someone@example.com').link).toBe('someone@example.com');
+  });
+
+  it('never sees an uppercase `WWW.` address: the parser does not call it a link at all', () => {
+    expect(plainTitle('WWW.EXAMPLE.COM/a').link).toBeNull();
   });
 
   it('leaves the syntaxes Obsidian reads as vault paths alone, even when they look like an address', () => {

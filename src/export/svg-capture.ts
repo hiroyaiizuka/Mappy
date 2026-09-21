@@ -91,9 +91,11 @@ const STATE_CLASSES = new Set(['is-selected', 'is-drag-source', 'is-drag-moving'
 const KEPT_ATTRIBUTES = new Set(['href', 'alt', 'title', 'width', 'height', 'dir', 'lang', 'data-href', 'data-node-id']);
 
 /**
- * Where an attribute names somewhere a click goes, not a resource to draw. On an anchor these are the
- * destination, so they are filtered (§5 M13, LEV-133); the same names on `<use>` or `<image>` point at a
- * shape or a picture, and a fragment or a data URL there is what the file is made of.
+ * Attributes that name where something outside this file is, whichever element carries one (§5 M13,
+ * LEV-133): they are filtered rather than copied. A same-document fragment (`<use xlink:href="#g">`) and a
+ * relative path name no scheme and travel unchanged; a resource written with one (`<image href="data:…">`)
+ * is dropped along with the destinations a click would run. The export's own images are written separately
+ * and are not affected.
  */
 const LINK_ATTRIBUTES = new Set(['href', 'data-href', 'xlink:href']);
 
@@ -210,7 +212,6 @@ interface Serializer {
 function serializeAttributes(element: Element, names: Iterable<string>, extra: Record<string, string | null>): string {
   const parts: string[] = [];
   const written = new Set<string>();
-  const anchor = element.localName === 'a';
   for (const [name, value] of Object.entries(extra)) {
     written.add(name);
     if (value !== null && value !== '') parts.push(` ${name}="${escapeAttribute(value)}"`);
@@ -219,8 +220,8 @@ function serializeAttributes(element: Element, names: Iterable<string>, extra: R
     if (written.has(name) || !isWritableAttributeName(name) || isEventHandler(name)) continue;
     const raw = element.getAttribute(name);
     if (raw === null) continue;
-    // An anchor's destination leaves the vault with the file; only the links `exportedLink` allows travel.
-    const value = anchor && LINK_ATTRIBUTES.has(name) ? exportedLink(raw) : raw;
+    // A destination leaves the vault with the file; only the links `exportedLink` allows travel with it.
+    const value = LINK_ATTRIBUTES.has(name) ? exportedLink(raw) : raw;
     if (value !== null) parts.push(` ${name}="${escapeAttribute(value)}"`);
   }
   return parts.join('');

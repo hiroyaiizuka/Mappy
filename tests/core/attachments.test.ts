@@ -39,7 +39,7 @@ describe('attachmentEntries', () => {
     expect(attachmentEntries('[[]] `[[x]]` [[ok]]')).toEqual([{ kind: 'link', target: 'ok', label: 'ok' }]);
   });
 
-  it('gives an autolink the scheme it was written without, and keeps the label as written (LEV-134)', () => {
+  it('gives a `www.` autolink the scheme it was written without, and keeps the label as written (LEV-134)', () => {
     // A body link travels into the drawing (§5 M6); `www.example.com/a` read as a vault path links to
     // a note that does not exist. The label is what the note wrote, so the node still shows the address.
     expect(attachmentEntries('見て www.example.com/a と [[www.example.com]] と [説明](www.example.com/b)')).toEqual([
@@ -47,9 +47,11 @@ describe('attachmentEntries', () => {
       { kind: 'link', target: 'www.example.com', label: 'www.example.com' },
       { kind: 'link', target: 'www.example.com/b', label: '説明' },
     ]);
-    expect(attachmentEntries('[ ] <someone@example.com>').at(-1)).toEqual({
-      kind: 'link', target: 'mailto:someone@example.com', label: 'someone@example.com',
-    });
+    // A bare address stays as written: the parser reads an attachment named `file@2x.png` as one (LEV-138).
+    expect(attachmentEntries('[ ] <someone@example.com> と ![[file@2x.png]]').slice(-2)).toEqual([
+      { kind: 'link', target: 'someone@example.com', label: 'someone@example.com' },
+      { kind: 'image', target: 'file@2x.png', label: 'file@2x.png' },
+    ]);
   });
 });
 

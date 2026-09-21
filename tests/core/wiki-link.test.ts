@@ -106,9 +106,7 @@ describe("externalUrl (what a note's link may carry into another plugin's docume
 describe("autolinkUrl (the scheme an autolink leaves for its reader to supply)", () => {
   it.each([
     ["www.example.com/a", "https://www.example.com/a"],
-    ["WWW.EXAMPLE.COM", "https://WWW.EXAMPLE.COM"],
-    ["someone@example.com", "mailto:someone@example.com"],
-    ["名前@example.co.jp", "mailto:名前@example.co.jp"],
+    ["www.example.com", "https://www.example.com"],
   ])("opens %s as %s", (text, url) => {
     expect(autolinkUrl(text)).toBe(url);
   });
@@ -125,10 +123,15 @@ describe("autolinkUrl (the scheme an autolink leaves for its reader to supply)",
     expect(autolinkUrl(text)).toBe(text);
   });
 
+  it("leaves a bare address alone: GFM linkifies an attachment named like one", () => {
+    // `file@2x.png` is how a retina image is named, and the parser calls it an email autolink. A blanket
+    // `mailto:` would turn a link to a picture in the vault into a mail window (LEV-138).
+    expect(autolinkUrl("file@2x.png")).toBe("file@2x.png");
+    expect(autolinkUrl("someone@example.com")).toBe("someone@example.com");
+  });
+
   it("supplies a scheme without judging it: the allowed list is still `externalUrl`'s to apply", () => {
-    // `www.` and an address are the two scheme-less forms GFM links; both land on the allowed list.
     expect(externalUrl(autolinkUrl("www.example.com/a"))).toBe("https://www.example.com/a");
-    expect(externalUrl(autolinkUrl("someone@example.com"))).toBe("mailto:someone@example.com");
   });
 });
 
@@ -149,4 +152,29 @@ describe("exportedLink (what a file written out of a note may carry)", () => {
       expect(exportedLink(link)).toBeNull();
     },
   );
+
+  it("refuses a scheme hidden behind the characters a URL parser throws away", () => {
+    // A browser deletes tabs and line breaks inside a URL and trims the controls and spaces around it before
+    // it reads the scheme, and the file's own escaping drops the same characters: judging the text as written
+    // would let ` javascript:…` through as a vault path and then hand a working script to the click.
+    expect(exportedLink(" javascript:alert(1)")).toBeNull();
+    expect(exportedLink("\u0000javascript:alert(1)")).toBeNull();
+    expect(exportedLink("java\tscript:alert(1)")).toBeNull();
+    expect(exportedLink("java\nscript:alert(1)")).toBeNull();
+    expect(exportedLink("\u000cjavascript:alert(1)")).toBeNull();
+    expect(externalUrl(" javascript:alert(1)")).toBeNull();
+    expect(hasUrlScheme(" javascript:alert(1)")).toBe(true);
+  });
+
+  it("writes the link the reader will see, not the one that was judged", () => {
+    expect(exportedLink(" https://example.com/a ")).toBe("https://example.com/a");
+    expect(exportedLink("https://example.com/\na")).toBe("https://example.com/a");
+    expect(externalUrl(" https://example.com/a")).toBe("https://example.com/a");
+  });
+
+  it("refuses `//host/path`: no scheme, and no note either", () => {
+    // A file served over http(s) would follow it out of the vault; nothing in a note means this.
+    expect(exportedLink("//example.com/x")).toBeNull();
+    expect(exportedLink("/Attachments/図.png")).toBe("/Attachments/図.png");
+  });
 });
