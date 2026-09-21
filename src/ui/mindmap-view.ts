@@ -152,10 +152,11 @@ export class MindmapView extends FileView {
   /**
    * The latest layout laid out without a placeholder, with the note and mode it was laid out for. It is
    * what holds the unpositioned topics in place (`topicLayouts`): while a placeholder is laid out (LEV-95)
-   * and, in the map and balanced map, for the whole of a topic's drag (LEV-117), a topic with no position
-   * of its own keeps the slot this layout stacked it in, so neither the placeholder nor the moving tree
-   * restacks the column it is about to join. A layout of another note or mode measures from a different
-   * origin and holds nothing, which is also what re-bases the hold when the layout is switched mid-drag.
+   * and, in every layout, for the whole of a topic's drag (LEV-117 for the map and the balanced map,
+   * LEV-125 for the timeline and the hierarchy), a topic with no position of its own keeps the slot this
+   * layout stacked it in, so neither the placeholder nor the moving tree restacks the column it is about
+   * to join. A layout of another note or mode measures from a different origin and holds nothing, which
+   * is also what re-bases the hold when the layout is switched mid-drag.
    */
   private plain: { file: TFile | null; mode: LayoutMode; layout: LayoutResult } | undefined;
   private placeholder!: HTMLDivElement;
@@ -983,11 +984,11 @@ export class MindmapView extends FileView {
   /**
    * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
    * position comes next, then the pressed point of a topic added on the map that no save has
-   * stored yet. In the map and balanced map, while a topic is dragged every other unpositioned topic
-   * keeps the slot `held` stacked it in, so a child column does not flee from the moving tree before
-   * snap can find it (LEV-117); a placeholder in any layout holds them the same way (LEV-95). The stack
-   * is dealt again once the slot goes or the drag ends. Topics sharing a heading have keys of their own
-   * (`topicKeys`), so each finds its entry.
+   * stored yet. While a topic is dragged every other unpositioned topic keeps the slot `held` stacked it
+   * in, so a child column does not flee from the moving tree before snap can find it (LEV-117 for the map
+   * and the balanced map, LEV-125 for the timeline and the hierarchy); a placeholder holds them the same
+   * way (LEV-95). The stack is dealt again once the slot goes or the drag ends. Topics sharing a heading
+   * have keys of their own (`topicKeys`), so each finds its entry.
    */
   private topicLayouts(trees?: readonly LayoutNode[], held?: LayoutResult): FreeTopicLayout[] {
     const projected = this.projected;
@@ -1058,9 +1059,11 @@ export class MindmapView extends FileView {
       const preview = this.previewLayout(projection, sizes);
       const plain = this.plain;
       // One hold for both: `plain` is this drag's own base as well (both take `this.layout` on every
-      // placeholder-free frame), and it carries the note and mode the offsets were measured in. Dragging
-      // the body root instead moves every topic through `overrides`, which leaves nothing for a hold.
-      const drag = this.topicDrag && !this.topicDrag.body && (this.mode === "mindmap" || this.mode === "balanced");
+      // placeholder-free frame), and it carries the note and mode the offsets were measured in. Every
+      // layout holds the same way: the timeline's axis and the hierarchy's row restack out from under the
+      // pointer exactly as the map's column did (LEV-125). Dragging the body root instead moves every
+      // topic through `overrides`, which leaves nothing for a hold.
+      const drag = this.topicDrag && !this.topicDrag.body;
       const held = (preview || drag) && plain && plain.file === this.file && plain.mode === this.mode ? plain.layout : undefined;
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
         this.topicLayouts(preview?.trees, held));

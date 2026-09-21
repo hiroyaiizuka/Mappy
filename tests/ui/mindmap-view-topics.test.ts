@@ -1311,7 +1311,7 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(placed(view, empty)).toEqual(root);
   });
 
-  it.each(['mindmap', 'balanced'] as const)(
+  it.each(['mindmap', 'timeline', 'hierarchy', 'balanced'] as const)(
     'in %s, dragging a topic into an unpositioned topic\'s child column keeps the parent in place and exposes the trailing slot',
     async mode => {
       const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
@@ -1328,7 +1328,12 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
       const child = placed(view, mode === 'balanced' ? right : trailing);
       const moving = placed(view, glossary);
       const viewport = view.getState().viewport as { x: number; y: number; scale: number };
-      const landing = { x: child.x, y: child.y + child.height / 2, width: moving.width, height: moving.height };
+      // The map and the balanced map hang the children in a column, so the trailing slot is under the last
+      // child's lower half; the timeline's axis and the hierarchy's row lay them side by side, so it is level
+      // with the last child's far half (LEV-125).
+      const landing = mode === 'timeline' || mode === 'hierarchy'
+        ? { x: child.x + child.width / 2, y: child.y, width: moving.width, height: moving.height }
+        : { x: child.x, y: child.y + child.height / 2, width: moving.width, height: moving.height };
       shift(glossary.id, {
         x: (landing.x - moving.x) * viewport.scale,
         y: (landing.y - moving.y) * viewport.scale,
