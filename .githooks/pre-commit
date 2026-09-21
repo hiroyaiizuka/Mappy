@@ -1,3 +1,15 @@
 #!/bin/sh
 set -eu
+
+# 調査用の使い捨てファイルはコミットに入れない。`git add -A` や `git add tests` で何度か混入し、
+# そのたびに amend で外している（12d6c59、LEV-140、LEV-142）。名前で止めるほうが確実。
+temps=$(git diff --cached --name-only --diff-filter=AM \
+  | grep -E '(^|/)(tmp-[^/]*|[^/]*-probe[^/]*|probe[^/]*)\.(test\.(ts|mjs)|mjs)$' || true)
+if [ -n "$temps" ]; then
+  echo "調査用の一時ファイルが staged です。外してからコミットしてください:" >&2
+  printf '  %s\n' $temps >&2
+  echo "意図して残すなら .git/info/exclude に入れるか、名前から tmp-／probe を外す。" >&2
+  exit 1
+fi
+
 npm run check
