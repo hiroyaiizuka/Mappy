@@ -169,6 +169,17 @@ export class HarnessApp {
     return entry.file;
   }
 
+  /** Rename a file: the same `TFile` under its new path, reported as Obsidian's vault reports it (the file, then the old path). */
+  rename(path: string, next: string): TFile {
+    const entry = this.entries.get(path);
+    if (!entry) throw new Error(`Unknown file in the harness vault: ${path}`);
+    this.entries.delete(path);
+    entry.file.path = next;
+    this.entries.set(next, entry);
+    this.vaultEvents.trigger("rename", entry.file, path);
+    return entry.file;
+  }
+
   /** Delete a file; open maps and embeds observe it, and the cache reports it gone. */
   remove(path: string): void {
     const entry = this.entries.get(path);

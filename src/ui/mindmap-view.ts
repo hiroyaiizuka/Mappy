@@ -1,4 +1,4 @@
-import { ItemView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, getNode, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
@@ -85,7 +85,23 @@ const POPOVER_MAX_WIDTH = 320;
 const POPOVER_GAP = 6;
 const POPOVER_MARGIN = 16;
 
-export class MindmapView extends ItemView {
+/**
+ * The map is a `FileView` (LEV-89), as the Markdown editor, Kanban or a PDF are: the note it shows is `file`, which
+ * Obsidian reads through `getActiveFileView()` while the map is active — the core file commands (copy path, delete,
+ * move, reveal in the explorer, open with the default app...) address the map's own note, `file-open` carries it to
+ * the outline, the backlinks and the properties sidebars and to the recent files, and a linked tab group keeps a
+ * map in step. `allowNoFile` stays false, so a leaf whose note is gone (deleted, or a state naming nothing the map
+ * can show) goes back in its history or to the empty view, as a Markdown tab does, instead of an empty map.
+ * `canAcceptExtension` stays FileView's (false): `WorkspaceLeaf.openFile` keeps a FileView that accepts the extension
+ * instead of asking the view registry, and a map claiming `md` would make the `ViewRouter` demote every plain note
+ * opened into a map leaf and remember that leaf as a Markdown one. Declining, every open goes through Markdown's
+ * registration and the router decides (§8), as for any other leaf: a map note opens as a map, a note that is no
+ * longer one as Markdown, and a leaf switched to Markdown on purpose stays there (E22), with nothing new recorded.
+ * Not an `EditableFileView`: 1.14.2 makes the view header's title editable there and renames the note to whatever
+ * it shows, which the ` · マップ` suffix would end up in.
+ */
+export class MindmapView extends FileView {
+  /** The note shown; loaded and unloaded by `FileView.setState` through `onLoadFile`／`onUnloadFile` below. */
   file: TFile | null = null;
   private document: MindDocument | undefined;
   /** The maps the document's items call (§5 M12), as last read; the trees are projected from the document and these. */
@@ -174,33 +190,31 @@ export class MindmapView extends ItemView {
     private readonly menuActions: readonly MapMenuAction[] = [],
   ) {
     super(leaf);
-    // The map opens a note, so it is a navigation view like the Markdown editor, Kanban or a PDF (the API's own rule
-    // for `navigation`), not a static one like the file explorer (LEV-74). Obsidian 1.14.2 treats a non-navigation
-    // active leaf as "not really the current file": `getActiveFileView()` (the core file commands, `getActiveFile()`,
+    // A FileView is a navigation view (the API's own rule: a view that opens a note, like the Markdown editor, Kanban
+    // or a PDF; not a static one like the file explorer — LEV-74). Obsidian 1.14.2 treats a non-navigation active
+    // leaf as "not really the current file": `getActiveFileView()` (the core file commands, `getActiveFile()`,
     // `file-open`) resolves to the most recently active navigation leaf, and the workspace's window `keydown` for a
     // bare Escape moves the active leaf and the focus there — on the map, Escape with no inline editor open jumped to
     // the Markdown tab beside it, and the core commands acted on that note. As a navigation view the map keeps the
-    // active leaf on Escape (the workspace returns before choosing another leaf), `getActiveFileView()` is null while
-    // the map is active (an ItemView, not a FileView: those commands are unavailable rather than aimed at a
-    // neighbour), the leaf's back／forward history records the states the map passes through (`setState` below), and
-    // `getLeaf(false)` — a link clicked on the map, a file chosen in the explorer or the quick switcher — opens in
-    // this leaf, as it would in a Markdown tab, instead of a neighbouring tab or a new one. ⌘-click still opens a tab.
-    // A map moved into a sidebar is the exception (`syncNavigation`).
-    this.navigation = true;
+    // active leaf on Escape (the workspace returns before choosing another leaf), the leaf's back／forward history
+    // records the notes the map passes through (`FileView.setState`), and `getLeaf(false)` — a link clicked on the
+    // map, a file chosen in the explorer or the quick switcher — opens in this leaf, as it would in a Markdown tab,
+    // instead of a neighbouring tab or a new one. ⌘-click still opens a tab. A map moved into a sidebar is the
+    // exception (`syncNavigation`).
+    this.allowNoFile = false;
     this.reader = new CallReader(this.app, store);
     // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
     // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
-    // it before the canvas listener (E02, LEV-48). Its `checkCallback` asks `getActiveFileView()`, which the navigation
-    // flag above makes null on the map (before LEV-74 it was the most recently active Markdown tab, whose file the
-    // default then started renaming), so the default no longer runs here even without this scope; the scope stays
-    // because it does not hinge on that (a map made a FileView one day would be renamed by F2 again) and keeps F2 the
-    // map's key when a user assigns it to another command. While the focus is in this view, F2 is the map's key: on
-    // the canvas it edits the selected node, in the inline editor or on a floating control it does nothing, and either
-    // way `false` (Obsidian's "consumed": preventDefault and stopPropagation) keeps that default from running. With the
-    // focus outside the view the handler declines (`undefined`); what Obsidian then does with F2 is its own affair
-    // (1.14.2 runs no other handler for a key the active view registered, so the default stays off while the map is
-    // active). Only F2 is registered: no other map key has a default hotkey. The workspace reads `view.scope` on each
-    // key, so there is nothing to undo.
+    // it before the canvas listener (E02, LEV-48). Its `checkCallback` (1.14.2) wants `getActiveFileView()` to be an
+    // `EditableFileView`, which the map is not, so the default declines here even without this scope (before LEV-74
+    // it found the most recently active Markdown tab, whose file it then started renaming); the scope stays because
+    // it does not hinge on that class distinction and keeps F2 the map's key when a user assigns it to another
+    // command. While the focus is in this view, F2 is the map's key: on the canvas it edits the selected node, in the
+    // inline editor or on a floating control it does nothing, and either way `false` (Obsidian's "consumed":
+    // preventDefault and stopPropagation) keeps that default from running. With the focus outside the view the
+    // handler declines (`undefined`); what Obsidian then does with F2 is its own affair (1.14.2 runs no other handler
+    // for a key the active view registered, so the default stays off while the map is active). Only F2 is registered:
+    // no other map key has a default hotkey. The workspace reads `view.scope` on each key, so there is nothing to undo.
     this.scope = new Scope(this.app.scope);
     this.scope.register([], "F2", event => {
       const target = event.targetNode;
@@ -289,38 +303,32 @@ export class MindmapView extends ItemView {
     this.syncModeButtons();
   }
 
+  /** The note (`FileView`: `file`, when one is shown) with the layout and the viewport, for the workspace layout and the leaf's history. */
   getState(): Record<string, unknown> {
-    return { file: this.file?.path, layout: this.mode, viewport: this.viewport?.value };
+    return { ...super.getState(), layout: this.mode, viewport: this.viewport?.value };
   }
 
+  /**
+   * `FileView.setState` loads the note the state names — `onUnloadFile` for the one shown, `onLoadFile` for the new
+   * one — and reports another note as a step of the leaf's back／forward history (LEV-74; the layout and the viewport
+   * alone are not one) and a leaf left without a note as one to close (`allowNoFile`). It is handed the state as it
+   * came, except that only a Markdown note is one the map can show: anything else named there (a folder, an
+   * image, a path that is gone) is handed over as no note, as a missing path would be. The layout comes from the
+   * state, else from the note's own preference when the note changed; the viewport is restored once the view has
+   * its DOM, and the note is read.
+   */
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
     const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
-    const found = typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
-    const file = found instanceof TFile && found.extension === "md" ? found : null;
+    // A state without `file` keeps the note shown (FileView reads the key's presence, not its value).
+    const named = Object.prototype.hasOwnProperty.call(value, "file");
+    const found = named && typeof value.file === "string" ? this.app.vault.getAbstractFileByPath(value.file) : null;
+    const file = named ? (found instanceof TFile && found.extension === "md" ? found : null) : this.file;
     const changed = this.file !== file;
-    // A draft under way when a navigation replaces the note in this leaf (a link, the explorer, back／forward —
-    // LEV-74) is saved first, as a Markdown tab keeps its buffer; the save needs the note it was opened on, so it
-    // runs before anything below changes. A refused save (the note moved on, E05) cannot keep the draft here.
-    if (changed && this.inlineEditor) {
-      try { await this.inlineEditor.flush(); }
-      catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
-    }
-    this.file = file;
+    await super.setState(named ? { ...value, file: file?.path ?? null } : value, result);
     if (isLayoutMode(value.layout)) this.mode = value.layout;
     else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
     // The bar follows the layout at once, before the read: draw() does not run for a note that fails to load.
     this.syncModeButtons();
-    if (changed) {
-      this.inlineEditor?.dispose(); this.inlineEditor = undefined;
-      this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
-      this.pendingTopic = null; this.topicDrag = null;
-      this.targets = new Map(); this.knownCalled.clear();
-      // Another note in this leaf (a link on the map, a called map opened from its node, the explorer) is a step of
-      // the leaf's back／forward history, as a FileView reports it; a navigation view's leaf records the state it left
-      // (LEV-74). Obsidian itself drops the flag for the states it never records: back／forward, a group sync, a
-      // deferred view waking. The layout and the viewport alone are not a step.
-      result.history = true;
-    }
     if (this.ready) {
       const view = value.viewport;
       if (view && typeof view === "object" && "x" in view && "y" in view && "scale" in view
@@ -332,7 +340,37 @@ export class MindmapView extends ItemView {
       }
       await this.refresh();
     }
-    await super.setState(state, result);
+  }
+
+  /**
+   * The note shown leaves this view (`FileView.loadFile`: another note takes its place, the state names none, the
+   * view closes). A draft under way when a navigation replaces the note in this leaf (a link, the explorer,
+   * back／forward — LEV-74) is saved first, as a Markdown tab keeps its buffer; the save needs the note it was
+   * opened on, which `file` still is here. A refused save (the note moved on, E05) cannot keep the draft here. A
+   * note that is gone (deleted: FileView then takes the leaf back in its history or to the empty view) has nothing
+   * to save to, and a closing view drops its draft as it did. Everything the note gave the view goes with it.
+   */
+  async onUnloadFile(file: TFile): Promise<void> {
+    if (this.inlineEditor && !this.closed && this.app.vault.getFileByPath(file.path) === file) {
+      try { await this.inlineEditor.flush(); }
+      catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
+    }
+    this.inlineEditor?.dispose(); this.inlineEditor = undefined;
+    this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
+    this.pendingTopic = null; this.topicDrag = null;
+    this.targets = new Map(); this.knownCalled.clear();
+    await super.onUnloadFile(file);
+  }
+
+  /**
+   * The note shown was renamed: FileView updates the leaf's header; the map redraws (the root node is the
+   * basename) and the workspace layout is saved with the new path (`getState`).
+   */
+  async onRename(file: TFile): Promise<void> {
+    await super.onRename(file);
+    if (file !== this.file) return;
+    this.scheduleRefresh();
+    this.app.workspace.requestSaveLayout();
   }
 
   /**
@@ -523,14 +561,12 @@ export class MindmapView extends ItemView {
       if (info.file?.path === this.file?.path) this.scheduleRefresh();
     }));
     this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) this.scheduleRefresh(); }));
-    this.registerEvent(this.app.vault.on("rename", file => {
-      if (file === this.file) { this.scheduleRefresh(); this.app.workspace.requestSaveLayout(); }
-    }));
+    // A rename of the note is `onRename` (FileView's own subscription). Its deletion is FileView's too: the leaf goes
+    // back in its history or to the empty view (`allowNoFile` is false), which unloads the note here without a save;
+    // a kept draft outlives refreshes, but not its note, so it goes at once rather than on that navigation.
     this.registerEvent(this.app.vault.on("delete", file => {
       if (file !== this.file) return;
-      // A kept draft outlives refreshes, but not its note.
       this.inlineEditor?.dispose(); this.inlineEditor = undefined;
-      this.file = null; this.document = undefined; this.scheduleRefresh();
     }));
     // The maps the items call (§5 M12) are read again when a note they concern changes: one read for the last draw
     // (edited, saved or not, renamed, deleted, no longer a map), or one an item resolves to now (created, became a map,
@@ -548,6 +584,7 @@ export class MindmapView extends ItemView {
     return this.refresh();
   }
 
+  /** The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, with no save). */
   onClose(): Promise<void> {
     this.closed = true;
     this.inlineEditor?.dispose(); this.inlineEditor = undefined;
@@ -556,7 +593,7 @@ export class MindmapView extends ItemView {
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
     if (this.recallTimer !== undefined) this.contentEl.win.clearTimeout(this.recallTimer);
     if (this.layoutFrame !== undefined) this.contentEl.win.cancelAnimationFrame(this.layoutFrame);
-    return Promise.resolve();
+    return super.onClose();
   }
 
   onResize(): void {

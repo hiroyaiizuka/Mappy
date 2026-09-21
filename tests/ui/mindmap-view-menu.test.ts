@@ -412,9 +412,11 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
     mounted.open();
     const removed = vi.spyOn(document, 'removeEventListener');
     const removedFromWindow = vi.spyOn(window, 'removeEventListener');
+    // Read before the close: FileView's `onClose` empties the content.
+    const gear = mounted.gear();
     await mounted.close();
     expect(document.querySelector('.mappy-popover')).toBeNull();
-    expect(mounted.gear().getAttribute('aria-expanded')).toBe('false');
+    expect(gear.getAttribute('aria-expanded')).toBe('false');
     expect(removed.mock.calls.some(([type, , options]) => type === 'pointerdown' && options === true)).toBe(true);
     expect(removedFromWindow.mock.calls.some(([type]) => type === 'blur')).toBe(true);
   });
@@ -477,7 +479,8 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
   it('disables all three items while the view shows no note', async () => {
     const { view, open, items, settle, choose, plugin } = await mount();
     const shown = vi.spyOn(view, 'showSource').mockResolvedValue();
-    await view.setState({}, { history: false } satisfies ViewStateResult);
+    // A state naming a note that is not there (FileView: a state without `file` keeps the note shown).
+    await view.setState({ file: 'Fixtures/gone.md' }, { history: false } satisfies ViewStateResult);
     await settle();
     expect(view.file).toBeNull();
     expect(open()).toEqual(TITLES);

@@ -67,8 +67,9 @@ export default class MappyPlugin extends Plugin {
       id: "create-mindmap", name: "新しいマインドマップを作成",
       callback: () => {
         this.run(async () => {
-          // "Same folder as current file" counts from the map's own note when a map is active: the map is a
-          // navigation view but not a FileView, so `getActiveFile()` alone is null there (LEV-74).
+          // "Same folder as current file" counts from the map's own note when a map is active (`activeFile()` asks
+          // the map first; `getActiveFile()` finds it too now that the map is a FileView — LEV-89 — except for a map
+          // in a sidebar, which is not a navigation view).
           const sourcePath = this.activeFile()?.path ?? "";
           const { defaultLayout: layout, newMapFolder: folder } = this.settings;
           const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
