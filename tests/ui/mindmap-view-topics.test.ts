@@ -1239,6 +1239,53 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     shift(glossary.id, null);
   });
 
+  it.each([['balanced', 'right'], ['hierarchy', 'below']] as const)(
+    'in %s a topic with no position keeps its slot in the stack while the slot beside it is previewed: the placeholder hangs where the dragged root is, and the stack under it stays (LEV-95)', async (mode, side) => {
+      // No topic has a position: 空の話題 (only its heading) stacks first under the body, 補足 under it, 余談 last. 補足 is carried
+      // to where 空の話題's first child lands (a root gap right of it in the balanced map, one under it in the hierarchy).
+      const { view, layout, topic } = await mount('## 本体\n\n- 回復する\n\n## 空の話題\n\n## 補足\n\n- 用語\n\n## 余談\n\n- 補遺\n', mode);
+      const glossary = topic('補足');
+      const empty = topic('空の話題');
+      const aside = topic('余談');
+      const { shift, snap, preview } = bind(view);
+      shift(glossary.id, { x: 0, y: 0 });
+      const root = placed(view, empty);
+      const held = placed(view, glossary);
+      const landing = side === 'right'
+        ? { x: root.x + root.width + 80, y: root.y + (root.height - held.height) / 2 }
+        : { x: root.x + (root.width - held.width) / 2, y: root.y + root.height + 48 };
+      const { scale } = view.getState().viewport as { scale: number };
+      shift(glossary.id, { x: (landing.x - held.x) * scale, y: (landing.y - held.y) * scale });
+      await frame();
+      // The dragged root sits at the landing; the parent, beside it and clear of it, has not moved.
+      expect(placed(view, glossary).x).toBeCloseTo(landing.x, 6);
+      expect(placed(view, glossary).y).toBeCloseTo(landing.y, 6);
+      expect(placed(view, empty)).toEqual(root);
+      const stacked = placed(view, aside);
+      const command = snap(glossary.id, at(view, { ...landing, width: held.width, height: held.height }), null);
+      expect(command).toEqual({ type: 'move', nodeId: glossary.id, parentId: empty.id, index: 0 });
+      preview(command);
+      await frame();
+      // The placeholder widens the parent's tree, which neither re-centres under the body root nor restacks clear of the
+      // dragged tree: the parent stays where the snap judged it, so the slot hangs exactly where the dragged root is.
+      const parent = placed(view, empty);
+      expect(parent.x).toBeCloseTo(root.x, 6);
+      expect(parent.y).toBeCloseTo(root.y, 6);
+      const slot = layout().nodes.find(node => node.id === PLACEHOLDER_ID);
+      expect(slot?.x).toBeCloseTo(landing.x, 6);
+      expect(slot?.y).toBeCloseTo(landing.y, 6);
+      expect(layout().edges.some(edge => edge.from === empty.id && edge.to === PLACEHOLDER_ID)).toBe(true);
+      // The rest of the stack keeps the slots the placeholder-free layout gave it as well.
+      expect(placed(view, aside).x).toBeCloseTo(stacked.x, 6);
+      expect(placed(view, aside).y).toBeCloseTo(stacked.y, 6);
+      expect(snap(glossary.id, at(view, { ...landing, width: held.width, height: held.height }), command)).toBe(command);
+      preview(null);
+      await frame();
+      expect(placed(view, empty)).toEqual(root);
+      shift(glossary.id, null);
+    },
+  );
+
   it('never snaps the body root, and a topic does not snap onto its own tree', async () => {
     const source = fixtureSource();
     const { view, layout, topic } = await mount(source);

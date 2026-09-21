@@ -1380,16 +1380,36 @@ async function captureTopicOperations(recorder, page) {
   });
 
   // A root with nothing under it (LEV-90): the map and the balanced map hang a root's first child a root gap (80 units)
-  // past it, farther than a branch's child (56), so the zone measured as a branch's (up to 72) never reached the landing.
-  // 参考資料 loses its three items and becomes a lone heading; 位置のないトピック is brought level with it from the right,
-  // so the root's left edge crosses nothing else on the way, and released where the child lands. The joined node is then
-  // read back to show the layout put it exactly there.
+  // past it, farther than a branch's child (56), so the zone measured as a branch's (up to 72) never reached the landing;
+  // the hierarchy hangs it a root gap (48) under the root. 参考資料 loses its three items and becomes a lone heading;
+  // 位置のないトピック is brought level with the landing from the right, so the root's left edge crosses nothing else on
+  // the way, and released where the child lands. The joined node is then read back to show the layout put it exactly there.
+  // In the balanced map and the hierarchy 参考資料 has no position there, so it sits in the stack under the body; its rect is
+  // read before the drag, at the staging point and with the slot shown, and must not move (LEV-95: the placeholder that
+  // widens its tree used to re-centre the stack's column and restack it clear of the dragged tree, so the parent jumped).
   const leafReference = original.replace('\n\n- [[heading-document|講座ノート]]\n- ![[sample-image.svg]]\n- [外部の資料](https://example.com)\n', '\n');
   const referenceJoined = '本文には何も書かない。\n\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n\n## 補足: 用語\n';
+  /** Where a root of `topic`'s size lands as the first child of `goal` (pointer coordinates, from the grab point), and how the joined child is read back. */
+  const rootGapCases = [
+    ...['mindmap', 'balanced'].map(mode => ({
+      mode, id: mode === 'mindmap' ? 'topic-snap-root-gap' : 'topic-snap-root-gap-balanced', name: mode === 'mindmap' ? '通常マップ' : '左右バランス',
+      where: '右辺の 80 単位先。枝の zone の 72 単位より離れる', landing: 'ルートの左辺が 参考資料 の右辺の 80 単位先',
+      // The root's left edge 80 units past the goal's right edge, its centre level with the goal's.
+      to: (topic, goal, from, scale) => ({ x: goal.x + goal.width + 80 * scale + (from.x - topic.x), y: goal.y + goal.height / 2 + (from.y - (topic.y + topic.height / 2)) }),
+      hung: (parent, child, scale) => ({ gap: (child.x - (parent.x + parent.width)) / scale, drift: ((child.y + child.height / 2) - (parent.y + parent.height / 2)) / scale, expected: 80, side: '右辺' }),
+    })),
+    {
+      mode: 'hierarchy', id: 'topic-snap-root-gap-hierarchy', name: '階層図',
+      where: '下辺の 48 単位下、中心を揃える', landing: 'ルートの上辺が 参考資料 の下辺の 48 単位下（中心を揃えて）',
+      // The root's top edge 48 units under the goal's bottom edge, horizontally centred on it.
+      to: (topic, goal, from, scale) => ({ x: goal.x + goal.width / 2 + (from.x - (topic.x + topic.width / 2)), y: goal.y + goal.height + 48 * scale + (from.y - topic.y) }),
+      hung: (parent, child, scale) => ({ gap: (child.y - (parent.y + parent.height)) / scale, drift: ((child.x + child.width / 2) - (parent.x + parent.width / 2)) / scale, expected: 48, side: '下辺' }),
+    },
+  ];
   await withFixtureRestored(async () => {
-    for (const [mode, id, name] of [['mindmap', 'topic-snap-root-gap', '通常マップ'], ['balanced', 'topic-snap-root-gap-balanced', '左右バランス']]) {
-      await recorder.run(id, `「参考資料」の項目を消して見出しだけのトピックにし、${name}で「位置のないトピック」を「参考資料」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「参考資料」の最初の子が置かれる位置（右辺の 80 単位先。枝の zone の 72 単位より離れる）へ運ぶ → 離す`,
-        `右の空白ではスロットが出ず、ルートの zone は最初の子の隙間（80）基準で測るので、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、離すと 参考資料 の子になり、その子は運んだ位置に置かれる`, async () => {
+    for (const { mode, id, name, where, landing, to: landingPoint, hung: hungOf } of rootGapCases) {
+      await recorder.run(id, `「参考資料」の項目を消して見出しだけのトピックにし、${name}で「位置のないトピック」を「参考資料」の右の空白（着地点と同じ高さ）へ運び、そこから左へ「参考資料」の最初の子が置かれる位置（${where}）へ運ぶ → 離す`,
+        `右の空白ではスロットが出ず、子が実際に置かれる位置にルートが来た時点でスロットとゴースト風の表示が出て、その間 参考資料 の矩形は動かず（LEV-95）、離すと 参考資料 の子になり、その子は運んだ位置に置かれる`, async () => {
           expect(leafReference !== original, 'the lone-heading note is the original: the items to remove were not found');
           await page.harness(`h.putNote(${JSON.stringify(stagePath)}, ${JSON.stringify(leafReference)})`);
           await switchLayout(mode);
@@ -1399,37 +1419,46 @@ async function captureTopicOperations(recorder, page) {
           const topic = await topicRect('位置のないトピック');
           const goal = (await topicRect('参考資料')).rect;
           const from = center(topic.rect);
-          // The root's left edge 80 units past the goal's right edge, its centre level with the goal's.
-          const to = { x: goal.x + goal.width + 80 * view.scale + (from.x - topic.rect.x), y: goal.y + goal.height / 2 + (from.y - (topic.rect.y + topic.rect.height / 2)) };
-          // The way in: level with the landing, the root's left edge at least 120 units right of the goal (outside any zone).
+          const to = landingPoint(topic.rect, goal, from, view.scale);
+          // The way in: level with the landing, the root's left edge 200 units right of the goal and of the landing (outside any
+          // zone; at least 120 where the canvas cuts it short), so the pointer holds the root by the same point throughout.
+          const grab = from.x - topic.rect.x;
           const canvas = await page.harness('h.canvasRect()');
-          const staging = { x: Math.min(to.x + 200 * view.scale, canvas.x + canvas.width - 24 - (topic.rect.width - (from.x - topic.rect.x))), y: to.y };
-          const stagingLeft = (staging.x - (from.x - topic.rect.x) - (goal.x + goal.width)) / view.scale;
+          const staging = { x: Math.min(Math.max(to.x, goal.x + goal.width + grab) + 200 * view.scale, canvas.x + canvas.width - 24 - (topic.rect.width - grab)), y: to.y };
+          const stagingLeft = (staging.x - grab - (goal.x + goal.width)) / view.scale;
           expect(stagingLeft >= 120, `the staging point's left edge is only ${stagingLeft.toFixed(1)} units right of the root`);
           await page.mouse('mouseMoved', from.x, from.y);
           await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
           await sweep(from, staging);
           const away = await snapPreview();
           expect(!away.placeholder && !away.connector, `a slot is shown right of the root: ${JSON.stringify(away)}`);
+          const parentAway = (await topicRect('参考資料')).rect;
           await sweep(staging, to);
           const under = await labelUnder(to);
           const preview = await snapPreview();
+          const parentShown = (await topicRect('参考資料')).rect;
           await page.screenshot(join(recorder.directory, `${id}-preview.png`));
           expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
           expect(preview.placeholder && preview.connector && preview.merging, `preview state at the landing ${JSON.stringify(preview)}`);
+          // The parent stays put while the dragged tree approaches and while its slot is shown (in screen px; 1.5 is the rounding).
+          const travel = (was, now) => ({ x: now.x - was.x, y: now.y - was.y });
+          const approach = travel(goal, parentAway);
+          const shown = travel(goal, parentShown);
+          expect(Math.abs(approach.x) < 1.5 && Math.abs(approach.y) < 1.5, `参考資料 moved by ${approach.x.toFixed(1)}, ${approach.y.toFixed(1)} px while the topic was brought level with it`);
+          expect(Math.abs(shown.x) < 1.5 && Math.abs(shown.y) < 1.5, `参考資料 moved by ${shown.x.toFixed(1)}, ${shown.y.toFixed(1)} px (${(shown.x / view.scale).toFixed(1)}, ${(shown.y / view.scale).toFixed(1)} units) when the slot was shown`);
           await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
           await page.settle();
           const source = await page.harness('h.source()');
           expect(source.includes(referenceJoined), `joined: ${JSON.stringify(source.slice(source.indexOf('## 参考資料'), source.indexOf('## 参考資料') + 200))}`);
           expect(!source.includes('mappy-layout'), 'switching the layout through the view state wrote mappy-layout');
-          // The joined node hangs where the root was released: the layout's root gap past the parent, level with it.
+          // The joined node hangs where the root was released: the layout's root gap past the parent, centred on it.
           const parent = (await topicRect('参考資料')).rect;
           const child = (await topicRect('位置のないトピック')).rect;
-          const hung = { gap: (child.x - (parent.x + parent.width)) / view.scale, drift: ((child.y + child.height / 2) - (parent.y + parent.height / 2)) / view.scale };
-          expect(Math.abs(hung.gap - 80) < 1.5 && Math.abs(hung.drift) < 1.5, `the joined node hangs ${hung.gap.toFixed(1)} units past its parent, ${hung.drift.toFixed(1)} off its centre`);
+          const hung = hungOf(parent, child, view.scale);
+          expect(Math.abs(hung.gap - hung.expected) < 1.5 && Math.abs(hung.drift) < 1.5, `the joined node hangs ${hung.gap.toFixed(1)} units past its parent, ${hung.drift.toFixed(1)} off its centre`);
           await undo();
           expect((await page.harness('h.source()')) === base, 'undo did not restore the topic');
-          return `右の空白（ルートの右 ${stagingLeft.toFixed(1)} 単位）ではスロットなし、ルートの左辺が 参考資料 の右辺の 80 単位先に来るとスロット表示あり、ポインター下: なし → 参考資料 の子になり、その子は親の右辺の ${hung.gap.toFixed(1)} 単位先・中心のずれ ${hung.drift.toFixed(1)} に置かれる（scale ${view.scale.toFixed(3)}）`;
+          return `右の空白（ルートの右 ${stagingLeft.toFixed(1)} 単位）ではスロットなし、${landing}に来るとスロット表示あり、その間の 参考資料 の移動 ${shown.x.toFixed(1)}, ${shown.y.toFixed(1)} px、ポインター下: なし → 参考資料 の子になり、その子は親の${hung.side}の ${hung.gap.toFixed(1)} 単位先・中心のずれ ${hung.drift.toFixed(1)} に置かれる（scale ${view.scale.toFixed(3)}）`;
         });
     }
   });

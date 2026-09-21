@@ -903,17 +903,27 @@ export class MindmapView extends ItemView {
   /**
    * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
    * position comes next, then the pressed point of a topic added on the map that no save has
-   * stored yet. Topics sharing a heading have keys of their own (`topicKeys`), so each finds its entry.
+   * stored yet. While a dragged topic's slot is previewed, a topic with none of these keeps the slot
+   * the drag's placeholder-free layout (`topicDrag.base`) stacked it in: the placeholder widens the
+   * destination's tree, which must neither re-centre it under the body root nor restack it clear of
+   * the tree being dragged, or the parent jumps away from the root it is about to take (LEV-95). The
+   * stack is dealt again when the slot goes or the drop lands. Topics sharing a heading have keys of
+   * their own (`topicKeys`), so each finds its entry.
    */
-  private topicLayouts(trees?: readonly LayoutNode[]): FreeTopicLayout[] {
+  private topicLayouts(preview?: { trees: readonly LayoutNode[] } | null): FreeTopicLayout[] {
     const projected = this.projected;
     if (!projected) return [];
+    const held = preview && this.topicDrag ? this.topicDrag.base : null;
     // Keys come from the headings as written (`split`); the tree laid out is the one shown (a topic may call a map).
     return projected.trees.split.topics.map((topic, index) => {
       const stored = projected.positions.get(projected.keys.get(topic.id) ?? topic.title)?.[this.mode];
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
-      const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
-      return { tree: trees?.[index + 1] ?? projected.trees.calls.roots[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
+      const kept = (): TopicPosition | undefined => {
+        const slot = held?.nodes.find(node => node.id === topic.id);
+        return held && slot ? { x: slot.x - held.origin.x, y: slot.y - held.origin.y } : undefined;
+      };
+      const position = this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending ?? kept();
+      return { tree: preview?.trees[index + 1] ?? projected.trees.calls.roots[index + 1] ?? topic, position: position ? { x: position.x, y: position.y } : null };
     });
   }
 
@@ -971,7 +981,7 @@ export class MindmapView extends ItemView {
       const sizes = this.renderer.sizes();
       const preview = this.previewLayout(projection, sizes);
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
-        this.topicLayouts(preview?.trees));
+        this.topicLayouts(preview));
       if (this.topicDrag && !preview) { this.topicDrag.base = this.layout; this.topicDrag.index = null; }
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
