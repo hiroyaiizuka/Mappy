@@ -1412,6 +1412,33 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     expect(rect(placed(view, parent))).toEqual(settled);
   });
 
+  it('keeps the carried tree itself under the pointer when the layout switches mid-drag, and drops where it is shown (LEV-129)', async () => {
+    // `topicDrag.from`/`overrides` are offsets from the body root's top-left, which the map and the balanced
+    // map place differently (`layoutTree`'s `origin`). Before the fix, switching layouts mid-drag left them
+    // measured from the map's origin, so the carried tree jumped by the origins' difference and the drop
+    // saved that jumped position under the balanced key.
+    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+    const { view, layout, topic, source: current } = await mount(source, 'mindmap');
+    const dragged = topic('資料');
+    const { shift } = bind(view);
+    const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+    shift(dragged.id, { x: 40, y: -40 });
+    await frame();
+    const beforeSwitch = placed(view, dragged);
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await frame();
+    // The pointer has not moved, only the layout switched: the carried tree must sit exactly where it did.
+    expect(placed(view, dragged)).toEqual(beforeSwitch);
+    // The drag continues normally from there: further travel lands exactly that far from where it was held.
+    shift(dragged.id, { x: 70, y: -10 });
+    await frame();
+    const released = placed(view, dragged);
+    const origin = layout().origin;
+    await place(dragged.id, { x: 70, y: -10 });
+    const expected = { x: Math.round(released.x - origin.x), y: Math.round(released.y - origin.y) };
+    expect(readTopicPositions(current()).get('資料')?.balanced).toEqual(expected);
+  });
+
   it('in the map a topic with no position and two children keeps its slot while a third is previewed under them', async () => {
     // The stack is flush left in the map, so no column moves; but the placeholder adds a row to the forest, on which
     // placeSideways re-centres the root, and the widened bounds reach the dragged tree stacked below, which used to push

@@ -10,7 +10,7 @@ import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_LABELS, LAYOUT_MODES, axisBand, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_LABELS, LAYOUT_MODES, axisBand, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore, conflictMessage } from "../obsidian/document-store";
@@ -401,8 +401,8 @@ export class MindmapView extends FileView {
     const file = named ? (found instanceof TFile && found.extension === "md" ? found : null) : this.file;
     const changed = this.file !== file;
     await super.setState(named ? { ...value, file: file?.path ?? null } : value, result);
-    if (isLayoutMode(value.layout)) this.mode = value.layout;
-    else if (changed && this.file) this.mode = readMapLayout(this.app, this.file) ?? "mindmap";
+    if (isLayoutMode(value.layout)) this.applyMode(value.layout);
+    else if (changed && this.file) this.applyMode(readMapLayout(this.app, this.file) ?? "mindmap");
     // The bar follows the layout at once, before the read: draw() does not run for a note that fails to load.
     this.syncModeButtons();
     // A leaf left without a note closes (`allowNoFile` is false: FileView asked the leaf to): nothing to restore or read.
@@ -880,7 +880,7 @@ export class MindmapView extends FileView {
   /** A deliberate layout switch is the note's next-open preference. */
   private selectMode(mode: LayoutMode): void {
     if (mode === this.mode) return;
-    this.mode = mode;
+    this.applyMode(mode);
     this.needsFit = true;
     this.syncModeButtons();
     this.draw();
@@ -890,6 +890,36 @@ export class MindmapView extends FileView {
     const write = this.layoutWrite.catch(() => undefined).then(() => writeMapLayout(this.app, file, mode));
     this.layoutWrite = write;
     this.run(() => write);
+  }
+
+  /**
+   * Where `this.mode` is set (here and in `setState`): a drag in progress is rebased to the new mode
+   * before it takes hold, so a layout switch mid-drag (a button, a restored workspace, a pane opened
+   * on the same note — LEV-129) does not move the carried tree out from under the pointer.
+   */
+  private applyMode(mode: LayoutMode): void {
+    const origin = mode !== this.mode ? this.topicDrag?.base.origin : undefined;
+    this.mode = mode;
+    if (origin) this.rebaseTopicDrag(origin);
+  }
+
+  /**
+   * `topicDrag.from`/`overrides` are offsets from the body root's top-left (`LayoutResult.origin`), which
+   * a mode switch moves — the map's origin sits at the body root itself, the balanced map's at
+   * `(-w/2, -h/2)`, and so on (`layoutTree`). Left alone, the carried tree would jump by exactly that
+   * difference, and stay off by it in whatever the drag stores when it is released. Shifting both maps
+   * by the origins' difference keeps the tree exactly where it was on screen, still under the point the
+   * pointer grabbed, so the drag continues as if the mode had always been the new one.
+   */
+  private rebaseTopicDrag(previousOrigin: LayoutPoint): void {
+    const drag = this.topicDrag;
+    if (!drag || !this.document) return;
+    const origin = this.originFor(this.document);
+    const dx = previousOrigin.x - origin.x;
+    const dy = previousOrigin.y - origin.y;
+    if (dx === 0 && dy === 0) return;
+    for (const [id, point] of drag.from) drag.from.set(id, { x: point.x + dx, y: point.y + dy });
+    for (const [id, point] of drag.overrides) drag.overrides.set(id, { x: point.x + dx, y: point.y + dy });
   }
 
   private scheduleRefresh(): void {

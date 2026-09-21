@@ -1121,6 +1121,52 @@ async function captureTopicOperations(recorder, page) {
     expect((await page.harness('h.source()')) === base, 'the note changed on a cancelled drag');
   });
 
+  await recorder.run('topic-drag-layout-switch', `「${reference}」をドラッグ中に左右バランスへ切り替え`,
+    '運んでいる木はポインターに付いたままで切り替え時にずれず、離した位置が balanced のキーに書かれる（LEV-129）', async () => {
+      const base = await page.harness('h.source()');
+      const before = await topicRect(reference);
+      const from = center(before.rect);
+      await page.mouse('mouseMoved', from.x, from.y);
+      await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+      await page.mouse('mouseMoved', from.x + 40, from.y - 30, { button: 'left' });
+      await page.settle();
+      const beforeSwitch = await topicRect(reference);
+      // The layout switches through the view state mid-drag (a restored workspace, a pane opened on the
+      // same note), the pointer staying down: `topicDrag` must be rebased to the new origin (LEV-129),
+      // not left measured from the map's, which used to show up as the carried tree jumping right here.
+      await page.harness(`h.load(${JSON.stringify(TOPIC_FIXTURE)}, 'balanced')`);
+      await page.settle();
+      const afterSwitch = await topicRect(reference);
+      expect(Math.abs(afterSwitch.rect.x - beforeSwitch.rect.x) < 1.5 && Math.abs(afterSwitch.rect.y - beforeSwitch.rect.y) < 1.5,
+        `the carried tree moved by ${(afterSwitch.rect.x - beforeSwitch.rect.x).toFixed(1)}, ${(afterSwitch.rect.y - beforeSwitch.rect.y).toFixed(1)} on the switch alone`);
+      await page.mouse('mouseMoved', from.x + 100, from.y - 60, { button: 'left' });
+      await page.settle();
+      const released = await topicRect(reference);
+      const view = await page.harness('h.viewport()');
+      const body = await page.harness('h.node("講座の本体")');
+      await page.mouse('mouseReleased', from.x + 100, from.y - 60, { button: 'left', clickCount: 1 });
+      await page.settle();
+      let result;
+      try {
+        const moved = await page.harness('h.source()');
+        const offset = { x: Math.round((released.rect.x - body.rect.x) / view.scale), y: Math.round((released.rect.y - body.rect.y) / view.scale) };
+        // Whatever mindmap/timeline already held (earlier cases moved and redid 参考資料's mindmap entry): only `balanced` is new here.
+        const baseEntry = topicEntry(base, reference);
+        expect(baseEntry, 'the reference topic has no entry to extend before the drag');
+        const expected = baseEntry?.replace(/ \}$/u, `, balanced: [${offset.x}, ${offset.y}] }`);
+        expect(topicEntry(moved, reference) === expected, `expected ${expected}, got ${topicEntry(moved, reference)}`);
+        expect(bodyOf(moved) === bodyOf(base), 'the body changed while dragging a topic across a layout switch');
+        result = `切替時のずれ 0 px、離した位置 balanced: [${offset.x}, ${offset.y}]（scale ${view.scale.toFixed(3)}）`;
+      } finally {
+        // Best effort even when an assertion above threw, so a broken case does not also corrupt the ones after it.
+        await undo();
+        await page.harness(`h.load(${JSON.stringify(TOPIC_FIXTURE)}, 'mindmap')`);
+        await page.settle();
+      }
+      expect((await page.harness('h.source()')) === base, 'undo did not restore the previous position');
+      return result;
+    });
+
   await recorder.run('topic-unplaced-drag', '「位置のないトピック」を左下へ 60×80 px ドラッグ（他のノードから離れた空白）', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
     const name = '位置のないトピック';
     const base = await page.harness('h.source()');
