@@ -56,6 +56,23 @@ interface SnapIndex {
   places: ReadonlyMap<string, NodePlace>;
 }
 
+/**
+ * Whether two readings of the node sizes describe the same map. The layout measures the DOM again on
+ * every frame and nothing announces a change it did not ask for (a theme class, a font arriving), so a
+ * drag's kept snap index is only carried over while the sizes behind it still hold (LEV-126).
+ */
+function sameSizes(
+  before: ReadonlyMap<string, { width: number; height: number }>,
+  after: ReadonlyMap<string, { width: number; height: number }>,
+): boolean {
+  if (before.size !== after.size) return false;
+  for (const [id, size] of after) {
+    const was = before.get(id);
+    if (!was || was.width !== size.width || was.height !== size.height) return false;
+  }
+  return true;
+}
+
 /** Where the roots of `ids` sit in `layout`, relative to its origin: the offsets `FreeTopicLayout.position` carries. One pass over the nodes. */
 function rootOffsets(layout: LayoutResult, ids: Iterable<string>): Map<string, TopicPosition> {
   const wanted = new Set(ids);
@@ -178,18 +195,20 @@ export class MindmapView extends FileView {
      * pushes a timeline stage past a forest).
      */
     base: LayoutResult;
+    /** The node sizes `base` was laid out with; the layout re-reads them from the DOM on every frame. */
+    sizes: ReadonlyMap<string, { width: number; height: number }>;
     /**
      * The snap's reading of `base` (tree structure and each node's place). Kept across the bases of one
      * drag: between two of them only the carried tree moved, and the snap never reads that tree, so the
-     * reading still describes the map. `snapIndexStale` says when it does not (LEV-126).
+     * reading still describes the map. `snapIndexStale` and the sizes say when it does not (LEV-126).
      */
     index: SnapIndex | null;
   } | null = null;
   /**
-   * Whether the next base a drag takes has to be read again: set by every `scheduleLayout()` that is not
-   * just a carried tree following the pointer (a redraw, a preview, a node's size, the mode, the pane),
-   * and cleared when a drag's base is refreshed. Between two bases that share it, only the carried tree
-   * moved: everything else is held where it was (`topicLayouts`), so the reading of it still holds.
+   * Whether the next base a drag takes has to be read again: set by every layout request that is not
+   * just a carried tree following the pointer (a redraw, a preview, the mode, the pane), and cleared
+   * when a drag's base is refreshed. Between two bases that share it, only the carried tree moved:
+   * everything else is held where it was (`topicLayouts`), so the reading of it still holds.
    */
   private snapIndexStale = true;
   /**
@@ -1068,12 +1087,20 @@ export class MindmapView extends FileView {
   }
 
   /**
-   * `carried` marks the one frame whose only change is where a dragged tree sits: everything the layout
-   * reads besides that offset is the same, so the snap's reading of the map survives it. Any other caller
-   * leaves the next base to be read again. The flag outlives a coalesced frame, so a redraw asking for the
-   * same frame as a pointer move still counts (LEV-126).
+   * A frame whose only change is where a dragged tree sits: everything the layout reads besides that
+   * offset is the same, so the snap's reading of the map survives it. Its own method rather than an
+   * argument to `scheduleLayout`, which is passed around as a bare callback (LEV-126).
    */
-  private scheduleLayout(carried = false): void {
+  private scheduleCarriedLayout(): void { this.requestLayout(true); }
+
+  private scheduleLayout(): void { this.requestLayout(false); }
+
+  /**
+   * `carried` says the request comes from a dragged tree following the pointer; every other request
+   * leaves the next base for the snap to read again. The flag outlives a coalesced frame, so a redraw
+   * asking for the same frame as a pointer move still counts.
+   */
+  private requestLayout(carried: boolean): void {
     if (!this.ready || this.closed) return;
     if (!carried) this.snapIndexStale = true;
     if (this.layoutFrame !== undefined) return;
@@ -1095,10 +1122,14 @@ export class MindmapView extends FileView {
         this.topicLayouts(preview?.trees, held));
       if (!preview) this.plain = { file: this.file, mode: this.mode, layout: this.layout };
       // Only a base the snap actually takes clears the flag, so a change made while a placeholder was laid
-      // out still reaches the first base after it.
+      // out still reaches the first base after it. The sizes are checked as well: they are read from the
+      // DOM here, not requested, so a change nobody asked a layout for would otherwise keep a stale index.
       if (this.topicDrag && !preview) {
-        this.topicDrag.base = this.layout;
-        if (this.snapIndexStale) { this.topicDrag.index = null; this.snapIndexStale = false; }
+        const drag = this.topicDrag;
+        if (this.snapIndexStale || !sameSizes(drag.sizes, sizes)) drag.index = null;
+        this.snapIndexStale = false;
+        drag.base = this.layout;
+        drag.sizes = sizes;
       }
       this.renderer.place(this.layout.nodes, this.layout.folds);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
@@ -1344,7 +1375,8 @@ export class MindmapView extends FileView {
     const body = projection.root.id === id;
     const from = rootOffsets(layout, (body ? projection.topics : projection.topics.filter(topic => topic.id === id)).map(topic => topic.id));
     this.topicDrag = {
-      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id), base: layout, index: null,
+      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id),
+      base: layout, sizes: this.renderer.sizes(), index: null,
     };
     return this.topicDrag;
   }
@@ -1373,7 +1405,8 @@ export class MindmapView extends FileView {
     for (const [topicId, start] of drag.from) drag.overrides.set(topicId, { x: start.x + sign * delta.x / scale, y: start.y + sign * delta.y / scale });
     if (drag.viewport) this.viewport.set({ ...drag.viewport, x: drag.viewport.x + delta.x, y: drag.viewport.y + delta.y });
     // Only a topic carries one tree; the body root moves every topic at once, which is no base the snap can keep.
-    this.scheduleLayout(!drag.body);
+    if (drag.body) this.scheduleLayout();
+    else this.scheduleCarriedLayout();
   }
 
   /** A free tree released on the canvas: only `mappy-topics` entries for this layout change (all of them for the body). */

@@ -9,6 +9,7 @@
  * describe the product's pipeline as shipped, plus the browser work it forces.
  */
 import type { ViewStateResult } from "obsidian";
+import { applyEdits, planEdit } from "../../src/core/commands";
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../../src/core/markdown";
 import { layoutTree, type LayoutMode, type NodeSize } from "../../src/layout/layout";
 import type { MindmapView } from "../../src/ui/mindmap-view";
@@ -465,12 +466,13 @@ const DRAG_TRAVEL_MIN = 96;
 /** A straight run of empty canvas, in client pixels. */
 interface DragPath { y: number; from: number; to: number }
 
-/** The note with one more top-level section, at the level the body root uses, so the map gains a free topic. */
+/**
+ * The note with one more top-level section, so the map gains a free topic. The product's own planner
+ * writes it: it takes the level from the last section (2 for a list document), keeps the note's tail,
+ * re-parses in the note's own format and refuses a result that is not exactly one added topic.
+ */
 export function withDragTopic(document: MindDocument): string {
-  const { root } = projectMap(document);
-  const level = root.kind === "root" ? 1 : root.level;
-  const { eol } = document;
-  return `${document.source.replace(/\s+$/u, "")}${eol}${eol}${"#".repeat(level)} ${DRAG_TOPIC_TITLE}${eol}`;
+  return applyEdits(document.source, planEdit(document, { type: "add-topic", title: DRAG_TOPIC_TITLE }).edits);
 }
 
 /** True where `NodeDrag.move` finds no node under the pointer, so the view searches the map for a snap slot instead. */
@@ -497,7 +499,8 @@ function dragPath(canvas: HTMLElement): DragPath | null {
       if (start !== null && x - DRAG_PROBE_STEP - start > longest()) best = { y, from: start, to: x - DRAG_PROBE_STEP };
       start = null;
     }
-    if (longest() >= right - left) break;
+    // One run long enough is all a drag needs; every further row costs a forced hit test per sample point.
+    if (longest() >= DRAG_TRAVEL_MIN) break;
   }
   return longest() >= DRAG_TRAVEL_MIN ? best : null;
 }
@@ -542,8 +545,11 @@ export async function measureTopicDrag(
     await writeNote(context, file, withDragTopic(documentOf(view)));
     const topic = projectMap(documentOf(view)).topics.find(node => node.title === DRAG_TOPIC_TITLE);
     if (!topic) throw new Error("The appended section did not become a free topic");
-    // Fit again: the samples before this one panned, zoomed and edited, and the drag needs the band Fit leaves.
-    pane.querySelector<HTMLButtonElement>('.mappy-button[aria-label="全体表示"]')?.click();
+    // Fit again: the samples before this one panned, zoomed and edited, and the drag needs the band Fit
+    // leaves. Missing it would measure an undocumented viewport, so a missing button fails the sample.
+    const fit = pane.querySelector<HTMLButtonElement>('.mappy-button[aria-label="全体表示"]');
+    if (!fit) throw new Error("The 全体表示 button is missing");
+    fit.click();
     await context.settle();
     const path = dragPath(canvas);
     if (!path) throw new Error("No run of empty canvas wide enough to carry a topic");
@@ -558,20 +564,28 @@ export async function measureTopicDrag(
     const intervals: number[] = [];
     let snapMoves = 0;
     let slots = 0;
-    const frameIndex = probes.frames.length;
+    // After the frame that move scheduled: the drag's first layout is the one that takes the hold and
+    // measures every node, which no later move pays. Frames are collected from here, one per move.
     let last = await probes.nextFrame();
+    const frameMs: number[] = [];
+    // Taken each move rather than sliced from one index at the end: `installProbes` trims its record from
+    // the front past RECORD_LIMIT, so an index kept across a whole run would quietly drift.
+    let seen = probes.frames.length;
     for (let index = 0; index < moves; index += 1) {
       const point = dragPoint(path, index, moves);
-      if (openAt(canvas, point.x, point.y)) snapMoves += 1;
       const dispatched = now();
       pointer(canvas, "pointermove", point.x, point.y);
       handlerMs.push(now() - dispatched);
+      // Read after the move, never before it: a hit test flushes the style and layout the previous frame
+      // left pending, which `NodeDrag.move` pays inside the window above by reading its own rectangles.
+      if (openAt(canvas, point.x, point.y)) snapMoves += 1;
       if (element.classList.contains("is-merging")) slots += 1;
       const timestamp = await probes.nextFrame();
+      for (const frame of probes.frames.slice(seen)) frameMs.push(frame.endedAt - frame.startedAt);
+      seen = probes.frames.length;
       intervals.push(timestamp - last);
       last = timestamp;
     }
-    const frameMs = probes.frames.slice(frameIndex).map(frame => frame.endedAt - frame.startedAt);
     canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await context.settle();
     return {
@@ -579,6 +593,10 @@ export async function measureTopicDrag(
       moves, snapMoves, slots, handlerMs, frameMs, intervals, at: stamp(),
     };
   } finally {
+    // The next samples of this fixture read the same note, and the runner's recovery only re-opens the
+    // view; a restore that did not take would leave them measuring a different document without saying so.
     await writeNote(context, file, source);
+    const left = documentOf(view).source;
+    if (left !== source) throw new Error(`The fixture was left with the drag topic in it (${left.length} bytes, expected ${source.length})`);
   }
 }
