@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath } from "../../src/core/wiki-link";
+import {
+  autolinkUrl, exportedLink, externalUrl, hasUrlScheme, insertWikiLink, wikiLinkContext, wikiLinkPath,
+} from "../../src/core/wiki-link";
 
 describe("inline wikilink completion", () => {
   it("finds the active link after surrounding Japanese text", () => {
@@ -98,5 +100,81 @@ describe("externalUrl (what a note's link may carry into another plugin's docume
     expect(externalUrl("Attachments/図.png")).toBeNull();
     expect(externalUrl("[[睡眠ノート]]")).toBeNull();
     expect(externalUrl("")).toBeNull();
+  });
+});
+
+describe("autolinkUrl (the scheme an autolink leaves for its reader to supply)", () => {
+  it.each([
+    ["www.example.com/a", "https://www.example.com/a"],
+    ["www.example.com", "https://www.example.com"],
+  ])("opens %s as %s", (text, url) => {
+    expect(autolinkUrl(text)).toBe(url);
+  });
+
+  it.each([
+    "https://example.com/a",
+    "mailto:someone@example.com",
+    "javascript:alert(1)",
+    "Attachments/図.png",
+    "睡眠ノート",
+    "www",
+    "",
+  ])("leaves %s as it was written", text => {
+    expect(autolinkUrl(text)).toBe(text);
+  });
+
+  it("leaves a bare address alone: GFM linkifies an attachment named like one", () => {
+    // `file@2x.png` is how a retina image is named, and the parser calls it an email autolink. A blanket
+    // `mailto:` would turn a link to a picture in the vault into a mail window (LEV-138).
+    expect(autolinkUrl("file@2x.png")).toBe("file@2x.png");
+    expect(autolinkUrl("someone@example.com")).toBe("someone@example.com");
+  });
+
+  it("supplies a scheme without judging it: the allowed list is still `externalUrl`'s to apply", () => {
+    expect(externalUrl(autolinkUrl("www.example.com/a"))).toBe("https://www.example.com/a");
+  });
+});
+
+describe("exportedLink (what a file written out of a note may carry)", () => {
+  it("keeps a vault link as written: inside Obsidian it is the note's own link", () => {
+    expect(exportedLink("睡眠ノート")).toBe("睡眠ノート");
+    expect(exportedLink("Attachments/図.png")).toBe("Attachments/図.png");
+    expect(exportedLink("#見出し")).toBe("#見出し");
+  });
+
+  it.each(["https://example.com/a", "mailto:someone@example.com", "obsidian://open?vault=x&file=y"])("keeps %s", link => {
+    expect(exportedLink(link)).toBe(link);
+  });
+
+  it.each(["javascript:alert(1)", "data:text/html;base64,PHNjcmlwdD4=", "vbscript:msgbox(1)", "tel:0000", "file:///etc/passwd", ""])(
+    "refuses %s",
+    link => {
+      expect(exportedLink(link)).toBeNull();
+    },
+  );
+
+  it("refuses a scheme hidden behind the characters a URL parser throws away", () => {
+    // A browser deletes tabs and line breaks inside a URL and trims the controls and spaces around it before
+    // it reads the scheme, and the file's own escaping drops the same characters: judging the text as written
+    // would let ` javascript:…` through as a vault path and then hand a working script to the click.
+    expect(exportedLink(" javascript:alert(1)")).toBeNull();
+    expect(exportedLink("\u0000javascript:alert(1)")).toBeNull();
+    expect(exportedLink("java\tscript:alert(1)")).toBeNull();
+    expect(exportedLink("java\nscript:alert(1)")).toBeNull();
+    expect(exportedLink("\u000cjavascript:alert(1)")).toBeNull();
+    expect(externalUrl(" javascript:alert(1)")).toBeNull();
+    expect(hasUrlScheme(" javascript:alert(1)")).toBe(true);
+  });
+
+  it("writes the link the reader will see, not the one that was judged", () => {
+    expect(exportedLink(" https://example.com/a ")).toBe("https://example.com/a");
+    expect(exportedLink("https://example.com/\na")).toBe("https://example.com/a");
+    expect(externalUrl(" https://example.com/a")).toBe("https://example.com/a");
+  });
+
+  it("refuses `//host/path`: no scheme, and no note either", () => {
+    // A file served over http(s) would follow it out of the vault; nothing in a note means this.
+    expect(exportedLink("//example.com/x")).toBeNull();
+    expect(exportedLink("/Attachments/図.png")).toBe("/Attachments/図.png");
   });
 });
