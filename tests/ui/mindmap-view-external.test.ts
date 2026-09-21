@@ -321,4 +321,44 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(editor()).toBeNull();
     expect(mounted.view.containerEl.querySelector('.mappy-inline-error')).toBeNull();
   });
+
+  // LEV-140: the view's own writes are not an external change. Pasting an image while a node is being edited
+  // used to append the image to that node's body, then refuse the edit because "the body changed".
+  it('keeps the draft usable after the map itself attaches an image to the node being edited', async () => {
+    const mounted = await mount(SOURCE);
+    const { canvas, source, key, editor, error, draft, refreshed, settle } = mounted;
+    const input = await draft('学ぶこと', '学ぶこと（編集）');
+    const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+    canvas.dispatchEvent(paste);
+    await settle();
+    await settle();
+    // The image lands under the node being edited, and the draft is still the user's text.
+    expect(source()).toContain('![[1-shot.png]]');
+    expect(editor()).toBe(input);
+    expect(error()).toBe('');
+    // Enter applies the draft to the note the map itself has just written.
+    key(input, 'Enter');
+    await refreshed();
+    expect(error()).toBe('');
+    expect(editor()).toBeNull();
+    expect(source()).toContain('- 学ぶこと（編集）');
+    expect(source()).toContain('![[1-shot.png]]');
+  });
+
+  it('confirms the open draft and runs the command instead of refusing it', async () => {
+    const mounted = await mount(SOURCE);
+    const { view, source, editor, draft, refreshed } = mounted;
+    const input = await draft('学ぶこと', '学ぶこと（編集）');
+    const target = documentOf(view).nodes.find(candidate => candidate.title === 'はじめに');
+    if (!target) throw new Error('Missing node');
+    await (view as unknown as { execute(command: unknown): Promise<void> }).execute({ type: 'add-child', nodeId: target.id });
+    await refreshed();
+    // The draft was written, not thrown away, and the command ran.
+    expect(source()).toContain('- 学ぶこと（編集）');
+    expect(documentOf(view).nodes.filter(node => node.title === '').length).toBe(1);
+    expect(editor()).not.toBe(input);
+  });
+
 });

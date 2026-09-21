@@ -1,7 +1,7 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
-import { getNode } from "../core/text-edits";
+import { findNode, getNode } from "../core/text-edits";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
@@ -48,6 +48,14 @@ export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り
 function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
 }
+
+/**
+ * What an open draft was started from: the node it edits and that node's text when the editor opened
+ * (`draftFingerprint`). A save refuses when the two no longer agree, so the draft cannot overwrite
+ * someone else's edit (E05). The value is re-based after the map's own writes — an image the user
+ * pasted into the node being edited is not someone else's edit (LEV-140).
+ */
+interface DraftBase { nodeId: string; value: string }
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
 interface SnapIndex {
@@ -201,6 +209,9 @@ export class MindmapView extends FileView {
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
   private bodyModal: EditModal | undefined;
+  /** The base of the open title draft and of the open body draft; see `DraftBase`. */
+  private inlineDraft: DraftBase | undefined;
+  private bodyDraft: DraftBase | undefined;
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
   private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; release: () => void } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
@@ -1206,13 +1217,16 @@ export class MindmapView extends FileView {
   }
 
   private async execute(command: EditCommand): Promise<void> {
+    if (this.saving) return;
+    if ("nodeId" in command) this.assertEditable(command.nodeId);
+    if ("parentId" in command) this.assertEditable(command.parentId);
+    // A kept draft (E05) still addresses its node and a structural edit under it would move what the draft
+    // comes back to, so the draft is written first and the command plans against the note that leaves
+    // (LEV-140). A refused save throws from here, which says what actually stands in the way.
+    if (this.inlineEditor) await this.inlineEditor.flush();
     const document = this.document;
     const file = this.file;
     if (!document || this.saving) return;
-    if ("nodeId" in command) this.assertEditable(command.nodeId);
-    if ("parentId" in command) this.assertEditable(command.parentId);
-    // A kept draft (E05) still addresses its node; a structural edit under it would move what the draft comes back to.
-    if (this.inlineEditor) throw new Error("テキストの編集を確定してから、もう一度実行してください。");
     const plan = planEdit(document, command);
     await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
@@ -1481,6 +1495,9 @@ export class MindmapView extends FileView {
   private async commit(source: string, edits: TextEdit[], file = this.file): Promise<void> {
     if (!file || file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
     if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
+    // Read before the write: a draft that already disagrees with the note is left alone, so an external
+    // change that arrived first is still refused when the draft is saved (E05).
+    const drafts = this.currentDrafts();
     this.saving = true;
     try {
       try { await this.store.apply(file, source, edits); }
@@ -1488,6 +1505,7 @@ export class MindmapView extends FileView {
       catch (error) { this.scheduleRefresh(); throw error; }
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh();
+      this.rebaseDrafts(drafts);
     } finally { this.saving = false; }
   }
 
@@ -1503,7 +1521,8 @@ export class MindmapView extends FileView {
     this.inlineEditor?.dispose();
     entry.content.hidden = true;
     let renamedOffset: number | null = null;
-    const opened = draftFingerprint(document, node);
+    const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
+    this.inlineDraft = draft;
     this.inlineEditor = new InlineEditor(entry.element, {
       initial: node.title,
       suggest: input => new LinkSuggest(this.app, input, file.path),
@@ -1511,7 +1530,7 @@ export class MindmapView extends FileView {
         // A topic added on the map is placed where it was pressed by the same edit set that names it.
         const pending = this.pendingTopic?.id === node.id ? this.pendingTopic : null;
         // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
-        const current = this.draftTarget(file, node.id, opened);
+        const current = this.draftTarget(file, node.id, draft.value);
         const plan = planEdit(current, {
           type: "rename", nodeId: node.id, title: text,
           ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
@@ -1522,6 +1541,7 @@ export class MindmapView extends FileView {
       },
       finish: (next, cancelled) => {
         this.inlineEditor = undefined;
+        if (this.inlineDraft === draft) this.inlineDraft = undefined;
         entry.content.hidden = false;
         if (this.closed || this.unloading || file !== this.file) return;
         this.draw();
@@ -1544,9 +1564,10 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!node || !document || !file) return;
     if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
-    const opened = draftFingerprint(document, node);
+    const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
+    this.bodyDraft = draft;
     const modal = new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
-      const current = this.draftTarget(file, node.id, opened);
+      const current = this.draftTarget(file, node.id, draft.value);
       await this.commit(current.source, [planBodyEdit(current, node.id, text)], file);
     });
     this.bodyModal = modal;
@@ -1559,6 +1580,31 @@ export class MindmapView extends FileView {
    * a re-parse only for unique titles, so a same-named or vanished node is refused here, and an external edit
    * to the node being drafted is refused rather than overwritten; a node that only moved takes the draft.
    */
+  /** The open drafts whose node still reads as it did when the editor opened. */
+  private currentDrafts(): DraftBase[] {
+    const document = this.document;
+    if (!document) return [];
+    return [this.inlineDraft, this.bodyDraft].filter((draft): draft is DraftBase => {
+      if (!draft) return false;
+      const node = findNode(document, draft.nodeId);
+      return node !== undefined && draftFingerprint(document, node) === draft.value;
+    });
+  }
+
+  /**
+   * After the map's own write, a draft that was current before it stays current: what changed is this
+   * view's doing (an image pasted onto the node being edited, a command run from under the draft), not
+   * another app's, and the save must not tell the user their own action changed the note (LEV-140).
+   */
+  private rebaseDrafts(drafts: readonly DraftBase[]): void {
+    const document = this.document;
+    if (!document) return;
+    for (const draft of drafts) {
+      const node = findNode(document, draft.nodeId);
+      if (node) draft.value = draftFingerprint(document, node);
+    }
+  }
+
   private draftTarget(file: TFile, nodeId: string, opened: string): MindDocument {
     const document = this.document;
     if (file !== this.file || !document) throw new Error(NOTE_CHANGED_MESSAGE);
