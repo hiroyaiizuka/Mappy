@@ -363,10 +363,11 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
 
 
 
-  it('follows the node being edited when the map\'s own write renumbers the same-named nodes', async () => {
-    // LEV-142: ids are carried through a re-parse by title, so every node sharing a title gets a fresh one
-    // whenever the note is written — including by the map itself. A draft that remembers its node by id then
-    // fails to find it and shows 「対象のノードが変更されています。再選択してください。」 although nothing moved.
+  it('keeps the ids of the same-named nodes across a write of its own, so the draft stays on its node', async () => {
+    // LEV-142 / LEV-146: matched by what the text says, ids can only be carried for titles that are unique,
+    // so every node sharing a title used to get a fresh one whenever the note was written — including by the
+    // map itself. The draft then failed to find its node although nothing moved. A write of the map's own
+    // carries the ids by where its edits leave each node (`parseMarkdown(…, edits)`), so nothing is renumbered.
     const mounted = await mount(SOURCE);
     const { canvas, source, key, editor, error, draft, refreshed, settle, view } = mounted;
     const input = await draft('同じ名前', '同じ名前（編集）', '一つ目の本文');
@@ -378,9 +379,9 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     await settle();
     await settle();
     expect(source()).toContain('![[1-shot.png]]');
-    // The write renumbered them, which is what makes an id-only draft lose its node.
+    // Both kept their ids, which is what keeps the draft — and the folds, and the selection — on their nodes.
     const after = documentOf(view).nodes.filter(node => node.title === '同じ名前').map(node => node.id);
-    expect(after).not.toEqual(before);
+    expect(after).toEqual(before);
     // The draft is still on the node it was opened on, so Enter writes it.
     key(input, 'Enter');
     await refreshed();
@@ -392,9 +393,9 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
 
 
   it('stops trusting where its own write left the node once someone else edits the note', async () => {
-    // The anchor a write leaves behind (LEV-142) answers only for that exact text. An external change after
-    // it makes every offset a guess again, and E05 does not guess: the draft is refused, not applied to
-    // whatever now sits at that place.
+    // The ids a write carries (LEV-146) answer for that write alone. An external change after it leaves the
+    // places a guess again, and E05 does not guess: the draft is refused, not applied to whatever now sits
+    // where its node was.
     const mounted = await mount(SOURCE);
     const { canvas, source, key, editor, error, draft, refreshed, settle, external } = mounted;
     const input = await draft('同じ名前', '同じ名前（編集）', '一つ目の本文');
@@ -406,7 +407,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     await settle();
     const written = source();
     expect(written).toContain('![[1-shot.png]]');
-    // Someone else now writes the note, which moves every offset the anchor was measured against.
+    // Someone else now writes the note, and this map has no edits of theirs to carry its nodes by.
     const outside = written.replace('## 講座の構成\n', '## 講座の構成\n\n外から足した前書き。\n');
     external(outside);
     await refreshed();

@@ -1,4 +1,6 @@
 import { parser } from '@lezer/markdown';
+import type { TextEdit } from './commands';
+import { offsetAfter } from './text-edits';
 
 export interface MindNode {
   id: string;
@@ -149,20 +151,56 @@ function sectionsByText(nodes: readonly MindNode[], source: string): Map<string,
   return byText;
 }
 
-function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source: string): void {
+/**
+ * The ids a known edit set carries over: a node still begins where those edits leave the line it begins
+ * on, and the node that begins there is that node, whatever its title says. Nothing else can carry a
+ * node whose title is not unique — an empty one included, which is what a node an image was pasted onto
+ * looks like — so without this every write renumbered them and the map lost their folds, the selection
+ * and any draft open on one (LEV-142, LEV-146). Answers only for the caller that planned the edits; an
+ * external change leaves offsets a guess, which is what E05 refuses to make.
+ */
+function carriedIds(nodes: MindNode[], previous: MindDocument, edits: readonly TextEdit[]): Set<MindNode> {
+  const places = new Map<number, MindNode>();
+  // Two nodes cannot begin at one offset: a collision would mean these are not the edits that made
+  // `source`, and a guess is worse than a new id, so no node claims a place two of them landed on.
+  const collided = new Set<number>();
+  for (const old of previous.nodes) {
+    const offset = offsetAfter(edits, old.from);
+    if (offset === undefined) continue;
+    if (places.has(offset)) collided.add(offset); else places.set(offset, old);
+  }
+  for (const offset of collided) places.delete(offset);
+  const carried = new Set<MindNode>();
+  for (const node of nodes) {
+    const old = places.get(node.from);
+    if (!old) continue;
+    node.id = old.id;
+    carried.add(node);
+  }
+  return carried;
+}
+
+function assignIds(
+  nodes: MindNode[], previous: MindDocument | undefined, source: string, edits?: readonly TextEdit[],
+): void {
   if (previous?.source === source && previous.nodes.length === nodes.length
     && nodes.every((node, index) => previous.nodes[index]?.kind === node.kind)) {
     nodes.forEach((node, index) => { node.id = previous.nodes[index]?.id ?? node.id; });
     return;
   }
   if (!previous) return;
+  // The rules below guess from the text, for the changes this map did not make; a node the edits already
+  // answered for is left alone, and its id is not handed to a second node.
+  const carried = edits ? carriedIds(nodes, previous, edits) : new Set<MindNode>();
+  const claimed = new Set(Array.from(carried, (node) => node.id));
   const oldTitles = groupByTitle(previous.nodes);
   const newTitles = groupByTitle(nodes);
   for (const node of nodes) {
+    if (carried.has(node)) continue;
     const oldMatches = oldTitles.get(node.title);
     if (oldMatches?.length === 1 && newTitles.get(node.title)?.length === 1) {
       const old = oldMatches[0];
-      if (old) node.id = old.id;
+      if (old && !claimed.has(old.id)) node.id = old.id;
     }
   }
   // Top-level sections whose whole text (heading and body) is unchanged keep their ids, same-titled ones
@@ -175,6 +213,7 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
     const olds = oldSections.get(text);
     if (!olds || olds.length !== sections.length) continue;
     sections.forEach((section, index) => {
+      if (carried.has(section)) return;
       const old = olds[index];
       if (old && !used.has(old.id)) { section.id = old.id; used.add(old.id); }
     });
@@ -187,7 +226,7 @@ function assignIds(nodes: MindNode[], previous: MindDocument | undefined, source
     && source[source.length - suffix - 1] === previous.source[previous.source.length - suffix - 1]) suffix++;
   const old = previous.nodes.find((node) => node.titleFrom <= prefix && node.titleTo >= previous.source.length - suffix);
   const current = nodes.find((node) => node.titleFrom <= prefix && node.titleTo >= source.length - suffix);
-  if (old && current && old.title !== current.title && old.from === current.from
+  if (old && current && !carried.has(current) && old.title !== current.title && old.from === current.from
     && old.kind === current.kind && old.level === current.level
     && oldTitles.get(old.title)?.length === 1 && newTitles.get(current.title)?.length === 1
     && !nodes.some((node) => node.id === old.id)) current.id = old.id;
@@ -340,9 +379,16 @@ export function projectMap(doc: MindDocument): MapProjection {
   return { root: { ...doc.root, children: sections.slice(0, first) }, topics: sections.slice(first) };
 }
 
-/** Project headings or H2 + real unordered lists, preserving original source ranges. */
+/**
+ * Project headings or H2 + real unordered lists, preserving original source ranges.
+ *
+ * `edits` is how `previous.source` became `source`, for the caller that wrote it: given them, every node
+ * still standing keeps its id, whatever its title (`carriedIds`). Without them the ids are matched by
+ * what the text says, which can only answer for titles that are unique.
+ */
 export function parseMarkdown(
   source: string, title: string, previous?: MindDocument, formatOverride?: MindDocument['format'],
+  edits?: readonly TextEdit[],
 ): MindDocument {
   const yamlEnd = frontmatterEnd(source);
   const masked = maskComments(whitespaceMask(source.slice(0, yamlEnd)) + source.slice(yamlEnd));
@@ -359,7 +405,7 @@ export function parseMarkdown(
     parentId: null, children: [], kind: 'root',
   };
   const nodes = format === 'list' ? listHierarchy(source, root, tree.topNode, headings) : headings;
-  assignIds(nodes, previous, source);
+  assignIds(nodes, previous, source, edits);
   if (format === 'headings') headingHierarchy(source, root, nodes);
   else {
     // Identity matching happens after projection; reconnect using the final IDs.

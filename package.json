@@ -23,6 +23,7 @@
     "check": "npm run validate && npm run lint && npm test && npm run package && npm run harness:browser:build",
     "harness:prepare": "npm run check && node scripts/prepare-test-vault.mjs",
     "harness:preflight": "node scripts/preflight.mjs",
+    "harness:e2e:paste": "node scripts/e2e/paste-image.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",
     "harness:browser:capture": "node scripts/browser-harness-capture.mjs",
