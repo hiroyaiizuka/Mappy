@@ -981,12 +981,11 @@ export class MindmapView extends FileView {
   /**
    * Positions for this layout: a topic being dragged shows where the pointer holds it, a stored
    * position comes next, then the pressed point of a topic added on the map that no save has
-   * stored yet. While a placeholder is laid out, a topic with none of these keeps the slot `held`
-   * (the latest layout without a placeholder, `plain`, as it was when the slot appeared) stacked it
-   * in: the placeholder widens the tree it joins, which must neither re-centre that tree under the
-   * body root nor restack it clear of a dragged tree, or the parent jumps away from the root it is
-   * about to take (LEV-95). The stack is dealt again once the slot goes or the drop lands. Topics
-   * sharing a heading have keys of their own (`topicKeys`), so each finds its entry.
+   * stored yet. In the map and balanced map, while a topic is dragged every other unpositioned topic
+   * keeps the slot `held` (the drag's latest placeholder-free base), so a child column does not flee
+   * from the moving tree before snap can find it (LEV-117). A placeholder in any layout instead holds
+   * the latest plain layout (LEV-95). The stack is dealt again once the drag ends. Topics sharing a
+   * heading have keys of their own (`topicKeys`), so each finds its entry.
    */
   private topicLayouts(trees?: readonly LayoutNode[], held?: LayoutResult): FreeTopicLayout[] {
     const projected = this.projected;
@@ -1056,7 +1055,9 @@ export class MindmapView extends FileView {
       const sizes = this.renderer.sizes();
       const preview = this.previewLayout(projection, sizes);
       const plain = this.plain;
-      const held = preview && plain && plain.file === this.file && plain.mode === this.mode ? plain.layout : undefined;
+      const held = preview && plain && plain.file === this.file && plain.mode === this.mode
+        ? plain.layout
+        : this.topicDrag && (this.mode === "mindmap" || this.mode === "balanced") ? this.topicDrag.base : undefined;
       this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
         this.topicLayouts(preview?.trees, held));
       if (!preview) this.plain = { file: this.file, mode: this.mode, layout: this.layout };

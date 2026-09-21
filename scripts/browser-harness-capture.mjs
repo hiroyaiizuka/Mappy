@@ -1466,6 +1466,50 @@ async function captureTopicOperations(recorder, page) {
     }
   });
 
+  await withFixtureRestored(async () => {
+    await recorder.run('topic-snap-unplaced-child-column-balanced', 'free-topics を左右バランスで開き、「位置のないトピック」を位置未設定の親「補足: 用語」の右側の子「用語 A」の下半分（右の子列の末尾）へ運ぶ → 離す → 元に戻す → やり直す',
+      'ドラッグ中も「補足: 用語」のルートが逃げず、右の子列の末尾に仮ノードと青線が出る。離すと原文順では 用語 B の後ろ（右列では 用語 A の後ろ）に合流し、Undo/Redo で原文と合流後を往復する', async () => {
+        await switchLayout('balanced');
+        const base = await page.harness('h.source()');
+        expect(base === original, 'free-topics was not restored before the child-column case');
+        const view = await page.harness('h.viewport()');
+        const topic = await topicRect('位置のないトピック');
+        const parent = (await topicRect('補足: 用語')).rect;
+        const child = (await topicRect('用語 A')).rect;
+        const from = center(topic.rect);
+        // Index 2 is dealt to the right. Put the moving root on the right column's shared left edge and
+        // put its top edge on 用語 A's lower half, where the trailing slot resolves after the left child 用語 B.
+        const to = {
+          x: child.x + (from.x - topic.rect.x),
+          y: child.y + child.height / 2 + (from.y - topic.rect.y),
+        };
+        await page.mouse('mouseMoved', from.x, from.y);
+        await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+        await sweep(from, to);
+        const under = await labelUnder(to);
+        const preview = await snapPreview();
+        const parentShown = (await topicRect('補足: 用語')).rect;
+        await page.screenshot(join(recorder.directory, 'topic-snap-unplaced-child-column-balanced-preview.png'));
+        expect(under === null, `the pointer is over ${under}; the snap must come from the root's position`);
+        expect(preview.placeholder && preview.connector && preview.merging, `preview state ${JSON.stringify(preview)}`);
+        const travel = { x: parentShown.x - parent.x, y: parentShown.y - parent.y };
+        expect(Math.abs(travel.x) < 1.5 && Math.abs(travel.y) < 1.5,
+          `補足: 用語 moved by ${travel.x.toFixed(1)}, ${travel.y.toFixed(1)} px while the topic was in its child column`);
+        await page.mouse('mouseReleased', to.x, to.y, { button: 'left', clickCount: 1 });
+        await page.settle();
+        const joined = await page.harness('h.source()');
+        const joinedTail = '- 用語 B\n- 位置のないトピック\n  `mappy-topics` に項目がないので、本体の下の既定位置に置く。\n\n  - 既定位置\n';
+        expect(joined.includes(joinedTail), `joined: ${JSON.stringify(joined.slice(joined.indexOf('## 補足: 用語'), joined.indexOf('## 補足: 用語') + 320))}`);
+        expect(!joined.includes('\n## 位置のないトピック\n'), 'the joined topic section is still present');
+        expect(topicEntry(joined, '位置のないトピック') === null, 'the joined topic gained a position entry');
+        await undo();
+        expect((await page.harness('h.source()')) === base, 'undo did not restore the original Markdown bytes');
+        await redo();
+        expect((await page.harness('h.source()')) === joined, 'redo did not restore the joined Markdown bytes');
+        return `親の移動 ${travel.x.toFixed(1)}, ${travel.y.toFixed(1)} px、右子列にスロット表示あり、用語 A の後ろ（原文 index 2）へ合流、Undo/Redo でバイト一致（scale ${view.scale.toFixed(3)}）`;
+      });
+  });
+
   await recorder.run('branch-detach', '本体の枝「記録する」を空白へドラッグ → 離す', '枝が新しいトピック（文末の `## 記録する`）になり、離した位置が mappy-topics に入る。Undo で枝に戻る', async () => {
     const base = await page.harness('h.source()');
     const before = (await page.harness('h.nodes()')).length;
