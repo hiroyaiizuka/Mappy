@@ -7,7 +7,7 @@ import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import type { MindDocument, MindNode } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { MindmapView } from '../../src/ui/mindmap-view';
+import { MindmapView, NODE_GONE_MESSAGE } from '../../src/ui/mindmap-view';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -34,9 +34,7 @@ const SOURCE = [
 const EXTERNAL = SOURCE.replace('- 記録する\n', '- 記録する（外部）\n');
 const CONFLICT = 'Markdown が変更されています。マップを更新してから再編集してください。';
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
-// The draft's own answer when its node is gone from the note: `getNode`'s wording is for a plan that
-// addresses a node by id, which is not what the user did (LEV-142).
-const NODE_CHANGED = '編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。';
+const NODE_CHANGED = NODE_GONE_MESSAGE;
 const TEXT_CHANGED = '編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。';
 
 function documentOf(view: MindmapView): MindDocument {
@@ -390,6 +388,34 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(editor()).toBeNull();
     expect(source()).toContain('- 同じ名前（編集）');
     expect(source()).toContain('![[1-shot.png]]');
+  });
+
+
+  it('stops trusting where its own write left the node once someone else edits the note', async () => {
+    // The anchor a write leaves behind (LEV-142) answers only for that exact text. An external change after
+    // it makes every offset a guess again, and E05 does not guess: the draft is refused, not applied to
+    // whatever now sits at that place.
+    const mounted = await mount(SOURCE);
+    const { canvas, source, key, editor, error, draft, refreshed, settle, external } = mounted;
+    const input = await draft('同じ名前', '同じ名前（編集）', '一つ目の本文');
+    const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+    canvas.dispatchEvent(paste);
+    await settle();
+    await settle();
+    const written = source();
+    expect(written).toContain('![[1-shot.png]]');
+    // Someone else now writes the note, which moves every offset the anchor was measured against.
+    const outside = written.replace('## 講座の構成\n', '## 講座の構成\n\n外から足した前書き。\n');
+    external(outside);
+    await refreshed();
+    key(input, 'Enter');
+    await refreshed();
+    // Refused, and the draft is still there to retry or cancel — not written onto a node it guessed at.
+    expect(error()).not.toBe('');
+    expect(editor()).toBe(input);
+    expect(source()).toBe(outside);
   });
 
 });
