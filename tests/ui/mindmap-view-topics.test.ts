@@ -1239,6 +1239,107 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     shift(glossary.id, null);
   });
 
+  it.each([['balanced', 'right'], ['hierarchy', 'below']] as const)(
+    'in %s a topic with no position keeps its slot in the stack while the slot beside it is previewed: the placeholder hangs where the dragged root is, and the stack under it stays (LEV-95)', async (mode, side) => {
+      // No topic has a position: 空の話題 (only its heading) stacks first under the body, 補足 under it, 余談 last. 補足 is carried
+      // to where 空の話題's first child lands (a root gap right of it in the balanced map, one under it in the hierarchy).
+      const { view, layout, topic } = await mount('## 本体\n\n- 回復する\n\n## 空の話題\n\n## 補足\n\n- 用語\n\n## 余談\n\n- 補遺\n', mode);
+      const glossary = topic('補足');
+      const empty = topic('空の話題');
+      const aside = topic('余談');
+      const { shift, snap, preview } = bind(view);
+      shift(glossary.id, { x: 0, y: 0 });
+      const root = placed(view, empty);
+      const held = placed(view, glossary);
+      const landing = side === 'right'
+        ? { x: root.x + root.width + 80, y: root.y + (root.height - held.height) / 2 }
+        : { x: root.x + (root.width - held.width) / 2, y: root.y + root.height + 48 };
+      const { scale } = view.getState().viewport as { scale: number };
+      shift(glossary.id, { x: (landing.x - held.x) * scale, y: (landing.y - held.y) * scale });
+      await frame();
+      // The dragged root sits at the landing; the parent, beside it and clear of it, has not moved.
+      expect(placed(view, glossary).x).toBeCloseTo(landing.x, 6);
+      expect(placed(view, glossary).y).toBeCloseTo(landing.y, 6);
+      expect(placed(view, empty)).toEqual(root);
+      const stacked = placed(view, aside);
+      const command = snap(glossary.id, at(view, { ...landing, width: held.width, height: held.height }), null);
+      expect(command).toEqual({ type: 'move', nodeId: glossary.id, parentId: empty.id, index: 0 });
+      preview(command);
+      await frame();
+      // The placeholder widens the parent's tree, which neither re-centres under the body root nor restacks clear of the
+      // dragged tree: the parent stays where the snap judged it, so the slot hangs exactly where the dragged root is.
+      const parent = placed(view, empty);
+      expect(parent.x).toBeCloseTo(root.x, 6);
+      expect(parent.y).toBeCloseTo(root.y, 6);
+      const slot = layout().nodes.find(node => node.id === PLACEHOLDER_ID);
+      expect(slot?.x).toBeCloseTo(landing.x, 6);
+      expect(slot?.y).toBeCloseTo(landing.y, 6);
+      expect(layout().edges.some(edge => edge.from === empty.id && edge.to === PLACEHOLDER_ID)).toBe(true);
+      // The rest of the stack keeps the slots the placeholder-free layout gave it as well.
+      expect(placed(view, aside).x).toBeCloseTo(stacked.x, 6);
+      expect(placed(view, aside).y).toBeCloseTo(stacked.y, 6);
+      expect(snap(glossary.id, at(view, { ...landing, width: held.width, height: held.height }), command)).toBe(command);
+      preview(null);
+      await frame();
+      expect(placed(view, empty)).toEqual(root);
+      shift(glossary.id, null);
+    },
+  );
+
+  it('a body branch previewed onto a topic with no position (a hover, no topic drag) leaves that topic and the stack where they are', async () => {
+    // The same widening, from the other kind of drag: the ghost of 回復する held over the heading-only topic 空の話題
+    // previews a slot a root gap right of it. Without the hold the topic re-centred out from under the pointer.
+    const { view, layout, topic } = await mount('## 本体\n\n- 回復する\n\n## 空の話題\n\n## 補足\n\n- 用語\n', 'balanced');
+    const doc = documentOf(view);
+    const empty = topic('空の話題');
+    const glossary = topic('補足');
+    const recover = doc.nodes.find(node => node.title === '回復する');
+    if (!recover) throw new Error('Missing node');
+    const { preview } = bind(view);
+    const root = placed(view, empty);
+    const stacked = placed(view, glossary);
+    preview({ type: 'move', nodeId: recover.id, parentId: empty.id, index: 0 });
+    await frame();
+    expect(placed(view, empty).x).toBeCloseTo(root.x, 6);
+    expect(placed(view, empty).y).toBeCloseTo(root.y, 6);
+    expect(placed(view, glossary).x).toBeCloseTo(stacked.x, 6);
+    expect(placed(view, glossary).y).toBeCloseTo(stacked.y, 6);
+    const slot = layout().nodes.find(node => node.id === PLACEHOLDER_ID);
+    expect(slot?.x).toBeCloseTo(root.x + root.width + 80, 6);
+    preview(null);
+    await frame();
+    expect(placed(view, empty)).toEqual(root);
+  });
+
+  it('in the map a topic with no position and two children keeps its slot while a third is previewed under them', async () => {
+    // The stack is flush left in the map, so no column moves; but the placeholder adds a row to the forest, on which
+    // placeSideways re-centres the root, and the widened bounds reach the dragged tree stacked below, which used to push
+    // the topic under it. (The slot is previewed directly: a dragged tree brought to the children's column overlaps the
+    // topic's bounds, and the stack yields to a dragged tree before any slot is shown.)
+    const { view, layout, topic } = await mount('## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n', 'mindmap');
+    const doc = documentOf(view);
+    const source = topic('資料');
+    const glossary = topic('補足');
+    const second = doc.nodes.find(node => node.title === '乙');
+    if (!second) throw new Error('Missing node');
+    const { shift, preview } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    const root = placed(view, source);
+    const last = placed(view, second);
+    preview({ type: 'move', nodeId: glossary.id, parentId: source.id, index: 2 });
+    await frame();
+    expect(placed(view, source).x).toBeCloseTo(root.x, 6);
+    expect(placed(view, source).y).toBeCloseTo(root.y, 6);
+    // The forest, a row taller, re-centres on the root that stayed: the children move up and the slot hangs under the last.
+    const slot = layout().nodes.find(node => node.id === PLACEHOLDER_ID);
+    const moved = placed(view, second);
+    expect(moved.y).toBeLessThan(last.y);
+    expect(slot?.x).toBeCloseTo(last.x, 6);
+    expect(slot?.y).toBeGreaterThan(moved.y + moved.height);
+    preview(null);
+    shift(glossary.id, null);
+  });
+
   it('never snaps the body root, and a topic does not snap onto its own tree', async () => {
     const source = fixtureSource();
     const { view, layout, topic } = await mount(source);
