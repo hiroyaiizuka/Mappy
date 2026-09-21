@@ -406,6 +406,76 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(current()).toBe(source);
   });
 
+  it('keeps a just-added, unnamed topic where it was pressed when the layout switches by button before it is named (LEV-129)', async () => {
+    // pendingTopic is tagged with the mode it was pressed in (topicLayouts() only uses it when that tag
+    // matches this.mode); Escape closes the inline editor without saving (InlineEditor.dispose(), not
+    // save()) but leaves pendingTopic itself in place. Before the fix, a layout switch by button left the
+    // tag stale, so the guard failed and the still-unnamed topic fell back to the default stacked slot.
+    const source = fixtureSource();
+    const { view, canvas, layout, transform, dblclick, key, editor, settle } = await mount(source, 'mindmap');
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    key(input, 'Escape');
+    await settle();
+    const blank = projectMap(documentOf(view)).topics.at(-1);
+    if (!blank) throw new Error('No blank topic');
+    expect(transform(blank.id)).toEqual(pressed);
+    const originBefore = layout().origin;
+    view.containerEl.querySelector<HTMLButtonElement>('.mappy-modes button[aria-label="左右バランス"]')?.click();
+    await settle();
+    expect(layout().origin).not.toEqual(originBefore);
+    // The pointer never touched the topic; only the layout changed. It must still sit exactly where it was pressed.
+    expect(transform(blank.id)).toEqual(pressed);
+  });
+
+  it('keeps a still-unnamed topic where it was pressed after a drag crossing a layout switch is cancelled with Escape (LEV-129, code review\'s sharper repro)', async () => {
+    // The code review found a tighter case than the one above: rather than switching after the inline
+    // editor closes, drag the still-unnamed topic itself, switch layout mid-drag (which also rebases the
+    // drag, per the case before this one), then Escape the drag (`endTopicDrag` never touches
+    // `pendingTopic`). Without rebasing `pendingTopic` on every mode change — not only when no drag is
+    // active — its `layout` tag would still read the mode it was pressed in, not the one the cancelled
+    // drag leaves the view in, and it would fall back to the default slot once the drag lets go of it.
+    const source = fixtureSource();
+    const { view, canvas, transform, dblclick, settle } = await mount(source, 'mindmap');
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    const blank = projectMap(documentOf(view)).topics.at(-1);
+    if (!blank) throw new Error('No blank topic');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    shift(blank.id, { x: 0, y: 0 });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    view.containerEl.querySelector<HTMLButtonElement>('.mappy-modes button[aria-label="左右バランス"]')?.click();
+    await settle();
+    shift(blank.id, null); // Escape-equivalent: cancels the drag and restores it (`endTopicDrag(id, true)`).
+    await settle();
+    expect(transform(blank.id)).toEqual(pressed);
+  });
+
+  it('composes two layout switches ahead of a single frame without an extra drift (LEV-129, code review\'s double-switch case)', async () => {
+    // applyMode reads `originFor()` fresh on both sides of every switch rather than a frame-cached origin
+    // (`topicDrag.base.origin`, only refreshed by the next `requestAnimationFrame`), so a second switch
+    // ahead of any frame still rebases from the true preceding origin instead of the one before that.
+    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+    const { view, transform, topic } = await mount(source, 'mindmap');
+    const dragged = topic('資料');
+    const shift = (view as unknown as { shiftTopic(id: string, delta: { x: number; y: number } | null): void }).shiftTopic.bind(view);
+    shift(dragged.id, { x: 40, y: -40 });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const beforeSwitch = transform(dragged.id);
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await view.setState({ file: PATH, layout: 'hierarchy' }, { history: false } satisfies ViewStateResult);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    // Neither switch was a pointer move: the tree must be exactly where it was, not off by the first switch's origin delta.
+    expect(transform(dragged.id)).toEqual(beforeSwitch);
+    shift(dragged.id, null);
+  });
+
   it('the context menu on empty canvas offers トピックを追加 and on a topic トピックを削除', async () => {
     const source = fixtureSource();
     const { view, canvas, nodes, source: current, settle, contextmenu, editor, transform } = await mount(source);
@@ -808,6 +878,45 @@ describe('MindmapView moves the body against its topics and joins a topic to a n
     expect(viewport()).toEqual(viewBefore);
     for (const topic of topics) expect(transform(topic.id)).toEqual(before.get(topic.id));
     expect(current()).toBe(source);
+  });
+
+  it('keeps a dragged body (and its topics) steady on screen when the layout switches mid-drag, and saves what is shown (LEV-129)', async () => {
+    // A body drag moves the viewport to carry the body while every topic's `overrides` cancels that pan
+    // (LEV-129's fix leaves them alone on a mid-drag switch): what must not jump on screen is the pan
+    // itself, since the body sits exactly at `origin` and a mode switch moves `origin` under it.
+    const source = fixtureSource();
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, viewport } = await mount(source, 'mindmap');
+    const { root, topics } = projectMap(documentOf(view));
+    const screenOf = (id: string): { x: number; y: number } => {
+      const t = transform(id);
+      const v = viewport();
+      return { x: t.x * v.scale + v.x, y: t.y * v.scale + v.y };
+    };
+    const element = nodes().get(root.id);
+    if (!element) throw new Error('No body element');
+    pointer('pointerdown', element, 500, 400);
+    pointer('pointermove', canvas, 506, 400);
+    pointer('pointermove', canvas, 560, 430);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const bodyMidDrag = screenOf(root.id);
+    const topicsMidDrag = new Map(topics.map(topic => [topic.id, screenOf(topic.id)]));
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    // The pointer has not moved, only the layout switched: the body and every topic must sit exactly where they did.
+    expect(screenOf(root.id)).toEqual(bodyMidDrag);
+    for (const topic of topics) expect(screenOf(topic.id)).toEqual(topicsMidDrag.get(topic.id));
+    pointer('pointermove', canvas, 620, 470);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const releasedWorld = new Map(topics.map(topic => [topic.id, transform(topic.id)]));
+    const origin = layout().origin;
+    pointer('pointerup', canvas, 620, 470);
+    await settle();
+    const positions = readTopicPositions(current());
+    for (const topic of topics) {
+      const world = releasedWorld.get(topic.id);
+      if (!world) throw new Error('Missing topic');
+      expect(positions.get(topic.title)?.balanced).toEqual({ x: Math.round(world.x - origin.x), y: Math.round(world.y - origin.y) });
+    }
   });
 
   it('a topic held over a node previews the slot and shows as a plain node; releasing joins it as a branch, undo brings the topic back', async () => {
@@ -1410,6 +1519,54 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     await frame();
     // Held from the map's layout, 資料 would sit at y 103: its map offset measured from the balanced origin.
     expect(rect(placed(view, parent))).toEqual(settled);
+  });
+
+  it('keeps the carried tree itself under the pointer when the layout switches mid-drag, and drops where it is shown (LEV-129)', async () => {
+    // `topicDrag.from`/`overrides` are offsets from the body root's top-left, which the map and the balanced
+    // map place differently (`layoutTree`'s `origin`). Before the fix, switching layouts mid-drag left them
+    // measured from the map's origin, so the carried tree jumped by the origins' difference and the drop
+    // saved that jumped position under the balanced key.
+    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+    const { view, layout, topic, source: current } = await mount(source, 'mindmap');
+    const dragged = topic('資料');
+    const { shift } = bind(view);
+    const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+    shift(dragged.id, { x: 40, y: -40 });
+    await frame();
+    const beforeSwitch = placed(view, dragged);
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    await frame();
+    // The pointer has not moved, only the layout switched: the carried tree must sit exactly where it did.
+    expect(placed(view, dragged)).toEqual(beforeSwitch);
+    // The drag continues normally from there: further travel lands exactly that far from where it was held.
+    shift(dragged.id, { x: 70, y: -10 });
+    await frame();
+    const released = placed(view, dragged);
+    const origin = layout().origin;
+    await place(dragged.id, { x: 70, y: -10 });
+    const expected = { x: Math.round(released.x - origin.x), y: Math.round(released.y - origin.y) };
+    expect(readTopicPositions(current()).get('資料')?.balanced).toEqual(expected);
+  });
+
+  it('refreshes the drag\'s own snap map synchronously on a mid-drag layout switch, ahead of the next frame (LEV-129)', async () => {
+    // `topicDrag.base`/`index` (what the snap judges against) are otherwise only refreshed by the next
+    // layout frame (`requestAnimationFrame`); `setState` calls `applyMode` synchronously, then awaits a
+    // store read before its own draw runs. A pointer move landing in that gap would judge the new mode's
+    // positions against the old mode's map unless `base`/`index` are current the instant the mode changes.
+    const source = fixtureSource();
+    const { view, topic } = await mount(source, 'mindmap');
+    const glossary = topic('補足: 用語');
+    const { shift } = bind(view);
+    shift(glossary.id, { x: 0, y: 0 });
+    await frame();
+    await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
+    // No frame awaited here on purpose: the assertion below must hold before the next one runs.
+    const drag = (view as unknown as { topicDrag: { base: LayoutResult; index: unknown } | null }).topicDrag;
+    if (!drag) throw new Error('Drag ended');
+    const fresh = (view as unknown as { originFor(doc: MindDocument): { x: number; y: number } }).originFor(documentOf(view));
+    expect(drag.base.origin).toEqual(fresh);
+    expect(drag.index).toBeNull();
+    shift(glossary.id, null);
   });
 
   it('in the map a topic with no position and two children keeps its slot while a third is previewed under them', async () => {
