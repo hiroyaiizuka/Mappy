@@ -83,6 +83,19 @@ export class InlineEditor {
     this.options.resize();
   }
 
+  /**
+   * Save the draft the way Enter does — a refusal keeps the draft with its reason on the error line — and
+   * answer whether the editor closed. A caller that must write its own edit against the note this draft
+   * leaves behind (`MindmapView.execute`) uses it instead of refusing outright (LEV-140), and stops when
+   * the answer is false: the reason is already on screen where the user is typing.
+   */
+  async confirm(): Promise<boolean> {
+    if (this.pending) await this.pending;
+    if (this.disposed) return true;
+    await this.commit("none");
+    return this.disposed;
+  }
+
   private commit(next: "none" | "child"): Promise<void> {
     if (this.busy || this.disposed) return Promise.resolve();
     const task = this.settle(next).finally(() => { if (this.pending === task) this.pending = undefined; });

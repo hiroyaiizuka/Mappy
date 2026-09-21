@@ -285,20 +285,48 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     expect(current()).toBe(`---\nmappy: true\n---\n# 講座\n\n## 第 1 章\n\n本文\n\n### 節\n\n### ${LINK}\n\n## 第 2 章\n`);
   });
 
-  it('refuses to call the map into itself and refuses while a title is being edited, leaving the note as it was', async () => {
+  it('refuses to call the map into itself, leaving the note as it was', async () => {
     const source = fixtureSource();
-    const { view, app, source: current, select, canvas, editor, other, parsed, key } = await mount();
+    const { view, app, source: current } = await mount();
     const self = app.asApp<App>().vault.getAbstractFileByPath(PATH) as TFile;
     await expect(view.callMap(self)).rejects.toThrow('自身');
     expect(current()).toBe(source);
+  });
+
+  it('writes the open draft first and then calls the map, instead of refusing while a title is being edited', async () => {
+    // LEV-140: the edit path used to refuse every command under a kept draft ("テキストの編集を確定してから…"), which
+    // made the user finish the edit and repeat the action. The draft is written first instead, so both land.
+    const source = fixtureSource();
+    const { view, source: current, select, canvas, editor, other, parsed, key, settle } = await mount();
     select('記録する');
     key(canvas, 'F2');
-    expect(editor()).not.toBeNull();
-    await expect(view.callMap(other)).rejects.toThrow('編集を確定');
-    // The guard sits on the shared edit path, so a context-menu add-child under a kept draft is refused the same way.
+    const input = editor();
+    if (!input) throw new Error('The inline editor did not open');
+    input.value = '記録する（編集）';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    await view.callMap(other);
+    await settle();
+    // The draft is in the note, the editor has closed, and the called map hangs under the node it was typed on.
+    expect(current()).toContain('- 記録する（編集）');
+    expect(current()).not.toBe(source);
+    expect(editor()).toBeNull();
+    expect(parsed('記録する（編集）').children.map(child => child.title)).toContain(LINK);
+    // The same holds for a command run from under a draft, so the editor is opened again for it: the call
+    // above closed it (a call carries its own title, so `execute` does not reopen one).
+    select('回復する');
+    key(canvas, 'F2');
+    const second = editor();
+    if (!second) throw new Error('The inline editor did not open');
+    second.value = '回復する（編集）';
+    second.dispatchEvent(new InputEvent('input', { bubbles: true }));
     const execute = (view as unknown as { execute(command: { type: 'add-child'; nodeId: string }): Promise<void> }).execute.bind(view);
-    await expect(execute({ type: 'add-child', nodeId: parsed('記録する').id })).rejects.toThrow('編集を確定');
-    expect(current()).toBe(source);
+    await execute({ type: 'add-child', nodeId: parsed('記録する（編集）').id });
+    await settle();
+    // The draft was written on its way, and the command ran against the note it left.
+    expect(current()).toContain('- 回復する（編集）');
+    // add-child names its new node in place, so an editor is open again — on the child, not on the draft.
+    expect(editor()?.value).toBe('');
+    expect(parsed('記録する（編集）').children.some(child => child.title === '')).toBe(true);
   });
 
   it('says so instead of dropping the choice while a save is in flight', async () => {
