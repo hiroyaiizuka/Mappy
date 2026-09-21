@@ -55,3 +55,16 @@ export function wikiLinkPath(link: string | null | undefined): string | null {
 export function hasUrlScheme(text: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/iu.test(text);
 }
+
+/** The schemes a link written in a note may keep when it is handed to another plugin's document. */
+const EXTERNAL_LINK_SCHEMES = new Set(["http", "https", "mailto", "obsidian"]);
+
+/**
+ * A note's link as an external URL, or null when it is not one. Only the few schemes Obsidian itself
+ * opens are allowed through: `javascript:`, `data:` and `file:` are refused, because a link copied out
+ * of a note lands in a document another plugin opens (an Excalidraw drawing), where a click runs it.
+ */
+export function externalUrl(text: string): string | null {
+  const scheme = text.match(/^([a-z][a-z0-9+.-]*):/iu)?.[1]?.toLowerCase();
+  return scheme && EXTERNAL_LINK_SCHEMES.has(scheme) ? text : null;
+}

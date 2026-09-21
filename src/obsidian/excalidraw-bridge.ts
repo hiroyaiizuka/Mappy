@@ -2,7 +2,7 @@ import type { App, TFile } from 'obsidian';
 import { imageMimeType } from '../core/attachments';
 import { initialCallFolds, projectCalls, type CallTargets } from '../core/calls';
 import { parseMarkdown, projectMap, type MindDocument } from '../core/markdown';
-import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
+import { externalUrl, hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
   buildScene, sceneContents, type NodeMeasure, type NodeRole, type SceneNodeContent,
 } from '../export/excalidraw-scene';
@@ -451,10 +451,14 @@ export class ExcalidrawBridge {
     return { ids: [id], origin: [element.x, element.y], size: { width: element.width, height: element.height } };
   }
 
-  /** Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in. */
+  /**
+   * Root boxes link back to the note; other nodes carry their first link, resolved from the note it is written in.
+   * A link that already has a scheme travels into the drawing as it was written, so only the schemes Obsidian opens
+   * are kept (`externalUrl`); the rest lose the link rather than being read as a vault path (LEV-131).
+   */
   private linkFor(node: SceneNodeContent, drawingPath: string, source: TFile): string | null {
     if (node.link) {
-      if (hasUrlScheme(node.link)) return node.link;
+      if (hasUrlScheme(node.link)) return externalUrl(node.link);
       const dest = this.app.metadataCache.getFirstLinkpathDest(node.link, node.sourcePath ?? source.path);
       return `[[${dest ? this.app.metadataCache.fileToLinktext(dest, drawingPath) : node.link}]]`;
     }

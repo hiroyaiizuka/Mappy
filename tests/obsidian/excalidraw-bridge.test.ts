@@ -646,6 +646,34 @@ describe('ExcalidrawBridge.handleDrop', () => {
     expect(image?.x).toBe(stageBox?.x);
   });
 
+  it('carries only the link schemes Obsidian opens into the drawing: a javascript: or data: link becomes no link at all', async () => {
+    // A link written in a note travels into a document another plugin opens, where a click runs it. The drawing keeps
+    // the ones Obsidian itself would open and drops the rest — without falling back to reading them as a vault path.
+    const { bridge, automate } = harness({
+      sources: {
+        'Note.md': '## 講座\n- [外部](https://example.com/a)\n- [押すな](javascript:alert1)\n'
+          + '- [画像](data:text/html;base64,PHNjcmlwdD4=)\n- [[睡眠ノート|睡眠]]\n',
+        '睡眠ノート.md': '## 睡眠\n',
+      },
+    });
+    expect(bridge.handleDrop(drop())).toBe(true);
+    await flush();
+    const elements = automate?.instances[0]?.added[0]?.elements ?? [];
+    // A node with no link carries no `link` at all, which is the same thing to Excalidraw as none.
+    const linkOf = (label: string): string | null => {
+      const text = elements.find(element => element.text === label);
+      if (!text) throw new Error(`No element for ${label}`);
+      const box = elements.find(element => element.id === text.containerId);
+      return (box ?? text).link ?? null;
+    };
+    expect(linkOf('外部')).toBe('https://example.com/a');
+    expect(linkOf('押すな')).toBeNull();
+    expect(linkOf('画像')).toBeNull();
+    expect(linkOf('睡眠')).toBe('[[睡眠ノート]]');
+    expect(elements.some(element => /^\s*(?:javascript|data):/iu.test(element.link ?? ''))).toBe(false);
+    expect(elements.some(element => (element.link ?? '').includes('javascript:'))).toBe(false);
+  });
+
   it('stacks several dropped notes vertically and uses frontmatter layouts', async () => {
     const { bridge, automate } = harness({
       sources: { 'A.md': '## A\n- a1\n- a2\n', 'B.md': '## B\n- b1\n' },
