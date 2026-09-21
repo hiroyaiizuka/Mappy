@@ -893,33 +893,76 @@ export class MindmapView extends FileView {
   }
 
   /**
-   * Where `this.mode` is set (here and in `setState`): a drag in progress is rebased to the new mode
-   * before it takes hold, so a layout switch mid-drag (a button, a restored workspace, a pane opened
-   * on the same note — LEV-129) does not move the carried tree out from under the pointer.
+   * Where `this.mode` is set (here and in `setState`): a drag in progress, and a topic just added on the
+   * map and not yet named, are rebased to the new mode before it takes hold, so a layout switch mid-drag
+   * (a button, a restored workspace, a pane opened on the same note — LEV-129) does not move them out
+   * from under the pointer or drop their held position. `originFor` is read fresh on both sides of the
+   * switch rather than trusting a frame-cached origin, so two switches ahead of a single paint (a fast
+   * double click, `setState` racing a pointer move while its `store.read` is in flight) still compose.
    */
   private applyMode(mode: LayoutMode): void {
-    const origin = mode !== this.mode ? this.topicDrag?.base.origin : undefined;
+    const changing = mode !== this.mode;
+    const rebasing = changing && this.document && (this.topicDrag || this.pendingTopic);
+    const previousOrigin = rebasing && this.document ? this.originFor(this.document) : undefined;
     this.mode = mode;
-    if (origin) this.rebaseTopicDrag(origin);
+    if (previousOrigin) this.rebaseFreePositions(previousOrigin);
   }
 
   /**
-   * `topicDrag.from`/`overrides` are offsets from the body root's top-left (`LayoutResult.origin`), which
-   * a mode switch moves — the map's origin sits at the body root itself, the balanced map's at
-   * `(-w/2, -h/2)`, and so on (`layoutTree`). Left alone, the carried tree would jump by exactly that
-   * difference, and stay off by it in whatever the drag stores when it is released. Shifting both maps
-   * by the origins' difference keeps the tree exactly where it was on screen, still under the point the
-   * pointer grabbed, so the drag continues as if the mode had always been the new one.
+   * `topicDrag.from`/`overrides`, a dragged body's viewport pan, the snap's own map (`topicDrag.base`／
+   * `index`), and `pendingTopic` are all measured against the body root's top-left (`LayoutResult.origin`)
+   * or tagged to the mode they were taken in; a mode switch moves the first and stales the rest. Left
+   * alone: a carried topic tree jumps by the origins' difference and stays off by it once dropped; a
+   * dragged body jumps the same way, since nothing here compensates the viewport pan that carries it; the
+   * snap can judge the new mode's positions against the old mode's map until the next frame catches up
+   * (`setState` awaits a read in between, so a pointer move can land in that window); and a topic just
+   * added on the map, still unnamed, falls back to the default slot the instant its `layout` tag stops
+   * matching `this.mode` (`topicLayouts()`'s guard). Rebasing all four here keeps every one of them
+   * exactly where it was on screen (LEV-129).
    */
-  private rebaseTopicDrag(previousOrigin: LayoutPoint): void {
-    const drag = this.topicDrag;
-    if (!drag || !this.document) return;
+  private rebaseFreePositions(previousOrigin: LayoutPoint): void {
+    if (!this.document) return;
     const origin = this.originFor(this.document);
     const dx = previousOrigin.x - origin.x;
     const dy = previousOrigin.y - origin.y;
-    if (dx === 0 && dy === 0) return;
-    for (const [id, point] of drag.from) drag.from.set(id, { x: point.x + dx, y: point.y + dy });
-    for (const [id, point] of drag.overrides) drag.overrides.set(id, { x: point.x + dx, y: point.y + dy });
+    const drag = this.topicDrag;
+    if (drag) {
+      if (drag.body) {
+        // The body's own screen position comes from the viewport pan the drag drives (`shiftTopic`), not
+        // from `overrides` — only the topics read those, to stay screen-fixed while the pan carries the
+        // body. Panning by the origins' difference in screen units keeps the body from jumping without
+        // touching the topics (shifting `overrides` too would double-correct: the origin term they sit
+        // against moves with them already).
+        if (drag.viewport && (dx !== 0 || dy !== 0)) {
+          const scale = drag.viewport.scale;
+          const panDx = dx * scale;
+          const panDy = dy * scale;
+          drag.viewport = { ...drag.viewport, x: drag.viewport.x + panDx, y: drag.viewport.y + panDy };
+          this.viewport.set({ ...this.viewport.value, x: this.viewport.value.x + panDx, y: this.viewport.value.y + panDy });
+        }
+      } else {
+        if (dx !== 0 || dy !== 0) {
+          for (const [id, point] of drag.from) drag.from.set(id, { x: point.x + dx, y: point.y + dy });
+          for (const [id, point] of drag.overrides) drag.overrides.set(id, { x: point.x + dx, y: point.y + dy });
+        }
+        // Only a topic drag snaps (a body never does — `snapTarget` declines it outright), so only here
+        // does `base`/`index` need a fresh, placeholder-free read under the new mode, taken now rather
+        // than left for the next frame.
+        const projection = this.projection();
+        if (projection) {
+          const sizes = this.renderer.sizes();
+          drag.base = layoutTree(projection.root, sizes, this.collapsed, this.mode, this.topicLayouts());
+          drag.sizes = sizes;
+          drag.index = null;
+        }
+      }
+    }
+    if (this.pendingTopic) {
+      this.pendingTopic = {
+        ...this.pendingTopic, layout: this.mode,
+        position: { x: this.pendingTopic.position.x + dx, y: this.pendingTopic.position.y + dy },
+      };
+    }
   }
 
   private scheduleRefresh(): void {
