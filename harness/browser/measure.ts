@@ -155,7 +155,28 @@ export interface FrameSample {
   at: string;
 }
 
-export type PerformanceSample = LoadSample | EditSample | FrameSample;
+export interface TopicDragSample {
+  kind: "topic-drag";
+  fixture: string;
+  mode: LayoutMode;
+  /** Nodes on the map while it is dragged: the fixture's, plus the one the appended topic adds. */
+  nodes: number;
+  /** Pointer moves dispatched, one per frame. */
+  moves: number;
+  /** Of those, the ones whose pointer sat on empty canvas, where the view searches the map for a snap slot. */
+  snapMoves: number;
+  /** Of those, the ones that ended with a slot previewed for the dragged topic; 0 while it is carried clear of every node. */
+  slots: number;
+  /** Synchronous cost of each pointer move: the view shifts the carried tree and searches for a slot. */
+  handlerMs: number[];
+  /** The view's own layout frames during the drag (sizes, layoutTree, place, edges). */
+  frameMs: number[];
+  /** requestAnimationFrame timestamp deltas while one pointer move is dispatched per frame. */
+  intervals: number[];
+  at: string;
+}
+
+export type PerformanceSample = LoadSample | EditSample | FrameSample | TopicDragSample;
 
 export const EDIT_MARK = "（編集）";
 
@@ -431,4 +452,133 @@ export async function measureFrames(
   }
   await context.settle();
   return { kind, fixture: fixture.id, mode: modeOf(view), nodes: documentOf(view).nodes.length, intervals, handlerMs, at: stamp() };
+}
+
+/** The free topic a drag sample appends to the note, carries across the canvas, and removes again. */
+export const DRAG_TOPIC_TITLE = "運ぶトピック";
+
+/** How far apart the probe samples the pane while looking for canvas the pointer can travel over. */
+const DRAG_PROBE_STEP = 16;
+/** A run of empty canvas shorter than this cannot carry a drag; the sample fails rather than measure a still pointer. */
+const DRAG_TRAVEL_MIN = 96;
+
+/** A straight run of empty canvas, in client pixels. */
+interface DragPath { y: number; from: number; to: number }
+
+/** The note with one more top-level section, at the level the body root uses, so the map gains a free topic. */
+export function withDragTopic(document: MindDocument): string {
+  const { root } = projectMap(document);
+  const level = root.kind === "root" ? 1 : root.level;
+  const { eol } = document;
+  return `${document.source.replace(/\s+$/u, "")}${eol}${eol}${"#".repeat(level)} ${DRAG_TOPIC_TITLE}${eol}`;
+}
+
+/** True where `NodeDrag.move` finds no node under the pointer, so the view searches the map for a snap slot instead. */
+function openAt(canvas: HTMLElement, x: number, y: number): boolean {
+  const hit = canvas.doc.elementFromPoint(x, y);
+  return Boolean(hit && canvas.contains(hit) && !hit.closest(".mappy-node, [data-drop-placeholder]"));
+}
+
+/**
+ * The longest straight run of empty canvas in the pane. Fit leaves at least FIT_PADDING around the
+ * map, so a band past its nodes is where a carried topic is judged by the snap search rather than by
+ * the node under the pointer. Sampled with the hit test `NodeDrag.move` itself makes.
+ */
+function dragPath(canvas: HTMLElement): DragPath | null {
+  const rect = canvas.getBoundingClientRect();
+  const left = rect.left + DRAG_PROBE_STEP;
+  const right = rect.right - DRAG_PROBE_STEP;
+  let best: DragPath | null = null;
+  const longest = (): number => (best ? best.to - best.from : 0);
+  for (let y = rect.top + DRAG_PROBE_STEP; y <= rect.bottom - DRAG_PROBE_STEP; y += DRAG_PROBE_STEP) {
+    let start: number | null = null;
+    for (let x = left; x <= right + DRAG_PROBE_STEP; x += DRAG_PROBE_STEP) {
+      if (x <= right && openAt(canvas, x, y)) { start ??= x; continue; }
+      if (start !== null && x - DRAG_PROBE_STEP - start > longest()) best = { y, from: start, to: x - DRAG_PROBE_STEP };
+      start = null;
+    }
+    if (longest() >= right - left) break;
+  }
+  return longest() >= DRAG_TRAVEL_MIN ? best : null;
+}
+
+/** Where the pointer sits on move `index`: out along the run and back, so the carried tree crosses the same canvas twice. */
+function dragPoint(path: DragPath, index: number, moves: number): { x: number; y: number } {
+  const half = Math.max(1, Math.floor(moves / 2));
+  const step = Math.min(half, index < half ? index + 1 : Math.max(0, moves - index - 1));
+  return { x: path.from + (path.to - path.from) * (step / half), y: path.y };
+}
+
+function pointer(target: EventTarget, type: string, x: number, y: number): void {
+  target.dispatchEvent(new PointerEvent(type, {
+    pointerId: 1, button: 0, buttons: type === "pointerup" ? 0 : 1, bubbles: true, cancelable: true, clientX: x, clientY: y,
+  }));
+}
+
+/** Write the note and wait until the view has re-read it and gone quiet again. */
+async function writeNote(context: MeasureContext, file: unknown, next: string): Promise<void> {
+  const timerIndex = context.probes.timers.length;
+  await context.vault.process(file, () => next);
+  await drain(context.probes, timerIndex);
+  await context.settle();
+}
+
+/**
+ * A free topic carried across empty canvas (§5 M7). The note gains one top-level section, the pointer
+ * presses that topic's root and moves once per frame along a run of empty canvas, and the note is put
+ * back. Over empty canvas the view judges the slot from where the carried root sits, which reads the
+ * whole map on every move (`MindmapView.snapTarget`): `handlerMs` is that search plus the shift it
+ * follows, and `frameMs` the layout frame the shift schedules. Escape ends the drag, so no move is
+ * ever written to the note.
+ */
+export async function measureTopicDrag(
+  context: MeasureContext, view: MindmapView, fixture: { id: string }, file: unknown, moves = 60,
+): Promise<TopicDragSample> {
+  const { probes, pane } = context;
+  const canvas = pane.querySelector<HTMLElement>(".mappy-canvas");
+  if (!canvas) throw new Error("Canvas missing");
+  const source = documentOf(view).source;
+  try {
+    await writeNote(context, file, withDragTopic(documentOf(view)));
+    const topic = projectMap(documentOf(view)).topics.find(node => node.title === DRAG_TOPIC_TITLE);
+    if (!topic) throw new Error("The appended section did not become a free topic");
+    // Fit again: the samples before this one panned, zoomed and edited, and the drag needs the band Fit leaves.
+    pane.querySelector<HTMLButtonElement>('.mappy-button[aria-label="全体表示"]')?.click();
+    await context.settle();
+    const path = dragPath(canvas);
+    if (!path) throw new Error("No run of empty canvas wide enough to carry a topic");
+    const element = nodeElement(pane, topic.id);
+    const box = element.getBoundingClientRect();
+    pointer(element, "pointerdown", box.left + box.width / 2, box.top + box.height / 2);
+    // One unmeasured move starts the drag: less travel than PRESS_TRAVEL is still a click on the node.
+    const first = dragPoint(path, 0, moves);
+    pointer(canvas, "pointermove", first.x, first.y);
+    if (!canvas.classList.contains("is-dragging-node")) throw new Error("The press did not become a drag");
+    const handlerMs: number[] = [];
+    const intervals: number[] = [];
+    let snapMoves = 0;
+    let slots = 0;
+    const frameIndex = probes.frames.length;
+    let last = await probes.nextFrame();
+    for (let index = 0; index < moves; index += 1) {
+      const point = dragPoint(path, index, moves);
+      if (openAt(canvas, point.x, point.y)) snapMoves += 1;
+      const dispatched = now();
+      pointer(canvas, "pointermove", point.x, point.y);
+      handlerMs.push(now() - dispatched);
+      if (element.classList.contains("is-merging")) slots += 1;
+      const timestamp = await probes.nextFrame();
+      intervals.push(timestamp - last);
+      last = timestamp;
+    }
+    const frameMs = probes.frames.slice(frameIndex).map(frame => frame.endedAt - frame.startedAt);
+    canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await context.settle();
+    return {
+      kind: "topic-drag", fixture: fixture.id, mode: modeOf(view), nodes: documentOf(view).nodes.length,
+      moves, snapMoves, slots, handlerMs, frameMs, intervals, at: stamp(),
+    };
+  } finally {
+    await writeNote(context, file, source);
+  }
 }

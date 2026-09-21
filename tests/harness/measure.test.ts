@@ -6,10 +6,10 @@ import { HarnessApp } from '../../harness/browser/app';
 import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import {
-  EDIT_MARK, editTarget, installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit, toggledTitle,
-  type MeasureContext, type Probes,
+  DRAG_TOPIC_TITLE, EDIT_MARK, editTarget, installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit,
+  measureTopicDrag, toggledTitle, withDragTopic, type MeasureContext, type Probes,
 } from '../../harness/browser/measure';
-import { parseMarkdown } from '../../src/core/markdown';
+import { parseMarkdown, projectMap } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView } from '../../src/ui/mindmap-view';
@@ -166,5 +166,52 @@ describe('performance probes', () => {
     const zoom = await measureFrames(context, view, fixture('performance-10'), 'zoom', 4);
     expect(zoom.intervals).toHaveLength(4);
     expect(zoom.nodes).toBe(10);
+  });
+
+  it('appends the drag topic at the body root\'s own level, so either fixture format gains one free topic', () => {
+    const headings = parseMarkdown(fixture('performance-10').source, 'performance-10');
+    const withTopic = parseMarkdown(withDragTopic(headings), 'performance-10');
+    expect(withTopic.format).toBe('headings');
+    expect(projectMap(withTopic).topics.map(topic => topic.title)).toEqual([DRAG_TOPIC_TITLE]);
+    const list = parseMarkdown(fixture('performance-10-list').source, 'performance-10-list');
+    const listWithTopic = parseMarkdown(withDragTopic(list), 'performance-10-list');
+    expect(listWithTopic.format).toBe('list');
+    expect(projectMap(listWithTopic).topics.map(topic => topic.title)).toEqual([DRAG_TOPIC_TITLE]);
+  });
+
+  it('carries a free topic over empty canvas one move per frame and puts the note back', async () => {
+    const { app, view, pane, context } = await mount('performance-10');
+    await measureLoad(context, view, fixture('performance-10'));
+    const file = app.vault.getAbstractFileByPath('Fixtures/performance-10.md');
+    const source = app.content(file!);
+    const canvas = pane.querySelector<HTMLElement>('.mappy-canvas');
+    if (!canvas) throw new Error('Canvas missing');
+    // jsdom has no layout or hit testing: the pane is 1280 × 800 with the map below y = 200, so the band above it is empty canvas.
+    canvas.getBoundingClientRect = (): DOMRect => ({ x: 0, y: 0, left: 0, top: 0, right: 1280, bottom: 800, width: 1280, height: 800 }) as DOMRect;
+    canvas.setPointerCapture = (): void => undefined;
+    canvas.releasePointerCapture = (): void => undefined;
+    canvas.hasPointerCapture = (): boolean => false;
+    Object.defineProperty(canvas, 'doc', {
+      configurable: true,
+      value: { elementFromPoint: (_x: number, y: number) => (y < 200 ? canvas : canvas.querySelector('.mappy-node')) },
+    });
+    const sample = await measureTopicDrag(context, view, fixture('performance-10'), file, 4);
+    expect(sample.kind).toBe('topic-drag');
+    // The fixture's ten nodes plus the topic the sample appends.
+    expect(sample.nodes).toBe(11);
+    expect(sample.moves).toBe(4);
+    expect(sample.snapMoves).toBe(4);
+    expect(sample.handlerMs).toHaveLength(4);
+    expect(sample.intervals).toHaveLength(4);
+    expect(sample.handlerMs.every(finite)).toBe(true);
+    expect(sample.intervals.every(finite)).toBe(true);
+    expect(sample.frameMs.length).toBeGreaterThan(0);
+    expect(sample.frameMs.every(finite)).toBe(true);
+    expect(sample.mode).toBe('mindmap');
+    // Escape ends the drag and the appended section is taken back out: the note is the fixture again, byte for byte.
+    expect(canvas.classList.contains('is-dragging-node')).toBe(false);
+    expect(app.content(file!)).toBe(source);
+    expect(view.snapshot()?.document?.source).toBe(source);
+    expect(pane.querySelectorAll('.mappy-node')).toHaveLength(10);
   });
 });

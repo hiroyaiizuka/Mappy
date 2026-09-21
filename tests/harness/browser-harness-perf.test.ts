@@ -40,6 +40,10 @@ describe('browser-harness-perf', () => {
       load('performance-500', 70, 'hierarchy'),
       { kind: 'markdown-edit', fixture: 'performance-500', mode: 'mindmap', nodes: 500, debounceMs: 46, parseMs: 1, refreshMs: 3, waitMs: 2, frameMs: 2, paintMs: 10, totalMs: 64, settledMs: 150 },
       { kind: 'pan', fixture: 'performance-500', mode: 'mindmap', nodes: 500, intervals: [16.7, 16.7, 33.4, 16.6] },
+      {
+        kind: 'topic-drag', fixture: 'performance-500', mode: 'mindmap', nodes: 501, moves: 4, snapMoves: 3, slots: 1,
+        handlerMs: [0.4, 0.6, 2.4, 0.5], frameMs: [8, 9, 30], intervals: [16.7, 16.7, 16.7, 50],
+      },
       { kind: 'load', fixture: 'performance-2000', mode: 'mindmap', nodes: 2000, firstLayoutMs: 999 },
     ];
     const summary = buildSummary(fixtures, samples);
@@ -51,6 +55,10 @@ describe('browser-harness-perf', () => {
     expect(mindmap?.['markdown-edit'].totalMs).toMatchObject({ n: 1, p50: 64, p95: 64 });
     expect(mindmap?.pan).toMatchObject({ n: 4, over: 1, max: 33.4 });
     expect(mindmap?.zoom.n).toBe(0);
+    expect(mindmap?.['topic-drag']).toMatchObject({ n: 4, over: 1, moves: 4, snapMoves: 3, slots: 1 });
+    expect(mindmap?.['topic-drag'].handler).toMatchObject({ n: 4, p50: 0.5, p95: 2.4, max: 2.4 });
+    expect(mindmap?.['topic-drag'].frame).toMatchObject({ n: 3, p50: 9, p95: 30 });
+    expect(timeline?.['topic-drag'].handler.n).toBe(0);
     expect(mindmap?.['inline-key'].totalMs?.n).toBe(0);
     expect(timeline?.load.firstLayoutMs?.n).toBe(0);
     expect(hierarchy?.load.firstLayoutMs).toMatchObject({ n: 1, p50: 70 });
@@ -68,9 +76,20 @@ describe('browser-harness-perf', () => {
       load('performance-2000', 300, 'mindmap'), load('performance-2000-wide', 400, 'mindmap'),
       { kind: 'pan', fixture: 'performance-2000', mode: 'mindmap', nodes: 2000, intervals: [16.7, 40] },
       { kind: 'pan', fixture: 'performance-2000-wide', mode: 'mindmap', nodes: 2000, intervals: [16.7, 16.7, 16.7] },
+      {
+        kind: 'topic-drag', fixture: 'performance-2000', mode: 'mindmap', nodes: 2001, moves: 2, snapMoves: 2, slots: 0,
+        handlerMs: [1, 3], frameMs: [20, 24], intervals: [16.7, 16.7],
+      },
+      {
+        kind: 'topic-drag', fixture: 'performance-2000-wide', mode: 'mindmap', nodes: 2001, moves: 2, snapMoves: 2, slots: 0,
+        handlerMs: [1, 2], frameMs: [30, 40], intervals: [16.7, 16.7],
+      },
     ];
     const [mindmap, timeline, hierarchy] = highlights(buildSummary(fixtures, samples));
     expect(mindmap).toMatchObject({ layout: 'mindmap', markdownEdit500: 80, firstLayout2000: 400, settled2000: 90, pan2000: { over: 1, n: 5 }, zoom2000: { over: 0, n: 0 } });
+    // The worst p95 across the shapes at 2,000 nodes: the handler from one shape, the layout frame from the other.
+    expect(mindmap).toMatchObject({ dragHandler2000: 3, dragFrame2000: 40 });
+    expect(Number.isNaN(hierarchy?.dragHandler2000)).toBe(true);
     expect(Number.isNaN(mindmap?.inlineKey500)).toBe(true);
     expect(hierarchy?.markdownEdit500).toBe(70);
     expect(Number.isNaN(timeline?.markdownEdit500)).toBe(true);
@@ -85,9 +104,12 @@ describe('browser-harness-perf', () => {
     expect(record).toContain('Node: v22.22.3、Chrome: Google Chrome 153');
     expect(record).toContain('build: abc1234（');
     expect(record).toContain('レイアウト（マップ・階層図）ごとに読み込み 10 回');
+    expect(record).toContain('フリートピックのドラッグ 2 回 × 60 回のポインター移動');
     expect(record).toContain('## 要点');
-    expect(record).toContain('| マップ | — | — | — | — | — | — | — | — |');
+    expect(record).toContain('| マップ | — | — | — | — | — | — | — | — | — | — |');
     expect(record).toContain('## 段階の定義');
+    expect(record).toContain('## フリートピックのドラッグ（ms、p50 / p95）');
+    expect(record).toContain('| performance-500 | 500 | マップ | 0 | 0 | 0 | — / — | — | — / — | — | — / — | — |');
     expect(record).toContain('| performance-500 | 見出し形式 | 500 | マップ | 1 | 1.0 / 1.0 | 5.0 / 5.0 |');
     expect(record).toContain('| performance-500 | 見出し形式 | 500 | 階層図 | 1 | 1.0 / 1.0 | 5.0 / 5.0 |');
     expect(record).not.toContain('| performance-500 | 見出し形式 | 500 | タイムライン |');
