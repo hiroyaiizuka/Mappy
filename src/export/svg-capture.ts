@@ -32,12 +32,6 @@ export interface CaptureSource {
   canvas: HTMLElement;
   /** The connector layer; its first path gives the stroke. */
   edges: SVGSVGElement;
-  /**
-   * The theme the map is shown in when it is not the document's: the settings'
-   * theme (M14) puts `theme-light`／`theme-dark` on the map view alone, and the
-   * colours copied from the DOM follow it. Left out, the body's class decides.
-   */
-  theme?: ExportTheme;
 }
 
 /** A data URL for the image, or null when it cannot be read; the node is kept either way. */
@@ -45,7 +39,7 @@ export type ImageResolver = (image: HTMLImageElement) => Promise<string | null>;
 
 export interface CaptureOptions {
   resolveImage: ImageResolver;
-  /** Overrides the source's theme; the default is the body's `theme-dark` class, Obsidian's convention. */
+  /** Overrides the theme read from the DOM: the nearest `theme-light`／`theme-dark` above the canvas, then the body's. */
   theme?: ExportTheme;
 }
 
@@ -104,8 +98,15 @@ const DECLARED_PREFIXES = new Set(['xlink', 'xml', 'xmlns']);
 /** The badge on screen is this tall unless the theme says otherwise (`.mappy-node-toggle-mark`). */
 const DEFAULT_BADGE_HEIGHT = 18;
 
-function themeOf(document: Document): ExportTheme {
-  return document.body.classList.contains('theme-dark') ? 'dark' : 'light';
+/**
+ * The theme the canvas is shown in: the nearest `theme-light`／`theme-dark`
+ * container (the settings' theme, M14, puts one on the map view alone), else
+ * the body's class, Obsidian's convention. It is read from the same DOM as
+ * the colours, so the file's attributes and its colours cannot disagree.
+ */
+function themeOf(canvas: HTMLElement): ExportTheme {
+  const scope = canvas.closest('.theme-light, .theme-dark') ?? canvas.ownerDocument.body;
+  return scope.classList.contains('theme-dark') ? 'dark' : 'light';
 }
 
 function computed(element: Element): CSSStyleDeclaration | null {
@@ -320,8 +321,7 @@ function badgeCss(mark: HTMLElement | undefined, fallbackColor: string, backgrou
  * bytes are fetched afterwards and spliced into the markup already built.
  */
 export async function captureScene(source: CaptureSource, options: CaptureOptions): Promise<SvgScene> {
-  const document = source.canvas.ownerDocument;
-  const theme = options.theme ?? source.theme ?? themeOf(document);
+  const theme = options.theme ?? themeOf(source.canvas);
   const registry = new StyleRegistry();
   const context: Serializer = { registry, images: [] };
   const drafts: SvgNode[] = [];

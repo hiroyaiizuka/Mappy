@@ -17,7 +17,7 @@ vi.mock('obsidian', () => ({
 }));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(() => { document.body.replaceChildren(); document.body.classList.remove('theme-dark'); });
 
 const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
 
@@ -156,12 +156,19 @@ describe('exportMap', () => {
     expect(raw.vault.createBinary).not.toHaveBeenCalled();
   });
 
-  it('writes the theme the source is shown in, and the option overrides it (LEV-92)', async () => {
+  it('names the theme of the container the map sits in, then the body\'s, and the option overrides both (LEV-92)', async () => {
     const { app, created } = fakeApp({});
-    await exportMap(app, file('Map.md'), { ...source(), theme: 'dark' }, 'svg');
-    await exportMap(app, file('Map.md'), { ...source(), theme: 'dark' }, 'svg', { theme: 'light' });
+    const inDarkView = (): CaptureSource => {
+      const captured = source();
+      document.body.createDiv({ cls: 'mappy-view theme-dark' }).append(captured.canvas);
+      return captured;
+    };
+    await exportMap(app, file('Map.md'), inDarkView(), 'svg');
+    await exportMap(app, file('Map.md'), inDarkView(), 'svg', { theme: 'light' });
     await exportMap(app, file('Map.md'), source(), 'svg');
-    expect(created.map(entry => typeof entry.data === 'string' && /data-theme="(\w+)"/.exec(entry.data)?.[1])).toEqual(['dark', 'light', 'light']);
+    document.body.classList.add('theme-dark');
+    await exportMap(app, file('Map.md'), source(), 'svg');
+    expect(created.map(entry => typeof entry.data === 'string' && /data-theme="(\w+)"/.exec(entry.data)?.[1])).toEqual(['dark', 'light', 'light', 'dark']);
   });
 
   it('refuses PNG where no canvas can be drawn, before capturing or naming a file', async () => {
