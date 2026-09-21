@@ -1158,6 +1158,43 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     shift(glossary.id, null);
   });
 
+  it.each(['mindmap', 'balanced'] as const)(
+    'in %s a root with nothing under it takes the topic where its first child lands, a root gap (80) past it: farther than a branch\'s child (56)', async mode => {
+      // The topic 空の話題 is only its heading, so its first child would hang 80 past it (right, in the balanced map too);
+      // the leaf 回復する under the body root hangs its child 56 past itself.
+      const { view, topic } = await mount('## 本体\n\n- 回復する\n\n## 空の話題\n\n## 補足\n\n- 用語\n', mode);
+      const doc = documentOf(view);
+      const glossary = topic('補足');
+      const empty = topic('空の話題');
+      const recover = doc.nodes.find(node => node.title === '回復する');
+      if (!recover) throw new Error('Missing node');
+      const { shift, snap } = bind(view);
+      shift(glossary.id, { x: 0, y: 0 });
+      const root = placed(view, empty);
+      const leaf = placed(view, recover);
+      const level = (box: Box, x: number) => ({ x, y: box.y + (box.height - size.height) / 2, ...size });
+      const joinsRoot = { type: 'move', nodeId: glossary.id, parentId: empty.id, index: 0 };
+      // At the landing, and up to 16 past it (the same margin a branch's zone leaves past its child); 17 past is out.
+      expect(snap(glossary.id, at(view, level(root, root.x + root.width + 80)), null)).toEqual(joinsRoot);
+      expect(snap(glossary.id, at(view, level(root, root.x + root.width + 96)), null)).toEqual(joinsRoot);
+      expect(snap(glossary.id, at(view, level(root, root.x + root.width + 97)), null)).toBeNull();
+      // Snug against the root still counts, and its left side is nothing: the first child goes right.
+      expect(snap(glossary.id, at(view, level(root, root.x + root.width - 8)), null)).toEqual(joinsRoot);
+      expect(snap(glossary.id, at(view, level(root, root.x - 80 - size.width)), null)).toBeNull();
+      // The leaf keeps the plain zone: 80 past it is out, 56 (its landing) is in.
+      expect(snap(glossary.id, at(view, level(leaf, leaf.x + leaf.width + 80)), null)).toBeNull();
+      expect(snap(glossary.id, at(view, level(leaf, leaf.x + leaf.width + 56)), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: recover.id, index: 0 });
+      if (mode === 'balanced') {
+        // The body root's one child was dealt right; the second goes left, a root gap out, so that empty side is the same zone mirrored.
+        const bodyRoot = projectMap(doc).root;
+        const body = placed(view, bodyRoot);
+        expect(snap(glossary.id, at(view, level(body, body.x - 80 - size.width)), null)).toEqual({ type: 'move', nodeId: glossary.id, parentId: bodyRoot.id, index: 1 });
+        expect(snap(glossary.id, at(view, level(body, body.x - 97 - size.width)), null)).toBeNull();
+      }
+      shift(glossary.id, null);
+    },
+  );
+
   it('keeps the slot it shows while its own placeholder shifts the hierarchy row under the root', async () => {
     const source = fixtureSource();
     const { view, topic } = await mount(source, 'hierarchy');
