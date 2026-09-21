@@ -406,7 +406,7 @@ export class MindmapView extends FileView {
     }
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
-    this.pendingTopic = null; this.topicDrag = null;
+    this.pendingTopic = null; this.topicDrag = null; this.ownWrite = undefined;
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
   }
@@ -461,7 +461,7 @@ export class MindmapView extends FileView {
     const selection = value.selection && typeof value.selection === "object" ? value.selection as Record<string, unknown> : null;
     if (document && typeof value.subpath === "string" && value.subpath !== "") {
       const offset = locateSubpath(document.source, value.subpath);
-      const id = offset === null ? undefined : this.nodeAt(document, offset)?.id;
+      const id = offset === null ? undefined : this.nodeContaining(document, offset)?.id;
       if (id !== undefined) this.select(id, true);
     } else if (document && selection && typeof selection.from === "number" && typeof selection.title === "string") {
       const { from, title } = selection;
@@ -476,7 +476,7 @@ export class MindmapView extends FileView {
   }
 
   /** The innermost node whose section holds the offset: children lie inside their parent's range and follow it. */
-  private nodeAt(document: MindDocument, offset: number): MindNode | undefined {
+  private nodeContaining(document: MindDocument, offset: number): MindNode | undefined {
     let found: MindNode | undefined;
     for (const node of document.nodes) {
       if (node.from <= offset && offset < node.to && (!found || node.from >= found.from)) found = node;
@@ -889,18 +889,21 @@ export class MindmapView extends FileView {
     const source = await this.store.read(file);
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
     const changed = source !== this.document?.source || this.document.root.title !== file.basename;
-    // This read is the one that answers for the view's own write while it finds exactly the text that write
-    // left on a note it has not re-read since; the edits then carry the ids across (LEV-146). Used once:
-    // a later read of the same note is someone else's business.
+    // The view's own write answers for this read while it finds exactly the text that write left on a note
+    // this view has not re-read since; the edits then carry the ids across (LEV-146). Anything else means
+    // someone else has written, and the write is of no use to any later read either.
     const own = this.ownWrite;
-    this.ownWrite = undefined;
     const written = own && source === own.after && this.document?.source === own.before ? own.edits : undefined;
+    if (own && !written) this.ownWrite = undefined;
     const document = changed || !this.document
       ? parseMarkdown(source, file.basename, this.document, undefined, written) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
+    // Spent only now: a read superseded above leaves the write for the read that wins, which finds the same
+    // text on the same note and carries the ids after all.
+    this.ownWrite = undefined;
     if (changed) {
       this.document = document;
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
@@ -1424,7 +1427,10 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!document || !file || this.saving) return;
     // Removing the branch re-centres the body root, so the drop point is measured from where the root will be.
-    const detached = parseMarkdown(applyEdits(document.source, planEdit(document, { type: "detach", nodeId: id }).edits), file.basename, document);
+    // The simulation takes its own edits, so the folds and the called maps — both held by node id — answer for
+    // the same nodes as on screen (LEV-146).
+    const removal = planEdit(document, { type: "detach", nodeId: id }).edits;
+    const detached = parseMarkdown(applyEdits(document.source, removal), file.basename, document, undefined, removal);
     const position = this.topicPoint(point, this.originFor(detached));
     const plan = planEdit(document, { type: "detach", nodeId: id, position: { layout: this.mode, x: position.x, y: position.y } });
     await this.commit(document.source, plan.edits, file);

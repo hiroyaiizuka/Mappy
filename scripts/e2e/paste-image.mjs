@@ -130,6 +130,8 @@ try {
     await new Promise(resolve => setTimeout(resolve, 1500));
     app.workspace.setActiveLeaf(opened, { focus: true });
     window.__mappyE2E = opened;
+    // What the vault held before this run: the cleanup removes what this run added and nothing else.
+    window.__mappyE2EBefore = new Set(app.vault.getFiles().map(file => file.path));
     ${VIEW}
     return { labels: nodes().map(label) };`));
 
@@ -177,11 +179,14 @@ try {
 
   if (!flag('--keep')) {
     await step('clean', () => evaluate(`${VIEW}
-      // "first 1.png" too: a run left with --keep makes Obsidian give the next paste a numbered name.
-      const attachments = app.vault.getFiles().filter(file => /(first|second)( \\d+)?\\.png$/u.test(file.path));
+      // Only what this run put there: Obsidian names a colliding attachment "first 1.png", and whatever the
+      // vault already held is not the case's to tidy.
+      const before = window.__mappyE2EBefore ?? new Set();
+      const attachments = app.vault.getFiles().filter(file => !before.has(file.path) && file.extension === 'png');
       for (const file of [...attachments, view.file]) await app.vault.delete(file, true);
       leaf.detach();
       delete window.__mappyE2E;
+      delete window.__mappyE2EBefore;
       return { removed: attachments.map(file => file.path) };`));
   }
 } finally {

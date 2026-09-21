@@ -10,14 +10,23 @@
  *   MAPPY_E2E_PORT   CDP port (default 9231)
  *   MAPPY_E2E_VAULT  absolute path of the vault the window must have open (default: this project's test-vault)
  */
+import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const PORT = process.env.MAPPY_E2E_PORT ?? '9231';
+/**
+ * The vault a case may drive. `MAPPY_E2E_VAULT` is for a second checkout's own test vault, not for a vault
+ * with anything in it: the marker `prepare-test-vault` leaves is required, so a case that writes and deletes
+ * notes can only reach a generated one (AGENTS.md: 本番 Vault をテスト対象にしない).
+ */
 export const VAULT = process.env.MAPPY_E2E_VAULT ?? resolve(root, 'test-vault');
+if (!existsSync(join(VAULT, '.mappy-generated'))) {
+  throw new Error(`${VAULT} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
+}
 
 /** modifier bits of Input.dispatchKeyEvent: Alt=1, Ctrl=2, Meta=4, Shift=8 */
 const KEYS = {

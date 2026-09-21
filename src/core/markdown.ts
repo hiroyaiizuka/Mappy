@@ -173,7 +173,9 @@ function carriedIds(nodes: MindNode[], previous: MindDocument, edits: readonly T
   const carried = new Set<MindNode>();
   for (const node of nodes) {
     const old = places.get(node.from);
-    if (!old) continue;
+    // The shape as well as the place: every planner today leaves a carried node's line where the arithmetic
+    // says, and a new one that does not should give the node a fresh id rather than another node's.
+    if (!old || old.kind !== node.kind || old.level !== node.level) continue;
     node.id = old.id;
     carried.add(node);
   }
@@ -191,7 +193,11 @@ function assignIds(
   if (!previous) return;
   // The rules below guess from the text, for the changes this map did not make; a node the edits already
   // answered for is left alone, and its id is not handed to a second node.
-  const carried = edits ? carriedIds(nodes, previous, edits) : new Set<MindNode>();
+  // An empty set is not a set of edits: a caller that has nothing to say about how `source` came about is
+  // telling us nothing, and offsets alone are the guess E05 refuses to make.
+  const carried = edits?.length ? carriedIds(nodes, previous, edits) : new Set<MindNode>();
+  // Every node answered for: none of the rules below can add anything, and they read the whole source twice.
+  if (carried.size === nodes.length) return;
   const claimed = new Set(Array.from(carried, (node) => node.id));
   const oldTitles = groupByTitle(previous.nodes);
   const newTitles = groupByTitle(nodes);

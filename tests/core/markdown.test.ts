@@ -127,6 +127,10 @@ describe('source-preserving Markdown projection', () => {
     const repeated = guessed.nodes.filter(node => node.title === 'Same');
     expect(repeated).toHaveLength(2);
     expect(repeated.some(node => first.nodes.some(old => old.id === node.id))).toBe(false);
+    // An empty set is not a set of edits: a caller with nothing to say about the change says nothing, and
+    // the offsets alone must not carry the repeated titles either.
+    const empty = parseMarkdown(after, 'File', first, undefined, []);
+    expect(empty.nodes.filter(node => node.title === 'Same').some(node => first.nodes.some(old => old.id === node.id))).toBe(false);
   });
 
   it('gives a node a new id when an edit rewrites the line it began on, rather than guessing at a place', () => {
