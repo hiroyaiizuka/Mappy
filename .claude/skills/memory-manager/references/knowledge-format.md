@@ -1,137 +1,45 @@
-<!-- Basic Memory 公式のナレッジフォーマット定義。mappy-memory のノートもこの形式に従う。プロジェクト固有の内容はここに書かず SKILL.md 側に置く。 -->
+<!-- Basic Memory のナレッジフォーマットは公式ドキュメントが正本。ここには出典へのリンクと、mappy-memory 固有の規則だけを置く。書き込みの手順は SKILL.md 側。 -->
 
-# Knowledge Format - Basic Memory
+# ナレッジフォーマット（mappy-memory）
 
-Understanding how Basic Memory structures knowledge will help you create richer, more connected notes. Here's how the semantic patterns work.
+## 出典
 
-File-First Architecture
------------------------
+frontmatter・Observations・Relations・permalink・スキーマの正式な定義は Basic Memory の公式ドキュメントにある。迷ったらこちらを読む。
 
-All knowledge in Basic Memory is stored in plain text Markdown files:
+- Knowledge Format — <https://docs.basicmemory.com/concepts/knowledge-format>
+- Basic Memory 本体 — <https://github.com/basicmachines-co/basic-memory>
 
-*   Files are the source of truth for all knowledge in Basic Memory
-*   Changes to files automatically update the knowledge graph in the db
-*   You maintain complete ownership and control
-*   Files work with git and other version control systems
-*   Knowledge persists independently of any AI conversation
+以前このファイルは当時のページを全文写していた。写しは置かない。理由は 2 つある。
 
-Core Document Structure
------------------------
+- **古くなる。** 写しは `edit-note`・`write-note --overwrite`・`schema-validate` のいずれにも触れておらず、その欠落が「追記のしかたが書かれていない」「推奨手順が `type` を落とす」という手順書の欠陥をそのまま生んだ（LEV-184）。現行ページはすでに見出し構成から違う。
+- **ライセンスが未確定。** Mappy は公開前提（GitHub Release ＋ BRAT で配布中）で、AGENTS.md も「公開時のライセンスと plugin ID は未確定」と書いている。他所の文書の全文を出典・版・ライセンス表記なしで同梱しない。
 
-Every document uses this basic structure:
+## 形（最小限の控え）
 
-```
+```markdown
 ---
 title: Document Title
 type: note
 tags: [tag1, tag2]
-permalink: custom-path
+permalink: folder/note-name
 ---
 
 # Document Title
-Regular markdown content...
 
 ## Observations
-- [category] Content with #tags (optional context)
+- [category] 内容 #tag (補足)
 
 ## Relations
-- relation_type [[Other Document]] (optional context)
+- relates_to [[Other Document]]
 ```
 
-### Frontmatter
+- Observations は `[category]` で始まるリスト項目。チェックボックス（`[ ]` / `[x]`）は Observations として扱われない。
+- Relations は関係の語で始まり `[[wiki link]]` が続くリスト項目。語がそのまま関係の種類になる（`implements` / `depends_on` / `relates_to` / `extends` / `part_of` など）。
+- permalink はノートの安定した識別子で、`bm tool read-note <permalink>` と他のノートからの `[[wiki link]]` の当て先になる。
 
-The YAML frontmatter at the top of each file defines essential metadata:
+## mappy-memory 固有の規則
 
-```
----
-title: Document Title    # Used for linking and references
-type: note               # Document type
-tags: [tag1, tag2]       # For organization and searching
-permalink: custom-link   # Optional custom URL path
----
-```
-
-The title is particularly important as it's used to create links between documents.
-
-### Observations
-
-Observations are facts or statements about a topic:
-
-```
-- [tech] Uses SQLite for storage #database
-- [design] Follows local-first architecture #architecture
-- [decision] Selected bcrypt for passwords #security (Based on audit)
-```
-
-Observations are markdown list items beginning with a `[category]` value. Basic Memory knows not to treat Markdown checkbox lists (`[ ]` or `[x]`) as observations.
-
-Each observation contains:
-
-*   **Category** in [brackets] - classifies the information type
-*   **Content text** - the main information
-*   Optional **#tags** - additional categorization
-*   Optional **(context)** - supporting details
-
-### Common Categories
-
-*   `[tech]`: Technical details
-*   `[design]`: Architecture decisions
-*   `[feature]`: User capabilities
-*   `[decision]`: Choices that were made
-
-### Additional Categories
-
-*   `[principle]`: Fundamental concepts
-*   `[method]`: Approaches or techniques
-*   `[preference]`: Personal opinions
-
-### Relations
-
-Relations connect documents to form the knowledge graph:
-
-```
-- implements [[Search Design]]
-- depends_on [[Database Schema]]
-- relates_to [[User Interface]]
-```
-
-Relations are markdown list items beginning with a descriptive word, followed by a `[[wiki link]]` value. The description is used as the relationship type.
-
-You can also create inline references:
-
-`This builds on [[Core Design]] and uses [[Utility Functions]].`
-
-Common relation types include:
-
-*   `implements`: Implementation of a specification
-*   `depends_on`: Required dependency
-*   `relates_to`: General connection
-*   `inspired_by`: Source of ideas
-*   `extends`: Enhancement
-*   `part_of`: Component relationship
-*   `contains`: Hierarchical relationship
-*   `pairs_with`: Complementary relationship
-
-Knowledge Graph
----------------
-
-Basic Memory automatically builds a knowledge graph from your document connections:
-
-*   Each document becomes a node in the graph
-*   Relations create edges between nodes
-*   Relation types add semantic meaning to connections
-*   Forward references can link to documents that don't exist yet
-
-This graph enables rich context building and navigation across your knowledge base.
-
-Permalinks and memory:// URLs
------------------------------
-
-Every document in Basic Memory has a unique **permalink** that serves as its stable identifier:
-
-*   Set explicitly in the frontmatter (`permalink: folder/note-name`), or generated from the folder and title when omitted
-*   Used to reference the note from `bm tool read-note <permalink> --project mappy-memory` and from `[[wiki links]]` in other notes
-*   Stable across edits to the note's content — renaming the title does not change the permalink unless the frontmatter is edited
-*   Addressable inside Basic Memory as a `memory://<permalink>` URL, used internally to resolve relations and build context
-
-mappy-memory の permalink はカテゴリを含める（例: `bugfixes/2026-09-22-paste-image-node-not-found`）。ファイル名と permalink の対応が崩れると `bm tool search-notes` や `[[wiki link]]` からたどれなくなる。
+- **permalink は `{カテゴリ}/{英語スラッグ}` にする。** カテゴリは `memory/README.md` のディレクトリ名（`events` / `bugfixes` / `investigations` / `designs` / `reviews` / `corrections` / `archive`）。例: `bugfixes/2026-09-22-paste-image-node-not-found`。
+- **permalink と type は frontmatter に必ず書く。** 省略するとそれぞれ既定に落ち、permalink はプロジェクト名を前置した自動生成（日本語タイトルはローマ字混じりの断片）に、type は `note` になる。理由と実測は SKILL.md「frontmatter の permalink と type」。
+- `ticket`（LEV-番号）を入れる。リリース済みなら `released_in`（0.x.y）も。
+- 生データ・スクリーンショット・計測値はノートに貼らず、`artifacts/{パス}` への参照として書く。
