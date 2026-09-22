@@ -97,6 +97,8 @@ bm tool edit-note {permalink} --project mappy-memory \
   --operation append --content "{追記する本文}"
 ```
 
+`append` は行の継ぎ目の改行を自分で入れるので、`--content` の先頭に改行を置かなくても前の行に癒着しない（続けて何度打っても別々の行に入る。`npm run harness:e2e:memory-procedure` の `repeated-append-does-not-glue-lines` が固定している）。日付の見出しなどで区切りたいときだけ、先頭に空行を 1 つ足す。
+
 同じ `--title` で `write-note` をもう一度打つと、終了コード 1 と `NOTE_ALREADY_EXISTS` で終わる。
 
 ```json

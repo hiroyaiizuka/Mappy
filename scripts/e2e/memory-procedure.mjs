@@ -272,6 +272,23 @@ try {
     return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated };
   });
 
+  // 6b. 手順書は `--content "{追記する本文}"` と書いており、先頭に改行を置かせていない。積み上げるノートは
+  //     この形で何度も呼ばれるので、append が自分で改行を入れることに寄りかかっている。前の行に癒着すると
+  //     corrections/inbox が 1 行に潰れるため、続けて 2 回打って別の行に入ることを固定する。
+  await step('repeated-append-does-not-glue-lines', () => {
+    const write = content => bmJson([
+      'tool', 'edit-note', 'corrections/inbox', '--project', PROJECT,
+      '--operation', 'append', '--content', content,
+    ]);
+    const first = write('- 追記A');
+    const second = write('- 追記B');
+    const text = readFileSync(notePath('corrections/Correction Inbox.md'), 'utf8');
+    check(first.status === 0 && second.status === 0, `連続した append が失敗した: ${first.stderr} / ${second.stderr}`);
+    check(/^- 追記A$/m.test(text), `1 回目の追記が単独の行にならなかった: ${JSON.stringify(text.slice(-80))}`);
+    check(/^- 追記B$/m.test(text), `2 回目の追記が前の行に癒着した: ${JSON.stringify(text.slice(-80))}`);
+    return { tail: text.slice(-40) };
+  });
+
   // 7. ここまでは bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
   //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
   await step('documents-still-say-it', () => {
