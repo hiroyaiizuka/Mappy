@@ -196,7 +196,9 @@ OS / Obsidian version / Vault / build hash:
 
 毎回、プロセス ID と乱数を混ぜた名前の使い捨て Basic Memory プロジェクトを一時ディレクトリに作り、最後にノートごと消す。**`mappy-memory` には触らない**（後片付けの後で、使い捨てプロジェクトが消えたことと `mappy-memory` が残っていることの両方を確かめる）。`--keep` で残せる。
 
-何を固定しているか: 手順書に書いてある推奨コマンドが、(1) 明示した `{カテゴリ}/{英語スラッグ}` の permalink を持ち、(2) `type` が `note` に落ちず、(3) `bm reindex` 無しで `read-note`・`search-notes`・`search-notes --type` から引けるノートを作ること。あわせて、積み上げるノートの扱い —— 同じタイトルの 2 回目の `write-note` が何も書かずに終わること、`--overwrite` が過去の記録を消すこと、`edit-note --operation append` が過去の記録を残すこと、**未作成の permalink への `append` はエラーにならずプロジェクト名を前置したノートを作ること**（手順書が「無ければ `write-note` で作る」と書いている根拠） —— を固定する。`permalink`・`type` を書かない旧手順（PR #74 の「方法A」）に戻すと 5 件の check が落ちる（`artifacts/lev-184-memory-procedure/revert-run.txt`）。手順書を直したら、同じブランチでこのケースも直す。
+何を固定しているか: 手順書に書いてある推奨コマンドが、(1) 明示した `{カテゴリ}/{英語スラッグ}` の permalink を持ち、(2) `type` が `note` に落ちず、(3) `bm reindex` 無しで `read-note`・`search-notes`・`search-notes --type` から引けるノートを作ること。あわせて、積み上げるノートの扱い —— 同じタイトルの 2 回目の `write-note` が何も書かずに終わること、`--overwrite` が過去の記録を消すこと、`edit-note --operation append` が過去の記録を残すこと、**未作成の permalink への `append` はエラーにならずプロジェクト名を前置したノートを作ること**（手順書が「無ければ `write-note` で作る」と書いている根拠） —— を固定する。原因の切り分けも固定している: プロジェクト名の前置**だけ**なら `read-note {カテゴリ}/{スラッグ}` は当たり、外れるのは `search-notes --permalink "{カテゴリ}/*"` の方で、`read-note` と `[[wiki link]]` を外すのは日本語タイトルのスラッグ崩れ（`prefix-alone-does-not-break-read-note`）。手順書の文言もこの切り分けで書いてある。
+
+`permalink`・`type` を書かない旧手順（PR #74 の「方法A」）に戻すと、`documented-write-note` の 2 件（permalink が明示した値にならない／`type` が `event` にならない）、`indexed-without-reindex` の 2 件（`{カテゴリ}/{スラッグ}` で `read-note` できない／検索に出ない）、`search-by-type` の 1 件（`--type event` で出ない）—— 計 5 件の check が落ちる。手順書を直したら、同じブランチでこのケースも直す。ハーネスは bm の挙動だけでなく手順書そのものにも当てており（`documents-still-say-it`）、SKILL.md から `permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append` が消える、ファイルへの heredoc 書き込みや個人の絶対パスが戻る、AGENTS.md からセッション開始のコマンドが消える、のいずれでも FAIL する。
 
 ## 公開前の追加確認
 

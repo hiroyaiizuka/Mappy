@@ -20,8 +20,11 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRecord, finish, makeCheck, makeStep, parseArgs } from './case-runner.mjs';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const { flag, value } = parseArgs();
 const jsonPath = value('--json');
@@ -61,8 +64,13 @@ try {
 
 // 後片付けの検証に使う。使い捨てプロジェクトを消すついでに他のプロジェクトまで消していないことを見るが、
 // mappy-memory が登録されていない端末で FAIL にしないよう、「元々あったか」を先に記録しておく。
+// 一覧そのものが読めなかった場合に false へ倒すと、行き過ぎた後片付けの検知が黙って消えるので、
+// 「読めなかった」を第 3 の状態として持つ（後片付けの側でそれを FAIL にする）。
 const projectsBefore = bmJson(['tool', 'list-projects']);
-const hadMappyMemory = (projectsBefore.json?.projects ?? []).some(item => item.name === 'mappy-memory');
+const listedBefore = projectsBefore.status === 0 && projectsBefore.json !== null;
+const hadMappyMemory = listedBefore
+  ? (projectsBefore.json.projects ?? []).some(item => item.name === 'mappy-memory')
+  : null;
 
 const root = mkdtempSync(join(tmpdir(), 'mappy-memory-probe-'));
 const record = createRecord(root, PROJECT);
@@ -72,13 +80,26 @@ const step = makeStep(record);
 const check = makeCheck(record);
 
 const notePath = name => join(root, name);
+/** frontmatter だけを返す。取れなければ空文字（本文全体を返すと、本文中の `type: event` で check が通る）。 */
 const frontmatterOf = file => {
   const text = readFileSync(file, 'utf8');
+  if (!text.startsWith('---\n')) return '';
   const end = text.indexOf('\n---', 4);
-  return text.slice(0, end === -1 ? text.length : end + 4);
+  return end === -1 ? '' : text.slice(0, end + 4);
 };
 
 let added = false;
+
+// Ctrl-C で中断しても、使い捨てプロジェクトを bm のグローバル設定に残さない。finally は届かない。
+const onInterrupt = signal => {
+  if (added && !keep) { spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes'], { encoding: 'utf8' }); }
+  if (!keep && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  console.error(`\n${signal} で中断した。使い捨てプロジェクトは片付けた。`);
+  process.exit(2);
+};
+process.on('SIGINT', () => onInterrupt('SIGINT'));
+process.on('SIGTERM', () => onInterrupt('SIGTERM'));
+
 try {
   await step('project-add', () => {
     const run = bm(['project', 'add', PROJECT, root]);
@@ -89,19 +110,41 @@ try {
   if (!added) throw new Error('プロジェクトを作れなかったので以降は実行しない');
 
   // 1. permalink と type を省いた write-note が、何を既定に落とすか（SKILL.md「frontmatter の permalink と type」）。
+  //    日本語タイトルなのでスラッグ崩れと前置が同時に起きる。原因の切り分けはステップ 1b で行う。
+  let droppedPermalink = '';
   await step('defaults-drop-permalink-and-type', () => {
     const title = '2026-09-22 既定の確認';
     const out = bmJson(
       ['tool', 'write-note', '--project', PROJECT, '--title', title, '--folder', 'events', '--tags', 'probe'],
       '# 既定の確認\n\n## Observations\n- [tech] permalink と type を省いた #probe\n',
     );
-    const permalink = out.json?.permalink ?? '';
+    droppedPermalink = out.json?.permalink ?? '';
     const file = notePath(`events/${title}.md`);
     const front = existsSync(file) ? frontmatterOf(file) : '';
+    // 意図した英語スラッグでは引けない ＝ 日本語タイトルのノートは permalink を予測できない。
+    const guess = bmJson(['tool', 'read-note', 'events/2026-09-22-defaults', '--project', PROJECT]);
     check(out.status === 0, `write-note が失敗した: ${out.stderr}`);
-    check(permalink.startsWith(`${PROJECT}/`), `permalink にプロジェクト名が前置されなかった: ${permalink}`);
+    check(droppedPermalink.startsWith(`${PROJECT}/`), `permalink にプロジェクト名が前置されなかった: ${droppedPermalink}`);
     check(/^type: note$/m.test(front), `type が既定の note にならなかった: ${front}`);
-    return { permalink, type: front.match(/^type: (.+)$/m)?.[1] };
+    check(guess.json?.permalink == null, `予測した英語スラッグで引けてしまった（スラッグは崩れていない）: ${guess.json?.permalink}`);
+    return { permalink: droppedPermalink, type: front.match(/^type: (.+)$/m)?.[1] };
+  });
+
+  // 1b. 原因の切り分け（レビュー指摘）。前置「だけ」なら read-note と [[wiki link]] は当たり、
+  //     外れるのは --permalink のグロブだけ。手順書はこの 2 つを別々の理由として書いている。
+  await step('prefix-alone-does-not-break-read-note', () => {
+    const out = bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'Probe Ascii Title', '--folder', 'events'],
+      '# Probe Ascii Title\n\n## Observations\n- [tech] permalink だけ省いた #probe\n',
+    );
+    const permalink = out.json?.permalink ?? '';
+    const byWish = bmJson(['tool', 'read-note', 'events/probe-ascii-title', '--project', PROJECT]);
+    const glob = bmJson(['tool', 'search-notes', '--permalink', 'events/*', '--project', PROJECT]);
+    const globHits = (glob.json?.results ?? []).map(item => item.permalink);
+    check(permalink === `${PROJECT}/events/probe-ascii-title`, `前置された permalink にならなかった: ${permalink}`);
+    check(byWish.json?.permalink === permalink, `前置されただけのノートが {カテゴリ}/{スラッグ} で読めない: ${byWish.stderr}`);
+    check(!globHits.includes(permalink), `--permalink "events/*" が前置されたノートを拾った: ${globHits.join(', ')}`);
+    return { permalink, readBy: byWish.json?.permalink, globHits };
   });
 
   // 2. SKILL.md の推奨手順そのもの（stdin + frontmatter の permalink / type）。
@@ -126,7 +169,9 @@ try {
     ].join('\n');
     const run = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
     const at = (run.stdout ?? '').indexOf('{');
-    const json = at === -1 ? null : JSON.parse(run.stdout.slice(at));
+    // JSON でなくても throw せず、下の status / stderr を出す check に到達させる。
+    let json = null;
+    if (at !== -1) { try { json = JSON.parse(run.stdout.slice(at)); } catch { json = null; } }
     const file = notePath('events/2026-09-22 推奨手順の確認.md');
     const front = existsSync(file) ? frontmatterOf(file) : '';
     check(run.status === 0, `heredoc 版の write-note が失敗した: ${run.stderr}`);
@@ -150,7 +195,8 @@ try {
     const out = bmJson(['tool', 'search-notes', '--type', 'event', '--project', PROJECT]);
     const hits = (out.json?.results ?? []).map(item => item.permalink);
     check(hits.includes('events/probe-documented-write'), `type: event のノートが --type event で出ない: ${hits.join(', ')}`);
-    check(!hits.some(hit => hit.startsWith(`${PROJECT}/`)), `type を落としたノートが --type event に混ざった: ${hits.join(', ')}`);
+    // permalink の形ではなく、ステップ 1 で type を落としたノートそのものが混ざっていないかを見る。
+    check(!hits.includes(droppedPermalink), `type を落としたノート（${droppedPermalink}）が --type event に混ざった: ${hits.join(', ')}`);
     return { hits };
   });
 
@@ -190,10 +236,12 @@ try {
   });
 
   await step('append-keeps-history', () => {
-    bmJson(
+    // 下準備。ここが失敗すると、下の「append が過去の記録を消した」が事実と違う理由で落ちる。
+    const restored = bmJson(
       ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
       '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-20\n- 既存の記録1\n',
     );
+    check(restored.status === 0, `下準備（過去の記録を書き戻す --overwrite）が失敗した: ${restored.stderr}`);
     const out = bmJson([
       'tool', 'edit-note', 'corrections/inbox', '--project', PROJECT,
       '--operation', 'append', '--content', '\n## 2026-09-22\n- 新しい記録2 PROBEAPPENDTOKEN\n',
@@ -223,28 +271,55 @@ try {
     bm(['tool', 'delete-note', `${PROJECT}/corrections/not-created-yet`, '--project', PROJECT]);
     return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated };
   });
+
+  // 7. ここまでは bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
+  //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
+  await step('documents-still-say-it', () => {
+    const skill = readFileSync(join(repoRoot, '.claude/skills/memory-manager/SKILL.md'), 'utf8');
+    const agents = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8');
+    const missing = [];
+    const want = (text, needle, where) => { if (!text.includes(needle)) missing.push(`${where}: ${needle}`); };
+    want(skill, 'permalink: {カテゴリ}/{英語スラッグ}', 'SKILL.md');
+    want(skill, 'type: {カテゴリの単数形}', 'SKILL.md');
+    want(skill, '--operation append', 'SKILL.md');
+    want(skill, '--overwrite', 'SKILL.md');
+    want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
+    want(agents, '--operation append', 'AGENTS.md');
+    check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
+    // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
+    check(!/cat >\s*"?\//.test(skill), 'SKILL.md にファイルへの heredoc 書き込みが戻っている（LEV-184 指摘 6）');
+    // 公開リポジトリなので個人の絶対パスを置かない（LEV-184 指摘 7）。
+    check(!skill.includes('/Users/'), 'SKILL.md に個人の絶対パスが戻っている（LEV-184 指摘 7）');
+    return { missing };
+  });
 } catch (error) {
   record.failures.push(String(error));
 } finally {
-  if (added && !keep) {
-    const removed = bm(['project', 'remove', PROJECT, '--delete-notes']);
-    check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes）`);
-    // bm がディレクトリを残した場合はこちらで消す。root は毎回 mkdtempSync が作った一時ディレクトリ。
-    const dirLeftByBm = existsSync(root);
-    if (dirLeftByBm) rmSync(root, { recursive: true, force: true });
-    const listed = bmJson(['tool', 'list-projects']);
-    // 一覧が読めないまま names を空配列にすると、消し損ねを見逃したまま PASS する。
-    check(listed.status === 0 && listed.json !== null, `後片付けの確認ができない（bm tool list-projects が読めない）: ${listed.stderr}`);
-    if (listed.json) {
-      const names = (listed.json.projects ?? []).map(item => item.name);
-      check(!names.includes(PROJECT), `使い捨てプロジェクトが残っている: ${PROJECT}`);
-      // mappy-memory が元から無い端末（新しいクローン・CI）で FAIL にしない。
-      if (hadMappyMemory) check(names.includes('mappy-memory'), 'mappy-memory がプロジェクト一覧から消えた（後片付けが行き過ぎた）');
+  if (keep) {
+    console.log(added
+      ? `--keep: ${PROJECT}（${root}）を残した。手で消す: bm project remove ${PROJECT} --delete-notes`
+      : `--keep: プロジェクトは作られていない。一時ディレクトリだけ残した: ${root}`);
+  } else {
+    // プロジェクトを作れなかった経路でも一時ディレクトリは残るので、後片付けは add の成否と分ける。
+    if (added) {
+      const removed = bm(['project', 'remove', PROJECT, '--delete-notes']);
+      check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes）`);
+      const listed = bmJson(['tool', 'list-projects']);
+      // 一覧が読めないまま names を空配列にすると、消し損ねを見逃したまま PASS する。
+      check(listed.status === 0 && listed.json !== null, `後片付けの確認ができない（bm tool list-projects が読めない）: ${listed.stderr}`);
+      if (listed.json) {
+        const names = (listed.json.projects ?? []).map(item => item.name);
+        check(!names.includes(PROJECT), `使い捨てプロジェクトが残っている: ${PROJECT}`);
+        // 実行前の一覧が読めていた場合だけ、他のプロジェクトを巻き込んでいないかを見る。
+        // hadMappyMemory === null（読めなかった）を「無かった」と同じ扱いにすると、検知が黙って消える。
+        check(hadMappyMemory !== null, '実行前のプロジェクト一覧を読めなかったので、行き過ぎた後片付けを検知できない');
+        if (hadMappyMemory === true) check(names.includes('mappy-memory'), 'mappy-memory がプロジェクト一覧から消えた（後片付けが行き過ぎた）');
+      }
+      record.steps['project-remove'] = { status: removed.status, dirLeftByBm: existsSync(root) };
     }
+    // root は毎回 mkdtempSync が作った一時ディレクトリ。bm が残した場合も、add が失敗した場合もここで消す。
+    if (existsSync(root)) rmSync(root, { recursive: true, force: true });
     check(!existsSync(root), `使い捨てのディレクトリを消せなかった: ${root}`);
-    record.steps['project-remove'] = { status: removed.status, dirLeftByBm };
-  } else if (keep) {
-    console.log(`--keep: ${PROJECT}（${root}）を残した。手で消す: bm project remove ${PROJECT} --delete-notes`);
   }
 }
 
