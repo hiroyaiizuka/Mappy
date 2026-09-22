@@ -1,6 +1,6 @@
 {
   "name": "mappy",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "description": "A Markdown-first mind map for Obsidian.",
   "main": "main.js",
