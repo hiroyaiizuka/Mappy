@@ -74,7 +74,7 @@ product-plan.md §5 <フェーズ> より: （該当文を引用。書き換え�
 - `npm run check` 合格
 - `artifacts/` に実行条件・結果・証跡を残す。未実施項目は明記する
 - product-plan.md の「現在の実装／残る検証・機能」の該当行を同じ PR で更新する
-- PR を作る前に `/code-review high origin/main...HEAD` を実行し（変更した場所を問わず全 PR）、指摘を直すか見送り理由を PR 本文に書く
+- PR を作る前に `/code-review high origin/main...HEAD` を実行し（変更した場所を問わず全 PR。base が `main` でないブランチはその base に読み替える）、指摘を直すか見送り理由を PR 本文に書く
 - PR リンクを `orca linear attach`、完了コメント1本、In Review へ
 ```
 
@@ -96,7 +96,10 @@ orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番�
 2. `product-plan.md` の受入条件と `harness.md` の該当ケースを確認する。
 3. 実装・検証し、`npm run check` を通す。証跡を `artifacts/` に残す。
 4. product-plan の該当行を更新し、ここまでをコミットする。**まだ PR を作らない。**
-5. **変更した場所を問わず、PR を作る前に `/code-review high origin/main...HEAD` を実行する。** 範囲は毎回書く。引数なしの `/code-review` が見るのは `@{upstream}...HEAD` で、upstream が無いときだけローカルの `main...HEAD` に落ちる（claude-code 2.1.273 の Phase 0）。先に `git push -u` したブランチではこの範囲が空になり、作業ツリーもクリーンならレビュー対象 0 のまま「指摘 0 件」で通る。フォールバックのローカル `main` も、プライマリーが `origin/main` より遅れていれば他チケットの merge 済みコミットまで入る。どちらもこの規約が防ごうとしている「実体のない PASS」そのもので、範囲を書けば push 済みでも rebase 前でも同じ差分を見る。結果は背景で走り、数分〜10 分後に task notification として届くので待つ。High・Medium の指摘は再現テストを足して同じ branch で直し、見送るものは理由を書く。人が差分を通読するより多く見つかった実績があり（LEV-39〜40 で 7 件、LEV-37 で 8 件、`src/` を含まない PR #76 で 14 件）、省略しない。`src/` を変えたかどうかで絞らない: 危険の所在は変更の場所ではなく役割で、#76 は他チケットを「実機で確認済み」と認定する側の仕組みだった（AGENTS.md）。
+5. **変更した場所を問わず、PR を作る前に `/code-review high origin/main...HEAD` を実行する。** 結果は背景で走り、数分〜10 分後に task notification として届くので待つ。High・Medium の指摘は再現テストを足して同じ branch で直し、見送るものは理由を書く。人が差分を通読するより多く見つかった実績があり（LEV-39〜40 で 7 件、LEV-37 で 8 件、`src/` を含まない PR #76 で 14 件）、省略しない。`src/` を変えたかどうかで絞らないのは、危険の所在が変更の場所ではなく役割だから（AGENTS.md）。
+    - **範囲を毎回書く。** 引数なしの `/code-review` が見るのは `@{upstream}...HEAD`、upstream が無ければローカルの `main...HEAD`、それも無ければ `HEAD~1`（claude-code 2.1.273 の Phase 0）。`git push -u` 済みのブランチでは `@{upstream}...HEAD` が空になり、作業ツリーもクリーンなら対象 0 のまま「指摘 0 件」で通る。`HEAD~1` に落ちれば複数コミットのブランチで最後の 1 コミットしか見ない。どちらもこの規約が塞ごうとしている「実体のない PASS」そのもので、LEV-183 で実際に再現した（`artifacts/lev-183-branch-review/record.md`）。
+    - base が `main` でないブランチ（`orca worktree create --base-branch` で切った場合）は `origin/main` をその base に読み替える。読み替えないと親ブランチのコミットまで自分の PR の指摘として返る。
+    - **直したあとにもう一度回すなら、先に直した分をコミットする。** 範囲を渡した実行は作業ツリーを見ない（Phase 0 が `git diff HEAD` を足すのは範囲を渡さなかったときだけ）ので、未コミットのままでは同じ指摘がそのまま返る。
 6. レビューを通してから PR を作る。PR 本文は `/visual-pr` スキル（`.claude/skills/visual-pr`）の形式で書く: 「なぜ」1文、「注意点」1〜3点、「変更の形」を diff 形式の木（ファイル・呼び出し・原文の前後）で示す。長い散文の changelog にしない。末尾に「コードレビュー: 指摘 N 件、対応 M 件、見送り K 件（理由）」を 1 行入れる。レビュー前の PR を本人に見せない。先に作ってしまった場合は draft に戻し（非 draft なら `gh pr ready --undo`）、draft のままレビューを通して指摘を直してから `gh pr ready` する。範囲を明示しているので、PR の有無でコマンドは変わらない。
 7. `orca linear attach --current --url <PR>`、完了コメント1本、`orca linear status set --current --to "In Review"`。
 8. 途中経過のコメントは書かない。範囲外は `--parent-current` で子 issue にする。
