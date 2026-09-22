@@ -50,7 +50,7 @@ AGENTS.md に同じコマンドが書いてある。このスキルはトリガ�
 
 ## 書き込み
 
-書き込みは `bm tool write-note`（新規）と `bm tool edit-note`（既存）の 2 つだけ。どちらも書いた内容をその場で検索索引に反映するので、**`bm reindex` は要らない**（`npm run harness:e2e:memory-procedure` がこれを毎回確かめる）。ファイルを直接開いて書かない — 索引が更新されず、`search-notes` から消える。
+書き込みは `bm tool write-note`（新規）と `bm tool edit-note`（既存）の 2 つだけ。どちらも書いた内容をその場で検索索引に反映するので、**`bm reindex` は要らない**（`npm run harness:e2e:memory-procedure` がこれを毎回確かめる）。ファイルを直接開いて書かない — 索引が更新されないので、`search-notes` は書き換える前の内容を返し続ける（直し方は下記「索引が壊れたとき」）。
 
 ### 新しいノートを作る
 
@@ -135,7 +135,13 @@ bm tool schema-validate {型} --project mappy-memory          # スキーマと�
 
 ## corrections
 
-流れ（`inbox` → `lessons` → `graduated` と、そこから `lessons` を消すこと）は `memory/schemas/correction.md` が正本。ここに写さない。書き込みの当て方だけ:
+流れ（`inbox` → `lessons` → `graduated` と、そこから `lessons` を消すこと）は `memory/schemas/correction.md` が正本。ここに写さない。ワークツリーにはファイルが無いので、コマンドで読む:
+
+```sh
+bm tool read-note schemas/correction --project mappy-memory
+```
+
+書き込みの当て方だけ:
 
 ```sh
 # ミスをした直後 — inbox へ追記（--overwrite を使わない）
@@ -146,6 +152,8 @@ bm tool edit-note corrections/inbox --project mappy-memory \
 bm tool edit-note corrections/lessons --project mappy-memory \
   --operation append --content "{教訓 1 行}"
 ```
+
+どちらも既存のノートで、`append` の当て先がある。**無い permalink へ `append` すると、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、新しく作るときは `write-note` を使う。
 
 ## 索引が壊れたとき
 

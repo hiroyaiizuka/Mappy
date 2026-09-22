@@ -192,11 +192,11 @@ OS / Obsidian version / Vault / build hash:
 
 ### 開発メモリの手順（Obsidian 実機を使わない）
 
-`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md「開発メモリ」と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
+`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md の開発メモリの箇条書き（`bm tool` を含む行。AGENTS.md はフラットな箇条書きで、節見出しは無い）と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
 
 毎回、プロセス ID と乱数を混ぜた名前の使い捨て Basic Memory プロジェクトを一時ディレクトリに作り、最後にノートごと消す。**`mappy-memory` には触らない**（後片付けの後で、使い捨てプロジェクトが消えたことと `mappy-memory` が残っていることの両方を確かめる）。`--keep` で残せる。
 
-何を固定しているか: 手順書に書いてある推奨コマンドが、(1) 明示した `{カテゴリ}/{英語スラッグ}` の permalink を持ち、(2) `type` が `note` に落ちず、(3) `bm reindex` 無しで `read-note`・`search-notes`・`search-notes --type` から引けるノートを作ること。あわせて、積み上げるノートの扱い —— 同じタイトルの 2 回目の `write-note` が何も書かずに終わること、`--overwrite` が過去の記録を消すこと、`edit-note --operation append` が過去の記録を残すこと —— を固定する。`permalink`・`type` を書かない旧手順（PR #74 の「方法A」）に戻すと 5 件の check が落ちる（`artifacts/lev-184-memory-procedure/revert-run.txt`）。手順書を直したら、同じブランチでこのケースも直す。
+何を固定しているか: 手順書に書いてある推奨コマンドが、(1) 明示した `{カテゴリ}/{英語スラッグ}` の permalink を持ち、(2) `type` が `note` に落ちず、(3) `bm reindex` 無しで `read-note`・`search-notes`・`search-notes --type` から引けるノートを作ること。あわせて、積み上げるノートの扱い —— 同じタイトルの 2 回目の `write-note` が何も書かずに終わること、`--overwrite` が過去の記録を消すこと、`edit-note --operation append` が過去の記録を残すこと、**未作成の permalink への `append` はエラーにならずプロジェクト名を前置したノートを作ること**（手順書が「無ければ `write-note` で作る」と書いている根拠） —— を固定する。`permalink`・`type` を書かない旧手順（PR #74 の「方法A」）に戻すと 5 件の check が落ちる（`artifacts/lev-184-memory-procedure/revert-run.txt`）。手順書を直したら、同じブランチでこのケースも直す。
 
 ## 公開前の追加確認
 

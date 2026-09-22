@@ -1,6 +1,7 @@
 /**
- * `.claude/skills/memory-manager/SKILL.md` と AGENTS.md「開発メモリ」に書かれた bm CLI の手順を、
- * 書かれたとおりに実行して期待どおりに動くかを確かめるケース（docs/harness.md「開発メモリの手順」）。
+ * `.claude/skills/memory-manager/SKILL.md` と AGENTS.md の開発メモリの箇条書き（`bm tool` を含む行）に
+ * 書かれた bm CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめるケース
+ * （docs/harness.md「開発メモリの手順」）。
  *
  * 手順書は `src/` を 1 行も含まないが、次のセッションのエージェントが従う側の仕組みなので、壊れたまま
  * merge されると毎セッション効き続ける（LEV-184 は PR #74 がそれで 15 件の欠陥を通した）。`artifacts/` に
@@ -17,7 +18,7 @@
  * 終了コード: 0 = PASS、1 = FAIL、2 = 実行できなかった（bm CLI が無い等。PASS として記録しない）
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRecord, finish, makeCheck, makeStep, parseArgs } from './case-runner.mjs';
@@ -45,16 +46,28 @@ function bmJson(args, input) {
   return { ...run, json };
 }
 
-const probe = bm(['--version']);
-if (probe.status !== 0) {
-  console.error('bm CLI を実行できない（Basic Memory 未インストール）。このケースは実行していない。');
+// bm が無い端末（新しいクローン・CI）では「手順書が壊れている」ではなく「実行していない」で終わる。
+// spawn 自体が失敗する ENOENT も含めてここで拾わないと、bm() の throw がそのまま終了コード 1 になり、
+// FAIL と見分けが付かなくなる（docs/harness.md「開発メモリの手順」が終了コード 2 を約束している）。
+let version;
+try {
+  const probe = bm(['--version']);
+  if (probe.status !== 0) throw new Error(probe.stderr || `終了コード ${probe.status}`);
+  version = probe.stdout.trim();
+} catch (error) {
+  console.error(`bm CLI を実行できない（${error.message}）。このケースは実行していない。`);
   process.exit(2);
 }
-const version = probe.stdout.trim();
+
+// 後片付けの検証に使う。使い捨てプロジェクトを消すついでに他のプロジェクトまで消していないことを見るが、
+// mappy-memory が登録されていない端末で FAIL にしないよう、「元々あったか」を先に記録しておく。
+const projectsBefore = bmJson(['tool', 'list-projects']);
+const hadMappyMemory = (projectsBefore.json?.projects ?? []).some(item => item.name === 'mappy-memory');
 
 const root = mkdtempSync(join(tmpdir(), 'mappy-memory-probe-'));
 const record = createRecord(root, PROJECT);
 record.bmVersion = version;
+record.hadMappyMemory = hadMappyMemory;
 const step = makeStep(record);
 const check = makeCheck(record);
 
@@ -194,18 +207,42 @@ try {
     check(hits.includes('corrections/inbox'), `append の直後に reindex 無しで検索に出ない: ${hits.join(', ')}`);
     return { operation: out.json?.operation, keptHistory: text.includes('既存の記録1'), hits };
   });
+
+  // 6. 未作成の permalink への append は、エラーにならず「プロジェクト名を前置したノート」を黙って作る。
+  //    AGENTS.md と SKILL.md が「無ければ write-note で作る」と書いている根拠。
+  await step('append-to-missing-creates-prefixed-note', () => {
+    const out = bmJson([
+      'tool', 'edit-note', 'corrections/not-created-yet', '--project', PROJECT,
+      '--operation', 'append', '--content', '追記\n',
+    ]);
+    check(out.json?.fileCreated === true, `未作成の permalink への append が新規作成にならなかった: ${JSON.stringify(out.json)}`);
+    check(
+      out.json?.permalink === `${PROJECT}/corrections/not-created-yet`,
+      `未作成の permalink への append がプロジェクト名を前置しなかった: ${out.json?.permalink}`,
+    );
+    bm(['tool', 'delete-note', `${PROJECT}/corrections/not-created-yet`, '--project', PROJECT]);
+    return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated };
+  });
 } catch (error) {
   record.failures.push(String(error));
 } finally {
   if (added && !keep) {
     const removed = bm(['project', 'remove', PROJECT, '--delete-notes']);
-    record.steps['project-remove'] = { status: removed.status };
     check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes）`);
+    // bm がディレクトリを残した場合はこちらで消す。root は毎回 mkdtempSync が作った一時ディレクトリ。
+    const dirLeftByBm = existsSync(root);
+    if (dirLeftByBm) rmSync(root, { recursive: true, force: true });
     const listed = bmJson(['tool', 'list-projects']);
-    const names = (listed.json?.projects ?? []).map(item => item.name);
-    check(!names.includes(PROJECT), `使い捨てプロジェクトが残っている: ${PROJECT}`);
-    check(!existsSync(root), `使い捨てのディレクトリが残っている: ${root}`);
-    check(names.includes('mappy-memory'), 'mappy-memory がプロジェクト一覧から消えた（後片付けが行き過ぎた）');
+    // 一覧が読めないまま names を空配列にすると、消し損ねを見逃したまま PASS する。
+    check(listed.status === 0 && listed.json !== null, `後片付けの確認ができない（bm tool list-projects が読めない）: ${listed.stderr}`);
+    if (listed.json) {
+      const names = (listed.json.projects ?? []).map(item => item.name);
+      check(!names.includes(PROJECT), `使い捨てプロジェクトが残っている: ${PROJECT}`);
+      // mappy-memory が元から無い端末（新しいクローン・CI）で FAIL にしない。
+      if (hadMappyMemory) check(names.includes('mappy-memory'), 'mappy-memory がプロジェクト一覧から消えた（後片付けが行き過ぎた）');
+    }
+    check(!existsSync(root), `使い捨てのディレクトリを消せなかった: ${root}`);
+    record.steps['project-remove'] = { status: removed.status, dirLeftByBm };
   } else if (keep) {
     console.log(`--keep: ${PROJECT}（${root}）を残した。手で消す: bm project remove ${PROJECT} --delete-notes`);
   }
