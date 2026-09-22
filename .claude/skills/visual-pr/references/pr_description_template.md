@@ -51,3 +51,9 @@
 ```
 
 {Tell the story in the order that makes it easiest to understand. It may make sense to show files first, or it may make sense to establish a data structure, SQL table, or API contract first. All views and subheadings are optional. Use only the views that help explain the pr, and name or order them based on the change rather than a fixed template. It should be written as one human would write to another. Use `diff` for a focused change to an existing shape. Show the complete target shape in a language-specific or `text` block when it is new, high-level, or clearer without diff notation.}
+
+## コードレビュー
+
+コードレビュー: 指摘 N 件、対応 M 件、見送り K 件
+
+{見送りが 1 件以上あるときは、指摘の全文と見送りの理由をここに書く。`artifacts/` と `memory/` は git 管理外で他所から読めないため、PR 本文がレビューの内容が残る唯一の場所（docs/linear-workflow.md の手順 6）。見送りが 0 件なら 1 行だけでよい。}
