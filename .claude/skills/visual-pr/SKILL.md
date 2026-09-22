@@ -31,6 +31,7 @@ Create or update the pull request for the current task with a concise descriptio
    - Keep **Why the change** to exactly one sentence.
    - Keep **Special things to note** to 1-3 bullets. Prioritize reviewer warnings, migrations, compatibility constraints, deliberate omissions, or surprising decisions. Write `- None.` when there are no special considerations.
    - Make **Change outline** a compact, `/show-me`-inspired structural view rather than prose or a file-by-file changelog.
+   - Always include **コードレビュー**, the last section before the footer. Every PR is reviewed before it is opened (`docs/linear-workflow.md` step 5), so this section is required even when nothing was waived: the `指摘 N 件、対応 M 件、見送り K 件（理由）` line with the totals across every review round, plus the full text and reason for each waived finding. The PR body is the only place a reader outside this machine can see them — `artifacts/` and `memory/` are both gitignored.
    - Include only the views that help explain this PR:
      - SQL table and endpoint contract changes, plus pseudocode for business logic.
      - key data structure / type changes
@@ -52,6 +53,6 @@ Create or update the pull request for the current task with a concise descriptio
 
 Always read and follow `{SKILLBASE}/references/pr_description_template.md`. Do not expand the PR body beyond that template.
 
-Write as one human talking to another: avoid jargon and slang, and use simple, coherent, concise language. Prose is Japanese (AGENTS.md); code, identifiers, and tree/diff blocks stay as they are. Keep the repository's PR footer line (`🤖 Generated with [Claude Code](https://claude.com/claude-code)`) at the end of the body.
+Write as one human talking to another: avoid jargon and slang, and use simple, coherent, concise language. Prose is Japanese (AGENTS.md); code, identifiers, and tree/diff blocks stay as they are. Keep the repository's PR footer line (`🤖 Generated with [Claude Code](https://claude.com/claude-code)`) at the very end of the body, after the **コードレビュー** section.
 
 Mappy-specific views that usually matter: the Markdown text before/after an edit (as a `diff` of the note source), the frontmatter keys touched, and which layer changed (`core` / `layout` / `interaction` / `ui` / `obsidian`). State plainly what was verified on the real Obsidian vault and what was not.
