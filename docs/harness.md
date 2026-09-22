@@ -190,6 +190,14 @@ OS / Obsidian version / Vault / build hash:
 
 `test-vault/Fixtures/` には初回準備時に静的 fixture と 10/100/500/2000 ノードの文書（見出し形式と 5 つの形の H2＋リスト、計 24 ファイル）を生成する。CRLF・末尾改行なし・途中 IME のような条件は、対応するテストで明示的に作る。レイアウトの幾何テストは性能測定の代わりにしない。性能は②の `scripts/browser-harness-perf.mjs`（ブラウザでの解析・配置・描画・入力反映の p50／p95）と、実機の入力から画面反映まで（E10、LEV-33 の `obsidian-realtime-probe.mjs`）を分けて記録する。`node scripts/measure-layout.mjs` は同じ生成文書で `layoutTree` 単体の配置時間（4 モード、展開と折りたたみ、中央値・p95・最大値）を `artifacts/layout-timing/<日時>/` に記録するが、DOM 計測を含まないレイアウト単体の数値であり、§6 の実機計測の代わりにはならない。
 
+### 開発メモリの手順（Obsidian 実機を使わない）
+
+`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md「開発メモリ」と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
+
+毎回、プロセス ID と乱数を混ぜた名前の使い捨て Basic Memory プロジェクトを一時ディレクトリに作り、最後にノートごと消す。**`mappy-memory` には触らない**（後片付けの後で、使い捨てプロジェクトが消えたことと `mappy-memory` が残っていることの両方を確かめる）。`--keep` で残せる。
+
+何を固定しているか: 手順書に書いてある推奨コマンドが、(1) 明示した `{カテゴリ}/{英語スラッグ}` の permalink を持ち、(2) `type` が `note` に落ちず、(3) `bm reindex` 無しで `read-note`・`search-notes`・`search-notes --type` から引けるノートを作ること。あわせて、積み上げるノートの扱い —— 同じタイトルの 2 回目の `write-note` が何も書かずに終わること、`--overwrite` が過去の記録を消すこと、`edit-note --operation append` が過去の記録を残すこと —— を固定する。`permalink`・`type` を書かない旧手順（PR #74 の「方法A」）に戻すと 5 件の check が落ちる（`artifacts/lev-184-memory-procedure/revert-run.txt`）。手順書を直したら、同じブランチでこのケースも直す。
+
 ## 公開前の追加確認
 
 現在はローカルで試用するプロトタイプであり、README・LICENSE の存在だけで公開可能とは扱わない。製品の受入条件、実機対応、公開ライセンス、作者表記、名称・ID の重複、説明文を確認する。`manifest.version` と同じタグで必要な配布物を GitHub release に添付する（下記「リリース手順」）。

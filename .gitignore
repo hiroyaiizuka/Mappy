@@ -4,9 +4,11 @@ main.js.map
 build-meta.json
 dist/
 coverage/
-artifacts/
-memory/
-test-vault/
+# アンカーする（先頭の / を付ける）。付けないと任意の深さの同名ディレクトリに当たり、
+# src/core/memory/ や docs/memory/ を作ったときに git add が無言で無視する。
+/artifacts/
+/memory/
+/test-vault/
 .vitest/
 .DS_Store
 *.tsbuildinfo

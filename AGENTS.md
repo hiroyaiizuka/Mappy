@@ -24,14 +24,11 @@
 - 1 チケット＝1 worktree＝1 エージェント（`docs/linear-workflow.md`）。**worktree を作る前に `ListAgents` と `orca worktree list` でそのチケットの先客を確認する。いれば新しく作らず、そこにも入らない。** 共有された作業ツリーでは「自分の変更だけを戻す」が成立しない（相手の削除を自分の復元が打ち消す）。触ってしまったら、状態を保存して相手に渡す。
 - 1 セッションで複数のチケットを渡り歩かない。長いセッションほど、序盤に読んだ規約が行動の直前に思い出されなくなる。
 - `main.js`、`node_modules/`、`dist/`、証跡をコミットしない。公開時のライセンスと plugin ID は未確定。
-
-## 開発メモリ
-
-- 置き場は `memory/`（git 管理外）。`artifacts/` は 1 回の実行の証跡、`memory/` は残す知識（何をしたか・なぜか・何が壊れていたか）。
-- カテゴリ: `events/`（実装・リリース）・`bugfixes/`・`investigations/`・`designs/`・`reviews/`・`corrections/`・`archive/`。`memory/` 直下には置かない。
-- セッション開始時に `memory/corrections/lessons.md` を読む。
-- 作業が終わったらメモリに残す。書き込みは `bm tool write-note --project mappy-memory`（ワークツリーからでも同じコマンドでプライマリーの `memory/` に入る）。検索は `bm tool search-notes "..." --project mappy-memory`。
-- ミスをしたら `memory/corrections/inbox.md` に追記する。AGENTS.md やテストに仕組み化できたら `graduated.md` へ送る。
-- 詳細は `.claude/skills/memory-manager/SKILL.md`。
+- 開発メモリは Basic Memory のプロジェクト `mappy-memory`（実体はプライマリーの `memory/`。git 管理外）。`artifacts/` は 1 回の実行の証跡、`memory/` は残す知識（何をしたか・なぜか・何が壊れていたか）。カテゴリは `events/`（実装・リリース）・`bugfixes/`・`investigations/`・`designs/`・`reviews/`・`corrections/`・`archive/` で、`memory/` 直下には置かない。
+- **セッション開始時に `bm tool read-note corrections/lessons --project mappy-memory` を実行して蒸留済みの教訓を読む。** ファイルを開きに行かない。`memory/` は git 管理外なのでワークツリーには存在せず（このファイルはブランチ作業を worktree で行えと命じている）、パスで読もうとすると必ず空振りする。`memory-manager` スキルはトリガー起動でセッション開始時には読み込まれないので、コマンドはここに置く。
+- 作業が終わったらメモリに残す。新しいノートは `bm tool write-note --project mappy-memory`、既存ノートへの追記は `bm tool edit-note <permalink> --project mappy-memory --operation append --content "..."`。検索は `bm tool search-notes "..." --project mappy-memory`。**同じタイトルで `write-note` を 2 回打つと `NOTE_ALREADY_EXISTS`（終了コード 1、`action: "conflict"`、`file_path: null`）で何も書かれず、`--overwrite` を足すとノート全体が置き換わって過去の記録が消える。** 積み上げるノートは必ず `edit-note --operation append`。
+- ノートの frontmatter には `permalink: {カテゴリ}/{英語スラッグ}` と `type: {カテゴリの単数形}` を必ず書く。省略するとそれぞれ既定に落ち（permalink はプロジェクト名を前置した自動生成で、日本語タイトルはローマ字混じりの断片になる。type は `note`）、`read-note {カテゴリ}/{スラッグ}`・`[[wiki link]]`・`search-notes --type`・`schema-validate` のすべてから外れる。CLI と MCP のどちらで書いても同じで、効いているのは frontmatter の明示であって CLI への切り替えではない。
+- ミスをしたら `corrections/inbox` に `edit-note --operation append` で追記する。そこから先の流れ（inbox → lessons → graduated）は `memory/schemas/correction.md` が正本で、このファイルにもスキルにも写さない。
+- 詳細は `.claude/skills/memory-manager/SKILL.md`。書かれた手順が壊れていないかは `npm run harness:e2e:memory-procedure` で確かめる（使い捨ての Basic Memory プロジェクトを作って実行し、最後に消す。`mappy-memory` には触らない）。
 
 現在はベータ（0.x）を GitHub Release ＋ BRAT で公開中（0.1.0〜0.2.1 は 2026-09-20。コミュニティ審査は未提出）。実装の存在と受入条件の達成は分けて扱い、実機テストの完成を先取りして報告しない。

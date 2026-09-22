@@ -28,6 +28,7 @@
     "harness:e2e:undo-redo": "node scripts/e2e/undo-redo.mjs",
     "harness:e2e:move-parent-text": "node scripts/e2e/move-parent-text.mjs",
     "harness:e2e:paste": "node scripts/e2e/paste-image.mjs",
+    "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",
     "harness:browser:capture": "node scripts/browser-harness-capture.mjs",
