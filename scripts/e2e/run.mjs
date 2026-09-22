@@ -1,0 +1,99 @@
+/**
+ * Runs the real-Obsidian e2e cases (docs/harness.md 実機検証) registered below, one Obsidian instance
+ * at a time (only one to drive: docs/linear-workflow.md「Obsidian 実機は1台なので、実機を使うチケットは
+ * 同時に1本にする」), each case connecting to it in turn.
+ *
+ * Each case stays a standalone script (`node scripts/e2e/<file>.mjs`, wired to its own
+ * `npm run harness:e2e:<name>`) run here as its own child process, not imported into this one: a case
+ * that hangs or crashes mid-CDP-call then only takes down its own process and connection, not the run's
+ * (or the next case's). This file only sequences them and points `--json`/`--shot` at per-case paths so
+ * a full run does not have every case overwrite the same file.
+ *
+ * Usage: npm run harness:e2e -- [--case <name>] [--reload] [--json <dir>] [--shot <dir>] [--keep]
+ *   --case   run only the named case (see CASES below) instead of all of them; no `summary.json` then,
+ *            since it would otherwise silently replace a previous full run's summary with one case's
+ *   --json   directory to write <case>.json into (and, for a full run, a summary.json)
+ *   --shot   directory to write <case>.png into, for cases that take one
+ */
+import { spawn } from 'node:child_process';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+export const CASES = [
+  { name: 'add-delete', file: 'add-delete.mjs', description: 'E02 兄弟・子の追加と削除', shot: false },
+  { name: 'undo-redo', file: 'undo-redo.mjs', description: 'E03 Undo/Redo と表裏切替', shot: false },
+  { name: 'move-parent-text', file: 'move-parent-text.mjs', description: 'E19 親本文を挟む移動', shot: false },
+  { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
+];
+
+const args = process.argv.slice(2);
+let caseName; let jsonDir; let shotDir;
+const passthrough = [];
+try {
+  for (let i = 0; i < args.length; i += 1) {
+    const isFlagValue = name => {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) throw new Error(`${name} needs a value`);
+      return next;
+    };
+    if (args[i] === '--case') { caseName = isFlagValue('--case'); i += 1; continue; }
+    if (args[i] === '--json') { jsonDir = isFlagValue('--json'); i += 1; continue; }
+    if (args[i] === '--shot') { shotDir = isFlagValue('--shot'); i += 1; continue; }
+    passthrough.push(args[i]);
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
+
+const targets = caseName ? CASES.filter(item => item.name === caseName) : CASES;
+if (caseName && targets.length === 0) {
+  console.error(`Unknown case "${caseName}". Known: ${CASES.map(item => item.name).join(', ')}`);
+  process.exit(2);
+}
+
+if (jsonDir) await mkdir(jsonDir, { recursive: true });
+if (shotDir) await mkdir(shotDir, { recursive: true });
+
+const run = testCase => new Promise(resolve => {
+  const caseArgs = [...passthrough];
+  if (jsonDir) caseArgs.push('--json', join(jsonDir, `${testCase.name}.json`));
+  if (shotDir && testCase.shot) caseArgs.push('--shot', join(shotDir, `${testCase.name}.png`));
+  console.log(`\n=== ${testCase.name}: ${testCase.description} ===`);
+  const child = spawn(process.execPath, [join(here, testCase.file), ...caseArgs], { stdio: 'inherit' });
+  child.on('exit', code => resolve(code ?? 1));
+  child.on('error', error => { console.error(error); resolve(1); });
+});
+
+const startedAt = new Date().toISOString();
+const results = [];
+for (const testCase of targets) {
+  // A stale <case>.json from an earlier run in the same --json dir must not be mistaken for this run's
+  // result if the case dies before it calls `finish()` (case-runner.mjs) — delete it first, so a crash
+  // leaves no file rather than an old, possibly green, one.
+  if (jsonDir) await rm(join(jsonDir, `${testCase.name}.json`), { force: true });
+  // Cases share the one Obsidian window and must not overlap.
+  const exitCode = await run(testCase);
+  results.push({ name: testCase.name, description: testCase.description, exitCode, passed: exitCode === 0 });
+}
+
+const passed = results.every(result => result.passed);
+// Only a full run (no --case) writes summary.json: a single-case run must not silently replace a
+// previous full run's summary with just that one case's result under the same name.
+if (jsonDir && !caseName) {
+  const summary = { startedAt, passed, results };
+  for (const result of summary.results) {
+    try {
+      result.record = JSON.parse(await readFile(join(jsonDir, `${result.name}.json`), 'utf8'));
+    } catch {
+      // The case did not write its own JSON (it failed before `finish()`, or never ran); the exit code stands.
+    }
+  }
+  await writeFile(join(jsonDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+}
+
+console.log(`\n${passed ? 'PASS' : 'FAIL'}: ${results.map(result => `${result.name}=${result.passed ? 'PASS' : 'FAIL'}`).join(' ')}`);
+process.exit(passed ? 0 : 1);
