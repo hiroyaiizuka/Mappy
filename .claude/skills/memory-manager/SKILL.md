@@ -112,9 +112,9 @@ bm tool edit-note {permalink} --project mappy-memory \
 | やりたいこと | コマンド |
 | --- | --- |
 | 新しいノート | `write-note` |
-| 末尾に足す | `edit-note --operation append` |
-| 先頭に足す | `edit-note --operation prepend` |
-| 節を差し替える | `edit-note --operation replace_section --section "## 節"` |
+| ファイル末尾に足す | `edit-note --operation append`（末尾が `## Relations` のノートではその後ろに落ちる） |
+| ファイル先頭に足す | `edit-note --operation prepend` |
+| 節の中に入れる | `edit-note --operation replace_section --section "## 節"`（見出しから**次の見出しまで**を置き換える。節の中身が平らなリストなら全部消える） |
 | 語を置き換える | `edit-note --operation find_replace --find-text "旧" --content "新"` |
 | 丸ごと書き直す（過去の記録を捨ててよいときだけ） | `write-note --overwrite` |
 
@@ -147,17 +147,28 @@ bm tool read-note schemas/correction --project mappy-memory
 
 書き込みの当て方だけ:
 
-```sh
-# ミスをした直後 — inbox へ追記（--overwrite を使わない）
-bm tool edit-note corrections/inbox --project mappy-memory \
-  --operation append --content "{何をしたか・なぜか}"
+**`append` を使わない。** `inbox` も `lessons` も末尾が `## Relations` で、書き足したい節はその上にある。`append` は必ず**ファイル末尾**に足すので、ミスの記録が Relations の後ろに落ちて、節の構造も蒸留の動線も崩れる。
 
-# 蒸留した 1 行を lessons へ
-bm tool edit-note corrections/lessons --project mappy-memory \
-  --operation append --content "{教訓 1 行}"
+```sh
+# ミスをした直後 — inbox の「## 未蒸留」の先頭に入れる
+bm tool edit-note corrections/inbox --project mappy-memory \
+  --operation replace_section --section "## 未蒸留" --content "### {YYYY-MM-DD 見出し}
+- {何をしたか・なぜか}"
 ```
 
-どちらも既存のノートで、`append` の当て先がある。**無い permalink へ `append` すると、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、新しく作るときは `write-note` を使う。
+`replace_section` は**見出しから次の見出し（レベルを問わない）までを置き換える。** `## 未蒸留` の中身は `### {日付}` で区切られているので、置き換わるのは見出しのすぐ下だけで、既存の `###` は下に残る（新しいものが先頭に積まれる）。
+
+**`lessons` に `replace_section` を使わない。** `## 道具の癖`・`## 手順`・`## 報告` の中身は番号付きの平らなリストで、次の見出しまでの全部が消える。蒸留した 1 行を足すときは、`read-note` で今の中身を読み、`find_replace` で並びの目印の前に差し込む。
+
+```sh
+bm tool read-note corrections/lessons --project mappy-memory   # 今の並びと番号を見る
+bm tool edit-note corrections/lessons --project mappy-memory \
+  --operation find_replace --find-text "## 手順" --content "{N}. **{教訓 1 行}**
+
+## 手順"
+```
+
+**無い permalink へ `append` や `replace_section` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。新しく作るときは `write-note`。
 
 ## 索引が壊れたとき
 

@@ -32,9 +32,14 @@ const keep = flag('--keep');
 
 const PROJECT = `mappy-memory-probe-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
-/** bm を 1 回呼ぶ。`input` を渡すと stdin から本文を流す（SKILL.md の heredoc と同じ経路）。 */
+/**
+ * bm を 1 回呼ぶ。`input` を渡すと stdin から本文を流す（SKILL.md の heredoc と同じ経路）。
+ * `--local` を必ず付ける: cloud モードが有効な端末では既定でクラウド側へ流れ、ローカルの一時
+ * ディレクトリにファイルが現れず「手順書が壊れている」という誤った FAIL になる。後片付けの
+ * `project remove --delete-notes` がクラウドのプロジェクトに当たるのも防ぐ。
+ */
 function bm(args, input) {
-  const result = spawnSync('bm', args, { input, encoding: 'utf8' });
+  const result = spawnSync('bm', [...args, '--local'], { input, encoding: 'utf8' });
   if (result.error) throw new Error(`bm ${args.join(' ')}: ${result.error.message}`);
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -54,9 +59,11 @@ function bmJson(args, input) {
 // FAIL と見分けが付かなくなる（docs/harness.md「開発メモリの手順」が終了コード 2 を約束している）。
 let version;
 try {
-  const probe = bm(['--version']);
+  // `bm --version` はトップレベルのフラグしか受けないので、ここだけ --local を付けずに呼ぶ。
+  const probe = spawnSync('bm', ['--version'], { encoding: 'utf8' });
+  if (probe.error) throw new Error(probe.error.message);
   if (probe.status !== 0) throw new Error(probe.stderr || `終了コード ${probe.status}`);
-  version = probe.stdout.trim();
+  version = (probe.stdout ?? '').trim();
 } catch (error) {
   console.error(`bm CLI を実行できない（${error.message}）。このケースは実行していない。`);
   process.exit(2);
@@ -137,12 +144,19 @@ try {
       ['tool', 'write-note', '--project', PROJECT, '--title', 'Probe Ascii Title', '--folder', 'events'],
       '# Probe Ascii Title\n\n## Observations\n- [tech] permalink だけ省いた #probe\n',
     );
+    // 対照。グロブが何も拾わなくなった場合に「前置を外している」と読み違えないよう、拾う側も同じ回で作る。
+    const target = bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'Probe Glob Target', '--folder', 'events'],
+      '---\npermalink: events/probe-glob-target\n---\n\n# Probe Glob Target\n',
+    );
     const permalink = out.json?.permalink ?? '';
     const byWish = bmJson(['tool', 'read-note', 'events/probe-ascii-title', '--project', PROJECT]);
     const glob = bmJson(['tool', 'search-notes', '--permalink', 'events/*', '--project', PROJECT]);
     const globHits = (glob.json?.results ?? []).map(item => item.permalink);
     check(permalink === `${PROJECT}/events/probe-ascii-title`, `前置された permalink にならなかった: ${permalink}`);
     check(byWish.json?.permalink === permalink, `前置されただけのノートが {カテゴリ}/{スラッグ} で読めない: ${byWish.stderr}`);
+    check(target.json?.permalink === 'events/probe-glob-target', `対照ノートを作れなかった: ${target.stderr}`);
+    check(globHits.includes('events/probe-glob-target'), `--permalink "events/*" が前置なしのノートを拾わない: ${globHits.join(', ')}`);
     check(!globHits.includes(permalink), `--permalink "events/*" が前置されたノートを拾った: ${globHits.join(', ')}`);
     return { permalink, readBy: byWish.json?.permalink, globHits };
   });
@@ -289,6 +303,55 @@ try {
     return { tail: text.slice(-40) };
   });
 
+  // 6c. 実物の corrections/inbox・lessons は末尾が `## Relations` で、追記先の節はその上にある。
+  //     append は必ずファイル末尾に足すので、この形のノートでは Relations の後ろに落ちる。
+  //     手順書が corrections に replace_section を指定している理由なので、両方の挙動を固定する。
+  const inboxShape = [
+    '---', 'permalink: corrections/shape', '---', '',
+    '# Correction Inbox', '', '## 未蒸留', '', '### 2026-09-20 既存のミス', '- 内容', '',
+    '## Relations', '- distilled_into [[Correction Lessons]]', '',
+  ].join('\n');
+  await step('append-lands-after-relations-replace-section-does-not', () => {
+    const shapeFile = notePath('corrections/Correction Shape.md');
+    const write = (content, extra = []) => bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Shape', '--folder', 'corrections', '--type', 'correction', ...extra],
+      content,
+    );
+    // (a) append はファイル末尾 ＝ Relations の後ろ。
+    write(inboxShape);
+    bmJson(['tool', 'edit-note', 'corrections/shape', '--project', PROJECT, '--operation', 'append', '--content', '### 2026-09-22 新しいミス']);
+    const appended = readFileSync(shapeFile, 'utf8');
+    const afterRelations = appended.indexOf('### 2026-09-22 新しいミス') > appended.indexOf('## Relations');
+    check(afterRelations, 'append が Relations より前に入った（手順書が replace_section を指定している理由が消えている）');
+
+    // (b) replace_section は節の中、既存の ### を残したまま先頭に入る。
+    write(inboxShape, ['--overwrite']);
+    bmJson([
+      'tool', 'edit-note', 'corrections/shape', '--project', PROJECT,
+      '--operation', 'replace_section', '--section', '## 未蒸留', '--content', '### 2026-09-22 新しいミス\n- 内容',
+    ]);
+    const replaced = readFileSync(shapeFile, 'utf8');
+    const at = needle => replaced.indexOf(needle);
+    check(at('### 2026-09-22 新しいミス') > at('## 未蒸留'), 'replace_section が節の外へ入った');
+    check(at('### 2026-09-22 新しいミス') < at('## Relations'), 'replace_section が Relations の後ろへ入った');
+    check(at('### 2026-09-20 既存のミス') !== -1, 'replace_section が節の中の既存の項目を消した');
+    check(at('- distilled_into [[Correction Lessons]]') !== -1, 'replace_section が Relations を壊した');
+
+    // (c) 節の中身が平らなリスト（lessons の形）だと replace_section は節ごと置き換える。
+    //     手順書が「lessons には使わない」と書いている根拠。
+    bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Flat', '--folder', 'corrections', '--type', 'correction'],
+      '---\npermalink: corrections/flat\n---\n\n# Correction Flat\n\n## 道具の癖\n\n1. 既存の教訓1\n2. 既存の教訓2\n\n## Relations\n- originated_from [[Correction Inbox]]\n',
+    );
+    bmJson([
+      'tool', 'edit-note', 'corrections/flat', '--project', PROJECT,
+      '--operation', 'replace_section', '--section', '## 道具の癖', '--content', '3. 新しい教訓3',
+    ]);
+    const flat = readFileSync(notePath('corrections/Correction Flat.md'), 'utf8');
+    check(!flat.includes('既存の教訓1'), 'replace_section が平らなリストを残した（手順書の警告が古い）');
+    return { afterRelations, flatKeptHistory: flat.includes('既存の教訓1') };
+  });
+
   // 7. ここまでは bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
   //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
   await step('documents-still-say-it', () => {
@@ -300,11 +363,14 @@ try {
     want(skill, 'type: {カテゴリの単数形}', 'SKILL.md');
     want(skill, '--operation append', 'SKILL.md');
     want(skill, '--overwrite', 'SKILL.md');
+    // corrections は append ではなく節を狙う（レビュー 3 回目の指摘 1・2）。
+    want(skill, '--operation replace_section --section "## 未蒸留"', 'SKILL.md');
     want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
-    want(agents, '--operation append', 'AGENTS.md');
+    want(agents, '--section "## 未蒸留"', 'AGENTS.md');
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
-    check(!/cat >\s*"?\//.test(skill), 'SKILL.md にファイルへの heredoc 書き込みが戻っている（LEV-184 指摘 6）');
+    // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
+    check(!/cat >[^>]/.test(skill), 'SKILL.md にファイルへの heredoc 書き込みが戻っている（LEV-184 指摘 6）');
     // 公開リポジトリなので個人の絶対パスを置かない（LEV-184 指摘 7）。
     check(!skill.includes('/Users/'), 'SKILL.md に個人の絶対パスが戻っている（LEV-184 指摘 7）');
     return { missing };
@@ -318,25 +384,36 @@ try {
       : `--keep: プロジェクトは作られていない。一時ディレクトリだけ残した: ${root}`);
   } else {
     // プロジェクトを作れなかった経路でも一時ディレクトリは残るので、後片付けは add の成否と分ける。
+    // bm() は spawn 失敗で throw する。finally の中で外へ抜けると rmSync も finish() も走らず、
+    // 使い捨てのディレクトリとプロジェクトが残ったまま、JSON も書かれずに終わる。ここで捕まえる。
     if (added) {
-      const removed = bm(['project', 'remove', PROJECT, '--delete-notes']);
-      check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes）`);
-      const listed = bmJson(['tool', 'list-projects']);
-      // 一覧が読めないまま names を空配列にすると、消し損ねを見逃したまま PASS する。
-      check(listed.status === 0 && listed.json !== null, `後片付けの確認ができない（bm tool list-projects が読めない）: ${listed.stderr}`);
-      if (listed.json) {
-        const names = (listed.json.projects ?? []).map(item => item.name);
-        check(!names.includes(PROJECT), `使い捨てプロジェクトが残っている: ${PROJECT}`);
-        // 実行前の一覧が読めていた場合だけ、他のプロジェクトを巻き込んでいないかを見る。
-        // hadMappyMemory === null（読めなかった）を「無かった」と同じ扱いにすると、検知が黙って消える。
-        check(hadMappyMemory !== null, '実行前のプロジェクト一覧を読めなかったので、行き過ぎた後片付けを検知できない');
-        if (hadMappyMemory === true) check(names.includes('mappy-memory'), 'mappy-memory がプロジェクト一覧から消えた（後片付けが行き過ぎた）');
+      try {
+        const removed = bm(['project', 'remove', PROJECT, '--delete-notes']);
+        check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes）`);
+        const listed = bmJson(['tool', 'list-projects']);
+        // 一覧が読めないまま names を空配列にすると、消し損ねを見逃したまま PASS する。
+        check(listed.status === 0 && listed.json !== null, `後片付けの確認ができない（bm tool list-projects が読めない）: ${listed.stderr}`);
+        if (listed.json) {
+          const names = (listed.json.projects ?? []).map(item => item.name);
+          check(!names.includes(PROJECT), `使い捨てプロジェクトが残っている: ${PROJECT}`);
+          // 実行前の一覧が読めていた場合だけ、他のプロジェクトを巻き込んでいないかを見る。
+          // hadMappyMemory === null（読めなかった）を「無かった」と同じ扱いにすると、検知が黙って消える。
+          check(hadMappyMemory !== null, '実行前のプロジェクト一覧を読めなかったので、行き過ぎた後片付けを検知できない');
+          if (hadMappyMemory === true) check(names.includes('mappy-memory'), 'mappy-memory がプロジェクト一覧から消えた（後片付けが行き過ぎた）');
+        }
+        record.steps['project-remove'] = { status: removed.status, dirLeftByBm: existsSync(root) };
+      } catch (error) {
+        record.steps['project-remove'] = { error: String(error) };
+        check(false, `後片付けの bm 呼び出しが失敗した（手で消す: bm project remove ${PROJECT} --delete-notes）: ${error}`);
       }
-      record.steps['project-remove'] = { status: removed.status, dirLeftByBm: existsSync(root) };
     }
     // root は毎回 mkdtempSync が作った一時ディレクトリ。bm が残した場合も、add が失敗した場合もここで消す。
-    if (existsSync(root)) rmSync(root, { recursive: true, force: true });
-    check(!existsSync(root), `使い捨てのディレクトリを消せなかった: ${root}`);
+    try {
+      if (existsSync(root)) rmSync(root, { recursive: true, force: true });
+      check(!existsSync(root), `使い捨てのディレクトリを消せなかった: ${root}`);
+    } catch (error) {
+      check(false, `使い捨てのディレクトリを消せなかった（手で消す: ${root}）: ${error}`);
+    }
   }
 }
 
