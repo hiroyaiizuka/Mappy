@@ -125,6 +125,12 @@ const count = (text, needle) => text.split(needle).length - 1;
  */
 const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
 const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').trim();
+if (!realBm.startsWith('/')) {
+  // 身代わりが本物へ渡せないまま進むと、手順書のステップが無関係な exec エラーで落ちる（レビュー 7 回目の指摘）。
+  rmSync(shimDir, { recursive: true, force: true });
+  console.error(`bm の場所を解決できない（command -v bm: ${JSON.stringify(realBm)}）。このケースは実行していない。`);
+  process.exit(2);
+}
 writeFileSync(join(shimDir, 'bm'), [
   '#!/bin/sh',
   '# memory-procedure.mjs が作る身代わり。使い捨てプロジェクト以外への呼び出しを本物へ渡さない。',
@@ -158,13 +164,17 @@ const shEnv = {
  * 手順書のコマンドをシェルで実行する。bm が認証やロックで止まってもハーネスごと固まらないよう時間を切り、
  * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする（レビュー指摘）。
  */
-const runSh = script => {
-  const run = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
+const runSh = (script, shell = 'sh') => {
+  const run = spawnSync(shell, ['-c', script], { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
   // 時間切れで止まるのは sh だけで、孫の bm は残ってロックを握り続ける。使い捨てプロジェクトの名前は
   // この実行に固有なので、その名前を引数に持つプロセスだけを止める（レビュー 4 回目の指摘）。
   if (run.error?.code === 'ETIMEDOUT') spawnSync('pkill', ['-f', PROJECT]);
   return { ...run, why: run.error ? String(run.error) : (run.stderr || run.stdout) };
 };
+
+// 手順書のコマンドを流すシェル。エージェントの Bash ツールは本人のシェル（この端末では zsh）で動き、macOS の
+// `sh` は bash 3.2 で読み方が違う。どちらでも同じ結果になることを見る（レビュー 7 回目の指摘）。無ければ飛ばす。
+const SHELLS = ['sh', 'zsh'].filter(shell => spawnSync(shell, ['-c', 'exit 0'], { timeout: 10_000 }).status === 0);
 
 // 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
 // 対になっていない文字も入れる。対の文字だけだと、bash 3.2 がコマンド置換の中の heredoc を読み違える形を
@@ -208,10 +218,21 @@ let added = false;
 
 // Ctrl-C で中断しても、使い捨てプロジェクトを bm のグローバル設定に残さない。finally は届かない。
 const onInterrupt = signal => {
-  if (added && !keep) { spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }); }
+  // 片付けが成功したかを確かめてから言う。失敗したら消し方を出す（レビュー 7 回目の指摘）。
+  const removed = added && !keep
+    ? spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS })
+    : null;
   if (!keep && existsSync(root)) rmSync(root, { recursive: true, force: true });
   rmSync(shimDir, { recursive: true, force: true });
-  console.error(`\n${signal} で中断した。使い捨てプロジェクトは片付けた。`);
+  const cleaned = removed === null || removed.status === 0;
+  if (jsonPath) {
+    record.failures.push(`${signal} で中断した（実行していない）`);
+    record.interrupted = { signal, projectRemoved: removed === null ? null : removed.status === 0 };
+    try { writeFileSync(jsonPath, `${JSON.stringify(record, null, 2)}\n`); } catch { /* 書けなくても終了コード 2 で終える */ }
+  }
+  console.error(cleaned
+    ? `\n${signal} で中断した。使い捨てプロジェクトは片付けた。`
+    : `\n${signal} で中断した。使い捨てプロジェクトを消せなかった。手で消す: bm project remove ${PROJECT} --delete-notes --local`);
   process.exit(2);
 };
 process.on('SIGINT', () => onInterrupt('SIGINT'));
@@ -290,7 +311,8 @@ try {
     const passed = runSh(`bm tool read-note ${probe} --project ${PROJECT} --local`);
     const leaks = refused.filter(([, run]) => run.status !== 97).map(([command, run]) => `[${run.status}] ${command}`);
     check(leaks.length === 0, `身代わりの bm が止めるべき呼び出しを通した: ${leaks.join(' / ')}`);
-    check(passed.status !== 97 && passed.status !== null, `身代わりの bm が使い捨てプロジェクトへの呼び出しまで止めた: [${passed.status}] ${passed.why}`);
+    // 本物の bm に届いたことを見る。97 以外なら良い、では exec の失敗（126/127）も通る（レビュー 7 回目の指摘）。
+    check(passed.status === 0 && parseBmJson(passed.stdout) !== null, `身代わりの bm が使い捨てプロジェクトへの呼び出しを本物へ渡さなかった: [${passed.status}] ${passed.why}`);
     return { refused: refused.map(([, run]) => run.status), passed: passed.status };
   });
 
@@ -407,7 +429,17 @@ try {
       `未作成の permalink への append がプロジェクト名を前置しなかった: ${out.json?.permalink}`,
     );
     bm(['tool', 'delete-note', `${PROJECT}/corrections/not-created-yet`, '--project', PROJECT]);
-    return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated };
+    // replace_section は append と違い、find_replace と同じく Entity not found で止まり、何も作らない。
+    // 以前の手順書は「append や replace_section は作る」と書いていたが、ケースを足したら違った（レビュー 7 回目の指摘）。
+    const section = bmJson([
+      'tool', 'edit-note', 'corrections/not-created-for-section', '--project', PROJECT,
+      '--operation', 'replace_section', '--section', '## 未蒸留', '--content', '追記\n',
+    ]);
+    const sectionSaid = `${section.stdout}${section.stderr}`;
+    const sectionLeaked = bmJson(['tool', 'read-note', `${PROJECT}/corrections/not-created-for-section`, '--project', PROJECT]);
+    check(section.status === 1 && sectionSaid.includes('Entity not found'), `未作成の permalink への replace_section が「Entity not found」の終了コード 1 で止まらなかった（手順書が古い）: [${section.status}] ${sectionSaid}`);
+    check(!existsSync(notePath('corrections/not-created-for-section.md')) && sectionLeaked.json?.file_path == null, '未作成の permalink への replace_section がノートを作った（手順書が古い）');
+    return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated, sectionStatus: section.status };
   });
 
   // 6b. 手順書は `--content '{追記する本文}'` と書いており、先頭に改行を置かせていない。積み上げるノートは
@@ -474,7 +506,10 @@ try {
     '## Relations', '- distilled_into [[Correction Lessons]]', '',
   ].join('\n');
   // エントリの本文が見出しを引用している形。この手順についての記録は自然にこうなる（レビュー指摘）。
-  const quotingInbox = realInbox.replace('- 内容A', '- 内容A: 末尾が `## Relations` なので append は後ろに落ちる');
+  // 見出しで始まるだけの行（`## Relations の…`）も入れる。手順書は、目印がそれだけの行にしか当たらないと書いている。
+  const quotingInbox = realInbox.replace('- 内容A', '- 内容A: 末尾が `## Relations` なので append は後ろに落ちる\n## Relations の書き方は SKILL.md を見る');
+  // 手順書の目印そのもの（改行＋見出し＋改行）。(c')・(d)・(f) もこれで打つ（レビュー 7 回目の指摘）。
+  const MARK = '\n## Relations\n';
   const realInboxFile = notePath('corrections/Correction Real Inbox.md');
   const resetRealInbox = (content = realInbox) => bmJson(
     ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
@@ -517,18 +552,18 @@ try {
     //      書いているので、それぞれのメッセージと終了コード 1 を固定する（レビュー 3 回目の指摘）。
     for (const [label, content, message] of [
       ['2 か所', realInbox.replace('- 内容A', '- 内容A\n## Relations'), 'Expected 1 occurrences'],
-      ['0 か所', realInbox.slice(0, realInbox.indexOf('\n## Relations') + 1), 'Text to replace not found'],
+      ['0 か所', realInbox.slice(0, realInbox.indexOf(MARK) + 1), 'Text to replace not found'],
     ]) {
       check(resetRealInbox(content).status === 0, `下準備 (c')（行頭の目印が ${label}）を作れなかった`);
       const kept = readFileSync(realInboxFile, 'utf8');
-      const run = editRealInbox(['--operation', 'find_replace', '--find-text', '\n## Relations', '--content', '\n### 2026-09-23 新C\n\n## Relations']);
+      const run = editRealInbox(['--operation', 'find_replace', '--find-text', MARK, '--content', '\n### 2026-09-23 新C\n\n## Relations\n']);
       check(run.status === 1 && said(run).includes(message), `行頭の目印が ${label} の find_replace が「${message}」の終了コード 1 で止まらなかった: [${run.status}] ${said(run)}`);
       check(readFileSync(realInboxFile, 'utf8') === kept, `行頭の目印が ${label} の find_replace がノートを書き換えた`);
     }
 
     // (d) `--content` の `\n` は改行にならず、2 文字のまま入る。手順書が引用符の中で実際に改行させる理由（レビュー指摘）。
     check(resetRealInbox().status === 0, '下準備 (d)（inbox の形のノート）を作れなかった');
-    const escaped = editRealInbox(['--operation', 'find_replace', '--find-text', '\n## Relations', '--content', '\n### 2026-09-23 新C\\n\\n## Relations']);
+    const escaped = editRealInbox(['--operation', 'find_replace', '--find-text', MARK, '--content', '\n### 2026-09-23 新C\\n\\n## Relations\n']);
     const escapedText = readFileSync(realInboxFile, 'utf8');
     check(escaped.status === 0, `(d) の find_replace が失敗した: ${said(escaped)}`);
     check(escapedText.includes('### 2026-09-23 新C\\n\\n## Relations'), `--content の \\n が改行として解釈された（手順書の警告が古い）: ${JSON.stringify(escapedText.slice(-80))}`);
@@ -546,8 +581,8 @@ try {
 
     // (f) 手順の前提が崩れた形: `## 未蒸留` と `## Relations` の間に別の節があると、目印は 1 か所に当たるので
     //     止まらず、その別の節の末尾へ終了コード 0 で黙って入る（レビュー指摘。手順書が前提と崩れる条件を書く根拠）。
-    check(resetRealInbox(realInbox.replace('\n## Relations', '\n## 蒸留済み\n- 済んだもの\n\n## Relations')).status === 0, '下準備 (f)（間に節がある inbox）を作れなかった');
-    const shifted = editRealInbox(['--operation', 'find_replace', '--find-text', '\n## Relations', '--content', '\n### 2026-09-23 新C\n- 内容C\n\n## Relations']);
+    check(resetRealInbox(realInbox.replace(MARK, '\n## 蒸留済み\n- 済んだもの\n\n## Relations\n')).status === 0, '下準備 (f)（間に節がある inbox）を作れなかった');
+    const shifted = editRealInbox(['--operation', 'find_replace', '--find-text', MARK, '--content', '\n### 2026-09-23 新C\n- 内容C\n\n## Relations\n']);
     const shiftedText = readFileSync(realInboxFile, 'utf8');
     check(shifted.status === 0, `(f) の find_replace が止まった（手順書の「黙って入る」が古い）: ${said(shifted)}`);
     check(shiftedText.indexOf('### 2026-09-23 新C') > shiftedText.indexOf('## 蒸留済み'), '(f) で新しいエントリが間の節より前に入った（手順書の「別の節の末尾へ黙って入る」が古い）');
@@ -558,58 +593,53 @@ try {
   //     当て先と project だけを差し替え、`{…}` の差し込み口はそのまま文字として入れる。本文が見出しを引用して
   //     いる inbox に対して、既存が重複も消失もせず、新しい 1 件が既存の後ろ・Relations の前に空行で区切られて
   //     入ることを見る。
+  /** 各見出しがそれだけの行としてちょうど 1 回ずつある。 */
+  const headingsAppearOnce = (text, headings) => headings.every(h => text.split('\n').filter(line => line === h).length === 1);
+
   await step('documented-inbox-entry', () => {
-    check(resetRealInbox(quotingInbox).status === 0, '下準備（本文が見出しを引用する inbox）を作れなかった');
     const script = documentedScript('edit-note corrections/inbox ', [
       ['corrections/inbox ', 'corrections/real-inbox '],
       ['{何をしたか・なぜか}', trickyInSingleQuotes],
     ], /corrections\/inbox(?![\w-])/);
     if (script === null) return { script };
-    const run = runSh(script);
-    const text = readFileSync(realInboxFile, 'utf8');
-    const heading = text.match(/^### \{[^\n]*$/m)?.[0] ?? '';
-    const at = needle => text.indexOf(needle);
-    check(run.status === 0, `手順書のコマンドが失敗した: ${run.why}`);
-    check(count(text, '### 2026-09-20 既存A') === 1 && count(text, '### 2026-09-21 既存B') === 1, '手順書どおりの書き込みで既存のエントリが重複・消失した');
-    check(text.includes('末尾が `## Relations` なので append は後ろに落ちる'), '手順書どおりの書き込みが、見出しを引用した本文を書き換えた');
-    check(heading !== '' && count(text, heading) === 1, `新しいエントリが 1 回だけ入っていない: ${JSON.stringify(heading)}`);
-    check(at(heading) > at('### 2026-09-21 既存B'), '新しいエントリが既存の後ろに入らない（inbox は古い順に積む）');
-    check(at(heading) < at('\n## Relations\n'), '新しいエントリが Relations の後ろに入った');
-    check(/- 内容B\n\n### \{/.test(text), '既存のエントリと新しいエントリの間に空行が無い');
-    check(text.includes(`- ${TRICKY}\n`), `差し込み口の本文がシェルに書き換えられた（バッククォート・$・引用符・括弧が素通しされない）: ${JSON.stringify(text.slice(at(heading), at('\n## Relations\n')))}`);
-    check(/\n\n## Relations\n- distilled_into \[\[Correction Lessons\]\]/.test(text), 'Relations の手前の空行か Relations 自体が崩れた');
-    return { heading, status: run.status };
+    const statuses = {};
+    for (const shell of SHELLS) {
+      check(resetRealInbox(quotingInbox).status === 0, `[${shell}] 下準備（本文が見出しを引用する inbox）を作れなかった`);
+      const run = runSh(script, shell);
+      statuses[shell] = run.status;
+      const text = readFileSync(realInboxFile, 'utf8');
+      const heading = text.match(/^### \{[^\n]*$/m)?.[0] ?? '';
+      const at = needle => text.indexOf(needle);
+      check(run.status === 0, `[${shell}] 手順書のコマンドが失敗した: ${run.why}`);
+      check(count(text, '### 2026-09-20 既存A') === 1 && count(text, '### 2026-09-21 既存B') === 1, `[${shell}] 手順書どおりの書き込みで既存のエントリが重複・消失した`);
+      check(text.includes('末尾が `## Relations` なので append は後ろに落ちる\n## Relations の書き方は SKILL.md を見る'), `[${shell}] 手順書どおりの書き込みが、見出しを引用した本文を書き換えた`);
+      check(heading !== '' && count(text, heading) === 1, `[${shell}] 新しいエントリが 1 回だけ入っていない: ${JSON.stringify(heading)}`);
+      check(at(heading) > at('### 2026-09-21 既存B'), `[${shell}] 新しいエントリが既存の後ろに入らない（inbox は古い順に積む）`);
+      check(at(heading) < at(MARK), `[${shell}] 新しいエントリが Relations の後ろに入った`);
+      check(/- 内容B\n\n### \{/.test(text), `[${shell}] 既存のエントリと新しいエントリの間に空行が無い`);
+      check(text.includes(`- ${TRICKY}\n`), `[${shell}] 差し込み口の本文がシェルに書き換えられた（バッククォート・$・引用符・括弧が素通しされない）: ${JSON.stringify(text.slice(at(heading), at(MARK)))}`);
+      check(/\n\n## Relations\n- distilled_into \[\[Correction Lessons\]\]/.test(text), `[${shell}] Relations の手前の空行か Relations 自体が崩れた`);
+    }
+    return { shells: SHELLS, statuses };
   });
 
   // 6e'. lessons のコードブロックも同じように実行する（レビュー 2 回目の指摘）。実物と同じく、節の見出しの直前に
-  //      空行を置かない番号付きリストで、教訓の本文が `## 手順` を引用している形。
+  //      空行を置かない番号付きリストで、教訓の本文が `## 手順` を引用し、`## 手順書…` で始まる行もある形。
   await step('documented-lessons-entry', () => {
     const lessons = [
       '---', 'permalink: corrections/real-lessons', '---', '',
       '# Correction Real Lessons', '', '蒸留した教訓。', '',
-      '## 道具の癖', '1. **教訓1** — `## 手順` の前に差し込む', '2. **教訓2**',
+      '## 道具の癖', '## 手順書の置き場は下', '1. **教訓1** — `## 手順` の前に差し込む', '2. **教訓2**',
       '## 手順', '3. **教訓3**',
       '## 報告', '4. **教訓4**',
       '## Relations', '- originated_from [[Correction Inbox]]', '',
     ].join('\n');
-    const made = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Lessons', '--folder', 'corrections', '--type', 'correction'],
-      lessons,
-    );
-    check(made.status === 0, `下準備（lessons の形のノート）を作れなかった: ${made.stderr}`);
+    const lessonsFile = notePath('corrections/Correction Real Lessons.md');
+    const sections = ['## 道具の癖', '## 手順', '## 報告', '## Relations'];
     const script = documentedScript('edit-note corrections/lessons ', [
       ['corrections/lessons ', 'corrections/real-lessons '],
       ['{教訓 1 行}', trickyInSingleQuotes],
     ], /corrections\/lessons(?![\w-])/);
-    if (script === null) return { script };
-    const run = runSh(script);
-    const text = readFileSync(notePath('corrections/Correction Real Lessons.md'), 'utf8');
-    check(run.status === 0, `手順書のコマンドが失敗した: ${run.why}`);
-    check(text.includes(`2. **教訓2**\n{N}. **${TRICKY}**\n## 手順\n3. **教訓3**`), `新しい教訓が ## 手順 の直前に、差し込み口の本文のまま入らなかった: ${JSON.stringify(text.slice(text.indexOf('## 道具の癖'), text.indexOf('## 報告')))}`);
-    check(count(text, `{N}. **${TRICKY}**`) === 1, '新しい教訓が 1 回だけ入っていない');
-    check(text.includes('1. **教訓1** — `## 手順` の前に差し込む'), '手順書どおりの書き込みが、見出しを引用した本文を書き換えた');
-    check(['## 道具の癖', '## 手順', '## 報告', '## Relations'].every(h => text.split('\n').filter(line => line === h).length === 1), '節の見出しが重複・消失した');
-
     // 最後の節（`## 報告`）に足すときは、手順書の指示どおり目印と本文の最後の見出しを両方 `## Relations` に変える
     // （レビュー 6 回目の指摘。この経路を実行するケースが無かった）。
     const last = documentedScript('edit-note corrections/lessons ', [
@@ -617,13 +647,30 @@ try {
       ['{教訓 1 行}', trickyInSingleQuotes],
       ['## 手順', '## Relations'],
     ], /corrections\/lessons(?![\w-])/);
-    if (last === null) return { status: run.status, last };
-    const lastRun = runSh(last);
-    const lastText = readFileSync(notePath('corrections/Correction Real Lessons.md'), 'utf8');
-    check(lastRun.status === 0, `最後の節へ足す手順書のコマンドが失敗した: ${lastRun.why}`);
-    check(lastText.includes(`4. **教訓4**\n{N}. **${TRICKY}**\n## Relations\n- originated_from`), `最後の節に足した教訓が ## Relations の直前に入らなかった: ${JSON.stringify(lastText.slice(lastText.indexOf('## 報告')))}`);
-    check(['## 道具の癖', '## 手順', '## 報告', '## Relations'].every(h => lastText.split('\n').filter(line => line === h).length === 1), '最後の節へ足したあと節の見出しが重複・消失した');
-    return { status: run.status, lastStatus: lastRun.status };
+    if (script === null || last === null) return { script, last };
+    const statuses = {};
+    for (const shell of SHELLS) {
+      const made = bmJson(
+        ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Lessons', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
+        lessons,
+      );
+      check(made.status === 0, `[${shell}] 下準備（lessons の形のノート）を作れなかった: ${made.stderr}`);
+      const run = runSh(script, shell);
+      const text = readFileSync(lessonsFile, 'utf8');
+      check(run.status === 0, `[${shell}] 手順書のコマンドが失敗した: ${run.why}`);
+      check(text.includes(`2. **教訓2**\n{N}. **${TRICKY}**\n## 手順\n3. **教訓3**`), `[${shell}] 新しい教訓が ## 手順 の直前に、差し込み口の本文のまま入らなかった: ${JSON.stringify(text.slice(text.indexOf('## 道具の癖'), text.indexOf('## 報告')))}`);
+      check(count(text, `{N}. **${TRICKY}**`) === 1, `[${shell}] 新しい教訓が 1 回だけ入っていない`);
+      check(text.includes('## 手順書の置き場は下\n1. **教訓1** — `## 手順` の前に差し込む'), `[${shell}] 手順書どおりの書き込みが、見出しを引用した本文か見出しで始まる行を書き換えた`);
+      check(headingsAppearOnce(text, sections), `[${shell}] 節の見出しが重複・消失した`);
+
+      const lastRun = runSh(last, shell);
+      const lastText = readFileSync(lessonsFile, 'utf8');
+      check(lastRun.status === 0, `[${shell}] 最後の節へ足す手順書のコマンドが失敗した: ${lastRun.why}`);
+      check(lastText.includes(`4. **教訓4**\n{N}. **${TRICKY}**\n## Relations\n- originated_from`), `[${shell}] 最後の節に足した教訓が ## Relations の直前に入らなかった: ${JSON.stringify(lastText.slice(lastText.indexOf('## 報告')))}`);
+      check(headingsAppearOnce(lastText, sections), `[${shell}] 最後の節へ足したあと節の見出しが重複・消失した`);
+      statuses[shell] = [run.status, lastRun.status];
+    }
+    return { shells: SHELLS, statuses };
   });
 
   // 6f. ファイル名とタイトルが違うノート（実物の corrections/inbox・lessons・graduated はどれも
@@ -710,10 +757,12 @@ try {
       // インラインコードは CommonMark と同じく「同じ長さのバッククォートの並びで閉じる」で切り出す。
       // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす（レビュー 4・5 回目の指摘）。
       // コードブロックは上で見ているので、先に取り除く（```` ``` ```` をインラインの区切りと読み違えないように）。
-      ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g)].map(match => match[2])
+      // CommonMark のコードスパンは段落をまたがないので、空行の手前で打ち切る（レビュー 7 回目の指摘）。
+      ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n)[\s\S])*?[^`])\1(?!`)/g)].map(match => match[2])
         .filter(span => /edit-note|write-note/.test(span)),
     ];
-    const escaped = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
+    const commands = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])];
+    const escaped = commands
       .filter(([, command]) => command.includes('\\n'));
     check(escaped.length === 0, `コマンドの中に \\n が戻っている（改行にならない）: ${escaped.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     // 前提と崩れる条件（AGENTS.md「回避策が成り立つ前提と崩れる条件を書く」）。
@@ -721,8 +770,9 @@ try {
     want(skill, "--operation find_replace --find-text '\n## 手順\n'", 'SKILL.md');
     // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える（レビュー 3・4 回目の指摘）。
     // 対象は corrections に限らない。一般の追記手順も同じ危険がある（レビュー 5 回目の指摘）。
-    const doubleQuoted = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
-      .filter(([, command]) => /--(content|find-text) "|--(content|find-text)=|\$\(cat/.test(command));
+    // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う（レビュー 7 回目の指摘）。
+    const doubleQuoted = commands
+      .filter(([, command]) => /--(content|find-text)(\s|\\\n)*[="]|\$\(cat/.test(command));
     check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。

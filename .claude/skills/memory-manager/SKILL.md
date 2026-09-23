@@ -174,7 +174,7 @@ bm tool edit-note corrections/inbox --project mappy-memory \
 
 `--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、行頭の `## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` が、本文に `` `## Relations` `` を含む inbox に対して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れたこのコードブロックを `sh` でそのまま実行して確かめている）。
 
-目印が 1 か所に当たらないときは、終了コード 1 で**何も書かずに止まる**。行頭の `## Relations` が 2 つあれば `Error: Expected 1 occurrences …`、無ければ `Error: Text to replace not found …`。打ち直す前に `read-note` で inbox の形が崩れていないかを見る。
+目印が 1 か所に当たらないときは、終了コード 1 で**何も書かずに止まる**。行頭の `## Relations` が 2 つあれば `Error: Expected 1 occurrences …`、無ければ `Error: Text to replace not found …`。打ち直す前に `read-note` で inbox の形が崩れていないかを見る。**エントリにこのコマンドをコードブロックごと貼らない** —— 貼った中の `## Relations` だけの行も目印に当たり、以後の書き込みが全部この理由で止まる。手順を指したいときは「SKILL.md「corrections」」と書く。
 
 > この手順が成り立つ前提: `## 未蒸留` が inbox の最後の節で、その次の見出しが行頭の `## Relations` であること（2026-09-23 時点の実物はこの形）。崩れる条件: `## 未蒸留` と `## Relations` の間に別の節が足される —— そのときも目印は 1 か所に当たるので、**止まらずに、その別の節の末尾へ黙って入る**（`inbox-replace-section-duplicates-find-replace-does-not` の (f) が固定している）。打つ前に `read-note` で `## 未蒸留` の次の見出しが `## Relations` であることを見る。inbox に節を足す変更をしたら、同じ変更でこの手順とケースを直す。
 
@@ -198,7 +198,7 @@ inbox と同じく、`--find-text` と `--content` はシングルクォート�
 - **足す節によって、`--find-text` の見出しと `--content` の最後の行の見出しを同じものに変える。** `## 道具の癖` に足すなら両方 `## 手順`（上のブロックのまま）、`## 手順` に足すなら両方 `## 報告`、`## 報告` に足すなら両方 `## Relations`。`--find-text` だけを変えると、目印の見出しが別の見出しに置き換わり、節が重複・消失したまま終了コード 0 で終わる。
 - **`{N}` は、どの節に足すときも lessons 全体で最大の番号＋1**。番号は並び順ではなく教訓を指す名前で、inbox などが「lessons 12」のように番号で参照しているので、既存の番号を振り直さない（節の途中に大きい番号が入ってよい）。
 
-**無い permalink へ `append` や `replace_section` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。`find_replace` は `Error: Entity not found`（終了コード 1）で止まり、何も作らない。新しく作るときは `write-note`。
+**無い permalink へ `append` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。`replace_section` と `find_replace` は `Error: Entity not found`（終了コード 1）で止まり、何も作らない（どちらも `npm run harness:e2e:memory-procedure` が固定している。以前この文書は `replace_section` も作ると書いていたが、実測では作らなかった）。新しく作るときは `write-note`。
 
 ## 索引が壊れたとき
 
