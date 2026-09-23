@@ -18,7 +18,7 @@
  * 終了コード: 0 = PASS、1 = FAIL、2 = 実行できなかった（bm CLI が無い等。PASS として記録しない）
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,16 +101,90 @@ const frontmatterOf = file => {
 const SKILL_PATH = join(repoRoot, '.claude/skills/memory-manager/SKILL.md');
 /** SKILL.md の sh コードブロック。実行するケースと `\n` の検査が同じ集合を見るよう、抜き出し方を 1 つにする。 */
 const shBlocks = text => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]);
+const count = (text, needle) => text.split(needle).length - 1;
+
+/**
+ * 手順書のコマンドを実行するときの身代わりの `bm`。`PATH` の先頭に置き、使い捨てプロジェクトを `--project` と
+ * `--local` で 1 回だけ指す呼び出しだけを本物へ渡し、それ以外は終了コード 97 で止める。抜き出したコマンドの
+ * 文字列を検査するだけでは、環境変数や書き方の違いで本物の mappy-memory に当たる形を網羅できない
+ * （レビュー 5 回目の指摘）。`basic-memory` の名前で呼ぶ形も同じく止める。
+ */
+const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
+const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8' }).stdout ?? '').trim();
+writeFileSync(join(shimDir, 'bm'), [
+  '#!/bin/sh',
+  '# memory-procedure.mjs が作る身代わり。使い捨てプロジェクト以外への呼び出しを本物へ渡さない。',
+  "project=''; projects=0; local=0; prev=''",
+  'for arg in "$@"; do',
+  '  case "$arg" in',
+  '    --project-id|--project-id=*|--project=*|--cloud|-p|-p=*) echo "memory-procedure shim: $arg は使えない" >&2; exit 97 ;;',
+  '    --local) local=1 ;;',
+  '    --project) projects=$((projects + 1)) ;;',
+  '  esac',
+  '  [ "$prev" = --project ] && project="$arg"',
+  '  prev="$arg"',
+  'done',
+  `if [ "$projects" != 1 ] || [ "$project" != '${PROJECT}' ] || [ "$local" != 1 ]; then`,
+  '  echo "memory-procedure shim: 使い捨てプロジェクト以外への呼び出しを止めた: $*" >&2; exit 97',
+  'fi',
+  `exec '${realBm}' "$@"`,
+  '',
+].join('\n'), { mode: 0o755 });
+writeFileSync(join(shimDir, 'basic-memory'), '#!/bin/sh\necho "memory-procedure shim: basic-memory は使えない" >&2\nexit 97\n', { mode: 0o755 });
+// 既定のプロジェクトを決める変数は外す。身代わりが --project を必須にするので効かないが、念のため。
+const shEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^BASIC_MEMORY_.*PROJECT/i.test(key))),
+  PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+};
+
 /**
  * 手順書のコマンドをシェルで実行する。bm が認証やロックで止まってもハーネスごと固まらないよう時間を切り、
  * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする（レビュー指摘）。
  */
 const runSh = script => {
-  const run = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: BM_TIMEOUT_MS });
+  const run = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
   // 時間切れで止まるのは sh だけで、孫の bm は残ってロックを握り続ける。使い捨てプロジェクトの名前は
   // この実行に固有なので、その名前を引数に持つプロセスだけを止める（レビュー 4 回目の指摘）。
   if (run.error?.code === 'ETIMEDOUT') spawnSync('pkill', ['-f', PROJECT]);
   return { ...run, why: run.error ? String(run.error) : (run.stderr || run.stdout) };
+};
+
+// 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
+// 対になっていない文字も入れる。対の文字だけだと、bash 3.2 がコマンド置換の中の heredoc を読み違える形を
+// 見逃した（レビュー 4 回目の指摘）。`'` は手順書の規則どおり `'\''` にして差し込む。
+const TRICKY = "`append と $HOME と \"二重 と 1) と it's と \\n";
+const trickyInSingleQuotes = TRICKY.replaceAll("'", () => "'\\''");
+
+/**
+ * SKILL.md のコードブロックのうち `select` を含むものを 1 つ抜き出し、`replacements` の順に差し替え、
+ * project を使い捨てのものに差し替えて返す。差し替えが効いたことを正の条件で確かめ、それ以外は null を返して
+ * 実行させない（レビュー指摘）。実行時は runSh の身代わりの bm も同じ条件で止めるので、ここは早く・分かりやすく
+ * 落とすための 1 段目。`stale` は差し替え後に残っていてはいけない当て先（本物の permalink）。
+ */
+const documentedScript = (select, replacements, stale) => {
+  const blocks = shBlocks(readFileSync(SKILL_PATH, 'utf8')).filter(block => block.includes(select));
+  check(blocks.length === 1, `SKILL.md に「${select}」を含むコードブロックが 1 つでない: ${blocks.length} 個`);
+  if (blocks.length !== 1) return null;
+  const absent = replacements.filter(([from]) => !blocks[0].includes(from)).map(([from]) => from);
+  let script = blocks[0];
+  for (const [from, to] of replacements) script = script.replaceAll(from, () => to);
+  script = script.replaceAll('--project mappy-memory', `--project ${PROJECT} --local`);
+  const rest = script.replaceAll(PROJECT, '');
+  // 呼び出しの数は、行頭が `#` の行（sh のコメントと、本文の見出し）を除いて数える（レビュー 4 回目の指摘）。
+  const code = script.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+  const calls = count(code, 'bm ');
+  const problems = [
+    absent.length > 0 && `差し替える箇所が無い: ${absent.join(', ')}`,
+    calls === 0 && 'bm の呼び出しが無い',
+    count(code, `--project ${PROJECT} --local`) !== calls && `bm の呼び出し ${calls} 個のうち、使い捨てプロジェクトへ向いていないものがある`,
+    /mappy-memory/.test(rest) && 'mappy-memory が残っている',
+    /(^|\s)-p(\s|=)|--project=|--project-id|--cloud/.test(script) && '--project 以外の形で project を指定している（--project-id は --project より優先される）',
+    /basic-memory|BASIC_MEMORY/.test(rest) && 'bm 以外の名前か環境変数で Basic Memory を指している',
+    count(code, 'tool ') !== count(code, 'bm tool ') && 'bm tool 以外の形で tool を呼んでいる',
+    stale && stale.test(script) && `当て先が ${stale.source} のまま`,
+  ].filter(Boolean);
+  check(problems.length === 0, `抜き出したコマンドを使い捨てプロジェクトへ向けられない（${problems.join(' / ')}）: ${script}`);
+  return problems.length === 0 ? script : null;
 };
 
 let added = false;
@@ -119,6 +193,7 @@ let added = false;
 const onInterrupt = signal => {
   if (added && !keep) { spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }); }
   if (!keep && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  rmSync(shimDir, { recursive: true, force: true });
   console.error(`\n${signal} で中断した。使い捨てプロジェクトは片付けた。`);
   process.exit(2);
 };
@@ -179,26 +254,41 @@ try {
     return { permalink, readBy: byWish.json?.permalink, globHits };
   });
 
-  // 2. SKILL.md の推奨手順そのもの（stdin + frontmatter の permalink / type）。
-  //    heredoc の構文自体が通ることを見るため、この回だけシェル経由で実行する。
+  // 1c. 手順書のコマンドを実行する前に、身代わりの bm が使い捨てプロジェクト以外への呼び出しを止めることを確かめる。
+  //     止めるべき呼び出しは本物に届かない。万一届いても、存在しないノートの read-note（読むだけ）にしてある。
+  await step('shim-refuses-other-projects', () => {
+    const probe = 'events/shim-probe-not-a-note';
+    const refused = [
+      `bm tool read-note ${probe} --project mappy-memory --local`,
+      `bm tool read-note ${probe} --project ${PROJECT}`,
+      `bm tool read-note ${probe} -p ${PROJECT} --local`,
+      `bm tool read-note ${probe} --project=${PROJECT} --local`,
+      `bm tool read-note ${probe} --project ${PROJECT} --project mappy-memory --local`,
+      `bm tool read-note ${probe} --project-id 00000000 --project ${PROJECT} --local`,
+      `bm tool read-note ${probe} --project ${PROJECT} --local --cloud`,
+      `basic-memory tool read-note ${probe}`,
+    ].map(command => [command, runSh(command)]);
+    const passed = runSh(`bm tool read-note ${probe} --project ${PROJECT} --local`);
+    const leaks = refused.filter(([, run]) => run.status !== 97).map(([command, run]) => `[${run.status}] ${command}`);
+    check(leaks.length === 0, `身代わりの bm が止めるべき呼び出しを通した: ${leaks.join(' / ')}`);
+    check(passed.status !== 97 && passed.status !== null, `身代わりの bm が使い捨てプロジェクトへの呼び出しまで止めた: [${passed.status}] ${passed.why}`);
+    return { refused: refused.map(([, run]) => run.status), passed: passed.status };
+  });
+
+  // 2. SKILL.md の推奨手順そのもの（stdin + frontmatter の permalink / type）。「新しいノートを作る」の
+  //    コードブロックを抜き出し、差し込み口だけを埋めてシェルで実行する（レビュー 5 回目の指摘。以前はハーネスが
+  //    手で組んだ同じ形を実行しており、手順書の側を崩しても通っていた）。
   await step('documented-write-note', () => {
-    const script = [
-      `bm tool write-note --project ${PROJECT} --local \\`,
-      `  --title "2026-09-22 推奨手順の確認" \\`,
-      `  --folder "events" \\`,
-      `  --tags "probe,mappy" <<'NOTE'`,
-      '---',
-      'permalink: events/probe-documented-write',
-      'type: event',
-      'ticket: LEV-184',
-      '---',
-      '',
-      '# 推奨手順の確認',
-      '',
-      '## Observations',
-      '- [tech] PROBEWRITETOKEN を含む #probe',
-      'NOTE',
-    ].join('\n');
+    const script = documentedScript('bm tool write-note --project mappy-memory', [
+      ['{YYYY-MM-DD タイトル}', '2026-09-22 推奨手順の確認'],
+      ['{カテゴリの単数形}', 'event'],
+      ['{英語スラッグ}', 'probe-documented-write'],
+      ['{カテゴリ}', 'events'],
+      ['{タグ1},{タグ2}', 'probe,mappy'],
+      ['{番号}', '184'],
+      ['- [category] 内容', '- [tech] PROBEWRITETOKEN'],
+    ]);
+    if (script === null) return { script };
     const run = runSh(script);
     const at = (run.stdout ?? '').indexOf('{');
     // JSON でなくても throw せず、下の status / stderr を出す check に到達させる。
@@ -304,9 +394,9 @@ try {
     return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated };
   });
 
-  // 6b. 手順書は `--content "{追記する本文}"` と書いており、先頭に改行を置かせていない。積み上げるノートは
-  //     この形で何度も呼ばれるので、append が自分で改行を入れることに寄りかかっている。前の行に癒着すると
-  //     corrections/inbox が 1 行に潰れるため、続けて 2 回打って別の行に入ることを固定する。
+  // 6b. 手順書は `--content '{追記する本文}'` と書いており、先頭に改行を置かせていない。積み上げるノートは
+  //     この形で何度も呼ばれるので、append が自分で改行を入れることに寄りかかっている。続けて 2 回打って
+  //     別の行に入ることを固定する（append の癖そのものの固定。corrections には append を使わない —— 6c）。
   await step('repeated-append-does-not-glue-lines', () => {
     const write = content => bmJson([
       'tool', 'edit-note', 'corrections/inbox', '--project', PROJECT,
@@ -375,7 +465,6 @@ try {
     content,
   );
   const editRealInbox = args => bmJson(['tool', 'edit-note', 'corrections/real-inbox', '--project', PROJECT, ...args]);
-  const count = (text, needle) => text.split(needle).length - 1;
   const said = run => `${run.stdout}${run.stderr}`;
 
   await step('inbox-replace-section-duplicates-find-replace-does-not', () => {
@@ -453,47 +542,12 @@ try {
   //     当て先と project だけを差し替え、`{…}` の差し込み口はそのまま文字として入れる。本文が見出しを引用して
   //     いる inbox に対して、既存が重複も消失もせず、新しい 1 件が既存の後ろ・Relations の前に空行で区切られて
   //     入ることを見る。
-  /**
-   * SKILL.md のコードブロックのうち `edit-note {target}` を含むものを 1 つ抜き出し、当て先を `{fixture}` に、
-   * project を使い捨てのものに差し替えて返す。差し替えが効いたことを正の条件で確かめ、それ以外は null を返して
-   * 実行させない（レビュー指摘）。`-p mappy-memory` や `--project=…` や project の省略に書き換えられると、
-   * 置き換えが空振りして本物の mappy-memory に当たる。使い捨てプロジェクトの名前も mappy-memory で始まるので、
-   * その名前を消してから残りを見る。
-   */
-  // 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
-  // 対になっていない文字も入れる。対の文字だけだと、bash 3.2 がコマンド置換の中の heredoc を読み違える形を
-  // 見逃した（レビュー 4 回目の指摘）。`'` は手順書の規則どおり `'\''` にして差し込む。
-  const TRICKY = "`append と $HOME と \"二重 と 1) と it's と \\n";
-  const documentedScript = (target, fixture, slot) => {
-    const blocks = shBlocks(readFileSync(SKILL_PATH, 'utf8')).filter(block => block.includes(`edit-note ${target} `));
-    check(blocks.length === 1, `SKILL.md に ${target} へ書くコードブロックが 1 つでない: ${blocks.length} 個`);
-    if (blocks.length !== 1) return null;
-    const script = blocks[0]
-      .replaceAll(`${target} `, `${fixture} `)
-      .replaceAll('--project mappy-memory', `--project ${PROJECT} --local`)
-      .replaceAll(slot, () => TRICKY.replaceAll("'", () => "'\\''"));
-    const rest = script.replaceAll(PROJECT, '');
-    // 呼び出しの数は、行頭が `#` の行（sh のコメントと、本文の見出し）を除いて数える（レビュー 4 回目の指摘）。
-    const code = script.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
-    const calls = count(code, 'bm ');
-    const escapedTarget = target.replace('/', '\\/');
-    const problems = [
-      calls === 0 && 'bm の呼び出しが無い',
-      count(code, `--project ${PROJECT} --local`) !== calls && `bm の呼び出し ${calls} 個のうち、使い捨てプロジェクトへ向いていないものがある`,
-      /mappy-memory/.test(rest) && 'mappy-memory が残っている',
-      /(^|\s)-p(\s|=)|--project=|--project-id|--cloud/.test(script) && '--project 以外の形で project を指定している（--project-id は --project より優先される）',
-      /basic-memory/.test(rest) && 'bm 以外の名前で Basic Memory を呼んでいる',
-      count(code, 'tool ') !== count(code, 'bm tool ') && 'bm tool 以外の形で tool を呼んでいる',
-      !blocks[0].includes(slot) && `差し込み口 ${slot} が無い`,
-      new RegExp(`${escapedTarget}(?![\\w-])`).test(script) && `当て先が ${target} のまま`,
-    ].filter(Boolean);
-    check(problems.length === 0, `抜き出したコマンドを使い捨てプロジェクトへ向けられない（${problems.join(' / ')}）: ${script}`);
-    return problems.length === 0 ? script : null;
-  };
-
   await step('documented-inbox-entry', () => {
     check(resetRealInbox(quotingInbox).status === 0, '下準備（本文が見出しを引用する inbox）を作れなかった');
-    const script = documentedScript('corrections/inbox', 'corrections/real-inbox', '{何をしたか・なぜか}');
+    const script = documentedScript('edit-note corrections/inbox ', [
+      ['corrections/inbox ', 'corrections/real-inbox '],
+      ['{何をしたか・なぜか}', trickyInSingleQuotes],
+    ], /corrections\/inbox(?![\w-])/);
     if (script === null) return { script };
     const run = runSh(script);
     const text = readFileSync(realInboxFile, 'utf8');
@@ -527,7 +581,10 @@ try {
       lessons,
     );
     check(made.status === 0, `下準備（lessons の形のノート）を作れなかった: ${made.stderr}`);
-    const script = documentedScript('corrections/lessons', 'corrections/real-lessons', '{教訓 1 行}');
+    const script = documentedScript('edit-note corrections/lessons ', [
+      ['corrections/lessons ', 'corrections/real-lessons '],
+      ['{教訓 1 行}', trickyInSingleQuotes],
+    ], /corrections\/lessons(?![\w-])/);
     if (script === null) return { script };
     const run = runSh(script);
     const text = readFileSync(notePath('corrections/Correction Real Lessons.md'), 'utf8');
@@ -603,7 +660,7 @@ try {
     // 実際の改行を含む目印そのものは、documented-inbox-entry がコードブロックを実行して確かめる。
     want(skill, "--operation find_replace --find-text '\n## Relations\n'", 'SKILL.md');
     want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
-    want(agents, 'edit-note corrections/inbox --operation find_replace', 'AGENTS.md');
+    want(agents, 'bm tool edit-note corrections/inbox --project mappy-memory --operation find_replace', 'AGENTS.md');
     want(agents, '**行頭の** `## Relations`', 'AGENTS.md');
     // --overwrite が当たるのはタイトルから決まるパスだけで、既存の書き換えは edit-note（LEV-192）。
     want(skill, '{folder}/{title}.md', 'SKILL.md');
@@ -618,8 +675,10 @@ try {
     // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
     const commandsOf = text => [
       ...shBlocks(text),
-      // `` `x` `` の二重バッククォートを先に取り、1 つずつの対と組み違えないようにする（レビュー 4 回目の指摘）。
-      ...(text.match(/``[^`]+?``|`[^`\n]+`/g) ?? []).filter(span => !span.startsWith('``') && /edit-note|write-note/.test(span)),
+      // インラインコードは CommonMark と同じく「同じ長さのバッククォートの並びで閉じる」で切り出す。
+      // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす（レビュー 4・5 回目の指摘）。
+      ...[...text.matchAll(/(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g)].map(match => match[2])
+        .filter(span => /edit-note|write-note/.test(span)),
     ];
     const escaped = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
       .filter(([, command]) => command.includes('\\n'));
@@ -628,8 +687,10 @@ try {
     want(skill, 'この手順が成り立つ前提', 'SKILL.md');
     want(skill, "--operation find_replace --find-text '\n## 手順\n'", 'SKILL.md');
     // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える（レビュー 3・4 回目の指摘）。
-    const corrections = shBlocks(skill).filter(block => /edit-note corrections\//.test(block));
-    check(corrections.every(block => !/--content "|\$\(cat/.test(block)), 'SKILL.md の corrections のコードブロックに、本文を二重引用符かコマンド置換で渡す形が戻っている');
+    // 対象は corrections に限らない。一般の追記手順も同じ危険がある（レビュー 5 回目の指摘）。
+    const doubleQuoted = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
+      .filter(([, command]) => /--content "|--content=|\$\(cat/.test(command));
+    check(doubleQuoted.length === 0, `本文を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
     // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
@@ -641,6 +702,8 @@ try {
 } catch (error) {
   record.failures.push(String(error));
 } finally {
+  // 身代わりの bm は --keep でも残さない（手で追うときは本物の bm を使う）。
+  rmSync(shimDir, { recursive: true, force: true });
   if (keep) {
     console.log(added
       ? `--keep: ${PROJECT}（${root}）を残した。手で消す: bm project remove ${PROJECT} --delete-notes`
