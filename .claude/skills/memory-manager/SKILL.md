@@ -110,7 +110,7 @@ bm tool edit-note {permalink} --project mappy-memory \
 **既存のノートを書き換えるときは、必ず permalink を指定する `edit-note` を使う。`write-note` は新規専用。** `--overwrite` を足すと通るが、当たるのは `--folder` と `--title` から決まるパス `{folder}/{title}.md` のファイルだけで、permalink でも frontmatter の `title` でも探さない。
 
 - そのパスにファイルがあれば、**ノート全体が置き換わり、過去の記録は残らない。**
-- 無ければ（ファイル名とタイトルが違うノート）、**既存のノートは変わらず、`{title}.md` という別のノートが作られる。** `corrections/inbox`・`lessons`・`graduated` はどれもこの形（ファイルは `inbox.md`、タイトルは `Correction Inbox`）で、`--title "Correction Inbox" --folder corrections --overwrite` は `corrections/Correction Inbox.md`（permalink `corrections/inbox-1`）を新しく作る（2026-09-23 に実際に踏んだ。`npm run harness:e2e:memory-procedure` の `overwrite-with-different-filename-creates-another-note` が固定している）。
+- 無ければ（ファイル名とタイトルが違うノート）、**既存のノートは変わらず、`{title}.md` という別のノートが作られる。** `corrections/` の 3 つはどれもこの形（`inbox.md` に `Correction Inbox`、`lessons.md` に `Correction Lessons`、`graduated.md` に `Correction Graduated`）で、`--title "Correction Inbox" --folder corrections --overwrite` は `corrections/Correction Inbox.md` を新しく作る。新しいノートの permalink は渡した本文で変わり、frontmatter に `permalink: corrections/inbox` を書いていれば衝突を避けて `corrections/inbox-1`（2026-09-23 に実際に踏んだ形）、書いていなければ `mappy-memory/corrections/correction-inbox` になる（`npm run harness:e2e:memory-procedure` の `overwrite-with-different-filename-creates-another-note` が両方を固定している）。
 
 | やりたいこと | コマンド |
 | --- | --- |
@@ -169,6 +169,8 @@ bm tool edit-note corrections/inbox --project mappy-memory \
 
 目印が 1 か所に当たらないとき（行頭の `## Relations` が 2 つある、または無い）は、`Error: Expected 1 occurrences …`（終了コード 1）で**何も書かずに止まる**。打ち直す前に `read-note` で inbox の形が崩れていないかを見る。
 
+> この手順が成り立つ前提: `## 未蒸留` が inbox の最後の節で、その次の見出しが行頭の `## Relations` であること（2026-09-23 時点の実物はこの形）。崩れる条件: `## 未蒸留` と `## Relations` の間に別の節が足される —— そのときも目印は 1 か所に当たるので、**止まらずに、その別の節の末尾へ黙って入る**（`inbox-replace-section-duplicates-find-replace-does-not` の (f) が固定している）。打つ前に `read-note` で `## 未蒸留` の次の見出しが `## Relations` であることを見る。inbox に節を足す変更をしたら、同じ変更でこの手順とケースを直す。
+
 **`## 未蒸留` に `replace_section` を使わない。** `replace_section` は見出しから次の見出し（レベルを問わない）までを置き換えるので、`## 未蒸留` の直後に `###` のエントリが続く `inbox` では、置き換わるのは見出しと最初の `###` の間の空の範囲だけ。既存＋新規の全文を渡すと既存のエントリが必ず重複する（2026-09-23 に 2 回重複した）。新しい 1 件だけを渡せば重複はしないが、節の先頭（既存の前）に入って並びが逆になり、既存との間の空行も落ちる（どちらも `inbox-replace-section-duplicates-find-replace-does-not` が固定している）。
 
 **`lessons` に `replace_section` を使わない。** `## 道具の癖`・`## 手順`・`## 報告` の中身は番号付きの平らなリストで、次の見出しまでの全部が消える。蒸留した 1 行を足すときは、`read-note` で今の中身を読み、`find_replace` で並びの目印の前に差し込む。
@@ -176,10 +178,13 @@ bm tool edit-note corrections/inbox --project mappy-memory \
 ```sh
 bm tool read-note corrections/lessons --project mappy-memory   # 今の並びと番号を見る
 bm tool edit-note corrections/lessons --project mappy-memory \
-  --operation find_replace --find-text "## 手順" --content "{N}. **{教訓 1 行}**
-
+  --operation find_replace --find-text "
+## 手順" --content "
+{N}. **{教訓 1 行}**
 ## 手順"
 ```
+
+inbox と同じく、目印は**行頭の** `## 手順` 見出しで、引用符を開いた直後で改行する。教訓の本文に `` `## 手順` `` と書いてあっても当たらない。`lessons` の節は見出しの直前に空行を置かない形なので、`--content` も空行を挟まない（`documented-lessons-entry` がこのコードブロックをそのまま実行して確かめている）。`## 道具の癖` に足すときは目印を `## 手順`、`## 手順` に足すときは `## 報告`、`## 報告` に足すときは `## Relations` にする。
 
 **無い permalink へ `append` や `replace_section` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。`find_replace` は `Error: Entity not found`（終了コード 1）で止まり、何も作らない。新しく作るときは `write-note`。
 
