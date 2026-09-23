@@ -107,16 +107,19 @@ bm tool edit-note {permalink} --project mappy-memory \
 
 **`file_path` が `null` で、何も書かれていない。** 形が成功時と同じ JSON なので成功と読み違えやすい。`action` を見る。
 
-`--overwrite` を足すと通るが、**ノート全体が置き換わり、過去の記録は残らない。** `corrections/inbox` のように積み上げるノートに `--overwrite` を使わない。
+**既存のノートを書き換えるときは、必ず permalink を指定する `edit-note` を使う。`write-note` は新規専用。** `--overwrite` を足すと通るが、当たるのは `--folder` と `--title` から決まるパス `{folder}/{title}.md` のファイルだけで、permalink でも frontmatter の `title` でも探さない。
+
+- そのパスにファイルがあれば、**ノート全体が置き換わり、過去の記録は残らない。**
+- 無ければ（ファイル名とタイトルが違うノート）、**既存のノートは変わらず、`{title}.md` という別のノートが作られる。** `corrections/inbox`・`lessons`・`graduated` はどれもこの形（ファイルは `inbox.md`、タイトルは `Correction Inbox`）で、`--title "Correction Inbox" --folder corrections --overwrite` は `corrections/Correction Inbox.md`（permalink `corrections/inbox-1`）を新しく作る（2026-09-23 に実際に踏んだ。`npm run harness:e2e:memory-procedure` の `overwrite-with-different-filename-creates-another-note` が固定している）。
 
 | やりたいこと | コマンド |
 | --- | --- |
 | 新しいノート | `write-note` |
 | ファイル末尾に足す | `edit-note --operation append`（末尾が `## Relations` のノートではその後ろに落ちる） |
 | ファイル先頭に足す | `edit-note --operation prepend` |
-| 節の中に入れる | `edit-note --operation replace_section --section "## 節"`（見出しから**次の見出しまで**を置き換える。節の中身が平らなリストなら全部消える） |
-| 語を置き換える | `edit-note --operation find_replace --find-text "旧" --content "新"` |
-| 丸ごと書き直す（過去の記録を捨ててよいときだけ） | `write-note --overwrite` |
+| 節を差し替える | `edit-note --operation replace_section --section "## 節"`（見出しから**次の見出し（レベルを問わない）まで**を置き換える。節の中身が平らなリストなら全部消え、`###` で始まる節なら最初の `###` の手前しか置き換わらない） |
+| 目印の前に差し込む・語を置き換える | `edit-note --operation find_replace --find-text "目印" --content "新しい本文\n\n目印"`（目印が 1 か所に当たらないと終了コード 1 で何も書かない） |
+| 丸ごと書き直す（過去の記録を捨ててよいときだけ） | `write-note --overwrite`。ファイル名が `{folder}/{title}.md` のノートにしか当たらない（上記） |
 
 存在しない permalink に `append` すると新規作成されるが、その permalink は `mappy-memory/` を前置した形になる。新規は `write-note` で作る。
 
@@ -150,13 +153,20 @@ bm tool read-note schemas/correction --project mappy-memory
 **`append` を使わない。** `inbox` も `lessons` も末尾が `## Relations` で、書き足したい節はその上にある。`append` は必ず**ファイル末尾**に足すので、ミスの記録が Relations の後ろに落ちて、節の構造も蒸留の動線も崩れる。
 
 ```sh
-# ミスをした直後 — inbox の「## 未蒸留」の先頭に入れる
+# ミスをした直後 — inbox の「## 未蒸留」の末尾（## Relations の直前）に 1 件足す
 bm tool edit-note corrections/inbox --project mappy-memory \
-  --operation replace_section --section "## 未蒸留" --content "### {YYYY-MM-DD 見出し}
-- {何をしたか・なぜか}"
+  --operation find_replace --find-text "## Relations" --content "### {YYYY-MM-DD 見出し}
+- {何をしたか・なぜか}
+
+## Relations"
 ```
 
-`replace_section` は**見出しから次の見出し（レベルを問わない）までを置き換える。** `## 未蒸留` の中身は `### {日付}` で区切られているので、置き換わるのは見出しのすぐ下だけで、既存の `###` は下に残る（新しいものが先頭に積まれる）。
+`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、`## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` がこのコードブロックをそのまま実行して確かめている）。
+
+`## Relations` がファイル内で 1 か所だけであることが前提。エントリの本文に `` `## Relations` `` と書くと 2 か所になるが、そのときは `Error: Expected 1 occurrences of '## Relations', but found 2`（終了コード 1）で**何も書かずに止まる**ので、`--find-text "## Relations
+- distilled_into"` のように目印を長くして打ち直す。
+
+**`## 未蒸留` に `replace_section` を使わない。** `replace_section` は見出しから次の見出し（レベルを問わない）までを置き換えるので、`## 未蒸留` の直後に `###` のエントリが続く `inbox` では、置き換わるのは見出しと最初の `###` の間の空の範囲だけ。既存＋新規の全文を渡すと既存のエントリが必ず重複する（2026-09-23 に 2 回重複した）。新しい 1 件だけを渡せば重複はしないが、節の先頭（既存の前）に入って並びが逆になり、既存との間の空行も落ちる（どちらも `inbox-replace-section-duplicates-find-replace-does-not` が固定している）。
 
 **`lessons` に `replace_section` を使わない。** `## 道具の癖`・`## 手順`・`## 報告` の中身は番号付きの平らなリストで、次の見出しまでの全部が消える。蒸留した 1 行を足すときは、`read-note` で今の中身を読み、`find_replace` で並びの目印の前に差し込む。
 
@@ -168,7 +178,7 @@ bm tool edit-note corrections/lessons --project mappy-memory \
 ## 手順"
 ```
 
-**無い permalink へ `append` や `replace_section` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。新しく作るときは `write-note`。
+**無い permalink へ `append` や `replace_section` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。`find_replace` は `Error: Entity not found`（終了コード 1）で止まり、何も作らない。新しく作るときは `write-note`。
 
 ## 索引が壊れたとき
 
@@ -188,7 +198,7 @@ npm run harness:e2e:memory-procedure
 
 使い捨ての Basic Memory プロジェクトを作り、この文書のコマンドをそのまま実行して期待どおりの結果かを確かめ、最後にプロジェクトごと消す。`mappy-memory` には触らない。
 
-固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite` の各文字列、ファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
+固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の `--find-text "## Relations"` の各文字列、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。「ミスをした直後」のコードブロックだけは、抜き出して使い捨てプロジェクトでそのまま実行する。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
 
 ## リファレンス
 

@@ -305,13 +305,13 @@ try {
 
   // 6c. 実物の corrections/inbox・lessons は末尾が `## Relations` で、追記先の節はその上にある。
   //     append は必ずファイル末尾に足すので、この形のノートでは Relations の後ろに落ちる。
-  //     手順書が corrections に replace_section を指定している理由なので、両方の挙動を固定する。
+  //     手順書が corrections に append を禁じている理由と、lessons に replace_section を使わない理由を固定する。
   const inboxShape = [
     '---', 'permalink: corrections/shape', '---', '',
     '# Correction Inbox', '', '## 未蒸留', '', '### 2026-09-20 既存のミス', '- 内容', '',
     '## Relations', '- distilled_into [[Correction Lessons]]', '',
   ].join('\n');
-  await step('append-lands-after-relations-replace-section-does-not', () => {
+  await step('append-lands-after-relations-flat-replace-section-wipes', () => {
     const shapeFile = notePath('corrections/Correction Shape.md');
     const write = (content, extra = []) => bmJson(
       ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Shape', '--folder', 'corrections', '--type', 'correction', ...extra],
@@ -322,20 +322,9 @@ try {
     bmJson(['tool', 'edit-note', 'corrections/shape', '--project', PROJECT, '--operation', 'append', '--content', '### 2026-09-22 新しいミス']);
     const appended = readFileSync(shapeFile, 'utf8');
     const afterRelations = appended.indexOf('### 2026-09-22 新しいミス') > appended.indexOf('## Relations');
-    check(afterRelations, 'append が Relations より前に入った（手順書が replace_section を指定している理由が消えている）');
+    check(afterRelations, 'append が Relations より前に入った（手順書が corrections に append を禁じている理由が消えている）');
 
-    // (b) replace_section は節の中、既存の ### を残したまま先頭に入る。
-    write(inboxShape, ['--overwrite']);
-    bmJson([
-      'tool', 'edit-note', 'corrections/shape', '--project', PROJECT,
-      '--operation', 'replace_section', '--section', '## 未蒸留', '--content', '### 2026-09-22 新しいミス\n- 内容',
-    ]);
-    const replaced = readFileSync(shapeFile, 'utf8');
-    const at = needle => replaced.indexOf(needle);
-    check(at('### 2026-09-22 新しいミス') > at('## 未蒸留'), 'replace_section が節の外へ入った');
-    check(at('### 2026-09-22 新しいミス') < at('## Relations'), 'replace_section が Relations の後ろへ入った');
-    check(at('### 2026-09-20 既存のミス') !== -1, 'replace_section が節の中の既存の項目を消した');
-    check(at('- distilled_into [[Correction Lessons]]') !== -1, 'replace_section が Relations を壊した');
+    // (b) inbox の形（`###` で区切られた節）への replace_section は、下の 6d で固定する。
 
     // (c) 節の中身が平らなリスト（lessons の形）だと replace_section は節ごと置き換える。
     //     手順書が「lessons には使わない」と書いている根拠。
@@ -352,6 +341,137 @@ try {
     return { afterRelations, flatKeptHistory: flat.includes('既存の教訓1') };
   });
 
+  // 6d. 実物の inbox と同じ形（見出しの直後に空行なしで `###` が続き、既存が 2 件）で、`## 未蒸留` への
+  //     書き込みがどうなるかを固定する（LEV-192）。旧手順の「replace_section で入れる」は、置き換わるのが
+  //     見出しから最初の `###` の手前まで（空の範囲）なので、既存＋新規の全文を渡すと既存が必ず重複する。
+  //     2026-09-23 に 2 回、実際に重複した。
+  const realInbox = [
+    '---', 'permalink: corrections/real-inbox', '---', '',
+    '# Correction Real Inbox', '', 'ミスをした直後にここへ書く。', '', '## 未蒸留',
+    '### 2026-09-20 既存A', '- 内容A', '', '### 2026-09-21 既存B', '- 内容B', '',
+    '## Relations', '- distilled_into [[Correction Lessons]]', '',
+  ].join('\n');
+  const realInboxFile = notePath('corrections/Correction Real Inbox.md');
+  const resetRealInbox = () => bmJson(
+    ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
+    realInbox,
+  );
+  const count = (text, needle) => text.split(needle).length - 1;
+
+  await step('inbox-replace-section-duplicates-find-replace-does-not', () => {
+    check(resetRealInbox().status === 0, '下準備（inbox の形のノート）を作れなかった');
+    // (a) 旧手順を踏んだ回と同じ: 既存＋新規の全文を replace_section に渡す → 既存が重複する。
+    bmJson([
+      'tool', 'edit-note', 'corrections/real-inbox', '--project', PROJECT,
+      '--operation', 'replace_section', '--section', '## 未蒸留',
+      '--content', '### 2026-09-20 既存A\n- 内容A\n\n### 2026-09-21 既存B\n- 内容B\n\n### 2026-09-23 新C\n- 内容C',
+    ]);
+    const full = readFileSync(realInboxFile, 'utf8');
+    check(count(full, '### 2026-09-20 既存A') === 2, `全文の replace_section で既存が重複しなかった（手順書の警告が古い）: ${count(full, '### 2026-09-20 既存A')} 回`);
+
+    // (b) 新しい 1 件だけを replace_section に渡す → 重複はしないが、節の先頭（既存の前）に入り、
+    //     既存の `###` との間の空行も落ちる。inbox は古い順に積んでいるので採らない（手順書が find_replace に
+    //     一本化している理由）。
+    resetRealInbox();
+    bmJson([
+      'tool', 'edit-note', 'corrections/real-inbox', '--project', PROJECT,
+      '--operation', 'replace_section', '--section', '## 未蒸留', '--content', '### 2026-09-23 新C\n- 内容C',
+    ]);
+    const single = readFileSync(realInboxFile, 'utf8');
+    check(count(single, '### 2026-09-20 既存A') === 1, '新しい 1 件だけの replace_section で既存が重複・消失した');
+    check(single.indexOf('### 2026-09-23 新C') < single.indexOf('### 2026-09-20 既存A'), '新しい 1 件だけの replace_section が既存の前に入らなかった（find_replace に一本化した理由が消えている）');
+
+    // (c) find_replace が 2 か所に当たると、終了コード 1 で何も書かずに止まる（--expected-replacements の既定 1）。
+    //     手順書が `## Relations` を目印にしてよい根拠 —— 一意でなくても黙って壊さない。
+    const doubled = realInbox.replace('- 内容B', '- 末尾が `## Relations` なので append は後ろに落ちる');
+    bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
+      doubled,
+    );
+    const before = readFileSync(realInboxFile, 'utf8');
+    const ambiguous = bmJson([
+      'tool', 'edit-note', 'corrections/real-inbox', '--project', PROJECT,
+      '--operation', 'find_replace', '--find-text', '## Relations', '--content', '### 2026-09-23 新C\n\n## Relations',
+    ]);
+    check(ambiguous.status !== 0, '2 か所に当たる find_replace が終了コード 0 で通った');
+    check(readFileSync(realInboxFile, 'utf8') === before, '2 か所に当たる find_replace がノートを書き換えた');
+
+    // (d) append・replace_section と違い、無い permalink への find_replace はエラーで止まり、何も作らない
+    //     （ステップ 6 と対。手順書が「find_replace は当て先を間違えても黙って別のノートを作らない」と書く根拠）。
+    const missing = bmJson([
+      'tool', 'edit-note', 'corrections/not-created-for-find', '--project', PROJECT,
+      '--operation', 'find_replace', '--find-text', '## Relations', '--content', '### 2026-09-23 新C\n\n## Relations',
+    ]);
+    const leaked = bmJson(['tool', 'read-note', `${PROJECT}/corrections/not-created-for-find`, '--project', PROJECT]);
+    check(missing.status !== 0, '無い permalink への find_replace が終了コード 0 で通った');
+    check(!existsSync(notePath('corrections/not-created-for-find.md')) && leaked.json?.file_path == null, '無い permalink への find_replace がノートを作った');
+    return { fullDuplicates: count(full, '### 2026-09-20 既存A'), ambiguousStatus: ambiguous.status, missingStatus: missing.status };
+  });
+
+  // 6e. SKILL.md の「ミスをした直後」のコードブロックを抜き出して、書かれたとおりに実行する（LEV-192）。
+  //     当て先と project だけを差し替え、`{…}` の差し込み口はそのまま文字として入れる。既存が重複も消失もせず、
+  //     新しい 1 件が既存の後ろ・Relations の前に空行で区切られて入ることを見る。
+  await step('documented-inbox-entry', () => {
+    check(resetRealInbox().status === 0, '下準備（inbox の形のノート）を作れなかった');
+    const skill = readFileSync(join(repoRoot, '.claude/skills/memory-manager/SKILL.md'), 'utf8');
+    const blocks = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1])
+      .filter(block => block.includes('edit-note corrections/inbox'));
+    check(blocks.length === 1, `SKILL.md に inbox へ書くコードブロックが 1 つでない: ${blocks.length} 個`);
+    if (blocks.length !== 1) return { blocks: blocks.length };
+    const script = blocks[0]
+      .replaceAll('edit-note corrections/inbox', 'edit-note corrections/real-inbox')
+      .replaceAll('--project mappy-memory', `--project ${PROJECT} --local`);
+    // 使い捨てプロジェクトの名前も mappy-memory で始まるので、`--project mappy-memory` の完全一致で見る。
+    const leaks = /--project mappy-memory(?![\w-])|corrections\/inbox(?![\w-])/.test(script);
+    check(!leaks, `抜き出したコマンドが mappy-memory の corrections/inbox を指したまま: ${script}`);
+    if (leaks) return { script };
+    const run = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+    const text = readFileSync(realInboxFile, 'utf8');
+    const heading = text.match(/^### \{[^\n]*$/m)?.[0] ?? '';
+    const at = needle => text.indexOf(needle);
+    check(run.status === 0, `手順書のコマンドが失敗した: ${run.stderr || run.stdout}`);
+    check(count(text, '### 2026-09-20 既存A') === 1 && count(text, '### 2026-09-21 既存B') === 1, '手順書どおりの書き込みで既存のエントリが重複・消失した');
+    check(heading !== '' && count(text, heading) === 1, `新しいエントリが 1 回だけ入っていない: ${JSON.stringify(heading)}`);
+    check(at(heading) > at('### 2026-09-21 既存B'), '新しいエントリが既存の後ろに入らない（inbox は古い順に積む）');
+    check(at(heading) < at('## Relations'), '新しいエントリが Relations の後ろに入った');
+    check(/- 内容B\n\n### \{/.test(text), '既存のエントリと新しいエントリの間に空行が無い');
+    check(/\n\n## Relations\n- distilled_into \[\[Correction Lessons\]\]/.test(text), 'Relations の手前の空行か Relations 自体が崩れた');
+    return { heading, status: run.status };
+  });
+
+  // 6f. ファイル名とタイトルが違うノート（実物の corrections/inbox・lessons・graduated はどれも
+  //     `inbox.md` に `title: Correction Inbox`）へ write-note --overwrite を打つと、既存は変わらず
+  //     `{folder}/{title}.md` の新しいノートができる（LEV-192。2026-09-23 に実際に踏んだ）。
+  //     write-note は --title でタイトルを決めるので、作ってから frontmatter の title だけを差し替えて実物の形にする。
+  await step('overwrite-with-different-filename-creates-another-note', () => {
+    const made = bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'inbox', '--folder', 'shaped', '--type', 'correction'],
+      '---\npermalink: shaped/inbox\n---\n\n# Correction Inbox\n\n- 既存の記録1\n',
+    );
+    const retitled = bmJson([
+      'tool', 'edit-note', 'shaped/inbox', '--project', PROJECT,
+      '--operation', 'find_replace', '--find-text', 'title: inbox', '--content', 'title: Correction Inbox',
+    ]);
+    const existing = notePath('shaped/inbox.md');
+    const read = bmJson(['tool', 'read-note', 'shaped/inbox', '--project', PROJECT]);
+    check(made.status === 0 && retitled.status === 0, `下準備（ファイル名とタイトルが違うノート）を作れなかった: ${made.stderr} / ${retitled.stderr}`);
+    check(read.json?.title === 'Correction Inbox' && read.json?.file_path === 'shaped/inbox.md', `下準備のノートが実物の形になっていない: ${JSON.stringify(read.json)}`);
+    const before = readFileSync(existing, 'utf8');
+    // 2026-09-23 に打ったのと同じ形: タイトルを指定し、全文（permalink 付き）を --overwrite で渡す。
+    const out = bmJson(
+      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'shaped', '--type', 'correction', '--overwrite'],
+      '---\npermalink: shaped/inbox\n---\n\n# Correction Inbox\n\n- 書き直した全文\n',
+    );
+    const other = notePath('shaped/Correction Inbox.md');
+    check(out.status === 0, `--overwrite が失敗した: ${out.stderr}`);
+    check(readFileSync(existing, 'utf8') === before, '--overwrite がファイル名の違う既存のノートを書き換えた（手順書の警告が古い）');
+    check(existsSync(other), '--overwrite が {folder}/{title}.md の新しいノートを作らなかった（手順書の警告が古い）');
+    check(out.json?.permalink !== 'shaped/inbox', `新しいノートが既存と同じ permalink を名乗った: ${out.json?.permalink}`);
+    check(bmJson(['tool', 'read-note', 'shaped/inbox', '--project', PROJECT]).json?.file_path === 'shaped/inbox.md', '--overwrite のあと shaped/inbox が既存のファイルを指さなくなった');
+    if (out.json?.permalink) bm(['tool', 'delete-note', out.json.permalink, '--project', PROJECT]);
+    return { createdPermalink: out.json?.permalink, createdFile: out.json?.file_path };
+  });
+
   // 7. ここまでは bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
   //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
   await step('documents-still-say-it', () => {
@@ -363,11 +483,19 @@ try {
     want(skill, 'type: {カテゴリの単数形}', 'SKILL.md');
     want(skill, '--operation append', 'SKILL.md');
     want(skill, '--overwrite', 'SKILL.md');
-    // corrections は append ではなく節を狙う（レビュー 3 回目の指摘 1・2）。
-    want(skill, '--operation replace_section --section "## 未蒸留"', 'SKILL.md');
+    // corrections は append ではなく `## Relations` の前に差し込む（LEV-192。旧手順は replace_section で重複した）。
+    want(skill, '--operation find_replace --find-text "## Relations"', 'SKILL.md');
     want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
-    want(agents, '--section "## 未蒸留"', 'AGENTS.md');
+    want(agents, '--operation find_replace --find-text "## Relations"', 'AGENTS.md');
+    // --overwrite が当たるのはタイトルから決まるパスだけで、既存の書き換えは edit-note（LEV-192）。
+    want(skill, '{folder}/{title}.md', 'SKILL.md');
+    want(agents, '{folder}/{title}.md', 'AGENTS.md');
+    want(skill, '`write-note` は新規専用', 'SKILL.md');
+    want(agents, '`write-note` は新規専用', 'AGENTS.md');
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
+    // inbox の `## 未蒸留` を replace_section で狙う旧手順は、既存のエントリを重複させる（LEV-192）。
+    check(!skill.includes('--section "## 未蒸留"'), 'SKILL.md に inbox への replace_section が戻っている（LEV-192）');
+    check(!agents.includes('--section "## 未蒸留"'), 'AGENTS.md に inbox への replace_section が戻っている（LEV-192）');
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
     // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
     check(!/cat >[^>]/.test(skill), 'SKILL.md にファイルへの heredoc 書き込みが戻っている（LEV-184 指摘 6）');
