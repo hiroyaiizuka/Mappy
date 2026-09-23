@@ -118,7 +118,7 @@ bm tool edit-note {permalink} --project mappy-memory \
 | ファイル末尾に足す | `edit-note --operation append`（末尾が `## Relations` のノートではその後ろに落ちる） |
 | ファイル先頭に足す | `edit-note --operation prepend` |
 | 節を差し替える | `edit-note --operation replace_section --section "## 節"`（見出しから**次の見出し（レベルを問わない）まで**を置き換える。節の中身が平らなリストなら全部消え、`###` で始まる節なら最初の `###` の手前しか置き換わらない） |
-| 目印の前に差し込む・語を置き換える | `edit-note --operation find_replace --find-text "目印" --content "新しい本文\n\n目印"`（目印が 1 か所に当たらないと終了コード 1 で何も書かない） |
+| 目印の前に差し込む・語を置き換える | `edit-note --operation find_replace --find-text "目印" --content "新しい本文と目印"`（目印が 1 か所に当たらないと終了コード 1 で何も書かない。改行は引用符の中で実際に改行して渡す —— `\n` と書いても改行にならず、その 2 文字がそのまま入る） |
 | 丸ごと書き直す（過去の記録を捨ててよいときだけ） | `write-note --overwrite`。ファイル名が `{folder}/{title}.md` のノートにしか当たらない（上記） |
 
 存在しない permalink に `append` すると新規作成されるが、その permalink は `mappy-memory/` を前置した形になる。新規は `write-note` で作る。
@@ -153,18 +153,21 @@ bm tool read-note schemas/correction --project mappy-memory
 **`append` を使わない。** `inbox` も `lessons` も末尾が `## Relations` で、書き足したい節はその上にある。`append` は必ず**ファイル末尾**に足すので、ミスの記録が Relations の後ろに落ちて、節の構造も蒸留の動線も崩れる。
 
 ```sh
-# ミスをした直後 — inbox の「## 未蒸留」の末尾（## Relations の直前）に 1 件足す
+# ミスをした直後 — inbox の「## 未蒸留」の末尾（行頭の ## Relations の直前）に 1 件足す
 bm tool edit-note corrections/inbox --project mappy-memory \
-  --operation find_replace --find-text "## Relations" --content "### {YYYY-MM-DD 見出し}
+  --operation find_replace --find-text "
+## Relations" --content "
+### {YYYY-MM-DD 見出し}
 - {何をしたか・なぜか}
 
 ## Relations"
 ```
 
-`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、`## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` がこのコードブロックをそのまま実行して確かめている）。
+`--find-text` も `--content` も、**引用符を開いた直後で改行する**（そのまま写す）。目印は「改行＋`## Relations`」、つまり**行頭の** `## Relations` 見出しだけで、エントリの本文に `` `## Relations` `` と書いてあっても当たらない。`\n` と書いても改行にはならず（bm は `--content` の `\n` を解釈しない）、見出しが前の行に潰れて Relations の節が壊れる。
 
-`## Relations` がファイル内で 1 か所だけであることが前提。エントリの本文に `` `## Relations` `` と書くと 2 か所になるが、そのときは `Error: Expected 1 occurrences of '## Relations', but found 2`（終了コード 1）で**何も書かずに止まる**ので、`--find-text "## Relations
-- distilled_into"` のように目印を長くして打ち直す。
+`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、行頭の `## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` が、本文に `` `## Relations` `` を含む inbox に対してこのコードブロックをそのまま実行して確かめている）。
+
+目印が 1 か所に当たらないとき（行頭の `## Relations` が 2 つある、または無い）は、`Error: Expected 1 occurrences …`（終了コード 1）で**何も書かずに止まる**。打ち直す前に `read-note` で inbox の形が崩れていないかを見る。
 
 **`## 未蒸留` に `replace_section` を使わない。** `replace_section` は見出しから次の見出し（レベルを問わない）までを置き換えるので、`## 未蒸留` の直後に `###` のエントリが続く `inbox` では、置き換わるのは見出しと最初の `###` の間の空の範囲だけ。既存＋新規の全文を渡すと既存のエントリが必ず重複する（2026-09-23 に 2 回重複した）。新しい 1 件だけを渡せば重複はしないが、節の先頭（既存の前）に入って並びが逆になり、既存との間の空行も落ちる（どちらも `inbox-replace-section-duplicates-find-replace-does-not` が固定している）。
 
@@ -198,7 +201,7 @@ npm run harness:e2e:memory-procedure
 
 使い捨ての Basic Memory プロジェクトを作り、この文書のコマンドをそのまま実行して期待どおりの結果かを確かめ、最後にプロジェクトごと消す。`mappy-memory` には触らない。
 
-固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の `--find-text "## Relations"` の各文字列、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。「ミスをした直後」のコードブロックだけは、抜き出して使い捨てプロジェクトでそのまま実行する。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
+固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の行頭の `## Relations` を目印にした `find_replace` の各記述、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。「ミスをした直後」のコードブロックだけは、抜き出して使い捨てプロジェクトでそのまま実行する。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
 
 ## リファレンス
 
