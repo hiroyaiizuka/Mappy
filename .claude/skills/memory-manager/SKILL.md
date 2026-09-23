@@ -118,7 +118,7 @@ bm tool edit-note {permalink} --project mappy-memory \
 | ファイル末尾に足す | `edit-note --operation append`（末尾が `## Relations` のノートではその後ろに落ちる） |
 | ファイル先頭に足す | `edit-note --operation prepend` |
 | 節を差し替える | `edit-note --operation replace_section --section "## 節"`（見出しから**次の見出し（レベルを問わない）まで**を置き換える。節の中身が平らなリストなら全部消え、`###` で始まる節なら最初の `###` の手前しか置き換わらない） |
-| 目印の前に差し込む・語を置き換える | `edit-note --operation find_replace --find-text "目印" --content "新しい本文と目印"`（目印が 1 か所に当たらないと終了コード 1 で何も書かない。改行は引用符の中で実際に改行して渡す —— `\n` と書いても改行にならず、その 2 文字がそのまま入る） |
+| 目印の前に差し込む・語を置き換える | `edit-note --operation find_replace --find-text '目印' --content '新しい本文と目印'`（目印が 1 か所に当たらないと終了コード 1 で何も書かない。シングルクォートで囲み、改行はその中で実際に改行して渡す —— `\n` と書いても改行にならず、その 2 文字がそのまま入る。本文の `'` は `'\''` と書く。下記「corrections」） |
 | 丸ごと書き直す（過去の記録を捨ててよいときだけ） | `write-note --overwrite`。ファイル名が `{folder}/{title}.md` のノートにしか当たらない（上記） |
 
 存在しない permalink に `append` すると新規作成されるが、その permalink は `mappy-memory/` を前置した形になる。新規は `write-note` で作る。
@@ -155,23 +155,22 @@ bm tool read-note schemas/correction --project mappy-memory
 ```sh
 # ミスをした直後 — inbox の「## 未蒸留」の末尾（行頭の ## Relations の直前）に 1 件足す
 bm tool edit-note corrections/inbox --project mappy-memory \
-  --operation find_replace --find-text "
-## Relations" --content "$(cat <<'ENTRY'
-
+  --operation find_replace --find-text '
+## Relations
+' --content '
 ### {YYYY-MM-DD 見出し}
 - {何をしたか・なぜか}
 
 ## Relations
-ENTRY
-)"
+'
 ```
 
 形をそのまま写す。
 
-- `--find-text` は**引用符を開いた直後で改行する**。目印は「改行＋`## Relations`」、つまり**行頭の** `## Relations` 見出しだけで、エントリの本文に `` `## Relations` `` と書いてあっても当たらない。`\n` と書いても改行にはならず（bm は引数の `\n` を解釈しない）、見出しが前の行に潰れて Relations の節が壊れる。
-- 本文は `<<'ENTRY'`（区切りを引用符で囲んだ heredoc）で渡す。二重引用符の中に直接書くと、本文のバッククォートや `$` をシェルが展開し、`` `append` `` のような語が**終了コード 0 のまま黙って消える**。heredoc の最初の空行が目印の改行の代わりになる。
+- `--find-text` と `--content` は**シングルクォートで囲み、開いた直後と閉じる直前で改行する**。目印は「改行＋`## Relations`＋改行」、つまり**それだけが書かれた行**の `## Relations` 見出しで、エントリの本文に `` `## Relations` `` と書いてあっても、`## Relations の…` で始まる行があっても当たらない。`\n` と書いても改行にはならない（bm は引数の `\n` を解釈しない）ので、見出しが前の行に潰れて Relations の節が壊れる。
+- シングルクォートの中はシェルが何も展開しないので、本文のバッククォート・`$`・`"`・`)` はそのまま入る。**本文に `'` を書くときだけ `'\''` と書く**（`it's` → `it'\''s`）。二重引用符で囲むと、本文のバッククォートや `$` がシェルに展開され、`` `append` `` のような語が**終了コード 0 のまま黙って消える**。`"$(cat <<'EOF' … EOF)"` の形も使わない —— macOS の `/bin/sh`（bash 3.2）はコマンド置換の中の heredoc を読み違え、対になっていない `)` や `'` で本文が壊れるか構文エラーになる。
 
-`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、行頭の `## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` が、本文に `` `## Relations` `` を含む inbox に対して、差し込み口にバッククォート・`$`・引用符を入れたこのコードブロックをそのまま実行して確かめている）。
+`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、行頭の `## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` が、本文に `` `## Relations` `` を含む inbox に対して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れたこのコードブロックを `sh` でそのまま実行して確かめている）。
 
 目印が 1 か所に当たらないときは、終了コード 1 で**何も書かずに止まる**。行頭の `## Relations` が 2 つあれば `Error: Expected 1 occurrences …`、無ければ `Error: Text to replace not found …`。打ち直す前に `read-note` で inbox の形が崩れていないかを見る。
 
@@ -184,16 +183,15 @@ ENTRY
 ```sh
 bm tool read-note corrections/lessons --project mappy-memory   # 今の並びと番号を見る
 bm tool edit-note corrections/lessons --project mappy-memory \
-  --operation find_replace --find-text "
-## 手順" --content "$(cat <<'LESSON'
-
+  --operation find_replace --find-text '
+## 手順
+' --content '
 {N}. **{教訓 1 行}**
 ## 手順
-LESSON
-)"
+'
 ```
 
-inbox と同じく、目印は**行頭の** `## 手順` 見出しで、`--find-text` は引用符を開いた直後で改行し、本文は `<<'LESSON'` の heredoc で渡す。教訓の本文に `` `## 手順` `` と書いてあっても当たらない。`lessons` の節は見出しの直前に空行を置かない形なので、`--content` も空行を挟まない（`documented-lessons-entry` がこのコードブロックをそのまま実行して確かめている）。`## 道具の癖` に足すときは目印を `## 手順`、`## 手順` に足すときは `## 報告`、`## 報告` に足すときは `## Relations` にする。
+inbox と同じく、`--find-text` と `--content` はシングルクォートで囲んで開いた直後と閉じる直前で改行し、本文の `'` だけ `'\''` と書く。目印はそれだけが書かれた行の `## 手順` 見出しで、教訓の本文に `` `## 手順` `` と書いてあっても、`## 手順書…` で始まる行があっても当たらない。`lessons` の節は見出しの直前に空行を置かない形なので、`--content` も空行を挟まない（`documented-lessons-entry` がこのコードブロックをそのまま実行して確かめている）。`## 道具の癖` に足すときは目印を `## 手順`、`## 手順` に足すときは `## 報告`、`## 報告` に足すときは `## Relations` にする。
 
 **無い permalink へ `append` や `replace_section` を打つと、エラーにならず `mappy-memory/` を前置した別のノートができる**ので、当て先が在ることを `read-note` で確かめてから打つ。`find_replace` は `Error: Entity not found`（終了コード 1）で止まり、何も作らない。新しく作るときは `write-note`。
 
@@ -215,7 +213,7 @@ npm run harness:e2e:memory-procedure
 
 使い捨ての Basic Memory プロジェクトを作り、この文書のコマンドをそのまま実行して期待どおりの結果かを確かめ、最後にプロジェクトごと消す。`mappy-memory` には触らない。
 
-固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の行頭の `## Relations` を目印にした `find_replace` の各記述、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。corrections の 2 つのコードブロック（inbox の「ミスをした直後」と lessons への差し込み）は、抜き出して、差し込み口にバッククォート・`$`・引用符を入れ、使い捨てプロジェクトでそのまま実行する。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
+固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の行頭の `## Relations` を目印にした `find_replace` の各記述、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。corrections の 2 つのコードブロック（inbox の「ミスをした直後」と lessons への差し込み）は、抜き出して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れ、使い捨てプロジェクトで `sh` からそのまま実行する。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
 
 ## リファレンス
 

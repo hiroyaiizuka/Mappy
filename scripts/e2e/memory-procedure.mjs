@@ -32,6 +32,8 @@ const keep = flag('--keep');
 
 const PROJECT = `mappy-memory-probe-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
+const BM_TIMEOUT_MS = 120_000;
+
 /**
  * bm を 1 回呼ぶ。`input` を渡すと stdin から本文を流す（SKILL.md の heredoc と同じ経路）。
  * `--local` を必ず付ける: cloud モードが有効な端末では既定でクラウド側へ流れ、ローカルの一時
@@ -39,7 +41,8 @@ const PROJECT = `mappy-memory-probe-${process.pid}-${Math.random().toString(36).
  * `project remove --delete-notes` がクラウドのプロジェクトに当たるのも防ぐ。
  */
 function bm(args, input) {
-  const result = spawnSync('bm', [...args, '--local'], { input, encoding: 'utf8' });
+  // 認証待ちやロックで止まってもハーネスごと固まらないよう時間を切る（レビュー 4 回目の指摘）。
+  const result = spawnSync('bm', [...args, '--local'], { input, encoding: 'utf8', timeout: BM_TIMEOUT_MS });
   if (result.error) throw new Error(`bm ${args.join(' ')}: ${result.error.message}`);
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -103,7 +106,10 @@ const shBlocks = text => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match =
  * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする（レビュー指摘）。
  */
 const runSh = script => {
-  const run = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 120_000 });
+  const run = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: BM_TIMEOUT_MS });
+  // 時間切れで止まるのは sh だけで、孫の bm は残ってロックを握り続ける。使い捨てプロジェクトの名前は
+  // この実行に固有なので、その名前を引数に持つプロセスだけを止める（レビュー 4 回目の指摘）。
+  if (run.error?.code === 'ETIMEDOUT') spawnSync('pkill', ['-f', PROJECT]);
   return { ...run, why: run.error ? String(run.error) : (run.stderr || run.stdout) };
 };
 
@@ -111,7 +117,7 @@ let added = false;
 
 // Ctrl-C で中断しても、使い捨てプロジェクトを bm のグローバル設定に残さない。finally は届かない。
 const onInterrupt = signal => {
-  if (added && !keep) { spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes'], { encoding: 'utf8' }); }
+  if (added && !keep) { spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }); }
   if (!keep && existsSync(root)) rmSync(root, { recursive: true, force: true });
   console.error(`\n${signal} で中断した。使い捨てプロジェクトは片付けた。`);
   process.exit(2);
@@ -455,7 +461,9 @@ try {
    * その名前を消してから残りを見る。
    */
   // 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
-  const TRICKY = "`append` と $HOME と \"二重\" と 'single' と \\n";
+  // 対になっていない文字も入れる。対の文字だけだと、bash 3.2 がコマンド置換の中の heredoc を読み違える形を
+  // 見逃した（レビュー 4 回目の指摘）。`'` は手順書の規則どおり `'\''` にして差し込む。
+  const TRICKY = "`append と $HOME と \"二重 と 1) と it's と \\n";
   const documentedScript = (target, fixture, slot) => {
     const blocks = shBlocks(readFileSync(SKILL_PATH, 'utf8')).filter(block => block.includes(`edit-note ${target} `));
     check(blocks.length === 1, `SKILL.md に ${target} へ書くコードブロックが 1 つでない: ${blocks.length} 個`);
@@ -463,17 +471,19 @@ try {
     const script = blocks[0]
       .replaceAll(`${target} `, `${fixture} `)
       .replaceAll('--project mappy-memory', `--project ${PROJECT} --local`)
-      .replaceAll(slot, TRICKY);
+      .replaceAll(slot, () => TRICKY.replaceAll("'", () => "'\\''"));
     const rest = script.replaceAll(PROJECT, '');
-    const calls = count(script, 'bm ');
+    // 呼び出しの数は、行頭が `#` の行（sh のコメントと、本文の見出し）を除いて数える（レビュー 4 回目の指摘）。
+    const code = script.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+    const calls = count(code, 'bm ');
     const escapedTarget = target.replace('/', '\\/');
     const problems = [
       calls === 0 && 'bm の呼び出しが無い',
-      count(script, `--project ${PROJECT} --local`) !== calls && `bm の呼び出し ${calls} 個のうち、使い捨てプロジェクトへ向いていないものがある`,
+      count(code, `--project ${PROJECT} --local`) !== calls && `bm の呼び出し ${calls} 個のうち、使い捨てプロジェクトへ向いていないものがある`,
       /mappy-memory/.test(rest) && 'mappy-memory が残っている',
       /(^|\s)-p(\s|=)|--project=|--project-id|--cloud/.test(script) && '--project 以外の形で project を指定している（--project-id は --project より優先される）',
       /basic-memory/.test(rest) && 'bm 以外の名前で Basic Memory を呼んでいる',
-      count(script, 'tool ') !== count(script, 'bm tool ') && 'bm tool 以外の形で tool を呼んでいる',
+      count(code, 'tool ') !== count(code, 'bm tool ') && 'bm tool 以外の形で tool を呼んでいる',
       !blocks[0].includes(slot) && `差し込み口 ${slot} が無い`,
       new RegExp(`${escapedTarget}(?![\\w-])`).test(script) && `当て先が ${target} のまま`,
     ].filter(Boolean);
@@ -496,7 +506,7 @@ try {
     check(at(heading) > at('### 2026-09-21 既存B'), '新しいエントリが既存の後ろに入らない（inbox は古い順に積む）');
     check(at(heading) < at('\n## Relations\n'), '新しいエントリが Relations の後ろに入った');
     check(/- 内容B\n\n### \{/.test(text), '既存のエントリと新しいエントリの間に空行が無い');
-    check(text.includes(`- ${TRICKY}\n`), `差し込み口の本文がシェルに書き換えられた（バッククォート・$・引用符が素通しされない）: ${JSON.stringify(text.slice(at(heading), at('\n## Relations\n')))}`);
+    check(text.includes(`- ${TRICKY}\n`), `差し込み口の本文がシェルに書き換えられた（バッククォート・$・引用符・括弧が素通しされない）: ${JSON.stringify(text.slice(at(heading), at('\n## Relations\n')))}`);
     check(/\n\n## Relations\n- distilled_into \[\[Correction Lessons\]\]/.test(text), 'Relations の手前の空行か Relations 自体が崩れた');
     return { heading, status: run.status };
   });
@@ -591,7 +601,7 @@ try {
     want(skill, '--overwrite', 'SKILL.md');
     // corrections は append ではなく行頭の `## Relations` の前に差し込む（LEV-192。旧手順は replace_section で重複した）。
     // 実際の改行を含む目印そのものは、documented-inbox-entry がコードブロックを実行して確かめる。
-    want(skill, '--operation find_replace --find-text "\n## Relations"', 'SKILL.md');
+    want(skill, "--operation find_replace --find-text '\n## Relations\n'", 'SKILL.md');
     want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
     want(agents, 'edit-note corrections/inbox --operation find_replace', 'AGENTS.md');
     want(agents, '**行頭の** `## Relations`', 'AGENTS.md');
@@ -608,14 +618,18 @@ try {
     // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
     const commandsOf = text => [
       ...shBlocks(text),
-      ...(text.match(/`[^`\n]+`/g) ?? []).filter(span => /edit-note|write-note/.test(span)),
+      // `` `x` `` の二重バッククォートを先に取り、1 つずつの対と組み違えないようにする（レビュー 4 回目の指摘）。
+      ...(text.match(/``[^`]+?``|`[^`\n]+`/g) ?? []).filter(span => !span.startsWith('``') && /edit-note|write-note/.test(span)),
     ];
     const escaped = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
       .filter(([, command]) => command.includes('\\n'));
     check(escaped.length === 0, `コマンドの中に \\n が戻っている（改行にならない）: ${escaped.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     // 前提と崩れる条件（AGENTS.md「回避策が成り立つ前提と崩れる条件を書く」）。
     want(skill, 'この手順が成り立つ前提', 'SKILL.md');
-    want(skill, '--operation find_replace --find-text "\n## 手順"', 'SKILL.md');
+    want(skill, "--operation find_replace --find-text '\n## 手順\n'", 'SKILL.md');
+    // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える（レビュー 3・4 回目の指摘）。
+    const corrections = shBlocks(skill).filter(block => /edit-note corrections\//.test(block));
+    check(corrections.every(block => !/--content "|\$\(cat/.test(block)), 'SKILL.md の corrections のコードブロックに、本文を二重引用符かコマンド置換で渡す形が戻っている');
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
     // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
