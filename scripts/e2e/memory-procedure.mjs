@@ -47,14 +47,20 @@ function bm(args, input) {
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
+/**
+ * bm の出力から JSON を読む。失敗時は "Error: NOTE_ALREADY_EXISTS" のような行が JSON の前に付くので、
+ * 最初の { から読む。JSON でなければ null（throw せず、呼び出し側の status / stderr の check に届かせる）。
+ */
+function parseBmJson(stdout) {
+  const at = (stdout ?? '').indexOf('{');
+  if (at === -1) return null;
+  try { return JSON.parse(stdout.slice(at)); } catch { return null; }
+}
+
 /** bm の JSON 出力を読む。conflict のように終了コードが 0 でない回も JSON を返すので status も渡す。 */
 function bmJson(args, input) {
   const run = bm(args, input);
-  // 失敗時は "Error: NOTE_ALREADY_EXISTS" のような行が JSON の前に付く。最初の { から読む。
-  const at = run.stdout.indexOf('{');
-  let json = null;
-  if (at !== -1) { try { json = JSON.parse(run.stdout.slice(at)); } catch { json = null; } }
-  return { ...run, json };
+  return { ...run, json: parseBmJson(run.stdout) };
 }
 
 // bm が無い端末（新しいクローン・CI）では「手順書が壊れている」ではなく「実行していない」で終わる。
@@ -63,7 +69,7 @@ function bmJson(args, input) {
 let version;
 try {
   // `bm --version` はトップレベルのフラグしか受けないので、ここだけ --local を付けずに呼ぶ。
-  const probe = spawnSync('bm', ['--version'], { encoding: 'utf8' });
+  const probe = spawnSync('bm', ['--version'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS });
   if (probe.error) throw new Error(probe.error.message);
   if (probe.status !== 0) throw new Error(probe.stderr || `終了コード ${probe.status}`);
   version = (probe.stdout ?? '').trim();
@@ -76,7 +82,14 @@ try {
 // mappy-memory が登録されていない端末で FAIL にしないよう、「元々あったか」を先に記録しておく。
 // 一覧そのものが読めなかった場合に false へ倒すと、行き過ぎた後片付けの検知が黙って消えるので、
 // 「読めなかった」を第 3 の状態として持つ（後片付けの側でそれを FAIL にする）。
-const projectsBefore = bmJson(['tool', 'list-projects']);
+// bm() は時間切れで throw する。ここは try の外なので、捕まえないと FAIL（終了コード 1）に見えて JSON も残らない。
+let projectsBefore;
+try {
+  projectsBefore = bmJson(['tool', 'list-projects']);
+} catch (error) {
+  console.error(`bm tool list-projects を実行できない（${error.message}）。このケースは実行していない。`);
+  process.exit(2);
+}
 const listedBefore = projectsBefore.status === 0 && projectsBefore.json !== null;
 const hadMappyMemory = listedBefore
   ? (projectsBefore.json.projects ?? []).some(item => item.name === 'mappy-memory')
@@ -104,21 +117,25 @@ const shBlocks = text => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match =
 const count = (text, needle) => text.split(needle).length - 1;
 
 /**
- * 手順書のコマンドを実行するときの身代わりの `bm`。`PATH` の先頭に置き、使い捨てプロジェクトを `--project` と
- * `--local` で 1 回だけ指す呼び出しだけを本物へ渡し、それ以外は終了コード 97 で止める。抜き出したコマンドの
+ * 手順書のコマンドを実行するときの身代わりの `bm`。`PATH` の先頭に置き、`tool` のサブコマンドで、使い捨て
+ * プロジェクトを `--project` と `--local` で 1 回だけ指し、`mappy-memory` そのものを引数に持たない呼び出しだけを
+ * 本物へ渡し、それ以外は終了コード 97 で止める。抜き出したコマンドの
  * 文字列を検査するだけでは、環境変数や書き方の違いで本物の mappy-memory に当たる形を網羅できない
  * （レビュー 5 回目の指摘）。`basic-memory` の名前で呼ぶ形も同じく止める。
  */
 const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
-const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8' }).stdout ?? '').trim();
+const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').trim();
 writeFileSync(join(shimDir, 'bm'), [
   '#!/bin/sh',
   '# memory-procedure.mjs が作る身代わり。使い捨てプロジェクト以外への呼び出しを本物へ渡さない。',
   "project=''; projects=0; local=0; prev=''",
+  '# project の登録・削除などは手順書の対象外。tool のサブコマンドだけを通す。',
+  '[ "$1" = tool ] || { echo "memory-procedure shim: bm $1 は使えない" >&2; exit 97; }',
   'for arg in "$@"; do',
   '  case "$arg" in',
   '    --project-id|--project-id=*|--project=*|--cloud|-p|-p=*) echo "memory-procedure shim: $arg は使えない" >&2; exit 97 ;;',
   '    --local) local=1 ;;',
+  '    mappy-memory) echo "memory-procedure shim: 引数に mappy-memory がある" >&2; exit 97 ;;',
   '    --project) projects=$((projects + 1)) ;;',
   '  esac',
   '  [ "$prev" = --project ] && project="$arg"',
@@ -267,6 +284,8 @@ try {
       `bm tool read-note ${probe} --project-id 00000000 --project ${PROJECT} --local`,
       `bm tool read-note ${probe} --project ${PROJECT} --local --cloud`,
       `basic-memory tool read-note ${probe}`,
+      `bm project list --project ${PROJECT} --local`,
+      `bm tool read-note mappy-memory --project ${PROJECT} --local`,
     ].map(command => [command, runSh(command)]);
     const passed = runSh(`bm tool read-note ${probe} --project ${PROJECT} --local`);
     const leaks = refused.filter(([, run]) => run.status !== 97).map(([command, run]) => `[${run.status}] ${command}`);
@@ -290,10 +309,7 @@ try {
     ]);
     if (script === null) return { script };
     const run = runSh(script);
-    const at = (run.stdout ?? '').indexOf('{');
-    // JSON でなくても throw せず、下の status / stderr を出す check に到達させる。
-    let json = null;
-    if (at !== -1) { try { json = JSON.parse(run.stdout.slice(at)); } catch { json = null; } }
+    const json = parseBmJson(run.stdout);
     const file = notePath('events/2026-09-22 推奨手順の確認.md');
     const front = existsSync(file) ? frontmatterOf(file) : '';
     check(run.status === 0, `heredoc 版の write-note が失敗した: ${run.why}`);
@@ -593,7 +609,21 @@ try {
     check(count(text, `{N}. **${TRICKY}**`) === 1, '新しい教訓が 1 回だけ入っていない');
     check(text.includes('1. **教訓1** — `## 手順` の前に差し込む'), '手順書どおりの書き込みが、見出しを引用した本文を書き換えた');
     check(['## 道具の癖', '## 手順', '## 報告', '## Relations'].every(h => text.split('\n').filter(line => line === h).length === 1), '節の見出しが重複・消失した');
-    return { status: run.status };
+
+    // 最後の節（`## 報告`）に足すときは、手順書の指示どおり目印と本文の最後の見出しを両方 `## Relations` に変える
+    // （レビュー 6 回目の指摘。この経路を実行するケースが無かった）。
+    const last = documentedScript('edit-note corrections/lessons ', [
+      ['corrections/lessons ', 'corrections/real-lessons '],
+      ['{教訓 1 行}', trickyInSingleQuotes],
+      ['## 手順', '## Relations'],
+    ], /corrections\/lessons(?![\w-])/);
+    if (last === null) return { status: run.status, last };
+    const lastRun = runSh(last);
+    const lastText = readFileSync(notePath('corrections/Correction Real Lessons.md'), 'utf8');
+    check(lastRun.status === 0, `最後の節へ足す手順書のコマンドが失敗した: ${lastRun.why}`);
+    check(lastText.includes(`4. **教訓4**\n{N}. **${TRICKY}**\n## Relations\n- originated_from`), `最後の節に足した教訓が ## Relations の直前に入らなかった: ${JSON.stringify(lastText.slice(lastText.indexOf('## 報告')))}`);
+    check(['## 道具の癖', '## 手順', '## 報告', '## Relations'].every(h => lastText.split('\n').filter(line => line === h).length === 1), '最後の節へ足したあと節の見出しが重複・消失した');
+    return { status: run.status, lastStatus: lastRun.status };
   });
 
   // 6f. ファイル名とタイトルが違うノート（実物の corrections/inbox・lessons・graduated はどれも
@@ -668,8 +698,10 @@ try {
     want(skill, '`write-note` は新規専用', 'SKILL.md');
     want(agents, '`write-note` は新規専用', 'AGENTS.md');
     // inbox の `## 未蒸留` を replace_section で狙う旧手順は、既存のエントリを重複させる（LEV-192）。
-    check(!skill.includes('--section "## 未蒸留"'), 'SKILL.md に inbox への replace_section が戻っている（LEV-192）');
-    check(!agents.includes('--section "## 未蒸留"'), 'AGENTS.md に inbox への replace_section が戻っている（LEV-192）');
+    // クォートの種類や `=` 付きを問わない（レビュー 6 回目の指摘）。
+    const sectionUnprocessed = /--section[ =]["']?## 未蒸留/;
+    check(!sectionUnprocessed.test(skill), 'SKILL.md に inbox への replace_section が戻っている（LEV-192）');
+    check(!sectionUnprocessed.test(agents), 'AGENTS.md に inbox への replace_section が戻っている（LEV-192）');
     // bm は引数の `\n` を改行にしないので、コマンドに書くと見出しが 1 行に潰れる（LEV-192 レビュー指摘）。
     // 引数の形（--content / --find-text、クォートの種類、`=` 付き）を問わず、コマンドの中に `\n` が無いことを見る。
     // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
@@ -677,7 +709,8 @@ try {
       ...shBlocks(text),
       // インラインコードは CommonMark と同じく「同じ長さのバッククォートの並びで閉じる」で切り出す。
       // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす（レビュー 4・5 回目の指摘）。
-      ...[...text.matchAll(/(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g)].map(match => match[2])
+      // コードブロックは上で見ているので、先に取り除く（```` ``` ```` をインラインの区切りと読み違えないように）。
+      ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g)].map(match => match[2])
         .filter(span => /edit-note|write-note/.test(span)),
     ];
     const escaped = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
@@ -689,8 +722,8 @@ try {
     // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える（レビュー 3・4 回目の指摘）。
     // 対象は corrections に限らない。一般の追記手順も同じ危険がある（レビュー 5 回目の指摘）。
     const doubleQuoted = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
-      .filter(([, command]) => /--content "|--content=|\$\(cat/.test(command));
-    check(doubleQuoted.length === 0, `本文を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
+      .filter(([, command]) => /--(content|find-text) "|--(content|find-text)=|\$\(cat/.test(command));
+    check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
     // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
