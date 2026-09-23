@@ -23,7 +23,7 @@
 - プライマリー（`projects/Mappy` のチェックアウト）は常に `main` に置く。ブランチ作業は `orca worktree create` で作った worktree で行い、プライマリーで `git checkout -b`／`git switch` を実行しない。
 - 1 チケット＝1 worktree＝1 エージェント（`docs/linear-workflow.md`）。**worktree を作る前に `ListAgents` と `orca worktree list` でそのチケットの先客を確認する。いれば新しく作らず、そこにも入らない。** 共有された作業ツリーでは「自分の変更だけを戻す」が成立しない（相手の削除を自分の復元が打ち消す）。触ってしまったら、状態を保存して相手に渡す。
 - 1 セッションで複数のチケットを渡り歩かない。長いセッションほど、序盤に読んだ規約が行動の直前に思い出されなくなる。
-- `main.js`、`node_modules/`、`dist/`、証跡をコミットしない。公開時のライセンスと plugin ID は未確定。
+- `main.js`、`node_modules/`、`dist/`、証跡をコミットしない。ライセンスは MIT、名称は `Mappy`、plugin ID は `mappy`（2026-09-20 の本人決定。`docs/product-plan.md` の M5 行）。
 - 開発メモリは Basic Memory のプロジェクト `mappy-memory`（実体はプライマリーの `memory/`。git 管理外）。`artifacts/` は 1 回の実行の証跡、`memory/` は残す知識（何をしたか・なぜか・何が壊れていたか）。カテゴリは `events/`（実装・リリース）・`bugfixes/`・`investigations/`・`designs/`・`reviews/`・`corrections/`・`archive/` で、`memory/` 直下には置かない。
 - **セッション開始時に `bm tool read-note corrections/lessons --project mappy-memory` を実行して蒸留済みの教訓を読む。** ファイルを開きに行かない。`memory/` は git 管理外なのでワークツリーには存在せず（このファイルはブランチ作業を worktree で行えと命じている）、パスで読もうとすると必ず空振りする。`memory-manager` スキルはトリガー起動でセッション開始時には読み込まれないので、コマンドはここに置く。
 - 作業が終わったらメモリに残す。新しいノートは `bm tool write-note --project mappy-memory`、既存ノートの書き換えは `bm tool edit-note <permalink> --project mappy-memory --operation <append|prepend|replace_section|find_replace> --content "..."`。検索は `bm tool search-notes "..." --project mappy-memory`。**同じタイトルで `write-note` を 2 回打つと `NOTE_ALREADY_EXISTS`（終了コード 1、`action: "conflict"`、`file_path: null`）で何も書かれず、`--overwrite` を足すとノート全体が置き換わって過去の記録が消える。** 積み上げるノートは必ず `edit-note --operation append`。
@@ -31,4 +31,4 @@
 - ミスをしたら `corrections/inbox` の `## 未蒸留` に `edit-note --operation replace_section --section "## 未蒸留"` で入れる。**`append` を使わない** —— `inbox` も `lessons` も末尾が `## Relations` で、`append` はファイル末尾に足すため、記録が Relations の後ろに落ちて節の構造が崩れる。**当て先が無い permalink へ打つとエラーにならず、`mappy-memory/` を前置した別のノートが黙って作られる**ので、先に `bm tool read-note corrections/inbox --project mappy-memory` で在ることを確かめる。`lessons` は節の中身が平らなリストなので `replace_section` では節ごと消える（`find_replace` を使う。SKILL.md「corrections」）。そこから先の流れ（inbox → lessons → graduated）は `memory/schemas/correction.md` が正本で、このファイルにもスキルにも写さない（`bm tool read-note schemas/correction --project mappy-memory` で読む）。
 - 詳細は `.claude/skills/memory-manager/SKILL.md`。ここと SKILL.md を直したら `npm run harness:e2e:memory-procedure` を回す（使い捨ての Basic Memory プロジェクトを作って実行し、最後に消す。`mappy-memory` には触らない）。固定しているのは **bm CLI の挙動**と、手順書に必須の記述が残っていることの 2 つで、書いた文章が正しいかまでは見ない。文面を変えたら同じブランチでケースも直す。
 
-現在はベータ（0.x）を GitHub Release ＋ BRAT で公開中（0.1.0〜0.2.1 は 2026-09-20。コミュニティ審査は未提出）。実装の存在と受入条件の達成は分けて扱い、実機テストの完成を先取りして報告しない。
+現在はベータ（0.x）を GitHub Release ＋ BRAT で公開中（0.1.0〜0.2.1 は 2026-09-20、0.3.0・0.3.1 は 2026-09-21、0.3.2〜0.3.4 は 2026-09-22。最新は 0.3.4。各版の中身は `docs/product-plan.md` §5 M5。コミュニティ審査は未提出）。実装の存在と受入条件の達成は分けて扱い、実機テストの完成を先取りして報告しない。
