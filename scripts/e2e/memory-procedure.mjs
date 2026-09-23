@@ -95,6 +95,18 @@ const frontmatterOf = file => {
   return end === -1 ? '' : text.slice(0, end + 4);
 };
 
+const SKILL_PATH = join(repoRoot, '.claude/skills/memory-manager/SKILL.md');
+/** SKILL.md の sh コードブロック。実行するケースと `\n` の検査が同じ集合を見るよう、抜き出し方を 1 つにする。 */
+const shBlocks = text => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]);
+/**
+ * 手順書のコマンドをシェルで実行する。bm が認証やロックで止まってもハーネスごと固まらないよう時間を切り、
+ * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする（レビュー指摘）。
+ */
+const runSh = script => {
+  const run = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 120_000 });
+  return { ...run, why: run.error ? String(run.error) : (run.stderr || run.stdout) };
+};
+
 let added = false;
 
 // Ctrl-C で中断しても、使い捨てプロジェクトを bm のグローバル設定に残さない。finally は届かない。
@@ -181,14 +193,14 @@ try {
       '- [tech] PROBEWRITETOKEN を含む #probe',
       'NOTE',
     ].join('\n');
-    const run = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+    const run = runSh(script);
     const at = (run.stdout ?? '').indexOf('{');
     // JSON でなくても throw せず、下の status / stderr を出す check に到達させる。
     let json = null;
     if (at !== -1) { try { json = JSON.parse(run.stdout.slice(at)); } catch { json = null; } }
     const file = notePath('events/2026-09-22 推奨手順の確認.md');
     const front = existsSync(file) ? frontmatterOf(file) : '';
-    check(run.status === 0, `heredoc 版の write-note が失敗した: ${run.stderr}`);
+    check(run.status === 0, `heredoc 版の write-note が失敗した: ${run.why}`);
     check(json?.permalink === 'events/probe-documented-write', `permalink が明示した値にならなかった: ${json?.permalink}`);
     check(/^type: event$/m.test(front), `type が event にならなかった: ${front}`);
     return { permalink: json?.permalink, action: json?.action };
@@ -390,6 +402,19 @@ try {
     check(ambiguous.status === 1 && said(ambiguous).includes('Expected 1 occurrences'), `2 か所に当たる find_replace が「Expected 1 occurrences」の終了コード 1 で止まらなかった: [${ambiguous.status}] ${said(ambiguous)}`);
     check(readFileSync(realInboxFile, 'utf8') === before, '2 か所に当たる find_replace がノートを書き換えた');
 
+    // (c') 手順書の目印（行頭の見出し）そのものが 2 か所・0 か所に当たる形。手順書は両方とも「何も書かずに止まる」と
+    //      書いているので、それぞれのメッセージと終了コード 1 を固定する（レビュー 3 回目の指摘）。
+    for (const [label, content, message] of [
+      ['2 か所', realInbox.replace('- 内容A', '- 内容A\n## Relations'), 'Expected 1 occurrences'],
+      ['0 か所', realInbox.slice(0, realInbox.indexOf('\n## Relations') + 1), 'Text to replace not found'],
+    ]) {
+      check(resetRealInbox(content).status === 0, `下準備 (c')（行頭の目印が ${label}）を作れなかった`);
+      const kept = readFileSync(realInboxFile, 'utf8');
+      const run = editRealInbox(['--operation', 'find_replace', '--find-text', '\n## Relations', '--content', '\n### 2026-09-23 新C\n\n## Relations']);
+      check(run.status === 1 && said(run).includes(message), `行頭の目印が ${label} の find_replace が「${message}」の終了コード 1 で止まらなかった: [${run.status}] ${said(run)}`);
+      check(readFileSync(realInboxFile, 'utf8') === kept, `行頭の目印が ${label} の find_replace がノートを書き換えた`);
+    }
+
     // (d) `--content` の `\n` は改行にならず、2 文字のまま入る。手順書が引用符の中で実際に改行させる理由（レビュー指摘）。
     check(resetRealInbox().status === 0, '下準備 (d)（inbox の形のノート）を作れなかった');
     const escaped = editRealInbox(['--operation', 'find_replace', '--find-text', '\n## Relations', '--content', '\n### 2026-09-23 新C\\n\\n## Relations']);
@@ -429,15 +454,16 @@ try {
    * 置き換えが空振りして本物の mappy-memory に当たる。使い捨てプロジェクトの名前も mappy-memory で始まるので、
    * その名前を消してから残りを見る。
    */
-  const documentedScript = (target, fixture) => {
-    const skill = readFileSync(join(repoRoot, '.claude/skills/memory-manager/SKILL.md'), 'utf8');
-    const blocks = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1])
-      .filter(block => block.includes(`edit-note ${target} `));
+  // 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
+  const TRICKY = "`append` と $HOME と \"二重\" と 'single' と \\n";
+  const documentedScript = (target, fixture, slot) => {
+    const blocks = shBlocks(readFileSync(SKILL_PATH, 'utf8')).filter(block => block.includes(`edit-note ${target} `));
     check(blocks.length === 1, `SKILL.md に ${target} へ書くコードブロックが 1 つでない: ${blocks.length} 個`);
     if (blocks.length !== 1) return null;
     const script = blocks[0]
       .replaceAll(`${target} `, `${fixture} `)
-      .replaceAll('--project mappy-memory', `--project ${PROJECT} --local`);
+      .replaceAll('--project mappy-memory', `--project ${PROJECT} --local`)
+      .replaceAll(slot, TRICKY);
     const rest = script.replaceAll(PROJECT, '');
     const calls = count(script, 'bm ');
     const escapedTarget = target.replace('/', '\\/');
@@ -445,7 +471,10 @@ try {
       calls === 0 && 'bm の呼び出しが無い',
       count(script, `--project ${PROJECT} --local`) !== calls && `bm の呼び出し ${calls} 個のうち、使い捨てプロジェクトへ向いていないものがある`,
       /mappy-memory/.test(rest) && 'mappy-memory が残っている',
-      /(^|\s)-p(\s|=)|--project=/.test(script) && '--project 以外の形で project を指定している',
+      /(^|\s)-p(\s|=)|--project=|--project-id|--cloud/.test(script) && '--project 以外の形で project を指定している（--project-id は --project より優先される）',
+      /basic-memory/.test(rest) && 'bm 以外の名前で Basic Memory を呼んでいる',
+      count(script, 'tool ') !== count(script, 'bm tool ') && 'bm tool 以外の形で tool を呼んでいる',
+      !blocks[0].includes(slot) && `差し込み口 ${slot} が無い`,
       new RegExp(`${escapedTarget}(?![\\w-])`).test(script) && `当て先が ${target} のまま`,
     ].filter(Boolean);
     check(problems.length === 0, `抜き出したコマンドを使い捨てプロジェクトへ向けられない（${problems.join(' / ')}）: ${script}`);
@@ -454,19 +483,20 @@ try {
 
   await step('documented-inbox-entry', () => {
     check(resetRealInbox(quotingInbox).status === 0, '下準備（本文が見出しを引用する inbox）を作れなかった');
-    const script = documentedScript('corrections/inbox', 'corrections/real-inbox');
+    const script = documentedScript('corrections/inbox', 'corrections/real-inbox', '{何をしたか・なぜか}');
     if (script === null) return { script };
-    const run = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+    const run = runSh(script);
     const text = readFileSync(realInboxFile, 'utf8');
     const heading = text.match(/^### \{[^\n]*$/m)?.[0] ?? '';
     const at = needle => text.indexOf(needle);
-    check(run.status === 0, `手順書のコマンドが失敗した: ${run.stderr || run.stdout}`);
+    check(run.status === 0, `手順書のコマンドが失敗した: ${run.why}`);
     check(count(text, '### 2026-09-20 既存A') === 1 && count(text, '### 2026-09-21 既存B') === 1, '手順書どおりの書き込みで既存のエントリが重複・消失した');
     check(text.includes('末尾が `## Relations` なので append は後ろに落ちる'), '手順書どおりの書き込みが、見出しを引用した本文を書き換えた');
     check(heading !== '' && count(text, heading) === 1, `新しいエントリが 1 回だけ入っていない: ${JSON.stringify(heading)}`);
     check(at(heading) > at('### 2026-09-21 既存B'), '新しいエントリが既存の後ろに入らない（inbox は古い順に積む）');
     check(at(heading) < at('\n## Relations\n'), '新しいエントリが Relations の後ろに入った');
     check(/- 内容B\n\n### \{/.test(text), '既存のエントリと新しいエントリの間に空行が無い');
+    check(text.includes(`- ${TRICKY}\n`), `差し込み口の本文がシェルに書き換えられた（バッククォート・$・引用符が素通しされない）: ${JSON.stringify(text.slice(at(heading), at('\n## Relations\n')))}`);
     check(/\n\n## Relations\n- distilled_into \[\[Correction Lessons\]\]/.test(text), 'Relations の手前の空行か Relations 自体が崩れた');
     return { heading, status: run.status };
   });
@@ -487,13 +517,13 @@ try {
       lessons,
     );
     check(made.status === 0, `下準備（lessons の形のノート）を作れなかった: ${made.stderr}`);
-    const script = documentedScript('corrections/lessons', 'corrections/real-lessons');
+    const script = documentedScript('corrections/lessons', 'corrections/real-lessons', '{教訓 1 行}');
     if (script === null) return { script };
-    const run = spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+    const run = runSh(script);
     const text = readFileSync(notePath('corrections/Correction Real Lessons.md'), 'utf8');
-    check(run.status === 0, `手順書のコマンドが失敗した: ${run.stderr || run.stdout}`);
-    check(text.includes('2. **教訓2**\n{N}. **{教訓 1 行}**\n## 手順\n3. **教訓3**'), `新しい教訓が ## 手順 の直前に入らなかった: ${JSON.stringify(text.slice(text.indexOf('## 道具の癖'), text.indexOf('## 報告')))}`);
-    check(count(text, '{N}. **{教訓 1 行}**') === 1, '新しい教訓が 1 回だけ入っていない');
+    check(run.status === 0, `手順書のコマンドが失敗した: ${run.why}`);
+    check(text.includes(`2. **教訓2**\n{N}. **${TRICKY}**\n## 手順\n3. **教訓3**`), `新しい教訓が ## 手順 の直前に、差し込み口の本文のまま入らなかった: ${JSON.stringify(text.slice(text.indexOf('## 道具の癖'), text.indexOf('## 報告')))}`);
+    check(count(text, `{N}. **${TRICKY}**`) === 1, '新しい教訓が 1 回だけ入っていない');
     check(text.includes('1. **教訓1** — `## 手順` の前に差し込む'), '手順書どおりの書き込みが、見出しを引用した本文を書き換えた');
     check(['## 道具の癖', '## 手順', '## 報告', '## Relations'].every(h => text.split('\n').filter(line => line === h).length === 1), '節の見出しが重複・消失した');
     return { status: run.status };
@@ -530,7 +560,11 @@ try {
     check(out.json?.permalink === 'shaped/inbox-1', `新しいノートの permalink が {既存}-1 にならなかった（手順書の実例が古い）: ${out.json?.permalink}`);
     check(bmJson(['tool', 'read-note', 'shaped/inbox', '--project', PROJECT]).json?.file_path === 'shaped/inbox.md', '--overwrite のあと shaped/inbox が既存のファイルを指さなくなった');
     // 既存と同じ permalink が返ったとき（bm の挙動が変わったとき）に下準備のノートを消さない（レビュー指摘）。
-    if (out.json?.permalink && out.json.permalink !== 'shaped/inbox') bm(['tool', 'delete-note', out.json.permalink, '--project', PROJECT]);
+    if (out.json?.permalink && out.json.permalink !== 'shaped/inbox') {
+      const removed = bm(['tool', 'delete-note', out.json.permalink, '--project', PROJECT]);
+      // 残ったままだと、下の frontmatter 無しの --overwrite がこのファイルに当たり、原因と違う FAIL になる。
+      check(removed.status === 0 && !existsSync(other), `下準備（誤って作られたノート）を消せなかった: ${removed.stderr}`);
+    }
 
     // 本文に frontmatter の permalink が無ければ、衝突の回避ではなくタイトルのスラッグ（前置あり）になる。
     const bare = bmJson(
@@ -547,7 +581,7 @@ try {
   // 7. ここまでは bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
   //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
   await step('documents-still-say-it', () => {
-    const skill = readFileSync(join(repoRoot, '.claude/skills/memory-manager/SKILL.md'), 'utf8');
+    const skill = readFileSync(SKILL_PATH, 'utf8');
     const agents = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8');
     const missing = [];
     const want = (text, needle, where) => { if (!text.includes(needle)) missing.push(`${where}: ${needle}`); };
@@ -573,7 +607,7 @@ try {
     // 引数の形（--content / --find-text、クォートの種類、`=` 付き）を問わず、コマンドの中に `\n` が無いことを見る。
     // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
     const commandsOf = text => [
-      ...[...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]),
+      ...shBlocks(text),
       ...(text.match(/`[^`\n]+`/g) ?? []).filter(span => /edit-note|write-note/.test(span)),
     ];
     const escaped = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])]
