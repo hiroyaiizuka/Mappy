@@ -44,8 +44,11 @@ const INTERRUPT_STATUS = { 130: 'SIGINT', 143: 'SIGTERM' };
 // 片付けの本体（onInterrupt）は record・root などを使うので、それらを作った後で登録する。登録前に中断されたら、
 // 片付けるものが無いのでここで終える。
 let interruptHandler = null;
+// 後片付けに入ったら、子の終わり方から中断に入らない。onInterrupt が二重に片付けて finally の残りを飛ばさないよう、
+// 後片付けは最後まで進め、失敗はそのまま check に残す。
+let cleaningUp = false;
 const stopIfInterrupted = result => {
-  if (result.error) return;
+  if (result.error || cleaningUp) return;
   const signal = result.signal === 'SIGINT' || result.signal === 'SIGTERM' ? result.signal : INTERRUPT_STATUS[result.status];
   if (!signal) return;
   if (interruptHandler) return interruptHandler(signal);
@@ -63,6 +66,9 @@ function bm(args, input) {
   // 認証待ちやロックで止まってもハーネスごと固まらないよう時間を切る。
   const result = spawnSync('bm', [...args, '--local'], { input, encoding: 'utf8', timeout: BM_TIMEOUT_MS });
   stopIfInterrupted(result);
+  // 時間切れで止まるのは bm 本体だけで、孫が残ってロックを握り続けることがある。runSh と同じく、この実行に固有な
+  // 使い捨てプロジェクトの名前を引数に持つプロセスを止める。
+  if (result.error?.code === 'ETIMEDOUT') spawnSync('pkill', ['-f', PROJECT]);
   if (result.error) throw new Error(`bm ${args.join(' ')}: ${result.error.message}`);
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -168,6 +174,14 @@ const SKILL_PATH = join(repoRoot, '.claude/skills/memory-manager/SKILL.md');
 /** SKILL.md の sh コードブロック。実行するケースと `\n` の検査が同じ集合を見るよう、抜き出し方を 1 つにする。 */
 const shBlocks = text => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]);
 const count = (text, needle) => text.split(needle).length - 1;
+const said = run => `${run.stdout}${run.stderr}`;
+/** 使い捨てプロジェクトに write-note を打つ。`extra` は `--type`・`--overwrite`・`--tags` など。 */
+const writeNoteWith = (extra, title, folder, body) => bmJson(
+  ['tool', 'write-note', '--project', PROJECT, '--title', title, '--folder', folder, ...extra],
+  body,
+);
+/** search-notes の結果の permalink の一覧。 */
+const permalinksOf = out => (out.json?.results ?? []).map(item => item.permalink);
 
 /**
  * 手順書のコマンドを実行するときの身代わりの `bm`。`PATH` の先頭に置き、`tool` のサブコマンドで、使い捨て
@@ -180,24 +194,27 @@ const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
 writeFileSync(join(shimDir, 'bm'), [
   '#!/bin/sh',
   '# memory-procedure.mjs が作る身代わり。使い捨てプロジェクト以外への呼び出しを本物へ渡さない。',
-  "project=''; projects=0; local=0; skip=''",
+  "projects=0; ok=0; state=0",
   '# project の登録・削除などは手順書の対象外。tool のサブコマンドだけを通す。',
   '[ "$1" = tool ] || { echo "memory-procedure shim: bm $1 は使えない" >&2; exit 97; }',
-  '# 値を取るオプションの値（本文・目印・タグなど）はフラグとして読まない。値が `--local` でも local にならない。',
+  '# `--project <使い捨て> --local` がこの順に連続して 1 回だけ並ぶことを求める。値として渡した `--local` は',
+  '# この並びにならないので local と数えない。値を取るオプションを列挙しないので、値が偶然フラグの形',
+  '# （`-p…`・`--cloud`・`mappy-memory`）でも止める側に倒れる（本物へは渡らない）。',
   'for arg in "$@"; do',
-  '  if [ -n "$skip" ]; then',
-  '    [ "$skip" = --project ] && project="$arg"',
-  "    skip=''; continue",
-  '  fi',
   '  case "$arg" in',
   '    --project-id|--project-id=*|--project=*|--cloud|-p*) echo "memory-procedure shim: $arg は使えない" >&2; exit 97 ;;',
-  '    --local) local=1 ;;',
-  '    --project) projects=$((projects + 1)); skip=--project ;;',
-  '    --content|--find-text|--section|--title|--folder|--tags|--operation|--type|--permalink|--expected-replacements) skip=value ;;',
   '    mappy-memory) echo "memory-procedure shim: 引数に mappy-memory がある" >&2; exit 97 ;;',
+  '    --project) projects=$((projects + 1)) ;;',
   '  esac',
+  '  if [ "$state" = 2 ]; then',
+  '    [ "$arg" = --local ] && ok=1; state=0',
+  '  elif [ "$state" = 1 ]; then',
+  `    if [ "$arg" = '${PROJECT}' ]; then state=2; else state=0; fi`,
+  '  elif [ "$arg" = --project ]; then',
+  '    state=1',
+  '  fi',
   'done',
-  `if [ "$projects" != 1 ] || [ "$project" != '${PROJECT}' ] || [ "$local" != 1 ]; then`,
+  'if [ "$projects" != 1 ] || [ "$ok" != 1 ]; then',
   '  echo "memory-procedure shim: 使い捨てプロジェクト以外への呼び出しを止めた: $*" >&2; exit 97',
   'fi',
   `exec '${realBm}' "$@"`,
@@ -211,7 +228,9 @@ const shEnv = { ...baseEnv, PATH: `${shimDir}:${process.env.PATH ?? ''}` };
  * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする。
  */
 const runSh = (script, shell = 'sh') => {
-  const run = spawnSync(shell, shellArgs(shell, script), { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
+  // 複数のコマンドからなるブロック（lessons の read-note と edit-note）で、前のコマンドの失敗が最後のコマンドの
+  // 成功に隠れないよう、最初の失敗で止める。
+  const run = spawnSync(shell, shellArgs(shell, `set -e\n${script}`), { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
   stopIfInterrupted(run);
   // 時間切れで止まるのは sh だけで、孫の bm は残ってロックを握り続ける。使い捨てプロジェクトの名前は
   // この実行に固有なので、その名前を引数に持つプロセスだけを止める。
@@ -258,6 +277,8 @@ const documentedScript = (select, replacements, stale) => {
 };
 
 let added = false;
+/** 使い捨てプロジェクトが bm に登録されているか（project add の途中で止まったときに使う）。 */
+const isRegistered = () => (spawnSync('bm', ['tool', 'list-projects', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').includes(PROJECT);
 // project add の最中に中断されると、bm が登録を終えていても added はまだ false。そのときは一覧で確かめて消す。
 let adding = false;
 
@@ -268,7 +289,7 @@ const onInterrupt = signal => {
   if (interruptHandled) return;
   interruptHandled = true;
   // 片付けが成功したかを確かめてから言う。失敗したら消し方を出す。
-  const registered = added || (adding && (spawnSync('bm', ['tool', 'list-projects', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').includes(PROJECT));
+  const registered = added || (adding && isRegistered());
   const removed = registered && !keep
     ? spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS })
     : null;
@@ -294,6 +315,70 @@ process.on('SIGINT', () => onInterrupt('SIGINT'));
 process.on('SIGTERM', () => onInterrupt('SIGTERM'));
 
 try {
+  // 0. 手順書の文面の検査。bm を使わないので最初に回し、文面だけの壊れ方をすぐ落とす。
+  //    ここより後は bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
+  //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
+  await step('documents-still-say-it', () => {
+    const skill = readFileSync(SKILL_PATH, 'utf8');
+    const agents = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8');
+    const missing = [];
+    const want = (text, needle, where) => { if (!text.includes(needle)) missing.push(`${where}: ${needle}`); };
+    want(skill, 'permalink: {カテゴリ}/{英語スラッグ}', 'SKILL.md');
+    want(skill, 'type: {カテゴリの単数形}', 'SKILL.md');
+    want(skill, '--operation append', 'SKILL.md');
+    want(skill, '--overwrite', 'SKILL.md');
+    // corrections は append ではなく行頭の `## Relations` の前に差し込む（LEV-192。旧手順は replace_section で重複した）。
+    // 実際の改行を含む目印そのものは、documented-inbox-entry がコードブロックを実行して確かめる。
+    want(skill, "--operation find_replace --find-text '\n## Relations\n'", 'SKILL.md');
+    want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
+    want(agents, 'bm tool edit-note corrections/inbox --project mappy-memory --operation find_replace', 'AGENTS.md');
+    want(agents, '**行頭の** `## Relations`', 'AGENTS.md');
+    // --overwrite が当たるのはタイトルから決まるパスだけで、既存の書き換えは edit-note（LEV-192）。
+    want(skill, '{folder}/{title}.md', 'SKILL.md');
+    want(agents, '{folder}/{title}.md', 'AGENTS.md');
+    want(skill, '`write-note` は新規専用', 'SKILL.md');
+    want(agents, '`write-note` は新規専用', 'AGENTS.md');
+    want(agents, '過去の記録が消え', 'AGENTS.md');
+    // inbox の `## 未蒸留` を replace_section で狙う旧手順は、既存のエントリを重複させる（LEV-192）。
+    // クォートの種類や `=` 付きを問わない。
+    const sectionUnprocessed = /--section[ =]["']?## 未蒸留/;
+    check(!sectionUnprocessed.test(skill), 'SKILL.md に inbox への replace_section が戻っている（LEV-192）');
+    check(!sectionUnprocessed.test(agents), 'AGENTS.md に inbox への replace_section が戻っている（LEV-192）');
+    // bm は引数の `\n` を改行にしないので、コマンドに書くと見出しが 1 行に潰れる（LEV-192）。
+    // 引数の形（--content / --find-text、クォートの種類、`=` 付き）を問わず、コマンドの中に `\n` が無いことを見る。
+    // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
+    const commandsOf = text => [
+      ...shBlocks(text),
+      // インラインコードは CommonMark と同じく「同じ長さのバッククォートの並びで閉じる」で切り出す。
+      // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす。
+      // コードブロックは上で見ているので、先に取り除く（```` ``` ```` をインラインの区切りと読み違えないように）。
+      // CommonMark のコードスパンは段落をまたがないので、空行の手前で打ち切る。
+      ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n)[\s\S])*?[^`])\1(?!`)/g)].map(match => match[2])
+        // サブコマンド名を含まない断片（`--title "…" --overwrite` など）も、長いオプションがあればコマンドとして見る。
+        .filter(span => /edit-note|write-note|search-notes|(^|\s)--[a-z]/.test(span)),
+    ];
+    const commands = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])];
+    const escaped = commands
+      .filter(([, command]) => command.includes('\\n'));
+    check(escaped.length === 0, `コマンドの中に \\n が戻っている（改行にならない）: ${escaped.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
+    // 前提と崩れる条件（AGENTS.md「回避策が成り立つ前提と崩れる条件を書く」）。
+    want(skill, 'この手順が成り立つ前提', 'SKILL.md');
+    want(skill, "--operation find_replace --find-text '\n## 手順\n'", 'SKILL.md');
+    // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える。
+    // 対象は corrections に限らない。一般の追記手順も同じ危険がある。
+    // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う。
+    const doubleQuoted = commands
+      // `--content='…'` は安全なので拾わない。`--section` も同じ危険があるので見る。
+      .filter(([, command]) => /--(content|find-text|section|title|folder|tags|permalink)(\s|\\\n)*(=\s*)?"|search-notes "|\$\(cat/.test(command));
+    check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
+    check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
+    // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
+    // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
+    check(!/cat >[^>]/.test(skill), 'SKILL.md にファイルへの heredoc 書き込みが戻っている（LEV-184 指摘 6）');
+    // 公開リポジトリなので個人の絶対パスを置かない（LEV-184 指摘 7）。
+    check(!skill.includes('/Users/'), 'SKILL.md に個人の絶対パスが戻っている（LEV-184 指摘 7）');
+    return { missing };
+  });
   await step('project-add', () => {
     adding = true;
     const run = bm(['project', 'add', PROJECT, root]);
@@ -309,9 +394,7 @@ try {
   let droppedPermalink = '';
   await step('defaults-drop-permalink-and-type', () => {
     const title = '2026-09-22 既定の確認';
-    const out = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', title, '--folder', 'events', '--tags', 'probe'],
-      '# 既定の確認\n\n## Observations\n- [tech] permalink と type を省いた #probe\n',
+    const out = writeNoteWith(['--tags', 'probe'], title, 'events', '# 既定の確認\n\n## Observations\n- [tech] permalink と type を省いた #probe\n',
     );
     droppedPermalink = out.json?.permalink ?? '';
     const file = notePath(`events/${title}.md`);
@@ -321,6 +404,8 @@ try {
     check(out.status === 0, `write-note が失敗した: ${out.stderr}`);
     check(droppedPermalink.startsWith(`${PROJECT}/`), `permalink にプロジェクト名が前置されなかった: ${droppedPermalink}`);
     check(/^type: note$/m.test(front), `type が既定の note にならなかった: ${front}`);
+    // 引けなかったことを見る前に、read-note 自体が答えを返したことを確かめる（JSON が無ければ何も確かめていない）。
+    check(guess.status === 0 && guess.json !== null, `予測した英語スラッグの read-note が答えを返さなかった: [${guess.status}] ${guess.stderr}`);
     check(guess.json?.permalink == null, `予測した英語スラッグで引けてしまった（スラッグは崩れていない）: ${guess.json?.permalink}`);
     return { permalink: droppedPermalink, type: front.match(/^type: (.+)$/m)?.[1] };
   });
@@ -328,19 +413,15 @@ try {
   // 1b. 原因の切り分け（レビュー指摘）。前置「だけ」なら read-note と [[wiki link]] は当たり、
   //     外れるのは --permalink のグロブだけ。手順書はこの 2 つを別々の理由として書いている。
   await step('prefix-alone-does-not-break-read-note', () => {
-    const out = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Probe Ascii Title', '--folder', 'events'],
-      '# Probe Ascii Title\n\n## Observations\n- [tech] permalink だけ省いた #probe\n',
+    const out = writeNoteWith([], 'Probe Ascii Title', 'events', '# Probe Ascii Title\n\n## Observations\n- [tech] permalink だけ省いた #probe\n',
     );
     // 対照。グロブが何も拾わなくなった場合に「前置を外している」と読み違えないよう、拾う側も同じ回で作る。
-    const target = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Probe Glob Target', '--folder', 'events'],
-      '---\npermalink: events/probe-glob-target\n---\n\n# Probe Glob Target\n',
+    const target = writeNoteWith([], 'Probe Glob Target', 'events', '---\npermalink: events/probe-glob-target\n---\n\n# Probe Glob Target\n',
     );
     const permalink = out.json?.permalink ?? '';
     const byWish = bmJson(['tool', 'read-note', 'events/probe-ascii-title', '--project', PROJECT]);
     const glob = bmJson(['tool', 'search-notes', '--permalink', 'events/*', '--project', PROJECT]);
-    const globHits = (glob.json?.results ?? []).map(item => item.permalink);
+    const globHits = permalinksOf(glob);
     check(permalink === `${PROJECT}/events/probe-ascii-title`, `前置された permalink にならなかった: ${permalink}`);
     check(byWish.json?.permalink === permalink, `前置されただけのノートが {カテゴリ}/{スラッグ} で読めない: ${byWish.stderr}`);
     check(target.json?.permalink === 'events/probe-glob-target', `対照ノートを作れなかった: ${target.stderr}`);
@@ -367,6 +448,8 @@ try {
       `bm tool read-note ${probe} --project ${PROJECT} --local -pother`,
       // 値として渡した `--local` は local フラグにならない。
       `bm tool edit-note ${probe} --project ${PROJECT} --operation append --content --local`,
+      `bm tool search-notes x --project ${PROJECT} --page --local`,
+      `bm tool read-note ${probe} --local --project ${PROJECT}`,
     ];
     // 手順書のブロックを流すすべてのシェルで確かめる。
     const results = {};
@@ -385,31 +468,38 @@ try {
   // 2. SKILL.md の推奨手順そのもの（stdin + frontmatter の permalink / type）。「新しいノートを作る」の
   //    コードブロックを抜き出し、差し込み口だけを埋めてシェルで実行する。
   await step('documented-write-note', () => {
+    // タイトルにもシェルが展開しうる文字を入れる（ファイル名に使えない `/` と `:` は除く）。本文には TRICKY を入れる。
+    const title = "2026-09-22 推奨 `x $HOME \"q 1) it's";
     const script = documentedScript('bm tool write-note --project mappy-memory', [
-      ['{YYYY-MM-DD タイトル}', '2026-09-22 推奨手順の確認'],
+      ['{YYYY-MM-DD タイトル}', title.replaceAll("'", () => "'\\''")],
       ['{カテゴリの単数形}', 'event'],
       ['{英語スラッグ}', 'probe-documented-write'],
       ['{カテゴリ}', 'events'],
       ['{タグ1},{タグ2}', 'probe,mappy'],
       ['{番号}', '184'],
-      ['- [category] 内容', '- [tech] PROBEWRITETOKEN'],
+      ['- [category] 内容', `- [tech] PROBEWRITETOKEN ${TRICKY}`],
     ]);
     if (script === null) return { script };
-    const file = notePath('events/2026-09-22 推奨手順の確認.md');
     const results = {};
+    // bm はタイトルの記号をファイル名から落とすので、ファイルの場所は bm が返す file_path から引く。
+    let file = '';
     for (const [index, shell] of SHELLS.entries()) {
       // 同じタイトルの 2 回目は NOTE_ALREADY_EXISTS になるので、前のシェルで作ったノートを消してから打つ。
       // 最後のシェルで作ったノートは、下の indexed-without-reindex・search-by-type が使う。
       // 前のシェルで作れていなければ（その失敗は記録済み）、消すものは無い。
-      if (index > 0 && existsSync(file)) {
+      if (index > 0 && file !== '' && existsSync(file)) {
         const removed = bm(['tool', 'delete-note', 'events/probe-documented-write', '--project', PROJECT]);
         check(removed.status === 0 && !existsSync(file), `[${shell}] 前のシェルで作ったノートを消せなかった: ${removed.stderr}`);
       }
       const run = runSh(script, shell);
       const json = parseBmJson(run.stdout);
-      const front = existsSync(file) ? frontmatterOf(file) : '';
+      file = json?.file_path ? notePath(json.file_path) : '';
+      const written = file !== '' && existsSync(file);
+      const front = written ? frontmatterOf(file) : '';
       check(run.status === 0, `[${shell}] heredoc 版の write-note が失敗した: ${run.why}`);
       check(json?.permalink === 'events/probe-documented-write', `[${shell}] permalink が明示した値にならなかった: ${json?.permalink}`);
+      check(json?.title === title, `[${shell}] タイトルがシェルに書き換えられた（引数のシングルクォートが素通しされない）: ${JSON.stringify(json?.title)}`);
+      check(written && readFileSync(file, 'utf8').includes(`PROBEWRITETOKEN ${TRICKY}`), `[${shell}] 本文が heredoc の中で書き換えられた`);
       check(/^type: event$/m.test(front), `[${shell}] type が event にならなかった: ${front}`);
       results[shell] = { permalink: json?.permalink, action: json?.action };
     }
@@ -420,7 +510,7 @@ try {
   await step('indexed-without-reindex', () => {
     const read = bmJson(['tool', 'read-note', 'events/probe-documented-write', '--project', PROJECT]);
     const found = bmJson(['tool', 'search-notes', 'PROBEWRITETOKEN', '--project', PROJECT]);
-    const hits = (found.json?.results ?? []).map(item => item.permalink);
+    const hits = permalinksOf(found);
     check(read.json?.permalink === 'events/probe-documented-write', `{カテゴリ}/{スラッグ} で read-note できない: ${read.stderr}`);
     check(hits.includes('events/probe-documented-write'), `reindex 無しで検索に出ない: ${hits.join(', ')}`);
     return { read: read.json?.permalink, hits };
@@ -429,7 +519,7 @@ try {
   // 4. type を明示したノートだけが --type で引けること（指摘 3 の回帰）。
   await step('search-by-type', () => {
     const out = bmJson(['tool', 'search-notes', '--type', 'event', '--project', PROJECT]);
-    const hits = (out.json?.results ?? []).map(item => item.permalink);
+    const hits = permalinksOf(out);
     check(hits.includes('events/probe-documented-write'), `type: event のノートが --type event で出ない: ${hits.join(', ')}`);
     // permalink の形ではなく、ステップ 1 で type を落としたノートそのものが混ざっていないかを見る。
     // ステップ 1 で permalink を取れなかったら、否定側の検査は空文字の検査になって何も確かめない。飛ばしたことを残す。
@@ -440,9 +530,7 @@ try {
 
   // 5. 積み上げるノート: 2 回目の write-note は何も書かず、--overwrite は過去の記録を消し、append は残す。
   await step('inbox-create', () => {
-    const out = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'corrections', '--type', 'correction'],
-      '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-20\n- 既存の記録1\n',
+    const out = writeNoteWith(['--type', 'correction'], 'Correction Inbox', 'corrections', '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-20\n- 既存の記録1\n',
     );
     check(out.status === 0, `inbox を作れない: ${out.stderr}`);
     return { permalink: out.json?.permalink, action: out.json?.action };
@@ -450,9 +538,7 @@ try {
 
   await step('second-write-note-writes-nothing', () => {
     const before = readFileSync(notePath('corrections/Correction Inbox.md'), 'utf8');
-    const out = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'corrections', '--type', 'correction'],
-      '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-22\n- 新しい記録2\n',
+    const out = writeNoteWith(['--type', 'correction'], 'Correction Inbox', 'corrections', '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-22\n- 新しい記録2\n',
     );
     const after = readFileSync(notePath('corrections/Correction Inbox.md'), 'utf8');
     check(out.status !== 0, '2 回目の write-note が終了コード 0 で通った');
@@ -463,9 +549,7 @@ try {
   });
 
   await step('overwrite-loses-history', () => {
-    const out = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
-      '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-22\n- 新しい記録2\n',
+    const out = writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Inbox', 'corrections', '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-22\n- 新しい記録2\n',
     );
     const text = readFileSync(notePath('corrections/Correction Inbox.md'), 'utf8');
     check(out.status === 0, `--overwrite が失敗した: ${out.stderr}`);
@@ -475,9 +559,7 @@ try {
 
   await step('append-keeps-history', () => {
     // 下準備。ここが失敗すると、下の「append が過去の記録を消した」が事実と違う理由で落ちる。
-    const restored = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
-      '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-20\n- 既存の記録1\n',
+    const restored = writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Inbox', 'corrections', '---\npermalink: corrections/inbox\n---\n\n# Correction Inbox\n\n## 2026-09-20\n- 既存の記録1\n',
     );
     check(restored.status === 0, `下準備（過去の記録を書き戻す --overwrite）が失敗した: ${restored.stderr}`);
     const out = bmJson([
@@ -486,7 +568,7 @@ try {
     ]);
     const text = readFileSync(notePath('corrections/Correction Inbox.md'), 'utf8');
     const found = bmJson(['tool', 'search-notes', 'PROBEAPPENDTOKEN', '--project', PROJECT]);
-    const hits = (found.json?.results ?? []).map(item => item.permalink);
+    const hits = permalinksOf(found);
     check(out.status === 0, `edit-note --operation append が失敗した: ${out.stderr}`);
     check(text.includes('既存の記録1'), 'append が過去の記録を消した');
     check(text.includes('新しい記録2'), 'append した内容が入っていない');
@@ -513,9 +595,10 @@ try {
       'tool', 'edit-note', 'corrections/not-created-for-section', '--project', PROJECT,
       '--operation', 'replace_section', '--section', '## 未蒸留', '--content', '追記\n',
     ]);
-    const sectionSaid = `${section.stdout}${section.stderr}`;
+    const sectionSaid = said(section);
     const sectionLeaked = bmJson(['tool', 'read-note', `${PROJECT}/corrections/not-created-for-section`, '--project', PROJECT]);
     check(section.status === 1 && sectionSaid.includes('Entity not found'), `未作成の permalink への replace_section が「Entity not found」の終了コード 1 で止まらなかった（手順書が古い）: [${section.status}] ${sectionSaid}`);
+    check(sectionLeaked.status === 0 && sectionLeaked.json !== null, `作られていないことを確かめる read-note が答えを返さなかった: [${sectionLeaked.status}] ${sectionLeaked.stderr}`);
     check(!existsSync(notePath('corrections/not-created-for-section.md')) && sectionLeaked.json?.file_path == null, '未作成の permalink への replace_section がノートを作った（手順書が古い）');
     return { permalink: out.json?.permalink, fileCreated: out.json?.fileCreated, sectionStatus: section.status };
   });
@@ -548,9 +631,7 @@ try {
   await step('append-lands-after-relations-flat-replace-section-wipes', () => {
     const shapeFile = notePath('corrections/Correction Shape.md');
     // (a) append はファイル末尾 ＝ Relations の後ろ。inbox の形（`###` で区切られた節）への replace_section は 6d で固定する。
-    const made = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Shape', '--folder', 'corrections', '--type', 'correction'],
-      inboxShape,
+    const made = writeNoteWith(['--type', 'correction'], 'Correction Shape', 'corrections', inboxShape,
     );
     check(made.status === 0, `下準備 (a)（inbox の形のノート）を作れなかった: ${made.stderr}`);
     const appendRun = bmJson(['tool', 'edit-note', 'corrections/shape', '--project', PROJECT, '--operation', 'append', '--content', '### 2026-09-22 新しいミス']);
@@ -561,9 +642,7 @@ try {
 
     // (b) 節の中身が平らなリスト（lessons の形）だと replace_section は節ごと置き換える。
     //     手順書が「lessons には使わない」と書いている根拠。
-    const flatMade = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Flat', '--folder', 'corrections', '--type', 'correction'],
-      '---\npermalink: corrections/flat\n---\n\n# Correction Flat\n\n## 道具の癖\n\n1. 既存の教訓1\n2. 既存の教訓2\n\n## Relations\n- originated_from [[Correction Inbox]]\n',
+    const flatMade = writeNoteWith(['--type', 'correction'], 'Correction Flat', 'corrections', '---\npermalink: corrections/flat\n---\n\n# Correction Flat\n\n## 道具の癖\n\n1. 既存の教訓1\n2. 既存の教訓2\n\n## Relations\n- originated_from [[Correction Inbox]]\n',
     );
     check(flatMade.status === 0, `下準備 (b)（lessons の形のノート）を作れなかった: ${flatMade.stderr}`);
     const flatRun = bmJson([
@@ -592,12 +671,9 @@ try {
   // 手順書の目印そのもの（改行＋見出し＋改行）。(c')・(d)・(f) もこれで打つ。
   const MARK = '\n## Relations\n';
   const realInboxFile = notePath('corrections/Correction Real Inbox.md');
-  const resetRealInbox = (content = realInbox) => bmJson(
-    ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Inbox', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
-    content,
+  const resetRealInbox = (content = realInbox) => writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Real Inbox', 'corrections', content,
   );
   const editRealInbox = args => bmJson(['tool', 'edit-note', 'corrections/real-inbox', '--project', PROJECT, ...args]);
-  const said = run => `${run.stdout}${run.stderr}`;
 
   await step('inbox-replace-section-duplicates-find-replace-does-not', () => {
     // (a) 旧手順を踏んだ回と同じ: 既存＋新規の全文を replace_section に渡す → 既存が重複する。
@@ -658,6 +734,7 @@ try {
     ]);
     const leaked = bmJson(['tool', 'read-note', `${PROJECT}/corrections/not-created-for-find`, '--project', PROJECT]);
     check(missing.status === 1 && said(missing).includes('Entity not found'), `無い permalink への find_replace が「Entity not found」の終了コード 1 で止まらなかった: [${missing.status}] ${said(missing)}`);
+    check(leaked.status === 0 && leaked.json !== null, `作られていないことを確かめる read-note が答えを返さなかった: [${leaked.status}] ${leaked.stderr}`);
     check(!existsSync(notePath('corrections/not-created-for-find.md')) && leaked.json?.file_path == null, '無い permalink への find_replace がノートを作った');
 
     // (f) 手順の前提が崩れた形: `## 未蒸留` と `## Relations` の間に別の節があると、目印は 1 か所に当たるので
@@ -737,9 +814,7 @@ try {
     const last = script.replaceAll('## 手順', '## Relations');
     const statuses = {};
     for (const shell of SHELLS) {
-      const made = bmJson(
-        ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Real Lessons', '--folder', 'corrections', '--type', 'correction', '--overwrite'],
-        lessons,
+      const made = writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Real Lessons', 'corrections', lessons,
       );
       check(made.status === 0, `[${shell}] 下準備（lessons の形のノート）を作れなかった: ${made.stderr}`);
       const run = runSh(script, shell);
@@ -757,6 +832,13 @@ try {
       check(headingsAppearOnce(lastText, sections), `[${shell}] 最後の節へ足したあと節の見出しが重複・消失した`);
       statuses[shell] = [run.status, lastRun.status];
     }
+    // 前提が崩れた形: `## 道具の癖` と `## 手順` の間に別の節があると、目印は 1 か所に当たるので止まらず、
+    // その別の節の末尾へ終了コード 0 で黙って入る（手順書が lessons の前提と崩れる条件を書く根拠）。
+    check(writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Real Lessons', 'corrections',
+      lessons.replace('2. **教訓2**\n## 手順', '2. **教訓2**\n## 追加の節\n9. **別の教訓**\n## 手順')).status === 0, '下準備（間に節がある lessons）を作れなかった');
+    const shifted = runSh(script);
+    const shiftedText = readFileSync(lessonsFile, 'utf8');
+    check(shifted.status === 0 && shiftedText.includes(`9. **別の教訓**\n{N}. **${TRICKY}**\n## 手順`), `間に節がある lessons で、新しい教訓がその節の末尾へ黙って入らなかった（手順書の前提の記述が古い）: ${shifted.why}`);
     return { shells: SHELLS, statuses };
   });
 
@@ -765,9 +847,7 @@ try {
   //     `{folder}/{title}.md` の新しいノートができる（LEV-192。2026-09-23 に実際に踏んだ）。
   //     write-note は --title でタイトルを決めるので、作ってから frontmatter の title だけを差し替えて実物の形にする。
   await step('overwrite-with-different-filename-creates-another-note', () => {
-    const made = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'inbox', '--folder', 'shaped', '--type', 'correction'],
-      '---\npermalink: shaped/inbox\n---\n\n# Correction Inbox\n\n- 既存の記録1\n',
+    const made = writeNoteWith(['--type', 'correction'], 'inbox', 'shaped', '---\npermalink: shaped/inbox\n---\n\n# Correction Inbox\n\n- 既存の記録1\n',
     );
     const retitled = bmJson([
       'tool', 'edit-note', 'shaped/inbox', '--project', PROJECT,
@@ -779,9 +859,7 @@ try {
     check(read.json?.title === 'Correction Inbox' && read.json?.file_path === 'shaped/inbox.md', `下準備のノートが実物の形になっていない: ${JSON.stringify(read.json)}`);
     const before = readFileSync(existing, 'utf8');
     // 2026-09-23 に打ったのと同じ形: タイトルを指定し、全文（permalink 付き）を --overwrite で渡す。
-    const out = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'shaped', '--type', 'correction', '--overwrite'],
-      '---\npermalink: shaped/inbox\n---\n\n# Correction Inbox\n\n- 書き直した全文\n',
+    const out = writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Inbox', 'shaped', '---\npermalink: shaped/inbox\n---\n\n# Correction Inbox\n\n- 書き直した全文\n',
     );
     const other = notePath('shaped/Correction Inbox.md');
     check(out.status === 0, `--overwrite が失敗した: ${out.stderr}`);
@@ -798,9 +876,7 @@ try {
     }
 
     // 本文に frontmatter の permalink が無ければ、衝突の回避ではなくタイトルのスラッグ（前置あり）になる。
-    const bare = bmJson(
-      ['tool', 'write-note', '--project', PROJECT, '--title', 'Correction Inbox', '--folder', 'shaped', '--type', 'correction', '--overwrite'],
-      '# Correction Inbox\n\n- 書き直した全文\n',
+    const bare = writeNoteWith(['--type', 'correction', '--overwrite'], 'Correction Inbox', 'shaped', '# Correction Inbox\n\n- 書き直した全文\n',
     );
     check(bare.status === 0, `frontmatter 無しの --overwrite が失敗した: ${bare.stderr}`);
     check(readFileSync(existing, 'utf8') === before, 'frontmatter 無しの --overwrite がファイル名の違う既存のノートを書き換えた');
@@ -809,68 +885,6 @@ try {
     return { createdPermalink: out.json?.permalink, createdFile: out.json?.file_path, barePermalink: bare.json?.permalink };
   });
 
-  // 7. ここまでは bm の挙動しか見ておらず、手順書を旧「方法A」に書き戻しても全部 PASS する。
-  //    手順書の側にも当て、書いてあるはずの形が消えていないことを確かめる（レビュー指摘）。
-  await step('documents-still-say-it', () => {
-    const skill = readFileSync(SKILL_PATH, 'utf8');
-    const agents = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8');
-    const missing = [];
-    const want = (text, needle, where) => { if (!text.includes(needle)) missing.push(`${where}: ${needle}`); };
-    want(skill, 'permalink: {カテゴリ}/{英語スラッグ}', 'SKILL.md');
-    want(skill, 'type: {カテゴリの単数形}', 'SKILL.md');
-    want(skill, '--operation append', 'SKILL.md');
-    want(skill, '--overwrite', 'SKILL.md');
-    // corrections は append ではなく行頭の `## Relations` の前に差し込む（LEV-192。旧手順は replace_section で重複した）。
-    // 実際の改行を含む目印そのものは、documented-inbox-entry がコードブロックを実行して確かめる。
-    want(skill, "--operation find_replace --find-text '\n## Relations\n'", 'SKILL.md');
-    want(agents, 'bm tool read-note corrections/lessons --project mappy-memory', 'AGENTS.md');
-    want(agents, 'bm tool edit-note corrections/inbox --project mappy-memory --operation find_replace', 'AGENTS.md');
-    want(agents, '**行頭の** `## Relations`', 'AGENTS.md');
-    // --overwrite が当たるのはタイトルから決まるパスだけで、既存の書き換えは edit-note（LEV-192）。
-    want(skill, '{folder}/{title}.md', 'SKILL.md');
-    want(agents, '{folder}/{title}.md', 'AGENTS.md');
-    want(skill, '`write-note` は新規専用', 'SKILL.md');
-    want(agents, '`write-note` は新規専用', 'AGENTS.md');
-    // inbox の `## 未蒸留` を replace_section で狙う旧手順は、既存のエントリを重複させる（LEV-192）。
-    // クォートの種類や `=` 付きを問わない。
-    const sectionUnprocessed = /--section[ =]["']?## 未蒸留/;
-    check(!sectionUnprocessed.test(skill), 'SKILL.md に inbox への replace_section が戻っている（LEV-192）');
-    check(!sectionUnprocessed.test(agents), 'AGENTS.md に inbox への replace_section が戻っている（LEV-192）');
-    // bm は引数の `\n` を改行にしないので、コマンドに書くと見出しが 1 行に潰れる（LEV-192）。
-    // 引数の形（--content / --find-text、クォートの種類、`=` 付き）を問わず、コマンドの中に `\n` が無いことを見る。
-    // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
-    const commandsOf = text => [
-      ...shBlocks(text),
-      // インラインコードは CommonMark と同じく「同じ長さのバッククォートの並びで閉じる」で切り出す。
-      // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす。
-      // コードブロックは上で見ているので、先に取り除く（```` ``` ```` をインラインの区切りと読み違えないように）。
-      // CommonMark のコードスパンは段落をまたがないので、空行の手前で打ち切る。
-      ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n)[\s\S])*?[^`])\1(?!`)/g)].map(match => match[2])
-        // サブコマンド名を含まない断片（`--title "…" --overwrite` など）も、長いオプションがあればコマンドとして見る。
-        .filter(span => /edit-note|write-note|search-notes|(^|\s)--[a-z]/.test(span)),
-    ];
-    const commands = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])];
-    const escaped = commands
-      .filter(([, command]) => command.includes('\\n'));
-    check(escaped.length === 0, `コマンドの中に \\n が戻っている（改行にならない）: ${escaped.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
-    // 前提と崩れる条件（AGENTS.md「回避策が成り立つ前提と崩れる条件を書く」）。
-    want(skill, 'この手順が成り立つ前提', 'SKILL.md');
-    want(skill, "--operation find_replace --find-text '\n## 手順\n'", 'SKILL.md');
-    // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える。
-    // 対象は corrections に限らない。一般の追記手順も同じ危険がある。
-    // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う。
-    const doubleQuoted = commands
-      // `--content='…'` は安全なので拾わない。`--section` も同じ危険があるので見る。
-      .filter(([, command]) => /--(content|find-text|section|title|folder|tags|permalink)(\s|\\\n)*(=\s*)?"|search-notes "|\$\(cat/.test(command));
-    check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
-    check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
-    // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
-    // 相対パス宛（`cat > memory/...`）も同じなので、リダイレクト先を問わず見る。
-    check(!/cat >[^>]/.test(skill), 'SKILL.md にファイルへの heredoc 書き込みが戻っている（LEV-184 指摘 6）');
-    // 公開リポジトリなので個人の絶対パスを置かない（LEV-184 指摘 7）。
-    check(!skill.includes('/Users/'), 'SKILL.md に個人の絶対パスが戻っている（LEV-184 指摘 7）');
-    return { missing };
-  });
 } catch (error) {
   record.failures.push(String(error));
 } finally {
@@ -878,11 +892,9 @@ try {
   // 「中断」で上書きしないよう、既定の動作（その場で終了）に戻す。
   process.removeAllListeners('SIGINT');
   process.removeAllListeners('SIGTERM');
+  cleaningUp = true;
   // project add が時間切れで throw した場合、bm が登録だけ済ませていることがある。一覧で確かめて消す対象に入れる。
-  if (!added && adding) {
-    const listed = spawnSync('bm', ['tool', 'list-projects', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS });
-    added = (listed.stdout ?? '').includes(PROJECT);
-  }
+  if (!added && adding) added = isRegistered();
   // 身代わりの bm は --keep でも残さない（手で追うときは本物の bm を使う）。
   rmSync(shimDir, { recursive: true, force: true });
   if (keep) {
