@@ -145,7 +145,14 @@ const root = mkdtempSync(join(tmpdir(), 'mappy-memory-probe-'));
 const record = createRecord(root, PROJECT);
 record.bmVersion = version;
 record.hadMappyMemory = hadMappyMemory;
-const step = makeStep(record);
+const runStep = makeStep(record);
+// node だけに届いたシグナル（CI のキャンセル、`kill <pid>`）は、イベントループが回るまでハンドラーが動かない。
+// ステップはどれも同期の spawnSync なので、ステップの合間に 1 回ループを回して、届いていれば中断に入る。
+// 1 つのステップの途中で届いた分は、そのステップが終わるまで待つ。
+const step = async (name, fn) => {
+  await new Promise(resolve => setImmediate(resolve));
+  return runStep(name, fn);
+};
 const check = makeCheck(record);
 
 const notePath = name => join(root, name);
@@ -173,18 +180,22 @@ const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
 writeFileSync(join(shimDir, 'bm'), [
   '#!/bin/sh',
   '# memory-procedure.mjs が作る身代わり。使い捨てプロジェクト以外への呼び出しを本物へ渡さない。',
-  "project=''; projects=0; local=0; prev=''",
+  "project=''; projects=0; local=0; skip=''",
   '# project の登録・削除などは手順書の対象外。tool のサブコマンドだけを通す。',
   '[ "$1" = tool ] || { echo "memory-procedure shim: bm $1 は使えない" >&2; exit 97; }',
+  '# 値を取るオプションの値（本文・目印・タグなど）はフラグとして読まない。値が `--local` でも local にならない。',
   'for arg in "$@"; do',
+  '  if [ -n "$skip" ]; then',
+  '    [ "$skip" = --project ] && project="$arg"',
+  "    skip=''; continue",
+  '  fi',
   '  case "$arg" in',
   '    --project-id|--project-id=*|--project=*|--cloud|-p*) echo "memory-procedure shim: $arg は使えない" >&2; exit 97 ;;',
   '    --local) local=1 ;;',
+  '    --project) projects=$((projects + 1)); skip=--project ;;',
+  '    --content|--find-text|--section|--title|--folder|--tags|--operation|--type|--permalink|--expected-replacements) skip=value ;;',
   '    mappy-memory) echo "memory-procedure shim: 引数に mappy-memory がある" >&2; exit 97 ;;',
-  '    --project) projects=$((projects + 1)) ;;',
   '  esac',
-  '  [ "$prev" = --project ] && project="$arg"',
-  '  prev="$arg"',
   'done',
   `if [ "$projects" != 1 ] || [ "$project" != '${PROJECT}' ] || [ "$local" != 1 ]; then`,
   '  echo "memory-procedure shim: 使い捨てプロジェクト以外への呼び出しを止めた: $*" >&2; exit 97',
@@ -354,6 +365,8 @@ try {
       `bm project list --project ${PROJECT} --local`,
       `bm tool read-note mappy-memory --project ${PROJECT} --local`,
       `bm tool read-note ${probe} --project ${PROJECT} --local -pother`,
+      // 値として渡した `--local` は local フラグにならない。
+      `bm tool edit-note ${probe} --project ${PROJECT} --operation append --content --local`,
     ];
     // 手順書のブロックを流すすべてのシェルで確かめる。
     const results = {};
@@ -833,7 +846,8 @@ try {
       // コードブロックは上で見ているので、先に取り除く（```` ``` ```` をインラインの区切りと読み違えないように）。
       // CommonMark のコードスパンは段落をまたがないので、空行の手前で打ち切る。
       ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n)[\s\S])*?[^`])\1(?!`)/g)].map(match => match[2])
-        .filter(span => /edit-note|write-note/.test(span)),
+        // サブコマンド名を含まない断片（`--title "…" --overwrite` など）も、長いオプションがあればコマンドとして見る。
+        .filter(span => /edit-note|write-note|search-notes|(^|\s)--[a-z]/.test(span)),
     ];
     const commands = [...commandsOf(skill).map(c => ['SKILL.md', c]), ...commandsOf(agents).map(c => ['AGENTS.md', c])];
     const escaped = commands
@@ -847,7 +861,7 @@ try {
     // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う。
     const doubleQuoted = commands
       // `--content='…'` は安全なので拾わない。`--section` も同じ危険があるので見る。
-      .filter(([, command]) => /--(content|find-text|section|title|folder|tags)(\s|\\\n)*(=\s*)?"|\$\(cat/.test(command));
+      .filter(([, command]) => /--(content|find-text|section|title|folder|tags|permalink)(\s|\\\n)*(=\s*)?"|search-notes "|\$\(cat/.test(command));
     check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
@@ -860,6 +874,15 @@ try {
 } catch (error) {
   record.failures.push(String(error));
 } finally {
+  // ここから先は後片付けそのもの。遅れて届いたシグナルで onInterrupt が二重に片付け、終わった記録を
+  // 「中断」で上書きしないよう、既定の動作（その場で終了）に戻す。
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+  // project add が時間切れで throw した場合、bm が登録だけ済ませていることがある。一覧で確かめて消す対象に入れる。
+  if (!added && adding) {
+    const listed = spawnSync('bm', ['tool', 'list-projects', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS });
+    added = (listed.stdout ?? '').includes(PROJECT);
+  }
   // 身代わりの bm は --keep でも残さない（手で追うときは本物の bm を使う）。
   rmSync(shimDir, { recursive: true, force: true });
   if (keep) {

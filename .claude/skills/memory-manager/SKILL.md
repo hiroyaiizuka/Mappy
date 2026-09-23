@@ -30,7 +30,7 @@ AGENTS.md に同じコマンドが書いてある。このスキルはトリガ�
 2. タスクに関連するノートを検索する。
 
    ```sh
-   bm tool search-notes "{検索語}" --project mappy-memory
+   bm tool search-notes '{検索語}' --project mappy-memory
    ```
 
 ## カテゴリ判定
@@ -54,7 +54,7 @@ AGENTS.md に同じコマンドが書いてある。このスキルはトリガ�
 
 ### 新しいノートを作る
 
-本文は stdin から渡す（`--content` を省略すると stdin を読む）。`<<'NOTE'` のように区切りを引用符で囲むと、本文はシェルに展開されない。`--title` などの引数はシングルクォートで囲む（二重引用符ではタイトルのバッククォートや `$` が展開されて、ファイル名ごと黙って化ける。`'` は `'\''` と書く）。`--content "$(...)"` に長い本文を詰めるより素直で、パスを 1 つも打たずに済む。
+本文は stdin から渡す（`--content` を省略すると stdin を読む）。`<<'NOTE'` のように区切りを引用符で囲むと、本文はシェルに展開されない。`--title` などの引数はシングルクォートで囲む（二重引用符ではタイトルのバッククォートや `$` が展開されて、ファイル名ごと黙って化ける。`'` は `'\''` と書く）。コマンド置換で長い本文を `--content` に詰めるより素直で、パスを 1 つも打たずに済む。
 
 ```sh
 bm tool write-note --project mappy-memory \
@@ -82,7 +82,7 @@ NOTE
 **この 2 行を省略しない。** どちらも既定に落ちると、書けたように見えて後から辿れない。
 
 - `permalink:` を省くと `mappy-memory/{カテゴリ}/{タイトルのスラッグ}` になる。明示した値は前置されずそのまま採用される。省略が壊すものは 2 つあり、**原因が別**なので分けて覚える。
-  - **プロジェクト名の前置**は `bm tool search-notes --permalink "{カテゴリ}/*"` を外す（前置された分が結果から漏れる）。一方 `bm tool read-note {カテゴリ}/{スラッグ}` と `[[wiki link]]` は**前置されていても当たる** —— どちらもタイトル経由の解決が効くため（Basic Memory 0.22.1 で実測）。
+  - **プロジェクト名の前置**は `bm tool search-notes --permalink '{カテゴリ}/*'` を外す（前置された分が結果から漏れる）。一方 `bm tool read-note {カテゴリ}/{スラッグ}` と `[[wiki link]]` は**前置されていても当たる** —— どちらもタイトル経由の解決が効くため（Basic Memory 0.22.1 で実測）。
   - **日本語タイトルのスラッグ崩れ**は当てを完全に外す。`2026-09-22 検証ノート` が `2026-09-22-検証-no-to` のようなローマ字混じりの断片になり、**書いた本人にも予測できない**ので、意図した `{カテゴリ}/{英語スラッグ}` では `read-note` も `[[wiki link]]` も空振りする。
 - `type:` を省くと `note` になる（`--type` の既定値）。`bm tool search-notes --type {型}` と `bm tool schema-validate {型}` はこの値で引くので、`note` のままだと `memory/schemas/*.md` の検証からも型別の検索からも外れる。`--type` フラグでも指定できるが、frontmatter 側が優先される。置き場所を 1 つに決めて frontmatter に書く。
 
@@ -112,7 +112,7 @@ bm tool edit-note {permalink} --project mappy-memory \
 **既存のノートを書き換えるときは、必ず permalink を指定する `edit-note` を使う。`write-note` は新規専用。** `--overwrite` を足すと通るが、当たるのは `--folder` と `--title` から決まるパス `{folder}/{title}.md` のファイルだけで、permalink でも frontmatter の `title` でも探さない。
 
 - そのパスにファイルがあれば、**ノート全体が置き換わり、過去の記録は残らない。**
-- 無ければ（ファイル名とタイトルが違うノート）、**既存のノートは変わらず、`{title}.md` という別のノートが作られる。** `corrections/` の 3 つはどれもこの形（`inbox.md` に `Correction Inbox`、`lessons.md` に `Correction Lessons`、`graduated.md` に `Correction Graduated`）で、`--title "Correction Inbox" --folder corrections --overwrite` は `corrections/Correction Inbox.md` を新しく作る。新しいノートの permalink は渡した本文で変わり、frontmatter に `permalink: corrections/inbox` を書いていれば衝突を避けて `corrections/inbox-1`（2026-09-23 に実際に踏んだ形）、書いていなければ `mappy-memory/corrections/correction-inbox` になる（`npm run harness:e2e:memory-procedure` の `overwrite-with-different-filename-creates-another-note` が両方を固定している）。
+- 無ければ（ファイル名とタイトルが違うノート）、**既存のノートは変わらず、`{title}.md` という別のノートが作られる。** `corrections/` の 3 つはどれもこの形（`inbox.md` に `Correction Inbox`、`lessons.md` に `Correction Lessons`、`graduated.md` に `Correction Graduated`）で、`--title 'Correction Inbox' --folder corrections --overwrite` は `corrections/Correction Inbox.md` を新しく作る。新しいノートの permalink は渡した本文で変わり、frontmatter に `permalink: corrections/inbox` を書いていれば衝突を避けて `corrections/inbox-1`（2026-09-23 に実際に踏んだ形）、書いていなければ `mappy-memory/corrections/correction-inbox` になる（`npm run harness:e2e:memory-procedure` の `overwrite-with-different-filename-creates-another-note` が両方を固定している）。
 
 | やりたいこと | コマンド |
 | --- | --- |
@@ -136,9 +136,9 @@ bm tool edit-note {permalink} --project mappy-memory \
 ## 検索
 
 ```sh
-bm tool search-notes "{検索語}" --project mappy-memory
+bm tool search-notes '{検索語}' --project mappy-memory
 bm tool search-notes --type {型} --project mappy-memory      # 型で絞る
-bm tool search-notes --permalink "{カテゴリ}/*" --project mappy-memory
+bm tool search-notes --permalink '{カテゴリ}/*' --project mappy-memory
 bm tool schema-validate {型} --project mappy-memory          # スキーマとの差分
 ```
 
