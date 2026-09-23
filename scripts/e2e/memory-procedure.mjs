@@ -36,13 +36,19 @@ const BM_TIMEOUT_MS = 120_000;
 
 // 端末の Ctrl-C は前面のプロセスグループ全体に届く。子（bm・sh）はその場で止まるが、node の SIGINT ハンドラーは
 // イベントループが回るまで動かず、このファイルは同期の spawnSync を続けるので、残りのステップを最後まで走らせて
-// しまう。子の終わり方（signal）を見て、その場で中断の片付けに入る（レビュー 9 回目の指摘）。
+// しまう。子の終わり方（signal）を見て、その場で中断の片付けに入る。
 // 時間切れ（error が ETIMEDOUT で signal が SIGTERM）は中断ではないので除く。
+// bm は Typer 製で、Ctrl-C（KeyboardInterrupt）ではシグナルで死なず終了コード 130 で終わる。シェルもその終了コードを
+// そのまま返す。シグナルでの終了と、128＋番号（130 = SIGINT、143 = SIGTERM）の終了コードの両方を中断と見る。
+const INTERRUPT_STATUS = { 130: 'SIGINT', 143: 'SIGTERM' };
+// 片付けの本体（onInterrupt）は record・root などを使うので、それらを作った後で登録する。登録前に中断されたら、
+// 片付けるものが無いのでここで終える。
 let interruptHandler = null;
 const stopIfInterrupted = result => {
-  const signal = !result.error && (result.signal === 'SIGINT' || result.signal === 'SIGTERM') ? result.signal : null;
+  if (result.error) return;
+  const signal = result.signal === 'SIGINT' || result.signal === 'SIGTERM' ? result.signal : INTERRUPT_STATUS[result.status];
   if (!signal) return;
-  if (interruptHandler) interruptHandler(signal);
+  if (interruptHandler) return interruptHandler(signal);
   console.error(`\n${signal} で中断した。このケースは実行していない。`);
   process.exit(2);
 };
@@ -54,7 +60,7 @@ const stopIfInterrupted = result => {
  * `project remove --delete-notes` がクラウドのプロジェクトに当たるのも防ぐ。
  */
 function bm(args, input) {
-  // 認証待ちやロックで止まってもハーネスごと固まらないよう時間を切る（レビュー 4 回目の指摘）。
+  // 認証待ちやロックで止まってもハーネスごと固まらないよう時間を切る。
   const result = spawnSync('bm', [...args, '--local'], { input, encoding: 'utf8', timeout: BM_TIMEOUT_MS });
   stopIfInterrupted(result);
   if (result.error) throw new Error(`bm ${args.join(' ')}: ${result.error.message}`);
@@ -92,26 +98,26 @@ try {
   process.exit(2);
 }
 
-// 一時ディレクトリを作る前に、実行できる環境かを確かめる。ここで終えれば片付けるものが無い（レビュー 9 回目の指摘）。
+// 一時ディレクトリを作る前に、実行できる環境かを確かめる。ここで終えれば片付けるものが無い。
 // 身代わりの bm（下記）が exec する本物の場所。解決できないまま進むと、手順書のステップが無関係な exec エラーで
-// 落ちる（レビュー 7 回目の指摘）。
+// 落ちる。
 const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').trim();
 if (!realBm.startsWith('/')) {
   console.error(`bm の場所を解決できない（command -v bm: ${JSON.stringify(realBm)}）。このケースは実行していない。`);
   process.exit(2);
 }
 // 手順書のコマンドを流すシェル。エージェントの Bash ツールは本人のシェル（この端末では zsh）で動き、macOS の
-// `sh` は bash 3.2 で読み方が違う。どちらでも同じ結果になることを見る（レビュー 7 回目の指摘）。片方でも無ければ、
-// 手順書のブロックを回さないまま PASS を記録しないよう、実行していない（終了コード 2）で終える（レビュー 8 回目の
-// 指摘）。zsh の無い端末（Linux の CI など）では、このケースは常に「実行していない」になる。
+// `sh` は bash 3.2 で読み方が違う。どちらでも同じ結果になることを見る。片方でも無ければ、
+// 手順書のブロックを回さないまま PASS を記録しないよう、実行していない（終了コード 2）で終える。
+// zsh の無い端末（Linux の CI など）では、このケースは常に「実行していない」になる。
 const SHELLS = ['sh', 'zsh'];
 // zsh は -c でも利用者の起動ファイル（~/.zshenv）を読み、PATH を書き換えて身代わりを外しうるので -f で読ませない。
 // -f でもシステムの /etc/zshenv は読まれる。そこで PATH が変わって身代わりが外れた場合は、
-// shim-refuses-other-projects が「止めるべき呼び出しを通した」で落とす（レビュー 8・9 回目の指摘）。
+// shim-refuses-other-projects が「止めるべき呼び出しを通した」で落とす。
 const shellArgs = (shell, script) => (shell === 'zsh' ? ['-f', '-c', script] : ['-c', script]);
 // 既定のプロジェクトを決める変数は外す。身代わりが --project を必須にするので効かないが、念のため。
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^BASIC_MEMORY_.*PROJECT/i.test(key)));
-// 実際に使う起動のしかた（引数・環境）と同じ形で確かめる（レビュー 9 回目の指摘）。
+// 実際に使う起動のしかた（引数・環境）と同じ形で確かめる。
 const missingShells = SHELLS.filter(shell => spawnSync(shell, shellArgs(shell, 'exit 0'), { timeout: 10_000, env: baseEnv }).status !== 0);
 if (missingShells.length > 0) {
   console.error(`${missingShells.join('・')} を起動できない。手順書のブロックをこのシェルで確かめられないので、このケースは実行していない。`);
@@ -161,7 +167,7 @@ const count = (text, needle) => text.split(needle).length - 1;
  * プロジェクトを `--project` と `--local` で 1 回だけ指し、`mappy-memory` そのものを引数に持たない呼び出しだけを
  * 本物へ渡し、それ以外は終了コード 97 で止める。抜き出したコマンドの
  * 文字列を検査するだけでは、環境変数や書き方の違いで本物の mappy-memory に当たる形を網羅できない
- * （レビュー 5 回目の指摘）。`basic-memory` の名前で呼ぶ形も同じく止める。
+ * 。`basic-memory` の名前で呼ぶ形も同じく止める。
  */
 const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
 writeFileSync(join(shimDir, 'bm'), [
@@ -191,27 +197,27 @@ const shEnv = { ...baseEnv, PATH: `${shimDir}:${process.env.PATH ?? ''}` };
 
 /**
  * 手順書のコマンドをシェルで実行する。bm が認証やロックで止まってもハーネスごと固まらないよう時間を切り、
- * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする（レビュー指摘）。
+ * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする。
  */
 const runSh = (script, shell = 'sh') => {
   const run = spawnSync(shell, shellArgs(shell, script), { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
   stopIfInterrupted(run);
   // 時間切れで止まるのは sh だけで、孫の bm は残ってロックを握り続ける。使い捨てプロジェクトの名前は
-  // この実行に固有なので、その名前を引数に持つプロセスだけを止める（レビュー 4 回目の指摘）。
+  // この実行に固有なので、その名前を引数に持つプロセスだけを止める。
   if (run.error?.code === 'ETIMEDOUT') spawnSync('pkill', ['-f', PROJECT]);
   return { ...run, why: run.error ? String(run.error) : (run.stderr || run.stdout) };
 };
 
-// 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
+// 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る。
 // 対になっていない文字も入れる。対の文字だけだと、bash 3.2 がコマンド置換の中の heredoc を読み違える形を
-// 見逃した（レビュー 4 回目の指摘）。`'` は手順書の規則どおり `'\''` にして差し込む。
+// 見逃した。`'` は手順書の規則どおり `'\''` にして差し込む。
 const TRICKY = "`append と $HOME と \"二重 と 1) と it's と \\n";
 const trickyInSingleQuotes = TRICKY.replaceAll("'", () => "'\\''");
 
 /**
  * SKILL.md のコードブロックのうち `select` を含むものを 1 つ抜き出し、`replacements` の順に差し替え、
  * project を使い捨てのものに差し替えて返す。差し替えが効いたことを正の条件で確かめ、それ以外は null を返して
- * 実行させない（レビュー指摘）。実行時は runSh の身代わりの bm も同じ条件で止めるので、ここは早く・分かりやすく
+ * 実行させない。実行時は runSh の身代わりの bm も同じ条件で止めるので、ここは早く・分かりやすく
  * 落とすための 1 段目。`stale` は差し替え後に残っていてはいけない当て先（本物の permalink）。
  */
 const documentedScript = (select, replacements, stale) => {
@@ -223,7 +229,7 @@ const documentedScript = (select, replacements, stale) => {
   for (const [from, to] of replacements) script = script.replaceAll(from, () => to);
   script = script.replaceAll('--project mappy-memory', `--project ${PROJECT} --local`);
   const rest = script.replaceAll(PROJECT, '');
-  // 呼び出しの数は、行頭が `#` の行（sh のコメントと、本文の見出し）を除いて数える（レビュー 4 回目の指摘）。
+  // 呼び出しの数は、行頭が `#` の行（sh のコメントと、本文の見出し）を除いて数える。
   const code = script.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
   const calls = count(code, 'bm ');
   const problems = [
@@ -241,6 +247,8 @@ const documentedScript = (select, replacements, stale) => {
 };
 
 let added = false;
+// project add の最中に中断されると、bm が登録を終えていても added はまだ false。そのときは一覧で確かめて消す。
+let adding = false;
 
 // Ctrl-C で中断しても、使い捨てプロジェクトを bm のグローバル設定に残さない。finally は届かない。
 // 子の終わり方から呼ぶ経路（stopIfInterrupted）と、node 自身へのシグナルの経路があるので、1 回だけ動かす。
@@ -248,22 +256,23 @@ let interruptHandled = false;
 const onInterrupt = signal => {
   if (interruptHandled) return;
   interruptHandled = true;
-  // 片付けが成功したかを確かめてから言う。失敗したら消し方を出す（レビュー 7 回目の指摘）。
-  const removed = added && !keep
+  // 片付けが成功したかを確かめてから言う。失敗したら消し方を出す。
+  const registered = added || (adding && (spawnSync('bm', ['tool', 'list-projects', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').includes(PROJECT));
+  const removed = registered && !keep
     ? spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS })
     : null;
   if (!keep && existsSync(root)) rmSync(root, { recursive: true, force: true });
   rmSync(shimDir, { recursive: true, force: true });
-  // --keep と、プロジェクトを作る前の中断を「片付けた」と言わない（レビュー 9 回目の指摘）。
+  // --keep と、プロジェクトを作る前の中断を「片付けた」と言わない。
   const outcome = keep
     ? `--keep なので残した（${root}）。手で消す: bm project remove ${PROJECT} --delete-notes --local`
-    : !added ? 'プロジェクトを作る前だった。一時ディレクトリは消した。'
+    : !registered ? 'プロジェクトを作る前だった。一時ディレクトリは消した。'
       : removed.status === 0 ? '使い捨てプロジェクトは片付けた。'
         : `使い捨てプロジェクトを消せなかった。手で消す: bm project remove ${PROJECT} --delete-notes --local`;
   if (jsonPath) {
     record.passed = false;
     record.failures.push(`${signal} で中断した（実行していない）`);
-    record.interrupted = { signal, keep, added, projectRemoved: removed === null ? null : removed.status === 0 };
+    record.interrupted = { signal, keep, registered, projectRemoved: removed === null ? null : removed.status === 0 };
     try { writeFileSync(jsonPath, `${JSON.stringify(record, null, 2)}\n`); } catch { /* 書けなくても終了コード 2 で終える */ }
   }
   console.error(`\n${signal} で中断した。${outcome}`);
@@ -275,8 +284,10 @@ process.on('SIGTERM', () => onInterrupt('SIGTERM'));
 
 try {
   await step('project-add', () => {
+    adding = true;
     const run = bm(['project', 'add', PROJECT, root]);
     added = run.status === 0;
+    adding = false;
     check(added, `使い捨てプロジェクトを作れない: ${run.stderr || run.stdout}`);
     return { status: run.status, path: root };
   });
@@ -344,14 +355,14 @@ try {
       `bm tool read-note mappy-memory --project ${PROJECT} --local`,
       `bm tool read-note ${probe} --project ${PROJECT} --local -pother`,
     ];
-    // 手順書のブロックを流すすべてのシェルで確かめる（レビュー 8 回目の指摘。zsh だけ身代わりが外れる形があった）。
+    // 手順書のブロックを流すすべてのシェルで確かめる。
     const results = {};
     for (const shell of SHELLS) {
       const runs = refused.map(command => [command, runSh(command, shell)]);
       const passed = runSh(`bm tool read-note ${probe} --project ${PROJECT} --local`, shell);
       const leaks = runs.filter(([, run]) => run.status !== 97).map(([command, run]) => `[${run.status}] ${command}`);
       check(leaks.length === 0, `[${shell}] 身代わりの bm が止めるべき呼び出しを通した: ${leaks.join(' / ')}`);
-      // 本物の bm に届いたことを見る。97 以外なら良い、では exec の失敗（126/127）も通る（レビュー 7 回目の指摘）。
+      // 本物の bm に届いたことを見る。97 以外なら良い、では exec の失敗（126/127）も通る。
       check(passed.status === 0 && parseBmJson(passed.stdout) !== null, `[${shell}] 身代わりの bm が使い捨てプロジェクトへの呼び出しを本物へ渡さなかった: [${passed.status}] ${passed.why}`);
       results[shell] = { refused: runs.map(([, run]) => run.status), passed: passed.status };
     }
@@ -359,8 +370,7 @@ try {
   });
 
   // 2. SKILL.md の推奨手順そのもの（stdin + frontmatter の permalink / type）。「新しいノートを作る」の
-  //    コードブロックを抜き出し、差し込み口だけを埋めてシェルで実行する（レビュー 5 回目の指摘。以前はハーネスが
-  //    手で組んだ同じ形を実行しており、手順書の側を崩しても通っていた）。
+  //    コードブロックを抜き出し、差し込み口だけを埋めてシェルで実行する。
   await step('documented-write-note', () => {
     const script = documentedScript('bm tool write-note --project mappy-memory', [
       ['{YYYY-MM-DD タイトル}', '2026-09-22 推奨手順の確認'],
@@ -377,7 +387,7 @@ try {
     for (const [index, shell] of SHELLS.entries()) {
       // 同じタイトルの 2 回目は NOTE_ALREADY_EXISTS になるので、前のシェルで作ったノートを消してから打つ。
       // 最後のシェルで作ったノートは、下の indexed-without-reindex・search-by-type が使う。
-      // 前のシェルで作れていなければ（その失敗は記録済み）、消すものは無い（レビュー 9 回目の指摘）。
+      // 前のシェルで作れていなければ（その失敗は記録済み）、消すものは無い。
       if (index > 0 && existsSync(file)) {
         const removed = bm(['tool', 'delete-note', 'events/probe-documented-write', '--project', PROJECT]);
         check(removed.status === 0 && !existsSync(file), `[${shell}] 前のシェルで作ったノートを消せなかった: ${removed.stderr}`);
@@ -409,7 +419,9 @@ try {
     const hits = (out.json?.results ?? []).map(item => item.permalink);
     check(hits.includes('events/probe-documented-write'), `type: event のノートが --type event で出ない: ${hits.join(', ')}`);
     // permalink の形ではなく、ステップ 1 で type を落としたノートそのものが混ざっていないかを見る。
-    check(!hits.includes(droppedPermalink), `type を落としたノート（${droppedPermalink}）が --type event に混ざった: ${hits.join(', ')}`);
+    // ステップ 1 で permalink を取れなかったら、否定側の検査は空文字の検査になって何も確かめない。飛ばしたことを残す。
+    check(droppedPermalink !== '', 'ステップ 1 のノートの permalink が取れていないので、type を落としたノートが混ざらないことを確かめられない');
+    if (droppedPermalink !== '') check(!hits.includes(droppedPermalink), `type を落としたノート（${droppedPermalink}）が --type event に混ざった: ${hits.join(', ')}`);
     return { hits };
   });
 
@@ -483,7 +495,7 @@ try {
     );
     bm(['tool', 'delete-note', `${PROJECT}/corrections/not-created-yet`, '--project', PROJECT]);
     // replace_section は append と違い、find_replace と同じく Entity not found で止まり、何も作らない。
-    // 以前の手順書は「append や replace_section は作る」と書いていたが、ケースを足したら違った（レビュー 7 回目の指摘）。
+    // 以前の手順書は「append や replace_section は作る」と書いていたが、ケースを足したら違った。
     const section = bmJson([
       'tool', 'edit-note', 'corrections/not-created-for-section', '--project', PROJECT,
       '--operation', 'replace_section', '--section', '## 未蒸留', '--content', '追記\n',
@@ -561,10 +573,10 @@ try {
     '### 2026-09-20 既存A', '- 内容A', '', '### 2026-09-21 既存B', '- 内容B', '',
     '## Relations', '- distilled_into [[Correction Lessons]]', '',
   ].join('\n');
-  // エントリの本文が見出しを引用している形。この手順についての記録は自然にこうなる（レビュー指摘）。
+  // エントリの本文が見出しを引用している形。この手順についての記録は自然にこうなる。
   // 見出しで始まるだけの行（`## Relations の…`）も入れる。手順書は、目印がそれだけの行にしか当たらないと書いている。
   const quotingInbox = realInbox.replace('- 内容A', '- 内容A: 末尾が `## Relations` なので append は後ろに落ちる\n## Relations の書き方は SKILL.md を見る');
-  // 手順書の目印そのもの（改行＋見出し＋改行）。(c')・(d)・(f) もこれで打つ（レビュー 7 回目の指摘）。
+  // 手順書の目印そのもの（改行＋見出し＋改行）。(c')・(d)・(f) もこれで打つ。
   const MARK = '\n## Relations\n';
   const realInboxFile = notePath('corrections/Correction Real Inbox.md');
   const resetRealInbox = (content = realInbox) => bmJson(
@@ -605,7 +617,7 @@ try {
     check(readFileSync(realInboxFile, 'utf8') === before, '2 か所に当たる find_replace がノートを書き換えた');
 
     // (c') 手順書の目印（行頭の見出し）そのものが 2 か所・0 か所に当たる形。手順書は両方とも「何も書かずに止まる」と
-    //      書いているので、それぞれのメッセージと終了コード 1 を固定する（レビュー 3 回目の指摘）。
+    //      書いているので、それぞれのメッセージと終了コード 1 を固定する。
     for (const [label, content, message] of [
       ['2 か所', realInbox.replace('- 内容A', '- 内容A\n## Relations'), 'Expected 1 occurrences'],
       ['0 か所', realInbox.slice(0, realInbox.indexOf(MARK) + 1), 'Text to replace not found'],
@@ -617,7 +629,7 @@ try {
       check(readFileSync(realInboxFile, 'utf8') === kept, `行頭の目印が ${label} の find_replace がノートを書き換えた`);
     }
 
-    // (d) `--content` の `\n` は改行にならず、2 文字のまま入る。手順書が引用符の中で実際に改行させる理由（レビュー指摘）。
+    // (d) `--content` の `\n` は改行にならず、2 文字のまま入る。手順書が引用符の中で実際に改行させる理由。
     check(resetRealInbox().status === 0, '下準備 (d)（inbox の形のノート）を作れなかった');
     const escaped = editRealInbox(['--operation', 'find_replace', '--find-text', MARK, '--content', '\n### 2026-09-23 新C\\n\\n## Relations\n']);
     const escapedText = readFileSync(realInboxFile, 'utf8');
@@ -636,7 +648,7 @@ try {
     check(!existsSync(notePath('corrections/not-created-for-find.md')) && leaked.json?.file_path == null, '無い permalink への find_replace がノートを作った');
 
     // (f) 手順の前提が崩れた形: `## 未蒸留` と `## Relations` の間に別の節があると、目印は 1 か所に当たるので
-    //     止まらず、その別の節の末尾へ終了コード 0 で黙って入る（レビュー指摘。手順書が前提と崩れる条件を書く根拠）。
+    //     止まらず、その別の節の末尾へ終了コード 0 で黙って入る（手順書が前提と崩れる条件を書く根拠）。
     check(resetRealInbox(realInbox.replace(MARK, '\n## 蒸留済み\n- 済んだもの\n\n## Relations\n')).status === 0, '下準備 (f)（間に節がある inbox）を作れなかった');
     const shifted = editRealInbox(['--operation', 'find_replace', '--find-text', MARK, '--content', '\n### 2026-09-23 新C\n- 内容C\n\n## Relations\n']);
     const shiftedText = readFileSync(realInboxFile, 'utf8');
@@ -644,7 +656,7 @@ try {
     check(shiftedText.indexOf('### 2026-09-23 新C') > shiftedText.indexOf('## 蒸留済み'), '(f) で新しいエントリが間の節より前に入った（手順書の「別の節の末尾へ黙って入る」が古い）');
 
     // (g) もう 1 つの前提: `## Relations` の直前に空行がある。無いと目印の改行が前のエントリの行末に当たり、
-    //     新しいエントリが空行なしで前のエントリに続く（レビュー 8 回目の指摘。手順書が前提として書く根拠）。
+    //     新しいエントリが空行なしで前のエントリに続く。
     check(resetRealInbox(realInbox.replace('- 内容B\n\n## Relations', '- 内容B\n## Relations')).status === 0, '下準備 (g)（Relations の直前に空行が無い inbox）を作れなかった');
     const glued = editRealInbox(['--operation', 'find_replace', '--find-text', MARK, '--content', '\n### 2026-09-23 新C\n- 内容C\n\n## Relations\n']);
     check(glued.status === 0 && readFileSync(realInboxFile, 'utf8').includes('- 内容B\n### 2026-09-23 新C'), `(g) で新しいエントリが空行なしで前のエントリに続かなかった（手順書の前提の記述が古い）: ${said(glued)}`);
@@ -685,7 +697,7 @@ try {
     return { shells: SHELLS, statuses };
   });
 
-  // 6e'. lessons のコードブロックも同じように実行する（レビュー 2 回目の指摘）。実物と同じく、節の見出しの直前に
+  // 6e'. lessons のコードブロックも同じように実行する。実物と同じく、節の見出しの直前に
   //      空行を置かない番号付きリストで、教訓の本文が `## 手順` を引用し、`## 手順書…` で始まる行もある形。
   await step('documented-lessons-entry', () => {
     const lessons = [
@@ -704,10 +716,10 @@ try {
     ], /corrections\/lessons(?![\w-])/);
     if (script === null) return { script };
     // 最後の節（`## 報告`）に足すときは、手順書の指示どおり目印と本文の最後の見出しを両方 `## Relations` に変える
-    // （レビュー 6 回目の指摘。この経路を実行するケースが無かった）。確かめ済みのスクリプトから作る。
+    // 。確かめ済みのスクリプトから作る。
     const marks = count(script, '## 手順');
     check(marks === 2, `lessons のブロックの ## 手順 が目印と本文の 2 か所でない: ${marks} か所`);
-    // 数が違うまま差し替えて回すと、無関係な場所で落ちて本当の原因が埋もれる（レビュー 9 回目の指摘）。
+    // 数が違うまま差し替えて回すと、無関係な場所で落ちて本当の原因が埋もれる。
     if (marks !== 2) return { marks };
     const last = script.replaceAll('## 手順', '## Relations');
     const statuses = {};
@@ -765,7 +777,7 @@ try {
     // 手順書は 2026-09-23 の実例として permalink `corrections/inbox-1` を挙げている。その形も固定する。
     check(out.json?.permalink === 'shaped/inbox-1', `新しいノートの permalink が {既存}-1 にならなかった（手順書の実例が古い）: ${out.json?.permalink}`);
     check(bmJson(['tool', 'read-note', 'shaped/inbox', '--project', PROJECT]).json?.file_path === 'shaped/inbox.md', '--overwrite のあと shaped/inbox が既存のファイルを指さなくなった');
-    // 既存と同じ permalink が返ったとき（bm の挙動が変わったとき）に下準備のノートを消さない（レビュー指摘）。
+    // 既存と同じ permalink が返ったとき（bm の挙動が変わったとき）に下準備のノートを消さない。
     if (out.json?.permalink && out.json.permalink !== 'shaped/inbox') {
       const removed = bm(['tool', 'delete-note', out.json.permalink, '--project', PROJECT]);
       // 残ったままだと、下の frontmatter 無しの --overwrite がこのファイルに当たり、原因と違う FAIL になる。
@@ -807,19 +819,19 @@ try {
     want(skill, '`write-note` は新規専用', 'SKILL.md');
     want(agents, '`write-note` は新規専用', 'AGENTS.md');
     // inbox の `## 未蒸留` を replace_section で狙う旧手順は、既存のエントリを重複させる（LEV-192）。
-    // クォートの種類や `=` 付きを問わない（レビュー 6 回目の指摘）。
+    // クォートの種類や `=` 付きを問わない。
     const sectionUnprocessed = /--section[ =]["']?## 未蒸留/;
     check(!sectionUnprocessed.test(skill), 'SKILL.md に inbox への replace_section が戻っている（LEV-192）');
     check(!sectionUnprocessed.test(agents), 'AGENTS.md に inbox への replace_section が戻っている（LEV-192）');
-    // bm は引数の `\n` を改行にしないので、コマンドに書くと見出しが 1 行に潰れる（LEV-192 レビュー指摘）。
+    // bm は引数の `\n` を改行にしないので、コマンドに書くと見出しが 1 行に潰れる（LEV-192）。
     // 引数の形（--content / --find-text、クォートの種類、`=` 付き）を問わず、コマンドの中に `\n` が無いことを見る。
     // コマンド = SKILL.md の sh ブロックと、bm のサブコマンドを含むインラインコード。説明文の `\n` は対象外。
     const commandsOf = text => [
       ...shBlocks(text),
       // インラインコードは CommonMark と同じく「同じ長さのバッククォートの並びで閉じる」で切り出す。
-      // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす（レビュー 4・5 回目の指摘）。
+      // `` `x` `` の中のバッククォートで組み違えると、その後ろのコマンドを見落とす。
       // コードブロックは上で見ているので、先に取り除く（```` ``` ```` をインラインの区切りと読み違えないように）。
-      // CommonMark のコードスパンは段落をまたがないので、空行の手前で打ち切る（レビュー 7 回目の指摘）。
+      // CommonMark のコードスパンは段落をまたがないので、空行の手前で打ち切る。
       ...[...text.replace(/^```[\s\S]*?^```/gm, '').matchAll(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n)[\s\S])*?[^`])\1(?!`)/g)].map(match => match[2])
         .filter(span => /edit-note|write-note/.test(span)),
     ];
@@ -830,12 +842,12 @@ try {
     // 前提と崩れる条件（AGENTS.md「回避策が成り立つ前提と崩れる条件を書く」）。
     want(skill, 'この手順が成り立つ前提', 'SKILL.md');
     want(skill, "--operation find_replace --find-text '\n## 手順\n'", 'SKILL.md');
-    // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える（レビュー 3・4 回目の指摘）。
-    // 対象は corrections に限らない。一般の追記手順も同じ危険がある（レビュー 5 回目の指摘）。
-    // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う（レビュー 7 回目の指摘）。
+    // 本文を二重引用符やコマンド置換の heredoc で渡す形は、シェルが本文を書き換える。
+    // 対象は corrections に限らない。一般の追記手順も同じ危険がある。
+    // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う。
     const doubleQuoted = commands
-      // `--content='…'` は安全なので拾わない。`--section` も同じ危険があるので見る（レビュー 9 回目の指摘）。
-      .filter(([, command]) => /--(content|find-text|section)(\s|\\\n)*(=\s*)?"|\$\(cat/.test(command));
+      // `--content='…'` は安全なので拾わない。`--section` も同じ危険があるので見る。
+      .filter(([, command]) => /--(content|find-text|section|title|folder|tags)(\s|\\\n)*(=\s*)?"|\$\(cat/.test(command));
     check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
