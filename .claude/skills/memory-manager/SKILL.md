@@ -172,11 +172,11 @@ bm tool edit-note corrections/inbox --project mappy-memory \
 - `--find-text` と `--content` は**シングルクォートで囲み、開いた直後と閉じる直前で改行する**。目印は「改行＋`## Relations`＋改行」、つまり**それだけが書かれた行**の `## Relations` 見出しで、エントリの本文に `` `## Relations` `` と書いてあっても、`## Relations の…` で始まる行があっても当たらない。`\n` と書いても改行にはならない（bm は引数の `\n` を解釈しない）ので、見出しが前の行に潰れて Relations の節が壊れる。
 - シングルクォートの中はシェルが何も展開しないので、本文のバッククォート・`$`・`"`・`)` はそのまま入る。**本文に `'` を書くときだけ `'\''` と書く**（`it's` → `it'\''s`）。二重引用符で囲むと、本文のバッククォートや `$` がシェルに展開され、`` `append` `` のような語が**終了コード 0 のまま黙って消える**。`"$(cat <<'EOF' … EOF)"` の形も使わない —— macOS の `/bin/sh`（bash 3.2）はコマンド置換の中の heredoc を読み違え、対になっていない `)` や `'` で本文が壊れるか構文エラーになる。
 
-`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、行頭の `## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` が、本文に `` `## Relations` `` を含む inbox に対して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れたこのコードブロックを `sh` でそのまま実行して確かめている）。
+`--content` には**新しい 1 件と `## Relations` だけ**を渡す。既存のエントリを含めない。`## 未蒸留` は `inbox` の最後の節なので、行頭の `## Relations` の前に差し込めば節の末尾に古い順で積まれ、既存のエントリとの間の空行も保たれる（`documented-inbox-entry` が、本文に `` `## Relations` `` を含む inbox に対して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れたこのコードブロックを `sh`（macOS では bash 3.2）と `zsh` でそのまま実行して確かめている）。
 
 目印が 1 か所に当たらないときは、終了コード 1 で**何も書かずに止まる**。行頭の `## Relations` が 2 つあれば `Error: Expected 1 occurrences …`、無ければ `Error: Text to replace not found …`。打ち直す前に `read-note` で inbox の形が崩れていないかを見る。**エントリにこのコマンドをコードブロックごと貼らない** —— 貼った中の `## Relations` だけの行も目印に当たり、以後の書き込みが全部この理由で止まる。手順を指したいときは「SKILL.md「corrections」」と書く。
 
-> この手順が成り立つ前提: `## 未蒸留` が inbox の最後の節で、その次の見出しが行頭の `## Relations` であること（2026-09-23 時点の実物はこの形）。崩れる条件: `## 未蒸留` と `## Relations` の間に別の節が足される —— そのときも目印は 1 か所に当たるので、**止まらずに、その別の節の末尾へ黙って入る**（`inbox-replace-section-duplicates-find-replace-does-not` の (f) が固定している）。打つ前に `read-note` で `## 未蒸留` の次の見出しが `## Relations` であることを見る。inbox に節を足す変更をしたら、同じ変更でこの手順とケースを直す。
+> この手順が成り立つ前提: `## 未蒸留` が inbox の最後の節で、その次の見出しが行頭の `## Relations` であり、その直前に空行が 1 つあること（2026-09-23 時点の実物はこの形）。空行が無いと、新しいエントリは空行なしで前のエントリに続く（`inbox-replace-section-duplicates-find-replace-does-not` の (g)）。崩れる条件: `## 未蒸留` と `## Relations` の間に別の節が足される —— そのときも目印は 1 か所に当たるので、**止まらずに、その別の節の末尾へ黙って入る**（`inbox-replace-section-duplicates-find-replace-does-not` の (f) が固定している）。打つ前に `read-note` で `## 未蒸留` の次の見出しが `## Relations` であることを見る。inbox に節を足す変更をしたら、同じ変更でこの手順とケースを直す。
 
 **`## 未蒸留` に `replace_section` を使わない。** `replace_section` は見出しから次の見出し（レベルを問わない）までを置き換えるので、`## 未蒸留` の直後に `###` のエントリが続く `inbox` では、置き換わるのは見出しと最初の `###` の間の空の範囲だけ。既存＋新規の全文を渡すと既存のエントリが必ず重複する（2026-09-23 に 2 回重複した）。新しい 1 件だけを渡せば重複はしないが、節の先頭（既存の前）に入って並びが逆になり、既存との間の空行も落ちる（どちらも `inbox-replace-section-duplicates-find-replace-does-not` が固定している）。
 
@@ -218,7 +218,7 @@ npm run harness:e2e:memory-procedure
 
 使い捨ての Basic Memory プロジェクトを作り、この文書のコマンドをそのまま実行して期待どおりの結果かを確かめ、最後にプロジェクトごと消す。`mappy-memory` には触らない。
 
-固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の行頭の `## Relations` を目印にした `find_replace` の各記述、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。corrections の 2 つのコードブロック（inbox の「ミスをした直後」と lessons への差し込み）は、抜き出して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れ、使い捨てプロジェクトで `sh` からそのまま実行する。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
+固定しているのは 2 つ。**bm CLI の挙動**（permalink・type の既定、`--overwrite` と `append` の違い、ファイル名とタイトルが違うノートへの `--overwrite`、`inbox` の形の節への `replace_section` と `find_replace`、`reindex` 無しで索引に入ること）と、**この文書に必須の記述が残っていること**（`permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append`・`--overwrite`・`{folder}/{title}.md`・inbox の行頭の `## Relations` を目印にした `find_replace` の各記述、`## 未蒸留` を狙う `replace_section` の指定とファイルへの heredoc 書き込みと個人の絶対パスが戻っていないこと）。corrections の 2 つのコードブロック（inbox の「ミスをした直後」と lessons への差し込み）は、抜き出して、差し込み口に対になっていないバッククォート・`$`・`"`・`)`・`'` を入れ、使い捨てプロジェクトで `sh` と `zsh` からそのまま実行する（「新しいノートを作る」のブロックも同じ）。書いた説明文が正しいかまでは見ないので、この文書を直したら同じブランチでケースの側も直す。
 
 ## リファレンス
 
