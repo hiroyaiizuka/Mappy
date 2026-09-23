@@ -119,7 +119,7 @@ bm tool edit-note {permalink} --project mappy-memory \
 | 新しいノート | `write-note` |
 | ファイル末尾に足す | `edit-note --operation append`（末尾が `## Relations` のノートではその後ろに落ちる） |
 | ファイル先頭に足す | `edit-note --operation prepend` |
-| 節を差し替える | `edit-note --operation replace_section --section "## 節"`（見出しから**次の見出し（レベルを問わない）まで**を置き換える。節の中身が平らなリストなら全部消え、`###` で始まる節なら最初の `###` の手前しか置き換わらない） |
+| 節を差し替える | `edit-note --operation replace_section --section '## 節'`（見出しから**次の見出し（レベルを問わない）まで**を置き換える。節の中身が平らなリストなら全部消え、`###` で始まる節なら最初の `###` の手前しか置き換わらない） |
 | 目印の前に差し込む・語を置き換える | `edit-note --operation find_replace --find-text '目印' --content '新しい本文と目印'`（目印が 1 か所に当たらないと終了コード 1 で何も書かない。シングルクォートで囲み、改行はその中で実際に改行して渡す —— `\n` と書いても改行にならず、その 2 文字がそのまま入る。本文の `'` は `'\''` と書く。下記「corrections」） |
 | 丸ごと書き直す（過去の記録を捨ててよいときだけ） | `write-note --overwrite`。ファイル名が `{folder}/{title}.md` のノートにしか当たらない（上記） |
 

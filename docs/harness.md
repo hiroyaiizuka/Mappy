@@ -193,7 +193,7 @@ OS / Obsidian version / Vault / build hash:
 
 ### 開発メモリの手順（Obsidian 実機を使わない）
 
-`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md の開発メモリの箇条書き（`bm tool` を含む行。AGENTS.md はフラットな箇条書きで、節見出しは無い）と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
+`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md の開発メモリの箇条書き（`bm tool` を含む行。AGENTS.md はフラットな箇条書きで、節見出しは無い）と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境、`sh`・`zsh` のどちらかを起動できない環境（Linux の CI など）では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
 
 毎回、プロセス ID と乱数を混ぜた名前の使い捨て Basic Memory プロジェクトを一時ディレクトリに作り、最後にノートごと消す。**`mappy-memory` には触らない**（後片付けの後で、使い捨てプロジェクトが消えたことと `mappy-memory` が残っていることの両方を確かめる）。`--keep` で残せる。
 

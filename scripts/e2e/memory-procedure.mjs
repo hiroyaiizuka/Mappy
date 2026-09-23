@@ -34,6 +34,19 @@ const PROJECT = `mappy-memory-probe-${process.pid}-${Math.random().toString(36).
 
 const BM_TIMEOUT_MS = 120_000;
 
+// 端末の Ctrl-C は前面のプロセスグループ全体に届く。子（bm・sh）はその場で止まるが、node の SIGINT ハンドラーは
+// イベントループが回るまで動かず、このファイルは同期の spawnSync を続けるので、残りのステップを最後まで走らせて
+// しまう。子の終わり方（signal）を見て、その場で中断の片付けに入る（レビュー 9 回目の指摘）。
+// 時間切れ（error が ETIMEDOUT で signal が SIGTERM）は中断ではないので除く。
+let interruptHandler = null;
+const stopIfInterrupted = result => {
+  const signal = !result.error && (result.signal === 'SIGINT' || result.signal === 'SIGTERM') ? result.signal : null;
+  if (!signal) return;
+  if (interruptHandler) interruptHandler(signal);
+  console.error(`\n${signal} で中断した。このケースは実行していない。`);
+  process.exit(2);
+};
+
 /**
  * bm を 1 回呼ぶ。`input` を渡すと stdin から本文を流す（SKILL.md の heredoc と同じ経路）。
  * `--local` を必ず付ける: cloud モードが有効な端末では既定でクラウド側へ流れ、ローカルの一時
@@ -43,6 +56,7 @@ const BM_TIMEOUT_MS = 120_000;
 function bm(args, input) {
   // 認証待ちやロックで止まってもハーネスごと固まらないよう時間を切る（レビュー 4 回目の指摘）。
   const result = spawnSync('bm', [...args, '--local'], { input, encoding: 'utf8', timeout: BM_TIMEOUT_MS });
+  stopIfInterrupted(result);
   if (result.error) throw new Error(`bm ${args.join(' ')}: ${result.error.message}`);
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -75,6 +89,32 @@ try {
   version = (probe.stdout ?? '').trim();
 } catch (error) {
   console.error(`bm CLI を実行できない（${error.message}）。このケースは実行していない。`);
+  process.exit(2);
+}
+
+// 一時ディレクトリを作る前に、実行できる環境かを確かめる。ここで終えれば片付けるものが無い（レビュー 9 回目の指摘）。
+// 身代わりの bm（下記）が exec する本物の場所。解決できないまま進むと、手順書のステップが無関係な exec エラーで
+// 落ちる（レビュー 7 回目の指摘）。
+const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').trim();
+if (!realBm.startsWith('/')) {
+  console.error(`bm の場所を解決できない（command -v bm: ${JSON.stringify(realBm)}）。このケースは実行していない。`);
+  process.exit(2);
+}
+// 手順書のコマンドを流すシェル。エージェントの Bash ツールは本人のシェル（この端末では zsh）で動き、macOS の
+// `sh` は bash 3.2 で読み方が違う。どちらでも同じ結果になることを見る（レビュー 7 回目の指摘）。片方でも無ければ、
+// 手順書のブロックを回さないまま PASS を記録しないよう、実行していない（終了コード 2）で終える（レビュー 8 回目の
+// 指摘）。zsh の無い端末（Linux の CI など）では、このケースは常に「実行していない」になる。
+const SHELLS = ['sh', 'zsh'];
+// zsh は -c でも利用者の起動ファイル（~/.zshenv）を読み、PATH を書き換えて身代わりを外しうるので -f で読ませない。
+// -f でもシステムの /etc/zshenv は読まれる。そこで PATH が変わって身代わりが外れた場合は、
+// shim-refuses-other-projects が「止めるべき呼び出しを通した」で落とす（レビュー 8・9 回目の指摘）。
+const shellArgs = (shell, script) => (shell === 'zsh' ? ['-f', '-c', script] : ['-c', script]);
+// 既定のプロジェクトを決める変数は外す。身代わりが --project を必須にするので効かないが、念のため。
+const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^BASIC_MEMORY_.*PROJECT/i.test(key)));
+// 実際に使う起動のしかた（引数・環境）と同じ形で確かめる（レビュー 9 回目の指摘）。
+const missingShells = SHELLS.filter(shell => spawnSync(shell, shellArgs(shell, 'exit 0'), { timeout: 10_000, env: baseEnv }).status !== 0);
+if (missingShells.length > 0) {
+  console.error(`${missingShells.join('・')} を起動できない。手順書のブロックをこのシェルで確かめられないので、このケースは実行していない。`);
   process.exit(2);
 }
 
@@ -124,14 +164,6 @@ const count = (text, needle) => text.split(needle).length - 1;
  * （レビュー 5 回目の指摘）。`basic-memory` の名前で呼ぶ形も同じく止める。
  */
 const shimDir = mkdtempSync(join(tmpdir(), 'mappy-memory-shim-'));
-const realBm = (spawnSync('sh', ['-c', 'command -v bm'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS }).stdout ?? '').trim();
-if (!realBm.startsWith('/')) {
-  // 身代わりが本物へ渡せないまま進むと、手順書のステップが無関係な exec エラーで落ちる（レビュー 7 回目の指摘）。
-  rmSync(shimDir, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
-  console.error(`bm の場所を解決できない（command -v bm: ${JSON.stringify(realBm)}）。このケースは実行していない。`);
-  process.exit(2);
-}
 writeFileSync(join(shimDir, 'bm'), [
   '#!/bin/sh',
   '# memory-procedure.mjs が作る身代わり。使い捨てプロジェクト以外への呼び出しを本物へ渡さない。',
@@ -155,38 +187,20 @@ writeFileSync(join(shimDir, 'bm'), [
   '',
 ].join('\n'), { mode: 0o755 });
 writeFileSync(join(shimDir, 'basic-memory'), '#!/bin/sh\necho "memory-procedure shim: basic-memory は使えない" >&2\nexit 97\n', { mode: 0o755 });
-// 既定のプロジェクトを決める変数は外す。身代わりが --project を必須にするので効かないが、念のため。
-const shEnv = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^BASIC_MEMORY_.*PROJECT/i.test(key))),
-  PATH: `${shimDir}:${process.env.PATH ?? ''}`,
-};
+const shEnv = { ...baseEnv, PATH: `${shimDir}:${process.env.PATH ?? ''}` };
 
 /**
  * 手順書のコマンドをシェルで実行する。bm が認証やロックで止まってもハーネスごと固まらないよう時間を切り、
  * sh 自体を起動できなかったときも原因が失敗メッセージに出るようにする（レビュー指摘）。
  */
 const runSh = (script, shell = 'sh') => {
-  // zsh は -c でも ~/.zshenv を読み、PATH を書き換えて身代わりを外しうるので -f で読ませない（レビュー 8 回目の指摘）。
-  const args = shell === 'zsh' ? ['-f', '-c', script] : ['-c', script];
-  const run = spawnSync(shell, args, { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
+  const run = spawnSync(shell, shellArgs(shell, script), { encoding: 'utf8', timeout: BM_TIMEOUT_MS, env: shEnv });
+  stopIfInterrupted(run);
   // 時間切れで止まるのは sh だけで、孫の bm は残ってロックを握り続ける。使い捨てプロジェクトの名前は
   // この実行に固有なので、その名前を引数に持つプロセスだけを止める（レビュー 4 回目の指摘）。
   if (run.error?.code === 'ETIMEDOUT') spawnSync('pkill', ['-f', PROJECT]);
   return { ...run, why: run.error ? String(run.error) : (run.stderr || run.stdout) };
 };
-
-// 手順書のコマンドを流すシェル。エージェントの Bash ツールは本人のシェル（この端末では zsh）で動き、macOS の
-// `sh` は bash 3.2 で読み方が違う。どちらでも同じ結果になることを見る（レビュー 7 回目の指摘）。無ければ飛ばす。
-// 片方でも無ければ、手順書のブロックを回さないまま PASS を記録しないよう、実行していない（終了コード 2）で終える
-// （レビュー 8 回目の指摘）。
-const SHELLS = ['sh', 'zsh'];
-const missingShells = SHELLS.filter(shell => spawnSync(shell, ['-c', 'exit 0'], { timeout: 10_000 }).status !== 0);
-if (missingShells.length > 0) {
-  rmSync(shimDir, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
-  console.error(`${missingShells.join('・')} を起動できない。手順書のブロックをこのシェルで確かめられないので、このケースは実行していない。`);
-  process.exit(2);
-}
 
 // 差し込み口に入れる本文。シェルが展開しうる文字を並べ、手順書の渡し方がそれを素通しするかを見る（レビュー 3 回目の指摘）。
 // 対になっていない文字も入れる。対の文字だけだと、bash 3.2 がコマンド置換の中の heredoc を読み違える形を
@@ -229,24 +243,33 @@ const documentedScript = (select, replacements, stale) => {
 let added = false;
 
 // Ctrl-C で中断しても、使い捨てプロジェクトを bm のグローバル設定に残さない。finally は届かない。
+// 子の終わり方から呼ぶ経路（stopIfInterrupted）と、node 自身へのシグナルの経路があるので、1 回だけ動かす。
+let interruptHandled = false;
 const onInterrupt = signal => {
+  if (interruptHandled) return;
+  interruptHandled = true;
   // 片付けが成功したかを確かめてから言う。失敗したら消し方を出す（レビュー 7 回目の指摘）。
   const removed = added && !keep
     ? spawnSync('bm', ['project', 'remove', PROJECT, '--delete-notes', '--local'], { encoding: 'utf8', timeout: BM_TIMEOUT_MS })
     : null;
   if (!keep && existsSync(root)) rmSync(root, { recursive: true, force: true });
   rmSync(shimDir, { recursive: true, force: true });
-  const cleaned = removed === null || removed.status === 0;
+  // --keep と、プロジェクトを作る前の中断を「片付けた」と言わない（レビュー 9 回目の指摘）。
+  const outcome = keep
+    ? `--keep なので残した（${root}）。手で消す: bm project remove ${PROJECT} --delete-notes --local`
+    : !added ? 'プロジェクトを作る前だった。一時ディレクトリは消した。'
+      : removed.status === 0 ? '使い捨てプロジェクトは片付けた。'
+        : `使い捨てプロジェクトを消せなかった。手で消す: bm project remove ${PROJECT} --delete-notes --local`;
   if (jsonPath) {
+    record.passed = false;
     record.failures.push(`${signal} で中断した（実行していない）`);
-    record.interrupted = { signal, projectRemoved: removed === null ? null : removed.status === 0 };
+    record.interrupted = { signal, keep, added, projectRemoved: removed === null ? null : removed.status === 0 };
     try { writeFileSync(jsonPath, `${JSON.stringify(record, null, 2)}\n`); } catch { /* 書けなくても終了コード 2 で終える */ }
   }
-  console.error(cleaned
-    ? `\n${signal} で中断した。使い捨てプロジェクトは片付けた。`
-    : `\n${signal} で中断した。使い捨てプロジェクトを消せなかった。手で消す: bm project remove ${PROJECT} --delete-notes --local`);
+  console.error(`\n${signal} で中断した。${outcome}`);
   process.exit(2);
 };
+interruptHandler = onInterrupt;
 process.on('SIGINT', () => onInterrupt('SIGINT'));
 process.on('SIGTERM', () => onInterrupt('SIGTERM'));
 
@@ -354,7 +377,8 @@ try {
     for (const [index, shell] of SHELLS.entries()) {
       // 同じタイトルの 2 回目は NOTE_ALREADY_EXISTS になるので、前のシェルで作ったノートを消してから打つ。
       // 最後のシェルで作ったノートは、下の indexed-without-reindex・search-by-type が使う。
-      if (index > 0) {
+      // 前のシェルで作れていなければ（その失敗は記録済み）、消すものは無い（レビュー 9 回目の指摘）。
+      if (index > 0 && existsSync(file)) {
         const removed = bm(['tool', 'delete-note', 'events/probe-documented-write', '--project', PROJECT]);
         check(removed.status === 0 && !existsSync(file), `[${shell}] 前のシェルで作ったノートを消せなかった: ${removed.stderr}`);
       }
@@ -681,7 +705,10 @@ try {
     if (script === null) return { script };
     // 最後の節（`## 報告`）に足すときは、手順書の指示どおり目印と本文の最後の見出しを両方 `## Relations` に変える
     // （レビュー 6 回目の指摘。この経路を実行するケースが無かった）。確かめ済みのスクリプトから作る。
-    check(count(script, '## 手順') === 2, `lessons のブロックの ## 手順 が目印と本文の 2 か所でない: ${count(script, '## 手順')} か所`);
+    const marks = count(script, '## 手順');
+    check(marks === 2, `lessons のブロックの ## 手順 が目印と本文の 2 か所でない: ${marks} か所`);
+    // 数が違うまま差し替えて回すと、無関係な場所で落ちて本当の原因が埋もれる（レビュー 9 回目の指摘）。
+    if (marks !== 2) return { marks };
     const last = script.replaceAll('## 手順', '## Relations');
     const statuses = {};
     for (const shell of SHELLS) {
@@ -807,7 +834,8 @@ try {
     // 対象は corrections に限らない。一般の追記手順も同じ危険がある（レビュー 5 回目の指摘）。
     // 空白の数や行の継続（`\` ＋改行）を挟んでも拾う（レビュー 7 回目の指摘）。
     const doubleQuoted = commands
-      .filter(([, command]) => /--(content|find-text)(\s|\\\n)*[="]|\$\(cat/.test(command));
+      // `--content='…'` は安全なので拾わない。`--section` も同じ危険があるので見る（レビュー 9 回目の指摘）。
+      .filter(([, command]) => /--(content|find-text|section)(\s|\\\n)*(=\s*)?"|\$\(cat/.test(command));
     check(doubleQuoted.length === 0, `本文か目印を二重引用符かコマンド置換で渡すコマンドが戻っている: ${doubleQuoted.map(([where, command]) => `${where}: ${command.slice(0, 80)}`).join(' / ')}`);
     check(missing.length === 0, `手順書から必須の記述が消えている: ${missing.join(' / ')}`);
     // 旧「方法B」の heredoc をファイルへ書く形は、フック拒否を踏むので戻さない（LEV-184 指摘 6）。
@@ -824,7 +852,7 @@ try {
   rmSync(shimDir, { recursive: true, force: true });
   if (keep) {
     console.log(added
-      ? `--keep: ${PROJECT}（${root}）を残した。手で消す: bm project remove ${PROJECT} --delete-notes`
+      ? `--keep: ${PROJECT}（${root}）を残した。手で消す: bm project remove ${PROJECT} --delete-notes --local`
       : `--keep: プロジェクトは作られていない。一時ディレクトリだけ残した: ${root}`);
   } else {
     // プロジェクトを作れなかった経路でも一時ディレクトリは残るので、後片付けは add の成否と分ける。
@@ -833,7 +861,7 @@ try {
     if (added) {
       try {
         const removed = bm(['project', 'remove', PROJECT, '--delete-notes']);
-        check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes）`);
+        check(removed.status === 0, `使い捨てプロジェクトを消せなかった（手で消す: bm project remove ${PROJECT} --delete-notes --local）`);
         const listed = bmJson(['tool', 'list-projects']);
         // 一覧が読めないまま names を空配列にすると、消し損ねを見逃したまま PASS する。
         check(listed.status === 0 && listed.json !== null, `後片付けの確認ができない（bm tool list-projects が読めない）: ${listed.stderr}`);
@@ -848,7 +876,7 @@ try {
         record.steps['project-remove'] = { status: removed.status, dirLeftByBm: existsSync(root) };
       } catch (error) {
         record.steps['project-remove'] = { error: String(error) };
-        check(false, `後片付けの bm 呼び出しが失敗した（手で消す: bm project remove ${PROJECT} --delete-notes）: ${error}`);
+        check(false, `後片付けの bm 呼び出しが失敗した（手で消す: bm project remove ${PROJECT} --delete-notes --local）: ${error}`);
       }
     }
     // root は毎回 mkdtempSync が作った一時ディレクトリ。bm が残した場合も、add が失敗した場合もここで消す。
