@@ -43,3 +43,19 @@ export async function finish(record, jsonPath) {
   console.log(record.passed ? 'PASS' : `FAIL\n- ${record.failures.join('\n- ')}`);
   return record.passed ? 0 : 1;
 }
+
+/**
+ * Thrown by `required` to end a case at a failed precondition: the steps after it would only drive the map
+ * through a state the case was not written for and bury the one real failure under a cascade of others. The
+ * case catches it around its steps, so `finish` still writes the record (with `stopped`) and reports FAIL.
+ */
+export class StopCase extends Error {}
+
+/** Ends the case (see `StopCase`) if the step's result is a recorded error; otherwise hands the result back. */
+export function required(record, name, result) {
+  if (result && typeof result === 'object' && 'error' in result) {
+    record.stopped = `${name} failed; the remaining steps were not run`;
+    throw new StopCase(record.stopped);
+  }
+  return result;
+}

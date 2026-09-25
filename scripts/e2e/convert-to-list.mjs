@@ -15,10 +15,10 @@
  * Usage: npm run harness:e2e:convert-to-list -- [--reload] [--json <out.json>] [--keep]
  */
 import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import {
   VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep, makeMarkSeen, makeAfter, makeAddNamed,
-  makeHistory, makeNoOtherLeafStep,
+  makeHistory, makeTree, makeNoOtherLeafStep,
 } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -72,16 +72,17 @@ const after = makeAfter(evaluate);
 const addNamed = makeAddNamed(cdp, evaluate);
 const history = makeHistory(cdp, evaluate);
 
-/** The map's own parse: its format, and each node as `title ← parent title` in document order. */
-const structure = () => evaluate(`${VIEW}
-  const doc = view.document;
-  const byId = new Map(doc.nodes.map(node => [node.id, node]));
-  return { format: doc.format, nodes: doc.nodes.map(node => node.title + ' ← ' + (byId.get(node.parentId ?? '')?.title ?? '(root)')) };`);
+const readTree = makeTree(evaluate);
+/** The map's own parse (`makeTree`): its format, and each node as `title ← parent title` in document order. */
+const structure = async () => {
+  const { format, nodes } = await readTree();
+  return { format, nodes: nodes.map(node => `${node.title} ← ${node.parent}`) };
+};
 
 try {
-  await step('plugin', makePluginStep(cdp, evaluate, flag));
-  await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
+  required(record, 'no-other-leaf', await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE)));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
 
   // 1. Opening is not converting: the note stays exactly as written, and the map reads it as headings.
   const original = await step('open-unchanged', async () => {
@@ -166,6 +167,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

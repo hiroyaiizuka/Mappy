@@ -21,28 +21,27 @@ export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; con
   const source = () => app.vault.read(view.file);`;
 
 /**
- * Script-string check, after `rect` is a node's bounding box: its centre lies inside the map's canvas. A pointer
- * event sent to a node laid out past the pane's edge lands on something else, and the step would then fail (or
- * worse, pass) for a reason that has nothing to do with the build — so it stops here with that said instead.
+ * Script string, after `node` is a map node: where a real click on it would go. `hit` is whether the topmost
+ * element at its centre is the node itself (or inside it) — false when the node is laid out past the pane's
+ * edge or covered by the map's floating controls (the gear, the layout and zoom buttons), where a pointer
+ * event would land on something else and the step fail (or worse, pass) for a reason that is not the build's.
  */
-const ONSCREEN = `{
-  const pane = el.querySelector('.mappy-canvas').getBoundingClientRect();
-  const cx = rect.left + rect.width / 2; const cy = rect.top + rect.height / 2;
-  if (cx < pane.left || cx > pane.right || cy < pane.top || cy > pane.bottom) {
-    throw new Error('Node ' + label(node) + ' is outside the map pane (centre ' + Math.round(cx) + ',' + Math.round(cy) + '); enlarge the window');
-  }
-}`;
+const AIM = `const rect = node.getBoundingClientRect();
+  const x = rect.left + rect.width / 2; const y = rect.top + rect.height / 2;
+  const hit = node.contains(document.elementFromPoint(x, y));`;
 
 /** Click a node until the map shows it selected: the first click after the view opens can land mid-layout. */
 export function makeSelect(cdp, evaluate) {
   return async (title, index = 0) => {
+    let box;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const box = await evaluate(`${VIEW}
+      box = await evaluate(`${VIEW}
         const node = nth(${JSON.stringify(title)}, ${index});
         if (!node) throw new Error('No node ' + ${JSON.stringify(title)} + ' #' + ${index});
-        const rect = node.getBoundingClientRect();
-        ${ONSCREEN}
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
+        ${AIM}
+        return { x, y, hit };`);
+      // Mid-layout (a fit or a re-layout after an edit) the node can be briefly elsewhere: look again, don't click.
+      if (!box.hit) { await wait(400); continue; }
       for (const type of ['mousePressed', 'mouseReleased']) {
         await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
       }
@@ -51,7 +50,9 @@ export function makeSelect(cdp, evaluate) {
         return nth(${JSON.stringify(title)}, ${index})?.classList.contains('is-selected') ?? false;`);
       if (selected) return;
     }
-    throw new Error(`The map would not select ${title} #${index}`);
+    throw new Error(box?.hit === false
+      ? `${title} #${index} is outside the map pane or under its controls (${Math.round(box.x)},${Math.round(box.y)}); enlarge the window`
+      : `The map would not select ${title} #${index}`);
   };
 }
 
@@ -139,14 +140,24 @@ export function makePaste(evaluate) {
     return true;`);
 }
 
-/** The centre of the first node titled `title`, in the window's CSS pixels; refuses a node outside the map pane. */
+/**
+ * The centre of the first node titled `title`, in the window's CSS pixels, for a drag. Refuses (after looking
+ * again for a moment, as `makeSelect` does) a node a real pointer there would not reach.
+ */
 export function makeCentre(evaluate) {
-  return title => evaluate(`${VIEW}
-    const node = nth(${JSON.stringify(title)}, 0);
-    if (!node) throw new Error('No node ' + ${JSON.stringify(title)});
-    const rect = node.getBoundingClientRect();
-    ${ONSCREEN}
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
+  return async title => {
+    let box;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      box = await evaluate(`${VIEW}
+        const node = nth(${JSON.stringify(title)}, 0);
+        if (!node) throw new Error('No node ' + ${JSON.stringify(title)});
+        ${AIM}
+        return { x, y, hit };`);
+      if (box.hit) return { x: box.x, y: box.y };
+      await wait(400);
+    }
+    throw new Error(`${title} is outside the map pane or under its controls (${Math.round(box.x)},${Math.round(box.y)}); enlarge the window`);
+  };
 }
 
 /** Marks every notice on screen now as seen, so `messages()` after the next action lists only what that action showed. */
@@ -156,20 +167,27 @@ export function makeMarkSeen(evaluate) {
 
 /**
  * Waits until the note's text is no longer `before` and the map has re-read it (its parsed source is the note's),
- * then returns what the map shows — or returns at `timeout` ms as it is, for a step whose right answer is that
- * nothing changes (the caller's byte comparison decides). Polling instead of a fixed sleep: no dead time when
- * the write lands quickly, and no race when it lands late.
+ * then `SETTLE` ms more, and returns what the map shows then — or returns at `timeout` ms as it is, for a step
+ * whose right answer is that nothing changes (the caller's byte comparison decides). Polling instead of a fixed
+ * sleep: no dead time when the write lands quickly, and no race when it lands late. The extra wait after the
+ * write is for what a build might do a task or two later — a Notice, a draft left open, another write — which
+ * the step's `messages`/`editing` checks must still see.
  */
+const SETTLE = 500;
 export function makeAfter(evaluate) {
+  const read = () => evaluate(`${VIEW}
+    const text = await source();
+    return { messages: messages(), editing: !!input(), labels: nodes().map(label), source: text, mapCurrent: view.document?.source === text };`);
   return async (before, timeout = 3000) => {
     const started = Date.now();
     for (;;) {
-      const current = await evaluate(`${VIEW}
-        const text = await source();
-        return { messages: messages(), editing: !!input(), labels: nodes().map(label), source: text, mapCurrent: view.document?.source === text };`);
-      const waited = Date.now() - started;
-      if ((current.source !== before && current.mapCurrent) || waited > timeout) {
-        const result = { ...current, waited };
+      const current = await read();
+      const changed = current.source !== before && current.mapCurrent;
+      if (changed || Date.now() - started > timeout) {
+        const waited = Date.now() - started;
+        let result = current;
+        if (changed) { await wait(SETTLE); result = await read(); }
+        result = { ...result, waited };
         delete result.mapCurrent;
         return result;
       }
@@ -190,6 +208,24 @@ export function makeAddNamed(cdp, evaluate) {
     const started = Date.now();
     while (!await evaluate(`${VIEW} return !!input();`)) {
       if (Date.now() - started > 3000) throw new Error(`${key} did not open the inline editor on a new node`);
+      await wait(100);
+    }
+    await cdp.insertText(title);
+    await wait(300);
+    const before = await evaluate(`${VIEW} return await source();`);
+    await cdp.realKey('Enter');
+    return after(before);
+  };
+}
+
+/** F2 on the selected node, then `title` over its selected old one (`InlineEditor` selects it) and Enter: one rename, one history entry. */
+export function makeRename(cdp, evaluate) {
+  const after = makeAfter(evaluate);
+  return async title => {
+    await cdp.realKey('F2');
+    const started = Date.now();
+    while (!await evaluate(`${VIEW} return !!input();`)) {
+      if (Date.now() - started > 3000) throw new Error('F2 did not open the inline editor');
       await wait(100);
     }
     await cdp.insertText(title);
@@ -238,7 +274,29 @@ export function makeHistory(cdp, evaluate) {
 export function makeNoOtherLeafStep(evaluate, note) {
   return () => evaluate(`
     const open = [];
-    app.workspace.iterateAllLeaves(item => { if (item.view.file?.path === ${JSON.stringify(note)}) open.push(item.view.getViewType()); });
+    // Only the leaves that edit the note count: a map or a Markdown editor. The sidebar's backlinks, outline and
+    // outgoing links name the active note in their state too, but they do not change how a write reaches disk.
+    // A tab restored in the background (Obsidian's deferred view) has no \`view.file\` yet; its state names the
+    // note and the type it will load as.
+    app.workspace.iterateAllLeaves(item => {
+      const state = item.getViewState();
+      if (!['markdown', 'mappy-map'].includes(state.type)) return;
+      if (item.view.file?.path === ${JSON.stringify(note)} || state.state?.file === ${JSON.stringify(note)}) open.push(state.type);
+    });
     if (open.length) throw new Error('Close the leaves already on ' + ${JSON.stringify(note)} + ' first: ' + open.join(', '));
     return true;`);
+}
+
+/**
+ * Script string, after VIEW: the map's own parse at the moment it runs (not the DOM's drawing) — `doc`, `byId`,
+ * and `depth(node)`, the node's number of ancestors below the root. The one definition every case compares with.
+ */
+export const PARSE = `const doc = view.document;
+  const byId = new Map(doc.nodes.map(node => [node.id, node]));
+  const depth = node => { let d = 0; for (let at = node; at?.parentId && byId.has(at.parentId); at = byId.get(at.parentId)) d += 1; return d; };`;
+
+/** The map's parse as data: its format, and each node's title, depth and parent's title in document order. */
+export function makeTree(evaluate) {
+  return () => evaluate(`${VIEW} ${PARSE}
+    return { format: doc.format, nodes: doc.nodes.map(node => ({ title: node.title, depth: depth(node), parent: byId.get(node.parentId ?? '')?.title ?? doc.root.title })) };`);
 }

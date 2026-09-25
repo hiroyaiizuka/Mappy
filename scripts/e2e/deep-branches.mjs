@@ -16,10 +16,10 @@
  * Usage: npm run harness:e2e:deep-branches -- [--reload] [--json <out.json>] [--keep]
  */
 import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import {
-  VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeCentre, makeMarkSeen, makeAfter, makeAddNamed,
-  makeMoveAlt, makeHistory, makeNoOtherLeafStep,
+  VIEW, PARSE, makeSelect, makeState, makePluginStep, makeOpenStep, makeCentre, makeMarkSeen, makeAfter, makeAddNamed,
+  makeRename, makeMoveAlt, makeHistory, makeTree, makeNoOtherLeafStep,
 } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -54,36 +54,11 @@ const after = makeAfter(evaluate);
 const addNamed = makeAddNamed(cdp, evaluate);
 const moveAlt = makeMoveAlt(cdp, evaluate);
 const history = makeHistory(cdp, evaluate);
+const rename = makeRename(cdp, evaluate);
+const readTree = makeTree(evaluate);
 
-/**
- * Script string, after VIEW: `doc` is the map's parse at the moment it runs, `depth(node)` the node's number of
- * ancestors below the root. The one definition of depth both `tree()` and `settle()` compare with.
- */
-const DEPTH = `const doc = view.document;
-  const byId = new Map(doc.nodes.map(node => [node.id, node]));
-  const depth = node => { let d = 0; for (let at = node; at?.parentId && byId.has(at.parentId); at = byId.get(at.parentId)) d += 1; return d; };`;
-
-/**
- * The hierarchy the map itself parsed (not the DOM's drawing): each node's title, depth below the root and
- * parent's title. Read from the view's current document, which a refresh after an editor change replaces.
- */
-const tree = () => evaluate(`${VIEW} ${DEPTH}
-  return Object.fromEntries(doc.nodes.map(node => [node.title, { depth: depth(node), parent: byId.get(node.parentId ?? '')?.title ?? doc.root.title }]));`);
-
-/** F2 on the selected node, then `title` over the selected old one and Enter: one rename, one history entry. */
-const rename = async title => {
-  await cdp.realKey('F2');
-  const started = Date.now();
-  while (!await evaluate(`${VIEW} return !!input();`)) {
-    if (Date.now() - started > 3000) throw new Error('F2 did not open the inline editor');
-    await wait(100);
-  }
-  await cdp.insertText(title);
-  await wait(300);
-  const before = (await state()).source;
-  await cdp.realKey('Enter');
-  return after(before);
-};
+/** The map's own parse (`makeTree`), keyed by title: each node's depth below the root and its parent's title. */
+const tree = async () => Object.fromEntries((await readTree()).nodes.map(({ title, ...place }) => [title, place]));
 
 /**
  * A real pointer drag (Input.dispatchMouseEvent, as LEV-61 drove it) from the centre of `from` to the centre
@@ -115,9 +90,16 @@ const shift = (branch, delta) => branch.split('\n').map(line => (line === '' ? l
   : delta >= 0 ? ' '.repeat(delta) + line : line.slice(-delta))).join('\n');
 
 try {
-  await step('plugin', makePluginStep(cdp, evaluate, flag));
-  await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
+  required(record, 'no-other-leaf', await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE)));
+  // Step 8's expected parents are worked out for a 4-column tab; another indent unit moves the item to other
+  // columns, and the case would fail (or pass) for a reason that is not the build's. Checked before anything
+  // is written, so a vault set up otherwise stops here rather than after seven steps of map edits.
+  required(record, 'indent-settings', await step('indent-settings', () => evaluate(`
+    const settings = { useTab: app.vault.getConfig('useTab'), tabSize: app.vault.getConfig('tabSize') };
+    if (settings.useTab !== true || settings.tabSize !== 4) throw new Error('This case assumes the vault indents with tabs of 4 columns (Obsidian defaults): ' + JSON.stringify(settings));
+    return settings;`)));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 0. The map shows all eight levels as the list nests them: 階層8 is eight below the root.
@@ -254,17 +236,13 @@ try {
   // live-preview list level (`HyperMD-list-line-N`, CodeMirror's CommonMark parse) must be every list line's
   // depth on the map. Obsidian's reading view and metadata cache parse mixed indentation their own way and
   // disagree with both (LEV-195): recorded below as `reading`, not checked.
-  await step('open-editor', () => evaluate(`${VIEW}
-    // The parents steps 8a–8c expect are worked out for a 4-column tab; another indent unit moves the item to
-    // other columns, and the case would fail (or pass) for a reason that is not the build's.
-    const settings = { useTab: app.vault.getConfig('useTab'), tabSize: app.vault.getConfig('tabSize') };
-    if (settings.useTab !== true || settings.tabSize !== 4) throw new Error('This case assumes the vault indents with tabs of 4 columns (Obsidian defaults): ' + JSON.stringify(settings));
+  required(record, 'open-editor', await step('open-editor', () => evaluate(`${VIEW}
     await view.showSource(true);
     await new Promise(resolve => setTimeout(resolve, 1000));
     const editor = app.workspace.getLeavesOfType('markdown').find(item => item.view.file?.path === view.file.path);
     if (!editor) throw new Error('No Markdown leaf opened beside the map');
     window.__mappyE2EEditor = editor;
-    return settings;`));
+    return { editor: editor.view.getViewType() };`)));
 
   /** Put the caret at the end of the line holding `title`, focus the editor, and send a real (Shift+)Tab. */
   const editorIndent = async (title, shiftKey) => {
@@ -312,7 +290,7 @@ try {
     for (let waited = 0; ; waited += 100) {
       const disk = await source();
       if ((disk === editorText && view.document.source === disk) || waited > 8000) {
-        ${DEPTH}
+        ${PARSE}
         const cm = editorView.editor.cm;
         const levels = new Map();
         for (const element of editorView.containerEl.querySelectorAll('.cm-line')) {
@@ -353,8 +331,11 @@ try {
     check(ms !== null, `the map did not re-parent 階層9の兄弟 under 階層9 within 1 s: ${JSON.stringify(nodes['階層9の兄弟'])}`);
     check(nodes['階層9の兄弟']?.depth === 10, `階層9の兄弟 should sit at depth 10: ${JSON.stringify(nodes['階層9の兄弟'])}`);
     const settled = await settle();
-    const line = settled.lines.find(item => item.title === '階層9の兄弟')?.text;
-    check(line !== before.split('\n').find(text => text.endsWith('- 階層9の兄弟')), 'Tab in the editor did not change the line');
+    // Read from the editor's own text, not the map's lines: if the map had lost the node, a line looked up there
+    // would be undefined and differ from anything.
+    const lineIn = text => text.split('\n').find(item => item.endsWith('- 階層9の兄弟'));
+    const afterLine = lineIn(await evaluate('return window.__mappyE2EEditor.view.editor.getValue();'));
+    check(afterLine !== undefined && afterLine !== lineIn(before), `Tab in the editor did not change the line: ${JSON.stringify(afterLine)}`);
     checkSettled(settled, 'Tab');
     return { ms, ...settled };
   });
@@ -387,6 +368,9 @@ try {
   if (!flag('--keep')) {
     await step('clean', () => evaluate(`${VIEW}
       const file = view.file;
+      // Save the editor's text before its leaf goes: a save that detach() starts could otherwise land after the
+      // delete below and bring the note back for the next run.
+      await window.__mappyE2EEditor?.view?.save?.();
       window.__mappyE2EEditor?.detach();
       leaf.detach();
       if (file) await app.vault.delete(file, true);
@@ -395,6 +379,8 @@ try {
       delete window.__mappyE2EEditor;
       return { removed: file?.path ?? null };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

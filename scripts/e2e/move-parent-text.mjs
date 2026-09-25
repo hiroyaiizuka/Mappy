@@ -14,9 +14,9 @@
  *
  * Usage: npm run harness:e2e:move-parent-text -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, VAULT, wait } from './cdp.mjs';
+import { connect, VAULT } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste, makeMoveAlt } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste, makeMoveAlt, makeAfter } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -46,6 +46,7 @@ const state = makeState(evaluate);
 
 /** ⌥↑ or ⌥↓ on the selected node (`makeMoveAlt`, dom-helpers.mjs); a boundary step waits out its timeout, since nothing should change. */
 const moveAlt = makeMoveAlt(cdp, evaluate);
+const after = makeAfter(evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
@@ -97,9 +98,9 @@ try {
   // body, before the child list — the child list and the trailing text must not move.
   await step('attach-image', async () => {
     await select('はじめに');
+    const before = (await state()).source;
     await paste('parent-body.png');
-    await wait(2000);
-    const result = await state();
+    const result = await after(before, 5000);
     check(result.messages.length === 0, `the paste showed ${JSON.stringify(result.messages)}`);
     check(result.labels.filter(title => title === '学ぶこと' || title === '全体の流れ').length === 2,
       'both children of はじめに should still be on the map');

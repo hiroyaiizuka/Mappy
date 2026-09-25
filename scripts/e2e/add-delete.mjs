@@ -9,9 +9,9 @@
  *
  * Usage: npm run harness:e2e:add-delete -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, VAULT, wait } from './cdp.mjs';
+import { connect, VAULT } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeAddNamed } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeAddNamed, makeAfter } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -33,6 +33,7 @@ const state = makeState(evaluate);
 
 /** Enter or Tab on the selected node, then a title and Enter (`makeAddNamed`, dom-helpers.mjs). */
 const addNamed = makeAddNamed(cdp, evaluate);
+const after = makeAfter(evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
@@ -67,9 +68,9 @@ try {
   // 3. Delete the child: back to the state right after step 1, byte for byte.
   await step('delete-child', async () => {
     await select('新しい子');
+    const before = (await state()).source;
     await cdp.realKey('Delete');
-    await wait(800);
-    const result = await state();
+    const result = await after(before);
     check(result.messages.length === 0, `Delete showed ${JSON.stringify(result.messages)}`);
     check(!result.labels.includes('新しい子'), 'the deleted child is still on the map');
     check(result.source === afterSibling.source, `Delete left the list different from before the child was added:\nexpected: ${JSON.stringify(afterSibling.source)}\nactual:   ${JSON.stringify(result.source)}`);
@@ -81,9 +82,9 @@ try {
   // document this case started from, byte for byte.
   await step('delete-sibling', async () => {
     await select('新しい兄弟');
+    const before = (await state()).source;
     await cdp.realKey('Delete');
-    await wait(800);
-    const result = await state();
+    const result = await after(before);
     check(result.messages.length === 0, `Delete showed ${JSON.stringify(result.messages)}`);
     check(!result.labels.includes('新しい兄弟'), 'the deleted sibling is still on the map');
     check(result.source === initial, `the round trip did not return to the original Markdown:\nexpected: ${JSON.stringify(initial)}\nactual:   ${JSON.stringify(result.source)}`);
