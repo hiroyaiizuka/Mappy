@@ -29,7 +29,8 @@ import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { makePluginStep } from './dom-helpers.mjs';
 import {
-  EXCALIDRAW, mapSource, plainSource, makeDrawingSetup, makeFileDrag, makeDrawingClean, makeToggle, DRAWING_LEAF,
+  mapSource, plainSource, noteName, makeDrawingSetup, makeFileDrag, makeDrawingClean, makeToggle, makeRestore,
+  EXCALIDRAW, DRAWING_LEAF,
 } from './excalidraw-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -45,7 +46,13 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const drag = makeFileDrag(cdp, evaluate);
-const toggle = makeToggle(evaluate);
+const toggleOnce = makeToggle(evaluate);
+/** Every toggle is kept in the record (`toggles`), with how long it waited and whether the wait ran out. */
+const toggle = async (id, on) => {
+  const result = await toggleOnce(id, on);
+  (record.toggles ??= []).push(result);
+  return result;
+};
 
 /**
  * What this stage left, stored under `label` for the identity checks of later stages: which plugins are loaded,
@@ -97,25 +104,12 @@ const expectNoMappy = (label, state, drop) => {
   if (drop) check(drop.kind === 'other', `${label}: the Option-drag inserted ${drop.kind} (${JSON.stringify(drop.texts)}), not Excalidraw's own default`);
 };
 
-/** The plugins loaded when the case started: the only ones `restore` loads again. */
-const loadedAtStart = await evaluate(`return ['mappy', ${JSON.stringify(EXCALIDRAW)}].filter(id => !!app.plugins.plugins[id]);`);
-let restored = false;
-const restore = async () => {
-  if (restored) return;
-  restored = true;
-  record.steps.restore = await evaluate(`
-    const out = {};
-    for (const id of ${JSON.stringify(loadedAtStart)}) {
-      if (!app.plugins.plugins[id]) await app.plugins.enablePlugin(id);
-      out[id] = !!app.plugins.plugins[id];
-    }
-    return out;`).catch(error => ({ error: String(error) }));
-};
+const restore = await makeRestore(evaluate);
 
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
   required(record, 'setup', await step('setup', makeDrawingSetup(evaluate, {
-    notes: { [MAP]: mapSource('E2E-excalidraw-lifecycle-plain'), [PLAIN]: plainSource('E2E-excalidraw-lifecycle-map') },
+    notes: { [MAP]: mapSource(noteName(PLAIN)), [PLAIN]: plainSource(noteName(MAP)) },
     drawing: DRAWING,
   })));
   await step('0-start', () => snapshot('start'));
@@ -176,7 +170,14 @@ try {
     check(state.automate && differs(state.sameAutomate, 'excalidrawOn2'), '5-excalidraw-on: the reload did not bring a new ExcalidrawAutomate');
     check(state.hook === null, `5-excalidraw-on: the reloaded Excalidraw has a ${state.hook} drop hook with Mappy disabled`);
     expectNoMappy('5-excalidraw-on', state, drop);
-    return { state, drop };
+    // A stand-in for another plugin's drop hook, so the slot Mappy chains to and has to put back is not empty: with
+    // null there, "put back what was there" and "clear the slot" look the same. It declines every drop and counts them.
+    await evaluate(`window.__mappyE2EStandInCalls = 0;
+      window.__mappyE2EStandIn = () => { window.__mappyE2EStandInCalls += 1; return false; };
+      window.ExcalidrawAutomate.onDropHook = window.__mappyE2EStandIn;
+      return true;`);
+    const standIn = await snapshot('standIn5');
+    return { state, drop, standIn };
   });
 
   // 6. Mappy enabled: it hooks the reloaded Excalidraw and routes again, its wrapper on top this time.
@@ -184,10 +185,15 @@ try {
     await toggle('mappy', true);
     const state = await snapshot('mappyOn6');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.6, 0.5] });
-    check(state.hook === 'function' && differs(state.sameHook, 'excalidrawOn5'), '6-mappy-on: no new drop hook on the reloaded Excalidraw');
+    // A drop Mappy declines goes on to the hook it chained to.
+    const plain = await drag(MAP, { modifiers: 0, at: [0.8, 0.5] });
+    const standInCalls = await evaluate('return window.__mappyE2EStandInCalls;');
+    check(state.hook === 'function' && differs(state.sameHook, 'standIn5'), '6-mappy-on: no new drop hook on the reloaded Excalidraw');
+    check(standInCalls > 0, '6-mappy-on: a drop Mappy declined did not reach the hook that was in the slot before it');
     check(differs(state.sameSetViewState, 'excalidrawOn5'), '6-mappy-on: setViewState is still the one without Mappy');
     expectMappy('6-mappy-on', state, drop);
-    return { state, drop };
+    check(plain.kind === 'other', `6-mappy-on: a drag without Option inserted ${plain.kind}, not Excalidraw's default`);
+    return { state, drop, plain, standInCalls };
   });
 
   // 7. Mappy disabled with its wrapper on top: what was below comes back exactly, the hook slot too. Then on again.
@@ -195,13 +201,26 @@ try {
     await toggle('mappy', false);
     const state = await snapshot('mappyOff7');
     check(sameAs(state.sameSetViewState, 'excalidrawOn5'), '7-mappy-off-on-top: setViewState is not the one Excalidraw left (stage 5)');
-    check(sameAs(state.sameHook, 'excalidrawOn5'), '7-mappy-off-on-top: the drop hook is not the one Excalidraw had before Mappy (stage 5)');
+    check(sameAs(state.sameHook, 'standIn5'), '7-mappy-off-on-top: the drop hook is not the one that was in the slot before Mappy (the stand-in)');
     expectNoMappy('7-mappy-off-on-top', state, null);
     await toggle('mappy', true);
     const again = await snapshot('mappyOn7');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.6, 0.8] });
     expectMappy('7-mappy-on-again', again, drop);
     return { state, again, drop };
+  });
+
+  // Take the stand-in out again: Mappy is unloaded (the slot goes back to the stand-in), the slot emptied, Mappy loaded.
+  await step('stand-in-out', async () => {
+    await toggle('mappy', false);
+    const emptied = await evaluate(`const ea = window.ExcalidrawAutomate;
+      const was = ea.onDropHook === window.__mappyE2EStandIn;
+      if (was) ea.onDropHook = null;
+      delete window.__mappyE2EStandIn;
+      delete window.__mappyE2EStandInCalls;
+      return was;`);
+    await toggle('mappy', true);
+    return { emptied };
   });
 
   // Read last, after the final drop: an error the re-enabled hook threw there must count too.
@@ -220,9 +239,8 @@ try {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
   await restore();
-  if (record.steps.restore?.error || loadedAtStart.some(id => !record.steps.restore?.[id])) {
-    record.failures.push(`the plugins loaded at the start were not all re-enabled: ${JSON.stringify(record.steps.restore)}`);
-  }
+  record.steps.restore = await restore();
+  if (record.steps.restore.failure) record.failures.push(record.steps.restore.failure);
   if (!flag('--keep') && record.steps.setup && !record.steps.setup.error) {
     await wait(500);
     await step('clean', makeDrawingClean(evaluate, [MAP, PLAIN]));

@@ -165,7 +165,7 @@ CDP でキー操作を再現するとき、要素へ送る合成 `keydown` は O
 | `move-parent-text` | E19 | 子リストの前後に本文がある項目で、子を ⌥↑／⌥↓ しても親の後続文章を持ち去らず、境界を越えず、画像追加が子リストを動かさない |
 | `paste` | E37 | 画像を貼ったノードが空タイトルのまま残る状態で、同じ操作をもう一度行っても下書きがノードを見失わない（LEV-142・LEV-146 の同名ノード id 継承） |
 | `excalidraw-frame` | E24 | 対話フレームの `mappy: true` のノートがライブのマップ（`mappy-map` の leaf、枠付きのルートと第一階層、線、リンク、枠の中に Fit）になり、通常ノートの枠は Markdown のまま。わざと壊したビルドで FAIL することを確認済み: ルーター（`setViewState` の差し替え）を入れない、ルーターを解除しない（前提確認 `no-stale-routing` で止まる）。前のビルドの wrapper が残った窓でも同じ前提確認で止まる（LEV-22） |
-| `excalidraw-lifecycle` | E25 | Excalidraw の後からの有効化・再読込で Option ドロップが効き、Mappy の無効化で hook と `setViewState` の差し替えが外れる（2 通りの積まれ方の両方）。Excalidraw が無効でもマップが開く。Mappy を外した段では hook の枠が空（Mappy 以前）に戻ることも見る。わざと壊したビルドで FAIL することを確認済み: ルーターを解除しない、hook を解放しない、`layout-change` で再フックしない、`patchMethod` が覆われていても元の関数に戻す（LEV-22） |
+| `excalidraw-lifecycle` | E25 | Excalidraw の後からの有効化・再読込で Option ドロップが効き、Mappy の無効化で hook と `setViewState` の差し替えが外れる（2 通りの積まれ方の両方）。Excalidraw が無効でもマップが開く。Mappy を外した段では hook の枠が Mappy 以前の値に戻ることも見る（段 5 のあとに他のプラグインの hook に見立てた目印を置き、段 6 で Mappy が断ったドロップがそこへ届くこと、段 7 の無効化で枠がその目印に戻ることを確かめ、最後に取り除く）。わざと壊したビルドで FAIL することを確認済み: ルーターを解除しない、hook を解放しない、`layout-change` で再フックしない、`patchMethod` が覆われていても元の関数に戻す、解除で枠を空にする（LEV-22） |
 
 **壊したビルドの検証は、変種ごとに Obsidian を起動し直す（LEV-22）**: 解除しない変種（ルーターの解除なし等）は、prototype の `setViewState` に wrapper を残したまま unload され、同じ窓で次の変種を試すとその残骸が routing を続ける。LEV-22 では 1 窓で 5 変種を続けて回したところ、2〜4 番目にも「ルーティングが残る」が出て、5 番目（ルーター未導入）は PASS した（どれも前の変種の残骸によるもの）。`--reload` はプラグインを読み直すだけで prototype は元に戻らない。変種ごとに窓を終了して起動し直すと、5 変種とも狙った段だけで FAIL した。正しいビルドに戻したあとも、起動し直してから PASS を確かめる。
 

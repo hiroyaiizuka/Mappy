@@ -26,6 +26,8 @@ export const mapSource = plainName => [
 ].join('\n');
 /** A note without `mappy: true`: Excalidraw shows it as Markdown, whatever Mappy does. */
 export const plainSource = mapName => ['# 通常ノート', '', '- 箇条書き', `- [[${mapName}]]`, ''].join('\n');
+/** The name a wiki link uses for a vault path (`Fixtures/A.md` → `A`), so a renamed fixture cannot leave a dead link. */
+export const noteName = path => path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/u, '');
 
 /** Script string: `waitForDrawing(leaf)` waits up to 10 s for an Excalidraw view with its API on `leaf`. */
 const WAIT_FOR_DRAWING = `const waitForDrawing = async leaf => {
@@ -35,26 +37,60 @@ const WAIT_FOR_DRAWING = `const waitForDrawing = async leaf => {
 
 /**
  * Loads or unloads one plugin (without saving the vault's plugin list) and waits, up to 10 s, until the window agrees:
- * the plugin is (not) loaded, `ExcalidrawAutomate` is on window exactly while Excalidraw is, and — while both are
- * loaded — a drop hook is in its slot (Mappy hooks on `onLayoutReady`／`layout-change`, a moment after the enable). A
- * stage whose hook never comes is still read and fails there, with what it found. Refuses while a map has a draft
- * open, as `makePluginStep` does: unloading Mappy would drop it.
+ * the plugin is (not) loaded, `ExcalidrawAutomate` is on window exactly while Excalidraw is, and — when this enable
+ * leaves both loaded — the drop slot holds a hook other than the one before the toggle (Mappy hooks on
+ * `onLayoutReady`／`layout-change`, a moment after the enable; a hook already in the slot, such as the stand-in the
+ * E25 case puts there, is not Mappy's). A wait that runs out is returned as `timedOut` and the stage is still read, so
+ * it fails there with what it found. Refuses while a map has a draft open, as `makePluginStep` does: unloading Mappy
+ * would drop it.
  */
 export function makeToggle(evaluate) {
   return (id, on) => evaluate(`
     if (document.querySelector('.mappy-inline-input')) throw new Error('A draft is open in this window');
+    const hookBefore = window.ExcalidrawAutomate?.onDropHook ?? null;
     if (${on}) await app.plugins.enablePlugin(${JSON.stringify(id)}); else await app.plugins.disablePlugin(${JSON.stringify(id)});
     const settled = () => {
       const excalidraw = !!app.plugins.plugins[${JSON.stringify(EXCALIDRAW)}];
       if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) return false;
       if (!!window.ExcalidrawAutomate !== excalidraw) return false;
-      return !(excalidraw && app.plugins.plugins.mappy) || !!window.ExcalidrawAutomate.onDropHook;
+      if (!${on} || !excalidraw || !app.plugins.plugins.mappy) return true;
+      const hook = window.ExcalidrawAutomate.onDropHook ?? null;
+      return hook !== null && hook !== hookBefore;
     };
     const started = Date.now();
     while (!settled() && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 100));
     if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) throw new Error(${JSON.stringify(id)} + ' did not ' + (${on} ? 'load' : 'unload'));
+    const timedOut = !settled();
     await new Promise(resolve => setTimeout(resolve, 300));
-    return { waited: Date.now() - started };`);
+    return { id: ${JSON.stringify(id)}, on: ${on}, waited: Date.now() - started, timedOut };`);
+}
+
+/**
+ * The window as the case found it, and a function that puts it back: the plugins loaded at the start are loaded again
+ * (only those — a vault with Excalidraw disabled keeps it disabled), and the left sidebar is collapsed or expanded as
+ * it was (the drag opens it; the frame case closes it). Returns `{ plugins, sidebar, failure }`; `failure` names a
+ * plugin that did not come back.
+ */
+export async function makeRestore(evaluate) {
+  const start = await evaluate(`return {
+    plugins: ['mappy', ${JSON.stringify(EXCALIDRAW)}].filter(id => !!app.plugins.plugins[id]),
+    sidebarCollapsed: app.workspace.leftSplit.collapsed,
+  };`);
+  let done = null;
+  return async () => {
+    done ??= evaluate(`
+      const plugins = {};
+      for (const id of ${JSON.stringify(start.plugins)}) {
+        if (!app.plugins.plugins[id]) await app.plugins.enablePlugin(id);
+        plugins[id] = !!app.plugins.plugins[id];
+      }
+      if (${start.sidebarCollapsed}) app.workspace.leftSplit.collapse(); else app.workspace.leftSplit.expand();
+      return plugins;`).then(
+      plugins => ({ plugins, failure: start.plugins.some(id => !plugins[id]) ? `the plugins loaded at the start were not all re-enabled: ${JSON.stringify(plugins)}` : null }),
+      error => ({ error: String(error), failure: `restoring the window failed: ${error}` }),
+    );
+    return done;
+  };
 }
 
 /**
@@ -161,6 +197,7 @@ export function makeFileDrag(cdp, evaluate) {
     });
     await cdp.send('Input.setInterceptDrags', { enabled: true });
     let data;
+    let dropped = false;
     try {
       const intercepted = cdp.once('Input.dragIntercepted', 8000);
       // Awaited below; this only keeps its timeout from becoming an unhandled rejection (which ends the process
@@ -172,8 +209,11 @@ export function makeFileDrag(cdp, evaluate) {
       for (const type of ['dragEnter', 'dragOver', 'drop']) {
         await cdp.send('Input.dispatchDragEvent', { type, x: points.to.x, y: points.to.y, data, modifiers });
       }
+      dropped = true;
     } finally {
-      await mouse('mouseReleased', points.to);
+      // With no drag under way the pointer is still over the explorer item it pressed: let go there, not on the
+      // drawing, where a release would end a tool action or change the selection before the next drag reads it.
+      await mouse('mouseReleased', dropped ? points.to : points.from);
       await cdp.send('Input.setInterceptDrags', { enabled: false });
     }
     // The map is inserted a render or two after the drop (Mappy measures each label in Excalidraw first): poll
@@ -200,13 +240,19 @@ export function makeFileDrag(cdp, evaluate) {
   };
 }
 
-/** Step body: closes the case's leaves and deletes its drawing and notes (the vault's own files are not the case's). */
+/**
+ * Step body: closes the case's leaves and deletes its drawing and notes (the vault's own files are not the case's).
+ * Only Markdown, map and drawing leaves are closed — the sidebar's backlinks, outline and outgoing links name the
+ * active file too, and are not the case's to close (as in `refuseOpenLeaves`).
+ */
 export function makeDrawingClean(evaluate, notes) {
   return () => evaluate(`const E = window.__mappyExcalidrawE2E;
     const paths = [E.drawing, ...${JSON.stringify(notes)}];
     const closed = [];
     app.workspace.iterateAllLeaves(item => {
-      const path = item.view.file?.path ?? item.getViewState().state?.file;
+      const state = item.getViewState();
+      if (!['markdown', 'mappy-map', 'excalidraw'].includes(state.type)) return;
+      const path = item.view.file?.path ?? state.state?.file;
       if (paths.includes(path)) closed.push(item);
     });
     for (const leaf of closed) leaf.detach();
@@ -236,12 +282,17 @@ export function makeNoStaleRouting(evaluate, note) {
     await toggle('mappy', false);
     let opens;
     try {
+      // The probe's tab is closed whatever happens: left open on the note, the next run's refuseOpenLeaves would stop.
       opens = await evaluate(`
         const leaf = app.workspace.getLeaf('tab');
-        await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(note)} } });
-        const type = leaf.view.getViewType();
-        leaf.detach();
-        return type;`);
+        try {
+          await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(note)} } });
+          return leaf.view.getViewType();
+        } catch (error) {
+          return 'an error (' + (error?.message ?? error) + ')';
+        } finally {
+          leaf.detach();
+        }`);
     } finally {
       await toggle('mappy', true);
     }

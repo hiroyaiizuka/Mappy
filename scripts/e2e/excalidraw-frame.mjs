@@ -25,15 +25,15 @@ import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { makePluginStep } from './dom-helpers.mjs';
 import {
-  MAP_ROOT, mapSource, plainSource, makeDrawingSetup, makeDrawingClean, makeNoStaleRouting,
+  MAP_ROOT, mapSource, plainSource, noteName, makeDrawingSetup, makeDrawingClean, makeNoStaleRouting, makeRestore,
 } from './excalidraw-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
 const MAP = 'Fixtures/E2E-excalidraw-frame-map.md';
 const PLAIN = 'Fixtures/E2E-excalidraw-frame-plain.md';
-const PLAIN_NAME = 'E2E-excalidraw-frame-plain';
-const MAP_NAME = 'E2E-excalidraw-frame-map';
+const PLAIN_NAME = noteName(PLAIN);
+const MAP_NAME = noteName(MAP);
 const DRAWING = 'Fixtures/E2E-excalidraw-frame.excalidraw.md';
 
 const record = createRecord(VAULT, MAP);
@@ -41,6 +41,8 @@ const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
+/** `no-stale-routing` unloads Mappy for a moment; this puts back the plugins and the sidebar as the case found them. */
+const restore = await makeRestore(evaluate);
 
 /** What each frame holds, read from its DOM: the leaf's view type, the map's nodes, lines and links, or the Markdown. */
 const readFrames = () => evaluate(`const E = window.__mappyExcalidrawE2E;
@@ -107,8 +109,7 @@ try {
       ea.destroy?.();
     }
     // A frame is rendered only while it is on screen: fit both into the view, with the sidebar out of the way (put
-    // back as it was in the case's finally, --keep or not).
-    E.sidebarCollapsed = app.workspace.leftSplit.collapsed;
+    // back as it was by \`restore\` in the case's finally, --keep or not).
     app.workspace.leftSplit.collapse();
     await new Promise(resolve => setTimeout(resolve, 400));
     view.zoomToFit(false);
@@ -120,8 +121,13 @@ try {
     for (const started = Date.now(); Date.now() - started < 15000;) {
       await wait(500);
       read = await readFrames();
+      // Everything the checks below read, so a correct build is not failed on a frame that is still drawing its lines,
+      // its link or the note's Markdown (they can land a frame after the nodes).
       const map = read.map; const plain = read.plain;
-      if (map?.container && plain?.container && map.nodes.length > 0 && map.nodes.every(node => node.visible) && plain.markdown) break;
+      const mapDone = map?.container && map.nodes.length > 0 && map.nodes.every(node => node.visible)
+        && map.lines === 3 && map.links.includes(PLAIN_NAME);
+      const plainDone = plain?.container && plain.markdown && plain.headings.includes('通常ノート') && plain.links.includes(MAP_NAME);
+      if (mapDone && plainDone) break;
     }
     return read;
   });
@@ -156,12 +162,11 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
-  await evaluate(`const E = window.__mappyExcalidrawE2E;
-    if (E && E.sidebarCollapsed === false) app.workspace.leftSplit.expand();
-    return true;`).catch(() => {});
   if (!flag('--keep') && record.steps.setup && !record.steps.setup.error) {
     await step('clean', makeDrawingClean(evaluate, [MAP, PLAIN]));
   }
+  record.steps.restore = await restore();
+  if (record.steps.restore.failure) record.failures.push(record.steps.restore.failure);
   cdp.close();
 }
 
