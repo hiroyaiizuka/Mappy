@@ -757,13 +757,22 @@ export async function captureInlineWidth(recorder, page) {
   const editing = () => page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') === true`);
   /** The fixture back to its original text, opened in `mode`, with nothing selected or being edited. */
   const originals = new Map();
+  /**
+   * Put the note back; an open view re-reads it 45 ms later (the refresh debounce) and redraws, which would take the
+   * focus from a node clicked meanwhile. Wait that out before the next load.
+   */
+  const putOriginal = async path => {
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(originals.get(path))})`);
+    await new Promise(resolveWait => { setTimeout(resolveWait, 300); });
+    await page.settle();
+  };
   const reset = async (fixture, mode) => {
     const path = `Fixtures/${fixture}.md`;
     if (!originals.has(path)) {
       await loadFixture(page, fixture, mode);
       originals.set(path, await page.harness('h.source()'));
     }
-    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(originals.get(path))})`);
+    await putOriginal(path);
     await loadFixture(page, fixture, mode);
     // A layout switch keeps the viewport it had, which can leave the target off screen: fit the whole map.
     const fit = await page.harness('h.button("全体表示")');
@@ -931,7 +940,7 @@ export async function captureInlineWidth(recorder, page) {
       });
   }
   // Each probe ends on a confirmed rename: the later sections read these fixtures as their original text.
-  for (const [path, source] of originals) await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(source)})`);
+  for (const path of originals.keys()) await putOriginal(path);
   await loadFixture(page, OPERATION_FIXTURE, 'mindmap');
 }
 
