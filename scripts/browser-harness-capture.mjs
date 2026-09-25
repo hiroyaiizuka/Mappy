@@ -930,6 +930,9 @@ export async function captureInlineWidth(recorder, page) {
         return results.map(summary).join('／');
       });
   }
+  // Each probe ends on a confirmed rename: the later sections read these fixtures as their original text.
+  for (const [path, source] of originals) await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(source)})`);
+  await loadFixture(page, OPERATION_FIXTURE, 'mindmap');
 }
 
 async function captureHierarchyRows(recorder, page) {
