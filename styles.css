@@ -235,8 +235,9 @@
   border-radius: 7px;
   background: var(--background-primary);
 }
-.mappy-view .mappy-node.is-root > .mappy-node-content > .mappy-node-label { font-weight: 700; }
-.mappy-view .mappy-node.is-stage > .mappy-node-content > .mappy-node-label { font-weight: 600; }
+/* The inline editor draws the draft in the label's weight: a bolder label is wider, and would wrap sooner than the draft did (LEV-198). */
+.mappy-view .mappy-node.is-root > .mappy-node-content > .mappy-node-label, .mappy-view .mappy-node.is-root > .mappy-inline-input { font-weight: 700; }
+.mappy-view .mappy-node.is-stage > .mappy-node-content > .mappy-node-label, .mappy-view .mappy-node.is-stage > .mappy-inline-input { font-weight: 600; }
 .mappy-view .mappy-node.is-selected, .mappy-view .mappy-node:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
 /* Image files dragged in from outside attach to the highlighted node. */
 .mappy-view .mappy-node.is-drop-target { outline: 1px dashed var(--mappy-selection); outline-offset: 3px; }
@@ -298,10 +299,16 @@
 .mappy-view .mappy-inline-input {
   display: block;
   box-sizing: border-box;
-  width: 100%;
-  min-width: 40px;
-  max-width: 303px;
-  min-height: 22px;
+  /* One row as wide as the text, then more rows once it reaches the node's own cap (max-width above: 420px, the root
+     360px), which is where the confirmed label wraps too (LEV-198). The 100% is cyclic while the node sizes itself, so
+     the text's full width asks for the cap; laid out, it is the node's content box. Where `field-sizing` is
+     unsupported InlineEditor.resize sets the width and height instead. At least the node's width (an image or the
+     error line can make it wider), so a click beside the text still lands in the editor, not on the node. */
+  field-sizing: content;
+  min-width: max(40px, 100%);
+  max-width: 100%;
+  /* The floor InlineEditor.measure has always given the height; the same on both paths. */
+  min-height: 26px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -310,10 +317,23 @@
   color: var(--text-normal);
   box-shadow: none;
   font: inherit;
+  /* The label's own weight (`.mappy-node-label`), not a theme's on an ancestor; roots and first-level nodes below. */
+  font-weight: 400;
+  /* The UA resets these on a textarea; a theme that spaces the label's text must space the draft the same. */
+  letter-spacing: inherit;
+  word-spacing: inherit;
+  text-transform: inherit;
   line-height: inherit;
   outline: none;
+  /* No scrollbar while the fallback measures the height (it would narrow the row), and the label's breaking rule. */
+  overflow: hidden;
+  overflow-wrap: anywhere;
   resize: none;
 }
+/* Set only while InlineEditor.resize (without `field-sizing`) reads the text's one-row width. */
+/* No width and no min-width (the node's width must not floor the reading); the 1px padding makes a laid-out empty
+   draft read 1, so 0 still means no layout at all. */
+.mappy-view .mappy-inline-input.is-measuring { width: 0; min-width: 0; padding-right: 1px; white-space: pre; }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
 .mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
 .mappy-view .mappy-inline-error { max-width: 303px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }

@@ -421,3 +421,46 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   });
 
 });
+
+describe('MindmapView keeps the open draft measured when a refresh restyles its node (LEV-198)', () => {
+  it('measures the draft again after an external change moves the node being edited to the first level', async () => {
+    // The measuring path (no `field-sizing`): jsdom has no layout, so a first-level node's bolder text reads wider.
+    vi.stubGlobal('CSS', { supports: () => false });
+    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.closest('.mappy-node')?.classList.contains('is-stage') ? 200 : 100;
+    });
+    try {
+      const mounted = await mount(SOURCE);
+      const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+      expect(input.closest('.mappy-node')?.classList.contains('is-stage')).toBe(false);
+      expect(input.style.width).toBe('102px');
+      // 学ぶこと becomes a first-level item: its text (and the draft) is drawn at weight 600 from now on.
+      mounted.external(SOURCE.replace('- はじめに\n  - 学ぶこと\n', '- 学ぶこと\n- はじめに\n'));
+      await mounted.refreshed();
+      expect(mounted.editor()).toBe(input);
+      expect(input.closest('.mappy-node')?.classList.contains('is-stage')).toBe(true);
+      expect(input.style.width).toBe('202px');
+    } finally {
+      scrollWidth.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('measures a draft opened in a pane with no layout once the pane is resized into view', async () => {
+    vi.stubGlobal('CSS', { supports: () => false });
+    let width = 0;
+    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(() => width);
+    try {
+      const mounted = await mount(SOURCE);
+      const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+      // Hidden: nothing to measure, and no width is pinned.
+      expect(input.style.width).toBe('');
+      width = 150;
+      mounted.view.onResize();
+      expect(input.style.width).toBe('152px');
+    } finally {
+      scrollWidth.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+});

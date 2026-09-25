@@ -708,6 +708,8 @@ export class MindmapView extends FileView {
 
   onResize(): void {
     if (this.ready) this.scheduleLayout();
+    // A draft opened while the pane had no layout (hidden) has not been measured yet.
+    this.inlineEditor?.fit(true);
     // The gear keeps its corner; the card under it follows, and shrinks if the pane got too narrow for it.
     this.placePopover();
   }
@@ -1189,6 +1191,8 @@ export class MindmapView extends FileView {
       visualRootId: projection.root.id, topicIds: new Set(projection.topics.map(topic => topic.id)), mode: this.mode,
       sources: projection.calls.sources, trees: [projection.root, ...projection.topics],
     });
+    // The update may have restyled the node being edited (is-root / is-stage set the weight): its draft is measured again.
+    this.inlineEditor?.fit();
     // One node stays selected (the first when the selected one is gone, or the note just opened) unless the empty canvas was clicked.
     if (!this.deselected && !nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
