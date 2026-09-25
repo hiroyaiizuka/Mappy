@@ -148,6 +148,13 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
 
 const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
 
+/** A body and two topics of a few lines each, laid out alike in every mode. */
+const THREE_SECTIONS = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
+
+/** A topic released at `delta` of pointer travel, as `NodeDrag` reports a drop on empty canvas. */
+const placeOf = (view: MindmapView) =>
+  (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+
 /** Where a node sits on screen, canvas-relative: its layout position through the viewport's pan and scale. */
 function screenOf(mounted: Mounted, id: string): { x: number; y: number } {
   const t = mounted.transform(id);
@@ -1531,11 +1538,10 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     // map place differently (`layoutTree`'s `origin`). Before the fix, switching layouts mid-drag left them
     // measured from the map's origin, so the carried tree jumped by the origins' difference and the drop
     // saved that jumped position under the balanced key.
-    const source = '## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n';
-    const { view, layout, topic, source: current } = await mount(source, 'mindmap');
+    const { view, layout, topic, source: current } = await mount(THREE_SECTIONS, 'mindmap');
     const dragged = topic('資料');
     const { shift } = bind(view);
-    const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+    const place = placeOf(view);
     shift(dragged.id, { x: 40, y: -40 });
     await frame();
     const beforeSwitch = placed(view, dragged);
@@ -1694,9 +1700,16 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     expect(mounted.viewport()).not.toEqual(fitted);
   };
   const fitted = (mounted: Mounted) => fitToBounds(mounted.layout().bounds, CANVAS.width, CANVAS.height);
-  /** Past the re-read the watcher schedules for a save (45 ms), which the fit held through a drop waits for. */
+  /**
+   * Until the re-read the watcher schedules for a save (45 ms after it) has drawn, which a fit held through a drop
+   * waits for: the view's own timer and read are watched rather than a fixed wait, then one frame lays it out.
+   */
   const reread = async (mounted: Mounted): Promise<void> => {
-    await new Promise(resolve => setTimeout(resolve, 100));
+    const view = mounted.view as unknown as { refreshTimer: number | undefined; refreshing: Promise<void> | undefined; saving: boolean; topicDrag: unknown };
+    await vi.waitFor(() => {
+      expect({ drag: view.topicDrag, saving: view.saving, timer: view.refreshTimer, read: view.refreshing })
+        .toEqual({ drag: null, saving: false, timer: undefined, read: undefined });
+    }, { timeout: 2000, interval: 5 });
     await mounted.settle();
   };
   /** Screen points agree to well under a pixel; the switch's rebase goes through the origin in world units and back. */
@@ -1707,7 +1720,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   };
 
   it('a topic drag: the viewport and the carried tree stay put on screen through the switch; releasing fits', async () => {
-    const mounted = await mount('## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n', 'mindmap');
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const { view, topic, viewport } = mounted;
     const dragged = topic('資料');
@@ -1725,7 +1738,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     await frame();
     expect(viewport()).toEqual(viewBefore);
     expectAt(screenOf(mounted, dragged.id), { x: shownBefore.x + 30, y: shownBefore.y });
-    const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+    const place = placeOf(view);
     await place(dragged.id, { x: 70, y: -40 });
     await reread(mounted);
     expect(viewport()).toEqual(fitted(mounted));
@@ -1736,7 +1749,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     // watcher of this very write can land after the read started (see `commit`). The frame the drag's end requests
     // then still lays out the note from before the drop, with the topic back at its stored place: a fit taken there
     // measures the wrong map, and the re-read that follows 45 ms later moves the topic out of the fitted view.
-    const mounted = await mount('## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n', 'mindmap');
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const { view, topic, viewport, store } = mounted;
     const dragged = topic('資料');
@@ -1756,7 +1769,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
       await new Promise(resolve => setTimeout(resolve, 10));
       return read(file);
     });
-    const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+    const place = placeOf(view);
     await place(dragged.id, drop);
     slow.mockRestore();
     await reread(mounted);
@@ -1765,7 +1778,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   });
 
   it('a topic drag cancelled after the switch also fits once it has put the tree back', async () => {
-    const mounted = await mount('## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n', 'mindmap');
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const { view, topic, viewport } = mounted;
     const dragged = topic('資料');
@@ -1812,6 +1825,20 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     await sized(mounted);
     select(mounted.view, 'balanced');
     await frame();
+    expect(mounted.viewport()).toEqual(fitted(mounted));
+  });
+
+  it('with no drag, a layout switch fits at once even while a re-read is scheduled', async () => {
+    // Only a fit held by a drag waits for a re-read. Any other would wait out every keystroke in an editor beside
+    // the map (each re-arms the 45 ms timer), and one whose read then failed would fire on some unrelated frame later.
+    const mounted = await mount(fixtureSource(), 'mindmap');
+    await sized(mounted);
+    const view = mounted.view as unknown as { scheduleRefresh(): void; refreshTimer: number | undefined };
+    view.scheduleRefresh();
+    expect(view.refreshTimer).toBeDefined();
+    select(mounted.view, 'balanced');
+    await frame();
+    expect(view.refreshTimer).toBeDefined();
     expect(mounted.viewport()).toEqual(fitted(mounted));
   });
 });

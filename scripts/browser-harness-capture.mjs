@@ -1176,6 +1176,21 @@ async function captureTopicOperations(recorder, page) {
    * does not fit, so the reload alone would keep the balanced map's fit and send the fixed-distance drags of the cases
    * after this one past the canvas edge.
    */
+  /**
+   * Until the view has nothing in flight: no drag, no save, no re-read scheduled or running, no layout write. A fit
+   * held through a drop waits for the re-read the save's watcher schedules 45 ms later, which a settle (three still
+   * frames) can return ahead of; the fields are the view's own, read as the page sees them.
+   */
+  const quiet = async () => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const busy = await page.harness('(async () => { const v = h.view; await v.layoutWrite; return Boolean(v.topicDrag || v.saving || v.refreshTimer !== undefined || v.refreshing); })()');
+      if (!busy) break;
+      if (Date.now() > deadline) throw new Error('the view did not settle: a drag, save or re-read is still in flight');
+      await page.evaluate('new Promise(done => { setTimeout(done, 10); })');
+    }
+    await page.settle();
+  };
   const dragWithTouchSwitch = async name => {
     const base = await page.harness('h.source()');
     const button = await page.harness(`h.button(${JSON.stringify('左右バランス')})`);
@@ -1207,23 +1222,25 @@ async function captureTopicOperations(recorder, page) {
       expect(Math.abs(follow.x - 30) < 1.5 && Math.abs(follow.y) < 1.5, `${name} followed 30 px of travel by ${follow.x.toFixed(1)}, ${follow.y.toFixed(1)}`);
       await page.mouse('mouseReleased', from.x + 70, from.y + 20, { button: 'left', clickCount: 1 });
       held = false;
-      // The held fit also waits for the re-read the save's watcher schedules (45 ms), which a settle can return ahead of.
-      await page.evaluate('new Promise(done => { setTimeout(done, 150); })');
-      await page.settle();
-      // The fit the switch asked for runs once the drag is over: the whole balanced map is inside the canvas.
-      const canvas = await page.harness('h.canvasRect()');
-      const outside = (await page.harness('h.nodes()')).filter(node => !inside(node.rect, canvas, 2));
+      await quiet();
+      // The fit the switch asked for runs once the drag is over. The viewport is compared with the one「全体表示」
+      // gives for the same map: a pan alone (the body's drag moves it) or a map that happens to fit already would
+      // pass a looser check without any fit having run.
       const released = await page.harness('h.viewport()');
-      expect(outside.length === 0, `not fitted after the release: ${outside.map(node => node.title).join(', ')} outside`);
-      expect(Math.abs(released.scale - switched.view.scale) > 1e-6 || Math.abs(released.x - switched.view.x) > 0.5, 'the viewport did not change on the release');
+      const fit = await page.harness('h.button("全体表示")');
+      await page.click(center(fit).x, center(fit).y);
+      await page.settle();
+      const fitted = await page.harness('h.viewport()');
+      expect(Math.abs(released.x - fitted.x) < 0.5 && Math.abs(released.y - fitted.y) < 0.5 && Math.abs(released.scale - fitted.scale) < 1e-6,
+        `not fitted after the release: ${JSON.stringify(released)}, a fit gives ${JSON.stringify(fitted)}`);
       return `切替時のずれ ${jump.x.toFixed(1)}, ${jump.y.toFixed(1)} px、scale ${before.view.scale.toFixed(3)} のまま、離したあと Fit（scale ${released.scale.toFixed(3)}）`;
     } finally {
       // An assertion that threw mid-drag leaves the button down and the canvas holding the capture: released first,
       // or the fit button's click below would end that drag and write its position over the text put back here.
-      if (held) {
-        await page.mouse('mouseReleased', from.x + 40, from.y + 20, { button: 'left', clickCount: 1 });
-        await page.settle();
-      }
+      if (held) await page.mouse('mouseReleased', from.x + 40, from.y + 20, { button: 'left', clickCount: 1 });
+      // The switch writes `mappy-layout` through its own chain (`layoutWrite`) and the release saves: both land before
+      // the text is put back, or a late one would leave its change in the note the next cases compare against.
+      await quiet();
       await page.harness(`h.putNote('Fixtures/free-topics.md', ${JSON.stringify(base)})`);
       await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
       const fit = await page.harness('h.button("全体表示")');

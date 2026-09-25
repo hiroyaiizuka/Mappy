@@ -245,6 +245,8 @@ export class MindmapView extends FileView {
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
   private unloading = false;
   private needsFit = true;
+  /** Whether `needsFit` was held back by a free drag (LEV-182): only that fit also waits for a re-read, see the layout frame. */
+  private fitHeld = false;
   private saving = false;
   private revealId: string | null = null;
   private inlineEditor: InlineEditor | undefined;
@@ -413,7 +415,7 @@ export class MindmapView extends FileView {
       && typeof view.y === "number" && Number.isFinite(view.y)
       && typeof view.scale === "number" && Number.isFinite(view.scale)) {
       this.viewport.set({ x: view.x, y: view.y, scale: view.scale });
-      this.needsFit = false;
+      this.needsFit = false; this.fitHeld = false;
     }
     await this.refresh();
   }
@@ -435,7 +437,7 @@ export class MindmapView extends FileView {
       finally { this.unloading = false; }
     }
     this.dropDraft();
-    this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true;
+    this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.ownWrite = undefined;
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
@@ -1253,14 +1255,18 @@ export class MindmapView extends FileView {
       this.drawEdges(this.layout.edges);
       // A free drag places its tree (a topic by `overrides`, the body by the viewport pan) through the viewport it
       // started under, so a fit asked for mid-drag (a layout button pressed by a second pointer) waits for the
-      // frame `endTopicDrag` requests; fitting now would pull the tree off the pointer (LEV-182). It also waits for
-      // a re-read scheduled or under way: after a drop, the save's own re-read gives up when the watcher schedules a
-      // newer one (`commit`), and until that one draws, this frame lays out the note from before the drop.
-      const reading = this.refreshTimer !== undefined || this.refreshing !== undefined;
-      if (this.needsFit && !this.topicDrag && !reading && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
-        this.viewport.fit(this.layout.bounds); this.needsFit = false;
+      // frame `endTopicDrag` requests; fitting now would pull the tree off the pointer (LEV-182). A fit held that way
+      // also waits for a re-read scheduled or under way: after a drop, the save's own re-read gives up when the
+      // watcher schedules a newer one (`commit`), and until that one draws, this frame lays out the note from before
+      // the drop. Any other fit runs at once, as it always has.
+      if (this.needsFit && this.topicDrag) this.fitHeld = true;
+      const waiting = this.needsFit && (this.topicDrag !== null
+        || (this.fitHeld && (this.refreshTimer !== undefined || this.refreshing !== undefined)));
+      if (this.needsFit && !waiting && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
+        this.viewport.fit(this.layout.bounds); this.needsFit = false; this.fitHeld = false;
       }
-      if (this.revealId) { this.ensureVisible(this.revealId); this.revealId = null; }
+      // A node to reveal is brought into view after the fit, as in the frame both run in, not before a fit that would move it again.
+      if (this.revealId && !waiting) { this.ensureVisible(this.revealId); this.revealId = null; }
     });
   }
 
