@@ -27,6 +27,36 @@ export const mapSource = plainName => [
 /** A note without `mappy: true`: Excalidraw shows it as Markdown, whatever Mappy does. */
 export const plainSource = mapName => ['# 通常ノート', '', '- 箇条書き', `- [[${mapName}]]`, ''].join('\n');
 
+/** Script string: `waitForDrawing(leaf)` waits up to 10 s for an Excalidraw view with its API on `leaf`. */
+const WAIT_FOR_DRAWING = `const waitForDrawing = async leaf => {
+    for (const started = Date.now(); !leaf?.view?.excalidrawAPI && Date.now() - started < 10000;) await new Promise(resolve => setTimeout(resolve, 200));
+    return leaf?.view?.getViewType?.() === 'excalidraw' && !!leaf.view.excalidrawAPI;
+  };`;
+
+/**
+ * Loads or unloads one plugin (without saving the vault's plugin list) and waits, up to 10 s, until the window agrees:
+ * the plugin is (not) loaded, `ExcalidrawAutomate` is on window exactly while Excalidraw is, and — while both are
+ * loaded — a drop hook is in its slot (Mappy hooks on `onLayoutReady`／`layout-change`, a moment after the enable). A
+ * stage whose hook never comes is still read and fails there, with what it found. Refuses while a map has a draft
+ * open, as `makePluginStep` does: unloading Mappy would drop it.
+ */
+export function makeToggle(evaluate) {
+  return (id, on) => evaluate(`
+    if (document.querySelector('.mappy-inline-input')) throw new Error('A draft is open in this window');
+    if (${on}) await app.plugins.enablePlugin(${JSON.stringify(id)}); else await app.plugins.disablePlugin(${JSON.stringify(id)});
+    const settled = () => {
+      const excalidraw = !!app.plugins.plugins[${JSON.stringify(EXCALIDRAW)}];
+      if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) return false;
+      if (!!window.ExcalidrawAutomate !== excalidraw) return false;
+      return !(excalidraw && app.plugins.plugins.mappy) || !!window.ExcalidrawAutomate.onDropHook;
+    };
+    const started = Date.now();
+    while (!settled() && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 100));
+    if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) throw new Error(${JSON.stringify(id)} + ' did not ' + (${on} ? 'load' : 'unload'));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    return { waited: Date.now() - started };`);
+}
+
 /**
  * Step body: writes the notes (path → text), makes the drawing with Excalidraw's own `create` and opens it in a
  * tab (`window.__mappyExcalidrawE2E = { leaf, drawing, errors }`). Stops first if a Markdown, map or drawing leaf is
@@ -55,12 +85,12 @@ export function makeDrawingSetup(evaluate, { notes, drawing }) {
     ea.reset();
     const created = await ea.create({ filename: ${JSON.stringify(name)}, foldername: ${JSON.stringify(folder)}, onNewPane: true });
     if (created !== ${JSON.stringify(drawing)}) throw new Error('Excalidraw created ' + created + ', not ' + ${JSON.stringify(drawing)});
+    ${WAIT_FOR_DRAWING}
     let leaf = null;
-    for (const started = Date.now(); !leaf?.view?.excalidrawAPI && Date.now() - started < 10000;) {
-      await new Promise(resolve => setTimeout(resolve, 200));
+    for (const started = Date.now(); !leaf && Date.now() - started < 10000; await new Promise(resolve => setTimeout(resolve, 200))) {
       leaf = app.workspace.getLeavesOfType('excalidraw').find(item => item.view.file?.path === created) ?? null;
     }
-    if (!leaf?.view?.excalidrawAPI) throw new Error('The drawing did not open in an Excalidraw view');
+    if (!await waitForDrawing(leaf)) throw new Error('The drawing did not open in an Excalidraw view');
     // A previous run that stopped early, or one with --keep, left its listeners on: take them off first.
     window.__mappyExcalidrawE2E?.off?.();
     const errors = [];
@@ -77,13 +107,13 @@ export function makeDrawingSetup(evaluate, { notes, drawing }) {
 
 /** Script string: the drawing's leaf, reopened in a tab when a reload of Excalidraw took the old one away. */
 export const DRAWING_LEAF = `const E = window.__mappyExcalidrawE2E;
+  ${WAIT_FOR_DRAWING}
   const drawingLeaf = async () => {
     const live = app.workspace.getLeavesOfType('excalidraw').find(item => item.view.file?.path === E.drawing && item.view.excalidrawAPI);
     if (live) return live;
     const leaf = app.workspace.getLeaf('tab');
     await leaf.setViewState({ type: 'excalidraw', state: { file: E.drawing }, active: true });
-    for (const started = Date.now(); !leaf.view.excalidrawAPI && Date.now() - started < 10000;) await new Promise(resolve => setTimeout(resolve, 200));
-    if (leaf.view.getViewType() !== 'excalidraw' || !leaf.view.excalidrawAPI) throw new Error('The drawing did not reopen in an Excalidraw view');
+    if (!await waitForDrawing(leaf)) throw new Error('The drawing did not reopen in an Excalidraw view');
     await new Promise(resolve => setTimeout(resolve, 800));
     return leaf;
   };`;
@@ -93,6 +123,11 @@ export const DRAWING_LEAF = `const E = window.__mappyExcalidrawE2E;
  * `modifiers` (Input.dispatchDragEvent bits: Alt=1, Ctrl=2, Meta=4, Shift=8), then waits for the drawing to stop
  * changing and returns what the drop added: `kind` is 'map' when it holds the map's root title and its lines,
  * 'none' when nothing was added, and 'other' otherwise (Excalidraw's own default, a link to the note).
+ *
+ * "Stopped changing" is the scene's ids and element versions, not its count: the drawing is read until it has been
+ * quiet for three polls (~0.9 s) both before the drag (so the work of an earlier drop — Mappy's import measures each
+ * label in Excalidraw first — is not counted as this one's) and after it (so a map added in more than one batch is
+ * read whole). A drop that rightly adds nothing waits out the 10 s.
  */
 export function makeFileDrag(cdp, evaluate) {
   return async (note, { modifiers = 0, at = [0.5, 0.8] } = {}) => {
@@ -111,6 +146,13 @@ export function makeFileDrag(cdp, evaluate) {
       const from = item.getBoundingClientRect();
       const canvas = leaf.view.containerEl.querySelector('canvas.interactive') ?? leaf.view.containerEl.querySelector('canvas');
       const to = canvas.getBoundingClientRect();
+      const signature = () => leaf.view.excalidrawAPI.getSceneElements().map(element => element.id + ':' + element.version).join(',');
+      for (let last = signature(), quiet = 0, started = Date.now(); quiet < 3 && Date.now() - started < 10000;) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const now = signature();
+        quiet = now === last ? quiet + 1 : 0;
+        last = now;
+      }
       E.before = new Set(leaf.view.excalidrawAPI.getSceneElements().map(element => element.id));
       return { from: { x: from.left + from.width / 2, y: from.top + from.height / 2 },
         to: { x: to.left + to.width * ${at[0]}, y: to.top + to.height * ${at[1]} } };`);
@@ -137,14 +179,19 @@ export function makeFileDrag(cdp, evaluate) {
     // The map is inserted a render or two after the drop (Mappy measures each label in Excalidraw first): poll
     // until the added elements stop changing, rather than guessing a sleep.
     let added = [];
-    for (let last = -1, stable = 0, started = Date.now(); Date.now() - started < 10000 && stable < 3;) {
+    for (let last = null, stable = 0, started = Date.now(); Date.now() - started < 10000 && stable < 3;) {
       await wait(300);
-      added = await evaluate(`${DRAWING_LEAF}
+      const read = await evaluate(`${DRAWING_LEAF}
         const leaf = await drawingLeaf();
-        return leaf.view.excalidrawAPI.getSceneElements().filter(element => !E.before.has(element.id) && !element.isDeleted)
-          .map(element => ({ type: element.type, text: element.text ?? null, link: element.link ?? null }));`);
-      stable = added.length === last && added.length > 0 ? stable + 1 : 0;
-      last = added.length;
+        const elements = leaf.view.excalidrawAPI.getSceneElements();
+        return {
+          signature: elements.map(element => element.id + ':' + element.version).join(','),
+          added: elements.filter(element => !E.before.has(element.id) && !element.isDeleted)
+            .map(element => ({ type: element.type, text: element.text ?? null, link: element.link ?? null })),
+        };`);
+      added = read.added;
+      stable = read.signature === last && added.length > 0 ? stable + 1 : 0;
+      last = read.signature;
     }
     const texts = added.filter(element => element.type === 'text').map(element => element.text);
     const lines = added.filter(element => element.type === 'line').length;
@@ -175,26 +222,32 @@ export function makeDrawingClean(evaluate, notes) {
 }
 
 /**
- * Step body: with Mappy unloaded for a moment, a `mappy: true` note has to open as Markdown. A window that ran a build
- * which never took its routing off `WorkspaceLeaf.prototype.setViewState` keeps routing after that build is gone —
- * `--reload` does not undo it — and would make a build without routing look like one with it (docs/harness.md
- * 「壊したビルドの検証は、変種ごとに Obsidian を起動し直す」). Mappy is enabled again whatever happens.
+ * Step body: with Mappy unloaded for a moment, a `mappy: true` note has to open as Markdown. If it still opens as a
+ * map, something routes `WorkspaceLeaf.prototype.setViewState` that no loaded plugin owns: either the build under test
+ * does not take its routing off on unload (E25's 「差し替えが外れる」 failing), or an earlier build in this window left
+ * its wrapper behind — `--reload` does not undo that — which would make a build without routing look like one with it
+ * (docs/harness.md 「壊したビルドの検証は、変種ごとに Obsidian を起動し直す」). The two cannot be told apart from
+ * inside one window; restarting Obsidian does: a failure that remains after a restart is the build's. Mappy is
+ * enabled again whatever happens.
  */
 export function makeNoStaleRouting(evaluate, note) {
-  return () => evaluate(`
-    await app.plugins.disablePlugin('mappy');
+  const toggle = makeToggle(evaluate);
+  return async () => {
+    await toggle('mappy', false);
     let opens;
     try {
-      const leaf = app.workspace.getLeaf('tab');
-      await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(note)} } });
-      opens = leaf.view.getViewType();
-      leaf.detach();
+      opens = await evaluate(`
+        const leaf = app.workspace.getLeaf('tab');
+        await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(note)} } });
+        const type = leaf.view.getViewType();
+        leaf.detach();
+        return type;`);
     } finally {
-      await app.plugins.enablePlugin('mappy');
+      await toggle('mappy', true);
     }
-    for (const started = Date.now(); !app.plugins.plugins.mappy && Date.now() - started < 10000;) await new Promise(resolve => setTimeout(resolve, 100));
     if (opens !== 'markdown') {
-      throw new Error('With Mappy unloaded the note still opened as ' + opens + ': this window routes through a wrapper an earlier build left behind. Restart Obsidian.');
+      throw new Error(`With Mappy unloaded the note still opened as ${opens}: either this build does not remove its setViewState routing on unload, or an earlier build in this window left a wrapper behind. Restart Obsidian and run again; if it still fails, it is this build.`);
     }
-    return { opensWithoutMappy: opens };`);
+    return { opensWithoutMappy: opens };
+  };
 }

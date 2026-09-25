@@ -29,7 +29,7 @@ import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { makePluginStep } from './dom-helpers.mjs';
 import {
-  EXCALIDRAW, mapSource, plainSource, makeDrawingSetup, makeFileDrag, makeDrawingClean, DRAWING_LEAF,
+  EXCALIDRAW, mapSource, plainSource, makeDrawingSetup, makeFileDrag, makeDrawingClean, makeToggle, DRAWING_LEAF,
 } from './excalidraw-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -45,27 +45,7 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const drag = makeFileDrag(cdp, evaluate);
-
-/**
- * Loads or unloads one plugin (without saving the vault's plugin list) and waits, up to 10 s, until the window agrees:
- * the plugin is (not) loaded, `ExcalidrawAutomate` is on window exactly while Excalidraw is, and — while both are
- * loaded — a drop hook is in its slot (Mappy hooks on `onLayoutReady`／`layout-change`, a moment after the enable). A
- * stage whose hook never comes is still read and fails there, with what it found.
- */
-const toggle = (id, on) => evaluate(`
-  if (document.querySelector('.mappy-inline-input')) throw new Error('A draft is open in this window');
-  if (${on}) await app.plugins.enablePlugin(${JSON.stringify(id)}); else await app.plugins.disablePlugin(${JSON.stringify(id)});
-  const settled = () => {
-    const excalidraw = !!app.plugins.plugins[${JSON.stringify(EXCALIDRAW)}];
-    if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) return false;
-    if (!!window.ExcalidrawAutomate !== excalidraw) return false;
-    return !(excalidraw && app.plugins.plugins.mappy) || !!window.ExcalidrawAutomate.onDropHook;
-  };
-  const started = Date.now();
-  while (!settled() && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 100));
-  if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) throw new Error(${JSON.stringify(id)} + ' did not ' + (${on} ? 'load' : 'unload'));
-  await new Promise(resolve => setTimeout(resolve, 300));
-  return { waited: Date.now() - started };`);
+const toggle = makeToggle(evaluate);
 
 /**
  * What this stage left, stored under `label` for the identity checks of later stages: which plugins are loaded,
@@ -83,10 +63,11 @@ const snapshot = label => evaluate(`const E = window.__mappyExcalidrawE2E;
     if (leaf.view.getViewType() !== 'mappy-map' || nodes > 0) break;
   }
   const opens = leaf.view.getViewType();
-  leaf.detach();
   // Read after the probe: a wrapper patchMethod left as a pass-through takes itself off the prototype on the next
-  // call once nothing is above it, so the function read before the call can be one that is already gone.
-  let owner = Object.getPrototypeOf(app.workspace.getMostRecentLeaf());
+  // call once nothing is above it, so the function read before the call can be one that is already gone. The probe's
+  // own leaf gives the prototype (the workspace can have no recent leaf once Excalidraw closed the drawing's).
+  let owner = Object.getPrototypeOf(leaf);
+  leaf.detach();
   while (owner && !Object.prototype.hasOwnProperty.call(owner, 'setViewState')) owner = Object.getPrototypeOf(owner);
   const ea = window.ExcalidrawAutomate ?? null;
   const now = { svs: owner.setViewState, ea, hook: ea?.onDropHook ?? null };
@@ -116,13 +97,15 @@ const expectNoMappy = (label, state, drop) => {
   if (drop) check(drop.kind === 'other', `${label}: the Option-drag inserted ${drop.kind} (${JSON.stringify(drop.texts)}), not Excalidraw's own default`);
 };
 
+/** The plugins loaded when the case started: the only ones `restore` loads again. */
+const loadedAtStart = await evaluate(`return ['mappy', ${JSON.stringify(EXCALIDRAW)}].filter(id => !!app.plugins.plugins[id]);`);
 let restored = false;
 const restore = async () => {
   if (restored) return;
   restored = true;
   record.steps.restore = await evaluate(`
     const out = {};
-    for (const id of ['mappy', ${JSON.stringify(EXCALIDRAW)}]) {
+    for (const id of ${JSON.stringify(loadedAtStart)}) {
       if (!app.plugins.plugins[id]) await app.plugins.enablePlugin(id);
       out[id] = !!app.plugins.plugins[id];
     }
@@ -171,6 +154,9 @@ try {
     const drop = await drag(MAP, { modifiers: ALT, at: [0.3, 0.5] });
     check(sameAs(state.sameSetViewState, 'excalidrawOn2'), '3-mappy-off-shadowed: disabling Mappy replaced the outer setViewState (Excalidraw\'s wrapper was undone)');
     check(differs(state.sameHook, 'excalidrawOn2'), '3-mappy-off-shadowed: the drop hook is still the one installed with Mappy loaded');
+    // Nothing else hooks drops in this vault (preflight allows only mappy and Excalidraw) and Excalidraw leaves the slot
+    // empty, so what Mappy chained to and has to put back is no hook at all — not a hook of its own that passes through.
+    check(state.hook === null, `3-mappy-off-shadowed: the drop hook slot holds a ${state.hook}, not what was there before Mappy (none)`);
     expectNoMappy('3-mappy-off-shadowed', state, drop);
     return { state, drop };
   });
@@ -188,6 +174,7 @@ try {
     const state = await snapshot('excalidrawOn5');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.3, 0.7] });
     check(state.automate && differs(state.sameAutomate, 'excalidrawOn2'), '5-excalidraw-on: the reload did not bring a new ExcalidrawAutomate');
+    check(state.hook === null, `5-excalidraw-on: the reloaded Excalidraw has a ${state.hook} drop hook with Mappy disabled`);
     expectNoMappy('5-excalidraw-on', state, drop);
     return { state, drop };
   });
@@ -233,7 +220,9 @@ try {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
   await restore();
-  if (!record.steps.restore?.mappy || !record.steps.restore?.[EXCALIDRAW]) record.failures.push(`the plugins were not both re-enabled: ${JSON.stringify(record.steps.restore)}`);
+  if (record.steps.restore?.error || loadedAtStart.some(id => !record.steps.restore?.[id])) {
+    record.failures.push(`the plugins loaded at the start were not all re-enabled: ${JSON.stringify(record.steps.restore)}`);
+  }
   if (!flag('--keep') && record.steps.setup && !record.steps.setup.error) {
     await wait(500);
     await step('clean', makeDrawingClean(evaluate, [MAP, PLAIN]));

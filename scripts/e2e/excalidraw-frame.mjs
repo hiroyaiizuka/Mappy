@@ -68,10 +68,18 @@ const readFrames = () => evaluate(`const E = window.__mappyExcalidrawE2E;
         bordered: bordered(node.querySelector('.mappy-node-content') ?? node) || bordered(node),
         visible: inside(box, node.getBoundingClientRect()),
       })),
-      lines: paths.filter(path => { const length = path.getTotalLength(); const stroke = getComputedStyle(path).stroke; return length > 0 && stroke !== 'none'; }).length,
-      links: [...container.querySelectorAll('a.internal-link')].filter(link => inside(box, link.getBoundingClientRect())).map(link => link.textContent.trim()),
+      // A line counts when it has length and a stroke one can see: a colour with some alpha, and a width above zero.
+      lines: paths.filter(path => {
+        const style = getComputedStyle(path);
+        const alpha = style.stroke.match(/rgba\\([^)]*,\\s*([\\d.]+)\\)/u)?.[1];
+        const visible = style.stroke !== 'none' && style.stroke !== 'transparent' && (alpha === undefined || parseFloat(alpha) > 0);
+        return path.getTotalLength() > 0 && visible && parseFloat(style.strokeWidth) > 0 && parseFloat(style.strokeOpacity || '1') > 0;
+      }).length,
+      // Reading view (what Excalidraw 2.27.3 shows) and live preview (should a later version open the note editable)
+      // draw the same heading and link with different elements; either counts.
+      links: [...container.querySelectorAll('a.internal-link, .cm-hmd-internal-link')].filter(link => inside(box, link.getBoundingClientRect())).map(link => link.textContent.trim()),
       markdown: !!container.querySelector('.markdown-preview-view, .markdown-source-view, .markdown-rendered'),
-      headings: [...container.querySelectorAll('h1')].map(heading => heading.textContent.trim()),
+      headings: [...container.querySelectorAll('h1, .cm-header-1')].map(heading => heading.textContent.trim()),
     };
   }
   return frames;`);
@@ -82,8 +90,9 @@ try {
     notes: { [MAP]: mapSource(PLAIN_NAME), [PLAIN]: plainSource(MAP_NAME) },
     drawing: DRAWING,
   })));
-  // The frame case never unloads Mappy, so without this a window still routing through an earlier build's wrapper
-  // would pass a build that has no routing at all (docs/harness.md 「壊したビルドの検証は…起動し直す」).
+  // Otherwise a window still routing through an earlier build's wrapper would pass a build that has no routing at all
+  // (docs/harness.md 「壊したビルドの検証は…起動し直す」). It unloads Mappy once, so a build that does not take its
+  // routing off on unload stops here too (the message says to restart to tell the two apart).
   required(record, 'no-stale-routing', await step('no-stale-routing', makeNoStaleRouting(evaluate, MAP)));
 
   required(record, 'insert', await step('insert', () => evaluate(`const E = window.__mappyExcalidrawE2E;
@@ -97,7 +106,9 @@ try {
     } finally {
       ea.destroy?.();
     }
-    // A frame is rendered only while it is on screen: fit both into the view, with the sidebar out of the way.
+    // A frame is rendered only while it is on screen: fit both into the view, with the sidebar out of the way (put
+    // back as it was in the case's finally, --keep or not).
+    E.sidebarCollapsed = app.workspace.leftSplit.collapsed;
     app.workspace.leftSplit.collapse();
     await new Promise(resolve => setTimeout(resolve, 400));
     view.zoomToFit(false);
@@ -131,7 +142,8 @@ try {
   check(mapNodes.filter(node => node.role !== 'branch').every(node => node.bordered)
     && mapNodes.some(node => node.role === 'root') && mapNodes.filter(node => node.role === 'stage').length === 2,
   `the root and the two first-level branches should be drawn boxed: ${JSON.stringify(mapNodes)}`);
-  check(map.lines >= 1, 'the map in the frame draws no lines');
+  // The fixture has three edges: the root to its two first-level branches, and 線と枠 to its child.
+  check(map.lines === 3, `the map in the frame draws ${map.lines} visible lines, not the fixture's 3`);
   check(map.links?.includes(PLAIN_NAME), `the link to ${PLAIN_NAME} is not shown in the map's frame: ${JSON.stringify(map.links)}`);
   check(plain.container, 'the plain note\'s frame was not rendered');
   check(!plain.leafTypes?.includes('mappy-map') && plainNodes.length === 0, 'the plain note\'s frame shows a map');
@@ -144,9 +156,11 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
+  await evaluate(`const E = window.__mappyExcalidrawE2E;
+    if (E && E.sidebarCollapsed === false) app.workspace.leftSplit.expand();
+    return true;`).catch(() => {});
   if (!flag('--keep') && record.steps.setup && !record.steps.setup.error) {
     await step('clean', makeDrawingClean(evaluate, [MAP, PLAIN]));
-    await evaluate('app.workspace.leftSplit.expand(); return true;').catch(() => {});
   }
   cdp.close();
 }
