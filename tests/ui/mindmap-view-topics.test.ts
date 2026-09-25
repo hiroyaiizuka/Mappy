@@ -146,6 +146,15 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
   };
 }
 
+const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
+
+/** Where a node sits on screen, canvas-relative: its layout position through the viewport's pan and scale. */
+function screenOf(mounted: Mounted, id: string): { x: number; y: number } {
+  const t = mounted.transform(id);
+  const v = mounted.viewport();
+  return { x: t.x * v.scale + v.x, y: t.y * v.scale + v.y };
+}
+
 function menuItem(title: string): HTMLElement {
   const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
     .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
@@ -886,26 +895,22 @@ describe('MindmapView moves the body against its topics and joins a topic to a n
     // (LEV-129's fix leaves them alone on a mid-drag switch): what must not jump on screen is the pan
     // itself, since the body sits exactly at `origin` and a mode switch moves `origin` under it.
     const source = fixtureSource();
-    const { view, canvas, nodes, layout, transform, source: current, settle, pointer, viewport } = await mount(source, 'mindmap');
+    const mounted = await mount(source, 'mindmap');
+    const { view, canvas, nodes, layout, transform, source: current, settle, pointer } = mounted;
     const { root, topics } = projectMap(documentOf(view));
-    const screenOf = (id: string): { x: number; y: number } => {
-      const t = transform(id);
-      const v = viewport();
-      return { x: t.x * v.scale + v.x, y: t.y * v.scale + v.y };
-    };
     const element = nodes().get(root.id);
     if (!element) throw new Error('No body element');
     pointer('pointerdown', element, 500, 400);
     pointer('pointermove', canvas, 506, 400);
     pointer('pointermove', canvas, 560, 430);
     await new Promise(resolve => requestAnimationFrame(resolve));
-    const bodyMidDrag = screenOf(root.id);
-    const topicsMidDrag = new Map(topics.map(topic => [topic.id, screenOf(topic.id)]));
+    const bodyMidDrag = screenOf(mounted, root.id);
+    const topicsMidDrag = new Map(topics.map(topic => [topic.id, screenOf(mounted, topic.id)]));
     await view.setState({ file: PATH, layout: 'balanced' }, { history: false } satisfies ViewStateResult);
     await new Promise(resolve => requestAnimationFrame(resolve));
     // The pointer has not moved, only the layout switched: the body and every topic must sit exactly where they did.
-    expect(screenOf(root.id)).toEqual(bodyMidDrag);
-    for (const topic of topics) expect(screenOf(topic.id)).toEqual(topicsMidDrag.get(topic.id));
+    expect(screenOf(mounted, root.id)).toEqual(bodyMidDrag);
+    for (const topic of topics) expect(screenOf(mounted, topic.id)).toEqual(topicsMidDrag.get(topic.id));
     pointer('pointermove', canvas, 620, 470);
     await new Promise(resolve => requestAnimationFrame(resolve));
     const releasedWorld = new Map(topics.map(topic => [topic.id, transform(topic.id)]));
@@ -1044,7 +1049,6 @@ describe('MindmapView snaps a dragged topic to the slot beside its root', () => 
     snap: (view as unknown as { snapTarget: Snap }).snapTarget.bind(view),
     preview: (view as unknown as { previewDrop(command: MoveCommand | null): void }).previewDrop.bind(view),
   });
-  const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
   /** Three childless stages: on the timeline the first and third hang their forests above the axis, the second below. */
   const THREE_STAGES = '## 本体\n\n- 回復する\n- 記録する\n- 習慣化する\n\n## 補足\n\n- 用語\n';
   /**
@@ -1673,7 +1677,6 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   // leaves the pointer; a dragged body, carried by the viewport pan itself, jumps until the next move puts the pan
   // back and the fit is lost. A single mouse cannot reach the button (the canvas holds pointer capture), but a
   // second pointer (a finger) can, so the view is driven here directly.
-  const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
   const select = (view: MindmapView, mode: LayoutMode): void => {
     (view as unknown as { selectMode(mode: LayoutMode): void }).selectMode(mode);
   };
@@ -1691,10 +1694,10 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     expect(mounted.viewport()).not.toEqual(fitted);
   };
   const fitted = (mounted: Mounted) => fitToBounds(mounted.layout().bounds, CANVAS.width, CANVAS.height);
-  const screenOf = (mounted: Mounted, id: string): { x: number; y: number } => {
-    const t = mounted.transform(id);
-    const v = mounted.viewport();
-    return { x: t.x * v.scale + v.x, y: t.y * v.scale + v.y };
+  /** Past the re-read the watcher schedules for a save (45 ms), which the fit held through a drop waits for. */
+  const reread = async (mounted: Mounted): Promise<void> => {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await mounted.settle();
   };
   /** Screen points agree to well under a pixel; the switch's rebase goes through the origin in world units and back. */
   const expectAt = (actual: { x: number; y: number }, expected: { x: number; y: number } | undefined): void => {
@@ -1724,7 +1727,40 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     expectAt(screenOf(mounted, dragged.id), { x: shownBefore.x + 30, y: shownBefore.y });
     const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
     await place(dragged.id, { x: 70, y: -40 });
-    await mounted.settle();
+    await reread(mounted);
+    expect(viewport()).toEqual(fitted(mounted));
+  });
+
+  it('the fit held through a drop waits for the re-read that shows the drop, when the save\'s own re-read is superseded', async () => {
+    // `commit` re-reads after its write, but that read gives up when a newer one was scheduled meanwhile — the modify
+    // watcher of this very write can land after the read started (see `commit`). The frame the drag's end requests
+    // then still lays out the note from before the drop, with the topic back at its stored place: a fit taken there
+    // measures the wrong map, and the re-read that follows 45 ms later moves the topic out of the fitted view.
+    const mounted = await mount('## 本体\n\n- 回復する\n\n## 資料\n\n- 甲\n- 乙\n\n## 補足\n\n- 用語\n', 'mindmap');
+    await sized(mounted);
+    const { view, topic, viewport, store } = mounted;
+    const dragged = topic('資料');
+    const shift = shiftOf(view);
+    shift(dragged.id, { x: 40, y: -40 });
+    await frame();
+    select(view, 'balanced');
+    await frame();
+    // Far to the right, so the drop widens the map's bounds and a fit of the map before it differs.
+    const drop = { x: 900, y: -40 };
+    shift(dragged.id, drop);
+    await frame();
+    // The save's own re-read takes a moment, and the watcher's refresh is scheduled while it is under way.
+    const read = store.read.bind(store);
+    const slow = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      setTimeout(() => { (view as unknown as { scheduleRefresh(): void }).scheduleRefresh(); }, 0);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return read(file);
+    });
+    const place = (view as unknown as { placeTopic(id: string, delta: { x: number; y: number }): Promise<void> }).placeTopic.bind(view);
+    await place(dragged.id, drop);
+    slow.mockRestore();
+    await reread(mounted);
+    expect(readTopicPositions(mounted.source()).get('資料')?.balanced).toBeDefined();
     expect(viewport()).toEqual(fitted(mounted));
   });
 
@@ -1766,7 +1802,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     await frame();
     expectAt(screenOf(mounted, root.id), { x: bodyBefore.x + 30, y: bodyBefore.y });
     pointer('pointerup', canvas, 590, 430);
-    await mounted.settle();
+    await reread(mounted);
     expect(viewport()).toEqual(fitted(mounted));
   });
 

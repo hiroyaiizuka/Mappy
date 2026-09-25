@@ -1181,9 +1181,11 @@ async function captureTopicOperations(recorder, page) {
     const button = await page.harness(`h.button(${JSON.stringify('左右バランス')})`);
     expect(button, 'no 左右バランス button');
     const from = center((await topicRect(name)).rect);
+    let held = false;
     try {
       await page.mouse('mouseMoved', from.x, from.y);
       await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+      held = true;
       await page.mouse('mouseMoved', from.x + 20, from.y + 10, { button: 'left' });
       await page.mouse('mouseMoved', from.x + 40, from.y + 20, { button: 'left' });
       await page.settle();
@@ -1204,6 +1206,9 @@ async function captureTopicOperations(recorder, page) {
       const follow = { x: moved.x - switched.rect.x, y: moved.y - switched.rect.y };
       expect(Math.abs(follow.x - 30) < 1.5 && Math.abs(follow.y) < 1.5, `${name} followed 30 px of travel by ${follow.x.toFixed(1)}, ${follow.y.toFixed(1)}`);
       await page.mouse('mouseReleased', from.x + 70, from.y + 20, { button: 'left', clickCount: 1 });
+      held = false;
+      // The held fit also waits for the re-read the save's watcher schedules (45 ms), which a settle can return ahead of.
+      await page.evaluate('new Promise(done => { setTimeout(done, 150); })');
       await page.settle();
       // The fit the switch asked for runs once the drag is over: the whole balanced map is inside the canvas.
       const canvas = await page.harness('h.canvasRect()');
@@ -1213,6 +1218,12 @@ async function captureTopicOperations(recorder, page) {
       expect(Math.abs(released.scale - switched.view.scale) > 1e-6 || Math.abs(released.x - switched.view.x) > 0.5, 'the viewport did not change on the release');
       return `切替時のずれ ${jump.x.toFixed(1)}, ${jump.y.toFixed(1)} px、scale ${before.view.scale.toFixed(3)} のまま、離したあと Fit（scale ${released.scale.toFixed(3)}）`;
     } finally {
+      // An assertion that threw mid-drag leaves the button down and the canvas holding the capture: released first,
+      // or the fit button's click below would end that drag and write its position over the text put back here.
+      if (held) {
+        await page.mouse('mouseReleased', from.x + 40, from.y + 20, { button: 'left', clickCount: 1 });
+        await page.settle();
+      }
       await page.harness(`h.putNote('Fixtures/free-topics.md', ${JSON.stringify(base)})`);
       await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
       const fit = await page.harness('h.button("全体表示")');

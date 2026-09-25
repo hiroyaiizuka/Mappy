@@ -1253,8 +1253,11 @@ export class MindmapView extends FileView {
       this.drawEdges(this.layout.edges);
       // A free drag places its tree (a topic by `overrides`, the body by the viewport pan) through the viewport it
       // started under, so a fit asked for mid-drag (a layout button pressed by a second pointer) waits for the
-      // frame `endTopicDrag` requests; fitting now would pull the tree off the pointer (LEV-182).
-      if (this.needsFit && !this.topicDrag && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
+      // frame `endTopicDrag` requests; fitting now would pull the tree off the pointer (LEV-182). It also waits for
+      // a re-read scheduled or under way: after a drop, the save's own re-read gives up when the watcher schedules a
+      // newer one (`commit`), and until that one draws, this frame lays out the note from before the drop.
+      const reading = this.refreshTimer !== undefined || this.refreshing !== undefined;
+      if (this.needsFit && !this.topicDrag && !reading && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
         this.viewport.fit(this.layout.bounds); this.needsFit = false;
       }
       if (this.revealId) { this.ensureVisible(this.revealId); this.revealId = null; }
