@@ -26,6 +26,8 @@
     "harness:e2e": "node scripts/e2e/run.mjs",
     "harness:e2e:add-delete": "node scripts/e2e/add-delete.mjs",
     "harness:e2e:undo-redo": "node scripts/e2e/undo-redo.mjs",
+    "harness:e2e:deep-branches": "node scripts/e2e/deep-branches.mjs",
+    "harness:e2e:convert-to-list": "node scripts/e2e/convert-to-list.mjs",
     "harness:e2e:move-parent-text": "node scripts/e2e/move-parent-text.mjs",
     "harness:e2e:paste": "node scripts/e2e/paste-image.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
