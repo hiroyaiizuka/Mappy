@@ -12,12 +12,15 @@ export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; con
   const nodes = () => Array.from(el.querySelectorAll('.mappy-node'));
   // A node's name is the hidden element its aria-labelledby points to (LEV-199); builds through 0.3.4 put it in aria-label.
   const label = node => {
-    const named = node.getAttribute('aria-labelledby');
-    if (!named) return node.getAttribute('aria-label') ?? '';
-    const target = node.ownerDocument.getElementById(named);
-    // A dangling reference is a broken build, not an untitled node: say so instead of matching the empty title.
-    if (!target) throw new Error('aria-labelledby points to a missing element: ' + named);
-    return target.textContent ?? '';
+    // The same reading as tests/ui/accessible-name.ts: every id, their texts trimmed and joined by a space.
+    const ids = (node.getAttribute('aria-labelledby') ?? '').split(/\\s+/u).filter(Boolean);
+    if (ids.length === 0) return node.getAttribute('aria-label') ?? '';
+    return ids.map(id => {
+      const target = node.ownerDocument.getElementById(id) ?? node.querySelector('[id="' + CSS.escape(id) + '"]');
+      // A dangling reference is a broken build, not an untitled node: say so instead of matching the empty title.
+      if (!target) throw new Error('aria-labelledby points to a missing element: ' + id);
+      return target.textContent?.trim() ?? '';
+    }).join(' ');
   };
   const nth = (title, index) => nodes().filter(node => label(node) === title)[index];
   const input = () => el.querySelector('textarea.mappy-inline-input');

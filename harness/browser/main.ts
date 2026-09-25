@@ -560,13 +560,17 @@ interface NodeInfo {
   color: string;
 }
 
-/** The text of the elements an `aria-labelledby`/`aria-describedby` points to, as a screen reader reads it; null without one. */
+/**
+ * The text of the elements an `aria-labelledby`/`aria-describedby` points to, as a screen reader reads it (the same
+ * reading as tests/ui/accessible-name.ts); null without one. A node's own elements are found even when it is not in
+ * the document, and a dangling reference names the node it is on.
+ */
 function referenced(element: HTMLElement, attribute: string): string | null {
   const ids = element.getAttribute(attribute)?.split(/\s+/u).filter(Boolean);
   if (!ids?.length) return null;
   return ids.map(id => {
-    const target = element.ownerDocument.getElementById(id);
-    if (!target) throw new Error(`${attribute} points to a missing element: ${id}`);
+    const target = element.ownerDocument.getElementById(id) ?? element.querySelector(`[id="${CSS.escape(id)}"]`);
+    if (!target) throw new Error(`${attribute} of node ${element.dataset.nodeId ?? "?"} points to a missing element: ${id}`);
     return target.textContent?.trim() ?? "";
   }).join(" ");
 }

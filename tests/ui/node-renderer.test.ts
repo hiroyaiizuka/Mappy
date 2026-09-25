@@ -337,6 +337,10 @@ describe('NodeRenderer node names (LEV-199: no title tooltip over the node below
     const appearance = { visualRootId: id(parsed, 'Course'), mode: 'mindmap' as const };
     renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
     const element = renderer.entries.get(id(parsed, 'one'))?.element as HTMLElement;
+    // An update that changes nothing leaves the name's text node alone: a large map's refresh is not a mutation per node.
+    const text = element.querySelector('.mappy-node-name')?.firstChild;
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    expect(element.querySelector('.mappy-node-name')?.firstChild).toBe(text);
     const renamed = parseMarkdown('## Course\n- uno\n', 'File root', parsed);
     renderer.update(renamed.nodes, renamed, 'Course.md', new Set(), appearance);
     expect(renderer.entries.get(id(renamed, 'uno'))?.element).toBe(element);

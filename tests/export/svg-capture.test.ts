@@ -191,8 +191,11 @@ describe('SVG export of the map view (jsdom)', () => {
     expect(Array.from(parsed.querySelectorAll('.mappy-fold text'), text => text.textContent)).toEqual(['1']);
     const calling = Array.from(parsed.querySelectorAll('.mappy-node')).find(node => node.classList.contains('is-called-root'));
     expect(calling?.querySelector('.mappy-node-call-mark svg')).not.toBeNull();
-    // The source is no longer a hover title on the map (LEV-199), so the file carries none either.
-    expect(calling?.hasAttribute('title')).toBe(false);
+    // On the map the source is read after the name, not a hover title (LEV-199); the file keeps it as its tooltip.
+    expect(calling?.getAttribute('title')).toBe('呼び出し元: Called.md');
+    const plain = Array.from(parsed.querySelectorAll('.mappy-node')).filter(node => !node.classList.contains('is-called'));
+    expect(plain.length).toBeGreaterThan(0);
+    for (const node of plain) expect(node.hasAttribute('title')).toBe(false);
     expect(parsed.querySelectorAll('.mappy-node.is-called')).toHaveLength(3);
     expect(parsed.querySelectorAll('.mappy-edges path')).toHaveLength(4);
     expect(svg).not.toContain('mappy-export-embed');

@@ -2037,12 +2037,16 @@ async function embedNode(page, src, title) {
  * app.js (1.14.2) does: the closest `[aria-label]` at or above the element (`matchParent`, the delegate of
  * `body.on("pointerover", "[aria-label]")` and of the `pointerout` hand-over), unless that element's computed
  * `--no-tooltip` is `true`. The tooltip sits below that element, so on a node it covers the node below.
+ * The browser's native tooltip (`title` at or above the element) is counted too: it shows under the pointer all the same.
  * `nodes`: the elements of the node bodies (the fold control aside) that would show one, with its text.
  * `unnamed`: fold controls and map buttons that would show none (they keep theirs).
  */
 async function tooltipFacts(page, scope) {
   return page.evaluate(`(() => {
     const tip = element => {
+      // The browser's own tooltip first: a title attribute at or above the element shows whatever Obsidian does.
+      const titled = element.closest('[title]');
+      if (titled && titled.getAttribute('title')) return 'title ' + titled.getAttribute('title');
       const owner = element.closest('[aria-label]');
       if (!owner || getComputedStyle(owner).getPropertyValue('--no-tooltip').trim() === 'true') return null;
       return owner.getAttribute('aria-label');
@@ -2053,7 +2057,10 @@ async function tooltipFacts(page, scope) {
     const nodes = parts.map(element => ({ element, text: tip(element) })).filter(item => item.text !== null)
       .map(item => (item.element.className || item.element.tagName) + ': ' + item.text);
     const controls = Array.from(scope.querySelectorAll('.mappy-node-toggle:not([hidden]), .mappy-button'));
-    const unnamed = controls.filter(element => tip(element) !== element.getAttribute('aria-label')).map(element => element.className);
+    const unnamed = controls.filter(element => {
+      const shown = tip(element);
+      return shown !== element.getAttribute('aria-label') && shown !== 'title ' + element.getAttribute('title');
+    }).map(element => element.className);
     return { parts: parts.length, nodes: Array.from(new Set(nodes)), controls: controls.length, unnamed };
   })()`);
 }

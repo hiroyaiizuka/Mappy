@@ -121,16 +121,19 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
-      entry.name.setText(node.title.trim() || "空のノード");
+      // Written only when it changes: a text node replaced on every refresh of a large map is a mutation each.
+      const name = node.title.trim() || "空のノード";
+      if (entry.name.textContent !== name) entry.name.setText(name);
       // The branches of a called map are read-only on this map (the calling item itself is not); every node of them
       // names its note after its name. Not on hover: a tooltip there covers the node below as the name's did (LEV-199).
       if (source && !source.root) entry.element.setAttribute("aria-readonly", "true");
       else entry.element.removeAttribute("aria-readonly");
       if (source) {
         entry.description ??= nameElement(entry.element, "description");
-        entry.description.setText(`呼び出し元: ${source.path}${source.subpath}`);
+        const description = `呼び出し元: ${source.path}${source.subpath}`;
+        if (entry.description.textContent !== description) entry.description.setText(description);
         entry.element.setAttribute("aria-describedby", entry.description.id);
-      } else if (entry.description) {
+      } else if (entry.description?.textContent) {
         entry.description.setText("");
         entry.element.removeAttribute("aria-describedby");
       }
