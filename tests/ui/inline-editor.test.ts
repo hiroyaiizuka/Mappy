@@ -139,11 +139,24 @@ describe('InlineEditor DOM interactions', () => {
       const calls = options.resize.mock.calls.length;
       editor.fit();
       expect(input.style.width).toBe('182px');
-      expect(options.resize).toHaveBeenCalledTimes(calls + 1);
+      // The callers (draw, onResize) lay the map out themselves.
+      expect(options.resize).toHaveBeenCalledTimes(calls);
       // The node became a root (bolder, wider text).
       width = 200;
       editor.fit();
       expect(input.style.width).toBe('202px');
+    });
+
+    it('does nothing on fit where the stylesheet sizes the draft', () => {
+      fieldSizing(true);
+      const reads: number[] = [];
+      scrollWidth(() => { reads.push(1); return 180; });
+      const { options, editor, input } = fixture('長い名前');
+      const calls = options.resize.mock.calls.length;
+      editor.fit();
+      expect(reads).toEqual([]);
+      expect(input.style.width).toBe('');
+      expect(options.resize).toHaveBeenCalledTimes(calls);
     });
 
     it('keeps the width while the IME composes and measures it at compositionend', () => {

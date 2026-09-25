@@ -908,11 +908,37 @@ async function captureInlineWidth(recorder, page) {
     { id: 'timeline', label: 'タイムラインで「空に近い枝」を F2', fixture: OPERATION_FIXTURE, mode: 'timeline', target: '空に近い枝', how: 'F2', kinds: ['全角'] },
     { id: 'hierarchy', label: '階層図で「空に近い枝」を F2', fixture: OPERATION_FIXTURE, mode: 'hierarchy', target: '空に近い枝', how: 'F2', kinds: ['全角'] },
     { id: 'balanced-left', label: '左右バランスで左側の「空に近い枝」を F2', fixture: OPERATION_FIXTURE, mode: 'balanced', target: '空に近い枝', how: 'F2', kinds: ['全角'] },
+    // The measuring path of InlineEditor (engines without `field-sizing`, older iOS WebKit), run in Chrome by
+    // reporting the property unsupported and switching it off.
+    { id: 'fallback', label: '`field-sizing` を無効にして（CSS.supports が false、field-sizing: fixed）「空に近い枝」「不均等な枝」で F2', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '空に近い枝', how: 'F2', kinds: ['全角', '混在'], fallback: true },
   ];
+  const fallback = on => page.evaluate(on
+    ? `(() => { window.__mappySupports = CSS.supports; CSS.supports = () => false;
+        const style = document.createElement('style'); style.id = 'no-field-sizing';
+        style.textContent = '.mappy-view .mappy-inline-input { field-sizing: fixed !important; }'; document.head.append(style); })()`
+    : `(() => { if (window.__mappySupports) CSS.supports = window.__mappySupports; document.getElementById('no-field-sizing')?.remove(); })()`);
   for (const cell of cells) {
     await recorder.run(`inline-width-${cell.id}`, `${cell.label} → ${cell.kinds.join('・')}を 1 文字ずつ入力（各長さを原文から入力し直して Enter）`,
       '1 行のまま横に広がり、20em（全角約 20 文字）で折り返す。折り返しの直前・直後・全文で、確定したラベルの行数が入力中と同じ', async () => {
         const results = [];
+        if (cell.fallback) {
+          await fallback(true);
+          try {
+            for (const kind of cell.kinds) results.push(await probe({ ...cell, kind }));
+            results.push(await probe({ ...cell, target: '不均等な枝', kind: '混在' }));
+            // The measuring path pins the width inline; the stylesheet path never does.
+            await reset(cell.fixture, cell.mode);
+            await open(cell.target, cell.how);
+            await page.type('あ');
+            const pinned = await page.evaluate(`document.getElementById('harness-pane').querySelector('.mappy-inline-input').style.width`);
+            await page.key('Escape', 'Escape', 27);
+            await page.settle();
+            expect(pinned !== '', 'the draft has no measured width: the fallback was not in force');
+          } finally {
+            await fallback(false);
+          }
+          return results.map(summary).join('／');
+        }
         for (const kind of cell.kinds) results.push(await probe({ ...cell, kind }));
         if (cell.id === 'image') {
           // The image makes the node wider than a short draft: the draft still fills it, so a click beside the text

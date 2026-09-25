@@ -26,7 +26,10 @@ describe("map editing CSS", () => {
     expect(css).not.toMatch(/@property/u);
     expect(rule(".mappy-view .mappy-inline-error")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
     // The one-row width InlineEditor.resize reads.
-    expect(rule(".mappy-view .mappy-inline-input.is-measuring")).toMatch(/width:\s*0;\s*white-space:\s*pre;/u);
+    // No min-width while measuring: `max(40px, 100%)` would floor the reading at the node's width.
+    expect(rule(".mappy-view .mappy-inline-input.is-measuring")).toMatch(/width:\s*0;\s*min-width:\s*0;\s*padding-right:\s*1px;\s*white-space:\s*pre;/u);
+    // Spacing a theme gives the label reaches the draft too (the UA resets it on a textarea).
+    for (const property of ["letter-spacing", "word-spacing", "text-transform"]) expect(input).toMatch(new RegExp(`${property}:\\s*inherit;`, "u"));
   });
 
   it("draws the drag preview connector and slot frame in the lighter drop blue, not the selection blue", async () => {

@@ -444,4 +444,22 @@ describe('MindmapView keeps the open draft measured when a refresh restyles its 
       vi.unstubAllGlobals();
     }
   });
+
+  it('measures a draft opened in a pane with no layout once the pane is resized into view', async () => {
+    vi.stubGlobal('CSS', { supports: () => false });
+    let width = 0;
+    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(() => width);
+    try {
+      const mounted = await mount(SOURCE);
+      const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+      // Hidden: nothing to measure, and no width is pinned.
+      expect(input.style.width).toBe('');
+      width = 150;
+      mounted.view.onResize();
+      expect(input.style.width).toBe('152px');
+    } finally {
+      scrollWidth.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -311,6 +311,10 @@
   color: var(--text-normal);
   box-shadow: none;
   font: inherit;
+  /* The UA resets these on a textarea; a theme that spaces the label's text must space the draft the same. */
+  letter-spacing: inherit;
+  word-spacing: inherit;
+  text-transform: inherit;
   line-height: inherit;
   outline: none;
   /* No scrollbar while the fallback measures the height (it would narrow the row), and the label's breaking rule. */
@@ -319,7 +323,9 @@
   resize: none;
 }
 /* Set only while InlineEditor.resize (without `field-sizing`) reads the text's one-row width. */
-.mappy-view .mappy-inline-input.is-measuring { width: 0; white-space: pre; }
+/* No width and no min-width (the node's width must not floor the reading); the 1px padding makes a laid-out empty
+   draft read 1, so 0 still means no layout at all. */
+.mappy-view .mappy-inline-input.is-measuring { width: 0; min-width: 0; padding-right: 1px; white-space: pre; }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
 .mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
 .mappy-view .mappy-inline-error { max-width: var(--mappy-text-wrap); margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }

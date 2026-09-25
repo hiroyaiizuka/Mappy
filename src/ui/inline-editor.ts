@@ -105,8 +105,8 @@ export class InlineEditor {
       this.input.classList.add("is-measuring");
       const natural = this.input.scrollWidth;
       this.input.classList.remove("is-measuring");
-      // Even an empty draft reads the 40px min-width; 0 means no layout yet (a hidden pane): the view's onResize
-      // measures again once it has one.
+      // A laid-out empty draft reads 1 (the class's padding); 0 means no layout yet (a hidden pane): the view's
+      // onResize measures again once it has one.
       if (natural > 0) this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
     }
     this.input.style.removeProperty("height");
@@ -119,7 +119,8 @@ export class InlineEditor {
    * a pane that had no layout has one now. Only the measuring fallback holds a width that can go stale.
    */
   fit(): void {
-    if (!this.disposed) this.resize();
+    // The callers (draw, onResize) lay the map out themselves.
+    if (!this.disposed && !this.sizesItself) this.measure();
   }
 
   /**
