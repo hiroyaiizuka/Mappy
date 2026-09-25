@@ -206,6 +206,13 @@ export function styleDeclarations(element: Element, style: CSSStyleDeclaration |
   return Array.from(values, ([property, value]) => `${property}:${value}`).join(';');
 }
 
+/** The text of the node's own elements its `aria-describedby` points to (they are hidden, so not written themselves). */
+function description(element: Element): string | null {
+  const ids = element.getAttribute('aria-describedby')?.split(/\s+/u).filter(Boolean) ?? [];
+  const texts = ids.map(id => Array.from(element.querySelectorAll('[id]')).find(item => item.id === id)?.textContent?.trim() ?? '');
+  return texts.some(Boolean) ? texts.filter(Boolean).join(' ') : null;
+}
+
 function isHidden(element: Element, style: CSSStyleDeclaration | null): boolean {
   return element.hasAttribute('hidden') || style?.getPropertyValue('display').trim() === 'none';
 }
@@ -332,7 +339,9 @@ function serializeElement(element: Element, context: Serializer, root: boolean, 
   if (!isXmlName(tag)) return '';
   const styleClass = context.registry.classFor(styleDeclarations(element, style));
   const extra: Record<string, string | null> = {
-    ...(root ? { xmlns: XHTML_NAMESPACE } : {}),
+    // A called node names its note to a screen reader on the map, not on hover there (LEV-199). The file has no
+    // input below a node to cover, so it keeps the note as the tooltip it was.
+    ...(root ? { xmlns: XHTML_NAMESPACE, title: description(element) ?? element.getAttribute('title') } : {}),
     class: exportedClasses(element, styleClass),
     style: geometry ? `width:${formatNumber(geometry.width)}px;height:${formatNumber(geometry.height)}px` : null,
   };

@@ -8,6 +8,13 @@ describe("map editing CSS", () => {
     expect(rule).toMatch(/max-width:\s*303px;/u);
   });
 
+  it("turns Obsidian's hover tooltips off over the map, fold controls aside (LEV-199)", async () => {
+    const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
+    // The property inherits: set on the canvas, it reaches the nodes' parts and the inline input; the toggles take it back.
+    expect(css).toMatch(/\.mappy-view \.mappy-canvas \{\s*--no-tooltip:\s*true;\s*\}/u);
+    expect(css).toMatch(/\.mappy-view \.mappy-node-toggle \{\s*--no-tooltip:\s*false;\s*\}/u);
+  });
+
   it("draws the drag preview connector and slot frame in the lighter drop blue, not the selection blue", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
     expect(css).toMatch(/--mappy-drop:\s*#2cbdff;/u);

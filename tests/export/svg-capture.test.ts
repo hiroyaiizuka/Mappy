@@ -13,6 +13,7 @@ import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { EXPORT_RENDER_STALLED_MESSAGE, EXPORT_RENDER_WAIT_MS, MindmapView } from '../../src/ui/mindmap-view';
+import { accessibleName } from '../ui/accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view and renderer run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -190,7 +191,11 @@ describe('SVG export of the map view (jsdom)', () => {
     expect(Array.from(parsed.querySelectorAll('.mappy-fold text'), text => text.textContent)).toEqual(['1']);
     const calling = Array.from(parsed.querySelectorAll('.mappy-node')).find(node => node.classList.contains('is-called-root'));
     expect(calling?.querySelector('.mappy-node-call-mark svg')).not.toBeNull();
+    // On the map the source is read after the name, not a hover title (LEV-199); the file keeps it as its tooltip.
     expect(calling?.getAttribute('title')).toBe('呼び出し元: Called.md');
+    const plain = Array.from(parsed.querySelectorAll('.mappy-node')).filter(node => !node.classList.contains('is-called'));
+    expect(plain.length).toBeGreaterThan(0);
+    for (const node of plain) expect(node.hasAttribute('title')).toBe(false);
     expect(parsed.querySelectorAll('.mappy-node.is-called')).toHaveLength(3);
     expect(parsed.querySelectorAll('.mappy-edges path')).toHaveLength(4);
     expect(svg).not.toContain('mappy-export-embed');
@@ -331,7 +336,7 @@ describe('SVG export of the map view (jsdom)', () => {
       // No settle: the export runs the debounced refresh itself, and the render it starts is still in flight.
       const { source, parsed } = await exportOf(mounted);
       expect(render).toHaveBeenCalled();
-      const added = mounted.nodes().find(node => node.getAttribute('aria-label') === '外部変更で足した枝');
+      const added = mounted.nodes().find(node => accessibleName(node) === '外部変更で足した枝');
       expect(added?.querySelector('.mappy-node-label')?.textContent).toBe('外部変更で足した枝');
       const object = parsed.querySelector(`foreignObject[data-node-id="${added?.dataset.nodeId ?? ''}"]`);
       expect(object?.querySelector('.mappy-node-label')?.textContent?.trim()).toBe('外部変更で足した枝');
@@ -367,7 +372,7 @@ describe('SVG export of the map view (jsdom)', () => {
       const source = await pending;
       expect(Notice.log).toEqual([EXPORT_RENDER_STALLED_MESSAGE]);
       expect(source.entries.size).toBe(before + 1);
-      const added = mounted.nodes().find(node => node.getAttribute('aria-label') === '描画が終わらない枝');
+      const added = mounted.nodes().find(node => accessibleName(node) === '描画が終わらない枝');
       expect(added?.querySelector('.mappy-node-label')?.textContent).toBe('');
       expect(source.entries.get(added?.dataset.nodeId ?? '')?.element).toBe(added);
     } finally {
