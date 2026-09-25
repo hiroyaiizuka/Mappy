@@ -13,9 +13,9 @@
  *
  * Usage: npm run harness:e2e:undo-redo -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+import { connect, VAULT } from './cdp.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeHistory, makeRename } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -33,40 +33,16 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
-const focusCanvas = makeFocusCanvas(cdp, evaluate);
-const mapState = makeState(evaluate);
 
 /**
- * F2 on the selected node: the inline editor opens with its current title selected (`InlineEditor`'s
- * constructor calls `input.select()`), so typing replaces it outright. One `commit()`, one history entry.
+ * F2 on the selected node (`makeRename`, dom-helpers.mjs): the inline editor opens with its current title
+ * selected (`InlineEditor`'s constructor calls `input.select()`), so typing replaces it outright. One
+ * `commit()`, one history entry.
  */
-const rename = async title => {
-  await cdp.realKey('F2');
-  await wait(1000);
-  const editing = await evaluate(`${VIEW} return !!input();`);
-  if (!editing) throw new Error('F2 did not open the inline editor');
-  await cdp.insertText(title);
-  await wait(300);
-  await cdp.realKey('Enter');
-  await wait(1000);
-  return mapState();
-};
+const rename = makeRename(cdp, evaluate);
 
-/**
- * ⌘Z / ⌘⇧Z, on the canvas rather than a specific node (`MapEvents.keydown`: the history answers with
- * nothing selected too). A blank click first puts focus back in the canvas — after a toggle round trip
- * (`showSource`'s `editor.focus()`, then the map's own async refocus) it is not guaranteed to be there,
- * and the chord is only ever caught by the map's `keydown` listener while it is (docs/harness.md 実機検証:
- * otherwise it reaches macOS and CDP hangs on the native dialog). Only sent with no draft open.
- */
-const history = async direction => {
-  await focusCanvas();
-  const before = await mapState();
-  if (before.editing) throw new Error(`${direction} sent while a draft was open`);
-  await cdp.realKey('z', direction === 'redo' ? 12 : 4);
-  await wait(1000);
-  return mapState();
-};
+/** ⌘Z / ⌘⇧Z on the canvas after a blank click (`makeHistory`, dom-helpers.mjs, says why the click). */
+const history = makeHistory(cdp, evaluate);
 
 const toggle = () => evaluate(`
   const before = window.__mappyE2E.view.getViewType();
@@ -81,7 +57,7 @@ const toggle = () => evaluate(`
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 編集 (F2 rename, one history entry). The expected text is computed independently of what the map
@@ -143,7 +119,7 @@ try {
   });
   // One further redo must be a no-op: the stack is exhausted, not somehow re-armed by the round trip.
   await step('redo-exhausted', async () => {
-    const result = await history('redo');
+    const result = await history('redo', 1500);
     check(result.messages.length === 0, `⌘⇧Z showed ${JSON.stringify(result.messages)}`);
     check(result.source === afterEdit.source, `a redo past the end of the stack changed the document:\nexpected: ${JSON.stringify(afterEdit.source)}\nactual:   ${JSON.stringify(result.source)}`);
     return result;
@@ -158,6 +134,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

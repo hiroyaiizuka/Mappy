@@ -14,9 +14,9 @@
  *
  * Usage: npm run harness:e2e:move-parent-text -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste } from './dom-helpers.mjs';
+import { connect, VAULT } from './cdp.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste, makeMoveAlt, makeAfter } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -44,18 +44,13 @@ const select = makeSelect(cdp, evaluate);
 const paste = makePaste(evaluate);
 const state = makeState(evaluate);
 
-/** ⌥↑ or ⌥↓ on the selected node: modifiers bit 1 = Alt (scripts/e2e/cdp.mjs). Only sent with no draft open (docs/harness.md 実機検証). */
-const moveAlt = async key => {
-  const before = await state();
-  if (before.editing) throw new Error(`${key} sent while a draft was open`);
-  await cdp.realKey(key, 1);
-  await wait(800);
-  return state();
-};
+/** ⌥↑ or ⌥↓ on the selected node (`makeMoveAlt`, dom-helpers.mjs); a boundary step, where nothing should change, waits out a shorter timeout. */
+const moveAlt = makeMoveAlt(cdp, evaluate);
+const after = makeAfter(evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 1. ⌥↓ on the first child: the two children swap, and はじめに's own trailing text is untouched.
@@ -74,7 +69,7 @@ try {
   // be a no-op, not reach past the trailing text into 記録する.
   await step('move-down-boundary', async () => {
     await select('学ぶこと');
-    const result = await moveAlt('ArrowDown');
+    const result = await moveAlt('ArrowDown', 1500);
     check(result.messages.length === 0, `⌥↓ at the boundary showed ${JSON.stringify(result.messages)}`);
     check(result.source === afterDown.source, `⌥↓ past the last child changed the document:\nbefore: ${JSON.stringify(afterDown.source)}\nafter:  ${JSON.stringify(result.source)}`);
     return result;
@@ -84,7 +79,7 @@ try {
   // はじめに itself with 記録する at the top level).
   await step('move-up-boundary', async () => {
     await select('全体の流れ');
-    const result = await moveAlt('ArrowUp');
+    const result = await moveAlt('ArrowUp', 1500);
     check(result.messages.length === 0, `⌥↑ at the boundary showed ${JSON.stringify(result.messages)}`);
     check(result.source === afterDown.source, `⌥↑ past the first child changed the document:\nbefore: ${JSON.stringify(afterDown.source)}\nafter:  ${JSON.stringify(result.source)}`);
     return result;
@@ -103,9 +98,9 @@ try {
   // body, before the child list — the child list and the trailing text must not move.
   await step('attach-image', async () => {
     await select('はじめに');
+    const before = (await state()).source;
     await paste('parent-body.png');
-    await wait(2000);
-    const result = await state();
+    const result = await after(before, 5000);
     check(result.messages.length === 0, `the paste showed ${JSON.stringify(result.messages)}`);
     check(result.labels.filter(title => title === '学ぶこと' || title === '全体の流れ').length === 2,
       'both children of はじめに should still be on the map');
@@ -134,6 +129,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: [file?.path, ...attachments.map(f => f.path)].filter(Boolean) };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

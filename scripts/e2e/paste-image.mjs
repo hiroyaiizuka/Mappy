@@ -16,7 +16,7 @@
  *   --keep    leave the note and its attachments in the vault
  */
 import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeOpenStep, makePaste } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -55,7 +55,7 @@ const state = () => evaluate(`${VIEW}
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
 
   // 1. A new node, an image pasted onto it, and the node left as the user leaves it: untitled.
   await step('first-paste', async () => {
@@ -111,6 +111,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: attachments.map(file => file.path) };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

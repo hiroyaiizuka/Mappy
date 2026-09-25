@@ -9,9 +9,9 @@
  *
  * Usage: npm run harness:e2e:add-delete -- [--reload] [--json <out.json>] [--keep]
  */
-import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+import { connect, VAULT } from './cdp.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeAddNamed, makeAfter } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -31,22 +31,13 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const state = makeState(evaluate);
 
-/** Enter or Tab on the selected node, answered by the inline editor opening on the new empty node, then a title and Enter to confirm it. */
-const addNamed = async (key, title) => {
-  await cdp.realKey(key);
-  await wait(1000);
-  const editing = await evaluate(`${VIEW} return !!input();`);
-  if (!editing) throw new Error(`${key} did not open the inline editor on a new node`);
-  await cdp.insertText(title);
-  await wait(300);
-  await cdp.realKey('Enter');
-  await wait(1000);
-  return state();
-};
+/** Enter or Tab on the selected node, then a title and Enter (`makeAddNamed`, dom-helpers.mjs). */
+const addNamed = makeAddNamed(cdp, evaluate);
+const after = makeAfter(evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 1. Enter on 子1: a new sibling between 子1 and 子2, named in place. A tight list, so the only
@@ -77,9 +68,9 @@ try {
   // 3. Delete the child: back to the state right after step 1, byte for byte.
   await step('delete-child', async () => {
     await select('新しい子');
+    const before = (await state()).source;
     await cdp.realKey('Delete');
-    await wait(800);
-    const result = await state();
+    const result = await after(before);
     check(result.messages.length === 0, `Delete showed ${JSON.stringify(result.messages)}`);
     check(!result.labels.includes('新しい子'), 'the deleted child is still on the map');
     check(result.source === afterSibling.source, `Delete left the list different from before the child was added:\nexpected: ${JSON.stringify(afterSibling.source)}\nactual:   ${JSON.stringify(result.source)}`);
@@ -91,9 +82,9 @@ try {
   // document this case started from, byte for byte.
   await step('delete-sibling', async () => {
     await select('新しい兄弟');
+    const before = (await state()).source;
     await cdp.realKey('Delete');
-    await wait(800);
-    const result = await state();
+    const result = await after(before);
     check(result.messages.length === 0, `Delete showed ${JSON.stringify(result.messages)}`);
     check(!result.labels.includes('新しい兄弟'), 'the deleted sibling is still on the map');
     check(result.source === initial, `the round trip did not return to the original Markdown:\nexpected: ${JSON.stringify(initial)}\nactual:   ${JSON.stringify(result.source)}`);
@@ -110,6 +101,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }
