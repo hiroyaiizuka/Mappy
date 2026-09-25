@@ -200,7 +200,9 @@
   box-sizing: border-box;
   width: max-content;
   min-width: 24px;
-  max-width: 420px;
+  /* Text wraps at about 20 full-width characters of the node's own font (LEV-198): the label's box and the inline
+     editor both cap at this, so a draft breaks its rows where the confirmed label will. Resolved where used (em). */
+  --mappy-text-wrap: 20em;
   min-height: 28px;
   padding: 4px 8px;
   border: 0;
@@ -215,7 +217,6 @@
   line-height: 1.4;
 }
 .mappy-view .mappy-node.is-root {
-  max-width: 360px;
   padding: 12px 18px;
   border: 2px solid var(--mappy-line);
   border-radius: 8px;
@@ -228,8 +229,9 @@
   border-radius: 7px;
   background: var(--background-primary);
 }
-.mappy-view .mappy-node.is-root > .mappy-node-content > .mappy-node-label { font-weight: 700; }
-.mappy-view .mappy-node.is-stage > .mappy-node-content > .mappy-node-label { font-weight: 600; }
+/* The inline editor draws the draft in the label's weight: a bolder label is wider, and would wrap sooner than the draft did (LEV-198). */
+.mappy-view .mappy-node.is-root > .mappy-node-content > .mappy-node-label, .mappy-view .mappy-node.is-root > .mappy-inline-input { font-weight: 700; }
+.mappy-view .mappy-node.is-stage > .mappy-node-content > .mappy-node-label, .mappy-view .mappy-node.is-stage > .mappy-inline-input { font-weight: 600; }
 .mappy-view .mappy-node.is-selected, .mappy-view .mappy-node:focus-visible { outline: 1px solid var(--mappy-selection); outline-offset: 1px; }
 /* Image files dragged in from outside attach to the highlighted node. */
 .mappy-view .mappy-node.is-drop-target { outline: 1px dashed var(--mappy-selection); outline-offset: 3px; }
@@ -273,7 +275,7 @@
 }
 .mappy-view .mappy-drop-placeholder[hidden] { display: none; }
 .mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-drop); stroke-width: 4; stroke-linecap: round; }
-.mappy-view .mappy-node-content { min-width: 0; }
+.mappy-view .mappy-node-content { min-width: 0; max-width: var(--mappy-text-wrap); }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
 /* While the inline editor stands in for a node's text, the node hides that text and keeps its attachments on
    screen; both parts set `display`, so the browser's own rule for `hidden` needs saying again here. */
@@ -291,9 +293,8 @@
 .mappy-view .mappy-inline-input {
   display: block;
   box-sizing: border-box;
-  width: 100%;
   min-width: 40px;
-  max-width: 303px;
+  max-width: var(--mappy-text-wrap);
   min-height: 22px;
   margin: 0;
   padding: 0;
@@ -305,11 +306,16 @@
   font: inherit;
   line-height: inherit;
   outline: none;
+  /* No scrollbar while the height is measured (it would narrow the row), and the label's breaking rule. */
+  overflow: hidden;
+  overflow-wrap: anywhere;
   resize: none;
 }
+/* Set only while InlineEditor.resize reads the text's one-row width. */
+.mappy-view .mappy-inline-input.is-measuring { width: 0; white-space: pre; }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
 .mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
-.mappy-view .mappy-inline-error { max-width: 303px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
+.mappy-view .mappy-inline-error { max-width: var(--mappy-text-wrap); margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
 .mappy-view .mappy-inline-error:empty { display: none; }
 .mappy-view .mappy-node-toggle {
   position: absolute;

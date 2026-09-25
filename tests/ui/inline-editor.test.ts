@@ -84,6 +84,29 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.save).not.toHaveBeenCalled();
   });
 
+  it('sizes the draft to its text measured on one row, leaving the wrap to the CSS max-width (LEV-198)', () => {
+    // jsdom has no layout: the textarea reports 180px for the text laid out on one row (the `is-measuring`
+    // rule in styles.css: no width, no wrapping) and 40px otherwise.
+    const measured: string[] = [];
+    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLTextAreaElement) {
+      const measuring = this.classList.contains('is-measuring');
+      measured.push(`${measuring ? 'one row' : 'wrapped'} ${this.style.width || 'css'}`);
+      return measuring ? 180 : 40;
+    });
+    try {
+      const { input } = fixture('長い名前');
+      expect(measured).toEqual(['one row css']);
+      expect(input.style.width).toBe('182px');
+      expect(input.classList.contains('is-measuring')).toBe(false);
+      expect(input.hasAttribute('cols')).toBe(false);
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '追加' }));
+      // The width set last time is cleared first, or it would outrank the class's `width: 0`.
+      expect(measured).toEqual(['one row css', 'one row css']);
+    } finally {
+      scrollWidth.mockRestore();
+    }
+  });
+
   it.each(['Enter', 'Tab', 'Escape'])('lets suggestions consume %s without finishing the node', value => {
     const suggestion = { handleKey: vi.fn(() => true), dispose: vi.fn() };
     const { options, editor, input } = fixture('[[', () => suggestion);

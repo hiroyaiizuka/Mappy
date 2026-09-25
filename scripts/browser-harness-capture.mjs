@@ -720,6 +720,218 @@ async function captureOperations(recorder, page) {
  * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
  * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
  */
+/** Texts typed into the inline editor (LEV-198), each long enough to wrap at about 20 full-width characters. */
+const WRAP_SAMPLES = {
+  全角: 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほ',
+  半角: 'The quick brown fox jumps over the lazy dog and keeps on running far away',
+  混在: 'Mappyの入力欄でwrapの幅を確かめるlong textです。さらに続く文',
+  URL: 'https://example.com/path/to/a/very/long/resource?query=1&page=2&sort=asc',
+};
+
+/**
+ * The inline editor's width (LEV-198): it opens narrow, widens with the text on one row up to the node's wrap
+ * width (20em: about 20 full-width characters of the node's own font), then wraps; the label confirmed from the
+ * draft wraps at the same width, so a draft of one row stays one row and a draft of two rows stays two. Every
+ * probe starts from the fixture's original text; the matrix is the user's operation × the node's shape × the
+ * kind of text × the layout (AGENTS.md), not a guess at the cause.
+ */
+export async function captureInlineWidth(recorder, page) {
+  const draft = () => page.evaluate(`(() => {
+    const input = document.getElementById('harness-pane').querySelector('.mappy-inline-input');
+    if (!input) return null;
+    const style = getComputedStyle(input);
+    const node = input.closest('.mappy-node').getBoundingClientRect();
+    return { width: input.offsetWidth, rows: Math.round(input.scrollHeight / parseFloat(style.lineHeight)), fontSize: parseFloat(style.fontSize),
+      left: node.left, right: node.right };
+  })()`);
+  /** The selected node's label as confirmed: its rows (distinct line tops of the text) and the node's width. */
+  const label = () => page.evaluate(`(() => {
+    const node = document.getElementById('harness-pane').querySelector('.mappy-node.is-selected');
+    const text = node?.querySelector('.mappy-node-label');
+    if (!text) return null;
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const tops = new Set(Array.from(range.getClientRects(), rect => Math.round(rect.top)));
+    return { rows: tops.size, width: node.offsetWidth, text: text.textContent.trim() };
+  })()`);
+  const editing = () => page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') === true`);
+  /** The fixture back to its original text, opened in `mode`, with nothing selected or being edited. */
+  const originals = new Map();
+  const reset = async (fixture, mode) => {
+    const path = `Fixtures/${fixture}.md`;
+    if (!originals.has(path)) {
+      await loadFixture(page, fixture, mode);
+      originals.set(path, await page.harness('h.source()'));
+    }
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(originals.get(path))})`);
+    await loadFixture(page, fixture, mode);
+    // A layout switch keeps the viewport it had, which can leave the target off screen: fit the whole map.
+    const fit = await page.harness('h.button("全体表示")');
+    expect(fit, 'fit button missing');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+  };
+  /** Open the inline editor the way the user does: F2, a double click, or Enter／Tab making an empty sibling／child. */
+  const open = async (target, how) => {
+    const node = await nodeInfo(page, target);
+    const point = center(node.rect);
+    if (how === 'dblclick') {
+      await page.dblclick(point.x, point.y);
+    } else {
+      await page.click(point.x, point.y);
+      await page.settle();
+      // The keys go to the focused node; a redraw still under way from the reset can take the focus back to the body.
+      const focused = () => page.evaluate(`document.activeElement?.closest?.('.mappy-view') != null`);
+      for (let retry = 0; retry < 3 && !(await focused()); retry += 1) {
+        await page.settle();
+        const again = center((await nodeInfo(page, target)).rect);
+        await page.click(again.x, again.y);
+      }
+      if (how === 'F2') await page.key('F2', 'F2', 113);
+      else if (how === 'Enter') await page.key('Enter', 'Enter', 13);
+      else await page.key('Tab', 'Tab', 9);
+    }
+    await page.settle();
+    // Enter／Tab open the editor after the edit that adds the node, which a loaded machine can take a while over.
+    for (let wait = 0; wait < 20 && !(await editing()); wait += 1) await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
+    if (!(await editing())) {
+      const active = await page.evaluate(`document.activeElement?.className ?? null`);
+      const selected = (await page.harness('h.nodes()')).filter(item => item.selected).map(item => item.title);
+      throw new Error(`inline editor did not open on ${target} (${how}); focus on ${active}, selected ${selected.join(', ') || 'nothing'}`);
+    }
+    // F2 and the double click select the old title, so the first character typed replaces it.
+  };
+  /** Type `text` one character at a time; the draft after each, and the first length that takes a second row. */
+  const typeSlowly = async text => {
+    const steps = [];
+    for (const character of text) {
+      await page.type(character);
+      steps.push(await draft());
+    }
+    const wrapAt = steps.findIndex(step => step.rows >= 2) + 1;
+    return { steps, wrapAt };
+  };
+  /** Paste `text` at once (the editor sees one insertion), read the draft, confirm with Enter, read the label. */
+  const confirmPasted = async (target, how, text) => {
+    await open(target, how);
+    await page.type(text);
+    await page.settle();
+    const before = await draft();
+    await page.key('Enter', 'Enter', 13);
+    await page.settle();
+    expect(!(await editing()), 'the editor stayed open after Enter');
+    const after = await label();
+    // The rename trims the title; a trailing space hangs in the draft without taking a row, so the rows still compare.
+    expect(after && after.text === text.trim(), `confirmed label ${JSON.stringify(after?.text)} is not the draft ${JSON.stringify(text)}`);
+    return { draft: before, label: after };
+  };
+  /**
+   * One cell of the matrix: type the sample to find where the draft wraps, then confirm the text one character
+   * short of that, the text that wraps, and the whole sample, each from the original fixture, and compare the rows.
+   */
+  const probe = async ({ fixture, mode, target, how, kind }) => {
+    const text = WRAP_SAMPLES[kind];
+    await reset(fixture, mode);
+    await open(target, how);
+    const empty = how === 'Enter' || how === 'Tab' ? await draft() : null;
+    const { steps, wrapAt } = await typeSlowly(text);
+    await page.key('Escape', 'Escape', 27);
+    await page.settle();
+    expect(wrapAt > 1, `${kind}: the draft never took a second row (${steps.at(-1)?.rows} rows at ${text.length} characters)`);
+    const { fontSize } = steps[0];
+    const cap = 20 * fontSize;
+    const widest = Math.max(...steps.map(step => step.width));
+    expect(Math.abs(widest - cap) <= 1, `${kind}: widest draft ${widest}px, cap 20em = ${cap}px`);
+    const oneRow = steps.slice(0, wrapAt - 1);
+    expect(oneRow.every((step, index) => index === 0 || step.width >= oneRow[index - 1].width), `${kind}: the one-row draft narrowed while typing`);
+    expect(oneRow[0].width < oneRow.at(-1).width, `${kind}: the draft did not widen with the text (${oneRow[0].width}px → ${oneRow.at(-1).width}px)`);
+    if (empty) expect(empty.width <= 60, `${kind}: an empty node's draft is ${empty.width}px wide`);
+    const lengths = [wrapAt - 1, wrapAt, text.length];
+    const confirmed = [];
+    for (const length of lengths) {
+      await reset(fixture, mode);
+      confirmed.push(await confirmPasted(target, how, [...text].slice(0, length).join('')));
+    }
+    for (const [index, { draft: typed, label: shown }] of confirmed.entries()) {
+      expect(typed.rows === shown.rows, `${kind}: ${lengths[index]} characters — ${typed.rows} rows while typing, ${shown.rows} once confirmed`);
+    }
+    expect(confirmed[0].draft.rows === 1 && confirmed[1].draft.rows === 2, `${kind}: rows ${confirmed[0].draft.rows} / ${confirmed[1].draft.rows} around the wrap`);
+    return { kind, fontSize, wrapAt, emptyWidth: empty?.width ?? steps[0].width, widest, rows: confirmed.map(entry => `${entry.draft.rows}/${entry.label.rows}`), lengths, steps };
+  };
+  const summary = result => `${result.kind}: ${result.fontSize}px、${result.wrapAt} 文字目で 2 行目（開いた直後 ${result.emptyWidth}px → 最大 ${result.widest}px）、`
+    + `入力中/確定後の行数 ${result.lengths.map((length, index) => `${length} 文字 ${result.rows[index]}`).join('・')}`;
+
+  await recorder.run('inline-width-type', '「空に近い枝」で F2 → 全角を 1 文字ずつ入力 → Escape（各長さを原文から入力し直して Enter）',
+    '開いた直後は狭く、1 行のまま文字に合わせて横に広がり、全角 20 文字（20em）で 21 文字目から 2 行目に折り返す。20 文字・21 文字・全文を確定したラベルの行数は入力中と同じ', async () => {
+      const result = await probe({ fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '空に近い枝', how: 'F2', kind: '全角' });
+      expect(result.wrapAt === 21, `full-width text wrapped at character ${result.wrapAt}, not 21`);
+      // Close-ups at the wrap: the draft of 21 characters and the label it confirms.
+      await reset(OPERATION_FIXTURE, 'mindmap');
+      // The zoom button, not Ctrl＋wheel: headless Chrome 153 stops answering after modifier input over CDP.
+      const zoomIn = await page.harness('h.button("拡大")');
+      expect(zoomIn, 'zoom-in button missing');
+      for (let step = 0; step < 5; step += 1) await page.click(center(zoomIn).x, center(zoomIn).y);
+      await page.settle();
+      // Zooming about the pane's centre can carry the node off screen: drag the background to bring it to the centre.
+      const canvas = await page.harness('h.canvasRect()');
+      const shown = center((await nodeInfo(page, '空に近い枝')).rect);
+      const from = await emptyCanvasPoint(page);
+      await page.drag(from.x, from.y, from.x + canvas.x + canvas.width / 2 - shown.x, from.y + canvas.y + canvas.height / 2 - shown.y);
+      await page.settle();
+      await open('空に近い枝', 'F2');
+      await page.type([...WRAP_SAMPLES.全角].slice(0, 21).join(''));
+      await page.settle();
+      const clip = async () => {
+        const node = await page.evaluate(`JSON.parse(JSON.stringify(document.getElementById('harness-pane').querySelector('.mappy-node.is-editing, .mappy-node.is-selected').getBoundingClientRect()))`);
+        return { x: node.x - 24, y: node.y - 24, width: node.width + 48, height: node.height + 48 };
+      };
+      await page.screenshot(join(recorder.directory, `${String(recorder.index).padStart(2, '0')}-inline-width-type-draft.png`), await clip());
+      await page.key('Enter', 'Enter', 13);
+      await page.settle();
+      await page.screenshot(join(recorder.directory, `${String(recorder.index).padStart(2, '0')}-inline-width-type-confirmed.png`), await clip());
+      return `${summary(result)}。幅の推移 ${result.steps.slice(0, 22).map(step => step.width).join(',')}`;
+    });
+
+  const cells = [
+    { id: 'kinds', label: '「空に近い枝」（第一階層）で F2', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '空に近い枝', how: 'F2', kinds: ['半角', '混在', 'URL'] },
+    { id: 'deep', label: '「八段目」（深い階層）をダブルクリック', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '八段目', how: 'dblclick', kinds: ['全角'] },
+    { id: 'root', label: '「不均等な枝」（本体のルート、H2）で F2', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '不均等な枝', how: 'F2', kinds: ['全角', '混在'] },
+    { id: 'enter', label: '「兄弟 1」で Enter（空の兄弟）', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '兄弟 1', how: 'Enter', kinds: ['全角'] },
+    { id: 'tab', label: '「八段目」で Tab（空の子）', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '八段目', how: 'Tab', kinds: ['混在'] },
+    { id: 'topic', label: 'free-topics のトピックのルート「参考資料」で F2', fixture: TOPIC_FIXTURE, mode: 'mindmap', target: '参考資料', how: 'F2', kinds: ['全角'] },
+    { id: 'image', label: 'heading-document の本文に画像を持つ「回復する」で F2', fixture: 'heading-document', mode: 'mindmap', target: '回復する', how: 'F2', kinds: ['全角'] },
+    { id: 'timeline', label: 'タイムラインで「空に近い枝」を F2', fixture: OPERATION_FIXTURE, mode: 'timeline', target: '空に近い枝', how: 'F2', kinds: ['全角'] },
+    { id: 'hierarchy', label: '階層図で「空に近い枝」を F2', fixture: OPERATION_FIXTURE, mode: 'hierarchy', target: '空に近い枝', how: 'F2', kinds: ['全角'] },
+    { id: 'balanced-left', label: '左右バランスで左側の「空に近い枝」を F2', fixture: OPERATION_FIXTURE, mode: 'balanced', target: '空に近い枝', how: 'F2', kinds: ['全角'] },
+  ];
+  for (const cell of cells) {
+    await recorder.run(`inline-width-${cell.id}`, `${cell.label} → ${cell.kinds.join('・')}を 1 文字ずつ入力（各長さを原文から入力し直して Enter）`,
+      '1 行のまま横に広がり、20em（全角約 20 文字）で折り返す。折り返しの直前・直後・全文で、確定したラベルの行数が入力中と同じ', async () => {
+        const results = [];
+        for (const kind of cell.kinds) results.push(await probe({ ...cell, kind }));
+        if (cell.id === 'balanced-left') {
+          // A left-side node keeps the edge toward its parent: the draft widens away from the branch.
+          await reset(cell.fixture, cell.mode);
+          await open(cell.target, cell.how);
+          const edges = [];
+          for (const character of [...WRAP_SAMPLES.全角].slice(0, 20)) {
+            await page.type(character);
+            await page.settle();
+            const { left, right } = await draft();
+            edges.push({ left, right });
+          }
+          await page.key('Escape', 'Escape', 27);
+          await page.settle();
+          const rights = edges.map(edge => edge.right);
+          expect(Math.max(...rights) - Math.min(...rights) <= 1, `the edge toward the parent moved: ${rights.map(value => value.toFixed(1)).join(',')}`);
+          expect(edges.at(-1).left < edges[0].left - 50, `the draft did not widen to the left: ${edges[0].left.toFixed(1)} → ${edges.at(-1).left.toFixed(1)}`);
+          return `${summary(results[0])}。入力中のノードの右辺 ${rights[0].toFixed(1)} → ${rights.at(-1).toFixed(1)}、左辺 ${edges[0].left.toFixed(1)} → ${edges.at(-1).left.toFixed(1)}（画面座標、1 文字ごとに配置を待って測定）`;
+        }
+        return results.map(summary).join('／');
+      });
+  }
+}
+
 async function captureHierarchyRows(recorder, page) {
   const nodeRect = async name => (await nodeInfo(page, name)).rect;
   const gapBelow = (parent, child) => child.y - (parent.y + parent.height);
@@ -2709,6 +2921,7 @@ async function main() {
       await captureFixtures(recorder, page, timings);
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
+      await captureInlineWidth(recorder, page);
       await captureThemes(recorder, page);
       await captureVisibleLayouts(recorder, page);
       await captureTopicOperations(recorder, page);

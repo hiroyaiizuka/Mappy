@@ -15,6 +15,9 @@ export interface InlineEditorOptions {
 /** Shown in place of a conflict line once the map has re-read the note: the same Enter now applies the draft to it. */
 export const REFRESHED_MESSAGE = "Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。";
 
+/** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
+const CARET_ALLOWANCE = 2;
+
 /** Edit at the node position; a failed save keeps the draft and error visible. */
 export class InlineEditor {
   private readonly input: HTMLTextAreaElement;
@@ -30,9 +33,9 @@ export class InlineEditor {
 
   constructor(private readonly host: HTMLElement, private readonly options: InlineEditorOptions) {
     host.addClass("is-editing");
-    // About ten characters wide; longer text wraps onto more rows instead of widening the node.
+    // One row that widens with the text up to the node's wrap width (CSS max-width), then more rows (`resize`).
     this.input = host.createEl("textarea", {
-      cls: "mappy-inline-input", attr: { rows: "1", cols: "10", "aria-label": "ノードのテキスト" },
+      cls: "mappy-inline-input", attr: { rows: "1", "aria-label": "ノードのテキスト" },
     });
     this.input.value = options.initial;
     this.suggestion = options.suggest?.(this.input);
@@ -77,7 +80,17 @@ export class InlineEditor {
     this.input.select();
   }
 
+  /**
+   * Width first: the text's width on one row (measured unwrapped), which the CSS max-width caps at the width a
+   * confirmed label wraps at, so the draft breaks where the node will (LEV-198). The height then follows the rows.
+   */
   private resize(): void {
+    // `is-measuring` lays the text out on one row in a box of no width, so scrollWidth is the text's own width.
+    this.input.style.removeProperty("width");
+    this.input.classList.add("is-measuring");
+    const natural = this.input.scrollWidth;
+    this.input.classList.remove("is-measuring");
+    this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
     this.input.style.removeProperty("height");
     this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
     this.options.resize();

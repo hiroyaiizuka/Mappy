@@ -2,10 +2,20 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("map editing CSS", () => {
-  it("caps the inline node editor at three quarters of its former width", async () => {
+  it("wraps the inline node editor and the confirmed label at the same width, in the label's weight (LEV-198)", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
-    const rule = css.match(/\.mappy-view \.mappy-inline-input \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
-    expect(rule).toMatch(/max-width:\s*303px;/u);
+    const rule = selector => css.match(new RegExp(`${selector.replace(/[.()]/gu, "\\$&")} \\{(?<body>[^}]*)\\}`, "u"))?.groups?.body ?? "";
+    // About 20 full-width characters of the node's own font, for both.
+    expect(rule(".mappy-view .mappy-node")).toMatch(/--mappy-text-wrap:\s*20em;/u);
+    expect(rule(".mappy-view .mappy-node-content")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
+    expect(rule(".mappy-view .mappy-inline-input")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
+    // No narrower cap on the node itself: it would wrap the label before the draft.
+    expect(rule(".mappy-view .mappy-node")).not.toMatch(/(^|[^-])max-width/u);
+    expect(rule(".mappy-view .mappy-node.is-root")).not.toMatch(/(^|[^-])max-width/u);
+    expect(css).toMatch(/\.mappy-node\.is-root > \.mappy-inline-input \{ font-weight: 700; \}/u);
+    expect(css).toMatch(/\.mappy-node\.is-stage > \.mappy-inline-input \{ font-weight: 600; \}/u);
+    // The one-row width InlineEditor.resize reads.
+    expect(rule(".mappy-view .mappy-inline-input.is-measuring")).toMatch(/width:\s*0;\s*white-space:\s*pre;/u);
   });
 
   it("draws the drag preview connector and slot frame in the lighter drop blue, not the selection blue", async () => {
