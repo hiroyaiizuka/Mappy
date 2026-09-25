@@ -8,6 +8,7 @@ import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView, type MapMenuAction } from '../../src/ui/mindmap-view';
+import { accessibleName } from './accessible-name';
 
 export interface MountedMapView {
   app: HarnessApp;
@@ -61,7 +62,7 @@ export async function mountMapView(
   const file = app.asApp<App>().vault.getAbstractFileByPath(path) as TFile | null;
   if (!file) throw new Error('The note is missing from the harness vault');
   const node = (title: string): HTMLElement => {
-    const found = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).find(el => el.getAttribute('aria-label') === title);
+    const found = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).find(el => accessibleName(el) === title);
     if (!found) throw new Error(`No element for ${title}`);
     return found;
   };

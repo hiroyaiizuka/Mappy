@@ -7,6 +7,7 @@ import { EditableFileView, FileView, MarkdownView, Notice, Scope, WorkspaceLeaf,
 import { readMapLayout } from '../../src/obsidian/frontmatter';
 import { ViewRouter } from '../../src/obsidian/view-routing';
 import { VIEW_TYPE } from '../../src/ui/mindmap-view';
+import { accessibleName, nodeNamed } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against a real DOM.
@@ -295,16 +296,16 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
   it('follows a rename of its note: the tab title, the root node, the state and the saved layout', async () => {
     const { app, view, file, map, settle } = await mount(ROOTLESS);
     expect(map.leaf.headerText).toBe('navigation · マップ');
-    expect(view.containerEl.querySelector('.mappy-node[aria-label="navigation"]')).not.toBeNull();
+    expect(nodeNamed(view.containerEl, 'navigation')).not.toBeNull();
     const saved = app.activity.filter(entry => entry.kind === 'layout-saved').length;
     app.rename(PATH, 'Fixtures/renamed.md');
     // FileView's own subscription: the same note under its new name, the tab title at once.
     expect(view.file).toBe(file);
     expect(map.leaf.headerText).toBe('renamed · マップ');
     // The map's: a debounced re-read, since the root node is the basename.
-    await vi.waitFor(() => { expect(view.containerEl.querySelector('.mappy-node[aria-label="renamed"]')).not.toBeNull(); });
+    await vi.waitFor(() => { expect(nodeNamed(view.containerEl, 'renamed')).not.toBeNull(); });
     await settle();
-    expect(view.containerEl.querySelector('.mappy-node[aria-label="navigation"]')).toBeNull();
+    expect(nodeNamed(view.containerEl, 'navigation')).toBeNull();
     expect(view.getState()).toMatchObject({ file: 'Fixtures/renamed.md' });
     expect(app.activity.filter(entry => entry.kind === 'layout-saved').length).toBeGreaterThan(saved);
   });
@@ -335,7 +336,7 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     await again.settle();
     expect(again.map.leaf.view).toBe(again.view);
     expect(again.view.file?.path).toBe(OTHER);
-    expect(again.view.containerEl.querySelector('.mappy-node[aria-label="別のノート"]')).not.toBeNull();
+    expect(nodeNamed(again.view.containerEl, '別のノート')).not.toBeNull();
     expect(again.editor()).toBeNull();
     expect(Notice.log).toEqual([]);
     expect(again.workspace.fileOpens.slice(before)).toEqual([again.app.vault.getFileByPath(OTHER)]);
@@ -453,7 +454,7 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     await settle();
     expect(other.history).toBe(true);
     expect(view.file?.path).toBe(OTHER);
-    expect(view.containerEl.querySelector('.mappy-node[aria-label="別のノート"]')).not.toBeNull();
+    expect(nodeNamed(view.containerEl, '別のノート')).not.toBeNull();
   });
 
   it('reports no history step for a state naming a file that is not a note while no note is shown', async () => {
@@ -521,7 +522,7 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect(document.activeElement).toBe(node('講座の構成'));
     view.setEphemeralState({ subpath: '#^intro' });
     await settle();
-    const intro = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).find(el => el.getAttribute('aria-label')?.startsWith('はじめに'));
+    const intro = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).find(el => accessibleName(el).startsWith('はじめに'));
     expect(intro?.classList.contains('is-selected')).toBe(true);
     expect(document.activeElement).toBe(intro);
     // Nothing at that subpath: the selection is left alone.

@@ -8,6 +8,7 @@ import type { MindDocument, MindNode } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView, NODE_GONE_MESSAGE } from '../../src/ui/mindmap-view';
+import { accessibleName } from './accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -109,7 +110,7 @@ async function mount(source: string): Promise<Mounted> {
     source: () => app.content(file),
     external: text => { app.put(PATH, text); },
     refreshed: async () => { await new Promise(resolve => setTimeout(resolve, 60)); await settle(); },
-    labels: () => Array.from(view.containerEl.querySelectorAll('.mappy-node'), item => item.getAttribute('aria-label') ?? ''),
+    labels: () => Array.from(view.containerEl.querySelectorAll('.mappy-node'), item => accessibleName(item)),
     error: () => view.containerEl.querySelector('.mappy-inline-error')?.textContent ?? '',
     draft: async (title, text, bodyHint) => {
       const target = element(node(title, bodyHint).id);
@@ -177,7 +178,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     const renamed = EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n');
     expect(source()).toBe(renamed);
     expect(editor()).toBeNull();
-    expect(view.containerEl.querySelector('.mappy-node.is-selected')?.getAttribute('aria-label')).toBe('学ぶこと（編集）');
+    expect(accessibleName(view.containerEl.querySelector('.mappy-node.is-selected') as HTMLElement)).toBe('学ぶこと（編集）');
     expect(node('学ぶこと（編集）').title).toBe('学ぶこと（編集）');
 
     // E03: the retried rename is one history entry on top of the external text.

@@ -10,7 +10,18 @@ import { installedVersion, wait } from './cdp.mjs';
 /** Read out of the view under test: its nodes, its inline editor, every message on screen, and its source. */
 export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el = view.contentEl;
   const nodes = () => Array.from(el.querySelectorAll('.mappy-node'));
-  const label = node => node.getAttribute('aria-label') ?? '';
+  // A node's name is the hidden element its aria-labelledby points to (LEV-199); builds through 0.3.4 put it in aria-label.
+  const label = node => {
+    // The same reading as tests/ui/accessible-name.ts: every id, their texts trimmed and joined by a space.
+    const ids = (node.getAttribute('aria-labelledby') ?? '').split(/\\s+/u).filter(Boolean);
+    if (ids.length === 0) return node.getAttribute('aria-label') ?? '';
+    return ids.map(id => {
+      const target = node.ownerDocument.getElementById(id) ?? node.querySelector('[id="' + CSS.escape(id) + '"]');
+      // A dangling reference is a broken build, not an untitled node: say so instead of matching the empty title.
+      if (!target) throw new Error('aria-labelledby points to a missing element: ' + id);
+      return target.textContent?.trim() ?? '';
+    }).join(' ');
+  };
   const nth = (title, index) => nodes().filter(node => label(node) === title)[index];
   const input = () => el.querySelector('textarea.mappy-inline-input');
   const messages = () => [
@@ -122,6 +133,26 @@ export function makePluginStep(cdp, evaluate, flag) {
 }
 
 /**
+ * Script string: throws if a leaf of one of `types` is on one of `paths` — by its file, or, for a tab restored in
+ * the background (Obsidian's deferred view, which has no `view.file` yet), by its view state. Only the types a case
+ * writes through: the sidebar's backlinks, outline and outgoing links name the active note too, and are neither in
+ * the way nor the case's to close.
+ */
+export function refuseOpenLeaves(paths, types = ['markdown', 'mappy-map']) {
+  return `{
+    const paths = ${JSON.stringify(paths)};
+    const already = [];
+    app.workspace.iterateAllLeaves(item => {
+      const state = item.getViewState();
+      if (!${JSON.stringify(types)}.includes(state.type)) return;
+      const path = paths.find(candidate => item.view.file?.path === candidate || state.state?.file === candidate);
+      if (path) already.push(state.type + ' ' + path);
+    });
+    if (already.length) throw new Error('Close the leaves already on these files first: ' + already.join(', '));
+  }`;
+}
+
+/**
  * Step body for `step('open', ...)`: writes the fixture note, opens it as a map, and records what the
  * vault already held (`window.__mappyE2EBefore`) so `clean` removes only what this run added.
  *
@@ -133,13 +164,7 @@ export function makePluginStep(cdp, evaluate, flag) {
  */
 export function makeOpenStep(evaluate, { note, source, layout = 'mindmap' }) {
   return () => evaluate(`
-    const already = [];
-    app.workspace.iterateAllLeaves(item => {
-      const state = item.getViewState();
-      if (!['markdown', 'mappy-map'].includes(state.type)) return;
-      if (item.view.file?.path === ${JSON.stringify(note)} || state.state?.file === ${JSON.stringify(note)}) already.push(state.type);
-    });
-    if (already.length) throw new Error('Close the leaves already on ' + ${JSON.stringify(note)} + ' first: ' + already.join(', '));
+    ${refuseOpenLeaves([note])}
     const existing = app.vault.getAbstractFileByPath(${JSON.stringify(note)});
     if (existing) await app.vault.modify(existing, ${JSON.stringify(source)});
     else await app.vault.create(${JSON.stringify(note)}, ${JSON.stringify(source)});

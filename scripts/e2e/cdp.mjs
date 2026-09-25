@@ -83,6 +83,18 @@ export async function connect() {
     await evaluate(`(() => { try { require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false); return true; } catch { return false; } })()`);
     return {
       send, evaluate, vault,
+      /** The next CDP event named `method` (e.g. `Input.dragIntercepted`), or a rejection after `ms`. */
+      once: (method, ms = 10000) => new Promise((resolve_, reject) => {
+        const timeout = setTimeout(() => { socket.removeEventListener('message', receive); reject(new Error(`${method} did not arrive`)); }, ms);
+        const receive = event => {
+          const message = JSON.parse(event.data);
+          if (message.method !== method) return;
+          clearTimeout(timeout);
+          socket.removeEventListener('message', receive);
+          resolve_(message.params);
+        };
+        socket.addEventListener('message', receive);
+      }),
       /** A key as the keyboard sends it, so Obsidian's own keymap sees it (a synthesized keydown does not). */
       realKey: async (key, modifiers = 0) => {
         const spec = KEYS[key];

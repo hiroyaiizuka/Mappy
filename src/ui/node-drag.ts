@@ -148,7 +148,9 @@ export class NodeDrag extends Component {
   private ghost(element: HTMLElement): HTMLElement {
     const ghost = element.cloneNode(true) as HTMLElement;
     ghost.querySelectorAll(".mappy-node-toggle").forEach(toggle => { toggle.remove(); });
-    for (const name of ["data-node-id", "id", "tabindex", "role", "aria-selected", "aria-expanded", "aria-level"]) ghost.removeAttribute(name);
+    // The node's hidden name elements come along: their ids would be the node's twice over (LEV-199).
+    ghost.querySelectorAll("[id]").forEach(named => { named.removeAttribute("id"); });
+    for (const name of ["data-node-id", "id", "tabindex", "role", "aria-selected", "aria-expanded", "aria-level", "aria-labelledby", "aria-describedby"]) ghost.removeAttribute(name);
     ghost.classList.remove("is-selected", "is-drag-source");
     ghost.classList.add("mappy-drag-ghost");
     ghost.setAttribute("aria-hidden", "true");

@@ -17,6 +17,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { accessibleName } from './accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -78,7 +79,7 @@ function errorLine(mounted: MountedMapView): string {
 /** Every node on screen with this label; an empty node reads as 空のノード, so there can be several. */
 function nodes(mounted: MountedMapView, label: string): HTMLElement[] {
   return Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'))
-    .filter(item => item.getAttribute('aria-label') === label);
+    .filter(item => accessibleName(item) === label);
 }
 
 function folds(mounted: MountedMapView): ReadonlySet<string> {

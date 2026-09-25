@@ -188,6 +188,13 @@
   cursor: grab;
 }
 .mappy-view .mappy-canvas.is-panning { cursor: grabbing; }
+/*
+ * Obsidian draws the closest `aria-label` above the pointer as a tooltip under that element, unless the element's
+ * `--no-tooltip` is `true` (LEV-199). Over the map that would be the canvas's key instructions, or the inline
+ * input's name, covering the node below the one hovered. The fold controls keep theirs.
+ */
+.mappy-view .mappy-canvas { --no-tooltip: true; }
+.mappy-view .mappy-node-toggle { --no-tooltip: false; }
 .mappy-view .mappy-empty-state { position: absolute; inset: 50% 20px auto; transform: translateY(-50%); text-align: center; color: var(--text-muted); }
 .mappy-view .mappy-empty-state[hidden] { display: none; }
 .mappy-view .mappy-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }

@@ -2319,6 +2319,40 @@ async function embedNode(page, src, title) {
   return { embed, node };
 }
 
+/**
+ * The tooltip Obsidian's desktop app would show on hovering each element under `scope` (LEV-199), decided as its
+ * app.js (1.14.2) does: the closest `[aria-label]` at or above the element (`matchParent`, the delegate of
+ * `body.on("pointerover", "[aria-label]")` and of the `pointerout` hand-over), unless that element's computed
+ * `--no-tooltip` is `true`. The tooltip sits below that element, so on a node it covers the node below.
+ * The browser's native tooltip (`title` at or above the element) is counted too: it shows under the pointer all the same.
+ * `nodes`: the elements of the node bodies (the fold control aside) that would show one, with its text.
+ * `unnamed`: fold controls and map buttons that would show none (they keep theirs).
+ */
+async function tooltipFacts(page, scope) {
+  return page.evaluate(`(() => {
+    const tip = element => {
+      // The browser's own tooltip first: a title attribute at or above the element shows whatever Obsidian does.
+      const titled = element.closest('[title]');
+      if (titled && titled.getAttribute('title')) return 'title ' + titled.getAttribute('title');
+      const owner = element.closest('[aria-label]');
+      if (!owner || getComputedStyle(owner).getPropertyValue('--no-tooltip').trim() === 'true') return null;
+      return owner.getAttribute('aria-label');
+    };
+    const scope = document.querySelector(${JSON.stringify(scope)});
+    const parts = Array.from(scope.querySelectorAll('.mappy-node, .mappy-node *'))
+      .filter(element => !element.closest('.mappy-node-toggle'));
+    const nodes = parts.map(element => ({ element, text: tip(element) })).filter(item => item.text !== null)
+      .map(item => (item.element.className || item.element.tagName) + ': ' + item.text);
+    const controls = Array.from(scope.querySelectorAll('.mappy-node-toggle:not([hidden]), .mappy-button'));
+    const unnamed = controls.filter(element => {
+      const shown = tip(element);
+      // A control with no name at all shows nothing: that is a failure too, not a match of null with null.
+      return shown === null || (shown !== element.getAttribute('aria-label') && shown !== 'title ' + element.getAttribute('title'));
+    }).map(element => element.className);
+    return { parts: parts.length, nodes: Array.from(new Set(nodes)), controls: controls.length, unnamed };
+  })()`);
+}
+
 /** docs/harness.md E34 on this page: a note that embeds maps, in the reading-view path and the live-preview path. */
 async function captureEmbeds(recorder, page) {
   // Earlier cases wrote `mappy: true` into heading-document's in-memory frontmatter (the page never rewrites the text);
@@ -2338,6 +2372,15 @@ async function captureEmbeds(recorder, page) {
     expect(live === maps.length, `${live} live embeds`);
     const nodes = maps.map(embed => embed.nodes.length);
     return `マップ ${maps.length}（ノード ${nodes.join(' / ')}、scale ${maps.map(embed => embed.scale.toFixed(2)).join(' / ')}）、通常の埋め込み ${EMBED_PLAIN.length}、安定まで ${timing.settledMs.toFixed(0)} ms`;
+  });
+
+  await recorder.run('embed-node-tooltip', `${EMBED_HOST} の埋め込みのノードに乗せたときの Obsidian の吹き出しを app.js の判定で求める（LEV-199）`,
+    '埋め込みのノードの本体のどの要素でも吹き出しは出ない（枠の「マインドマップ: …」も canvas の名前も出ない）。開閉ボタンと「マップで開く」は自分の aria-label を出す', async () => {
+    const facts = await tooltipFacts(page, '#harness-pane');
+    expect(facts.parts > 0 && facts.controls > 0, `nothing to hover: ${JSON.stringify(facts)}`);
+    expect(facts.nodes.length === 0, `tooltips over embedded nodes: ${facts.nodes.slice(0, 5).join(' / ')}`);
+    expect(facts.unnamed.length === 0, `controls without their tooltip: ${facts.unnamed.join(', ')}`);
+    return `ノードの要素 ${facts.parts} で吹き出し 0、ボタン ${facts.controls} は自分の名前`;
   });
 
   await recorder.run('embed-first-level', '階層図の埋め込みまでスクロール', 'ルートと第一階層だけが見え、第一階層の各ノードに隠れた子孫の件数（回復する 4、記録する 2、習慣化する 1）。#見出し の埋め込みは最初の「同じ名前」（回復する の下）をルートにその 2 つの子を描く', async () => {
@@ -2600,7 +2643,7 @@ async function captureEmbedNodes(recorder, page) {
   let firstCount = 0;
 
   await recorder.run('embed-node-draw', `${EMBED_NODES_FIXTURE} を読み込む（mappy: true のマップ。ノードのテキストが ![[…]] だけの項目を持つ）`,
-    '5 つの項目がそれぞれ呼び出し先のルートの文（タイムライン・#見出し の部分木・2,000 ノード・同じマップの 2 回目・循環の相手）を表示し、その子が通常の枝として右に並ぶ。それより下は折りたたみ。枠はなく、呼び出したノードは控えめな文字色でツールチップに元ノートのパス、項目には link の印。自分自身・文中の埋め込み・mappy: true のないノート・存在しないノート・ブロック参照はリンク、画像は画像。どのノートも変わらない', async () => {
+    '5 つの項目がそれぞれ呼び出し先のルートの文（タイムライン・#見出し の部分木・2,000 ノード・同じマップの 2 回目・循環の相手）を表示し、その子が通常の枝として右に並ぶ。それより下は折りたたみ。枠はなく、呼び出したノードは控えめな文字色で読み上げの説明に元ノートのパス、項目には link の印。自分自身・文中の埋め込み・mappy: true のないノート・存在しないノート・ブロック参照はリンク、画像は画像。どのノートも変わらない', async () => {
     const timing = await loadFixture(page, EMBED_NODES_FIXTURE);
     const nodes = await page.harness('h.nodes()');
     const { roots, called } = expectCalledBranches(nodes);
@@ -2628,6 +2671,23 @@ async function captureEmbedNodes(recorder, page) {
     listeners = await page.harness('h.listeners()');
     firstCount = nodes.length;
     return `ノード ${nodes.length}（自分 ${timing.nodes}、呼び出し ${roots.length} 項目＋${called.length}）、リンク ${links.length}、画像 1、文字色 ${hostColor} → ${calledColor}、安定まで ${timing.settledMs.toFixed(0)} ms、購読 vault ${listeners.vault}／workspace ${listeners.workspace}`;
+  });
+
+  await recorder.run('node-tooltip', `${EMBED_NODES_FIXTURE} のノードと入力中の欄に乗せたときの Obsidian の吹き出しを app.js の判定で求める（LEV-199）`,
+    '自分のノード・呼び出したノード・入力中の欄のどの要素でも吹き出しは出ない（題名も canvas の操作説明も「ノードのテキスト」も出ない）。開閉ボタンと左下・右下・右上のボタンは自分の aria-label を出す', async () => {
+    const shown = await tooltipFacts(page, '#harness-pane');
+    expect(shown.parts > 0 && shown.controls > 0, `nothing to hover: ${JSON.stringify(shown)}`);
+    expect(shown.nodes.length === 0, `tooltips over nodes: ${shown.nodes.slice(0, 5).join(' / ')}`);
+    expect(shown.unnamed.length === 0, `controls without their tooltip: ${shown.unnamed.join(', ')}`);
+    await openInlineEditor(page, 'リンクのまま');
+    const editing = await tooltipFacts(page, '#harness-pane');
+    const input = await page.evaluate(`document.querySelectorAll('#harness-pane .mappy-node .mappy-inline-input').length`);
+    await page.key('Escape', 'Escape', 27);
+    await page.settle();
+    expect(input === 1, `${input} inline inputs inside a node`);
+    expect(editing.nodes.length === 0, `tooltips while editing: ${editing.nodes.slice(0, 5).join(' / ')}`);
+    await unchanged();
+    return `ノードの要素 ${shown.parts}（編集中 ${editing.parts}）で吹き出し 0、ボタン ${shown.controls} は自分の名前`;
   });
 
   for (const mode of ['timeline', 'hierarchy', 'balanced']) {

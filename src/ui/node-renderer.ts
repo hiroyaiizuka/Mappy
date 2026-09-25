@@ -10,6 +10,10 @@ interface NodeEntry {
   content: HTMLDivElement;
   toggle: HTMLButtonElement;
   toggleMark: HTMLSpanElement;
+  /** What a screen reader reads for the node (`aria-labelledby`) and after it (`aria-describedby`); see `nameElement`. */
+  name: HTMLSpanElement;
+  /** Made the first time the node is drawn from a called map: most nodes never are. */
+  description: HTMLSpanElement | null;
   component: Component;
   key: string;
   /** Whether the inline editor stands in for this node's text; see `editing()`. */
@@ -28,6 +32,21 @@ interface NodeAppearance {
   sources?: ReadonlyMap<string, CallSource>;
   /** The trees on the map (the body root and the free topics), for the fold counts; `document.root` when absent. */
   trees?: readonly MindNode[];
+}
+
+/** Ids of the hidden name elements; a counter, since two views (or an embed) of one note draw the same node ids. */
+let nameIds = 0;
+
+/**
+ * A hidden element holding what a screen reader reads, pointed at by `aria-labelledby`/`aria-describedby`. Not an
+ * `aria-label` or `title` on the node: Obsidian's desktop app draws an `aria-label` as a tooltip on hover (and the
+ * browser a `title`), which repeats the text on screen over the node below — the input of the node being written
+ * there (LEV-199). A reference reaches a hidden element all the same (accessible name computation, step 2B).
+ */
+function nameElement(parent: HTMLElement, role: string): HTMLSpanElement {
+  const element = parent.createSpan({ cls: `mappy-node-${role}`, attr: { id: `mappy-node-${role}-${++nameIds}` } });
+  element.hidden = true;
+  return element;
 }
 
 /** Each Markdown render owns a disposable child component. */
@@ -77,7 +96,9 @@ export class NodeRenderer extends Component {
         const content = element.createDiv({ cls: "mappy-node-content" });
         const toggle = element.createEl("button", { cls: "mappy-node-toggle", attr: { tabindex: "0", type: "button" } });
         const toggleMark = toggle.createSpan({ cls: "mappy-node-toggle-mark", attr: { "aria-hidden": "true" } });
-        entry = { element, content, toggle, toggleMark, component: this.addChild(new Component()), key: "", editing: false };
+        const name = nameElement(element, "name");
+        element.setAttribute("aria-labelledby", name.id);
+        entry = { element, content, toggle, toggleMark, name, description: null, component: this.addChild(new Component()), key: "", editing: false };
         this.entries.set(node.id, entry);
       }
       const isCollapsed = collapsed.has(node.id) && node.children.length > 0;
@@ -100,12 +121,22 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
-      entry.element.setAttribute("aria-label", node.title.trim() || "空のノード");
-      // The branches of a called map are read-only on this map (the calling item itself is not); every node of them names its note on hover.
+      // Written only when it changes: a text node replaced on every refresh of a large map is a mutation each.
+      const name = node.title.trim() || "空のノード";
+      if (entry.name.textContent !== name) entry.name.setText(name);
+      // The branches of a called map are read-only on this map (the calling item itself is not); every node of them
+      // names its note after its name. Not on hover: a tooltip there covers the node below as the name's did (LEV-199).
       if (source && !source.root) entry.element.setAttribute("aria-readonly", "true");
       else entry.element.removeAttribute("aria-readonly");
-      if (source) entry.element.setAttribute("title", `呼び出し元: ${source.path}${source.subpath}`);
-      else entry.element.removeAttribute("title");
+      if (source) {
+        entry.description ??= nameElement(entry.element, "description");
+        const description = `呼び出し元: ${source.path}${source.subpath}`;
+        if (entry.description.textContent !== description) entry.description.setText(description);
+        if (entry.element.getAttribute("aria-describedby") !== entry.description.id) entry.element.setAttribute("aria-describedby", entry.description.id);
+      } else if (entry.description?.textContent) {
+        entry.description.setText("");
+        entry.element.removeAttribute("aria-describedby");
+      }
       entry.toggle.hidden = node.children.length === 0;
       entry.toggleMark.empty();
       const hiddenCount = descendantCounts.get(node.id) ?? 0;
