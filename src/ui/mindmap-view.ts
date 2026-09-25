@@ -245,7 +245,10 @@ export class MindmapView extends FileView {
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
   private unloading = false;
   private needsFit = true;
-  /** Whether `needsFit` was held back by a free drag (LEV-182): only that fit also waits for a re-read, see the layout frame. */
+  /**
+   * Whether `needsFit` outlived a free drag (LEV-182), set when the drag ends: only that fit also waits for a re-read
+   * (see the layout frame), and a pan or zoom made before it runs cancels it (`clearFit`).
+   */
   private fitHeld = false;
   private saving = false;
   private revealId: string | null = null;
@@ -415,7 +418,7 @@ export class MindmapView extends FileView {
       && typeof view.y === "number" && Number.isFinite(view.y)
       && typeof view.scale === "number" && Number.isFinite(view.scale)) {
       this.viewport.set({ x: view.x, y: view.y, scale: view.scale });
-      this.needsFit = false; this.fitHeld = false;
+      this.clearFit();
     }
     await this.refresh();
   }
@@ -571,6 +574,8 @@ export class MindmapView extends FileView {
     this.viewport = this.addChild(new MapViewport(this.canvas, world, view => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
+      // A pan or zoom between a drop and the fit held through it is where the view is wanted now (LEV-182).
+      if (this.fitHeld && !this.topicDrag) this.clearFit();
     }, () => { this.deselect(); }));
     this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
@@ -976,7 +981,12 @@ export class MindmapView extends FileView {
 
   /** One refresh, tracked while it runs (the last one started wins, as with the epoch), so the export can wait for it. */
   private refresh(): Promise<void> {
-    const task = this.reread().finally(() => { if (this.refreshing === task) this.refreshing = undefined; });
+    const task = this.reread().finally(() => {
+      if (this.refreshing !== task) return;
+      this.refreshing = undefined;
+      // A fit held for this read runs now even when the read failed and drew nothing, not on some later unrelated frame.
+      if (this.fitHeld && this.refreshTimer === undefined) this.scheduleLayout();
+    });
     this.refreshing = task;
     return task;
   }
@@ -1254,19 +1264,17 @@ export class MindmapView extends FileView {
       }
       this.drawEdges(this.layout.edges);
       // A free drag places its tree (a topic by `overrides`, the body by the viewport pan) through the viewport it
-      // started under, so a fit asked for mid-drag (a layout button pressed by a second pointer) waits for the
-      // frame `endTopicDrag` requests; fitting now would pull the tree off the pointer (LEV-182). A fit held that way
-      // also waits for a re-read scheduled or under way: after a drop, the save's own re-read gives up when the
-      // watcher schedules a newer one (`commit`), and until that one draws, this frame lays out the note from before
-      // the drop. Any other fit runs at once, as it always has.
-      if (this.needsFit && this.topicDrag) this.fitHeld = true;
-      const waiting = this.needsFit && (this.topicDrag !== null
-        || (this.fitHeld && (this.refreshTimer !== undefined || this.refreshing !== undefined)));
+      // started under, so a fit asked for mid-drag (a layout button pressed by a second pointer) waits until the drag
+      // ends; fitting now would pull the tree off the pointer (LEV-182). A fit that outlived a drag (`fitHeld`) also
+      // waits for a re-read scheduled or under way: after a drop, the save's own re-read gives up when the watcher
+      // schedules a newer one (`commit`), and until that one draws, this frame lays out the note from before the drop.
+      // Any other fit runs at once, as it always has.
+      const waiting = this.topicDrag !== null || (this.fitHeld && (this.refreshTimer !== undefined || this.refreshing !== undefined));
       if (this.needsFit && !waiting && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
-        this.viewport.fit(this.layout.bounds); this.needsFit = false; this.fitHeld = false;
+        this.viewport.fit(this.layout.bounds); this.clearFit();
       }
       // A node to reveal is brought into view after the fit, as in the frame both run in, not before a fit that would move it again.
-      if (this.revealId && !waiting) { this.ensureVisible(this.revealId); this.revealId = null; }
+      if (this.revealId && !(this.needsFit && waiting)) { this.ensureVisible(this.revealId); this.revealId = null; }
     });
   }
 
@@ -1515,7 +1523,16 @@ export class MindmapView extends FileView {
     for (const marked of drag.marked) this.renderer.entries.get(marked)?.element.removeClass("is-drag-moving");
     this.renderer.entries.get(id)?.element.removeClass("is-merging");
     if (restore && drag.viewport) this.viewport.set(drag.viewport);
+    // Set here, after the drag's own viewport is back, rather than by a frame that saw the drag: a frame can come late
+    // or the release land inside one frame interval of the switch, and the hold must not hang on that (LEV-182).
+    if (this.needsFit) this.fitHeld = true;
     this.scheduleLayout();
+  }
+
+  /** The fit is done or no longer wanted (a saved viewport restored, the view moved by hand after a drop). */
+  private clearFit(): void {
+    this.needsFit = false;
+    this.fitHeld = false;
   }
 
   /**

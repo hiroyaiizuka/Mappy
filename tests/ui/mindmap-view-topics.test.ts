@@ -1744,37 +1744,80 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     expect(viewport()).toEqual(fitted(mounted));
   });
 
-  it('the fit held through a drop waits for the re-read that shows the drop, when the save\'s own re-read is superseded', async () => {
-    // `commit` re-reads after its write, but that read gives up when a newer one was scheduled meanwhile — the modify
-    // watcher of this very write can land after the read started (see `commit`). The frame the drag's end requests
-    // then still lays out the note from before the drop, with the topic back at its stored place: a fit taken there
-    // measures the wrong map, and the re-read that follows 45 ms later moves the topic out of the fitted view.
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
-    await sized(mounted);
-    const { view, topic, viewport, store } = mounted;
+  /**
+   * A topic carried across a layout switch by button and dropped far to the right (so the drop widens the map and a
+   * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, but
+   * that read gives up when a newer one was scheduled meanwhile — the modify watcher of this very write can land after
+   * the read started (see `commit`). Until the watcher's re-read draws, frames lay out the note from before the drop.
+   * `frameAfterSwitch` lets a frame run between the switch and the drop; `watcher` stands in for the watcher's read.
+   */
+  const dropSuperseded = async (mounted: Mounted, options: { frameAfterSwitch: boolean; watcher?: () => Promise<string> }) => {
+    const { view, topic, store } = mounted;
     const dragged = topic('資料');
     const shift = shiftOf(view);
     shift(dragged.id, { x: 40, y: -40 });
     await frame();
     select(view, 'balanced');
-    await frame();
-    // Far to the right, so the drop widens the map's bounds and a fit of the map before it differs.
+    if (options.frameAfterSwitch) await frame();
     const drop = { x: 900, y: -40 };
     shift(dragged.id, drop);
-    await frame();
-    // The save's own re-read takes a moment, and the watcher's refresh is scheduled while it is under way.
     const read = store.read.bind(store);
-    const slow = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
       setTimeout(() => { (view as unknown as { scheduleRefresh(): void }).scheduleRefresh(); }, 0);
       await new Promise(resolve => setTimeout(resolve, 10));
       return read(file);
     });
-    const place = placeOf(view);
-    await place(dragged.id, drop);
-    slow.mockRestore();
+    if (options.watcher) reads.mockImplementationOnce(options.watcher);
+    await placeOf(view)(dragged.id, drop);
+    return reads;
+  };
+
+  it('the fit held through a drop waits for the re-read that shows the drop, when the save\'s own re-read is superseded', async () => {
+    // A fit taken on the frame the drag's end requests measures the map before the drop, and the re-read that follows
+    // 45 ms later moves the topic out of the fitted view.
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    await sized(mounted);
+    const reads = await dropSuperseded(mounted, { frameAfterSwitch: true });
+    reads.mockRestore();
     await reread(mounted);
     expect(readTopicPositions(mounted.source()).get('資料')?.balanced).toBeDefined();
-    expect(viewport()).toEqual(fitted(mounted));
+    expect(mounted.viewport()).toEqual(fitted(mounted));
+  });
+
+  it('the fit is held through the drop even when no frame ran between the switch and the release', async () => {
+    // Whether the fit waits must not hang on a frame having seen the drag: a frame can be late (a throttled window) or
+    // the release can land inside one frame interval of the tap.
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    await sized(mounted);
+    const reads = await dropSuperseded(mounted, { frameAfterSwitch: false });
+    reads.mockRestore();
+    await reread(mounted);
+    expect(mounted.viewport()).toEqual(fitted(mounted));
+  });
+
+  it('a held fit whose re-read fails still runs once that read is over, not on some unrelated frame later', async () => {
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    await sized(mounted);
+    const reads = await dropSuperseded(mounted, { frameAfterSwitch: true, watcher: () => Promise.reject(new Error('read failed')) });
+    await reread(mounted);
+    reads.mockRestore();
+    const settled = mounted.viewport();
+    expect(settled).toEqual(fitted(mounted));
+    // Nothing is left waiting: an unrelated layout request afterwards does not move the view.
+    (mounted.view as unknown as { scheduleLayout(): void }).scheduleLayout();
+    await frame();
+    expect(mounted.viewport()).toEqual(settled);
+  });
+
+  it('a pan made after the release, before the re-read, cancels the held fit instead of being thrown away by it', async () => {
+    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    await sized(mounted);
+    const reads = await dropSuperseded(mounted, { frameAfterSwitch: true });
+    reads.mockRestore();
+    mounted.canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 60, bubbles: true, cancelable: true }));
+    const panned = mounted.viewport();
+    await reread(mounted);
+    expect(mounted.viewport()).toEqual(panned);
   });
 
   it('a topic drag cancelled after the switch also fits once it has put the tree back', async () => {

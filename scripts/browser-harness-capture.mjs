@@ -1184,7 +1184,7 @@ async function captureTopicOperations(recorder, page) {
   const quiet = async () => {
     const deadline = Date.now() + 5000;
     for (;;) {
-      const busy = await page.harness('(async () => { const v = h.view; await v.layoutWrite; return Boolean(v.topicDrag || v.saving || v.refreshTimer !== undefined || v.refreshing); })()');
+      const busy = await page.harness('(async () => { const v = h.view; await v.layoutWrite.catch(() => undefined); return Boolean(v.topicDrag || v.saving || v.refreshTimer !== undefined || v.refreshing); })()');
       if (!busy) break;
       if (Date.now() > deadline) throw new Error('the view did not settle: a drag, save or re-read is still in flight');
       await page.evaluate('new Promise(done => { setTimeout(done, 10); })');
@@ -1239,8 +1239,10 @@ async function captureTopicOperations(recorder, page) {
       // or the fit button's click below would end that drag and write its position over the text put back here.
       if (held) await page.mouse('mouseReleased', from.x + 40, from.y + 20, { button: 'left', clickCount: 1 });
       // The switch writes `mappy-layout` through its own chain (`layoutWrite`) and the release saves: both land before
-      // the text is put back, or a late one would leave its change in the note the next cases compare against.
-      await quiet();
+      // the text is put back, or a late one would leave its change in the note the next cases compare against. A view
+      // that never settles is not this block's to report: the text is put back regardless, and the case's own error
+      // (if any) stays the one recorded.
+      try { await quiet(); } catch { /* restored below all the same */ }
       await page.harness(`h.putNote('Fixtures/free-topics.md', ${JSON.stringify(base)})`);
       await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
       const fit = await page.harness('h.button("全体表示")');
