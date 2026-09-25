@@ -193,13 +193,28 @@ OS / Obsidian version / Vault / build hash:
 
 ### 開発メモリの手順（Obsidian 実機を使わない）
 
-`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md の開発メモリの箇条書き（`bm tool` を含む行。AGENTS.md はフラットな箇条書きで、節見出しは無い）と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
+`npm run harness:e2e:memory-procedure`（`scripts/e2e/memory-procedure.mjs`）。AGENTS.md の開発メモリの箇条書き（`bm tool` を含む行。AGENTS.md はフラットな箇条書きで、節見出しは無い）と `.claude/skills/memory-manager/SKILL.md` に書かれた `bm` CLI の手順を、書かれたとおりに実行して期待どおりに動くかを確かめる。Obsidian も vault も要らないので `npm run harness:e2e`（実機の 4 ケース）には登録せず、単体で走らせる。`bm` が無い環境、`sh`・`zsh` のどちらかを起動できない環境（Linux の CI など）では**終了コード 2 で「実行していない」と言って終わる**（PASS にしない）。
 
 毎回、プロセス ID と乱数を混ぜた名前の使い捨て Basic Memory プロジェクトを一時ディレクトリに作り、最後にノートごと消す。**`mappy-memory` には触らない**（後片付けの後で、使い捨てプロジェクトが消えたことと `mappy-memory` が残っていることの両方を確かめる）。`--keep` で残せる。
 
-何を固定しているか: 手順書に書いてある推奨コマンドが、(1) 明示した `{カテゴリ}/{英語スラッグ}` の permalink を持ち、(2) `type` が `note` に落ちず、(3) `bm reindex` 無しで `read-note`・`search-notes`・`search-notes --type` から引けるノートを作ること。あわせて、積み上げるノートの扱い —— 同じタイトルの 2 回目の `write-note` が何も書かずに終わること、`--overwrite` が過去の記録を消すこと、`edit-note --operation append` が過去の記録を残すこと、**未作成の permalink への `append` はエラーにならずプロジェクト名を前置したノートを作ること**（手順書が「無ければ `write-note` で作る」と書いている根拠） —— を固定する。原因の切り分けも固定している: プロジェクト名の前置**だけ**なら `read-note {カテゴリ}/{スラッグ}` は当たり、外れるのは `search-notes --permalink "{カテゴリ}/*"` の方で、`read-note` と `[[wiki link]]` を外すのは日本語タイトルのスラッグ崩れ（`prefix-alone-does-not-break-read-note`）。手順書の文言もこの切り分けで書いてある。
+何を固定しているか（ステップ名ごと。細部と理由は `scripts/e2e/memory-procedure.mjs` の各ステップのコメント）:
 
-`permalink`・`type` を書かない旧手順（PR #74 の「方法A」）に戻すと、`documented-write-note` の 2 件（permalink が明示した値にならない／`type` が `event` にならない）、`indexed-without-reindex` の 2 件（`{カテゴリ}/{スラッグ}` で `read-note` できない／検索に出ない）、`search-by-type` の 1 件（`--type event` で出ない）—— 計 5 件の check が落ちる。手順書を直したら、同じブランチでこのケースも直す。ハーネスは bm の挙動だけでなく手順書そのものにも当てており（`documents-still-say-it`）、SKILL.md から `permalink: {カテゴリ}/{英語スラッグ}`・`type: {カテゴリの単数形}`・`--operation append` が消える、ファイルへの heredoc 書き込みや個人の絶対パスが戻る、AGENTS.md からセッション開始のコマンドが消える、のいずれでも FAIL する。
+- **手順書のブロックをそのまま実行する** —— SKILL.md のコードブロックを抜き出し、当て先・project・差し込み口だけを差し替えて、`sh`（macOS では bash 3.2）と `zsh`（エージェントの Bash ツールが動く本人のシェル）の両方で実行する。差し込み口には対になっていないバッククォート・`$`・`"`・`)`・`'`（手順書の規則どおり `'\''`）を入れ、文字のまま入ることを見る。
+  - `documented-write-note` —「新しいノートを作る」。明示した permalink と `type` のノートができる。
+  - `documented-inbox-entry` —「ミスをした直後」。本文が見出しを引用している inbox で、既存が重複も消失もせず、新しい 1 件が既存の後ろ・Relations の前に空行で区切られて入る。
+  - `documented-lessons-entry` — lessons への差し込み。最後の節へ足すときの `## Relations` への差し替えも実行する。
+- **実行してよいかの 2 段の確認** —— 抜き出したコマンドは、すべての `bm tool` 呼び出しが使い捨てプロジェクトの `--project … --local` を持ち、`--project-id`・`--cloud`・`-p`・`basic-memory` を含まないときだけ実行する。実行時も `PATH` の先頭に身代わりの `bm` を置き、条件を満たさない呼び出しは本物へ渡さずに止める（`shim-refuses-other-projects` が止め方と、正しい呼び出しが本物へ届くことを固定する）。
+- **bm の挙動** —— 手順書が根拠にしているもの。
+  - `defaults-drop-permalink-and-type`・`prefix-alone-does-not-break-read-note` — permalink・type を省いたときの既定と、前置とスラッグ崩れの切り分け。
+  - `indexed-without-reindex`・`search-by-type` — `bm reindex` 無しで `read-note`・`search-notes`・`--type` から引ける。
+  - `second-write-note-writes-nothing`・`overwrite-loses-history`・`append-keeps-history` — 積み上げるノートの扱い。
+  - `append-to-missing-creates-prefixed-note` — 無い permalink への `append` は前置したノートを黙って作り、`replace_section` は `Entity not found` で止まる（以前の手順書は `replace_section` も作ると書いていたが、LEV-192 でケースを足して違うと分かった）。
+  - `append-lands-after-relations-flat-replace-section-wipes` — `append` は Relations の後ろに落ち、平らなリストへの `replace_section` は節ごと消す。
+  - `inbox-replace-section-duplicates-find-replace-does-not` — inbox の形への `replace_section` の重複、`find_replace` の止まり方（2 か所・0 か所・当て先なし）、`\n` が改行にならないこと、前提が崩れた形（間に節がある・Relations の直前に空行が無い）での黙った入り方。
+  - `overwrite-with-different-filename-creates-another-note` — ファイル名とタイトルが違うノートへの `--overwrite` は既存を変えず別のノートを作る（permalink の出方も）。
+- **手順書の文面** —— `documents-still-say-it`。必須の記述（permalink・type の行、inbox の行頭の目印、`{folder}/{title}.md`、「`write-note` は新規専用」、前提と崩れる条件）が残っていること、旧手順（`## 未蒸留` への `replace_section`、本文や目印を二重引用符・コマンド置換で渡す形、コマンドの中の `\n`、ファイルへの heredoc 書き込み、個人の絶対パス）が戻っていないこと。
+
+旧手順に戻すと落ちることを確かめるときは、件数ではなく**どのステップが落ちるか**で見る。落ち方は差し込み口の文字次第で変わる（本文を二重引用符で渡す旧版はシェルの構文エラーで止まり、`permalink:`・`type:` の行を消すと「差し替える箇所が無い」で止まり、そのノートを使う後続のステップも落ちる）。手順書を直したら、同じブランチでこのケースも直す。
 
 ## 公開前の追加確認
 
