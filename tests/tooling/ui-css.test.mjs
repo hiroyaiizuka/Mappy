@@ -19,6 +19,9 @@ describe("map editing CSS", () => {
     expect(input).toMatch(/min-width:\s*max\(40px, 100%\);/u);
     expect(input).toMatch(/max-width:\s*100%;/u);
     expect(input).not.toMatch(/(^|[^-])width:\s*100%/u);
+    // The label's weight (400) whatever a theme gives the ancestors, and the 26px floor the measuring path uses.
+    expect(input).toMatch(/font: inherit;[\s\S]*font-weight:\s*400;/u);
+    expect(input).toMatch(/min-height:\s*26px;/u);
     expect(css).toMatch(/\.mappy-node\.is-root > \.mappy-inline-input \{ font-weight: 700; \}/u);
     expect(css).toMatch(/\.mappy-node\.is-stage > \.mappy-inline-input \{ font-weight: 600; \}/u);
     expect(css).not.toMatch(/--mappy-text-wrap|@property/u);

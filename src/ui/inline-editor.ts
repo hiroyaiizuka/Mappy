@@ -95,20 +95,23 @@ export class InlineEditor {
 
   /**
    * Width first: the text's width on one row (measured unwrapped), which the CSS max-width caps. The height then
-   * follows the rows. While the IME composes only the height follows: switching the composing textarea to one row
-   * and back on every update can disturb the composition, and compositionend measures the width.
+   * follows the rows, never under the 26px the stylesheet's min-height gives the other path. The width follows the
+   * IME's composition too, as `field-sizing` does: a draft typed in kana stays one row as it grows.
    */
   private measure(): void {
-    if (!this.composing) {
-      // `is-measuring` lays the text out on one row in a box of no width, so scrollWidth is the text's own width.
-      this.input.style.removeProperty("width");
-      this.input.classList.add("is-measuring");
-      const natural = this.input.scrollWidth;
-      this.input.classList.remove("is-measuring");
-      // A laid-out empty draft reads 1 (the class's padding); 0 means no layout yet (a hidden pane): the view's
-      // onResize measures again once it has one.
-      if (natural > 0) this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
+    const measured = this.input.style.width;
+    // `is-measuring` lays the text out on one row in a box of no width, so scrollWidth is the text's own width.
+    this.input.style.removeProperty("width");
+    this.input.classList.add("is-measuring");
+    const natural = this.input.scrollWidth;
+    this.input.classList.remove("is-measuring");
+    // A laid-out empty draft reads 1 (the class's padding). 0 means no layout (a hidden pane): nothing can be read,
+    // so the box keeps what it had, and the view's onResize measures once the pane has a layout.
+    if (natural === 0) {
+      if (measured) this.input.style.width = measured;
+      return;
     }
+    this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
     this.input.style.removeProperty("height");
     this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
   }
@@ -118,9 +121,11 @@ export class InlineEditor {
    * switch) can make it a root or a first-level node, whose bolder text is wider than the width measured before, and
    * a pane that had no layout has one now. Only the measuring fallback holds a width that can go stale.
    */
-  fit(): void {
-    // The callers (draw, onResize) lay the map out themselves.
-    if (!this.disposed && !this.sizesItself) this.measure();
+  fit(unmeasuredOnly = false): void {
+    // The callers (draw, onResize) lay the map out themselves. A resize changes neither the text nor the node's
+    // style, so it only has to measure a draft that has never been measured (opened in a hidden pane).
+    if (this.disposed || this.sizesItself || (unmeasuredOnly && this.input.style.width)) return;
+    this.measure();
   }
 
   /**

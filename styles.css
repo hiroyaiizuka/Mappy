@@ -307,7 +307,8 @@
   field-sizing: content;
   min-width: max(40px, 100%);
   max-width: 100%;
-  min-height: 22px;
+  /* The floor InlineEditor.measure has always given the height; the same on both paths. */
+  min-height: 26px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -316,6 +317,8 @@
   color: var(--text-normal);
   box-shadow: none;
   font: inherit;
+  /* The label's own weight (`.mappy-node-label`), not a theme's on an ancestor; roots and first-level nodes below. */
+  font-weight: 400;
   /* The UA resets these on a textarea; a theme that spaces the label's text must space the draft the same. */
   letter-spacing: inherit;
   word-spacing: inherit;

@@ -743,7 +743,7 @@ async function captureInlineWidth(recorder, page) {
     const cap = ['maxWidth', 'paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
       .map(key => parseFloat(box[key])).reduce((room, value, index) => index === 0 ? value : room - value);
     return { width: input.offsetWidth, rows: Math.round(input.scrollHeight / parseFloat(style.lineHeight)), fontSize: parseFloat(style.fontSize),
-      cap, left: node.left, right: node.right };
+      cap, inner: host.clientWidth - parseFloat(box.paddingLeft) - parseFloat(box.paddingRight), left: node.left, right: node.right };
   })()`);
   /** The selected node's label as confirmed: its rows (distinct line tops of the text) and the node's width. */
   const label = () => page.evaluate(`(() => {
@@ -846,7 +846,11 @@ async function captureInlineWidth(recorder, page) {
     const oneRow = steps.slice(0, wrapAt - 1);
     expect(oneRow.every((step, index) => index === 0 || step.width >= oneRow[index - 1].width), `${kind}: the one-row draft narrowed while typing`);
     expect(oneRow[0].width < oneRow.at(-1).width, `${kind}: the draft did not widen with the text (${oneRow[0].width}px → ${oneRow.at(-1).width}px)`);
-    if (empty) expect(empty.width <= 60, `${kind}: an empty node's draft is ${empty.width}px wide`);
+    if (empty) {
+      expect(empty.width <= 60, `${kind}: an empty node's draft is ${empty.width}px wide`);
+      // The 40px floor counts in the node's own width: the empty draft does not stick out of its node's box.
+      expect(empty.width <= empty.inner + 0.5, `${kind}: an empty draft of ${empty.width}px in a node box of ${empty.inner}px`);
+    }
     const lengths = [wrapAt - 1, wrapAt, text.length];
     const confirmed = [];
     for (const length of lengths) {
