@@ -11,6 +11,7 @@
  * not see a hook Excalidraw no longer calls.
  */
 import { wait } from './cdp.mjs';
+import { refuseOpenLeaves } from './dom-helpers.mjs';
 
 export const EXCALIDRAW = 'obsidian-excalidraw-plugin';
 /** The title of the map note's root: a drop that inserted the map has a text element with it. */
@@ -28,9 +29,9 @@ export const plainSource = mapName => ['# 通常ノート', '', '- 箇条書き'
 
 /**
  * Step body: writes the notes (path → text), makes the drawing with Excalidraw's own `create` and opens it in a
- * tab (`window.__mappyExcalidrawE2E = { leaf, drawing, errors }`). Stops first if a leaf is already on one of these
- * files (a previous `--keep`, or a run that stopped early). A drawing left at the same path by such a run is
- * replaced: the name is the case's own, in the generated vault's Fixtures. Page errors and unhandled rejections
+ * tab (`window.__mappyExcalidrawE2E = { leaf, drawing, errors }`). Stops first if a Markdown, map or drawing leaf is
+ * already on one of these files (a previous `--keep`, or a run that stopped early; `refuseOpenLeaves`). A drawing
+ * left at the same path by such a run is replaced: the name is the case's own, in the generated vault's Fixtures. Page errors and unhandled rejections
  * from here on are counted in `errors`, so a case can check that toggling the plugins threw nothing.
  */
 export function makeDrawingSetup(evaluate, { notes, drawing }) {
@@ -42,14 +43,7 @@ export function makeDrawingSetup(evaluate, { notes, drawing }) {
     if (!app.plugins.plugins[${JSON.stringify(EXCALIDRAW)}] || !window.ExcalidrawAutomate) {
       throw new Error('Excalidraw is not loaded: install and enable it in this vault (docs/harness.md Obsidian 実機の初回準備 2)');
     }
-    const paths = ${JSON.stringify(paths)};
-    const already = [];
-    app.workspace.iterateAllLeaves(item => {
-      const state = item.getViewState();
-      const path = item.view.file?.path ?? state.state?.file;
-      if (paths.includes(path)) already.push(state.type + ' ' + path);
-    });
-    if (already.length) throw new Error('Close the leaves already on these files first: ' + already.join(', '));
+    ${refuseOpenLeaves(paths, ['markdown', 'mappy-map', 'excalidraw'])}
     for (const [path, text] of Object.entries(${JSON.stringify(notes)})) {
       const existing = app.vault.getAbstractFileByPath(path);
       if (existing) await app.vault.modify(existing, text); else await app.vault.create(path, text);
@@ -67,6 +61,8 @@ export function makeDrawingSetup(evaluate, { notes, drawing }) {
       leaf = app.workspace.getLeavesOfType('excalidraw').find(item => item.view.file?.path === created) ?? null;
     }
     if (!leaf?.view?.excalidrawAPI) throw new Error('The drawing did not open in an Excalidraw view');
+    // A previous run that stopped early, or one with --keep, left its listeners on: take them off first.
+    window.__mappyExcalidrawE2E?.off?.();
     const errors = [];
     const onError = event => { errors.push(String(event.message ?? event.error ?? event)); };
     const onRejection = event => { errors.push('unhandledrejection: ' + String(event.reason?.message ?? event.reason)); };
@@ -125,6 +121,9 @@ export function makeFileDrag(cdp, evaluate) {
     let data;
     try {
       const intercepted = cdp.once('Input.dragIntercepted', 8000);
+      // Awaited below; this only keeps its timeout from becoming an unhandled rejection (which ends the process
+      // before the case's finally re-enables the plugins) when a mouse event throws first.
+      intercepted.catch(() => {});
       await mouse('mousePressed', points.from);
       for (let step = 1; step <= 5; step += 1) await mouse('mouseMoved', { x: points.from.x + step * 8, y: points.from.y + step * 2 });
       ({ data } = await intercepted);
@@ -173,4 +172,29 @@ export function makeDrawingClean(evaluate, notes) {
     E.off();
     delete window.__mappyExcalidrawE2E;
     return { removed, leavesClosed: closed.length };`);
+}
+
+/**
+ * Step body: with Mappy unloaded for a moment, a `mappy: true` note has to open as Markdown. A window that ran a build
+ * which never took its routing off `WorkspaceLeaf.prototype.setViewState` keeps routing after that build is gone —
+ * `--reload` does not undo it — and would make a build without routing look like one with it (docs/harness.md
+ * 「壊したビルドの検証は、変種ごとに Obsidian を起動し直す」). Mappy is enabled again whatever happens.
+ */
+export function makeNoStaleRouting(evaluate, note) {
+  return () => evaluate(`
+    await app.plugins.disablePlugin('mappy');
+    let opens;
+    try {
+      const leaf = app.workspace.getLeaf('tab');
+      await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(note)} } });
+      opens = leaf.view.getViewType();
+      leaf.detach();
+    } finally {
+      await app.plugins.enablePlugin('mappy');
+    }
+    for (const started = Date.now(); !app.plugins.plugins.mappy && Date.now() - started < 10000;) await new Promise(resolve => setTimeout(resolve, 100));
+    if (opens !== 'markdown') {
+      throw new Error('With Mappy unloaded the note still opened as ' + opens + ': this window routes through a wrapper an earlier build left behind. Restart Obsidian.');
+    }
+    return { opensWithoutMappy: opens };`);
 }

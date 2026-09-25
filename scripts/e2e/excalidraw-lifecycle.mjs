@@ -46,30 +46,35 @@ const step = makeStep(record);
 const check = makeCheck(record);
 const drag = makeFileDrag(cdp, evaluate);
 
-/** Loads or unloads one plugin (without saving the vault's plugin list) and waits until the window agrees. */
+/**
+ * Loads or unloads one plugin (without saving the vault's plugin list) and waits, up to 10 s, until the window agrees:
+ * the plugin is (not) loaded, `ExcalidrawAutomate` is on window exactly while Excalidraw is, and — while both are
+ * loaded — a drop hook is in its slot (Mappy hooks on `onLayoutReady`／`layout-change`, a moment after the enable). A
+ * stage whose hook never comes is still read and fails there, with what it found.
+ */
 const toggle = (id, on) => evaluate(`
   if (document.querySelector('.mappy-inline-input')) throw new Error('A draft is open in this window');
   if (${on}) await app.plugins.enablePlugin(${JSON.stringify(id)}); else await app.plugins.disablePlugin(${JSON.stringify(id)});
-  for (const started = Date.now(); !!app.plugins.plugins[${JSON.stringify(id)}] !== ${on};) {
-    if (Date.now() - started > 10000) throw new Error(${JSON.stringify(id)} + ' did not ' + (${on} ? 'load' : 'unload'));
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  // Excalidraw brings its automate object up after its own onload; the map view needs a frame to settle.
-  await new Promise(resolve => setTimeout(resolve, ${on ? 2500 : 800}));
-  return true;`);
+  const settled = () => {
+    const excalidraw = !!app.plugins.plugins[${JSON.stringify(EXCALIDRAW)}];
+    if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) return false;
+    if (!!window.ExcalidrawAutomate !== excalidraw) return false;
+    return !(excalidraw && app.plugins.plugins.mappy) || !!window.ExcalidrawAutomate.onDropHook;
+  };
+  const started = Date.now();
+  while (!settled() && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 100));
+  if (!!app.plugins.plugins[${JSON.stringify(id)}] !== ${on}) throw new Error(${JSON.stringify(id)} + ' did not ' + (${on} ? 'load' : 'unload'));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  return { waited: Date.now() - started };`);
 
 /**
  * What this stage left, stored under `label` for the identity checks of later stages: which plugins are loaded,
  * whether the automate object is there (and the same one), the drop hook and the prototype's `setViewState` against
- * each earlier stage, and what a `mappy: true` note opens as.
+ * each earlier stage, and what a `mappy: true` note opens as. A stage whose snapshot failed is not stored, so a
+ * comparison with it is `undefined` — neither `=== true` nor `=== false`, and every check below names the one it
+ * needs (`differs`/`sameAs`), so a missing stage fails the check rather than passing it.
  */
 const snapshot = label => evaluate(`const E = window.__mappyExcalidrawE2E;
-  let owner = Object.getPrototypeOf(app.workspace.getMostRecentLeaf());
-  while (owner && !Object.prototype.hasOwnProperty.call(owner, 'setViewState')) owner = Object.getPrototypeOf(owner);
-  const ea = window.ExcalidrawAutomate ?? null;
-  const now = { svs: owner.setViewState, ea, hook: ea?.onDropHook ?? null };
-  E.stages ??= {};
-  const same = key => Object.fromEntries(Object.entries(E.stages).map(([name, stage]) => [name, stage[key] === now[key]]));
   const leaf = app.workspace.getLeaf('tab');
   await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(MAP)} } });
   let nodes = 0;
@@ -79,6 +84,14 @@ const snapshot = label => evaluate(`const E = window.__mappyExcalidrawE2E;
   }
   const opens = leaf.view.getViewType();
   leaf.detach();
+  // Read after the probe: a wrapper patchMethod left as a pass-through takes itself off the prototype on the next
+  // call once nothing is above it, so the function read before the call can be one that is already gone.
+  let owner = Object.getPrototypeOf(app.workspace.getMostRecentLeaf());
+  while (owner && !Object.prototype.hasOwnProperty.call(owner, 'setViewState')) owner = Object.getPrototypeOf(owner);
+  const ea = window.ExcalidrawAutomate ?? null;
+  const now = { svs: owner.setViewState, ea, hook: ea?.onDropHook ?? null };
+  E.stages ??= {};
+  const same = key => Object.fromEntries(Object.entries(E.stages).map(([name, stage]) => [name, stage[key] === now[key]]));
   const result = {
     mappy: !!app.plugins.plugins.mappy, excalidraw: !!app.plugins.plugins[${JSON.stringify(EXCALIDRAW)}],
     automate: ea !== null, hook: now.hook === null ? null : typeof now.hook,
@@ -87,6 +100,9 @@ const snapshot = label => evaluate(`const E = window.__mappyExcalidrawE2E;
   };
   E.stages[${JSON.stringify(label)}] = now;
   return result;`);
+
+const sameAs = (relation, label) => relation?.[label] === true;
+const differs = (relation, label) => relation?.[label] === false;
 
 /** Mappy is loaded: map notes open as maps, and an Option-drag inserts the map. */
 const expectMappy = (label, state, drop) => {
@@ -138,9 +154,9 @@ try {
     const state = await snapshot('excalidrawOn2');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.3, 0.3] });
     const plain = await drag(MAP, { modifiers: 0, at: [0.7, 0.3] });
-    check(state.automate && !state.sameAutomate.start, '2-excalidraw-on: the reload did not bring a new ExcalidrawAutomate');
+    check(state.automate && differs(state.sameAutomate, 'start'), '2-excalidraw-on: the reload did not bring a new ExcalidrawAutomate');
     check(state.hook === 'function', '2-excalidraw-on: the reloaded Excalidraw has no drop hook');
-    check(!state.sameSetViewState.excalidrawOff1, '2-excalidraw-on: Excalidraw did not wrap setViewState again');
+    check(differs(state.sameSetViewState, 'excalidrawOff1'), '2-excalidraw-on: Excalidraw did not wrap setViewState again');
     expectMappy('2-excalidraw-on', state, drop);
     check(plain.kind === 'other', `2-excalidraw-on: a drag without Option inserted ${plain.kind}, not Excalidraw's default`);
     return { state, drop, plain };
@@ -153,8 +169,8 @@ try {
     await toggle('mappy', false);
     const state = await snapshot('mappyOff3');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.3, 0.5] });
-    check(state.sameSetViewState.excalidrawOn2, '3-mappy-off-shadowed: disabling Mappy replaced the outer setViewState (Excalidraw\'s wrapper was undone)');
-    check(!state.sameHook.excalidrawOn2, '3-mappy-off-shadowed: the drop hook is still the one installed with Mappy loaded');
+    check(sameAs(state.sameSetViewState, 'excalidrawOn2'), '3-mappy-off-shadowed: disabling Mappy replaced the outer setViewState (Excalidraw\'s wrapper was undone)');
+    check(differs(state.sameHook, 'excalidrawOn2'), '3-mappy-off-shadowed: the drop hook is still the one installed with Mappy loaded');
     expectNoMappy('3-mappy-off-shadowed', state, drop);
     return { state, drop };
   });
@@ -171,7 +187,7 @@ try {
     await toggle(EXCALIDRAW, true);
     const state = await snapshot('excalidrawOn5');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.3, 0.7] });
-    check(state.automate && !state.sameAutomate.excalidrawOn2, '5-excalidraw-on: the reload did not bring a new ExcalidrawAutomate');
+    check(state.automate && differs(state.sameAutomate, 'excalidrawOn2'), '5-excalidraw-on: the reload did not bring a new ExcalidrawAutomate');
     expectNoMappy('5-excalidraw-on', state, drop);
     return { state, drop };
   });
@@ -181,8 +197,8 @@ try {
     await toggle('mappy', true);
     const state = await snapshot('mappyOn6');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.6, 0.5] });
-    check(state.hook === 'function' && !state.sameHook.excalidrawOn5, '6-mappy-on: no new drop hook on the reloaded Excalidraw');
-    check(!state.sameSetViewState.excalidrawOn5, '6-mappy-on: setViewState is still the one without Mappy');
+    check(state.hook === 'function' && differs(state.sameHook, 'excalidrawOn5'), '6-mappy-on: no new drop hook on the reloaded Excalidraw');
+    check(differs(state.sameSetViewState, 'excalidrawOn5'), '6-mappy-on: setViewState is still the one without Mappy');
     expectMappy('6-mappy-on', state, drop);
     return { state, drop };
   });
@@ -191,15 +207,21 @@ try {
   await step('7-mappy-off-on-top', async () => {
     await toggle('mappy', false);
     const state = await snapshot('mappyOff7');
-    check(state.sameSetViewState.excalidrawOn5, '7-mappy-off-on-top: setViewState is not the one Excalidraw left (stage 5)');
-    check(state.sameHook.excalidrawOn5, '7-mappy-off-on-top: the drop hook is not the one Excalidraw had before Mappy (stage 5)');
+    check(sameAs(state.sameSetViewState, 'excalidrawOn5'), '7-mappy-off-on-top: setViewState is not the one Excalidraw left (stage 5)');
+    check(sameAs(state.sameHook, 'excalidrawOn5'), '7-mappy-off-on-top: the drop hook is not the one Excalidraw had before Mappy (stage 5)');
     expectNoMappy('7-mappy-off-on-top', state, null);
     await toggle('mappy', true);
     const again = await snapshot('mappyOn7');
     const drop = await drag(MAP, { modifiers: ALT, at: [0.6, 0.8] });
     expectMappy('7-mappy-on-again', again, drop);
-    check(again.errors.length === 0, `page errors while toggling: ${JSON.stringify(again.errors)}`);
     return { state, again, drop };
+  });
+
+  // Read last, after the final drop: an error the re-enabled hook threw there must count too.
+  await step('errors', async () => {
+    const errors = await evaluate('return [...window.__mappyExcalidrawE2E.errors];');
+    check(errors.length === 0, `page errors while toggling and dropping: ${JSON.stringify(errors)}`);
+    return errors;
   });
 
   const shot = value('--shot');

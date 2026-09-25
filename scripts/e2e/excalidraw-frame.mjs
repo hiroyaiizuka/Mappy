@@ -24,7 +24,9 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { makePluginStep } from './dom-helpers.mjs';
-import { MAP_ROOT, mapSource, plainSource, makeDrawingSetup, makeDrawingClean } from './excalidraw-helpers.mjs';
+import {
+  MAP_ROOT, mapSource, plainSource, makeDrawingSetup, makeDrawingClean, makeNoStaleRouting,
+} from './excalidraw-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -80,6 +82,9 @@ try {
     notes: { [MAP]: mapSource(PLAIN_NAME), [PLAIN]: plainSource(MAP_NAME) },
     drawing: DRAWING,
   })));
+  // The frame case never unloads Mappy, so without this a window still routing through an earlier build's wrapper
+  // would pass a build that has no routing at all (docs/harness.md 「壊したビルドの検証は…起動し直す」).
+  required(record, 'no-stale-routing', await step('no-stale-routing', makeNoStaleRouting(evaluate, MAP)));
 
   required(record, 'insert', await step('insert', () => evaluate(`const E = window.__mappyExcalidrawE2E;
     const view = E.leaf.view;
@@ -115,18 +120,21 @@ try {
 
   const map = frames.map ?? {};
   const plain = frames.plain ?? {};
+  // A frame that never rendered has no node list: read it as empty, so every check below still runs and says so.
+  const mapNodes = map.nodes ?? [];
+  const plainNodes = plain.nodes ?? [];
   check(map.container, 'the map note\'s frame was not rendered');
   check(map.leafTypes?.includes('mappy-map'), `the map note's frame holds ${JSON.stringify(map.leafTypes)}, not a mappy-map leaf`);
-  const labels = (map.nodes ?? []).map(node => node.label);
+  const labels = mapNodes.map(node => node.label);
   for (const title of [MAP_ROOT, '線と枠', '二つ目の枝']) check(labels.includes(title), `the map in the frame has no node ${title}`);
-  check((map.nodes ?? []).length > 0 && map.nodes.every(node => node.visible), 'a node of the map is outside its frame (not fitted)');
-  check((map.nodes ?? []).filter(node => node.role !== 'branch').every(node => node.bordered)
-    && map.nodes.some(node => node.role === 'root') && map.nodes.filter(node => node.role === 'stage').length === 2,
-  `the root and the two first-level branches should be drawn boxed: ${JSON.stringify(map.nodes)}`);
+  check(mapNodes.length > 0 && mapNodes.every(node => node.visible), 'a node of the map is outside its frame (not fitted)');
+  check(mapNodes.filter(node => node.role !== 'branch').every(node => node.bordered)
+    && mapNodes.some(node => node.role === 'root') && mapNodes.filter(node => node.role === 'stage').length === 2,
+  `the root and the two first-level branches should be drawn boxed: ${JSON.stringify(mapNodes)}`);
   check(map.lines >= 1, 'the map in the frame draws no lines');
   check(map.links?.includes(PLAIN_NAME), `the link to ${PLAIN_NAME} is not shown in the map's frame: ${JSON.stringify(map.links)}`);
   check(plain.container, 'the plain note\'s frame was not rendered');
-  check(!plain.leafTypes?.includes('mappy-map') && (plain.nodes ?? []).length === 0, 'the plain note\'s frame shows a map');
+  check(!plain.leafTypes?.includes('mappy-map') && plainNodes.length === 0, 'the plain note\'s frame shows a map');
   check(plain.markdown && plain.headings?.includes('通常ノート'), 'the plain note\'s frame does not show its Markdown');
   check(plain.links?.includes(MAP_NAME), 'the plain note\'s frame does not show its link');
 
