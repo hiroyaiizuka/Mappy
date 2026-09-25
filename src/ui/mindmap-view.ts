@@ -1251,7 +1251,10 @@ export class MindmapView extends FileView {
         this.placeholder.style.transform = `translate(${slot.x}px, ${slot.y}px)`;
       }
       this.drawEdges(this.layout.edges);
-      if (this.needsFit && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
+      // A free drag places its tree (a topic by `overrides`, the body by the viewport pan) through the viewport it
+      // started under, so a fit asked for mid-drag (a layout button pressed by a second pointer) waits for the
+      // frame `endTopicDrag` requests; fitting now would pull the tree off the pointer (LEV-182).
+      if (this.needsFit && !this.topicDrag && this.canvas.clientWidth > 0 && this.canvas.clientHeight > 0) {
         this.viewport.fit(this.layout.bounds); this.needsFit = false;
       }
       if (this.revealId) { this.ensureVisible(this.revealId); this.revealId = null; }

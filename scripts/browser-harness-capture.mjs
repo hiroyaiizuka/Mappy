@@ -1167,6 +1167,64 @@ async function captureTopicOperations(recorder, page) {
       return result;
     });
 
+  /**
+   * A layout button pressed by a second pointer (a finger) while the mouse still carries a tree (LEV-182): the mouse
+   * alone cannot reach the button, the canvas holding its capture, but a touch can. The switch asks for a fit; the fit
+   * must wait for the release, or the carried tree (a topic by its offsets, the body by the viewport pan) leaves the
+   * pointer. The press, the switch and the release write the note (`mappy-layout` and the positions), so the note's text
+   * is put back and the map reloaded in the map after each run, then fitted: a layout passed through the view state
+   * does not fit, so the reload alone would keep the balanced map's fit and send the fixed-distance drags of the cases
+   * after this one past the canvas edge.
+   */
+  const dragWithTouchSwitch = async name => {
+    const base = await page.harness('h.source()');
+    const button = await page.harness(`h.button(${JSON.stringify('左右バランス')})`);
+    expect(button, 'no 左右バランス button');
+    const from = center((await topicRect(name)).rect);
+    try {
+      await page.mouse('mouseMoved', from.x, from.y);
+      await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+      await page.mouse('mouseMoved', from.x + 20, from.y + 10, { button: 'left' });
+      await page.mouse('mouseMoved', from.x + 40, from.y + 20, { button: 'left' });
+      await page.settle();
+      const before = { rect: (await topicRect(name)).rect, view: await page.harness('h.viewport()') };
+      const tap = center(button);
+      await page.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: tap.x, y: tap.y, id: 2 }] });
+      await page.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await page.settle();
+      const active = (await page.harness('h.layoutButtons()')).find(item => item.active)?.label;
+      expect(active === '左右バランス', `the touch did not switch the layout mid-drag (active: ${active})`);
+      const switched = { rect: (await topicRect(name)).rect, view: await page.harness('h.viewport()') };
+      const jump = { x: switched.rect.x - before.rect.x, y: switched.rect.y - before.rect.y };
+      expect(Math.abs(jump.x) < 1.5 && Math.abs(jump.y) < 1.5, `${name} moved by ${jump.x.toFixed(1)}, ${jump.y.toFixed(1)} on the switch alone`);
+      expect(Math.abs(switched.view.scale - before.view.scale) < 1e-9, `the scale changed mid-drag (${before.view.scale.toFixed(3)} → ${switched.view.scale.toFixed(3)})`);
+      await page.mouse('mouseMoved', from.x + 70, from.y + 20, { button: 'left' });
+      await page.settle();
+      const moved = (await topicRect(name)).rect;
+      const follow = { x: moved.x - switched.rect.x, y: moved.y - switched.rect.y };
+      expect(Math.abs(follow.x - 30) < 1.5 && Math.abs(follow.y) < 1.5, `${name} followed 30 px of travel by ${follow.x.toFixed(1)}, ${follow.y.toFixed(1)}`);
+      await page.mouse('mouseReleased', from.x + 70, from.y + 20, { button: 'left', clickCount: 1 });
+      await page.settle();
+      // The fit the switch asked for runs once the drag is over: the whole balanced map is inside the canvas.
+      const canvas = await page.harness('h.canvasRect()');
+      const outside = (await page.harness('h.nodes()')).filter(node => !inside(node.rect, canvas, 2));
+      const released = await page.harness('h.viewport()');
+      expect(outside.length === 0, `not fitted after the release: ${outside.map(node => node.title).join(', ')} outside`);
+      expect(Math.abs(released.scale - switched.view.scale) > 1e-6 || Math.abs(released.x - switched.view.x) > 0.5, 'the viewport did not change on the release');
+      return `切替時のずれ ${jump.x.toFixed(1)}, ${jump.y.toFixed(1)} px、scale ${before.view.scale.toFixed(3)} のまま、離したあと Fit（scale ${released.scale.toFixed(3)}）`;
+    } finally {
+      await page.harness(`h.putNote('Fixtures/free-topics.md', ${JSON.stringify(base)})`);
+      await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
+      const fit = await page.harness('h.button("全体表示")');
+      await page.click(center(fit).x, center(fit).y);
+      await page.settle();
+    }
+  };
+  await recorder.run('topic-drag-layout-button-touch', `「${reference}」をマウスで運びながら、タッチで左下の「左右バランス」を押す → 30 px 運ぶ → 離す`,
+    '切り替えで木も scale も動かず（Fit しない）、その後の移動にそのまま付いてきて、離したあとで Fit する（LEV-182）', () => dragWithTouchSwitch(reference));
+  await recorder.run('body-drag-layout-button-touch', '本体「講座の本体」をマウスで運びながら、タッチで左下の「左右バランス」を押す → 30 px 運ぶ → 離す',
+    '切り替えで本体も scale も動かず（Fit しない）、その後の移動にそのまま付いてきて、離したあとで Fit する（LEV-182）', () => dragWithTouchSwitch('講座の本体'));
+
   await recorder.run('topic-unplaced-drag', '「位置のないトピック」を左下へ 60×80 px ドラッグ（他のノードから離れた空白）', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
     const name = '位置のないトピック';
     const base = await page.harness('h.source()');
