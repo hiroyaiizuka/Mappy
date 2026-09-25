@@ -1167,6 +1167,94 @@ async function captureTopicOperations(recorder, page) {
       return result;
     });
 
+  /**
+   * A layout button pressed by a second pointer (a finger) while the mouse still carries a tree (LEV-182): the mouse
+   * alone cannot reach the button, the canvas holding its capture, but a touch can. The switch asks for a fit; the fit
+   * must wait for the release, or the carried tree (a topic by its offsets, the body by the viewport pan) leaves the
+   * pointer. The press, the switch and the release write the note (`mappy-layout` and the positions), so the note's text
+   * is put back and the map reloaded in the map after each run, then fitted: a layout passed through the view state
+   * does not fit, so the reload alone would keep the balanced map's fit and send the fixed-distance drags of the cases
+   * after this one past the canvas edge.
+   */
+  /**
+   * Until the view has nothing in flight: no drag, no save, no re-read scheduled or running, no layout write. A fit
+   * held through a drop waits for the re-read the save's watcher schedules 45 ms later, which a settle (three still
+   * frames) can return ahead of; the fields are the view's own, read as the page sees them.
+   */
+  const quiet = async () => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const busy = await page.harness('(async () => { const v = h.view; await v.layoutWrite.catch(() => undefined); return Boolean(v.topicDrag || v.saving || v.refreshTimer !== undefined || v.refreshing); })()');
+      if (!busy) break;
+      if (Date.now() > deadline) throw new Error('the view did not settle: a drag, save or re-read is still in flight');
+      await page.evaluate('new Promise(done => { setTimeout(done, 10); })');
+    }
+    await page.settle();
+  };
+  const dragWithTouchSwitch = async name => {
+    const base = await page.harness('h.source()');
+    const button = await page.harness(`h.button(${JSON.stringify('左右バランス')})`);
+    expect(button, 'no 左右バランス button');
+    const from = center((await topicRect(name)).rect);
+    let held = false;
+    try {
+      await page.mouse('mouseMoved', from.x, from.y);
+      await page.mouse('mousePressed', from.x, from.y, { button: 'left', clickCount: 1 });
+      held = true;
+      await page.mouse('mouseMoved', from.x + 20, from.y + 10, { button: 'left' });
+      await page.mouse('mouseMoved', from.x + 40, from.y + 20, { button: 'left' });
+      await page.settle();
+      const before = { rect: (await topicRect(name)).rect, view: await page.harness('h.viewport()') };
+      const tap = center(button);
+      await page.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: tap.x, y: tap.y, id: 2 }] });
+      await page.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await page.settle();
+      const active = (await page.harness('h.layoutButtons()')).find(item => item.active)?.label;
+      expect(active === '左右バランス', `the touch did not switch the layout mid-drag (active: ${active})`);
+      const switched = { rect: (await topicRect(name)).rect, view: await page.harness('h.viewport()') };
+      const jump = { x: switched.rect.x - before.rect.x, y: switched.rect.y - before.rect.y };
+      expect(Math.abs(jump.x) < 1.5 && Math.abs(jump.y) < 1.5, `${name} moved by ${jump.x.toFixed(1)}, ${jump.y.toFixed(1)} on the switch alone`);
+      expect(Math.abs(switched.view.scale - before.view.scale) < 1e-9, `the scale changed mid-drag (${before.view.scale.toFixed(3)} → ${switched.view.scale.toFixed(3)})`);
+      await page.mouse('mouseMoved', from.x + 70, from.y + 20, { button: 'left' });
+      await page.settle();
+      const moved = (await topicRect(name)).rect;
+      const follow = { x: moved.x - switched.rect.x, y: moved.y - switched.rect.y };
+      expect(Math.abs(follow.x - 30) < 1.5 && Math.abs(follow.y) < 1.5, `${name} followed 30 px of travel by ${follow.x.toFixed(1)}, ${follow.y.toFixed(1)}`);
+      await page.mouse('mouseReleased', from.x + 70, from.y + 20, { button: 'left', clickCount: 1 });
+      held = false;
+      await quiet();
+      // The fit the switch asked for runs once the drag is over. The viewport is compared with the one「全体表示」
+      // gives for the same map: a pan alone (the body's drag moves it) or a map that happens to fit already would
+      // pass a looser check without any fit having run.
+      const released = await page.harness('h.viewport()');
+      const fit = await page.harness('h.button("全体表示")');
+      await page.click(center(fit).x, center(fit).y);
+      await page.settle();
+      const fitted = await page.harness('h.viewport()');
+      expect(Math.abs(released.x - fitted.x) < 0.5 && Math.abs(released.y - fitted.y) < 0.5 && Math.abs(released.scale - fitted.scale) < 1e-6,
+        `not fitted after the release: ${JSON.stringify(released)}, a fit gives ${JSON.stringify(fitted)}`);
+      return `切替時のずれ ${jump.x.toFixed(1)}, ${jump.y.toFixed(1)} px、scale ${before.view.scale.toFixed(3)} のまま、離したあと Fit（scale ${released.scale.toFixed(3)}）`;
+    } finally {
+      // An assertion that threw mid-drag leaves the button down and the canvas holding the capture: released first,
+      // or the fit button's click below would end that drag and write its position over the text put back here.
+      if (held) await page.mouse('mouseReleased', from.x + 40, from.y + 20, { button: 'left', clickCount: 1 });
+      // The switch writes `mappy-layout` through its own chain (`layoutWrite`) and the release saves: both land before
+      // the text is put back, or a late one would leave its change in the note the next cases compare against. A view
+      // that never settles is not this block's to report: the text is put back regardless, and the case's own error
+      // (if any) stays the one recorded.
+      try { await quiet(); } catch { /* restored below all the same */ }
+      await page.harness(`h.putNote('Fixtures/free-topics.md', ${JSON.stringify(base)})`);
+      await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
+      const fit = await page.harness('h.button("全体表示")');
+      await page.click(center(fit).x, center(fit).y);
+      await page.settle();
+    }
+  };
+  await recorder.run('topic-drag-layout-button-touch', `「${reference}」をマウスで運びながら、タッチで左下の「左右バランス」を押す → 30 px 運ぶ → 離す`,
+    '切り替えで木も scale も動かず（Fit しない）、その後の移動にそのまま付いてきて、離したあとで Fit する（LEV-182）', () => dragWithTouchSwitch(reference));
+  await recorder.run('body-drag-layout-button-touch', '本体「講座の本体」をマウスで運びながら、タッチで左下の「左右バランス」を押す → 30 px 運ぶ → 離す',
+    '切り替えで本体も scale も動かず（Fit しない）、その後の移動にそのまま付いてきて、離したあとで Fit する（LEV-182）', () => dragWithTouchSwitch('講座の本体'));
+
   await recorder.run('topic-unplaced-drag', '「位置のないトピック」を左下へ 60×80 px ドラッグ（他のノードから離れた空白）', '初めての移動で mappy-topics に新しいキーが書かれる', async () => {
     const name = '位置のないトピック';
     const base = await page.harness('h.source()');
