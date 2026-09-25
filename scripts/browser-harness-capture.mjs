@@ -715,7 +715,7 @@ async function captureOperations(recorder, page) {
   });
 }
 
-/** Texts typed into the inline editor (LEV-198), each long enough to wrap at about 20 full-width characters. */
+/** Texts typed into the inline editor (LEV-198), each long enough to wrap in the widest node (420px, 25 full-width characters at 16px). */
 const WRAP_SAMPLES = {
   全角: 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほ',
   半角: 'The quick brown fox jumps over the lazy dog and keeps on running far away',
@@ -724,9 +724,10 @@ const WRAP_SAMPLES = {
 };
 
 /**
- * The inline editor's width (LEV-198): it opens narrow, widens with the text on one row up to the node's wrap
- * width (20em: about 20 full-width characters of the node's own font), then wraps; the label confirmed from the
- * draft wraps at the same width, so a draft of one row stays one row and a draft of two rows stays two. Every
+ * The inline editor's width (LEV-198): it opens narrow, widens with the text on one row up to the width the node's
+ * own cap leaves for text (420px, the root 360px, less padding and border: unchanged from before), then wraps; the
+ * label confirmed from the draft wraps at the same width, so a draft of one row stays one row and a draft of two rows
+ * stays two, and the confirmed node is as wide as it always was. Every
  * probe starts from the fixture's original text; the matrix is the user's operation × the node's shape × the
  * kind of text × the layout (AGENTS.md), not a guess at the cause.
  */
@@ -735,9 +736,14 @@ async function captureInlineWidth(recorder, page) {
     const input = document.getElementById('harness-pane').querySelector('.mappy-inline-input');
     if (!input) return null;
     const style = getComputedStyle(input);
-    const node = input.closest('.mappy-node').getBoundingClientRect();
+    const host = input.closest('.mappy-node');
+    const node = host.getBoundingClientRect();
+    // The text's room in the node at its cap: max-width less padding and border (the stylesheet's, unchanged by LEV-198).
+    const box = getComputedStyle(host);
+    const cap = ['maxWidth', 'paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+      .map(key => parseFloat(box[key])).reduce((room, value, index) => index === 0 ? value : room - value);
     return { width: input.offsetWidth, rows: Math.round(input.scrollHeight / parseFloat(style.lineHeight)), fontSize: parseFloat(style.fontSize),
-      left: node.left, right: node.right };
+      cap, left: node.left, right: node.right };
   })()`);
   /** The selected node's label as confirmed: its rows (distinct line tops of the text) and the node's width. */
   const label = () => page.evaluate(`(() => {
@@ -834,10 +840,9 @@ async function captureInlineWidth(recorder, page) {
     await page.key('Escape', 'Escape', 27);
     await page.settle();
     expect(wrapAt > 1, `${kind}: the draft never took a second row (${steps.at(-1)?.rows} rows at ${text.length} characters)`);
-    const { fontSize } = steps[0];
-    const cap = 20 * fontSize;
+    const { fontSize, cap } = steps[0];
     const widest = Math.max(...steps.map(step => step.width));
-    expect(Math.abs(widest - cap) <= 1, `${kind}: widest draft ${widest}px, cap 20em = ${cap}px`);
+    expect(Math.abs(widest - cap) <= 1, `${kind}: widest draft ${widest}px, the node's room for text ${cap}px`);
     const oneRow = steps.slice(0, wrapAt - 1);
     expect(oneRow.every((step, index) => index === 0 || step.width >= oneRow[index - 1].width), `${kind}: the one-row draft narrowed while typing`);
     expect(oneRow[0].width < oneRow.at(-1).width, `${kind}: the draft did not widen with the text (${oneRow[0].width}px → ${oneRow.at(-1).width}px)`);
@@ -852,24 +857,26 @@ async function captureInlineWidth(recorder, page) {
       expect(typed.rows === shown.rows, `${kind}: ${lengths[index]} characters — ${typed.rows} rows while typing, ${shown.rows} once confirmed`);
     }
     expect(confirmed[0].draft.rows === 1 && confirmed[1].draft.rows === 2, `${kind}: rows ${confirmed[0].draft.rows} / ${confirmed[1].draft.rows} around the wrap`);
-    return { kind, fontSize, wrapAt, emptyWidth: empty?.width ?? steps[0].width, widest, rows: confirmed.map(entry => `${entry.draft.rows}/${entry.label.rows}`), lengths, steps };
+    return { kind, fontSize, cap, wrapAt, emptyWidth: empty?.width ?? steps[0].width, widest, rows: confirmed.map(entry => `${entry.draft.rows}/${entry.label.rows}`), lengths, steps };
   };
-  const summary = result => `${result.kind}: ${result.fontSize}px、${result.wrapAt} 文字目で 2 行目（開いた直後 ${result.emptyWidth}px → 最大 ${result.widest}px）、`
+  const summary = result => `${result.kind}: ${result.fontSize}px、${result.wrapAt} 文字目で 2 行目（開いた直後 ${result.emptyWidth}px → 最大 ${result.widest}px = ノードの文字の幅 ${result.cap}px）、`
     + `入力中/確定後の行数 ${result.lengths.map((length, index) => `${length} 文字 ${result.rows[index]}`).join('・')}`;
 
   await recorder.run('inline-width-type', '「空に近い枝」で F2 → 全角を 1 文字ずつ入力 → Escape（各長さを原文から入力し直して Enter）',
-    '開いた直後は狭く、1 行のまま文字に合わせて横に広がり、全角 20 文字（20em）で 21 文字目から 2 行目に折り返す。20 文字・21 文字・全文を確定したラベルの行数は入力中と同じ', async () => {
+    '開いた直後は狭く、1 行のまま文字に合わせて横に広がり、確定後のノードと同じ幅（第一階層は 420px − 余白 32px = 388px、全角 24 文字）で 25 文字目から 2 行目に折り返す。折り返しの直前・直後・全文を確定したラベルの行数は入力中と同じ。確定後のノードの幅は変更前と同じ（長い題名のノードは 420px、ルートの上限は 360px）', async () => {
       const result = await probe({ fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '空に近い枝', how: 'F2', kind: '全角' });
-      expect(result.wrapAt === 21, `full-width text wrapped at character ${result.wrapAt}, not 21`);
-      // The error line under the draft caps at the same px (its own smaller font must not shrink the 20em).
+      const perRow = Math.floor(result.cap / result.fontSize);
+      expect(result.wrapAt === perRow + 1, `full-width text wrapped at character ${result.wrapAt}, not ${perRow + 1} (${result.cap}px / ${result.fontSize}px)`);
+      // The confirmed map keeps its look: the node caps are the stylesheet's from before LEV-198, and a long title fills its node's cap.
       await reset(OPERATION_FIXTURE, 'mindmap');
-      await open('空に近い枝', 'F2');
-      const caps = await page.evaluate(`(() => { const pane = document.getElementById('harness-pane');
-        return [pane.querySelector('.mappy-inline-input'), pane.querySelector('.mappy-inline-error')].map(element => getComputedStyle(element).maxWidth); })()`);
-      await page.key('Escape', 'Escape', 27);
-      await page.settle();
-      expect(caps[0] === `${20 * result.fontSize}px` && caps[1] === caps[0], `max-width of the draft ${caps[0]}, of its error line ${caps[1]}`);
-      // Close-ups at the wrap: the draft of 21 characters and the label it confirms.
+      const kept = await page.evaluate(`(() => {
+        const nodes = Array.from(document.getElementById('harness-pane').querySelectorAll('.mappy-node'));
+        const long = nodes.find(node => node.querySelector('.mappy-node-label')?.textContent.trim().startsWith('長い日本語'));
+        const root = nodes.find(node => node.classList.contains('is-root'));
+        return { long: long.offsetWidth, longCap: getComputedStyle(long).maxWidth, rootCap: getComputedStyle(root).maxWidth };
+      })()`);
+      expect(kept.long === 420 && kept.longCap === '420px' && kept.rootCap === '360px', `confirmed widths ${JSON.stringify(kept)}`);
+      // Close-ups at the wrap: the draft that just took a second row and the label it confirms.
       await reset(OPERATION_FIXTURE, 'mindmap');
       // The zoom button, not Ctrl＋wheel: headless Chrome 153 stops answering after modifier input over CDP.
       const zoomIn = await page.harness('h.button("拡大")');
@@ -883,7 +890,7 @@ async function captureInlineWidth(recorder, page) {
       await page.drag(from.x, from.y, from.x + canvas.x + canvas.width / 2 - shown.x, from.y + canvas.y + canvas.height / 2 - shown.y);
       await page.settle();
       await open('空に近い枝', 'F2');
-      await page.type([...WRAP_SAMPLES.全角].slice(0, 21).join(''));
+      await page.type([...WRAP_SAMPLES.全角].slice(0, result.wrapAt).join(''));
       await page.settle();
       const clip = async () => {
         const node = await page.evaluate(`JSON.parse(JSON.stringify(document.getElementById('harness-pane').querySelector('.mappy-node.is-editing, .mappy-node.is-selected').getBoundingClientRect()))`);
@@ -919,7 +926,7 @@ async function captureInlineWidth(recorder, page) {
     : `(() => { if (window.__mappySupports) CSS.supports = window.__mappySupports; document.getElementById('no-field-sizing')?.remove(); })()`);
   for (const cell of cells) {
     await recorder.run(`inline-width-${cell.id}`, `${cell.label} → ${cell.kinds.join('・')}を 1 文字ずつ入力（各長さを原文から入力し直して Enter）`,
-      '1 行のまま横に広がり、20em（全角約 20 文字）で折り返す。折り返しの直前・直後・全文で、確定したラベルの行数が入力中と同じ', async () => {
+      '1 行のまま横に広がり、確定後のノードと同じ幅（ノードの上限 420px／ルート 360px から余白を引いた幅）で折り返す。折り返しの直前・直後・全文で、確定したラベルの行数が入力中と同じ', async () => {
         const results = [];
         if (cell.fallback) {
           await fallback(true);
@@ -958,22 +965,6 @@ async function captureInlineWidth(recorder, page) {
           await page.settle();
           expect(fill.input >= fill.attachments - 1 && fill.hit, `draft ${fill.input.toFixed(1)}px beside attachments ${fill.attachments.toFixed(1)}px, right end hits the editor: ${fill.hit}`);
           return `${results.map(summary).join('／')}。1 文字の下書きの幅 ${fill.input.toFixed(1)}px（画像の行 ${fill.attachments.toFixed(1)}px）、右端の押下は入力欄に当たる`;
-        }
-        if (cell.id === 'topic') {
-          // Held over a slot (is-merging) the topic is drawn at the plain text size; its wrap width must not change mid-drag.
-          await reset(cell.fixture, cell.mode);
-          const widths = await page.evaluate(`(() => {
-            const node = Array.from(document.getElementById('harness-pane').querySelectorAll('.mappy-node.is-topic'))
-              .find(candidate => candidate.getAttribute('aria-label') === ${JSON.stringify(cell.target)});
-            const content = node.querySelector('.mappy-node-content');
-            const before = getComputedStyle(content).maxWidth;
-            node.classList.add('is-merging');
-            const merging = getComputedStyle(content).maxWidth;
-            node.classList.remove('is-merging');
-            return { before, merging };
-          })()`);
-          expect(widths.before === widths.merging, `wrap width ${widths.before} → ${widths.merging} while merging`);
-          return `${results.map(summary).join('／')}。スロットの上（is-merging）でも折り返し幅 ${widths.merging} のまま`;
         }
         if (cell.id === 'balanced-left') {
           // A left-side node keeps the edge toward its parent: the draft widens away from the branch.

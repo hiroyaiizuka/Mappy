@@ -207,12 +207,7 @@
   box-sizing: border-box;
   width: max-content;
   min-width: 24px;
-  /* Text wraps at about 20 full-width characters of the node's text size (LEV-198): the label's box, the inline
-     editor and its error line all cap at this, so a draft breaks its rows where the confirmed label will. It is a
-     length from the node's size variable, not `em`, so the error line's smaller font and a topic drawn smaller while
-     it is dragged over a slot (`is-merging`) keep the node's width. */
-  --mappy-node-font: var(--font-text-size);
-  --mappy-text-wrap: calc(20 * var(--mappy-node-font));
+  max-width: 420px;
   min-height: 28px;
   padding: 4px 8px;
   border: 0;
@@ -223,15 +218,16 @@
   outline: none;
   cursor: default;
   overflow-wrap: anywhere;
-  font-size: var(--mappy-node-font);
+  font-size: var(--font-text-size);
   line-height: 1.4;
 }
 .mappy-view .mappy-node.is-root {
+  max-width: 360px;
   padding: 12px 18px;
   border: 2px solid var(--mappy-line);
   border-radius: 8px;
   background: var(--color-base-40, var(--background-modifier-border-hover));
-  --mappy-node-font: calc(var(--font-text-size) * 1.15);
+  font-size: calc(var(--font-text-size) * 1.15);
 }
 .mappy-view .mappy-node.is-stage {
   padding: 8px 14px;
@@ -285,7 +281,7 @@
 }
 .mappy-view .mappy-drop-placeholder[hidden] { display: none; }
 .mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-drop); stroke-width: 4; stroke-linecap: round; }
-.mappy-view .mappy-node-content { min-width: 0; max-width: var(--mappy-text-wrap); }
+.mappy-view .mappy-node-content { min-width: 0; }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
 /* While the inline editor stands in for a node's text, the node hides that text and keeps its attachments on
    screen; both parts set `display`, so the browser's own rule for `hidden` needs saying again here. */
@@ -303,12 +299,14 @@
 .mappy-view .mappy-inline-input {
   display: block;
   box-sizing: border-box;
-  /* One row as wide as the text, up to the wrap width, then more rows. Where `field-sizing` is unsupported
-     InlineEditor.resize sets the width and height instead. At least the node's width (an image or the error line
-     can make it wider), so a click beside the text still lands in the editor, not on the node. */
+  /* One row as wide as the text, then more rows once it reaches the node's own cap (max-width above: 420px, the root
+     360px), which is where the confirmed label wraps too (LEV-198). The 100% is cyclic while the node sizes itself, so
+     the text's full width asks for the cap; laid out, it is the node's content box. Where `field-sizing` is
+     unsupported InlineEditor.resize sets the width and height instead. At least the node's width (an image or the
+     error line can make it wider), so a click beside the text still lands in the editor, not on the node. */
   field-sizing: content;
   min-width: max(40px, 100%);
-  max-width: var(--mappy-text-wrap);
+  max-width: 100%;
   min-height: 22px;
   margin: 0;
   padding: 0;
@@ -335,7 +333,7 @@
 .mappy-view .mappy-inline-input.is-measuring { width: 0; min-width: 0; padding-right: 1px; white-space: pre; }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
 .mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
-.mappy-view .mappy-inline-error { max-width: var(--mappy-text-wrap); margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
+.mappy-view .mappy-inline-error { max-width: 303px; margin-top: 4px; color: var(--text-error); font-size: var(--font-ui-small); }
 .mappy-view .mappy-inline-error:empty { display: none; }
 .mappy-view .mappy-node-toggle {
   position: absolute;
