@@ -13,7 +13,11 @@ export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; con
   // A node's name is the hidden element its aria-labelledby points to (LEV-199); builds through 0.3.4 put it in aria-label.
   const label = node => {
     const named = node.getAttribute('aria-labelledby');
-    return named ? node.ownerDocument.getElementById(named)?.textContent ?? '' : node.getAttribute('aria-label') ?? '';
+    if (!named) return node.getAttribute('aria-label') ?? '';
+    const target = node.ownerDocument.getElementById(named);
+    // A dangling reference is a broken build, not an untitled node: say so instead of matching the empty title.
+    if (!target) throw new Error('aria-labelledby points to a missing element: ' + named);
+    return target.textContent ?? '';
   };
   const nth = (title, index) => nodes().filter(node => label(node) === title)[index];
   const input = () => el.querySelector('textarea.mappy-inline-input');

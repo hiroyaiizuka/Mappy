@@ -560,13 +560,24 @@ interface NodeInfo {
   color: string;
 }
 
+/** The text of the elements an `aria-labelledby`/`aria-describedby` points to, as a screen reader reads it; null without one. */
+function referenced(element: HTMLElement, attribute: string): string | null {
+  const ids = element.getAttribute(attribute)?.split(/\s+/u).filter(Boolean);
+  if (!ids?.length) return null;
+  return ids.map(id => {
+    const target = element.ownerDocument.getElementById(id);
+    if (!target) throw new Error(`${attribute} points to a missing element: ${id}`);
+    return target.textContent?.trim() ?? "";
+  }).join(" ");
+}
+
 function nodeInfo(element: HTMLElement): NodeInfo {
   const toggle = element.querySelector<HTMLElement>(":scope > .mappy-node-toggle");
   const label = element.querySelector<HTMLElement>(":scope > .mappy-node-content > .mappy-node-label");
   const badge = element.classList.contains("is-collapsed") ? Number(toggle?.querySelector(".mappy-node-toggle-mark")?.textContent ?? "") : NaN;
   return {
     id: element.dataset.nodeId ?? "",
-    title: label?.textContent?.trim() ?? element.querySelector<HTMLElement>(":scope > .mappy-node-name")?.textContent ?? "",
+    title: label?.textContent?.trim() ?? referenced(element, "aria-labelledby") ?? "",
     rect: plainRect(element) ?? { x: 0, y: 0, width: 0, height: 0 },
     toggle: toggle && !toggle.hidden ? plainRect(toggle) : null,
     collapsed: element.classList.contains("is-collapsed"),
@@ -574,9 +585,7 @@ function nodeInfo(element: HTMLElement): NodeInfo {
     called: element.classList.contains("is-called"),
     calledRoot: element.classList.contains("is-called-root"),
     // The source is read after the node's name (`aria-describedby`), no longer a hover `title` (LEV-199).
-    source: element.hasAttribute("aria-describedby")
-      ? (element.querySelector(":scope > .mappy-node-description")?.textContent ?? "").replace(/^呼び出し元: /u, "")
-      : null,
+    source: referenced(element, "aria-describedby")?.replace(/^呼び出し元: /u, "") ?? null,
     badge: Number.isFinite(badge) ? badge : null,
     link: label?.querySelector<HTMLAnchorElement>("a.internal-link")?.dataset.href ?? null,
     image: Boolean(label?.querySelector(".image-embed img")),

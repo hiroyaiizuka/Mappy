@@ -347,10 +347,12 @@ describe('NodeRenderer node names (LEV-199: no title tooltip over the node below
     document.body.append(layer);
     const second = new NodeRenderer({} as App, layer, vi.fn());
     second.update(renamed.nodes, renamed, 'Course.md', new Set(), appearance);
-    const ids = Array.from(document.querySelectorAll('[id]'), item => item.id);
-    // Two maps, two nodes each, a name and a description element per node.
-    expect(ids).toHaveLength(8);
+    const ids = [...renderer.entries.values(), ...second.entries.values()]
+      .flatMap(entry => Array.from(entry.element.querySelectorAll('[id]'), item => item.id));
+    // Two maps, two nodes each, a name element per node (no description: nothing here is called).
+    expect(ids).toHaveLength(4);
     expect(new Set(ids).size).toBe(ids.length);
+    for (const value of ids) expect(document.querySelectorAll(`[id="${CSS.escape(value)}"]`)).toHaveLength(1);
     expect(accessibleName(second.entries.get(id(renamed, 'uno'))?.element as HTMLElement)).toBe('uno');
   });
 });

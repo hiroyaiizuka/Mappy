@@ -10,9 +10,10 @@ interface NodeEntry {
   content: HTMLDivElement;
   toggle: HTMLButtonElement;
   toggleMark: HTMLSpanElement;
-  /** What a screen reader reads for the node (`aria-labelledby`) and after it (`aria-describedby`); see `nameNode`. */
+  /** What a screen reader reads for the node (`aria-labelledby`) and after it (`aria-describedby`); see `nameElement`. */
   name: HTMLSpanElement;
-  description: HTMLSpanElement;
+  /** Made the first time the node is drawn from a called map: most nodes never are. */
+  description: HTMLSpanElement | null;
   component: Component;
   key: string;
   /** Whether the inline editor stands in for this node's text; see `editing()`. */
@@ -96,9 +97,8 @@ export class NodeRenderer extends Component {
         const toggle = element.createEl("button", { cls: "mappy-node-toggle", attr: { tabindex: "0", type: "button" } });
         const toggleMark = toggle.createSpan({ cls: "mappy-node-toggle-mark", attr: { "aria-hidden": "true" } });
         const name = nameElement(element, "name");
-        const description = nameElement(element, "description");
         element.setAttribute("aria-labelledby", name.id);
-        entry = { element, content, toggle, toggleMark, name, description, component: this.addChild(new Component()), key: "", editing: false };
+        entry = { element, content, toggle, toggleMark, name, description: null, component: this.addChild(new Component()), key: "", editing: false };
         this.entries.set(node.id, entry);
       }
       const isCollapsed = collapsed.has(node.id) && node.children.length > 0;
@@ -126,9 +126,14 @@ export class NodeRenderer extends Component {
       // names its note after its name. Not on hover: a tooltip there covers the node below as the name's did (LEV-199).
       if (source && !source.root) entry.element.setAttribute("aria-readonly", "true");
       else entry.element.removeAttribute("aria-readonly");
-      entry.description.setText(source ? `呼び出し元: ${source.path}${source.subpath}` : "");
-      if (source) entry.element.setAttribute("aria-describedby", entry.description.id);
-      else entry.element.removeAttribute("aria-describedby");
+      if (source) {
+        entry.description ??= nameElement(entry.element, "description");
+        entry.description.setText(`呼び出し元: ${source.path}${source.subpath}`);
+        entry.element.setAttribute("aria-describedby", entry.description.id);
+      } else if (entry.description) {
+        entry.description.setText("");
+        entry.element.removeAttribute("aria-describedby");
+      }
       entry.toggle.hidden = node.children.length === 0;
       entry.toggleMark.empty();
       const hiddenCount = descendantCounts.get(node.id) ?? 0;
