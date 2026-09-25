@@ -708,6 +708,8 @@ export class MindmapView extends FileView {
 
   onResize(): void {
     if (this.ready) this.scheduleLayout();
+    // A draft opened while the pane had no layout (hidden) has not been measured yet.
+    this.inlineEditor?.fit();
     // The gear keeps its corner; the card under it follows, and shrinks if the pane got too narrow for it.
     this.placePopover();
   }

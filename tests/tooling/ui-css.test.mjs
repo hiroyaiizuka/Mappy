@@ -5,17 +5,25 @@ describe("map editing CSS", () => {
   it("wraps the inline node editor and the confirmed label at the same width, in the label's weight (LEV-198)", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
     const rule = selector => css.match(new RegExp(`${selector.replace(/[.()]/gu, "\\$&")} \\{(?<body>[^}]*)\\}`, "u"))?.groups?.body ?? "";
-    // About 20 full-width characters of the node's own font, for both.
-    expect(rule(".mappy-view .mappy-node")).toMatch(/--mappy-text-wrap:\s*20em;/u);
+    // About 20 full-width characters of the node's text size, as a length (not em): the error line's smaller font
+    // and a topic drawn smaller while dragged over a slot keep the node's width.
+    expect(rule(".mappy-view .mappy-node")).toMatch(/--mappy-node-font:\s*var\(--font-text-size\);\s*--mappy-text-wrap:\s*calc\(20 \* var\(--mappy-node-font\)\);/u);
+    expect(rule(".mappy-view .mappy-node")).toMatch(/font-size:\s*var\(--mappy-node-font\);/u);
+    expect(rule(".mappy-view .mappy-node.is-root")).toMatch(/--mappy-node-font:\s*calc\(var\(--font-text-size\) \* 1\.15\);/u);
+    expect(rule(".mappy-view .mappy-node.is-topic.is-merging")).not.toMatch(/--mappy-node-font/u);
     expect(rule(".mappy-view .mappy-node-content")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
-    expect(rule(".mappy-view .mappy-inline-input")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
+    const input = rule(".mappy-view .mappy-inline-input");
+    expect(input).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
+    // The textarea sizes itself to its text, and fills the node so a click beside the text stays in the editor.
+    expect(input).toMatch(/field-sizing:\s*content;/u);
+    expect(input).toMatch(/min-width:\s*max\(40px, 100%\);/u);
     // No narrower cap on the node itself: it would wrap the label before the draft.
     expect(rule(".mappy-view .mappy-node")).not.toMatch(/(^|[^-])max-width/u);
     expect(rule(".mappy-view .mappy-node.is-root")).not.toMatch(/(^|[^-])max-width/u);
     expect(css).toMatch(/\.mappy-node\.is-root > \.mappy-inline-input \{ font-weight: 700; \}/u);
     expect(css).toMatch(/\.mappy-node\.is-stage > \.mappy-inline-input \{ font-weight: 600; \}/u);
-    // A length computed on the node, so the error line (smaller font) inherits the node's px instead of its own 20em.
-    expect(rule("@property --mappy-text-wrap")).toMatch(/syntax:\s*"<length>";\s*inherits:\s*true;/u);
+    // No global @property registration: the variable stays a scoped declaration.
+    expect(css).not.toMatch(/@property/u);
     expect(rule(".mappy-view .mappy-inline-error")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
     // The one-row width InlineEditor.resize reads.
     expect(rule(".mappy-view .mappy-inline-input.is-measuring")).toMatch(/width:\s*0;\s*white-space:\s*pre;/u);

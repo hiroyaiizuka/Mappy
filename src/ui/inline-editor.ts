@@ -30,6 +30,8 @@ export class InlineEditor {
   private compositionBlurTimer: number | undefined;
   private disposed = false;
   private readonly suggestion: InlineSuggestion | undefined;
+  /** Whether the stylesheet sizes the draft to its text (`field-sizing: content`); if not, `measure` does. */
+  private readonly sizesItself: boolean;
 
   constructor(private readonly host: HTMLElement, private readonly options: InlineEditorOptions) {
     host.addClass("is-editing");
@@ -38,6 +40,7 @@ export class InlineEditor {
       cls: "mappy-inline-input", attr: { rows: "1", "aria-label": "ノードのテキスト" },
     });
     this.input.value = options.initial;
+    this.sizesItself = this.input.ownerDocument.defaultView?.CSS?.supports?.("field-sizing", "content") === true;
     this.suggestion = options.suggest?.(this.input);
     this.error = host.createDiv({ cls: "mappy-inline-error", attr: { role: "alert" } });
     this.input.addEventListener("compositionstart", () => { this.composing = true; });
@@ -81,25 +84,39 @@ export class InlineEditor {
   }
 
   /**
-   * Width first: the text's width on one row (measured unwrapped), which the CSS max-width caps at the width a
-   * confirmed label wraps at, so the draft breaks where the node will (LEV-198). The height then follows the rows.
+   * The draft is one row as wide as its text up to the width a confirmed label wraps at, then more rows (LEV-198).
+   * The stylesheet does that with `field-sizing: content`; without it (older WebKit) the box is measured here.
+   * Either way the map lays out again for the node's new size.
    */
   private resize(): void {
-    // `is-measuring` lays the text out on one row in a box of no width, so scrollWidth is the text's own width.
-    this.input.style.removeProperty("width");
-    this.input.classList.add("is-measuring");
-    const natural = this.input.scrollWidth;
-    this.input.classList.remove("is-measuring");
-    // Even an empty draft reads the 40px min-width; 0 means no layout yet (a hidden pane), so the CSS width stands.
-    if (natural > 0) this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
-    this.input.style.removeProperty("height");
-    this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
+    if (!this.sizesItself) this.measure();
     this.options.resize();
   }
 
   /**
-   * Measure the draft again because the node changed under it: a redraw (an external change, a layout switch) can
-   * make it a root or a first-level node, whose bolder text is wider than the width measured before.
+   * Width first: the text's width on one row (measured unwrapped), which the CSS max-width caps. The height then
+   * follows the rows. While the IME composes only the height follows: switching the composing textarea to one row
+   * and back on every update can disturb the composition, and compositionend measures the width.
+   */
+  private measure(): void {
+    if (!this.composing) {
+      // `is-measuring` lays the text out on one row in a box of no width, so scrollWidth is the text's own width.
+      this.input.style.removeProperty("width");
+      this.input.classList.add("is-measuring");
+      const natural = this.input.scrollWidth;
+      this.input.classList.remove("is-measuring");
+      // Even an empty draft reads the 40px min-width; 0 means no layout yet (a hidden pane): the view's onResize
+      // measures again once it has one.
+      if (natural > 0) this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
+    }
+    this.input.style.removeProperty("height");
+    this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
+  }
+
+  /**
+   * Measure the draft again because the node or the pane changed under it: a redraw (an external change, a layout
+   * switch) can make it a root or a first-level node, whose bolder text is wider than the width measured before, and
+   * a pane that had no layout has one now. Only the measuring fallback holds a width that can go stale.
    */
   fit(): void {
     if (!this.disposed) this.resize();

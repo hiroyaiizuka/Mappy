@@ -84,47 +84,80 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.save).not.toHaveBeenCalled();
   });
 
-  it('sizes the draft to its text measured on one row, leaving the wrap to the CSS max-width (LEV-198)', () => {
-    // jsdom has no layout: the textarea reports 180px for the text laid out on one row (the `is-measuring`
-    // rule in styles.css: no width, no wrapping) and 40px otherwise.
-    const measured: string[] = [];
-    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLTextAreaElement) {
-      const measuring = this.classList.contains('is-measuring');
-      measured.push(`${measuring ? 'one row' : 'wrapped'} ${this.style.width || 'css'}`);
-      return measuring ? 180 : 40;
+  describe('the draft box (LEV-198)', () => {
+    /** Whether the page reports `field-sizing: content` as supported. */
+    const fieldSizing = (supported: boolean): void => {
+      vi.stubGlobal('CSS', { supports: (property: string, value: string) => supported && property === 'field-sizing' && value === 'content' });
+      onTestFinished(() => { vi.unstubAllGlobals(); });
+    };
+    /** jsdom has no layout: scrollWidth reads `read(textarea)` instead. */
+    const scrollWidth = (read: (input: HTMLTextAreaElement) => number): void => {
+      const spy = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLTextAreaElement) { return read(this); });
+      onTestFinished(() => { spy.mockRestore(); });
+    };
+
+    it('leaves the box to the stylesheet where it sizes the textarea to its text, measuring nothing', () => {
+      fieldSizing(true);
+      const reads: string[] = [];
+      scrollWidth(input => { reads.push(input.className); return 180; });
+      const { options, input } = fixture('長い名前');
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '追加' }));
+      expect(reads).toEqual([]);
+      expect(input.style.width).toBe('');
+      expect(input.style.height).toBe('');
+      expect(input.hasAttribute('cols')).toBe(false);
+      // The map still lays out for the node's new size on every input.
+      expect(options.resize).toHaveBeenCalledTimes(2);
     });
-    try {
+
+    it('otherwise sizes the draft to its text measured on one row, leaving the wrap to the CSS max-width', () => {
+      fieldSizing(false);
+      // 180px for the text laid out on one row (the `is-measuring` rule in styles.css: no width, no wrapping), 40px otherwise.
+      const measured: string[] = [];
+      scrollWidth(input => {
+        const measuring = input.classList.contains('is-measuring');
+        measured.push(`${measuring ? 'one row' : 'wrapped'} ${input.style.width || 'css'}`);
+        return measuring ? 180 : 40;
+      });
       const { input } = fixture('長い名前');
       expect(measured).toEqual(['one row css']);
       expect(input.style.width).toBe('182px');
       expect(input.classList.contains('is-measuring')).toBe(false);
-      expect(input.hasAttribute('cols')).toBe(false);
       input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '追加' }));
       // The width set last time is cleared first, or it would outrank the class's `width: 0`.
       expect(measured).toEqual(['one row css', 'one row css']);
-    } finally {
-      scrollWidth.mockRestore();
-    }
-  });
+    });
 
-  it('measures the draft again on fit, for a node restyled under it', () => {
-    let width = 180;
-    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(() => width);
-    onTestFinished(() => { scrollWidth.mockRestore(); });
-    const { options, editor, input } = fixture('長い名前');
-    expect(input.style.width).toBe('182px');
-    const calls = options.resize.mock.calls.length;
-    // The node became a root under the draft (bolder text): fit reads the wider width and lays the map out again.
-    width = 200;
-    editor.fit();
-    expect(input.style.width).toBe('202px');
-    expect(options.resize).toHaveBeenCalledTimes(calls + 1);
-  });
+    it('measures again on fit: a node restyled under the draft, or a pane that had no layout when it opened', () => {
+      fieldSizing(false);
+      let width = 0;
+      scrollWidth(() => width);
+      const { options, editor, input } = fixture('長い名前');
+      // A hidden pane: nothing to measure, so no width is pinned.
+      expect(input.style.width).toBe('');
+      width = 180;
+      const calls = options.resize.mock.calls.length;
+      editor.fit();
+      expect(input.style.width).toBe('182px');
+      expect(options.resize).toHaveBeenCalledTimes(calls + 1);
+      // The node became a root (bolder, wider text).
+      width = 200;
+      editor.fit();
+      expect(input.style.width).toBe('202px');
+    });
 
-  it('leaves the width to the stylesheet while the draft has no layout (a hidden pane reads 0)', () => {
-    const { input } = fixture('長い名前');
-    expect(input.scrollWidth).toBe(0);
-    expect(input.style.width).toBe('');
+    it('keeps the width while the IME composes and measures it at compositionend', () => {
+      fieldSizing(false);
+      let width = 100;
+      scrollWidth(() => width);
+      const { input } = fixture('');
+      input.dispatchEvent(new CompositionEvent('compositionstart'));
+      width = 160;
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'へんかん' }));
+      expect(input.style.width).toBe('102px');
+      input.dispatchEvent(new CompositionEvent('compositionend'));
+      expect(input.style.width).toBe('162px');
+    });
   });
 
   it.each(['Enter', 'Tab', 'Escape'])('lets suggestions consume %s without finishing the node', value => {

@@ -868,7 +868,7 @@ async function captureInlineWidth(recorder, page) {
         return [pane.querySelector('.mappy-inline-input'), pane.querySelector('.mappy-inline-error')].map(element => getComputedStyle(element).maxWidth); })()`);
       await page.key('Escape', 'Escape', 27);
       await page.settle();
-      expect(caps[0] === '320px' && caps[1] === caps[0], `max-width of the draft ${caps[0]}, of its error line ${caps[1]}`);
+      expect(caps[0] === `${20 * result.fontSize}px` && caps[1] === caps[0], `max-width of the draft ${caps[0]}, of its error line ${caps[1]}`);
       // Close-ups at the wrap: the draft of 21 characters and the label it confirms.
       await reset(OPERATION_FIXTURE, 'mindmap');
       // The zoom button, not Ctrl＋wheel: headless Chrome 153 stops answering after modifier input over CDP.
@@ -914,6 +914,41 @@ async function captureInlineWidth(recorder, page) {
       '1 行のまま横に広がり、20em（全角約 20 文字）で折り返す。折り返しの直前・直後・全文で、確定したラベルの行数が入力中と同じ', async () => {
         const results = [];
         for (const kind of cell.kinds) results.push(await probe({ ...cell, kind }));
+        if (cell.id === 'image') {
+          // The image makes the node wider than a short draft: the draft still fills it, so a click beside the text
+          // lands in the editor rather than on the node (which would select it, or with a double click reopen it).
+          await reset(cell.fixture, cell.mode);
+          await open(cell.target, cell.how);
+          await page.type('あ');
+          await page.settle();
+          const fill = await page.evaluate(`(() => {
+            const input = document.getElementById('harness-pane').querySelector('.mappy-inline-input');
+            const attachments = input.closest('.mappy-node').querySelector('.mappy-node-attachments').getBoundingClientRect();
+            const box = input.getBoundingClientRect();
+            const hit = document.elementFromPoint(box.right - 4, box.top + box.height / 2);
+            return { input: box.width, attachments: attachments.width, hit: hit === input };
+          })()`);
+          await page.key('Escape', 'Escape', 27);
+          await page.settle();
+          expect(fill.input >= fill.attachments - 1 && fill.hit, `draft ${fill.input.toFixed(1)}px beside attachments ${fill.attachments.toFixed(1)}px, right end hits the editor: ${fill.hit}`);
+          return `${results.map(summary).join('／')}。1 文字の下書きの幅 ${fill.input.toFixed(1)}px（画像の行 ${fill.attachments.toFixed(1)}px）、右端の押下は入力欄に当たる`;
+        }
+        if (cell.id === 'topic') {
+          // Held over a slot (is-merging) the topic is drawn at the plain text size; its wrap width must not change mid-drag.
+          await reset(cell.fixture, cell.mode);
+          const widths = await page.evaluate(`(() => {
+            const node = Array.from(document.getElementById('harness-pane').querySelectorAll('.mappy-node.is-topic'))
+              .find(candidate => candidate.getAttribute('aria-label') === ${JSON.stringify(cell.target)});
+            const content = node.querySelector('.mappy-node-content');
+            const before = getComputedStyle(content).maxWidth;
+            node.classList.add('is-merging');
+            const merging = getComputedStyle(content).maxWidth;
+            node.classList.remove('is-merging');
+            return { before, merging };
+          })()`);
+          expect(widths.before === widths.merging, `wrap width ${widths.before} → ${widths.merging} while merging`);
+          return `${results.map(summary).join('／')}。スロットの上（is-merging）でも折り返し幅 ${widths.merging} のまま`;
+        }
         if (cell.id === 'balanced-left') {
           // A left-side node keeps the edge toward its parent: the draft widens away from the branch.
           await reset(cell.fixture, cell.mode);
@@ -935,9 +970,9 @@ async function captureInlineWidth(recorder, page) {
         return results.map(summary).join('／');
       });
   }
-  // Each probe ends on a confirmed rename: the later sections read these fixtures as their original text.
-  // The viewport of the last cell (the balanced layout) stays with the view: fit, so the next section finds its nodes on screen.
-  for (const path of originals.keys()) await putOriginal(path);
+  // Each probe ends on a confirmed rename: the later sections read these fixtures as their original text. The reset
+  // puts the operation fixture back and fits it: the last cell's viewport (the balanced layout) stays with the view.
+  for (const path of originals.keys()) if (path !== `Fixtures/${OPERATION_FIXTURE}.md`) await putOriginal(path);
   await reset(OPERATION_FIXTURE, 'mindmap');
 }
 

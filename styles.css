@@ -193,14 +193,6 @@
 .mappy-view .mappy-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 .mappy-view .mappy-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 .mappy-view .mappy-edges path { fill: none; stroke: var(--mappy-line); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-/* Registered as a length so the node's 20em is fixed in px on the node and inherited as that: the error line's
-   smaller font would otherwise resolve its own 20em narrower (LEV-198). Where @property is unsupported, each use
-   resolves the em itself, which is the same for the label and the editor (both in the node's font). */
-@property --mappy-text-wrap {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 320px;
-}
 .mappy-view .mappy-node {
   position: absolute;
   left: 0;
@@ -208,9 +200,12 @@
   box-sizing: border-box;
   width: max-content;
   min-width: 24px;
-  /* Text wraps at about 20 full-width characters of the node's own font (LEV-198): the label's box, the inline
-     editor and its error line all cap at this, so a draft breaks its rows where the confirmed label will. */
-  --mappy-text-wrap: 20em;
+  /* Text wraps at about 20 full-width characters of the node's text size (LEV-198): the label's box, the inline
+     editor and its error line all cap at this, so a draft breaks its rows where the confirmed label will. It is a
+     length from the node's size variable, not `em`, so the error line's smaller font and a topic drawn smaller while
+     it is dragged over a slot (`is-merging`) keep the node's width. */
+  --mappy-node-font: var(--font-text-size);
+  --mappy-text-wrap: calc(20 * var(--mappy-node-font));
   min-height: 28px;
   padding: 4px 8px;
   border: 0;
@@ -221,7 +216,7 @@
   outline: none;
   cursor: default;
   overflow-wrap: anywhere;
-  font-size: var(--font-text-size);
+  font-size: var(--mappy-node-font);
   line-height: 1.4;
 }
 .mappy-view .mappy-node.is-root {
@@ -229,7 +224,7 @@
   border: 2px solid var(--mappy-line);
   border-radius: 8px;
   background: var(--color-base-40, var(--background-modifier-border-hover));
-  font-size: calc(var(--font-text-size) * 1.15);
+  --mappy-node-font: calc(var(--font-text-size) * 1.15);
 }
 .mappy-view .mappy-node.is-stage {
   padding: 8px 14px;
@@ -301,7 +296,11 @@
 .mappy-view .mappy-inline-input {
   display: block;
   box-sizing: border-box;
-  min-width: 40px;
+  /* One row as wide as the text, up to the wrap width, then more rows. Where `field-sizing` is unsupported
+     InlineEditor.resize sets the width and height instead. At least the node's width (an image or the error line
+     can make it wider), so a click beside the text still lands in the editor, not on the node. */
+  field-sizing: content;
+  min-width: max(40px, 100%);
   max-width: var(--mappy-text-wrap);
   min-height: 22px;
   margin: 0;
@@ -314,12 +313,12 @@
   font: inherit;
   line-height: inherit;
   outline: none;
-  /* No scrollbar while the height is measured (it would narrow the row), and the label's breaking rule. */
+  /* No scrollbar while the fallback measures the height (it would narrow the row), and the label's breaking rule. */
   overflow: hidden;
   overflow-wrap: anywhere;
   resize: none;
 }
-/* Set only while InlineEditor.resize reads the text's one-row width. */
+/* Set only while InlineEditor.resize (without `field-sizing`) reads the text's one-row width. */
 .mappy-view .mappy-inline-input.is-measuring { width: 0; white-space: pre; }
 .mappy-view .mappy-inline-input:focus { border: 0; box-shadow: none; outline: none; }
 .mappy-view .mappy-inline-input { user-select: text; -webkit-user-select: text; }
