@@ -18,8 +18,8 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import {
-  VIEW, PARSE, makeSelect, makeState, makePluginStep, makeOpenStep, makeCentre, makeMarkSeen, makeAfter, makeAddNamed,
-  makeRename, makeMoveAlt, makeHistory, makeTree, makeNoOtherLeafStep,
+  VIEW, PARSE, makeSelect, makeState, makePluginStep, makeOpenStep, makeAim, makeMarkSeen, makeAfter, makeAddNamed,
+  makeRename, makeMoveAlt, makeHistory, makeTree,
 } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -48,7 +48,7 @@ const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const state = makeState(evaluate);
-const centre = makeCentre(evaluate);
+const centre = makeAim(evaluate);
 const markSeen = makeMarkSeen(evaluate);
 const after = makeAfter(evaluate);
 const addNamed = makeAddNamed(cdp, evaluate);
@@ -82,16 +82,42 @@ const drag = async (from, to) => {
   await mouse('mouseMoved', { x: end.x + 1, y: end.y }, { buttons: 1 });
   await wait(400);
   await mouse('mouseReleased', { x: end.x + 1, y: end.y }, { buttons: 0, clickCount: 1 });
-  return after(before);
+  return { ...await after(before), before };
+};
+
+/**
+ * A drag that did not change the note (a drop that missed, or one the map refused) must not be followed by its
+ * ⌘Z: that would undo the step before it and run the rest of the case on a document it was not written for.
+ * Records why and stops the case (`StopCase`; the `finally` below still cleans up).
+ */
+const landed = (result, name) => {
+  if (result.source !== result.before) return;
+  record.failures.push(`${name}: the drag did not change the note${result.messages.length ? ` (${result.messages.join(' / ')})` : ''}`);
+  record.stopped = `${name} changed nothing; its ⌘Z and the remaining steps were not run`;
+  throw new StopCase(record.stopped);
 };
 
 /** The lines of `branch` (a run of list lines) with `delta` spaces added (positive) or removed (negative) at the front of each. */
 const shift = (branch, delta) => branch.split('\n').map(line => (line === '' ? line
   : delta >= 0 ? ' '.repeat(delta) + line : line.slice(-delta))).join('\n');
 
+/** The note this run opened; `clean` runs once it is set, whether the case finished or stopped. */
+let opened;
+const clean = () => step('clean', () => evaluate(`${VIEW}
+  const file = view.file;
+  // Save the editor's text before its leaf goes: a save that detach() starts could otherwise land after the
+  // delete below and bring the note back for the next run.
+  await window.__mappyE2EEditor?.view?.save?.();
+  window.__mappyE2EEditor?.detach();
+  leaf.detach();
+  if (file) await app.vault.delete(file, true);
+  delete window.__mappyE2E;
+  delete window.__mappyE2EBefore;
+  delete window.__mappyE2EEditor;
+  return { removed: file?.path ?? null };`));
+
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
-  required(record, 'no-other-leaf', await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE)));
   // Step 8's expected parents are worked out for a 4-column tab; another indent unit moves the item to other
   // columns, and the case would fail (or pass) for a reason that is not the build's. Checked before anything
   // is written, so a vault set up otherwise stops here rather than after seven steps of map edits.
@@ -99,7 +125,7 @@ try {
     const settings = { useTab: app.vault.getConfig('useTab'), tabSize: app.vault.getConfig('tabSize') };
     if (settings.useTab !== true || settings.tabSize !== 4) throw new Error('This case assumes the vault indents with tabs of 4 columns (Obsidian defaults): ' + JSON.stringify(settings));
     return settings;`)));
-  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
+  opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 0. The map shows all eight levels as the list nests them: 階層8 is eight below the root.
@@ -191,6 +217,7 @@ try {
   await step('drag-shallower', async () => {
     await markSeen();
     const result = await drag('階層7', '移動先');
+    landed(result, 'drag-shallower');
     check(result.messages.length === 0, `the drag showed ${JSON.stringify(result.messages)}`);
     const expected = afterSibling.source.replace(branch7, '').replace('  - 移動先\n', `  - 移動先\n${shift(branch7, -8)}`);
     check(result.source === expected, `unexpected diff dragging 階層7 under 移動先:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
@@ -212,6 +239,7 @@ try {
   await step('drag-deeper', async () => {
     await markSeen();
     const result = await drag('移動先', '階層8');
+    landed(result, 'drag-deeper');
     check(result.messages.length === 0, `the drag showed ${JSON.stringify(result.messages)}`);
     const expected = afterSibling.source.replace('  - 移動先\n', '').replace(branch8, `${branch8}                - 移動先\n`);
     check(result.source === expected, `unexpected diff dragging 移動先 under 階層8:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
@@ -241,6 +269,11 @@ try {
     await new Promise(resolve => setTimeout(resolve, 1000));
     const editor = app.workspace.getLeavesOfType('markdown').find(item => item.view.file?.path === view.file.path);
     if (!editor) throw new Error('No Markdown leaf opened beside the map');
+    // The router opens it in the vault's default mode; reading view would never pass a Tab to CodeMirror.
+    // Editing mode with live preview is where the list levels this step compares with are drawn.
+    await editor.setViewState({ type: 'markdown', state: { ...editor.getViewState().state, mode: 'source', source: false } });
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (editor.view.getMode?.() !== 'source') throw new Error('The Markdown leaf beside the map is not in editing mode: ' + editor.view.getMode?.());
     window.__mappyE2EEditor = editor;
     return { editor: editor.view.getViewType() };`)));
 
@@ -255,22 +288,33 @@ try {
       editor.setCursor({ line, ch: editor.getLine(line).length });
       return editor.getValue();`);
     await wait(200);
+    const from = await drawnAt(title);
     const sentAt = Date.now();
     await cdp.realKey('Tab', shiftKey ? 8 : 0);
-    return { before, sentAt };
+    return { before, sentAt, from };
   };
 
+  /** Where the map draws the node titled `title` now (its box's left and top), or null if it draws none. */
+  const drawnAt = title => evaluate(`${VIEW}
+    const node = nth(${JSON.stringify(title)}, 0);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return { left: Math.round(rect.left), top: Math.round(rect.top) };`);
+
   /**
-   * Wait until the map's own parse puts `title` under `parent`; how long that took after the key. The limit is
-   * 1 s, under Obsidian's ~2 s save: a map that only re-read the note once it was saved (`vault.on('modify')`)
-   * instead of following the editor (`workspace.on('editor-change')`) would not make it — that is the row's
-   * 「即時反映」.
+   * Wait until the map's own parse puts `title` under `parent` and the canvas draws it somewhere else than
+   * `from` (its box before the key: a new parent at another depth is another column); how long that took after
+   * the key. The limit is 1 s, under Obsidian's ~2 s save: a map that only re-read the note once it was saved
+   * (`vault.on('modify')`) instead of following the editor (`workspace.on('editor-change')`), or that updated
+   * its model at once but drew it only later, would not make it — that is the row's 「即時反映」.
    */
-  const followed = async (title, parent, sentAt) => {
+  const followed = async (title, parent, sentAt, from) => {
     for (;;) {
       const nodes = await tree();
-      if (nodes[title]?.parent === parent) return { nodes, ms: Date.now() - sentAt };
-      if (Date.now() - sentAt > 1000) return { nodes, ms: null };
+      const drawn = await drawnAt(title);
+      const moved = drawn !== null && from !== null && (drawn.left !== from.left || drawn.top !== from.top);
+      if (nodes[title]?.parent === parent && moved) return { nodes, ms: Date.now() - sentAt, from, drawn };
+      if (Date.now() - sentAt > 1000) return { nodes, ms: null, from, drawn };
       await wait(50);
     }
   };
@@ -326,8 +370,8 @@ try {
   // 8a. Tab: 階層9の兄弟 (column 16) moves 4 columns in, under 階層9 (content column 18), which has no
   // children — so it becomes 階層9's child at level 10.
   await step('editor-indent', async () => {
-    const { before, sentAt } = await editorIndent('階層9の兄弟', false);
-    const { nodes, ms } = await followed('階層9の兄弟', '階層9', sentAt);
+    const { before, sentAt, from } = await editorIndent('階層9の兄弟', false);
+    const { nodes, ms } = await followed('階層9の兄弟', '階層9', sentAt, from);
     check(ms !== null, `the map did not re-parent 階層9の兄弟 under 階層9 within 1 s: ${JSON.stringify(nodes['階層9の兄弟'])}`);
     check(nodes['階層9の兄弟']?.depth === 10, `階層9の兄弟 should sit at depth 10: ${JSON.stringify(nodes['階層9の兄弟'])}`);
     const settled = await settle();
@@ -342,8 +386,8 @@ try {
 
   // 8b. Shift+Tab: back to column 16, under 階層8 at level 9.
   await step('editor-outdent', async () => {
-    const { sentAt } = await editorIndent('階層9の兄弟', true);
-    const { nodes, ms } = await followed('階層9の兄弟', '階層8', sentAt);
+    const { sentAt, from } = await editorIndent('階層9の兄弟', true);
+    const { nodes, ms } = await followed('階層9の兄弟', '階層8', sentAt, from);
     check(ms !== null && nodes['階層9の兄弟']?.depth === 9, `Shift+Tab should bring 階層9の兄弟 back to depth 9 under 階層8 within 1 s: ${JSON.stringify(nodes['階層9の兄弟'])}`);
     const settled = await settle();
     checkSettled(settled, 'Shift+Tab');
@@ -354,8 +398,8 @@ try {
   // (column 14) then falls inside 階層9の兄弟's content column and nests under it; that is CommonMark, and
   // the map has to agree with the editor about it too.
   await step('editor-outdent-again', async () => {
-    const { sentAt } = await editorIndent('階層9の兄弟', true);
-    const { nodes, ms } = await followed('階層9の兄弟', '階層6', sentAt);
+    const { sentAt, from } = await editorIndent('階層9の兄弟', true);
+    const { nodes, ms } = await followed('階層9の兄弟', '階層6', sentAt, from);
     check(ms !== null && nodes['階層9の兄弟']?.depth === 7, `a second Shift+Tab should put 階層9の兄弟 at depth 7 under 階層6 within 1 s: ${JSON.stringify(nodes['階層9の兄弟'])}`);
     check(nodes['階層9']?.parent === '階層8' && nodes['階層8']?.parent === '階層7', 'outdenting 階層9の兄弟 moved 階層8 or 階層9');
     const settled = await settle();
@@ -365,23 +409,11 @@ try {
     return { ms, nodes, ...settled };
   });
 
-  if (!flag('--keep')) {
-    await step('clean', () => evaluate(`${VIEW}
-      const file = view.file;
-      // Save the editor's text before its leaf goes: a save that detach() starts could otherwise land after the
-      // delete below and bring the note back for the next run.
-      await window.__mappyE2EEditor?.view?.save?.();
-      window.__mappyE2EEditor?.detach();
-      leaf.detach();
-      if (file) await app.vault.delete(file, true);
-      delete window.__mappyE2E;
-      delete window.__mappyE2EBefore;
-      delete window.__mappyE2EEditor;
-      return { removed: file?.path ?? null };`));
-  }
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
+  // Also after a stop: a map or editor left on the note would make the next run refuse to open it (makeOpenStep).
+  if (opened && !flag('--keep')) await clean();
   cdp.close();
 }
 

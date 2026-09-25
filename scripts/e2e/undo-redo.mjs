@@ -14,7 +14,7 @@
  * Usage: npm run harness:e2e:undo-redo -- [--reload] [--json <out.json>] [--keep]
  */
 import { connect, VAULT } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeHistory, makeRename } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -57,7 +57,7 @@ const toggle = () => evaluate(`
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 編集 (F2 rename, one history entry). The expected text is computed independently of what the map
@@ -119,7 +119,7 @@ try {
   });
   // One further redo must be a no-op: the stack is exhausted, not somehow re-armed by the round trip.
   await step('redo-exhausted', async () => {
-    const result = await history('redo');
+    const result = await history('redo', 1500);
     check(result.messages.length === 0, `⌘⇧Z showed ${JSON.stringify(result.messages)}`);
     check(result.source === afterEdit.source, `a redo past the end of the stack changed the document:\nexpected: ${JSON.stringify(afterEdit.source)}\nactual:   ${JSON.stringify(result.source)}`);
     return result;
@@ -134,6 +134,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

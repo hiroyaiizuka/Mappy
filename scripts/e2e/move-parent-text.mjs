@@ -15,7 +15,7 @@
  * Usage: npm run harness:e2e:move-parent-text -- [--reload] [--json <out.json>] [--keep]
  */
 import { connect, VAULT } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste, makeMoveAlt, makeAfter } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -44,13 +44,13 @@ const select = makeSelect(cdp, evaluate);
 const paste = makePaste(evaluate);
 const state = makeState(evaluate);
 
-/** ⌥↑ or ⌥↓ on the selected node (`makeMoveAlt`, dom-helpers.mjs); a boundary step waits out its timeout, since nothing should change. */
+/** ⌥↑ or ⌥↓ on the selected node (`makeMoveAlt`, dom-helpers.mjs); a boundary step, where nothing should change, waits out a shorter timeout. */
 const moveAlt = makeMoveAlt(cdp, evaluate);
 const after = makeAfter(evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 1. ⌥↓ on the first child: the two children swap, and はじめに's own trailing text is untouched.
@@ -69,7 +69,7 @@ try {
   // be a no-op, not reach past the trailing text into 記録する.
   await step('move-down-boundary', async () => {
     await select('学ぶこと');
-    const result = await moveAlt('ArrowDown');
+    const result = await moveAlt('ArrowDown', 1500);
     check(result.messages.length === 0, `⌥↓ at the boundary showed ${JSON.stringify(result.messages)}`);
     check(result.source === afterDown.source, `⌥↓ past the last child changed the document:\nbefore: ${JSON.stringify(afterDown.source)}\nafter:  ${JSON.stringify(result.source)}`);
     return result;
@@ -79,7 +79,7 @@ try {
   // はじめに itself with 記録する at the top level).
   await step('move-up-boundary', async () => {
     await select('全体の流れ');
-    const result = await moveAlt('ArrowUp');
+    const result = await moveAlt('ArrowUp', 1500);
     check(result.messages.length === 0, `⌥↑ at the boundary showed ${JSON.stringify(result.messages)}`);
     check(result.source === afterDown.source, `⌥↑ past the first child changed the document:\nbefore: ${JSON.stringify(afterDown.source)}\nafter:  ${JSON.stringify(result.source)}`);
     return result;
@@ -129,6 +129,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: [file?.path, ...attachments.map(f => f.path)].filter(Boolean) };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }

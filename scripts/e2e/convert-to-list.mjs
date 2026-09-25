@@ -18,7 +18,7 @@ import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import {
   VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep, makeMarkSeen, makeAfter, makeAddNamed,
-  makeHistory, makeTree, makeNoOtherLeafStep,
+  makeHistory, makeTree,
 } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -79,10 +79,19 @@ const structure = async () => {
   return { format, nodes: nodes.map(node => `${node.title} ← ${node.parent}`) };
 };
 
+/** The note this run opened; `clean` runs once it is set, whether the case finished or stopped. */
+let opened;
+const clean = () => step('clean', () => evaluate(`${VIEW}
+  const file = view.file;
+  leaf.detach();
+  if (file) await app.vault.delete(file, true);
+  delete window.__mappyE2E;
+  delete window.__mappyE2EBefore;
+  return { removed: file?.path ?? null };`));
+
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
-  required(record, 'no-other-leaf', await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE)));
-  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
+  opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
 
   // 1. Opening is not converting: the note stays exactly as written, and the map reads it as headings.
   const original = await step('open-unchanged', async () => {
@@ -158,18 +167,11 @@ try {
     return result;
   });
 
-  if (!flag('--keep')) {
-    await step('clean', () => evaluate(`${VIEW}
-      const file = view.file;
-      leaf.detach();
-      if (file) await app.vault.delete(file, true);
-      delete window.__mappyE2E;
-      delete window.__mappyE2EBefore;
-      return { removed: file?.path ?? null };`));
-  }
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
+  // Also after a stop: a map left on the note would make the next run refuse to open it (makeOpenStep).
+  if (opened && !flag('--keep')) await clean();
   cdp.close();
 }
 

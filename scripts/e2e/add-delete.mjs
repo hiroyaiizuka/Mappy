@@ -10,7 +10,7 @@
  * Usage: npm run harness:e2e:add-delete -- [--reload] [--json <out.json>] [--keep]
  */
 import { connect, VAULT } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeAddNamed, makeAfter } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -37,7 +37,7 @@ const after = makeAfter(evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
+  const opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const initial = opened.source;
 
   // 1. Enter on 子1: a new sibling between 子1 and 子2, named in place. A tight list, so the only
@@ -101,6 +101,8 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: file?.path ?? null };`));
   }
+} catch (error) {
+  if (!(error instanceof StopCase)) throw error;
 } finally {
   cdp.close();
 }
