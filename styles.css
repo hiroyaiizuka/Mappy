@@ -193,6 +193,14 @@
 .mappy-view .mappy-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 .mappy-view .mappy-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 .mappy-view .mappy-edges path { fill: none; stroke: var(--mappy-line); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+/* Registered as a length so the node's 20em is fixed in px on the node and inherited as that: the error line's
+   smaller font would otherwise resolve its own 20em narrower (LEV-198). Where @property is unsupported, each use
+   resolves the em itself, which is the same for the label and the editor (both in the node's font). */
+@property --mappy-text-wrap {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 320px;
+}
 .mappy-view .mappy-node {
   position: absolute;
   left: 0;
@@ -200,8 +208,8 @@
   box-sizing: border-box;
   width: max-content;
   min-width: 24px;
-  /* Text wraps at about 20 full-width characters of the node's own font (LEV-198): the label's box and the inline
-     editor both cap at this, so a draft breaks its rows where the confirmed label will. Resolved where used (em). */
+  /* Text wraps at about 20 full-width characters of the node's own font (LEV-198): the label's box, the inline
+     editor and its error line all cap at this, so a draft breaks its rows where the confirmed label will. */
   --mappy-text-wrap: 20em;
   min-height: 28px;
   padding: 4px 8px;

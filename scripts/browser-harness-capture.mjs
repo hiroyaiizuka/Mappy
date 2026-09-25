@@ -715,11 +715,6 @@ async function captureOperations(recorder, page) {
   });
 }
 
-/**
- * M8 rows (LEV-46) on heading-document: the stages「回復する」「記録する」carry images, so
- * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
- * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
- */
 /** Texts typed into the inline editor (LEV-198), each long enough to wrap at about 20 full-width characters. */
 const WRAP_SAMPLES = {
   全角: 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほ',
@@ -735,7 +730,7 @@ const WRAP_SAMPLES = {
  * probe starts from the fixture's original text; the matrix is the user's operation × the node's shape × the
  * kind of text × the layout (AGENTS.md), not a guess at the cause.
  */
-export async function captureInlineWidth(recorder, page) {
+async function captureInlineWidth(recorder, page) {
   const draft = () => page.evaluate(`(() => {
     const input = document.getElementById('harness-pane').querySelector('.mappy-inline-input');
     if (!input) return null;
@@ -758,13 +753,12 @@ export async function captureInlineWidth(recorder, page) {
   /** The fixture back to its original text, opened in `mode`, with nothing selected or being edited. */
   const originals = new Map();
   /**
-   * Put the note back; an open view re-reads it 45 ms later (the refresh debounce) and redraws, which would take the
-   * focus from a node clicked meanwhile. Wait that out before the next load.
+   * Put the note back while another fixture is shown: written under an open view, the note would be re-read 45 ms
+   * later (the refresh debounce) and redrawn, taking the focus from a node clicked meanwhile.
    */
   const putOriginal = async path => {
+    await loadFixture(page, path === `Fixtures/${OPERATION_FIXTURE}.md` ? 'heading-document' : OPERATION_FIXTURE);
     await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(originals.get(path))})`);
-    await new Promise(resolveWait => { setTimeout(resolveWait, 300); });
-    await page.settle();
   };
   const reset = async (fixture, mode) => {
     const path = `Fixtures/${fixture}.md`;
@@ -789,13 +783,6 @@ export async function captureInlineWidth(recorder, page) {
     } else {
       await page.click(point.x, point.y);
       await page.settle();
-      // The keys go to the focused node; a redraw still under way from the reset can take the focus back to the body.
-      const focused = () => page.evaluate(`document.activeElement?.closest?.('.mappy-view') != null`);
-      for (let retry = 0; retry < 3 && !(await focused()); retry += 1) {
-        await page.settle();
-        const again = center((await nodeInfo(page, target)).rect);
-        await page.click(again.x, again.y);
-      }
       if (how === 'F2') await page.key('F2', 'F2', 113);
       else if (how === 'Enter') await page.key('Enter', 'Enter', 13);
       else await page.key('Tab', 'Tab', 9);
@@ -874,6 +861,14 @@ export async function captureInlineWidth(recorder, page) {
     '開いた直後は狭く、1 行のまま文字に合わせて横に広がり、全角 20 文字（20em）で 21 文字目から 2 行目に折り返す。20 文字・21 文字・全文を確定したラベルの行数は入力中と同じ', async () => {
       const result = await probe({ fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '空に近い枝', how: 'F2', kind: '全角' });
       expect(result.wrapAt === 21, `full-width text wrapped at character ${result.wrapAt}, not 21`);
+      // The error line under the draft caps at the same px (its own smaller font must not shrink the 20em).
+      await reset(OPERATION_FIXTURE, 'mindmap');
+      await open('空に近い枝', 'F2');
+      const caps = await page.evaluate(`(() => { const pane = document.getElementById('harness-pane');
+        return [pane.querySelector('.mappy-inline-input'), pane.querySelector('.mappy-inline-error')].map(element => getComputedStyle(element).maxWidth); })()`);
+      await page.key('Escape', 'Escape', 27);
+      await page.settle();
+      expect(caps[0] === '320px' && caps[1] === caps[0], `max-width of the draft ${caps[0]}, of its error line ${caps[1]}`);
       // Close-ups at the wrap: the draft of 21 characters and the label it confirms.
       await reset(OPERATION_FIXTURE, 'mindmap');
       // The zoom button, not Ctrl＋wheel: headless Chrome 153 stops answering after modifier input over CDP.
@@ -902,6 +897,7 @@ export async function captureInlineWidth(recorder, page) {
     });
 
   const cells = [
+    // URL: this page draws external links without Obsidian's icon, so a match here is not a match in Obsidian.
     { id: 'kinds', label: '「空に近い枝」（第一階層）で F2', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '空に近い枝', how: 'F2', kinds: ['半角', '混在', 'URL'] },
     { id: 'deep', label: '「八段目」（深い階層）をダブルクリック', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '八段目', how: 'dblclick', kinds: ['全角'] },
     { id: 'root', label: '「不均等な枝」（本体のルート、H2）で F2', fixture: OPERATION_FIXTURE, mode: 'mindmap', target: '不均等な枝', how: 'F2', kinds: ['全角', '混在'] },
@@ -945,6 +941,11 @@ export async function captureInlineWidth(recorder, page) {
   await reset(OPERATION_FIXTURE, 'mindmap');
 }
 
+/**
+ * M8 rows (LEV-46) on heading-document: the stages「回復する」「記録する」carry images, so
+ * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
+ * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
+ */
 async function captureHierarchyRows(recorder, page) {
   const nodeRect = async name => (await nodeInfo(page, name)).rect;
   const gapBelow = (parent, child) => child.y - (parent.y + parent.height);

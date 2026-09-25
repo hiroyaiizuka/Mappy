@@ -1189,6 +1189,8 @@ export class MindmapView extends FileView {
       visualRootId: projection.root.id, topicIds: new Set(projection.topics.map(topic => topic.id)), mode: this.mode,
       sources: projection.calls.sources, trees: [projection.root, ...projection.topics],
     });
+    // The update may have restyled the node being edited (is-root / is-stage set the weight): its draft is measured again.
+    this.inlineEditor?.fit();
     // One node stays selected (the first when the selected one is gone, or the note just opened) unless the empty canvas was clicked.
     if (!this.deselected && !nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);

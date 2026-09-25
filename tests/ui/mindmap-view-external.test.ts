@@ -7,6 +7,7 @@ import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import type { MindDocument, MindNode } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
+import { InlineEditor } from '../../src/ui/inline-editor';
 import { MindmapView, NODE_GONE_MESSAGE } from '../../src/ui/mindmap-view';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
@@ -419,4 +420,25 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(source()).toBe(outside);
   });
 
+});
+
+describe('MindmapView keeps the open draft measured when a refresh restyles its node (LEV-198)', () => {
+  it('measures the draft again after an external change moves the node being edited to the first level', async () => {
+    const fit = vi.spyOn(InlineEditor.prototype, 'fit');
+    try {
+      const mounted = await mount(SOURCE);
+      const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
+      const host = input.closest('.mappy-node');
+      expect(host?.classList.contains('is-stage')).toBe(false);
+      fit.mockClear();
+      // 学ぶこと becomes a first-level item: its text (and the draft) is drawn at weight 600 from now on.
+      mounted.external(SOURCE.replace('- はじめに\n  - 学ぶこと\n', '- 学ぶこと\n- はじめに\n'));
+      await mounted.refreshed();
+      expect(mounted.editor()).toBe(input);
+      expect(input.closest('.mappy-node')?.classList.contains('is-stage')).toBe(true);
+      expect(fit).toHaveBeenCalled();
+    } finally {
+      fit.mockRestore();
+    }
+  });
 });

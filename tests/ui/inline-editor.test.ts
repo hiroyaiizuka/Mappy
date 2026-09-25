@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { InlineEditor, type InlineEditorOptions } from '../../src/ui/inline-editor';
 
 const editors = new Set<InlineEditor>();
@@ -105,6 +105,26 @@ describe('InlineEditor DOM interactions', () => {
     } finally {
       scrollWidth.mockRestore();
     }
+  });
+
+  it('measures the draft again on fit, for a node restyled under it', () => {
+    let width = 180;
+    const scrollWidth = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollWidth', 'get').mockImplementation(() => width);
+    onTestFinished(() => { scrollWidth.mockRestore(); });
+    const { options, editor, input } = fixture('長い名前');
+    expect(input.style.width).toBe('182px');
+    const calls = options.resize.mock.calls.length;
+    // The node became a root under the draft (bolder text): fit reads the wider width and lays the map out again.
+    width = 200;
+    editor.fit();
+    expect(input.style.width).toBe('202px');
+    expect(options.resize).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it('leaves the width to the stylesheet while the draft has no layout (a hidden pane reads 0)', () => {
+    const { input } = fixture('長い名前');
+    expect(input.scrollWidth).toBe(0);
+    expect(input.style.width).toBe('');
   });
 
   it.each(['Enter', 'Tab', 'Escape'])('lets suggestions consume %s without finishing the node', value => {

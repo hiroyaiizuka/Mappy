@@ -14,6 +14,9 @@ describe("map editing CSS", () => {
     expect(rule(".mappy-view .mappy-node.is-root")).not.toMatch(/(^|[^-])max-width/u);
     expect(css).toMatch(/\.mappy-node\.is-root > \.mappy-inline-input \{ font-weight: 700; \}/u);
     expect(css).toMatch(/\.mappy-node\.is-stage > \.mappy-inline-input \{ font-weight: 600; \}/u);
+    // A length computed on the node, so the error line (smaller font) inherits the node's px instead of its own 20em.
+    expect(rule("@property --mappy-text-wrap")).toMatch(/syntax:\s*"<length>";\s*inherits:\s*true;/u);
+    expect(rule(".mappy-view .mappy-inline-error")).toMatch(/max-width:\s*var\(--mappy-text-wrap\);/u);
     // The one-row width InlineEditor.resize reads.
     expect(rule(".mappy-view .mappy-inline-input.is-measuring")).toMatch(/width:\s*0;\s*white-space:\s*pre;/u);
   });

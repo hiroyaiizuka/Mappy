@@ -90,10 +90,19 @@ export class InlineEditor {
     this.input.classList.add("is-measuring");
     const natural = this.input.scrollWidth;
     this.input.classList.remove("is-measuring");
-    this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
+    // Even an empty draft reads the 40px min-width; 0 means no layout yet (a hidden pane), so the CSS width stands.
+    if (natural > 0) this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
     this.input.style.removeProperty("height");
     this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
     this.options.resize();
+  }
+
+  /**
+   * Measure the draft again because the node changed under it: a redraw (an external change, a layout switch) can
+   * make it a root or a first-level node, whose bolder text is wider than the width measured before.
+   */
+  fit(): void {
+    if (!this.disposed) this.resize();
   }
 
   /**
