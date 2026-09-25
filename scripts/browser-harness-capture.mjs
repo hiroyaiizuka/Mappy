@@ -940,8 +940,9 @@ export async function captureInlineWidth(recorder, page) {
       });
   }
   // Each probe ends on a confirmed rename: the later sections read these fixtures as their original text.
+  // The viewport of the last cell (the balanced layout) stays with the view: fit, so the next section finds its nodes on screen.
   for (const path of originals.keys()) await putOriginal(path);
-  await loadFixture(page, OPERATION_FIXTURE, 'mindmap');
+  await reset(OPERATION_FIXTURE, 'mindmap');
 }
 
 async function captureHierarchyRows(recorder, page) {
