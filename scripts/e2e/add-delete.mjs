@@ -11,7 +11,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeAddNamed } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -31,18 +31,8 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const state = makeState(evaluate);
 
-/** Enter or Tab on the selected node, answered by the inline editor opening on the new empty node, then a title and Enter to confirm it. */
-const addNamed = async (key, title) => {
-  await cdp.realKey(key);
-  await wait(1000);
-  const editing = await evaluate(`${VIEW} return !!input();`);
-  if (!editing) throw new Error(`${key} did not open the inline editor on a new node`);
-  await cdp.insertText(title);
-  await wait(300);
-  await cdp.realKey('Enter');
-  await wait(1000);
-  return state();
-};
+/** Enter or Tab on the selected node, then a title and Enter (`makeAddNamed`, dom-helpers.mjs). */
+const addNamed = makeAddNamed(cdp, evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));

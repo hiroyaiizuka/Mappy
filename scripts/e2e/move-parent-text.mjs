@@ -16,7 +16,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makePaste, makeMoveAlt } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -44,14 +44,8 @@ const select = makeSelect(cdp, evaluate);
 const paste = makePaste(evaluate);
 const state = makeState(evaluate);
 
-/** ⌥↑ or ⌥↓ on the selected node: modifiers bit 1 = Alt (scripts/e2e/cdp.mjs). Only sent with no draft open (docs/harness.md 実機検証). */
-const moveAlt = async key => {
-  const before = await state();
-  if (before.editing) throw new Error(`${key} sent while a draft was open`);
-  await cdp.realKey(key, 1);
-  await wait(800);
-  return state();
-};
+/** ⌥↑ or ⌥↓ on the selected node (`makeMoveAlt`, dom-helpers.mjs); a boundary step waits out its timeout, since nothing should change. */
+const moveAlt = makeMoveAlt(cdp, evaluate);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));

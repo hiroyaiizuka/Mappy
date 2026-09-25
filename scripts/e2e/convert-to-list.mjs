@@ -16,7 +16,10 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+import {
+  VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep, makeMarkSeen, makeAfter, makeAddNamed,
+  makeHistory, makeNoOtherLeafStep,
+} from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -52,7 +55,9 @@ const CONVERTED = [
   '- 第2章',
   '  - まとめ', '',
 ].join('\n');
-const CONVERTED_NOTICE = 'H2 とリストの形式に変更しました';
+const CONVERTED_NOTICE = 'H2 とリストの形式に変更しました。元に戻す操作で復元できます。';
+/** `src/core/commands.ts`'s add-child guard — not its move guard 「見出しは子孫を含めて 6 階層までです。」. */
+const H6_REFUSAL = '見出しは 6 階層までです。';
 
 const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
@@ -62,6 +67,10 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const focusCanvas = makeFocusCanvas(cdp, evaluate);
 const state = makeState(evaluate);
+const markSeen = makeMarkSeen(evaluate);
+const after = makeAfter(evaluate);
+const addNamed = makeAddNamed(cdp, evaluate);
+const history = makeHistory(cdp, evaluate);
 
 /** The map's own parse: its format, and each node as `title ← parent title` in document order. */
 const structure = () => evaluate(`${VIEW}
@@ -69,26 +78,9 @@ const structure = () => evaluate(`${VIEW}
   const byId = new Map(doc.nodes.map(node => [node.id, node]));
   return { format: doc.format, nodes: doc.nodes.map(node => node.title + ' ← ' + (byId.get(node.parentId ?? '')?.title ?? '(root)')) };`);
 
-/** Messages on screen other than the conversion's own notice, which stays up for a few seconds after it. */
-const errors = messages => messages.filter(message => !message.includes(CONVERTED_NOTICE));
-
-/** ⌘Z／⌘⇧Z on the canvas, after a blank click puts focus back there (undo-redo.mjs explains why). */
-const history = async direction => {
-  await focusCanvas();
-  const before = await state();
-  if (before.editing) throw new Error(`${direction} sent while a draft was open`);
-  await cdp.realKey('z', direction === 'redo' ? 12 : 4);
-  await wait(1000);
-  return state();
-};
-
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  await step('no-other-leaf', () => evaluate(`
-    const open = [];
-    app.workspace.iterateAllLeaves(item => { if (item.view.file?.path === ${JSON.stringify(NOTE)}) open.push(item.view.getViewType()); });
-    if (open.length) throw new Error('Close the leaves already on ${NOTE} first: ' + open.join(', '));
-    return true;`));
+  await step('no-other-leaf', makeNoOtherLeafStep(evaluate, NOTE));
   const opened = await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE }));
 
   // 1. Opening is not converting: the note stays exactly as written, and the map reads it as headings.
@@ -102,29 +94,28 @@ try {
     return { ...result, shape };
   });
 
-  // 2. Heading format: Tab on the H6 is refused with a message, no draft opens, the note is untouched.
+  // 2. Heading format: Tab on the H6 is refused with the add-child guard's message, no draft opens, the note
+  // is untouched. (The right answer is that nothing changes, so this waits out `after`'s whole timeout.)
   await step('h6-child-refused', async () => {
     await select('最深');
+    await markSeen();
     await cdp.realKey('Tab');
-    await wait(1000);
-    const result = await state();
+    const result = await after(SOURCE, 1500);
     check(!result.editing, 'Tab on an H6 opened a draft');
-    check(result.messages.some(message => message.includes('6 階層')), `Tab on an H6 should say headings stop at six levels, showed ${JSON.stringify(result.messages)}`);
+    check(JSON.stringify(result.messages) === JSON.stringify([H6_REFUSAL]), `Tab on an H6 should show only 「${H6_REFUSAL}」, showed ${JSON.stringify(result.messages)}`);
     check(result.source === SOURCE, `Tab on an H6 changed the note:\n${JSON.stringify(result.source)}`);
     return result;
   });
-  await wait(4500); // let that notice go before the conversion's own is looked for
 
   // 3. The command: headings become H2 + list items, same titles, same parents.
   const converted = await step('convert', async () => {
     await focusCanvas();
+    await markSeen();
     await evaluate(`app.workspace.setActiveLeaf(window.__mappyE2E, { focus: true });
       if (!app.commands.executeCommandById('mappy:convert-to-list')) throw new Error('mappy:convert-to-list was not available');
-      await new Promise(resolve => setTimeout(resolve, 1500));
       return true;`);
-    const result = await state();
-    check(result.messages.some(message => message.includes(CONVERTED_NOTICE)), `the conversion's notice did not show: ${JSON.stringify(result.messages)}`);
-    check(errors(result.messages).length === 0, `the conversion showed ${JSON.stringify(errors(result.messages))}`);
+    const result = await after(SOURCE);
+    check(JSON.stringify(result.messages) === JSON.stringify([CONVERTED_NOTICE]), `the conversion should show only its own notice, showed ${JSON.stringify(result.messages)}`);
     check(result.source === CONVERTED, `unexpected conversion:\nexpected: ${JSON.stringify(CONVERTED)}\nactual:   ${JSON.stringify(result.source)}`);
     const shape = await structure();
     check(shape.format === 'list', `the map should read the converted note as the list format, not ${shape.format}`);
@@ -134,8 +125,9 @@ try {
 
   // 4. ⌘Z: the original heading-format note, byte for byte, and the same structure.
   await step('undo', async () => {
+    await markSeen();
     const result = await history('undo');
-    check(errors(result.messages).length === 0, `⌘Z showed ${JSON.stringify(errors(result.messages))}`);
+    check(result.messages.length === 0, `⌘Z showed ${JSON.stringify(result.messages)}`);
     check(result.source === SOURCE, `⌘Z did not restore the heading-format note:\nexpected: ${JSON.stringify(SOURCE)}\nactual:   ${JSON.stringify(result.source)}`);
     const shape = await structure();
     check(shape.format === 'headings', `after ⌘Z the map should read headings again, not ${shape.format}`);
@@ -145,8 +137,9 @@ try {
 
   // 5. ⌘⇧Z: the conversion again, the same bytes as the command wrote.
   await step('redo', async () => {
+    await markSeen();
     const result = await history('redo');
-    check(errors(result.messages).length === 0, `⌘⇧Z showed ${JSON.stringify(errors(result.messages))}`);
+    check(result.messages.length === 0, `⌘⇧Z showed ${JSON.stringify(result.messages)}`);
     check(result.source === converted.source, `⌘⇧Z did not re-apply the conversion:\nexpected: ${JSON.stringify(converted.source)}\nactual:   ${JSON.stringify(result.source)}`);
     return result;
   });
@@ -154,16 +147,9 @@ try {
   // 6. List format: the Tab refused in step 2 now adds a seventh level under 最深, as a list item.
   await step('seventh-level', async () => {
     await select('最深');
-    await cdp.realKey('Tab');
-    await wait(1000);
-    const editing = await evaluate(`${VIEW} return !!input();`);
-    if (!editing) throw new Error('Tab on 最深 did not open the inline editor after the conversion');
-    await cdp.insertText('7段目');
-    await wait(300);
-    await cdp.realKey('Enter');
-    await wait(1000);
-    const result = await state();
-    check(errors(result.messages).length === 0, `Tab showed ${JSON.stringify(errors(result.messages))}`);
+    await markSeen();
+    const result = await addNamed('Tab', '7段目');
+    check(result.messages.length === 0, `Tab showed ${JSON.stringify(result.messages)}`);
     const expected = CONVERTED.replace('          最深の本文。\n', '          最深の本文。\n          - 7段目\n');
     check(result.source === expected, `unexpected diff adding the seventh level:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
     const shape = await structure();

@@ -15,7 +15,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish } from './case-runner.mjs';
-import { VIEW, makeSelect, makeState, makeFocusCanvas, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makeState, makePluginStep, makeOpenStep, makeHistory } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -33,7 +33,6 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
-const focusCanvas = makeFocusCanvas(cdp, evaluate);
 const mapState = makeState(evaluate);
 
 /**
@@ -52,21 +51,8 @@ const rename = async title => {
   return mapState();
 };
 
-/**
- * ⌘Z / ⌘⇧Z, on the canvas rather than a specific node (`MapEvents.keydown`: the history answers with
- * nothing selected too). A blank click first puts focus back in the canvas — after a toggle round trip
- * (`showSource`'s `editor.focus()`, then the map's own async refocus) it is not guaranteed to be there,
- * and the chord is only ever caught by the map's `keydown` listener while it is (docs/harness.md 実機検証:
- * otherwise it reaches macOS and CDP hangs on the native dialog). Only sent with no draft open.
- */
-const history = async direction => {
-  await focusCanvas();
-  const before = await mapState();
-  if (before.editing) throw new Error(`${direction} sent while a draft was open`);
-  await cdp.realKey('z', direction === 'redo' ? 12 : 4);
-  await wait(1000);
-  return mapState();
-};
+/** ⌘Z / ⌘⇧Z on the canvas after a blank click (`makeHistory`, dom-helpers.mjs, says why the click). */
+const history = makeHistory(cdp, evaluate);
 
 const toggle = () => evaluate(`
   const before = window.__mappyE2E.view.getViewType();
