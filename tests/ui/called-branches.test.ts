@@ -12,6 +12,7 @@ import { PLACEHOLDER_ID } from '../../src/layout/drop-preview';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { CALLED_READ_ONLY_MESSAGE, MindmapView } from '../../src/ui/mindmap-view';
+import { accessibleDescription, accessibleName } from './accessible-name';
 
 /**
  * §5 M12, the display side: a node whose title is one `![[map]]` stands in for the called map's
@@ -68,7 +69,7 @@ interface Mounted {
   document: () => MindDocument;
   /** Every node element on the map, by id, in DOM order. */
   nodes: () => Map<string, HTMLElement>;
-  /** The n-th node element whose label (`aria-label`) is this text. */
+  /** The n-th node element whose name (`aria-labelledby`) is this text. */
   node: (title: string, occurrence?: number) => HTMLElement;
   /** The titles on the map, in the order the view lists them (preorder over the trees shown). */
   titles: () => string[];
@@ -93,7 +94,7 @@ async function settleDom(): Promise<void> {
 }
 
 function labelOf(node: HTMLElement): string {
-  return node.getAttribute('aria-label') ?? '';
+  return accessibleName(node);
 }
 
 async function mount(notes: Record<string, string> = NOTES, hostPath = HOST_PATH, layout = 'mindmap', router: ViewRouter = {} as ViewRouter): Promise<Mounted> {
@@ -193,7 +194,8 @@ describe('a node whose title is one `![[map]]` (judgement and drawing)', () => {
     expect(calling.hasClass('is-called')).toBe(true);
     expect(calling.hasClass('is-called-root')).toBe(true);
     expect(calling.hasClass('is-stage')).toBe(false);
-    expect(calling.getAttribute('title')).toBe('呼び出し元: Map.md');
+    expect(calling.hasAttribute('title')).toBe(false);
+    expect(accessibleDescription(calling)).toBe('呼び出し元: Map.md');
     expect(calling.hasAttribute('aria-readonly')).toBe(false);
     expect(calling.querySelector(':scope > .mappy-node-content > .mappy-node-call-mark')).not.toBeNull();
     expect(calling.querySelector('.mappy-node-label')?.textContent).toBe('講座');
@@ -208,12 +210,12 @@ describe('a node whose title is one `![[map]]` (judgement and drawing)', () => {
     expect(recover.hasClass('is-collapsed')).toBe(true);
     expect(recover.querySelector('.mappy-node-toggle-mark')?.textContent).toBe('3');
     expect(recover.querySelector('.mappy-node-call-mark')).toBeNull();
-    expect(recover.getAttribute('title')).toBe('呼び出し元: Map.md');
+    expect(accessibleDescription(recover)).toBe('呼び出し元: Map.md');
     expect(recover.getAttribute('aria-readonly')).toBe('true');
     expect(titles().slice(0, 9)).toEqual(['ホスト', '呼び出し', '講座', '回復する', '記録する', '葉', '進行', '第 1 週', '第 2 週']);
     // The called note's free topic (補足) is not drawn; the heading call draws its section only.
     expect(titles()).not.toContain('補足');
-    expect(node('同じ名前').getAttribute('title')).toBe('呼び出し元: Headings.md#同じ名前');
+    expect(accessibleDescription(node('同じ名前'))).toBe('呼び出し元: Headings.md#同じ名前');
     expect(titles()).toContain('深い');
     expect(titles()).not.toContain('構成');
     expect(called()).toHaveLength(2 * 4 + 3 + 2);
@@ -248,7 +250,7 @@ describe('a node whose title is one `![[map]]` (judgement and drawing)', () => {
     expect(links.get('`![[Map]]`')).toBeNull();
     const image = plain.find(node => labelOf(node) === '![[image.png]]');
     expect(image?.querySelector('.image-embed img')).not.toBeNull();
-    for (const node of plain) expect(node.hasAttribute('title')).toBe(false);
+    for (const node of plain) expect(node.hasAttribute('aria-describedby')).toBe(false);
     expect(called().filter(node => node.hasClass('is-called-root')).map(labelOf)).toEqual(['講座', '進行', '同じ名前', '講座']);
   });
 
@@ -456,7 +458,7 @@ describe('editing the calling item', () => {
     await settle();
     expect(source()).toContain('  - ![[Headings]]\n');
     expect(node('構成').hasClass('is-called-root')).toBe(true);
-    expect(node('構成').getAttribute('title')).toBe('呼び出し元: Headings.md');
+    expect(accessibleDescription(node('構成'))).toBe('呼び出し元: Headings.md');
     // The whole note: its first level shown (回復する, 記録する), the levels below folded.
     expect(node('回復する', 1).hasClass('is-collapsed')).toBe(true);
     click(node('構成'));
@@ -520,7 +522,7 @@ describe('updates and release', () => {
     app.put('Later.md', MAP);
     await refreshed();
     expect(node('講座').hasClass('is-called-root')).toBe(true);
-    expect(node('講座').getAttribute('title')).toBe('呼び出し元: Later.md');
+    expect(accessibleDescription(node('講座'))).toBe('呼び出し元: Later.md');
     app.put('Plain.md', '---\nmappy: true\n---\n## Plain\n- a\n');
     await refreshed();
     expect(node('Plain').hasClass('is-called-root')).toBe(true);

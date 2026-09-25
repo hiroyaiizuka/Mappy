@@ -4,6 +4,7 @@ import { MarkdownRenderer, type App } from 'obsidian';
 import { projectCalls } from '../../src/core/calls';
 import { parseMarkdown, projectMap, type MindDocument } from '../../src/core/markdown';
 import { NodeRenderer } from '../../src/ui/node-renderer';
+import { accessibleDescription, accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => {
   class Component {
@@ -262,8 +263,10 @@ describe('NodeRenderer title rendering', () => {
     const calling = renderer.entries.get(caller);
     expect(calling?.element.classList.contains('is-called')).toBe(true);
     expect(calling?.element.classList.contains('is-called-root')).toBe(true);
-    expect(calling?.element.getAttribute('aria-label')).toBe('講座');
-    expect(calling?.element.getAttribute('title')).toBe('呼び出し元: Maps/Map.md');
+    expect(accessibleName(calling?.element as HTMLElement)).toBe('講座');
+    // The source is read after the name, not drawn on hover over the node below (LEV-199).
+    expect(calling?.element.hasAttribute('title')).toBe(false);
+    expect(accessibleDescription(calling?.element as HTMLElement)).toBe('呼び出し元: Maps/Map.md');
     // The calling item is the host's own node, edited as any other: not read-only, unlike the nodes grafted under it.
     expect(calling?.element.hasAttribute('aria-readonly')).toBe(false);
     expect(calling?.content.querySelector('.mappy-node-call-mark')?.getAttribute('data-icon')).toBe('link');
@@ -275,13 +278,14 @@ describe('NodeRenderer title rendering', () => {
     expect(entry?.element.classList.contains('is-called')).toBe(true);
     expect(entry?.element.classList.contains('is-called-root')).toBe(false);
     expect(entry?.element.getAttribute('aria-readonly')).toBe('true');
-    expect(entry?.element.getAttribute('title')).toBe('呼び出し元: Maps/Map.md');
+    expect(entry?.element.hasAttribute('title')).toBe(false);
+    expect(accessibleDescription(entry?.element as HTMLElement)).toBe('呼び出し元: Maps/Map.md');
     expect(entry?.content.querySelector('.mappy-node-call-mark')).toBeNull();
     expect(entry?.key).toBe('Maps/Map.md\0記録する\0![[図.png]]');
     // The host's own nodes stay as they were: the own child under the calling item, the unresolved call a link.
     const own = renderer.entries.get(id(parsed, 'own child'));
     expect(own?.element.classList.contains('is-called')).toBe(false);
-    expect(own?.element.hasAttribute('title')).toBe(false);
+    expect(own?.element.hasAttribute('aria-describedby')).toBe(false);
     expect(renderer.entries.get(id(parsed, '![[Other]]'))?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Other]]');
     // Fold counts come from the trees shown: the calling item hides the three called nodes and its own child.
     renderer.update(visible.filter(node => !projection.sources.has(node.id) || node.id === caller), parsed, 'Course.md', new Set([caller]), appearance);
@@ -290,10 +294,64 @@ describe('NodeRenderer title rendering', () => {
     renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
     await Promise.resolve();
     expect(calling?.element.classList.contains('is-called')).toBe(false);
-    expect(calling?.element.hasAttribute('title')).toBe(false);
+    expect(calling?.element.hasAttribute('aria-describedby')).toBe(false);
     expect(calling?.content.querySelector('.mappy-node-call-mark')).toBeNull();
     expect(calling?.content.querySelector('.mappy-node-label')?.textContent).toBe('[[Map]]');
     expect(calling?.key).toBe('Course.md\0![[Map]]\0[[own link]]');
+  });
+});
+
+describe('NodeRenderer node names (LEV-199: no title tooltip over the node below)', () => {
+  // Obsidian's desktop app draws any element's `aria-label` as a black tooltip on hover. On a node that is the title
+  // already on screen, and it covers the node below — the input of the node being written there. The name stays
+  // for screen readers (§5 M3) through `aria-labelledby`, which Obsidian does not draw.
+  it('names every node through aria-labelledby, never aria-label or title, the empty one as 空のノード', async () => {
+    const { parsed, renderer } = setup('## Course\n- 選択肢を出す\n- \n');
+    const empty = parsed.nodes.find(node => node.title === '');
+    if (!empty) throw new Error('Missing fixture node: the empty one');
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+    await Promise.resolve();
+    const names = new Map<string, string>();
+    for (const [nodeId, entry] of renderer.entries) {
+      expect(entry.element.hasAttribute('aria-label')).toBe(false);
+      expect(entry.element.hasAttribute('title')).toBe(false);
+      expect(entry.element.hasAttribute('aria-describedby')).toBe(false);
+      names.set(nodeId, accessibleName(entry.element));
+    }
+    expect(names.get(id(parsed, 'Course'))).toBe('Course');
+    expect(names.get(id(parsed, '選択肢を出す'))).toBe('選択肢を出す');
+    expect(names.get(empty.id)).toBe('空のノード');
+    // The name is not drawn: the rendered label is the only text on screen, and the node's size is the label's.
+    const element = renderer.entries.get(id(parsed, '選択肢を出す'))?.element;
+    const target = element?.ownerDocument.getElementById(element.getAttribute('aria-labelledby') ?? '');
+    expect(target?.hidden).toBe(true);
+    expect(element?.contains(target ?? null)).toBe(true);
+    // Neither while the node is being edited.
+    renderer.editing(id(parsed, '選択肢を出す'), true);
+    expect(element?.hasAttribute('aria-label')).toBe(false);
+    expect(accessibleName(element as HTMLElement)).toBe('選択肢を出す');
+  });
+
+  it('follows a rename, and keeps the ids unique across two maps of the same note', () => {
+    const { parsed, renderer } = setup('## Course\n- one\n');
+    const appearance = { visualRootId: id(parsed, 'Course'), mode: 'mindmap' as const };
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), appearance);
+    const element = renderer.entries.get(id(parsed, 'one'))?.element as HTMLElement;
+    const renamed = parseMarkdown('## Course\n- uno\n', 'File root', parsed);
+    renderer.update(renamed.nodes, renamed, 'Course.md', new Set(), appearance);
+    expect(renderer.entries.get(id(renamed, 'uno'))?.element).toBe(element);
+    expect(element.hasAttribute('aria-label')).toBe(false);
+    expect(accessibleName(element)).toBe('uno');
+    // A second view (or an embed) of the same note draws the same node ids: the name elements' ids must still differ.
+    const layer = dom(document.createElement('div'));
+    document.body.append(layer);
+    const second = new NodeRenderer({} as App, layer, vi.fn());
+    second.update(renamed.nodes, renamed, 'Course.md', new Set(), appearance);
+    const ids = Array.from(document.querySelectorAll('[id]'), item => item.id);
+    // Two maps, two nodes each, a name and a description element per node.
+    expect(ids).toHaveLength(8);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(accessibleName(second.entries.get(id(renamed, 'uno'))?.element as HTMLElement)).toBe('uno');
   });
 });
 

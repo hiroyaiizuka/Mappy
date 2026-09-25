@@ -5,6 +5,7 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Component, MarkdownRenderer, MarkdownView, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
+import { accessibleName } from './accessible-name';
 import { EMBED_ANCHOR_CLASS, EMBED_CLAIM_HOLD_MS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
 
 // The browser-harness stand-in for `obsidian`, so the shipped post processor, embed component and renderer run against a real DOM.
@@ -173,6 +174,12 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     // Nothing editable: no inline input, nodes are not in the tab order, the frame says so.
     expect(section.querySelector('textarea, [contenteditable]')).toBeNull();
     expect(nodeByTitle(section, '講座').getAttribute('tabindex')).toBe('-1');
+    // The embed draws its nodes through the same renderer: named for screen readers, no tooltip over the node below (LEV-199).
+    for (const node of section.querySelectorAll<HTMLElement>('.mappy-node')) {
+      expect(node.hasAttribute('aria-label')).toBe(false);
+      expect(node.hasAttribute('aria-labelledby')).toBe(true);
+      expect(accessibleName(node)).toBe(node.querySelector('.mappy-node-label')?.textContent?.trim());
+    }
     expect(embed?.querySelector('.mappy-canvas')?.getAttribute('aria-readonly')).toBe('true');
     expect(section.textContent).toContain('前置き');
     expect(section.textContent).toContain('後書き');

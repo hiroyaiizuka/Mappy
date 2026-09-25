@@ -141,6 +141,28 @@ function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## 
 }
 
 describe('NodeDrag pointer dragging', () => {
+  it('gives the ghost no id of the node it copies, nor names pointing at them (LEV-199)', () => {
+    const { canvas, node, pointer, center, ghost } = fixture();
+    // NodeRenderer names a node by a hidden element inside it (`aria-labelledby`); a copy of that id would name two elements.
+    const name = document.createElement('span');
+    name.id = 'mappy-node-name-a3';
+    name.hidden = true;
+    name.textContent = 'A3';
+    node('A3').append(name);
+    node('A3').setAttribute('aria-labelledby', name.id);
+    node('A3').setAttribute('aria-describedby', name.id);
+    const [x, y] = center('A3');
+    pointer('pointerdown', node('A3'), x, y);
+    pointer('pointermove', canvas, x + 5, y);
+    const clone = ghost();
+    expect(clone).not.toBeNull();
+    expect(clone?.querySelectorAll('[id]')).toHaveLength(0);
+    expect(clone?.hasAttribute('aria-labelledby')).toBe(false);
+    expect(clone?.hasAttribute('aria-describedby')).toBe(false);
+    expect(document.querySelectorAll('#mappy-node-name-a3')).toHaveLength(1);
+    pointer('pointerup', canvas, x + 5, y);
+  });
+
   it('starts only after the pointer travels past the threshold, then shows a ghost and fades the source', () => {
     const { canvas, actions, node, id, pointer, center, ghost, capture } = fixture();
     const [x, y] = center('A3');

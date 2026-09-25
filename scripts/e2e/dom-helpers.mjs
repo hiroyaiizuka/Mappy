@@ -10,7 +10,11 @@ import { installedVersion, wait } from './cdp.mjs';
 /** Read out of the view under test: its nodes, its inline editor, every message on screen, and its source. */
 export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el = view.contentEl;
   const nodes = () => Array.from(el.querySelectorAll('.mappy-node'));
-  const label = node => node.getAttribute('aria-label') ?? '';
+  // A node's name is the hidden element its aria-labelledby points to (LEV-199); builds through 0.3.4 put it in aria-label.
+  const label = node => {
+    const named = node.getAttribute('aria-labelledby');
+    return named ? node.ownerDocument.getElementById(named)?.textContent ?? '' : node.getAttribute('aria-label') ?? '';
+  };
   const nth = (title, index) => nodes().filter(node => label(node) === title)[index];
   const input = () => el.querySelector('textarea.mappy-inline-input');
   const messages = () => [

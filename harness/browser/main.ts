@@ -566,14 +566,17 @@ function nodeInfo(element: HTMLElement): NodeInfo {
   const badge = element.classList.contains("is-collapsed") ? Number(toggle?.querySelector(".mappy-node-toggle-mark")?.textContent ?? "") : NaN;
   return {
     id: element.dataset.nodeId ?? "",
-    title: label?.textContent?.trim() ?? element.getAttribute("aria-label") ?? "",
+    title: label?.textContent?.trim() ?? element.querySelector<HTMLElement>(":scope > .mappy-node-name")?.textContent ?? "",
     rect: plainRect(element) ?? { x: 0, y: 0, width: 0, height: 0 },
     toggle: toggle && !toggle.hidden ? plainRect(toggle) : null,
     collapsed: element.classList.contains("is-collapsed"),
     selected: element.classList.contains("is-selected"),
     called: element.classList.contains("is-called"),
     calledRoot: element.classList.contains("is-called-root"),
-    source: element.getAttribute("title")?.replace(/^呼び出し元: /u, "") ?? null,
+    // The source is read after the node's name (`aria-describedby`), no longer a hover `title` (LEV-199).
+    source: element.hasAttribute("aria-describedby")
+      ? (element.querySelector(":scope > .mappy-node-description")?.textContent ?? "").replace(/^呼び出し元: /u, "")
+      : null,
     badge: Number.isFinite(badge) ? badge : null,
     link: label?.querySelector<HTMLAnchorElement>("a.internal-link")?.dataset.href ?? null,
     image: Boolean(label?.querySelector(".image-embed img")),
