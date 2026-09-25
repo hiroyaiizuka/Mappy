@@ -132,7 +132,7 @@ export class NodeRenderer extends Component {
         entry.description ??= nameElement(entry.element, "description");
         const description = `呼び出し元: ${source.path}${source.subpath}`;
         if (entry.description.textContent !== description) entry.description.setText(description);
-        entry.element.setAttribute("aria-describedby", entry.description.id);
+        if (entry.element.getAttribute("aria-describedby") !== entry.description.id) entry.element.setAttribute("aria-describedby", entry.description.id);
       } else if (entry.description?.textContent) {
         entry.description.setText("");
         entry.element.removeAttribute("aria-describedby");

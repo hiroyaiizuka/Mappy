@@ -2059,7 +2059,8 @@ async function tooltipFacts(page, scope) {
     const controls = Array.from(scope.querySelectorAll('.mappy-node-toggle:not([hidden]), .mappy-button'));
     const unnamed = controls.filter(element => {
       const shown = tip(element);
-      return shown !== element.getAttribute('aria-label') && shown !== 'title ' + element.getAttribute('title');
+      // A control with no name at all shows nothing: that is a failure too, not a match of null with null.
+      return shown === null || (shown !== element.getAttribute('aria-label') && shown !== 'title ' + element.getAttribute('title'));
     }).map(element => element.className);
     return { parts: parts.length, nodes: Array.from(new Set(nodes)), controls: controls.length, unnamed };
   })()`);
