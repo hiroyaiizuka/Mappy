@@ -999,6 +999,8 @@ function renderInline(escaped: string, app: RendererApp, sourcePath: string, ref
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/gu, (_match, lead: string, href: string) => `${lead}${externalLink(href, href)}`)
     .replace(/\*\*([^*]+)\*\*/gu, "<strong>$1</strong>")
     .replace(/==([^=]+)==/gu, "<mark>$1</mark>")
+    // Obsidian keeps a `<br>` written in the text (a line break inside a node, LEV-202); outside code only, as there.
+    .replace(/&lt;br[ \t]*\/?&gt;/giu, "<br>")
     .replace(/\u0000(\d+)\u0000/gu, (_match, index: string) => code[Number(index)] ?? "");
 }
 

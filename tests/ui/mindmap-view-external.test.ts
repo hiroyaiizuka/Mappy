@@ -297,11 +297,12 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   it('leaves a validation error alone when the map refreshes, since Enter would not apply that draft', async () => {
     const mounted = await mount(SOURCE);
     const { source, key, editor, error, draft, refreshed, external } = mounted;
-    const input = await draft('学ぶこと', '学ぶ\nこと');
+    // A line break was the example until LEV-202 made it a break inside the node; a task marker still changes the syntax.
+    const input = await draft('学ぶこと', '[ ] 学ぶこと');
     key(input, 'Enter');
     await refreshed();
     const validation = error();
-    expect(validation).toBe('ノード名は改行を含まない文字列にしてください。');
+    expect(validation).toBe('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
     external(EXTERNAL);
     await refreshed();
     expect(error()).toBe(validation);

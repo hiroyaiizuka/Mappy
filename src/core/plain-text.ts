@@ -1,5 +1,6 @@
 import { autolinkUrl, type LinkSyntax } from './wiki-link';
 import { GFM, parser } from '@lezer/markdown';
+import { displayTitle } from './title-breaks';
 
 const inlineParser = parser.configure(GFM);
 
@@ -29,8 +30,9 @@ function wikiReplacement(match: RegExpMatchArray): Replacement {
   return { from: match.index ?? 0, to: (match.index ?? 0) + whole.length, text: label, link: isEmbed ? null : bare, syntax: 'vault' };
 }
 
-/** Reduce a node title to plain text for renderers that cannot show Markdown. */
-export function plainTitle(title: string): PlainTitle {
+/** Reduce a node title to plain text for renderers that cannot show Markdown; a `<br>` in it is a line break (LEV-202). */
+export function plainTitle(written: string): PlainTitle {
+  const title = displayTitle(written);
   const replacements: Replacement[] = [];
   for (const match of title.matchAll(/(!?)\[\[([^\]\r\n]+?)\]\]/gu)) replacements.push(wikiReplacement(match));
   const tree = inlineParser.parse(title);
@@ -70,6 +72,6 @@ export function plainTitle(title: string): PlainTitle {
     cursor = edit.to;
   }
   parts.push(title.slice(cursor));
-  const text = parts.join('').replace(/[ \t]+/gu, ' ').trim();
+  const text = parts.join('').replace(/[ \t]+/gu, ' ').replace(/ ?\n ?/gu, '\n').trim();
   return { text, link: firstLink, linkSyntax: firstSyntax };
 }

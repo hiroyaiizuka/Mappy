@@ -95,12 +95,16 @@ export async function connect() {
         };
         socket.addEventListener('message', receive);
       }),
-      /** A key as the keyboard sends it, so Obsidian's own keymap sees it (a synthesized keydown does not). */
-      realKey: async (key, modifiers = 0) => {
+      /**
+       * A key as the keyboard sends it, so Obsidian's own keymap sees it (a synthesized keydown does not). With
+       * `text` (`'\r'` for Enter) the key also types it, so the default action runs where nothing prevents it:
+       * a textarea's line break on Shift+Enter (LEV-202). Without it no text is typed.
+       */
+      realKey: async (key, modifiers = 0, text) => {
         const spec = KEYS[key];
         if (!spec) throw new Error(`Unknown key ${key}`);
         const base = { key, code: spec.code, windowsVirtualKeyCode: spec.keyCode, nativeVirtualKeyCode: spec.keyCode, modifiers };
-        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+        await send('Input.dispatchKeyEvent', text ? { type: 'keyDown', ...base, text, unmodifiedText: text } : { type: 'rawKeyDown', ...base });
         await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
       },
       /** Text as an IME commit delivers it (the input events fire). */

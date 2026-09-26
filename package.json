@@ -31,6 +31,7 @@
     "harness:e2e:move-parent-text": "node scripts/e2e/move-parent-text.mjs",
     "harness:e2e:paste": "node scripts/e2e/paste-image.mjs",
     "harness:e2e:layout-switch": "node scripts/e2e/layout-switch.mjs",
+    "harness:e2e:line-break": "node scripts/e2e/line-break.mjs",
     "harness:e2e:excalidraw-frame": "node scripts/e2e/excalidraw-frame.mjs",
     "harness:e2e:excalidraw-lifecycle": "node scripts/e2e/excalidraw-lifecycle.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",

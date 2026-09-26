@@ -6,6 +6,7 @@ import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
+import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
 import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
@@ -1562,6 +1563,9 @@ export class MindmapView extends FileView {
    * does now, the popover of LEV-81 having no such item).
    */
   private async addTopic(point?: { x: number; y: number }): Promise<void> {
+    if (this.saving) return;
+    // As for a command (`execute`): a draft kept by a refusal is written first, or stays with its reason, and no topic is added.
+    if (this.inlineEditor && !await this.inlineEditor.confirm()) return;
     const document = this.document;
     const file = this.file;
     if (!document || !file || this.saving) return;
@@ -1808,6 +1812,20 @@ export class MindmapView extends FileView {
   }
 
   private editTitle(): void {
+    // The draft already open is confirmed before another opens (a double click on a node, F2 from the menu): one a
+    // refusal keeps (its error line up) stays where it is instead of being dropped for the node's old text (LEV-202).
+    const open = this.inlineEditor;
+    if (open) {
+      const wanted = this.selectedId;
+      this.run(async () => {
+        if (!await open.confirm()) { open.focus(); return; }
+        if (this.inlineEditor || this.closed) return;
+        // Closing the draft selects its node again; the node asked for is the one to edit.
+        if (wanted && this.document && findNode(this.document, wanted)) this.select(wanted, true);
+        this.editTitle();
+      });
+      return;
+    }
     const node = this.selected();
     const document = this.document;
     const file = this.file;
@@ -1816,7 +1834,6 @@ export class MindmapView extends FileView {
     if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
-    this.inlineEditor?.dispose();
     // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
     // draft is open appears at once instead of when the draft is confirmed (報告: 2026-09-22).
     this.renderer.editing(node.id, true);
@@ -1824,7 +1841,8 @@ export class MindmapView extends FileView {
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
     this.inlineEditor = new InlineEditor(entry.element, {
-      initial: node.title,
+      // Its `<br>` tags are line breaks in the draft; the rename writes them back (core/title-breaks, LEV-202).
+      initial: displayTitle(node.title),
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
         // A topic added on the map is placed where it was pressed by the same edit set that names it.

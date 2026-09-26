@@ -1,6 +1,7 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, paragraphGap } from './text-edits';
+import { hasLineBreak, storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -9,7 +10,11 @@ export interface TextEdit { from: number; to: number; text: string }
 export interface MoveCommand { type: 'move'; nodeId: string; parentId: string; index: number }
 
 export type EditCommand =
-  /** `position` stores one layout position under the new title in the same edit set (a topic added on the map). */
+  /**
+   * `title` is the text as the inline editor holds it: its line breaks are written as `<br>` (LEV-202,
+   * `storedTitle`). `position` stores one layout position under the new title in the same edit set (a
+   * topic added on the map).
+   */
   | { type: 'rename'; nodeId: string; title: string; position?: TopicPlacement }
   /**
    * A new last child. Empty by default (the inline editor names it); `title` writes the item's
@@ -187,8 +192,16 @@ export function assertSingleLine(title: string): void {
   }
 }
 
-function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicPlacement): EditPlan {
-  assertSingleLine(title);
+function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicPlacement): EditPlan {
+  const title = storedTitle(draft, node.title);
+  // An untouched draft is the title as written, which a multi-line Setext heading spreads over lines of its own.
+  if (title !== node.title) {
+    // A Setext heading's text is a paragraph, whose lines are the note's own: a break there stays Markdown's to write.
+    if (node.kind === 'setext' && hasLineBreak(draft)) {
+      throw new Error('Setext 見出しの中では改行できません。Markdown 側で ATX 見出し（# 見出し）へ変更してください。');
+    }
+    assertSingleLine(title);
+  }
   if (node.kind === 'setext' && title.trim().length === 0) {
     throw new Error('Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。');
   }

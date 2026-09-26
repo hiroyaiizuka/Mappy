@@ -68,6 +68,10 @@ export class InlineEditor {
         event.preventDefault();
         this.dispose();
         this.options.finish("none", true);
+      } else if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        // A line break inside the node (LEV-202), as XMind's Shift+Enter: the textarea's own insertion, which its
+        // Undo knows. The save writes it as `<br>` in the title's one line (core/title-breaks).
+        return;
       } else if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         void this.commit(event.key === "Tab" ? "child" : "none");
@@ -188,6 +192,11 @@ export class InlineEditor {
       this.busy = false;
       this.input.readOnly = false;
     }
+  }
+
+  /** Bring the keyboard back to a draft that stays open (a refused one, while another edit was asked for). */
+  focus(): void {
+    if (!this.disposed) this.input.focus({ preventScroll: true });
   }
 
   /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */

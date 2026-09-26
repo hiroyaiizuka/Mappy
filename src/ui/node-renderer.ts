@@ -1,6 +1,7 @@
 import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
+import { displayTitle } from "../core/title-breaks";
 import { attachmentMarkdown, transclusionsAsLinks } from "../core/attachments";
 import type { CallSource } from "../core/calls";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
@@ -122,7 +123,8 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-collapsed", isCollapsed);
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       // Written only when it changes: a text node replaced on every refresh of a large map is a mutation each.
-      const name = node.title.trim() || "空のノード";
+      // A `<br>` in the title is a break on screen and a space when read out (LEV-202).
+      const name = displayTitle(node.title).replace(/\s*\n\s*/gu, " ").trim() || "空のノード";
       if (entry.name.textContent !== name) entry.name.setText(name);
       // The branches of a called map are read-only on this map (the calling item itself is not); every node of them
       // names its note after its name. Not on hover: a tooltip there covers the node below as the name's did (LEV-199).
@@ -196,7 +198,7 @@ export class NodeRenderer extends Component {
         changed();
       }).catch(() => {
         if (this.entries.get(node.id) === current && current.key === key) {
-          label.setText(node.title);
+          label.setText(displayTitle(node.title));
           attachmentsEl.empty();
           this.changed();
         }
