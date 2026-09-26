@@ -18,8 +18,11 @@ export class MapViewport extends Component {
   constructor(
     private readonly canvas: HTMLElement,
     private readonly world: HTMLElement,
-    /** Every write, with the viewport it replaced: a drag under way re-reads its tree against the new one (LEV-194). */
-    private readonly changed: (viewport: Viewport, previous: Viewport) => void,
+    /**
+     * Every write, with the viewport it replaced and whether a drag wrote it to carry its tree (`carried`): any other
+     * write moves the view under a drag under way, which re-reads its tree against the new one (LEV-194).
+     */
+    private readonly changed: (viewport: Viewport, previous: Viewport, carried: boolean) => void,
     private readonly clicked?: () => void,
   ) { super(); }
 
@@ -75,11 +78,11 @@ export class MapViewport extends Component {
     this.registerDomEvent(this.canvas, "lostpointercapture", release);
   }
 
-  set(viewport: Viewport): void {
+  set(viewport: Viewport, carried = false): void {
     const previous = this.value;
     this.value = { x: viewport.x, y: viewport.y, scale: clampScale(viewport.scale) };
     this.world.style.transform = `translate(${this.value.x}px, ${this.value.y}px) scale(${this.value.scale})`;
-    this.changed(this.value, previous);
+    this.changed(this.value, previous, carried);
   }
 
   zoom(factor: number): void {

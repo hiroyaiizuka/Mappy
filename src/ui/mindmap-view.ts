@@ -249,8 +249,8 @@ export class MindmapView extends FileView {
      * something else moves the view mid-drag (`viewportMoved`, LEV-194).
      */
     view: Viewport;
-    /** How far the tree had come in world units (`moved`) when the pointer had travelled `mark`; `delta` is the travel now. See `travelled`. */
-    moved: LayoutPoint; mark: DragDelta; delta: DragDelta;
+    /** The pointer's travel now (screen pixels since the press), and what the tree's travel in world units is offset by (`travelled`). */
+    delta: DragDelta; offset: LayoutPoint;
     /** Node ids marked as moving; cleared by id, since a joined topic keeps its element under a new tree. */
     marked: string[];
     /**
@@ -290,8 +290,6 @@ export class MindmapView extends FileView {
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
   private unloading = false;
   private needsFit = true;
-  /** True while a free drag writes the viewport itself (the body's pan), which is no move of the view under it (`viewportMoved`). */
-  private carrying = false;
   /**
    * Whether `needsFit` outlived a free drag (LEV-182), set when the drag ends: only that fit also waits for a re-read
    * (see the layout frame), and a pan or zoom made before it runs cancels it (`clearFit`).
@@ -628,12 +626,12 @@ export class MindmapView extends FileView {
     this.button(zoom, "拡大", "plus", () => { this.viewport.zoom(1.2); });
     this.button(zoom, "全体表示", "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
     this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }));
-    this.viewport = this.addChild(new MapViewport(this.canvas, world, (view, previous) => {
+    this.viewport = this.addChild(new MapViewport(this.canvas, world, (view, previous, carried) => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
       // A pan or zoom between a drop and the fit held through it is where the view is wanted now (LEV-182).
       if (this.fitHeld && !this.topicDrag) this.clearFit();
-      if (!this.carrying) this.viewportMoved(previous, view);
+      if (!carried) this.viewportMoved(previous, view);
     }, () => { this.deselect(); }));
     this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
@@ -1701,7 +1699,7 @@ export class MindmapView extends FileView {
     const from = rootOffsets(layout, (body ? projection.topics : projection.topics.filter(topic => topic.id === id)).map(topic => topic.id));
     this.topicDrag = {
       id, body, from, overrides: new Map(from), view: { ...this.viewport.value },
-      moved: { x: 0, y: 0 }, mark: { x: 0, y: 0 }, delta: { x: 0, y: 0 }, marked: this.markMoving(id),
+      delta: { x: 0, y: 0 }, offset: { x: 0, y: 0 }, marked: this.markMoving(id),
       base: layout, sizes: this.renderer.sizes(), index: null,
     };
     return this.topicDrag;
@@ -1743,7 +1741,7 @@ export class MindmapView extends FileView {
   /** How far the tree has come, in world units, once the pointer has travelled `delta` (screen pixels) since the press. */
   private travelled(drag: NonNullable<MindmapView["topicDrag"]>, delta: DragDelta): LayoutPoint {
     const scale = drag.view.scale;
-    return { x: drag.moved.x + (delta.x - drag.mark.x) / scale, y: drag.moved.y + (delta.y - drag.mark.y) / scale };
+    return { x: drag.offset.x + delta.x / scale, y: drag.offset.y + delta.y / scale };
   }
 
   /** Puts the tree where the drag has brought it: a topic through `overrides`; the body by the pan, its topics the other way. */
@@ -1751,11 +1749,7 @@ export class MindmapView extends FileView {
     const moved = this.travelled(drag, drag.delta);
     const sign = drag.body ? -1 : 1;
     for (const [topicId, start] of drag.from) drag.overrides.set(topicId, { x: start.x + sign * moved.x, y: start.y + sign * moved.y });
-    if (drag.body) {
-      this.carrying = true;
-      try { this.viewport.set({ ...drag.view, x: drag.view.x + moved.x * drag.view.scale, y: drag.view.y + moved.y * drag.view.scale }); }
-      finally { this.carrying = false; }
-    }
+    if (drag.body) this.viewport.set({ ...drag.view, x: drag.view.x + moved.x * drag.view.scale, y: drag.view.y + moved.y * drag.view.scale }, true);
     // Only a topic carries one tree; the body root moves every topic at once, which is no base the snap can keep.
     if (drag.body) this.scheduleLayout();
     else this.scheduleCarriedLayout();
@@ -1774,7 +1768,7 @@ export class MindmapView extends FileView {
    */
   private viewportMoved(previous: Viewport, next: Viewport): void {
     const drag = this.topicDrag;
-    const pointer = this.nodeDrag.pointer();
+    const pointer = drag ? this.nodeDrag.pointer(drag.id) : null;
     if (drag) this.rebaseDrag(drag, next, pointer);
     this.nodeDrag.viewportMoved(previous, this.viewport.value);
   }
@@ -1784,15 +1778,13 @@ export class MindmapView extends FileView {
     const moved = this.travelled(drag, drag.delta);
     const scale = next.scale;
     const view = drag.body ? { x: next.x - moved.x * scale, y: next.y - moved.y * scale, scale } : { ...next };
-    const previousView = drag.view;
-    drag.mark = drag.delta;
+    const under = (at: Viewport, point: LayoutPoint): LayoutPoint => ({ x: (point.x - at.x) / at.scale, y: (point.y - at.y) / at.scale });
+    const shift = pointer ? { x: under(view, pointer).x - under(drag.view, pointer).x, y: under(view, pointer).y - under(drag.view, pointer).y } : { x: 0, y: 0 };
+    // From here the travel is measured under `view`: the tree has come `moved` (plus how far the world point under
+    // the pointer moved), and further travel adds to it at the new scale.
     drag.view = view;
-    if (!pointer) { drag.moved = moved; return; }
-    const under = (at: Viewport): LayoutPoint => ({ x: (pointer.x - at.x) / at.scale, y: (pointer.y - at.y) / at.scale });
-    const before = under(previousView);
-    const after = under(view);
-    drag.moved = { x: moved.x + after.x - before.x, y: moved.y + after.y - before.y };
-    this.carry(drag);
+    drag.offset = { x: moved.x + shift.x - drag.delta.x / scale, y: moved.y + shift.y - drag.delta.y / scale };
+    if (pointer) this.carry(drag);
   }
 
   /** A free tree released on the canvas: only `mappy-topics` entries for this layout change (all of them for the body). */

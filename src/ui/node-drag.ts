@@ -60,6 +60,10 @@ interface Session extends Press {
   last: { x: number; y: number };
   /** The pointer of the last move, in canvas pixels: where the view last carried the tree to (`pointer`). */
   at: { x: number; y: number };
+  /** The canvas's top-left at the last move, in window pixels: a pan or zoom does not move it, so a viewport change reads no geometry. */
+  origin: { left: number; top: number };
+  /** The free tree's root size on screen at its last snap, kept in step with the zoom (`viewportMoved`). */
+  size: { width: number; height: number } | null;
   /** Where the node sat when pressed; a release back on it is not a detach. */
   home: Box;
 }
@@ -126,11 +130,13 @@ export class NodeDrag extends Component {
   }
 
   /**
-   * Where the pointer of the drag under way was at its last move, in canvas pixels: the point the travel handed to
-   * `shift` was measured to (a release records its point without a move); null when no drag is under way.
+   * Where the pointer carrying free node `id` was at its last move, in canvas pixels: the point the travel handed to
+   * `shift` was measured to (a release records its point without a move); null when no drag of that free node is under
+   * way (released, or another node's drag).
    */
-  pointer(): { x: number; y: number } | null {
-    return this.session ? { ...this.session.at } : null;
+  pointer(id: string): { x: number; y: number } | null {
+    const session = this.session;
+    return session?.free && session.id === id ? { ...session.at } : null;
   }
 
   /**
@@ -138,7 +144,8 @@ export class NodeDrag extends Component {
    * a restored state — LEV-194). What the session measured on screen at the press is carried into the new viewport:
    * the grab offset and the ghost's scale follow the zoom (the view keeps the grabbed point under the pointer, so the
    * root sits that much farther from it), and the node's own box moves with the map, so a release back on the node
-   * is still no detach.
+   * is still no detach. The slot previewed was judged against the map as it was: it is let go, and a free tree asks
+   * for its snap again from where its root now sits (a tree drag's slot comes back with the next move over a node).
    */
   viewportMoved(previous: Viewport, next: Viewport): void {
     const session = this.session;
@@ -146,14 +153,17 @@ export class NodeDrag extends Component {
     const ratio = next.scale / previous.scale;
     session.grab = { x: session.grab.x * ratio, y: session.grab.y * ratio };
     session.scale *= ratio;
-    // Only a tree drag has a ghost and a home box to read; a free drag's own tree moves, and no geometry is read for it.
-    if (!session.ghost) return;
-    const canvas = this.canvas.getBoundingClientRect();
-    const x = (value: number): number => (value - canvas.left - previous.x) * ratio + next.x + canvas.left;
-    const y = (value: number): number => (value - canvas.top - previous.y) * ratio + next.y + canvas.top;
-    const home = session.home;
-    session.home = { left: x(home.left), top: y(home.top), right: x(home.right), bottom: y(home.bottom) };
-    this.placeGhost(session, canvas);
+    if (session.size) session.size = { width: session.size.width * ratio, height: session.size.height * ratio };
+    if (session.ghost) {
+      const { left, top } = session.origin;
+      const x = (value: number): number => (value - left - previous.x) * ratio + next.x + left;
+      const y = (value: number): number => (value - top - previous.y) * ratio + next.y + top;
+      const home = session.home;
+      session.home = { left: x(home.left), top: y(home.top), right: x(home.right), bottom: y(home.bottom) };
+      this.placeGhost(session, session.origin);
+    }
+    this.retarget(session, null, null, session.last);
+    if (session.free) this.snap(session);
   }
 
   private element(target: Node | null): Element | null {
@@ -173,7 +183,8 @@ export class NodeDrag extends Component {
     try { this.canvas.setPointerCapture(press.pointerId); } catch { /* InvalidPointerId */ }
     this.session = {
       ...press, ghost, free, scale, grab: { x: press.x - rect.left, y: press.y - rect.top }, target: null, anchor: null, switched: null,
-      last: { x: press.x, y: press.y }, at: { x: press.x - canvas.left, y: press.y - canvas.top }, home: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      last: { x: press.x, y: press.y }, at: { x: press.x - canvas.left, y: press.y - canvas.top },
+      origin: { left: canvas.left, top: canvas.top }, size: null, home: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
     };
     this.actions.select(press.id);
     this.move(event);
@@ -217,13 +228,13 @@ export class NodeDrag extends Component {
    * overlapping anything. The root's place comes from the pointer and the grab offset, not from the
    * DOM, which only catches up on the next frame and would leave a fast drag judged one step behind.
    */
-  private snap(session: Session, event: PointerEvent): void {
-    const canvas = this.canvas.getBoundingClientRect();
-    const rect = session.element.getBoundingClientRect();
-    const root = { x: event.clientX - canvas.left - session.grab.x, y: event.clientY - canvas.top - session.grab.y, width: rect.width, height: rect.height };
+  private snap(session: Session): void {
+    const size = session.size ?? (() => { const rect = session.element.getBoundingClientRect(); return { width: rect.width, height: rect.height }; })();
+    session.size = size;
+    const root = { x: session.at.x - session.grab.x, y: session.at.y - session.grab.y, width: size.width, height: size.height };
     const command = this.actions.snap(session.id, root, session.target);
     if (command && session.target && command.parentId === session.target.parentId && command.index === session.target.index) return;
-    this.retarget(session, command, command ? { id: `${command.parentId}@${command.index}`, position: "inside" } : null, event);
+    this.retarget(session, command, command ? { id: `${command.parentId}@${command.index}`, position: "inside" } : null, session.last);
   }
 
   /** Over empty canvas the current slot stays only while the pointer is still close to the node it targets. */
@@ -233,7 +244,7 @@ export class NodeDrag extends Component {
     const element = this.canvas.querySelector<HTMLElement>(`[data-node-id="${anchor.id.replace(/["\\]/gu, "\\$&")}"]`);
     const box = element?.getBoundingClientRect();
     if (box && this.near({ x: event.clientX, y: event.clientY }, box, KEEP_DISTANCE)) return;
-    this.retarget(session, null, null, event);
+    this.retarget(session, null, null, session.last);
   }
 
   private move(event: PointerEvent): void {
@@ -242,10 +253,13 @@ export class NodeDrag extends Component {
     session.last = { x: event.clientX, y: event.clientY };
     const canvas = this.canvas.getBoundingClientRect();
     session.at = { x: event.clientX - canvas.left, y: event.clientY - canvas.top };
+    session.origin = { left: canvas.left, top: canvas.top };
+    // Measured afresh on the first snap of each move: the layout of the last frame may have resized the root.
+    session.size = null;
     if (session.free) this.actions.shift(session.id, this.delta(session));
     this.placeGhost(session, canvas);
     if (!this.insideCanvas(session, canvas)) {
-      this.retarget(session, null, null, event);
+      this.retarget(session, null, null, session.last);
       return;
     }
     const hit = this.canvas.doc.elementFromPoint(event.clientX, event.clientY);
@@ -253,7 +267,7 @@ export class NodeDrag extends Component {
     if (!hit || !this.canvas.contains(hit) || hit.closest("[data-drop-placeholder]")) return;
     const node = nodeOf(this.canvas, hit);
     const id = node?.dataset.nodeId;
-    if (!node || !id) { if (session.free) this.snap(session, event); else this.leaveIfFar(session, event); return; }
+    if (!node || !id) { if (session.free) this.snap(session); else this.leaveIfFar(session, event); return; }
     if (id === session.id) return;
     const sameNode = session.anchor?.id === id;
     const position = this.dropPosition(node, event, sameNode ? session.anchor?.position : undefined);
@@ -261,21 +275,22 @@ export class NodeDrag extends Component {
     // Zone changes on the node already targeted follow the pointer at once; a different node waits for real travel.
     if (!sameNode && session.switched && Math.hypot(event.clientX - session.switched.x, event.clientY - session.switched.y) < SWITCH_DISTANCE) return;
     const command = this.actions.dropTarget(session.id, id, position);
-    this.retarget(session, command, command ? { id, position } : null, event);
+    this.retarget(session, command, command ? { id, position } : null, session.last);
   }
 
-  private placeGhost(session: Session, canvas: DOMRect): void {
+  private placeGhost(session: Session, canvas: { left: number; top: number }): void {
     if (!session.ghost) return;
     const x = session.last.x - canvas.left - session.grab.x;
     const y = session.last.y - canvas.top - session.grab.y;
     session.ghost.style.transform = `translate(${x}px, ${y}px) scale(${session.scale})`;
   }
 
-  private retarget(session: Session, command: MoveCommand | null, anchor: Session["anchor"], event: PointerEvent): void {
+  /** `at`: the pointer (window pixels) the change was judged at, from which a different node needs real travel. */
+  private retarget(session: Session, command: MoveCommand | null, anchor: Session["anchor"], at: { x: number; y: number }): void {
     if (!command && !session.target) return;
     session.target = command;
     session.anchor = anchor;
-    session.switched = { x: event.clientX, y: event.clientY };
+    session.switched = { ...at };
     this.actions.preview(command);
   }
 
