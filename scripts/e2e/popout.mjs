@@ -30,7 +30,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeRename, makeAddNamed, makeClickIn, makePress, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
-import { HANDLERS, handlerDiff, preciseGc, makeTrack, makeAppTheme, ERRORS } from './window-helpers.mjs';
+import { HANDLERS, handlerDiff, preciseGc, makeTrack, makeAppTheme, ERRORS, COLOR } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -62,13 +62,19 @@ let serial = 0;
  * name dom-helpers' `VIEW` reads, in the popout's own global scope), send its uncaught errors to the main window's
  * list, and wait for the map to lay out.
  */
+const watch = (winExpression, mark) => `{ const target = ${winExpression};
+  target.document.body.dataset.mappyE2ePopout = ${JSON.stringify(mark)};
+  (window.__mappyE2EPopouts ??= {})[${JSON.stringify(mark)}] = target;
+  if (!target.__mappyE2EWatched) {
+    target.__mappyE2EWatched = true;
+    target.addEventListener('error', event => { window.__mappyE2EErrors.push(${JSON.stringify(mark)} + ': ' + String(event.error?.stack ?? event.message)); });
+    target.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(${JSON.stringify(mark)} + ': ' + String(event.reason?.stack ?? event.reason)); });
+  } }`;
+
 const settle = mark => `const win = leaf.view.contentEl.win;
   if (win === window) throw new Error('the leaf is not in a popout window');
-  win.document.body.dataset.mappyE2ePopout = ${JSON.stringify(mark)};
-  (window.__mappyE2EPopouts ??= {})[${JSON.stringify(mark)}] = win;
+  ${watch('win', mark)}
   win.__mappyE2E = leaf;
-  win.addEventListener('error', event => { window.__mappyE2EErrors.push(${JSON.stringify(mark)} + ': ' + String(event.error?.stack ?? event.message)); });
-  win.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(${JSON.stringify(mark)} + ': ' + String(event.reason?.stack ?? event.reason)); });
   // Every key the popout's window receives (capture phase: Obsidian's keymap and the inline editor stop some keys before
   // they bubble), the element it was sent to, and — read once the event's task is over — whether something took it.
   // Kept in the record of step 6, to tell one key acted on twice (the inline editor and the map) from a second key.
@@ -93,10 +99,10 @@ const openPopout = async () => {
     // Marked before the map goes in: a failing setViewState must not leave a window nothing can find. The window is
     // the leaf's container's (a fresh leaf's own element is not in the popout's document yet, and its \`win\` is still the
     // main window's — marking that once closed the main window).
+    // Watched here too, before the map loads: what the popout throws while it first draws is recorded.
     const opening = leaf.getContainer().win;
-    if (opening === window) throw new Error('openPopoutLeaf gave a leaf in the main window');
-    (window.__mappyE2EPopouts ??= {})[${JSON.stringify(mark)}] = opening;
-    opening.document.body.dataset.mappyE2ePopout = ${JSON.stringify(mark)};
+    if (opening === window) { leaf.detach(); throw new Error('openPopoutLeaf gave a leaf in the main window (detached it)'); }
+    ${watch('opening', mark)}
     await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)} }, active: true });
     ${settle(mark)} return true;`);
   return mark;
@@ -156,7 +162,7 @@ try {
     if (!await closePopout(await openPopout())) throw new Error('the warm-up popout did not close');
     return true;
   }));
-  const baseline = await step('baseline', () => evaluate(`return ${HANDLERS};`));
+  const baseline = required(record, 'baseline', await step('baseline', () => evaluate(`return ${HANDLERS};`)));
 
   // 1–5 in one popout.
   const first = await openPopout();
@@ -198,7 +204,9 @@ try {
       return { open: !!card, inPopout: card?.ownerDocument === document, focusInside: !!card && card.contains(document.activeElement) };`);
     check(shown.open && shown.inPopout, `3-popover: the gear did not open its popover in the popout: ${JSON.stringify(shown)}`);
     check(shown.focusInside, '3-popover: the focus is not in the popover');
-    // A press on the canvas away from the nodes and the floating controls: the outside-press listener is on the popout's document.
+    // A press on the empty canvas closes the card. It closes either through the outside-press listener (on the popout's
+    // document) or because the focus leaves the card, and this step does not tell the two apart: a build that puts the
+    // listener on the main document still passes here (measured). What it fixes is that the card closes in a popout.
     await pop.press(`const node = el.querySelector('.mappy-canvas'); const box = node.getBoundingClientRect(); at = { x: box.left + box.width / 2, y: box.bottom - 90 };`,
       { avoid: '.mappy-node, .mappy-floating, .mappy-popover' });
     const closed = await pop.evaluate(`${VIEW} return !el.querySelector('.mappy-popover');`);
@@ -229,12 +237,13 @@ try {
     const appTheme = makeAppTheme(evaluate);
     const scheme = async theme => {
       await appTheme(theme, [evaluate, pop.evaluate]);
-      return pop.evaluate(`${VIEW}
-        const [r, g, b] = getComputedStyle(el.querySelector('.mappy-canvas')).backgroundColor.match(/\\d+/gu).map(Number);
-        return { body: document.body.classList.contains('theme-dark') ? 'dark' : 'light', canvas: [r, g, b], canvasDark: r + g + b < 3 * 90 };`);
+      // What the canvas shows, composited as E48 reads it (any colour syntax, translucent layers).
+      return pop.evaluate(`${VIEW} ${COLOR}
+        const ground = backdrop(el.querySelector('.mappy-canvas'));
+        return { body: document.body.classList.contains('theme-dark') ? 'dark' : 'light', canvas: css(ground), canvasDark: luminance(ground) < 0.2, canvasLight: luminance(ground) > 0.6 };`);
     };
     const light = await scheme('light');
-    check(light.body === 'light' && !light.canvasDark, `5-theme: the popout did not turn light first: ${JSON.stringify(light)}`);
+    check(light.body === 'light' && light.canvasLight, `5-theme: the popout did not turn light first: ${JSON.stringify(light)}`);
     const dark = await scheme('dark');
     const shot = value('--shot');
     if (shot) await pop.cdp.screenshot(shot.replace(/\.png$/u, '-dark.png'));
@@ -260,7 +269,7 @@ try {
       app.workspace.moveLeafToPopout(tab);
       await new Promise(resolve => setTimeout(resolve, 800));
       // The window the tab went to, recorded before the lookup below can fail.
-      if (tab.getContainer().win !== window) (window.__mappyE2EPopouts ??= {})[${JSON.stringify(mark)}] = tab.getContainer().win;
+      if (tab.getContainer().win !== window) ${watch('tab.getContainer().win', mark)}
       const leaf = app.workspace.getLeavesOfType('mappy-map').find(item => item.view.file?.path === ${JSON.stringify(NOTE)} && item.view.contentEl.win !== window);
       if (!leaf) throw new Error('no map leaf in a new window after moveLeafToPopout');
       ${settle(mark)} return true;`);
@@ -331,22 +340,20 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
-  try {
-    for (const mark of [...opened]) await closePopout(mark);
-    // And any popout opened after setup that no mark reaches (a window left by a step that failed before marking it).
-    await evaluate(`for (const win of Object.values(window.__mappyE2EPopouts ?? {})) if (win !== window && !win.closed) win.close();
-      delete window.__mappyE2EPopouts; return true;`);
-    if (record.steps.setup && !record.steps.setup.error) {
-      await evaluate(`app.changeTheme(${JSON.stringify(record.steps.setup.appTheme)});
-        for (const leaf of app.workspace.getLeavesOfType('mappy-map')) if (leaf.view.file?.path === ${JSON.stringify(NOTE)}) leaf.detach();
-        delete window.__mappyE2ETracked; return true;`);
-      if (!flag('--keep')) {
-        await wait(300);
-        await step('clean', makeDeleteNote(evaluate, NOTE));
-      }
+  // Each part of the cleanup on its own: one that throws (a window mid-close) must not skip the theme or the note.
+  const tidy = async (name, run) => { try { await run(); } catch (error) { record.failures.push(`${name}: ${error}`); } };
+  for (const mark of [...opened]) await tidy(`close ${mark}`, () => closePopout(mark));
+  // And any popout opened after setup that no mark reaches (a window left by a step that failed before marking it).
+  await tidy('close strays', () => evaluate(`for (const win of Object.values(window.__mappyE2EPopouts ?? {})) if (win !== window && !win.closed) win.close();
+    delete window.__mappyE2EPopouts; return true;`));
+  if (record.steps.setup && !record.steps.setup.error) {
+    await tidy('restore theme', () => evaluate(`app.changeTheme(${JSON.stringify(record.steps.setup.appTheme)}); return true;`));
+    await tidy('detach', () => evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) if (leaf.view.file?.path === ${JSON.stringify(NOTE)}) leaf.detach();
+      delete window.__mappyE2ETracked; return true;`));
+    if (!flag('--keep')) {
+      await wait(300);
+      await step('clean', makeDeleteNote(evaluate, NOTE));
     }
-  } catch (error) {
-    record.failures.push(`clean: ${error}`);
   }
   main.close();
 }

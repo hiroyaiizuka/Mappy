@@ -232,19 +232,20 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
-  try {
-    const original = record.steps.original;
-    if (original && !original.error) {
-      await setSetting(original.setting);
-      await evaluate(`app.changeTheme(${JSON.stringify(original.appTheme)}); return true;`);
-    }
-    await evaluate(`window.__mappyE2E?.detach(); window.__mappyE2E = null; return true;`);
-    if (!flag('--keep') && record.steps.open && !record.steps.open.error) {
+  // Each part of the restore on its own: a settings tab that would not open must not leave the app's theme changed.
+  const tidy = async (name, run) => { try { await run(); } catch (error) { record.failures.push(`${name}: ${error}`); } };
+  const original = record.steps.original;
+  if (original && !original.error) {
+    await tidy('restore setting', () => setSetting(original.setting));
+    await tidy('restore theme', () => evaluate(`app.changeTheme(${JSON.stringify(original.appTheme)}); return true;`));
+  }
+  // Only the map this case opened (the open step refuses a note already open elsewhere, and then there is none).
+  if (record.steps.open && !record.steps.open.error) {
+    await tidy('detach', () => evaluate(`window.__mappyE2E?.detach(); window.__mappyE2E = null; return true;`));
+    if (!flag('--keep')) {
       await wait(300);
       await step('clean', makeDeleteNote(evaluate, NOTE));
     }
-  } catch (error) {
-    record.failures.push(`restore: ${error}`);
   }
   cdp.close();
 }

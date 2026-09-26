@@ -147,7 +147,7 @@ try {
   // Warm-up: one open and close, so the baseline has Obsidian's own lazily created handlers (the first map view is
   // the first view of its kind) and the first read of the note in it.
   await step('warm-up', () => cycle('warm-up', 'plain'));
-  const baseline = await step('baseline', async () => ({ handlers: await evaluate(`return ${HANDLERS};`), memory: await memory(cdp) }));
+  const baseline = required(record, 'baseline', await step('baseline', async () => ({ handlers: await evaluate(`return ${HANDLERS};`), memory: await memory(cdp) })));
 
   const kinds = ['plain', 'draft', 'popover', 'zoom', 'split'];
   const missed = [];
@@ -303,14 +303,16 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
-  try {
-    await evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) if (leaf.view.file?.path === ${JSON.stringify(NOTE)}) leaf.detach();
-      delete window.__mappyE2ERouting; delete window.__mappyE2ETracked; return true;`);
-    if (!flag('--keep') && record.steps.setup && !record.steps.setup.error) {
-      await step('clean', makeDeleteNote(evaluate, NOTE));
+  // Only once the setup went through: a setup that refused because the note or a map was already open must not close
+  // the very leaf it refused to touch (someone's tab, maybe with a draft).
+  if (record.steps.setup && !record.steps.setup.error) {
+    try {
+      await evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) if (leaf.view.file?.path === ${JSON.stringify(NOTE)}) leaf.detach();
+        delete window.__mappyE2ERouting; delete window.__mappyE2ETracked; return true;`);
+    } catch (error) {
+      record.failures.push(`detach: ${error}`);
     }
-  } catch (error) {
-    record.failures.push(`clean: ${error}`);
+    if (!flag('--keep')) await step('clean', makeDeleteNote(evaluate, NOTE));
   }
   cdp.close();
 }
