@@ -1,7 +1,5 @@
-import { GFM, parser } from '@lezer/markdown';
+import { inlineParser as attachmentParser } from './title-breaks';
 import { autolinkUrl, type LinkSyntax } from './wiki-link';
-
-const attachmentParser = parser.configure(GFM);
 
 /** Image files the map previews and the exports embed, by extension; the single list every layer reads. */
 export const IMAGE_MIME_TYPES: Readonly<Record<string, string>> = {

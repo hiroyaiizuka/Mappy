@@ -257,6 +257,24 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.restore).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves Shift+Enter to the textarea, which breaks the line inside the node (LEV-202)', async () => {
+    const { options, input } = fixture('温泉旅行');
+    expect(key(input, 'Enter', { shiftKey: true }).defaultPrevented).toBe(false);
+    await Promise.resolve();
+    expect(options.save).not.toHaveBeenCalled();
+    // The break the textarea inserts is saved with the rest on Enter.
+    input.value = '温泉\n旅行';
+    expect(key(input, 'Enter').defaultPrevented).toBe(true);
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('温泉\n旅行');
+  });
+
+  it.each([{ altKey: true }, { ctrlKey: true }, { metaKey: true }])('still confirms on Shift+Enter with %o, as on Enter', (modifier) => {
+    // Pins that only the plain Shift+Enter breaks the line; these confirmed before LEV-202 as well.
+    const { options, input } = fixture();
+    expect(key(input, 'Enter', { shiftKey: true, ...modifier }).defaultPrevented).toBe(true);
+    expect(options.save).toHaveBeenCalledOnce();
+  });
+
   it('suppresses Enter during composition and saves after compositionend', async () => {
     const { options, input } = fixture();
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));

@@ -31,6 +31,7 @@ export const CASES = [
   { name: 'move-parent-text', file: 'move-parent-text.mjs', description: 'E19 親本文を挟む移動', shot: false },
   { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
   { name: 'layout-switch', file: 'layout-switch.mjs', description: 'E39 レイアウトボタンと同時の編集・折りたたみ', shot: false },
+  { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
 ];

@@ -1,6 +1,7 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
+import { storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -9,7 +10,11 @@ export interface TextEdit { from: number; to: number; text: string }
 export interface MoveCommand { type: 'move'; nodeId: string; parentId: string; index: number }
 
 export type EditCommand =
-  /** `position` stores one layout position under the new title in the same edit set (a topic added on the map). */
+  /**
+   * `title` is the text as the inline editor holds it: its line breaks are written as `<br>` (LEV-202,
+   * `storedTitle`). `position` stores one layout position under the new title in the same edit set (a
+   * topic added on the map).
+   */
   | { type: 'rename'; nodeId: string; title: string; position?: TopicPlacement }
   /**
    * A new last child. Empty by default (the inline editor names it); `title` writes the item's
@@ -233,13 +238,17 @@ export function assertSingleLine(title: string): void {
   }
 }
 
-function rename(doc: MindDocument, node: MindNode, title: string, place?: TopicPlacement): EditPlan {
-  assertSingleLine(title);
-  if (node.kind === 'setext' && title.trim().length === 0) {
+function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicPlacement): EditPlan {
+  if (node.kind === 'setext' && draft.trim().length === 0) {
     throw new Error('Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。');
   }
   const before = (node.kind === 'atx' || node.kind === 'list') && !/[ \t]/u.test(doc.source.charAt(node.titleFrom - 1)) ? ' ' : '';
   const after = node.kind === 'atx' && node.titleFrom === node.titleTo && doc.source.charAt(node.titleTo) === '#' ? ' ' : '';
+  // A multi-line Setext heading (its text over two or more lines) is written as one line, its breaks as `<br>` like
+  // every other title's (LEV-202, 本人の決定 2026-09-26): Obsidian does not read those lines as a heading at all (a
+  // paragraph, then a rule for `---`; artifacts/lev-202-node-line-break/record.md), and the one line it does, with
+  // the same breaks the map shows. Only the heading's own text changes; an untouched draft changes nothing.
+  const title = storedTitle(draft, node.title);
   const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
   const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
   const updated = parsed.nodes.find((candidate) => candidate.from === node.from);

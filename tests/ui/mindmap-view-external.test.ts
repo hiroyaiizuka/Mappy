@@ -294,14 +294,36 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(editor()).toBeNull();
   });
 
+  // Review 3 of LEV-202: asking for another edit (a double click) confirmed the open draft, which wrote one held
+  // after an external change without the Enter its REFRESHED line asks for. Blur never saves such a draft either.
+  it.each(['another node', 'the empty canvas'])('does not write a draft held after an external change when %s is double-clicked', async (where) => {
+    const mounted = await mount(SOURCE);
+    const { app, source, key, editor, error, draft, refreshed, canvas, element, node } = mounted;
+    const input = await draft('学ぶこと', '学ぶこと（編集）');
+    const silent = vi.spyOn(app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    app.put(PATH, EXTERNAL);
+    silent.mockRestore();
+    key(input, 'Enter');
+    await refreshed();
+    expect(error()).toBe(REFRESHED);
+    const target = where === 'another node' ? element(node('毎日のログ').id) : canvas;
+    target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await refreshed();
+    expect(source()).toBe(EXTERNAL);
+    expect(editor()).toBe(input);
+    expect(input.value).toBe('学ぶこと（編集）');
+    expect(error()).toBe(REFRESHED);
+  });
+
   it('leaves a validation error alone when the map refreshes, since Enter would not apply that draft', async () => {
     const mounted = await mount(SOURCE);
     const { source, key, editor, error, draft, refreshed, external } = mounted;
-    const input = await draft('学ぶこと', '学ぶ\nこと');
+    // A line break was the example until LEV-202 made it a break inside the node; a task marker still changes the syntax.
+    const input = await draft('学ぶこと', '[ ] 学ぶこと');
     key(input, 'Enter');
     await refreshed();
     const validation = error();
-    expect(validation).toBe('ノード名は改行を含まない文字列にしてください。');
+    expect(validation).toBe('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
     external(EXTERNAL);
     await refreshed();
     expect(error()).toBe(validation);
