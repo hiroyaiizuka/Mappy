@@ -5,9 +5,10 @@ import {
 import { embedTopicLayouts, embedTrees, initialFolds, readMapFromSource, visibleNodes, type EmbedTrees } from "../core/embed";
 import { parseMarkdown, type MindDocument } from "../core/markdown";
 import { readTopicPositions, type TopicPositionMap } from "../core/topics";
+import { WriteRecord } from "../core/write-record";
 import { fitToBounds } from "../interaction/viewport";
 import { layoutTree, type LayoutBounds, type LayoutMode } from "../layout/layout";
-import type { DocumentStore, LatestWrite } from "../obsidian/document-store";
+import type { DocumentStore } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
 import { EdgeLayer } from "./edge-layer";
@@ -68,12 +69,11 @@ export class MapEmbed extends MarkdownRenderChild {
   private mode: LayoutMode = "mindmap";
   private collapsed = new Set<string>();
   /**
-   * The store's writes on the note since the last parse, in order (`DocumentStore.onWrite`): an edit, a layout button,
-   * ⌘Z／⌘⇧Z in a map tab of the note. The re-read carries the ids over with their edits, as the tab does (`MindmapView`'s
-   * `ownWrites`, LEV-150), so the reader's folds stay on a node whose title repeats or is empty (LEV-217). Anything
-   * else — an external change (E05) — is matched by titles alone.
+   * The store's writes on the note since the last parse (`DocumentStore.onWrite`): an edit, a layout button, ⌘Z／⌘⇧Z in
+   * a map tab of the note. The re-read carries the ids over with their edits, as the tab does (LEV-150), so the reader's
+   * folds stay on a node whose title repeats or is empty (LEV-217). An external change (E05) is matched by titles alone.
    */
-  private writes: LatestWrite[] = [];
+  private readonly writes = new WriteRecord();
   private epoch = 0;
   private refreshTimer: number | undefined;
   private layoutFrame: number | undefined;
@@ -120,7 +120,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerEvent(this.app.vault.on("modify", file => { if (file.path === path()) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("rename", file => { if (file === this.source.file) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("delete", file => { if (file === this.source.file) this.scheduleRefresh(); }));
-    this.register(this.store.onWrite((file, write) => { if (file === this.source.file) this.record(write); }));
+    this.register(this.store.onWrite((file, write) => { if (file === this.source.file) this.writes.record(write, this.document?.source); }));
     if (typeof ResizeObserver !== "undefined") {
       // Only the fit depends on the frame's size; the layout itself does not.
       this.observer = new ResizeObserver(() => { if (this.bounds) this.fit(this.bounds); });
@@ -139,7 +139,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.observer?.disconnect();
     this.observer = undefined;
     this.document = undefined;
-    this.writes = [];
+    this.writes.clear();
     this.trees = null;
     this.drawnSource = null;
     this.frame.empty();
@@ -179,19 +179,27 @@ export class MapEmbed extends MarkdownRenderChild {
     try {
       text = await this.store.read(file);
     } catch {
-      if (epoch === this.epoch) this.show(`${file.basename} を読み込めませんでした。`);
+      // No text to lead on from: a later write is recorded from the map last parsed, or matched by titles.
+      if (epoch !== this.epoch) return;
+      this.writes.clear();
+      this.show(`${file.basename} を読み込めませんでした。`);
       return;
     }
     if (epoch !== this.epoch) return;
-    if (text === this.drawnSource && this.document?.root.title === file.basename) return;
+    if (text === this.drawnSource && this.document?.root.title === file.basename) {
+      // Writes that came back to the text on screen (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
+      this.writes.spend(text, this.document, file.basename);
+      return;
+    }
     const mode = readMapFromSource(text);
     if (!mode) {
+      this.writes.clear();
       this.show(`${file.basename} はマップではなくなりました。開き直すと通常の表示に戻ります。`);
       return;
     }
     // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
     const previous = this.document;
-    this.document = this.replay(text, file.basename) ?? parseMarkdown(text, file.basename, previous);
+    this.document = this.writes.take(text, previous, file.basename);
     this.mode = mode;
     this.positions = readTopicPositions(text);
     const trees = embedTrees(this.document, this.source.subpath);
@@ -208,34 +216,6 @@ export class MapEmbed extends MarkdownRenderChild {
     this.collapsed = collapsed;
     this.drawnSource = text;
     this.draw();
-  }
-
-  /**
-   * `write` kept for the re-read where the record leads to its start: the end of the record, or the text last parsed.
-   * A write on a text the embed has not reached (the note changed under it first) cannot lead on from it and is left out.
-   */
-  private record(write: LatestWrite): void {
-    const last = this.writes[this.writes.length - 1];
-    if (write.before !== (last?.after ?? this.document?.source)) return;
-    this.writes.push(write);
-  }
-
-  /**
-   * The parse of `text` from the recorded writes: each re-parses its text from the parse before it, starting at the
-   * last one, until one wrote exactly `text`; the writes up to it are spent, the rest kept for the next read. Undefined,
-   * and the record dropped, when they do not lead there: someone else wrote, and the ids are then a guess (E05).
-   */
-  private replay(text: string, basename: string): MindDocument | undefined {
-    let document = this.document;
-    for (const [index, write] of this.writes.entries()) {
-      if (!document || document.source !== write.before) break;
-      document = parseMarkdown(write.after, basename, document, undefined, write.edits);
-      if (write.after !== text) continue;
-      this.writes = this.writes.slice(index + 1);
-      return document;
-    }
-    this.writes = [];
-    return undefined;
   }
 
   /** A frame with a sentence instead of a map: the note stopped being one, lost the heading, or could not be read. */

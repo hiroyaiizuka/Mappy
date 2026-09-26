@@ -186,6 +186,10 @@ describe("the embed's folds through the writes of the note's map tab (LEV-217)",
     const from = SOURCE.indexOf('子1');
     await store.applyLatest(map.file, () => [{ from, to: from + 2, text: '改名' }]);
     await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
+    // The row's premise: the embed has not re-read the rename yet (its debounce is still waiting). Were it to, the
+    // record would be spent correctly and the row would pass whatever the record does with a write it cannot use.
+    const [embed] = (opened.embeds as unknown as { live: Set<EmbedState> }).live;
+    expect({ drawn: embed?.drawnSource, waiting: embed?.refreshTimer !== undefined }).toEqual({ drawn: SOURCE, waiting: true });
     await settled(opened, source => source.includes('- 外から\n') && source.includes('- 改名\n'));
     // Titles alone: the second untitled node is not guessed, and comes back folded as new.
     const after = seen(section, EMPTY_LABEL, 1);
