@@ -2,15 +2,20 @@
  * E58 (docs/harness.md): a second write of the map's own recorded while a re-read of the text on screen is reading
  * keeps the ids it carries: the fold of the second untitled or same-titled node stays (LEV-218).
  *
- * `reread` drops the whole record of the map's own writes when it does not lead to the text read (`if (!replayed)
- * this.ownWrites = []`). Since LEV-219 the save shows what it wrote at once, so the rename's last re-read (the
- * watcher's) finds the text on screen and leads nowhere; a second write W2 recorded while it reads (its start is the
- * text on screen) would be dropped with it, and W2's re-read would match nodes by title. What keeps it is the epoch
- * check right after the read: every write the record takes is one the store has just made on this note, and the note's
- * watcher — `modify` for a note no editor holds (the store writes through `vault.process`), `editor-change` for one a
- * Markdown editor holds (`editor.transaction`) — moves the epoch before the store tells the view (`DocumentStore.tell`),
- * so the read gives up first. jsdom's vault fires `modify` inside its write by construction; this case measures that
- * order on Obsidian's own events.
+ * Before LEV-218 `reread` dropped the whole record of the map's own writes when it did not lead to the text read (`if
+ * (!replayed) this.ownWrites = []`). Since LEV-219 the save shows what it wrote at once, so the rename's last re-read
+ * (the watcher's) finds the text on screen and leads nowhere; a second write W2 recorded while it reads (its start is
+ * the text on screen) was open to that drop, and W2's re-read would match nodes by title. Two things keep it now:
+ * - the fix: a read of the text on screen does not drop the record;
+ * - the order: every write the record takes is one the store has just made on this note, and the note's watcher —
+ *   `modify` for a note no editor holds (the store writes through `vault.process`), `editor-change` for one a Markdown
+ *   editor holds (`editor.transaction`) — moves the epoch before the store tells the view (`DocumentStore.tell`), so
+ *   the read gives up at the epoch check right after `store.read`. jsdom's vault fires `modify` inside its write by
+ *   construction; the rows without `-late` measure that order on Obsidian's own events.
+ * The `-late` rows break the order on purpose: from the moment the read begins until it has answered, this map's
+ * watcher re-read (`scheduleRefresh`) is held back and scheduled only after the answer, as it would be on an Obsidian
+ * whose `modify` came after `vault.process` resolved. The read then goes on with W2 on the record, and only the fix
+ * keeps it: with the fix reverted those rows fail.
  *
  * Rows are the second write × the note's form × the node folded: `button` (this map's layout button), `other-button`
  * (the layout button of a second map on the note, a split), `other-edit` (the second map moves 子2 up: an edit of its
@@ -69,13 +74,16 @@ const INSIDE_MS = 40;
 const RENAMED = '改名後';
 
 const KINDS = ['button', 'other-button', 'other-edit', 'other-undo', 'key', 'undo'];
+/** The kinds whose W2 a read ever holds (this map's own key and ⌘Z are spent the moment they land): the `-late` rows. */
+const LATE_KINDS = new Set(['button', 'other-button', 'other-edit', 'other-undo']);
 const FORMS = ['alone', 'editor'];
 const SHAPES = [
   { name: 'empty', label: EMPTY_LABEL, index: 1 },
   { name: 'same', label: '同名', index: 1 },
 ];
 // The form outermost: the Markdown editor is opened and closed once per run, not every other row.
-const ROWS = FORMS.flatMap(form => KINDS.flatMap(kind => SHAPES.map(shape => ({ id: `${kind}-${form}-${shape.name}`, kind, form, shape }))));
+const ROWS = FORMS.flatMap(form => [false, true].flatMap(late => KINDS.filter(kind => !late || LATE_KINDS.has(kind))
+  .flatMap(kind => SHAPES.map(shape => ({ id: `${kind}-${form}-${shape.name}${late ? '-late' : ''}`, kind, form, shape, late })))));
 const only = value('--only')?.split(',').map(item => item.trim()).filter(Boolean);
 if (only) {
   const unknown = only.filter(id => !ROWS.some(row => row.id === id));
@@ -188,11 +196,12 @@ const read = shape => evaluate(`${VIEW}
  * write marked when the store answers; INSIDE_MS into the first read begun after it with no refresh scheduled, the
  * second write; and the epoch when the map records that write (`recordWrite`, what the store tells every map).
  */
-const arm = kind => evaluate(`${VIEW}
+const arm = (kind, late) => evaluate(`${VIEW}
   ${LEAVES}
   const slow = ${SLOW_MS};
   const inside = ${INSIDE_MS};
   const kind = ${JSON.stringify(kind)};
+  const late = ${JSON.stringify(late)};
   const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, caughtUp: null, watched: false, answered: false, found: {
     landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null, beforeAnswer: null } };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
@@ -236,8 +245,11 @@ const arm = kind => evaluate(`${VIEW}
     found.beforeAnswer = !probe.answered;
   };
   mine.scheduleRefresh = view.scheduleRefresh;
+  // late: held back while the read that carries W2 is under way, and scheduled once it has answered.
+  const held = [];
   view.scheduleRefresh = function (...args) {
-    probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch });
+    probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch, held: late && inFlight !== null && !probe.answered });
+    if (late && inFlight !== null && !probe.answered) { held.push(() => mine.scheduleRefresh.apply(this, args)); return; }
     return mine.scheduleRefresh.apply(this, args);
   };
   // The note's watcher events themselves, heard right after the map's own handlers (registered after them).
@@ -274,6 +286,8 @@ const arm = kind => evaluate(`${VIEW}
     entry.end = now(); entry.epochEnd = view.epoch; entry.unchanged = text === shown;
     if (carries) probe.answered = true;
     if (carries) { probe.found.landedIn = text === shown; probe.found.gaveUp = view.epoch !== epoch; }
+    // After this read has gone on (it continues in this task once it has the text): the held re-reads, W2's among them.
+    if (carries && held.length > 0) setTimeout(() => { for (const schedule of held.splice(0)) schedule(); }, 0);
     return text;
   };
   own.applyOver = store.applyOver;
@@ -306,7 +320,7 @@ const WROTE = {
 };
 const UNDOES = new Set(['other-undo', 'undo']);
 
-const run = async ({ kind, form, shape }) => {
+const run = async ({ kind, form, shape, late }) => {
   const failures = [];
   const expect = (condition, message) => { if (!condition) failures.push(message); };
   const opened = await setForm(form);
@@ -328,7 +342,7 @@ const run = async ({ kind, form, shape }) => {
   if (!(await read(shape)).editing) return { failures: ['F2 did not open the inline editor'] };
   await cdp.insertText(RENAMED);
   await wait(250);
-  await arm(kind);
+  await arm(kind, late);
   await wait(50);
   await cdp.realKey('Enter');
   const started = Date.now();
@@ -347,8 +361,9 @@ const run = async ({ kind, form, shape }) => {
   expect(found.newestBefore === true, `that read was superseded before the second write (${JSON.stringify(found)}): not the window`);
   expect(found.recorded === true, `the map did not record the second write (${JSON.stringify(found)})`);
   expect(found.beforeAnswer === true, `the map recorded the second write only after the read answered (${JSON.stringify(found)}): not the window`);
-  expect(found.movedBeforeRecord === true, `the epoch had not moved by the map's watcher of the second write when the map recorded it (${JSON.stringify(found)})`);
-  expect(found.gaveUp === true, `the read did not give up (${JSON.stringify(found)})`);
+  // On time, the order closes the window by itself; late, the read goes on with W2 on the record and only the fix keeps it.
+  expect(found.movedBeforeRecord === !late, `the epoch had ${late ? '' : 'not '}moved by the map's watcher of the second write when the map recorded it (${JSON.stringify(found)})`);
+  expect(found.gaveUp === !late, `the read ${late ? 'gave up: the order was not broken' : 'did not give up'} (${JSON.stringify(found)})`);
   expect(UNDOES.has(kind) || after.text.includes(`  - ${RENAMED}\n`), 'the note lost the rename');
   expect(kind !== 'other-edit' || caughtUp === true, `the second map had not re-read the rename when it moved 子2 (${caughtUp})`);
   expect(WROTE[kind](after.text), `the note does not hold the second write (${kind})`);
@@ -380,8 +395,15 @@ try {
   record.rows = {
     total: results.length,
     failed: results.filter(({ result }) => !result || result.error || result.failures?.length).map(({ id }) => id),
-    // Every flag the rows check: found the text on screen, still the newest, W2 recorded, the epoch moved first, gave up.
-    windowHit: results.filter(({ result }) => result?.found && Object.values(result.found).every(flag => flag === true)).length,
+    // Every flag the rows check: found the text on screen, still the newest, W2 recorded before the answer, and (on
+    // time) the epoch moved first and the read gave up, (late) neither.
+    windowHit: results.filter(({ id, result }) => {
+      const found = result?.found;
+      if (!found) return false;
+      const late = id.endsWith('-late');
+      return found.landedIn && found.newestBefore && found.recorded && found.beforeAnswer
+        && found.movedBeforeRecord === !late && found.gaveUp === !late;
+    }).length,
   };
   check(results.length > 0, 'no row ran');
 } catch (error) {

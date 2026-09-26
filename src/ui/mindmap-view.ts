@@ -1143,10 +1143,12 @@ export class MindmapView extends FileView {
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
     const changed = source !== this.document?.source || this.document.root.title !== file.basename;
     // The view's own writes answer for this read while they lead from the text this view last parsed to
-    // exactly the text found; their edits then carry the ids across (LEV-146). Anything else means someone
-    // else has written, and the writes are of no use to any later read either.
+    // exactly the text found; their edits then carry the ids across (LEV-146). Another text means someone
+    // else has written, and the writes are of no use to any later read either. The text on screen found again
+    // is no one else's: the writes lead on from it, and one recorded while this read was under way is the next
+    // read's to replay (LEV-218; as the embedded maps' `WriteRecord`, LEV-217).
     const replayed = this.replayOwnWrites(source, file.basename);
-    if (!replayed) this.ownWrites = [];
+    if (!replayed && source !== this.document?.source) this.ownWrites = [];
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
