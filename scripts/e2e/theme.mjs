@@ -26,8 +26,8 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeClickIn } from './dom-helpers.mjs';
-import { COLOR, ERRORS } from './window-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeClickIn, makePress, makeDeleteNote } from './dom-helpers.mjs';
+import { COLOR, ERRORS, APP_THEMES, makeAppTheme } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -38,7 +38,6 @@ const SOURCE = [
   '- 通常のノード', '  - [[uneven-branches|リンクのノード]]', '  - 画像のノード ![[sample-image.svg]]',
   '- 折りたたむ枝', '  - 隠れる子 1', '  - 隠れる子 2', '',
 ].join('\n');
-const APP_THEMES = { light: 'moonstone', dark: 'obsidian' };
 const SETTINGS = ['follow', 'light', 'dark'];
 const TEXT = 4.5;
 const NON_TEXT = 3;
@@ -66,13 +65,12 @@ const setSetting = theme => evaluate(`app.setting.open(); app.setting.openTabByI
   await new Promise(resolve => setTimeout(resolve, 300));
   return app.plugins.plugins.mappy.settings.theme;`);
 
-const setAppTheme = scheme => evaluate(`app.changeTheme(${JSON.stringify(APP_THEMES[scheme])});
-  for (const started = Date.now(); Date.now() - started < 3000 && !document.body.classList.contains(${JSON.stringify(`theme-${scheme}`)}); await new Promise(resolve => setTimeout(resolve, 50)));
-  await new Promise(resolve => setTimeout(resolve, 400));
-  return document.body.classList.contains('theme-dark') ? 'dark' : 'light';`);
+const appTheme = makeAppTheme(evaluate);
+const setAppTheme = async scheme => (await appTheme(scheme))[0];
 
 /** A real click at the centre of `selector` inside the view under test (dom-helpers' `makeClickIn`). */
 const clickIn = makeClickIn(cdp, evaluate);
+const press = makePress(cdp, evaluate);
 
 /**
  * Script: `pairs` of [name, foreground, background, minimum] for what is on screen now, each colour composited to
@@ -141,14 +139,9 @@ try {
 
   // The branch folded (its count badge is on the map) and a node selected (its outline is), by real clicks.
   required(record, 'prepare', await step('prepare', async () => {
-    const box = await evaluate(`${VIEW} const node = nodes().find(item => label(item) === '折りたたむ枝');
-      const toggle = node?.querySelector('.mappy-node-toggle');
-      if (!toggle) throw new Error('no toggle on 折りたたむ枝');
-      const rect = toggle.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
-    await wait(150);
-    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-    await wait(500);
+    // The toggle of 折りたたむ枝, hovered first as a pointer reaches it (its mark shows on hover), and hit-tested.
+    await press(`const node = nodes().find(item => label(item) === '折りたたむ枝')?.querySelector('.mappy-node-toggle');`, { hover: true });
+    await wait(250);
     await select('通常のノード');
     const state = await evaluate(`${VIEW} return { collapsed: !!el.querySelector('.mappy-node.is-collapsed'), selected: label(el.querySelector('.mappy-node.is-selected')) };`);
     if (!state.collapsed || state.selected !== '通常のノード') throw new Error(`fold/select did not take: ${JSON.stringify(state)}`);
@@ -248,7 +241,7 @@ try {
     await evaluate(`window.__mappyE2E?.detach(); window.__mappyE2E = null; return true;`);
     if (!flag('--keep') && record.steps.open && !record.steps.open.error) {
       await wait(300);
-      await step('clean', () => evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)}); if (file) await app.vault.delete(file); return true;`));
+      await step('clean', makeDeleteNote(evaluate, NOTE));
     }
   } catch (error) {
     record.failures.push(`restore: ${error}`);

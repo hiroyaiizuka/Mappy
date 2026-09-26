@@ -47,12 +47,16 @@ export async function preciseGc(cdp) {
   await wait(100);
 }
 
-/** DOM nodes, documents and JS event listeners of the page, and its JS heap, after `preciseGc`. */
+/**
+ * DOM nodes, documents and JS event listeners of the page, and its JS heap, after `preciseGc`. The heap is
+ * `Runtime.getHeapUsage`'s exact `usedSize`: `performance.memory` is bucketed and cached without
+ * `--enable-precise-memory-info`, and two readings inside one cache window would show no growth at all.
+ */
 export async function memory(cdp) {
   await preciseGc(cdp);
   const counters = await cdp.send('Memory.getDOMCounters');
-  const heap = await cdp.evaluate('performance.memory.usedJSHeapSize');
-  return { ...counters, heapMB: Math.round(heap / 10485.76) / 100 };
+  const { usedSize } = await cdp.send('Runtime.getHeapUsage');
+  return { ...counters, heapMB: Math.round(usedSize / 10485.76) / 100 };
 }
 
 /**
@@ -69,6 +73,27 @@ export function makeTrack(evaluate) {
     alive: () => evaluate(`return window.__mappyE2ETracked
       .filter(entry => entry.view.deref() !== undefined || entry.el.deref() !== undefined)
       .map(entry => entry.label);`),
+  };
+}
+
+export const APP_THEMES = { light: 'moonstone', dark: 'obsidian' };
+
+/**
+ * Switches Obsidian's base theme (`app.changeTheme`, what Appearance calls; `scheme` is 'light' or 'dark') from the
+ * main window's `evaluate`, and waits until `body` in each of `windows` (evaluate functions; the main window by
+ * default, a popout's too) carries `theme-<scheme>`, instead of sleeping a fixed time. Resolves to what each body
+ * shows then ('light' or 'dark'), in order.
+ */
+export function makeAppTheme(evaluate) {
+  return async (scheme, windows = [evaluate]) => {
+    await evaluate(`app.changeTheme(${JSON.stringify(APP_THEMES[scheme])}); return true;`);
+    const shown = [];
+    for (const read of windows) {
+      shown.push(await read(`for (const started = Date.now(); Date.now() - started < 5000 && !document.body.classList.contains(${JSON.stringify(`theme-${scheme}`)}); await new Promise(resolve => setTimeout(resolve, 50)));
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return document.body.classList.contains('theme-dark') ? 'dark' : 'light';`));
+    }
+    return shown;
   };
 }
 

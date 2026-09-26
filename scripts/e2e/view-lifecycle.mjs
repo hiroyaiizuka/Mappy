@@ -25,7 +25,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeClickIn, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeClickIn, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
 import { HANDLERS, handlerDiff, memory, preciseGc, makeTrack, ERRORS } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -84,8 +84,13 @@ const LEFT = `return {
   leaves: app.workspace.getLeavesOfType('mappy-map').length,
 };`;
 
-/** A real click at the centre of `selector` inside the view under test (dom-helpers' `makeClickIn`). */
-const clickIn = selector => makeClickIn(cdp, evaluate)(selector);
+/** The connection as the helpers see it: always the current `cdp` (the window reload replaces it). */
+const live = {
+  send: (...args) => cdp.send(...args), realKey: (...args) => cdp.realKey(...args), insertText: (...args) => cdp.insertText(...args),
+};
+const run = expression => evaluate(expression);
+const select = makeSelect(live, run);
+const clickIn = makeClickIn(live, run);
 
 /**
  * One open and close. `kind` is what happens while it is open (see the file comment); what it did is returned so a
@@ -104,7 +109,7 @@ const act = async (index, kind) => {
   await evaluate(`${OPEN} return true;`);
   let did = null;
   if (kind === 'draft') {
-    await makeSelect(cdp, evaluate)('子ノード');
+    await select('子ノード');
     await cdp.realKey('F2');
     await wait(200);
     // The draft keeps the node's own title: closing the tab saves a draft through the textarea's blur (the element
@@ -134,15 +139,7 @@ const act = async (index, kind) => {
 try {
   const plugin = required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
   required(record, 'setup', await step('setup', async () => {
-    const result = await evaluate(`${refuseOpenLeaves([NOTE])}
-      ${ERRORS}
-      const open = app.workspace.getLeavesOfType('mappy-map').length;
-      if (open > 0) throw new Error(open + ' map leaves are already open; the baseline would count their handlers. Close them first.');
-      const existing = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)});
-      if (existing) await app.vault.modify(existing, ${JSON.stringify(SOURCE)});
-      else await app.vault.create(${JSON.stringify(NOTE)}, ${JSON.stringify(SOURCE)});
-      await new Promise(resolve => setTimeout(resolve, 400));
-      return { obsidian: require('electron').ipcRenderer.sendSync('version'), mappy: ${JSON.stringify(plugin.version)} };`);
+    const result = await makeNoteStep(evaluate, { note: NOTE, source: SOURCE, errors: ERRORS, extra: `{ mappy: ${JSON.stringify(plugin.version)} }` })();
     await track.reset();
     return result;
   }));
@@ -172,9 +169,10 @@ try {
     check(diff.length === 0, `handlers after ${CYCLES} opens and closes differ from before: ${diff.join('; ')}`);
     const left = await evaluate(LEFT);
     check(Object.values(left).every(count => count === 0), `left in the window after the last close: ${JSON.stringify(left)}`);
-    // The last checkpoint (`memory`) collected just now, after the last close: the WeakRefs are read after it.
+    // Collected again here, not only at the last checkpoint: that GC runs right after the last close, and a view closed
+    // in the same moment can still be held by work Obsidian finishes after it (measured: the 50th view once).
     const first = checkpoints[CHECKPOINT]; const last = checkpoints[CYCLES];
-    if (!last) await preciseGc(cdp);
+    await preciseGc(cdp);
     const alive = await track.alive();
     const tracked = await track.count();
     check(tracked === CYCLES + 1 + Math.floor((CYCLES + 1) / 5), `${tracked} views tracked, ${CYCLES + 1 + Math.floor((CYCLES + 1) / 5)} expected (warm-up, every cycle, and each split's second view)`);
@@ -254,8 +252,13 @@ try {
   // Window reload with the map open: the saved workspace brings the map back, once.
   await step('app-reload', async () => {
     await evaluate(`await app.workspace.requestSaveLayout.run?.(); await app.workspace.saveLayout?.(); return true;`);
+    // The page the reload makes has no collector until something installs one, and whatever it throws while Mappy loads
+    // and the map is restored would go unseen: this connection has the page run it first, before the page's own scripts
+    // (`Page.addScriptToEvaluateOnNewDocument` lives as long as the connection, which is closed only after the reload).
+    const before = cdp;
+    await before.send('Page.enable');
+    await before.send('Page.addScriptToEvaluateOnNewDocument', { source: ERRORS });
     await evaluate(`setTimeout(() => app.commands.executeCommandById('app:reload'), 50); return true;`);
-    cdp.close();
     await wait(3000);
     let restored = null;
     let connected = false;
@@ -274,7 +277,6 @@ try {
             if (leaf.view.contentEl?.querySelector('.mappy-node')) break;
           }
           window.__mappyE2E = leaf;
-          ${ERRORS}
           return { leaves: leaves.length, nodes: leaf.view.contentEl.querySelectorAll('.mappy-node').length, views: document.querySelectorAll('.mappy-view').length }; })()`);
       } catch {
         restored = null;
@@ -283,6 +285,7 @@ try {
     }
     // Without a live connection the \`finally\` below would wait out a closed socket's timeouts: connect once more.
     if (!connected) { try { cdp = await connect(); } catch { /* the finally records its own failure */ } }
+    before.close();
     check(restored !== null, 'the window did not come back with Mappy loaded within 30 s');
     check(connected, `the map was not drawn again within 30 s of the window reload: ${JSON.stringify(restored)}`);
     if (restored) {
@@ -292,8 +295,9 @@ try {
   });
 
   await step('errors', async () => {
-    const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
-    check(errors.length === 0, `page errors: ${JSON.stringify(errors).slice(0, 1500)}`);
+    const errors = await evaluate('return window.__mappyE2EErrors ? [...window.__mappyE2EErrors] : null;');
+    check(errors !== null, 'the reloaded page has no error collector (addScriptToEvaluateOnNewDocument did not run)');
+    check(errors?.length === 0, `page errors after the window reload: ${JSON.stringify(errors).slice(0, 1500)}`);
     return errors;
   });
 } catch (error) {
@@ -303,7 +307,7 @@ try {
     await evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) if (leaf.view.file?.path === ${JSON.stringify(NOTE)}) leaf.detach();
       delete window.__mappyE2ERouting; delete window.__mappyE2ETracked; return true;`);
     if (!flag('--keep') && record.steps.setup && !record.steps.setup.error) {
-      await step('clean', () => evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)}); if (file) await app.vault.delete(file); return true;`));
+      await step('clean', makeDeleteNote(evaluate, NOTE));
     }
   } catch (error) {
     record.failures.push(`clean: ${error}`);

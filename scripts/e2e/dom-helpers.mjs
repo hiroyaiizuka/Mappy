@@ -99,30 +99,6 @@ export function makeState(evaluate) {
  * command whose earlier step left focus elsewhere (blur, `showSource`'s `editor.focus()`) is not
  * `preventDefault`-ed and reaches the OS instead — the macOS-menu hang docs/harness.md warns about.
  */
-/**
- * A real click at the centre of the first element in the view under test matching `selector` (the gear, a zoom
- * button). As `makeAim` does for nodes, the topmost element at that point must be the target or inside it: a Notice
- * there is dismissed and the point looked at again, anything else stops the step with what was in the way.
- */
-export function makeClickIn(cdp, evaluate) {
-  return async selector => {
-    let box;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      box = await evaluate(`${VIEW} const node = el.querySelector(${JSON.stringify(selector)});
-        if (!node) throw new Error('no ' + ${JSON.stringify(selector)} + ' in the view');
-        ${AIM}
-        return { x, y, hit, cover };`);
-      if (box.hit) break;
-      await wait(400);
-    }
-    if (!box.hit) throw new Error(`${selector} cannot be reached at (${Math.round(box.x)},${Math.round(box.y)}): ${box.cover} is there`);
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-    }
-    await wait(250);
-  };
-}
-
 export function makeFocusCanvas(cdp, evaluate) {
   return async () => {
     const box = await evaluate(`${VIEW}
@@ -133,6 +109,46 @@ export function makeFocusCanvas(cdp, evaluate) {
     }
     await wait(200);
   };
+}
+
+/**
+ * A real click where `locate` (script, run after `VIEW`) says: it defines `node`, the element to press, and may define
+ * `at` ({ x, y } in the window's CSS pixels; the centre of `node` otherwise). As `makeAim` does for nodes, the topmost
+ * element at that point must be `node` or inside it, and not inside `avoid` (a selector): a Notice there is dismissed
+ * and the point looked at again; anything else stops the step with what was in the way, so a press cannot pass for a
+ * reason that is not the build's (a press meant for the empty canvas landing on a node, say).
+ */
+export function makePress(cdp, evaluate) {
+  return async (locate, { avoid, hover = false } = {}) => {
+    let box;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      box = await evaluate(`${VIEW} let at; ${locate}
+        if (!node) throw new Error('nothing to press: ' + ${JSON.stringify(locate)});
+        const rect = node.getBoundingClientRect();
+        const x = at?.x ?? rect.left + rect.width / 2; const y = at?.y ?? rect.top + rect.height / 2;
+        const top = document.elementFromPoint(x, y);
+        const inside = node.contains(top);
+        const blocked = inside && ${avoid ? `!!top.closest(${JSON.stringify(avoid)})` : 'false'};
+        const notice = inside ? null : top?.closest?.('.notice');
+        if (notice) notice.click();
+        const cover = inside && !blocked ? null : notice ? 'a Notice (dismissed)' : top ? String(top.className?.baseVal ?? top.className ?? '') || top.tagName : 'nothing (outside the window)';
+        return { x, y, hit: inside && !blocked, cover };`);
+      if (box.hit) break;
+      await wait(400);
+    }
+    if (!box.hit) throw new Error(`cannot press at (${Math.round(box.x)},${Math.round(box.y)}): ${box.cover} is there`);
+    if (hover) { await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y }); await wait(150); }
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    }
+    await wait(250);
+  };
+}
+
+/** A real click at the centre of the first element in the view under test matching `selector` (`makePress`). */
+export function makeClickIn(cdp, evaluate) {
+  const press = makePress(cdp, evaluate);
+  return selector => press(`const node = el.querySelector(${JSON.stringify(selector)});`);
 }
 
 /** Step body for `step('plugin', ...)`: optionally reloads the plugin, then asserts it is actually loaded. */
@@ -174,6 +190,28 @@ export function refuseOpenLeaves(paths, types = ['markdown', 'mappy-map']) {
     });
     if (already.length) throw new Error('Close the leaves already on these files first: ' + already.join(', '));
   }`;
+}
+
+/**
+ * Step body for a case that opens its note itself (E49, E50): refuses a note already open (`refuseOpenLeaves`) and
+ * any map leaf at all (the case's baseline would count its handlers), installs the page-error collector `errors`
+ * (window-helpers.mjs `ERRORS`), then writes `source` to `note`. `extra` (script) adds fields to what it returns.
+ */
+export function makeNoteStep(evaluate, { note, source, errors = '', extra = '{}' }) {
+  return () => evaluate(`${refuseOpenLeaves([note])}
+    ${errors}
+    const open = app.workspace.getLeavesOfType('mappy-map').length;
+    if (open > 0) throw new Error(open + ' map leaves are already open; the baseline would count their handlers. Close them first.');
+    const existing = app.vault.getAbstractFileByPath(${JSON.stringify(note)});
+    if (existing) await app.vault.modify(existing, ${JSON.stringify(source)});
+    else await app.vault.create(${JSON.stringify(note)}, ${JSON.stringify(source)});
+    await new Promise(resolve => setTimeout(resolve, 400));
+    return { obsidian: require('electron').ipcRenderer.sendSync('version'), ...(${extra}) };`);
+}
+
+/** Step body for the `clean` step: deletes the case's note if it is there. */
+export function makeDeleteNote(evaluate, note) {
+  return () => evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(note)}); if (file) await app.vault.delete(file); return true;`);
 }
 
 /**
