@@ -106,6 +106,9 @@ const clickAt = async locate => {
   const box = await evaluate(`${EMBED}
     const target = (() => { ${locate} })();
     if (!target) throw new Error('nothing to click');
+    // The host pane is the lower half: the lower nodes of the embed can be below what it shows.
+    target.scrollIntoView({ block: 'center', inline: 'center' });
+    await new Promise(resolve => setTimeout(resolve, 300));
     const rect = target.getBoundingClientRect();
     const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     if (!target.contains(top)) throw new Error('something else is on top: ' + (top?.className ?? 'nothing'));
@@ -147,7 +150,8 @@ const history = async direction => {
 };
 
 try {
-  await step('plugin', makePluginStep(cdp, evaluate, flag));
+  // Without the plugin every row would fail on something else (a restricted vault opens no map) and hide why.
+  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
   const withTimeline = text => text.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n');
   const LONG = 'ずっと長い題名に改名';
   for (const shape of SHAPES) {
