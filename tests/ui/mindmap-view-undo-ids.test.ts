@@ -18,6 +18,7 @@ import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
 import { LAYOUT_LABELS } from '../../src/core/layout-mode';
 import type { MindDocument } from '../../src/core/markdown';
+import { conflictMessage, type DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { accessibleName } from './accessible-name';
 
@@ -100,17 +101,38 @@ async function history(mounted: MountedMapView, redo: boolean, reached: (source:
   await settled(mounted, reached);
 }
 
-/** 子1 renamed with F2: the step ⌘Z takes back. */
-async function rename(mounted: MountedMapView): Promise<void> {
+/** 子1 renamed with F2 to `title`: the step ⌘Z takes back. */
+async function rename(mounted: MountedMapView, title: string): Promise<void> {
   click(nodeNamed(mounted, '子1'));
   mounted.key(mounted.canvas, 'F2');
   const editor = mounted.editor();
   if (!editor) throw new Error('F2 opened no editor');
-  editor.value = '改名';
+  editor.value = title;
   editor.dispatchEvent(new Event('input', { bubbles: true }));
   mounted.key(editor, 'Enter');
-  await settled(mounted, source => source.includes('- 改名\n'));
+  await settled(mounted, source => source.includes(`- ${title}\n`));
 }
+
+/**
+ * The step ⌘Z takes back, above every folded node: a rename that keeps the length (no node moves), one that makes
+ * the title longer and a delete (every node after it moves), so the edits Undo／Redo hand the view are the ones that
+ * move the nodes' places — a wrong set would carry the ids to other nodes or to none.
+ */
+const EDITS = [
+  { edit: 'a rename of the same length', run: (mounted: MountedMapView) => rename(mounted, '改名'), done: '  - 改名\n' },
+  { edit: 'a longer rename', run: (mounted: MountedMapView) => rename(mounted, 'ずっと長い題名に改名'), done: '  - ずっと長い題名に改名\n' },
+  {
+    edit: 'a delete', done: null,
+    run: async (mounted: MountedMapView) => {
+      click(nodeNamed(mounted, '子1'));
+      mounted.key(mounted.canvas, 'Delete');
+      await settled(mounted, source => !source.includes('- 子1\n'));
+    },
+  },
+] as const;
+
+/** The note holds what `edit` wrote (`done`), or, for the delete, no 子1. */
+const edited = (done: string | null) => (source: string): boolean => done === null ? !source.includes('  - 子1\n') : source.includes(done);
 
 const SHAPES = [
   { shape: '通常', label: '親', index: 0 },
@@ -120,46 +142,84 @@ const SHAPES = [
 ] as const;
 
 const BEFORE = [
-  { name: 'an edit', layout: false },
-  { name: 'an edit and then a layout button', layout: true },
+  { name: '', layout: false },
+  { name: ' and then a layout button', layout: true },
 ] as const;
 
+/** Select `label`'s `index`-th node and fold it with its toggle; returns its id. */
+async function foldAndSelect(mounted: MountedMapView, label: string, index: number): Promise<string> {
+  const element = nodeNamed(mounted, label, index);
+  click(element);
+  const id = element.dataset.nodeId ?? '';
+  const toggle = element.querySelector<HTMLElement>('.mappy-node-toggle');
+  if (!toggle) throw new Error('No toggle');
+  click(toggle);
+  await mounted.settle();
+  const view = state(mounted);
+  expect({ collapsed: [...view.collapsed], selected: view.selectedId }).toEqual({ collapsed: [id], selected: id });
+  return id;
+}
+
+function expectKept(mounted: MountedMapView, label: string, index: number, id: string): void {
+  const view = state(mounted);
+  expect({ collapsed: [...view.collapsed], selected: view.selectedId, id: nodeNamed(mounted, label, index).dataset.nodeId })
+    .toEqual({ collapsed: [id], selected: id, id });
+}
+
 describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Redo half)', () => {
-  it.each(BEFORE.flatMap(before => SHAPES.map(shape => ({ ...before, ...shape }))))(
-    '$name, then ⌘Z and ⌘⇧Z: a folded, selected $shape node stays folded and selected', async ({ layout, label, index }) => {
+  it.each(EDITS.flatMap(edit => BEFORE.flatMap(before => SHAPES.map(shape => ({ ...edit, ...before, ...shape })))))(
+    '$edit$name, then ⌘Z and ⌘⇧Z: a folded, selected $shape node stays folded and selected', async ({ run, done, layout, label, index }) => {
       const mounted = await mount();
-      await rename(mounted);
+      await run(mounted);
       if (layout) {
         const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${LAYOUT_LABELS.timeline}"]`);
         if (!button) throw new Error('No layout button');
         button.click();
         await settled(mounted, source => source.includes('mappy-layout: timeline\n'));
       }
-      const element = nodeNamed(mounted, label, index);
-      click(element);
-      const id = element.dataset.nodeId ?? '';
-      const toggle = element.querySelector<HTMLElement>('.mappy-node-toggle');
-      if (!toggle) throw new Error('No toggle');
-      click(toggle);
-      await mounted.settle();
-      const view = state(mounted);
-      expect({ collapsed: [...view.collapsed], selected: view.selectedId }).toEqual({ collapsed: [id], selected: id });
+      const id = await foldAndSelect(mounted, label, index);
 
-      await history(mounted, false, source => source.includes('- 子1\n'));
-      expect({ collapsed: [...view.collapsed], selected: view.selectedId }).toEqual({ collapsed: [id], selected: id });
-      expect(nodeNamed(mounted, label, index).dataset.nodeId).toBe(id);
+      await history(mounted, false, source => source.includes('  - 子1\n'));
+      expectKept(mounted, label, index, id);
 
-      await history(mounted, true, source => source.includes('- 改名\n'));
-      expect({ collapsed: [...view.collapsed], selected: view.selectedId }).toEqual({ collapsed: [id], selected: id });
-      expect(nodeNamed(mounted, label, index).dataset.nodeId).toBe(id);
+      await history(mounted, true, edited(done));
+      expectKept(mounted, label, index, id);
       if (layout) expect(mounted.source()).toContain('mappy-layout: timeline\n');
       expect(Notice.log).toEqual([]);
     });
 
+  it('⌘Z in one map keeps the fold and the selection of another map of the note (the history is shared)', async () => {
+    const first = await mount();
+    const store = (first.view as unknown as { store: DocumentStore }).store;
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
+    opened.push(second);
+    await rename(first, 'ずっと長い題名に改名');
+    await settled(second, source => source.includes('ずっと長い題名に改名'));
+    const id = await foldAndSelect(second, EMPTY_LABEL, 1);
+    await history(first, false, source => source.includes('  - 子1\n'));
+    await settled(second, source => source.includes('  - 子1\n'));
+    expectKept(second, EMPTY_LABEL, 1, id);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('a refused ⌘Z re-reads the note even when no watcher reports the change', async () => {
+    // Not about the ids: the one own write of the view that did not re-read on a refusal (as `writeOwn` does).
+    const mounted = await mount();
+    await rename(mounted, '改名');
+    const entries = (mounted.app as unknown as { entries: Map<string, { content: string }> }).entries;
+    const entry = entries.get(PATH);
+    if (!entry) throw new Error('No note');
+    entry.content = entry.content.replace('- 子2\n', '- 外から\n');
+    mounted.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+    await settled(mounted, () => true);
+    expect(Notice.log).toContain(conflictMessage);
+    expect(state(mounted).document?.source).toContain('- 外から\n');
+  });
+
   it('an external change after the edit still drops the history, and a same-titled node is not guessed (E05)', async () => {
     // Not a regression test of the bug: it pins what the fix must not do — take someone else's change for the map's own.
     const mounted = await mount();
-    await rename(mounted);
+    await rename(mounted, '改名');
     const id = nodeNamed(mounted, EMPTY_LABEL, 1).dataset.nodeId ?? '';
     await mounted.app.asApp<App>().vault.process(mounted.file, text => text.replace('- 子2\n', '- 外から\n'));
     await settled(mounted, source => source.includes('- 外から\n'));

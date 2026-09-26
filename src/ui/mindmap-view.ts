@@ -696,6 +696,7 @@ export class MindmapView extends FileView {
       if (info.file?.path === this.file?.path) this.scheduleRefresh();
     }));
     this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) this.scheduleRefresh(); }));
+    this.register(this.store.onHistoryWrite((file, write) => { this.recordHistory(file, write); }));
     // A rename of the note is `onRename` (FileView's own subscription). Its deletion is FileView's too, and comes
     // first (subscribed in `onload`): the leaf goes back in its history or to the empty view (`allowNoFile` is
     // false), which unloads the note here without a save; a kept draft outlives refreshes, but not its note, so it
@@ -2080,20 +2081,26 @@ export class MindmapView extends FileView {
     new Notice("H2 とリストの形式に変更しました。元に戻す操作で復元できます。");
   }
 
-  /**
-   * Undo／Redo, recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the folds and
-   * the selection stay on a node whose title repeats or is empty. As with the layout buttons (`writeLayout`), a
-   * view that left the note, or left it and came back, while the step was under way does not record it.
-   */
+  /** Undo／Redo: the store tells every map of the note what the step wrote (`recordHistory`). */
   private history(direction: "undo" | "redo"): void {
     const file = this.file;
     if (!file) return;
-    const loaded = this.loads;
     this.run(async () => {
-      const write = await this.store[direction](file);
-      if (write.edits.length > 0 && file === this.file && !this.closed && loaded === this.loads) this.ownWrites.push({ ...write });
+      // A refused step (the note changed under it) re-reads the note here too, as a refused edit does (`writeOwn`).
+      try { await this.store[direction](file); } catch (error) { this.scheduleRefresh(); throw error; }
       await this.refresh();
     });
+  }
+
+  /**
+   * A step of the note's history, taken from this view or another map of the note (the history is shared), recorded
+   * as a write of this view's own so the re-read carries the ids over (LEV-150): the folds and the selection stay on
+   * a node whose title repeats or is empty. Recorded only where the view's record leads to its start (`recordCarried`):
+   * a view that moved on, or whose text is not the one the step was taken from, re-reads it as it would any change.
+   */
+  private recordHistory(file: TFile, write: LatestWrite): void {
+    if (write.edits.length === 0 || file !== this.file || this.closed) return;
+    this.recordCarried([write]);
   }
 
   async showSource(split: boolean): Promise<void> {
