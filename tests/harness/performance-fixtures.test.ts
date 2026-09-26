@@ -118,6 +118,12 @@ describe('performance fixture shapes', () => {
     expect(images).toContain('![説明](sample-image.svg)');
     expect(images.filter(image => image === '![[存在しない画像.png|120]]')).toHaveLength(1);
     expect(attachmentMarkdown(nodeBody(doc, stages[2]!))).toBe('![[sample-image.svg|120]]');
+    // E45 folds the first stage's chain at depth 8, then 4, then the stage: the first 段 8／段 4 lines of the note are in it.
+    const chain = [stages[0]!];
+    while (chain.at(-1)!.children.length > 0) chain.push(chain.at(-1)!.children[0]!);
+    expect(chain.length - 1).toBe(MIXED_CHAIN_LEVELS);
+    expect(source.match(/^ {16}- (\d+ 段 8)$/mu)?.[1]).toBe(chain[8]!.title);
+    expect(source.match(/^ {8}- (\d+ 段 4)$/mu)?.[1]).toBe(chain[4]!.title);
   });
 
   it('rejects unknown shapes', () => {

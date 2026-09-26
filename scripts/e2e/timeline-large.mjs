@@ -28,6 +28,7 @@ import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, PARSE, makePluginStep, makeSelect, makeAfter, makeState, refuseOpenLeaves } from './dom-helpers.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
+import { summarize } from '../perf-stats.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -107,8 +108,11 @@ const GEOMETRY = `
     forest.nodes.push(entry.rect);
     forests.set(stage, forest);
   }
-  const bandTop = Math.min(...stages.map(stage => stage.rect.t));
-  const bandBottom = Math.max(...stages.map(stage => stage.rect.b));
+  // The band the layout keeps clear (axisBand in layout.ts): the root and every stage, centred on the axis.
+  const root = [...entries.values()].find(entry => el.querySelector('[data-node-id="' + CSS.escape(entry.id) + '"]')?.classList.contains('is-root'));
+  const band = [...stages, root].filter(Boolean);
+  const bandTop = Math.min(...band.map(stage => stage.rect.t));
+  const bandBottom = Math.max(...band.map(stage => stage.rect.b));
   const sides = [];
   const last = {};
   const gaps = [];
@@ -154,10 +158,16 @@ const CONTENT = `
   const expected = doc.nodes.filter(node => !hidden(node));
   const drawn = new Map();
   let duplicates = 0;
-  for (const node of nodes()) { if (drawn.has(node.dataset.nodeId)) duplicates += 1; drawn.set(node.dataset.nodeId, label(node)); }
+  let empty = 0;
+  for (const node of nodes()) {
+    // A node in the DOM with no size is not on screen: counted as missing, and it would escape every geometry check too.
+    if (node.offsetWidth === 0 || node.offsetHeight === 0) { empty += 1; continue; }
+    if (drawn.has(node.dataset.nodeId)) duplicates += 1;
+    drawn.set(node.dataset.nodeId, label(node));
+  }
   const missing = expected.filter(node => !drawn.has(node.id)).map(node => node.title);
   const renamed = expected.filter(node => drawn.has(node.id) && drawn.get(node.id) !== node.title.trim()).map(node => node.title + ' → ' + drawn.get(node.id));
-  const content = { parsed: doc.nodes.length, expected: expected.length, drawn: drawn.size, duplicates, closed: closed.size, missing: missing.slice(0, 10), missingCount: missing.length, renamed: renamed.slice(0, 10), renamedCount: renamed.length };`;
+  const content = { empty, parsed: doc.nodes.length, expected: expected.length, drawn: drawn.size, duplicates, closed: closed.size, missing: missing.slice(0, 10), missingCount: missing.length, renamed: renamed.slice(0, 10), renamedCount: renamed.length };`;
 
 /** Every image has finished (loaded or failed), and a cheap fingerprint of every node's place, to tell a settled map. */
 const SNAPSHOT = `${VIEW}
@@ -190,24 +200,27 @@ function judge(what, state, { closed = 0 } = {}) {
   check(state.forestOverlaps === 0, `${what}: ${state.forestOverlaps} stage forests overlap (${state.forestOverlapExamples.join('; ')})`);
   check(state.acrossBand.length === 0, `${what}: forests cross the axis band (${state.acrossBand.join('; ')})`);
   check(state.shortGaps.length === 0, `${what}: same-side stems closer than ${CLEARANCE} px (${state.shortGaps.join('; ')})`);
-  check(content.missingCount === 0 && content.renamedCount === 0 && content.duplicates === 0 && content.drawn === content.expected,
-    `${what}: drawn ${content.drawn} of ${content.expected} (missing ${content.missingCount}, renamed ${content.renamedCount}, duplicated ${content.duplicates})`);
+  check(content.missingCount === 0 && content.renamedCount === 0 && content.duplicates === 0 && content.empty === 0 && content.drawn === content.expected,
+    `${what}: drawn ${content.drawn} of ${content.expected} (missing ${content.missingCount}, renamed ${content.renamedCount}, duplicated ${content.duplicates}, without size ${content.empty})`);
   check(content.closed === closed, `${what}: ${content.closed} closed branches, expected ${closed}`);
   check(JSON.stringify(state.stageOrder) === JSON.stringify(state.axisOrder), `${what}: the axis does not follow the note's stage order`);
 }
 
-/** Nearest-rank percentiles of frame intervals. */
-function frameStats(frames) {
+/** Frame intervals as the other performance records summarise them (nearest rank), with the counts over one and two frames. */
+function frameStats({ frames, longTasks }) {
   // A frame the renderer catches up on hands the same timestamp to the callback queued in it: not a frame of its own.
-  const intervals = frames.slice(1).map((time, index) => time - (frames[index] ?? time)).filter(interval => interval > 0).sort((a, b) => a - b);
-  const rank = p => intervals[Math.min(intervals.length - 1, Math.max(0, Math.ceil(p * intervals.length) - 1))];
-  const round = number => (number === undefined ? null : Math.round(number * 10) / 10);
-  return { frames: intervals.length, p50: round(rank(0.5)), p95: round(rank(0.95)), max: round(intervals.at(-1)), over17: intervals.filter(v => v > 17.2).length, over33: intervals.filter(v => v > 33.4).length };
+  const intervals = frames.slice(1).map((time, index) => time - (frames[index] ?? time)).filter(interval => interval > 0);
+  const { n, p50, p95, max } = summarize(intervals);
+  const round = number => (Number.isFinite(number) ? Math.round(number * 10) / 10 : null);
+  return { frames: n, p50: round(p50), p95: round(p95), max: round(max), over17: intervals.filter(v => v > 17.2).length, over33: intervals.filter(v => v > 33.4).length, longTasks };
 }
 
 /** Frame timestamps while `drive` runs. */
 async function recordFrames(drive) {
-  await evaluate(`window.__mappyE2EFrames = []; window.__mappyE2EFramesOn = true;
+  // Long tasks tell script from drawing: a slow frame with none is the renderer's (paint, raster, compositing), not the map's code.
+  await evaluate(`window.__mappyE2EFrames = []; window.__mappyE2EFramesOn = true; window.__mappyE2ELong = [];
+    window.__mappyE2ELongObserver = new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__mappyE2ELong.push(entry.duration); });
+    window.__mappyE2ELongObserver.observe({ type: 'longtask' });
     const loop = time => { if (!window.__mappyE2EFramesOn) return; window.__mappyE2EFrames.push(time); requestAnimationFrame(loop); };
     requestAnimationFrame(loop); return true;`);
   let frames;
@@ -215,7 +228,9 @@ async function recordFrames(drive) {
     await drive();
     await wait(200);
   } finally {
-    frames = await evaluate(`window.__mappyE2EFramesOn = false; const frames = window.__mappyE2EFrames; delete window.__mappyE2EFrames; return frames;`);
+    frames = await evaluate(`window.__mappyE2EFramesOn = false; window.__mappyE2ELongObserver.disconnect();
+      const result = { frames: window.__mappyE2EFrames, longTasks: window.__mappyE2ELong.length };
+      delete window.__mappyE2EFrames; delete window.__mappyE2ELong; delete window.__mappyE2ELongObserver; return result;`);
   }
   return frameStats(frames);
 }
@@ -347,15 +362,18 @@ async function runCount(count) {
       if (item.view?.file?.path === path || state.state?.file === path) item.detach();
     });
     const file = app.vault.getAbstractFileByPath(path);
-    const remove = ${JSON.stringify(!flag('--keep'))};
+    // Only a note this run created: one already in the vault (kept by --keep, or edited by hand) was only overwritten.
+    const remove = ${JSON.stringify(!flag('--keep'))} && !(window.__mappyE2EBefore?.has(path) ?? true);
     if (file && remove) await app.vault.delete(file, true);
     delete window.__mappyE2E;
+    delete window.__mappyE2EBefore;
     return { removed: file && remove ? path : null };`));
 
   try {
     required(record, name('open'), await step(name('open'), async () => {
       const opened = await evaluate(`
         ${refuseOpenLeaves([note])}
+        window.__mappyE2EBefore = new Set(app.vault.getFiles().map(file => file.path));
         const existing = app.vault.getAbstractFileByPath(${JSON.stringify(note)});
         if (existing) await app.vault.modify(existing, ${JSON.stringify(SOURCE)});
         else await app.vault.create(${JSON.stringify(note)}, ${JSON.stringify(SOURCE)});
@@ -374,8 +392,10 @@ async function runCount(count) {
         return { started, setViewStateMs: Math.round(stated - started), drawnMs: drawn === null ? null : Math.round(drawn - started) };`);
       if (opened.drawnMs === null) throw new Error(`the map did not draw ${count} nodes within 45 s`);
       const settled = await settle(60000);
-      // The fixture leaves exactly one image missing (`存在しない画像.png`), which Obsidian may draw as a broken image or not at all.
-      if (settled.broken > 1 || settled.images - settled.broken === 0) throw new Error(`${settled.broken} of ${settled.images} images did not load: is Fixtures/sample-image.svg in the vault?`);
+      // Every embed of sample-image.svg (both forms) is an <img> that loaded. The missing `存在しない画像.png` is not an <img> at all:
+      // the node keeps only the images and links of the attachment render (node-renderer.ts), and Obsidian draws it as an empty span.
+      const expected = (SOURCE.match(/!\[\[sample-image\.svg|\]\(sample-image\.svg\)/gu) ?? []).length;
+      if (settled.broken > 0 || settled.images !== expected) throw new Error(`${settled.images - settled.broken} of ${expected} images loaded (${settled.broken} broken): is Fixtures/sample-image.svg in the vault?`);
       return { ...opened, settledMs: Math.round(settled.settledAt - opened.started), images: settled.images, broken: settled.broken, started: undefined };
     }));
 

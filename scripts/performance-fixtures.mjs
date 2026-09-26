@@ -134,14 +134,14 @@ export const MIXED_BARE_STAGE_EVERY = 9;
  * about one first-level stage per 40 nodes, cycling through a deep single chain (MIXED_CHAIN_LEVELS levels),
  * long Japanese titles with an image every third node, many flat siblings, and a mixed branch of long and short
  * titles with images (Vault, Markdown-style and one missing) partway down. Every MIXED_BARE_STAGE_EVERY-th stage
- * is bare, stage titles alternate short and long, and the third stage carries an image of its own, which widens
- * the band every forest starts from. `mappy: true` with no layout key: the case chooses the layout it opens with.
+ * is bare, every third stage title (the 2nd, 5th, 8th…) is a long sentence, and the third stage carries an image of
+ * its own, which widens the band every forest starts from. `mappy: true` with no layout key: the case chooses the layout it opens with.
  * Parses to exactly `nodeCount` nodes; every title starts with its own number, so no two are the same.
  */
 export function makeMixedFixture(nodeCount) {
   const stageCount = Math.max(6, Math.round(nodeCount / 40));
   const items = nodeCount - 1 - stageCount;
-  if (items < stageCount) throw new Error(`A mixed fixture needs more than ${stageCount * 2 + 1} nodes, not ${nodeCount}`);
+  if (items < stageCount) throw new Error(`A mixed fixture needs at least ${stageCount * 2 + 1} nodes, not ${nodeCount}`);
   const bare = index => index % MIXED_BARE_STAGE_EVERY === MIXED_BARE_STAGE_EVERY - 4;
   const filled = Array.from({ length: stageCount }, (_, index) => index).filter(index => !bare(index));
   const budgets = new Array(stageCount).fill(0);
