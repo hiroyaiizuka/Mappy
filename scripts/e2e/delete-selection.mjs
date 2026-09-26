@@ -1,8 +1,9 @@
 /**
  * E02 の削除後の選択（LEV-204）: Delete／Backspace のあと、選択は 1 つ上の兄弟 → なければ 1 つ下の兄弟 → なければ
  * 親へ移る（原文順。左右バランスでも画面の上下ではない）。行列は本人の操作（Delete・Backspace を実キーで）× 対象の形
- * （末尾・中間・先頭・一人っ子の項目、フリートピックの中の項目、トピックのルート、呼び出し項目 `![[…]]`、見出し形式
- * の見出し）× 4 レイアウト。各削除のあと ⌘Z で消えたノードが戻り原文がバイト一致すること、選択が削除のときに移した
+ * （末尾・中間・先頭・一人っ子の項目、呼び出し項目 `![[…]]`、フリートピックの中の項目、隣にトピックがあるトピックの
+ * ルートと一つだけのトピックのルート、本体のルート、H2 のない本体の項目とその隣のトピック、見出し形式の見出しと H1 の
+ * 区画）× 4 レイアウト。各削除のあと ⌘Z で消えたノードが戻り原文がバイト一致すること、選択が削除のときに移した
  * ノードに残ることも見る。最後に、選択先が画面の外にあるとき削除で表示の中へ入ることを見る。
  *
  * 選択は `src/core/commands.ts` の `selectionAfterDelete` が決め（見出し形式・リスト形式の両方の `delete` が使う）、
@@ -19,11 +20,10 @@ const { flag, value } = parseArgs();
 
 const NOTE = 'Fixtures/E2E-delete-selection.md';
 const CALLED = 'Fixtures/E2E-delete-selection-called.md';
-const HEADINGS = 'Fixtures/E2E-delete-selection-headings.md';
 const CALLED_SOURCE = ['---', 'mappy: true', '---', '## 呼び出し先', '- 中身', ''].join('\n');
+const note = (...lines) => ['---', 'mappy: true', '---', ...lines, ''].join('\n');
 // The report (LEV-204): the parent had three children and the last one, 「aaaa」, was deleted.
-const SOURCE = [
-  '---', 'mappy: true', '---',
+const SOURCE = note(
   '## 注意残余の対策',
   '- 作業途中で、ひと言メモを残す',
   '- aaaaaaaa',
@@ -31,25 +31,52 @@ const SOURCE = [
   '- 次の枝',
   '  - 一人っ子',
   '- ![[E2E-delete-selection-called]]',
-  '', '## トピック', '- t1', '- t2', '',
-].join('\n');
-const HEADINGS_SOURCE = ['---', 'mappy: true', '---', '# 見出し', '', '## A', '', '## B', '', '## C', ''].join('\n');
-const LAYOUTS = ['mindmap', 'timeline', 'hierarchy', 'balanced'];
-// [what is deleted, what must be selected after]. The key alternates by row and by layout (`keyFor`), so over the
-// four layouts every shape is pressed with Delete twice and with Backspace twice.
-const ROWS = [
-  ['aaaa', 'aaaaaaaa'],
-  ['aaaaaaaa', '作業途中で、ひと言メモを残す'],
-  ['作業途中で、ひと言メモを残す', 'aaaaaaaa'],
-  ['一人っ子', '次の枝'],
-  // The calling item shows the called map's root title (§5 M12); the item itself is deletable, its branch goes with it.
-  ['呼び出し先', '次の枝'],
-  ['t2', 't1'],
-  ['t1', 't2'],
-  // The only topic: no topic beside it, so the body root, which stands for the topics' parent on the map.
-  ['トピック', '注意残余の対策'],
+  '', '## トピック', '- t1', '- t2',
+  '', '## トピック2',
+);
+/**
+ * Each note × each layout, one row at a time: [what is deleted, what must be selected after]. The key alternates
+ * by row and by layout (`keyFor`), so over the four layouts every shape is pressed with Delete twice and with
+ * Backspace twice. Every row is undone before the next, so each starts from the note as written here.
+ */
+const NOTES = [
+  {
+    name: 'report', path: NOTE, source: SOURCE, rows: [
+      ['aaaa', 'aaaaaaaa'],
+      ['aaaaaaaa', '作業途中で、ひと言メモを残す'],
+      ['作業途中で、ひと言メモを残す', 'aaaaaaaa'],
+      ['一人っ子', '次の枝'],
+      // The calling item shows the called map's root title (§5 M12); the item itself is deletable, its branch goes with it.
+      ['呼び出し先', '次の枝'],
+      // Items inside a free topic, then the topic roots: siblings of each other, never the body between them.
+      ['t2', 't1'],
+      ['t1', 't2'],
+      ['トピック2', 'トピック'],
+      ['トピック', 'トピック2'],
+      // The body root goes: the first topic below takes its place.
+      ['注意残余の対策', 'トピック'],
+    ],
+  },
+  {
+    // The only topic: no topic beside it, so the body root, which stands for the topics' parent on the map.
+    name: 'only-topic', path: 'Fixtures/E2E-delete-selection-topic.md',
+    source: note('## 本体', '- b', '', '## 一つだけのトピック', '- t'),
+    rows: [['一つだけのトピック', '本体']],
+  },
+  {
+    // A body without an H2: its items sit on the virtual root, which is never selected, beside the topic.
+    name: 'virtual-body', path: 'Fixtures/E2E-delete-selection-virtual.md',
+    source: note('- a', '- b', '', '## T', '- t'),
+    rows: [['b', 'a'], ['a', 'b'], ['T', 'b']],
+  },
+  {
+    // The headings format, two H1 sections: the second is a free topic of the first.
+    name: 'headings', path: 'Fixtures/E2E-delete-selection-headings.md',
+    source: note('# 見出し', '', '## A', '', '## B', '', '## C', '', '# 二つ目'),
+    rows: [['C', 'B'], ['A', 'B'], ['B', 'A'], ['二つ目', '見出し'], ['見出し', '二つ目']],
+  },
 ];
-const HEADING_ROWS = [['C', 'B'], ['A', 'B'], ['B', 'A']];
+const LAYOUTS = ['mindmap', 'timeline', 'hierarchy', 'balanced'];
 const keyFor = (row, pass) => (row + pass) % 2 === 0 ? 'Delete' : 'Backspace';
 
 const record = createRecord(VAULT, NOTE);
@@ -123,14 +150,17 @@ try {
     else await app.vault.create(${JSON.stringify(CALLED)}, ${JSON.stringify(CALLED_SOURCE)});
     return true;`));
 
-  for (const [pass, layout] of LAYOUTS.entries()) {
-    const opened = required(record, `open-${layout}`, await step(`open-${layout}`, makeOpenStep(evaluate, { note: NOTE, source: SOURCE, layout })));
-    await step(`rows-${layout}`, async () => {
-      const results = [];
-      for (const [index, row] of ROWS.entries()) results.push(await deleteRow(opened.source, row, keyFor(index, pass), layout));
-      return results;
-    });
-    await step(`close-${layout}`, closeNote);
+  for (const target of NOTES) {
+    for (const [pass, layout] of LAYOUTS.entries()) {
+      const where = `${target.name}-${layout}`;
+      const opened = required(record, `open-${where}`, await step(`open-${where}`, makeOpenStep(evaluate, { note: target.path, source: target.source, layout })));
+      await step(`rows-${where}`, async () => {
+        const results = [];
+        for (const [index, row] of target.rows.entries()) results.push(await deleteRow(opened.source, row, keyFor(index, pass), where));
+        return results;
+      });
+      await step(`close-${where}`, closeNote);
+    }
   }
 
   // Off-screen: pan so the sibling above leaves the canvas, then delete; the selection must be drawn inside it.
@@ -160,17 +190,10 @@ try {
   });
   await step('close-offscreen', closeNote);
 
-  const headings = required(record, 'open-headings', await step('open-headings', makeOpenStep(evaluate, { note: HEADINGS, source: HEADINGS_SOURCE })));
-  await step('rows-headings', async () => {
-    const results = [];
-    for (const [index, row] of HEADING_ROWS.entries()) results.push(await deleteRow(headings.source, row, keyFor(index, 0), 'headings'));
-    return results;
-  });
-
   if (!flag('--keep')) {
     await step('clean', () => evaluate(`
       window.__mappyE2E?.detach();
-      for (const path of ${JSON.stringify([NOTE, CALLED, HEADINGS])}) {
+      for (const path of ${JSON.stringify([CALLED, ...NOTES.map(target => target.path)])}) {
         const file = app.vault.getAbstractFileByPath(path);
         if (file) await app.vault.delete(file, true);
       }

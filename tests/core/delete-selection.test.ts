@@ -124,5 +124,18 @@ describe('selection after delete (LEV-204)', () => {
       expect(selectedAfterDelete('# Two\n\n# One', 'One', 'headings')).toBe('Two');
       expect(selectedAfterDelete('# Only\n', 'Only', 'headings')).toBeNull();
     });
+
+    // The offset is moved, not looked up again: these are the shapes where the removal reaches back over the blank
+    // lines before the node or runs to the end of the file, next to a title that starts right at a line's end.
+    it('finds the node at the end of a file, with CRLF, and beside an empty title', () => {
+      expect(selectedAfterDelete('# T\n\n## A\n\n## B', 'B', 'headings')).toBe('A');
+      expect(selectedAfterDelete('# T\r\n\r\n## A\r\ntext\r\n\r\n## B\r\n\r\n## C\r\n', 'B', 'headings')).toBe('A');
+      expect(selectedAfterDelete('# T\r\n\r\n## A\r\n\r\n## B\r\n', 'A', 'headings')).toBe('B');
+      expect(selectedAfterDelete('# T\n## \n## B', 'B', 'headings')).toBe('');
+      expect(selectedAfterDelete('# T\n## A\n## ', '', 'headings')).toBe('A');
+      expect(selectedAfterDelete('---\nmappy: true\n---\n# T\n\n## A\n\n## B\n', 'A', 'headings')).toBe('B');
+      expect(selectedAfterDelete('## R\n- \n- X', 'X', 'list')).toBe('');
+      expect(selectedAfterDelete('## R\n-\n- X\n', 'X', 'list')).toBe('');
+    });
   });
 });

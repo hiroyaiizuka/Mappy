@@ -1,6 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
-import { endsWithBlankLine, findNode, getNode, nodeAt, paragraphGap } from './text-edits';
+import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap } from './text-edits';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -71,14 +71,16 @@ function deletionTarget(doc: MindDocument, node: MindNode): MindNode | undefined
 }
 
 /**
- * Where `deletionTarget` stands in the text the removal `edits` leave, found by id in that parse (the edits carry
- * every standing node's id), so a caller reads the offset it matches on (`titleFrom`, or `from` for `validate`).
+ * Where `deletionTarget` starts (`from`) and where its title starts (`titleFrom`) in the text the removal `edits`
+ * leave, without parsing it again: the target stands wholly before the removed range (the sibling above, the
+ * parent: the removal only ever reaches back over blank lines after its line) or after it (the sibling below), so
+ * `offsetAfter` moves its start and its heading line comes along unchanged. The list format looks the node up by
+ * `from` in the parse `validate` makes anyway; the headings format has the same answer pinned by the core tests.
  */
-export function selectionAfterDelete(doc: MindDocument, node: MindNode, edits: TextEdit[]): MindNode | undefined {
+export function selectionAfterDelete(doc: MindDocument, node: MindNode, edits: readonly TextEdit[]): { from: number; titleFrom: number } | undefined {
   const target = deletionTarget(doc, node);
-  if (!target) return undefined;
-  const after = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, doc, doc.format, edits);
-  return after.nodes.find((candidate) => candidate.id === target.id);
+  const from = target ? offsetAfter(edits, target.from) : undefined;
+  return target && from !== undefined ? { from, titleFrom: from + target.titleFrom - target.from } : undefined;
 }
 
 function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: number | null, count: number): EditPlan {
