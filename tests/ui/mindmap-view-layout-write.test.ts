@@ -240,6 +240,58 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     expect(mounted.source()).toBe(external);
   });
 
+  it('an image pasted right after the button is linked, not refused as someone else\'s change', async () => {
+    const mounted = await mount();
+    selectNode(mounted, '子1');
+    clickLayout(mounted, 'timeline');
+    const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+    mounted.canvas.dispatchEvent(paste);
+    await settled(mounted, source => asks('timeline')(source) && source.includes('shot.png'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Pins the outcome, not the guard in `overLayoutWrites` that drops a round trip: a body edit carried over the line
+  // inserted and then removed lands where it was planned either way, so this row also passes without that guard.
+  it('a button pressed and then taken back (to the text before it) carries nothing: an edit right after is saved', async () => {
+    const mounted = await mount();
+    selectNode(mounted, '子1');
+    clickLayout(mounted, 'timeline');
+    clickLayout(mounted, 'mindmap');
+    mounted.key(mounted.canvas, 'Delete');
+    await settled(mounted, source => !source.includes('子1'));
+    expect(refusals()).toEqual([]);
+    expect(mounted.source()).toBe(SOURCE.replace('  - 子1\n', ''));
+  });
+
+  it('a spent button write is not carried again once the note is back at the text before it (an editor Undo)', async () => {
+    // The button and an edit right after it: the edit is carried over the button's write. The note then goes back
+    // to exactly the text before both. An edit there is planned on that text and applies to it as it stands.
+    const mounted = await mount();
+    selectNode(mounted, '子1');
+    clickLayout(mounted, 'timeline');
+    mounted.key(mounted.canvas, 'Delete');
+    await settled(mounted, source => asks('timeline')(source) && !source.includes('子1'));
+    mounted.app.put(PATH, SOURCE);
+    await settled(mounted, source => source === SOURCE);
+    selectNode(mounted, '親');
+    mounted.key(mounted.canvas, 'Tab');
+    await settled(mounted, source => source !== SOURCE);
+    expect(refusals()).toEqual([]);
+  });
+
+  it('on a note with no frontmatter, an edit in the body right after the button follows the header it created', async () => {
+    const bare = SOURCE.split('\n').slice(HEADER.length).join('\n');
+    const mounted = await mount(bare);
+    selectNode(mounted, '子1');
+    clickLayout(mounted, 'timeline');
+    mounted.key(mounted.canvas, 'Delete');
+    await settled(mounted, source => asks('timeline')(source) && !source.includes('子1'));
+    expect(refusals()).toEqual([]);
+    expect(mounted.source()).toBe(`---\nmappy-layout: timeline\n---\n${bare.replace('  - 子1\n', '')}`);
+  });
+
   it('on a note with no frontmatter, a drop after the button is refused rather than writing a second header', async () => {
     // Both writes would create the header: carried after the button's, the drop's would land in the body.
     const mounted = await mount(SOURCE.split('\n').slice(HEADER.length).join('\n'));

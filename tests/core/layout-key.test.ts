@@ -23,11 +23,15 @@ describe('planMapLayout (a layout button, LEV-196)', () => {
     expect(planMapLayout('---\nmappy: true\n---\n', 'mindmap')).toEqual([]);
   });
 
-  it('makes the note a map as `writeMapLayout` does: a missing or non-true `mappy` becomes `mappy: true`', () => {
-    expect(write('---\ntags: [a]\n---\n# Map\n', 'timeline')).toBe('---\ntags: [a]\nmappy: true\nmappy-layout: timeline\n---\n# Map\n');
-    expect(write('---\nmappy: "true"\n---\n# Map\n', 'mindmap')).toBe('---\nmappy: true\n---\n# Map\n');
-    expect(write('# Map\n', 'hierarchy')).toBe('---\nmappy: true\nmappy-layout: hierarchy\n---\n# Map\n');
-    expect(write('﻿# Map\n', 'mindmap')).toBe('﻿---\nmappy: true\n---\n# Map\n');
+  it('leaves `mappy` alone: a button records a preference and never makes a note a map, nor makes it one again', () => {
+    expect(write('---\ntags: [a]\n---\n# Map\n', 'timeline')).toBe('---\ntags: [a]\nmappy-layout: timeline\n---\n# Map\n');
+    expect(write('---\nmappy: "true"\nmappy-layout: timeline\n---\n# Map\n', 'mindmap')).toBe('---\nmappy: "true"\n---\n# Map\n');
+  });
+
+  it('creates the header only for a layout that has a key', () => {
+    expect(write('# Map\n', 'hierarchy')).toBe('---\nmappy-layout: hierarchy\n---\n# Map\n');
+    expect(write('﻿# Map\n', 'balanced')).toBe('﻿---\nmappy-layout: balanced\n---\n# Map\n');
+    expect(planMapLayout('# Map\n', 'mindmap')).toEqual([]);
   });
 
   it('keeps the note\'s line endings', () => {

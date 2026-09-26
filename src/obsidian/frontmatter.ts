@@ -1,18 +1,12 @@
 import type { App, TFile } from 'obsidian';
 import { TOPICS_KEY } from '../core/topics';
-import { isLayoutMode, layoutFromValue, type LayoutMode } from '../core/layout-mode';
+import { layoutFromValue, layoutKeyValue, parseLayout, type LayoutMode } from '../core/layout-mode';
 import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from '../core/map-keys';
 
 /** The keys live in core (`map-keys.ts`) so the text reader of embeds decides the same way. */
 export { MAPPY_KEY, LAYOUT_KEY };
 /** Free-topic positions by layout (M7). The topics' text stays in the note body, so removing the key loses no words. */
 export { TOPICS_KEY };
-
-/** A frontmatter value naming a layout, tolerant of case and surrounding space; anything else is null. */
-function parseLayout(value: unknown): LayoutMode | null {
-  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : value;
-  return isLayoutMode(normalized) ? normalized : null;
-}
 
 /** Layout never determines whether a file is a map. Unknown values use the safe default. */
 export const layoutFromFrontmatter = layoutFromValue;
@@ -45,8 +39,8 @@ export function writeMapLayout(app: App, file: TFile, layout: LayoutMode | null)
   return app.fileManager.processFrontMatter(file, (properties: Record<string, unknown>) => {
     if (layout) {
       properties[MAPPY_KEY] = true;
-      // The regular map is the default, so only the other layouts are written down.
-      if (layout !== 'mindmap') properties[LAYOUT_KEY] = layout;
+      const value = layoutKeyValue(layout);
+      if (value) properties[LAYOUT_KEY] = value;
       else delete properties[LAYOUT_KEY];
     } else {
       delete properties[MAPPY_KEY];

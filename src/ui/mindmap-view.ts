@@ -70,7 +70,14 @@ interface DraftBase { nodeId: string; value: string }
  * ids are as much of a guess as E05 says they are. `layout` marks the layout buttons' writes (LEV-196), the
  * only ones an edit planned before them is carried over (`overLayoutWrites`).
  */
-interface OwnWrite { before: string; after: string; edits: readonly TextEdit[]; layout?: true }
+interface OwnWrite {
+  readonly before: string;
+  readonly after: string;
+  readonly edits: readonly TextEdit[];
+  readonly layout?: true;
+  /** `after` parsed from a document with these edits, kept so a replay and a carry do not parse it again (`parseOwn`). */
+  parsed?: { from: MindDocument; basename: string; document: MindDocument };
+}
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
 interface SnapIndex {
@@ -265,9 +272,9 @@ export class MindmapView extends FileView {
   /** The writes this view made since its last re-parse, in order, for the re-parse that reads them back; see `OwnWrite`. */
   private ownWrites: OwnWrite[] = [];
   /**
-   * The layout buttons' writes an edit may still have been planned before (LEV-196): from the text the view
-   * last parsed on, kept while a save is under way (`commit` may hold a text from before them), and pruned
-   * by the re-parse to those that lead on from the text it adopted. See `overLayoutWrites`.
+   * The layout buttons' writes an edit may still have been planned before (LEV-196): those that lead on from
+   * the text the view shows (`pruneLayoutWrites`, after every re-read while no save is under way — a save may
+   * hold a text from before them — and after every save). See `overLayoutWrites`.
    */
   private layoutWrites: OwnWrite[] = [];
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
@@ -943,16 +950,44 @@ export class MindmapView extends FileView {
    * second would land in the body.
    */
   private overLayoutWrites(source: string, edits: TextEdit[], planned: MindDocument | undefined, basename: string): { source: string; edits: TextEdit[]; planned: MindDocument | undefined } {
+    const original = { source, edits, planned };
     for (const own of this.layoutWrites) {
       if (own.before !== source) continue;
-      if (!frontmatterLayout(own.before)) break;
+      // Only an edit at the very start competes with a header the button created; one in the body follows it.
+      if (!frontmatterLayout(own.before) && edits.some(edit => edit.from <= (own.edits[0]?.from ?? 0))) break;
       const rebased = rebaseEdits(edits, own.edits);
       if (!rebased) break;
-      if (planned?.source === source) planned = parseMarkdown(own.after, basename, planned, undefined, own.edits);
+      if (planned?.source === source) planned = this.parseOwn(own, planned, basename);
       source = own.after;
       edits = rebased;
+      // Back at the text it was planned on (a button and then the one before it): the edit is the one planned.
+      if (source === original.source) ({ source, edits, planned } = original);
     }
     return { source, edits, planned };
+  }
+
+  /** Keeps the layout writes that lead on from `from`, in order; the rest no edit can still be planned before. */
+  private pruneLayoutWrites(from: string): void {
+    let at = from;
+    this.layoutWrites = this.layoutWrites.filter(own => own.before === at && (at = own.after, true));
+  }
+
+  /** Whether the view's own layout writes lead from `from` to `text` (`from` itself included). */
+  private reachedByLayoutWrites(from: string, text: string): boolean {
+    let at = from;
+    for (const own of this.layoutWrites) {
+      if (at === text) return true;
+      if (own.before === at) at = own.after;
+    }
+    return at === text;
+  }
+
+  /** `own.after` parsed from `from` with its edits, once per base document. */
+  private parseOwn(own: OwnWrite, from: MindDocument, basename: string): MindDocument {
+    if (own.parsed?.from !== from || own.parsed.basename !== basename) {
+      own.parsed = { from, basename, document: parseMarkdown(own.after, basename, from, undefined, own.edits) };
+    }
+    return own.parsed.document;
   }
 
   /**
@@ -1075,13 +1110,11 @@ export class MindmapView extends FileView {
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one.
     this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
+    // Only an edit planned on the text now shown, or on one a write since led from, is still to come. Also when
+    // the text is the one shown already: the save's own re-read, which skips this, may have adopted it.
+    if (!this.saving) this.pruneLayoutWrites(document.source);
     if (changed) {
       this.document = document;
-      if (!this.saving) {
-        // Only an edit planned on the text now shown, or on one a write since led from it, is still to come.
-        let from = document.source;
-        this.layoutWrites = this.layoutWrites.filter(own => own.before === from && (from = own.after, true));
-      }
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
       if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
@@ -1102,7 +1135,7 @@ export class MindmapView extends FileView {
     let document = this.document;
     for (const [index, own] of this.ownWrites.entries()) {
       if (!document || document.source !== own.before) return undefined;
-      document = parseMarkdown(own.after, basename, document, undefined, own.edits);
+      document = this.parseOwn(own, document, basename);
       if (own.after === source) return { document, used: index + 1 };
     }
     return undefined;
@@ -1785,6 +1818,8 @@ export class MindmapView extends FileView {
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
       this.ownWrites.push({ before: source, after: written, edits });
+      // Every edit still to come is planned after this one (a second is refused while this one saves).
+      this.pruneLayoutWrites(written);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external
@@ -1973,7 +2008,10 @@ export class MindmapView extends FileView {
     if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
     if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
     const binary = await image.arrayBuffer();
-    if (await this.store.read(file) !== document.source) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
+    // The note as the map shows it, or as the view's own layout buttons have since written it (LEV-196): `commit`
+    // carries the link over those.
+    const current = await this.store.read(file);
+    if (!this.reachedByLayoutWrites(document.source, current)) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
     const name = image.name.replace(/[\\/:*?"<>|]/gu, "-") || "image.png";
     const path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
     const attachment = await this.app.vault.createBinary(path, binary);

@@ -27,7 +27,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeOpenStep, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makePaste, refuseOpenLeaves } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -50,6 +50,7 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
+const paste = makePaste(evaluate);
 
 /** The shapes: the name the node is found by on screen (an untitled node is named 空のノード) and its index among equals. */
 const SHAPES = [
@@ -76,12 +77,16 @@ const clickLayout = async index => {
   }
 };
 
-/** Waits until the map has re-read what is on disk, then a little more for a late Notice or write, and reads it all. */
+/**
+ * Waits until the map has re-read what is on disk, then a little more for a late Notice or write, and reads it all.
+ * A map that never catches up fails the row: every check after it would read a map from before.
+ */
 const settle = async () => {
   const started = Date.now();
   for (;;) {
     const current = await evaluate(`${VIEW} const text = await source(); return view.document?.source === text;`);
-    if (current || Date.now() - started > 3000) break;
+    if (current) break;
+    if (Date.now() - started > 3000) throw new Error('the map did not re-read the note within 3 s');
     await wait(100);
   }
   await wait(600);
@@ -96,6 +101,8 @@ const expectLayout = (result, mode, row) => {
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
+  // What the vault held before the rows: `clean` removes the images the paste rows add, and nothing else.
+  await evaluate(`window.__mappyLayoutBefore = new Set(app.vault.getFiles().map(file => file.path)); return true;`);
 
   // 1. draft × shape: the blur of the click on the button saves the draft while the button writes the layout.
   for (const shape of SHAPES) {
@@ -143,6 +150,25 @@ try {
     }
   }
 
+  // 2b. an image pasted onto the selected node right after the button (the view's own check before the attachment
+  // used to refuse the button's write as someone else's change), at machine speed like the keys.
+  for (const shape of SHAPES) {
+    await step(`paste-${shape.name}`, async () => {
+      await reopen();
+      await select(shape.title, shape.index);
+      await clickLayout(1);
+      await evaluate(`${VIEW} el.querySelector('.mappy-canvas').focus({ preventScroll: true }); return true;`);
+      await paste(`layout-${SHAPES.indexOf(shape)}.png`);
+      const started = Date.now();
+      while (!(await evaluate(`${VIEW} return (await source()).includes('layout-${SHAPES.indexOf(shape)}.png');`)) && Date.now() - started < 3000) await wait(100);
+      const result = await settle();
+      check(result.messages.length === 0, `paste-${shape.name}: showed ${JSON.stringify(result.messages)}`);
+      check(result.source.includes(`layout-${SHAPES.indexOf(shape)}.png`), `paste-${shape.name}: the image is not linked in the note`);
+      expectLayout(result, 'timeline', `paste-${shape.name}`);
+      return result;
+    });
+  }
+
   // 3. fold × shape (LEV-150): the second of two 同名, or of two untitled nodes, folded and selected, then a button.
   // The first of each would do too, but not one alone: a title only one node has is carried by the text either way.
   for (const shape of [{ name: '同名', title: '同名', index: 1 }, { name: '空題名', title: '空のノード', index: 1 }]) {
@@ -172,8 +198,9 @@ try {
       const result = await settle();
       const after = await read();
       check(result.messages.length === 0, `fold-${shape.name}: showed ${JSON.stringify(result.messages)}`);
+      check(after.id !== null, `fold-${shape.name}: the node is gone from the map's parse (${JSON.stringify(after)})`);
       check(after.collapsed.includes(after.id ?? ''), `fold-${shape.name}: the fold was lost (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
-      check(after.selected === after.id, `fold-${shape.name}: the selection moved (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
+      check(after.id !== null && after.selected === after.id, `fold-${shape.name}: the selection moved (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
       // The nodes on screen, not their order (see `read`).
       check(JSON.stringify(after.labels) === JSON.stringify(before.labels), `fold-${shape.name}: the map shows other nodes: ${JSON.stringify(after.labels)}`);
       expectLayout(result, 'balanced', `fold-${shape.name}`);
@@ -187,9 +214,12 @@ try {
       leaf.detach();
       ${refuseOpenLeaves([NOTE])}
       if (file) await app.vault.delete(file, true);
+      const added = app.vault.getFiles().filter(item => !window.__mappyLayoutBefore.has(item.path));
+      for (const item of added) await app.vault.delete(item, true);
       delete window.__mappyE2E;
       delete window.__mappyE2EBefore;
-      return { removed: file?.path ?? null };`));
+      delete window.__mappyLayoutBefore;
+      return { removed: [file?.path ?? null, ...added.map(item => item.path)] };`));
   }
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
