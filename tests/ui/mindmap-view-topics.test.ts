@@ -1790,8 +1790,8 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
    * A topic carried across a layout switch by button and dropped far to the right (so the drop widens the map and a
    * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, and
    * the modify watcher of this very write can schedule a newer one after the read started, and that read then gives
-   * up. Until the watcher's re-read draws, the note shown is the one from before the drop (since LEV-197 with the
-   * dropped trees held where they were dropped), and the held fit waits for that re-read.
+   * up. Until LEV-219 the note shown was then the one from before the drop until the watcher's re-read drew (since
+   * LEV-219 the save shows the text it wrote at once), and the held fit waits for that re-read.
    * `frameAfterSwitch` lets a frame run between the switch and the drop; `watcher` stands in for the watcher's read.
    */
   const dropSuperseded = async (mounted: Mounted, options: { frameAfterSwitch: boolean; watcher?: () => Promise<string> }) => {
@@ -2112,6 +2112,9 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
   // overrides at once, so every frame until the watcher's re-read drew (its 45 ms debounce and its read) laid out the
   // note from before the drop: the released tree jumped back to where it was pressed, then to where it was dropped.
   // The matrix is the tree dropped (a topic, the body) × whether the layout was switched mid-drag (LEV-182).
+  // LEV-197 held the dropped positions in the view until a re-read published (`settling`); LEV-219 replaced that hold:
+  // every write of the view's own shows the text it wrote as soon as it lands (`showOwnWrite`). These rows pin the
+  // same frames, and fail with that call taken out of `writeOwn`.
   const SOURCE = `---\nmappy: true\nmappy-topics:\n  資料: { mindmap: [40, 200], balanced: [40, 200] }\n  補足: { mindmap: [40, 360], balanced: [40, 360] }\n---\n${THREE_SECTIONS}`;
   type Point = { x: number; y: number };
   type Watched = { released: Map<string, Point>; frames: Map<string, Point>[]; read: { saving: boolean; superseded: boolean } | null };
@@ -2195,8 +2198,8 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
   }
 
   it('a note put back while the save\'s re-read reads is shown put back, the dropped topic with it', async () => {
-    // Passes before the fix too (the dropped topic went back at once then): it pins that the hold of the dropped trees
-    // ends with any read that publishes, here one of a note put back by someone else, not only with the written text.
+    // Passes before LEV-197 too (the dropped topic went back at once then): it pins that a note put back by someone else
+    // while the save's re-read reads is what the map ends up showing, not the text the drop wrote.
     const mounted = await mount(SOURCE, 'mindmap');
     const { view, store, app } = mounted;
     const state = view as unknown as Internals;
@@ -2252,9 +2255,9 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     });
   };
 
-  it('a re-read begun before the save, publishing while the save writes, does not end the hold of the dropped topic', async () => {
+  it('a re-read begun before the save, publishing while the save writes, does not put the dropped topic back', async () => {
     // It read the note from before the drop (the watcher of an earlier change, say), so what it shows is no newer
-    // than what the hold stands in for.
+    // than the drop, which the save shows once it lands.
     const mounted = await mount(SOURCE, 'mindmap');
     const { view, store } = mounted;
     const dragged = mounted.topic('資料');
@@ -2289,7 +2292,7 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     expect(placed(mounted, dragged.id)).toEqual(released);
   });
 
-  it('a layout switched while the drop saves shows the new layout\'s own positions, not the drop held over them', async () => {
+  it('a layout switched while the drop saves shows the new layout\'s own positions, not the drop\'s', async () => {
     const mounted = await mount(SOURCE, 'mindmap');
     const { view, store } = mounted;
     const dragged = mounted.topic('資料');
@@ -2313,7 +2316,7 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     expect(placed(mounted, dragged.id)).toEqual(shown);
   });
 
-  it('⌘Z made while the dropped topic is held ends the hold, even when no re-read gets to publish', async () => {
+  it('⌘Z made after the drop shows the note it put back, even when no re-read gets to publish', async () => {
     const mounted = await mount(SOURCE, 'mindmap');
     const { view, store } = mounted;
     const dragged = mounted.topic('資料');
