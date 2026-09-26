@@ -24,7 +24,9 @@
  * the canvas stops before the key, since a chord the page does not take reaches the macOS menu (docs/harness.md).
  *
  * Usage (see docs/harness.md 実機検証 for the Obsidian instance):
- *   npm run harness:e2e:undo-ids -- [--reload] [--json <out.json>] [--keep]
+ *   npm run harness:e2e:undo-ids -- [--reload] [--json <out.json>] [--keep] [--only <row name prefix>]
+ * A split above and below (not side by side): side by side, the first map's nodes stay where the full width put them,
+ * under the second map, and a real click cannot reach them.
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
@@ -53,7 +55,11 @@ const SOURCE = [
 const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
-const step = makeStep(record);
+const run = makeStep(record);
+/** A row, unless `--only` names the rows to run by the start of their name (a partial run is recorded as such). */
+const only = value('--only');
+if (only) record.only = only;
+const step = (name, body) => (!only || name === 'plugin' || name === 'clean' || name.startsWith(only) ? run(name, body) : undefined);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const rename = makeRename(cdp, evaluate);
@@ -160,7 +166,7 @@ try {
     await step(`two-map-${shape.name}`, async () => {
       const opened = await reopen();
       await evaluate(`
-        const second = app.workspace.createLeafBySplit(window.__mappyE2E, 'vertical');
+        const second = app.workspace.createLeafBySplit(window.__mappyE2E, 'horizontal');
         await second.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: false });
         await new Promise(resolve => setTimeout(resolve, 1500));
         window.__mappyE2ESecond = second;
