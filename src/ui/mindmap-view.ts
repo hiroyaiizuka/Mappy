@@ -177,6 +177,9 @@ const POPOVER_MARGIN = 16;
  * Not an `EditableFileView`: 1.14.2 makes the view header's title editable there and renames the note to whatever
  * it shows, which the ` · マップ` suffix would end up in.
  */
+/** A free drop's save, for the hold of its trees (`settling`): see `endTopicDrag`. */
+interface TopicSave { written: string; write: number; positions: ReadonlyMap<string, TopicPosition>; layout: LayoutMode }
+
 export class MindmapView extends FileView {
   /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
   file: TFile | null = null;
@@ -284,12 +287,18 @@ export class MindmapView extends FileView {
    * Where a free drag left its trees once dropped and saved, until a re-read publishes a note (LEV-197): the save's own
    * re-read gives up when the watcher of that very write schedules a newer one while it reads (`writeOwn`), and until
    * the newer one draws, the note shown is the one from before the drop. Its topics stay where they were dropped
-   * (what the save stored) rather than jump back to where they were pressed; the next read that publishes, of the
-   * written text or of anything that came after it, ends the hold. Only in the layout the drop was made in.
+   * (the positions the save stored, in the layout it stored them for) rather than jump back to where they were
+   * pressed. The next read that publishes, of the written text or of anything that came after it, ends the hold, and
+   * so does the view's next write (an edit, ⌘Z), which replaces the text the hold stood for.
    */
-  private settling: { overrides: Map<string, TopicPosition>; layout: LayoutMode } | null = null;
-  /** How many re-reads have published what they read: a drop holds its trees only if none has since its save began. */
-  private published = 0;
+  private settling: { positions: ReadonlyMap<string, TopicPosition>; layout: LayoutMode } | null = null;
+  /** How many writes of this view's own have landed (`writeOwn`, ⌘Z／⌘⇧Z). */
+  private writes = 0;
+  /**
+   * `writes` as it was when the last re-read that published began: a read begun after a write landed read the note as
+   * that write left it or later; one begun before may have read the note from before it.
+   */
+  private publishedAfter = 0;
   private refreshTimer: number | undefined;
   /** The refresh running now, if any: what the export waits for when the debounce has already fired. */
   private refreshing: Promise<void> | undefined;
@@ -1139,6 +1148,7 @@ export class MindmapView extends FileView {
   private async reread(): Promise<void> {
     if (!this.ready || this.closed) return;
     const epoch = ++this.epoch;
+    const writes = this.writes;
     const file = this.file;
     if (!file) {
       this.emptyState.hidden = false;
@@ -1164,7 +1174,7 @@ export class MindmapView extends FileView {
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one.
     this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
-    this.published += 1;
+    this.publishedAfter = Math.max(this.publishedAfter, writes);
     this.settling = null;
     if (changed) {
       this.document = document;
@@ -1314,7 +1324,7 @@ export class MindmapView extends FileView {
     const own = topics.map(topic => {
       const stored = projected.positions.get(projected.keys.get(topic.id) ?? topic.title)?.[this.mode];
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
-      const settled = this.settling?.layout === this.mode ? this.settling.overrides.get(topic.id) : undefined;
+      const settled = this.settling?.layout === this.mode ? this.settling.positions.get(topic.id) : undefined;
       return this.topicDrag?.overrides.get(topic.id) ?? settled ?? stored ?? pending;
     });
     // Only a topic with no position of its own reads the hold, so a note whose topics all have one (the common case,
@@ -1719,16 +1729,18 @@ export class MindmapView extends FileView {
   }
 
   /**
-   * `saved`: what the drop saved, if it did, and the count of published re-reads when its save began. Its trees are
-   * held where they were dropped (`settling`) while no re-read has published since: one that has shows the note as
-   * it is now (the text written, or a change after it), and holding the drop over that would outlive it.
+   * `saved`: what the drop saved, if it did — the text written, the write's number (`writes`), and the positions
+   * stored in their layout. They are held (`settling`) while the note shown is not that text and no re-read begun
+   * after the write has published: one that has shows the note as it is now (the text written, or a change after it,
+   * someone putting the note back included), and a hold over that would outlive it. A read begun before the write
+   * (the watcher of an earlier change) that publishes meanwhile shows the note from before the drop, and does not.
    */
-  private endTopicDrag(id: string, restore: boolean, saved?: { written: string; published: number }): void {
+  private endTopicDrag(id: string, restore: boolean, saved?: TopicSave): void {
     const drag = this.topicDrag;
     if (!drag || drag.id !== id) return;
     this.topicDrag = null;
-    if (saved && this.published === saved.published && this.document?.source !== saved.written) {
-      this.settling = { overrides: drag.overrides, layout: this.mode };
+    if (saved && this.publishedAfter < saved.write && this.document?.source !== saved.written) {
+      this.settling = { positions: saved.positions, layout: saved.layout };
     }
     for (const marked of drag.marked) this.renderer.entries.get(marked)?.element.removeClass("is-drag-moving");
     this.renderer.entries.get(id)?.element.removeClass("is-merging");
@@ -1737,6 +1749,15 @@ export class MindmapView extends FileView {
     // Set here, after the drag's own viewport is back, rather than by a frame that saw the drag: a frame can come late
     // or the release land inside one frame interval of the switch, and the hold must not hang on that (LEV-182).
     if (this.needsFit) this.fitHeld = true;
+    this.scheduleLayout();
+  }
+
+  /** A write of this view's own has landed: counted for the reads begun after it, and the end of any drop's hold (`settling`). */
+  private landed(): void {
+    this.writes += 1;
+    if (!this.settling) return;
+    this.settling = null;
+    // Laid out again now: the re-read after the write may give up or fail, and draw nothing.
     this.scheduleLayout();
   }
 
@@ -1814,7 +1835,7 @@ export class MindmapView extends FileView {
     const file = this.file;
     const projection = this.projection();
     const drag = this.topicDrag?.id === id ? this.topicDrag : this.startTopicDrag(id);
-    let saved: { written: string; published: number } | undefined;
+    let saved: TopicSave | undefined;
     try {
       if (!document || !file || !projection || !drag) return;
       const moved = this.travelled(drag, delta);
@@ -1826,9 +1847,12 @@ export class MindmapView extends FileView {
         if (!projection.topics.some(topic => topic.id === topicId)) continue;
         moves.set(topicId, { x: Math.round(start.x + sign * moved.x), y: Math.round(start.y + sign * moved.y) });
       }
-      const edit = planTopicMoves(document, this.mode, moves);
-      const published = this.published;
-      if (edit) saved = { written: (await this.commit(document.source, [edit], file)).after, published };
+      const layout = this.mode;
+      const edit = planTopicMoves(document, layout, moves);
+      if (edit) {
+        const written = (await this.commit(document.source, [edit], file)).after;
+        saved = { written, write: this.writes, positions: moves, layout };
+      }
       if (this.pendingTopic && (drag.body || this.pendingTopic.id === id)) this.pendingTopic = null;
     } finally {
       this.endTopicDrag(id, false, saved);
@@ -1966,6 +1990,7 @@ export class MindmapView extends FileView {
       try { write = await perform(file); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
+      this.landed();
       const written = write.after;
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
@@ -2191,6 +2216,7 @@ export class MindmapView extends FileView {
         if (error instanceof Error && error.message === conflictMessage) this.scheduleRefresh();
         throw error;
       }
+      this.landed();
       await this.refresh();
     });
   }
