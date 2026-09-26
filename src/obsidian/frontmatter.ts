@@ -40,7 +40,7 @@ export function readPreferredMapLayout(app: App, file: TFile, fallback: LayoutMo
   return parseLayout(frontmatter(app, file)?.[LAYOUT_KEY]) ?? fallback;
 }
 
-/** Explicit conversion, removal, or layout selection. Obsidian's atomic frontmatter path handles open editors. */
+/** Explicit conversion or removal (a layout button writes through the map view's own path: `planMapLayout`). Obsidian's atomic frontmatter path handles open editors. */
 export function writeMapLayout(app: App, file: TFile, layout: LayoutMode | null): Promise<void> {
   return app.fileManager.processFrontMatter(file, (properties: Record<string, unknown>) => {
     if (layout) {

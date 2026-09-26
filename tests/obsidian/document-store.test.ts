@@ -227,4 +227,50 @@ describe('DocumentStore', () => {
     expect(store.canUndo(file)).toBe(false);
     expect(await store.undo(other)).toBe('Other');
   });
+
+  describe('applyLatest (a layout button, LEV-196)', () => {
+    const HEADER = '---\nmappy: true\n---\n';
+    const addHeader = () => [{ from: 0, to: 0, text: HEADER }];
+
+    it('plans on the text as it is when its turn comes, behind an edit already queued', async () => {
+      const { store, file, disk } = harness('# A\n');
+      await store.read(file);
+      const edit = store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      const seen: string[] = [];
+      const layout = store.applyLatest(file, source => { seen.push(source); return addHeader(); });
+      await expect(edit).resolves.toBe('# B\n');
+      await expect(layout).resolves.toEqual({ before: '# B\n', after: `${HEADER}# B\n`, edits: addHeader() });
+      expect(seen).toEqual(['# B\n']);
+      expect(disk.get(file.path)).toBe(`${HEADER}# B\n`);
+    });
+
+    it('is no step of the history, and drops the steps before it as any change the history did not make', async () => {
+      const { store, file } = harness('# A\n');
+      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      expect(store.canUndo(file)).toBe(true);
+      await store.applyLatest(file, addHeader);
+      expect(store.canUndo(file)).toBe(false);
+      // An edit after it is measured against it and is undone on its own.
+      await store.apply(file, `${HEADER}# B\n`, [{ from: HEADER.length + 2, to: HEADER.length + 3, text: 'C' }]);
+      await expect(store.undo(file)).resolves.toBe(`${HEADER}# B\n`);
+    });
+
+    it('writes nothing and keeps the history when the plan changes nothing', async () => {
+      const { store, file, process } = harness('# A\n');
+      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      process.mockClear();
+      await expect(store.applyLatest(file, () => [])).resolves.toEqual({ before: '# B\n', after: '# B\n', edits: [] });
+      expect(process).not.toHaveBeenCalled();
+      expect(store.canUndo(file)).toBe(true);
+    });
+
+    it('goes through an open editor, as every write of an open note does', async () => {
+      const { store, file, leaves, process } = harness('# A\n');
+      const editor = makeEditor('# A\n');
+      leaves.push({ view: new MarkdownView(file, editor) });
+      await store.applyLatest(file, addHeader);
+      expect(editor.state.source).toBe(`${HEADER}# A\n`);
+      expect(process).not.toHaveBeenCalled();
+    });
+  });
 });

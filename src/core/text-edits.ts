@@ -38,6 +38,26 @@ export function offsetAfter(edits: readonly TextEdit[], offset: number): number 
   return offset + shift;
 }
 
+/**
+ * `edits`, planned on a text, carried onto that text once `applied` has changed it (each list sorted and not
+ * overlapping within itself), or undefined when one of them touches what `applied` replaced or inserts into it:
+ * then the two do not commute, and the edit has to be planned again. Text `applied` inserted exactly where an
+ * edit starts stays before it; text inserted exactly where an edit ends stays after it. For an edit planned
+ * before one of the view's own frontmatter writes landed (a layout button, LEV-196).
+ */
+export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEdit[]): TextEdit[] | undefined {
+  const rebased: TextEdit[] = [];
+  for (const edit of edits) {
+    let shift = 0;
+    for (const other of applied) {
+      if (other.to <= edit.from) shift += other.text.length - (other.to - other.from);
+      else if (other.from < edit.to) return undefined;
+    }
+    rebased.push({ from: edit.from + shift, to: edit.to + shift, text: edit.text });
+  }
+  return rebased;
+}
+
 /** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
 export function getNode(doc: MindDocument, id: string): MindNode {
   const node = findNode(doc, id);

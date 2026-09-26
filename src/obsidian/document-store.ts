@@ -63,6 +63,28 @@ export class DocumentStore {
     });
   }
 
+  /**
+   * A write planned on whatever the note holds when its turn in the queue comes, not on a text the caller
+   * saw: a preference the map keeps in the frontmatter (the layout buttons, LEV-196), which no edit of the
+   * note's content decides for or against. Queued with the map's edits, so an edit already on its way lands
+   * first and one planned after it is measured against it. It is no step of the history — Undo would revert
+   * a key the view does not read back — and the steps before it are dropped, as after any change the history
+   * did not make. Returns the text before and after, and the edits between (none when nothing changed).
+   */
+  applyLatest(file: TFile, plan: (source: string) => TextEdit[]): Promise<{ before: string; after: string; edits: TextEdit[] }> {
+    return this.enqueue(file, async (session) => {
+      const before = await this.readCurrent(file);
+      this.observe(session, before);
+      const edits = plan(before);
+      const after = applyEdits(before, edits);
+      if (after === before) return { before, after, edits: [] };
+      await this.writeSafely(file, session, before, after, edits);
+      session.past = [];
+      session.future = [];
+      return { before, after, edits };
+    });
+  }
+
   undo(file: TFile): Promise<string> {
     return this.navigateHistory(file, 'undo');
   }
