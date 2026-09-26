@@ -988,9 +988,11 @@ export class MindmapView extends FileView {
    * ⌘Z, ⌘⇧Z, ⌘Z before one re-read write the same texts twice. A write made on the text the view shows while the
    * record ends elsewhere starts the record again: the store wrote it on that text, so the note was put back there
    * (Undo in the Markdown pane, a sync) and the writes recorded were taken back (LEV-218). One already in the record
-   * is not that: it was told before the caller got its answer, and others were recorded after it.
+   * is not that: it was told before the caller got its answer, and others were recorded after it. Nor a write that
+   * changed nothing (told to no one): it takes nothing back, and carries no id anywhere.
    */
   private recordOwn(write: LatestWrite): void {
+    if (write.before === write.after) return;
     const last = this.ownWrites[this.ownWrites.length - 1];
     if (last?.before === write.before && last.after === write.after) return;
     const recorded = { before: write.before, after: write.after, edits: write.edits };
@@ -1160,6 +1162,7 @@ export class MindmapView extends FileView {
     // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
     const replayed = this.replayOwnWrites(source, file.basename);
     if (!replayed) this.ownWrites = onScreen ? leadingFrom(this.ownWrites.filter(write => !recorded.has(write)), source) : [];
+    const replaying = this.ownWrites;
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
@@ -1168,8 +1171,9 @@ export class MindmapView extends FileView {
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
-    // kept for the next one.
-    this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
+    // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
+    // read replayed is not in it.
+    if (this.ownWrites === replaying) this.ownWrites = replaying.slice(replayed?.used ?? 0);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).

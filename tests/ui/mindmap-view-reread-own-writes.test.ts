@@ -25,13 +25,14 @@
  * The first describe keeps the order (in jsdom by construction: the harness vault fires `modify` inside its write; on
  * Obsidian's own events it is E58, `scripts/e2e/reread-own-writes.mjs`) and also checks that the read gave up. The
  * second breaks it — `modify` reaches the maps late — so only the fix holds there. The third is a write someone else
- * took back (code reviews 1 and 2 of the fix): how far the fix may go.
+ * took back (code reviews 1 and 2 of the fix): how far the fix may go. The last two pin what the fix itself must not
+ * break (code review 3): a no-op write recorded late, a record started again while a read waits for the called maps.
  *
  * Against each version (`artifacts/lev-218-reread-own-writes/run-jsdom-variants.sh`, `jsdom-*.log`): the fix passes
- * all 25, and all 25 with the epoch check taken out too. The code before it fails 10 (the 8 of the second describe and
- * the 2 layout-button rows of the third), 18 with the epoch check also taken out. Keeping every write on a read of the
- * text on screen (this branch's first fix) fails 5 of the third, keeping those recorded during the read without the
- * other two rules fails 3. Of the rows that never fail, 4 are this map's own ⌥↑ and ⌘Z, on both shapes: they are shown
+ * all 27, and all 27 with the epoch check taken out too. The code before it fails 11 (the 8 of the second describe,
+ * the 2 layout-button rows of the third and the restarted record), 19 with the epoch check also taken out. Keeping
+ * every write on a read of the text on screen (this branch's first fix) fails 6, keeping those recorded during the
+ * read without the other rules 4, the fix before code review 3 the last 2. Of the rows that never fail, 4 are this map's own ⌥↑ and ⌘Z, on both shapes: they are shown
  * and spent the moment they land (`showOwnWrite`, LEV-219), so no read ever holds them. They are not regression tests
  * of either; they pin that the user's own next key keeps the fold through the window.
  */
@@ -500,5 +501,61 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
     await internals.refresh();
     expect(view.document?.source).toBe(SOURCE);
     expect(view.ownWrites).toEqual([]);
+  });
+});
+
+describe('the record kept whole through what the fix added (LEV-218, code review 3)', () => {
+  interface Internals {
+    recordOwn(write: { before: string; after: string; edits: unknown[] }): void;
+    recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
+    refresh(): Promise<void>;
+    reader: { read(...args: unknown[]): Promise<unknown> };
+  }
+
+  it('a write that changed nothing, recorded late, leaves another map\'s write alone', async () => {
+    // White-box: the save found nothing to change (before = after, told to no one), and before its caller records it,
+    // another map's write X (S→A) is recorded. The no-op starts on the text on screen, but it takes nothing back: it
+    // must not start the record again over X, whose re-read needs it.
+    const mounted = await mount();
+    const view = state(mounted);
+    const internals = mounted.view as unknown as Internals;
+    const a = SOURCE.replace('  - 子2\n', '  - 子二\n');
+    const x = { before: SOURCE, after: a, edits: [] };
+    internals.recordWrite(mounted.file, x);
+    internals.recordOwn({ before: SOURCE, after: SOURCE, edits: [] });
+    expect(view.ownWrites).toEqual([x]);
+  });
+
+  it('a record started again while the read waits for the called maps is not spent by that read', async () => {
+    // White-box: the read replays [A] to the text it found and then waits for the maps the note calls. Meanwhile a write
+    // W on the text on screen starts the record again (A was taken back). The read spends what it replayed from the
+    // record it replayed, not the first entries of the new one: W stays for its own re-read.
+    const MAP_A = '---\nmappy: true\n---\n## 地図A\n- A の枝\n';
+    const host = ['---', 'mappy: true', '---', '## 本体', '', '- ![[map-a]]', '- 子1', '- 子2', ''].join('\n');
+    const app = new HarnessApp();
+    app.put('Fixtures/map-a.md', MAP_A);
+    const mounted = await mountMapView(PATH, host, 'mindmap', app);
+    opened.push(mounted);
+    await settled(mounted);
+    const view = state(mounted);
+    const internals = mounted.view as unknown as Internals;
+    // A real write for the read to replay: 子2 renamed in the note, recorded with its edit.
+    const at = host.indexOf('子2');
+    const a = host.slice(0, at) + '子二' + host.slice(at + 2);
+    const w = { before: host, after: host.replace('- 子1\n', '- 子一\n'), edits: [] };
+    expect(w.after).not.toBe(host);
+    const read = internals.reader.read.bind(internals.reader);
+    let restarted = false;
+    vi.spyOn(internals.reader, 'read').mockImplementation(async (...args: unknown[]) => {
+      const targets = await read(...args);
+      if (!restarted) { restarted = true; internals.recordWrite(mounted.file, w); }
+      return targets;
+    });
+    internals.recordWrite(mounted.file, { before: host, after: a, edits: [{ from: at, to: at + 2, text: '子二' }] });
+    // The note holds A; the read is started here, before the watcher's (45 ms later), as a late watcher's would be.
+    app.put(PATH, a);
+    await internals.refresh();
+    expect(restarted).toBe(true);
+    expect(view.ownWrites).toEqual([w]);
   });
 });
