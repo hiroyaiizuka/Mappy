@@ -249,8 +249,9 @@ const arm = (kind, late) => evaluate(`${VIEW}
   const held = [];
   const flush = () => { for (const schedule of held.splice(0)) schedule(); };
   view.scheduleRefresh = function (...args) {
-    probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch, held: late && inFlight !== null && !probe.answered });
-    if (late && inFlight !== null && !probe.answered) { held.push(() => mine.scheduleRefresh.apply(this, args)); return; }
+    const hold = late && inFlight !== null && !probe.answered;
+    probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch, held: hold });
+    if (hold) { held.push(() => mine.scheduleRefresh.apply(this, args)); return; }
     return mine.scheduleRefresh.apply(this, args);
   };
   // The note's watcher events themselves, heard right after the map's own handlers (registered after them).

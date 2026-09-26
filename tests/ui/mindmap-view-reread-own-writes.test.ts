@@ -16,20 +16,24 @@
  * without that a row could pass because the window was never hit.
  *
  * Two things keep the record, and each is enough alone:
- * - the fix: a read of the text on screen does not drop it (`reread`);
+ * - the fix: a read of the text on screen keeps the writes recorded while it was under way that lead on from it
+ *   (`reread`), and a write made on the text on screen starts the record again when it ends on a text someone took
+ *   back (`recordOwn`);
  * - the order: every write the record takes is one the store has just made on this note, and the note's watcher
  *   (`modify` for a note no editor holds, `editor-change` for one it does) moves the epoch before the store tells the
  *   view (`DocumentStore.tell` after `writeSafely`), so the read gives up at the epoch check right after `store.read`.
  * The first describe keeps the order (in jsdom by construction: the harness vault fires `modify` inside its write; on
  * Obsidian's own events it is E58, `scripts/e2e/reread-own-writes.mjs`) and also checks that the read gave up. The
- * second breaks it — `modify` reaches the maps late — so only the fix holds there: those 8 rows fail with the fix
- * reverted (`artifacts/lev-218-reread-own-writes/tests-late-unfixed.log`). With the epoch check also taken out, 16 of
- * the 22 fail with the fix reverted (`tests-m1-unfixed.log`) and all 22 pass with it (`tests-fixed-m1.log`). Of the 6
- * that never fail, 4 are this map's own ⌥↑ and ⌘Z, on both shapes: they are shown and spent the moment they land
- * (`showOwnWrite`, LEV-219), so no read ever holds them. They are not regression tests of either; they pin that the
- * user's own next key keeps the fold through the window. The other 2 (the last describe) pin how far the fix goes:
- * only the writes recorded while the read was under way are kept, and they fail with every write kept
- * (`tests-aba-keep-all.log`).
+ * second breaks it — `modify` reaches the maps late — so only the fix holds there. The third is a write someone else
+ * took back (code reviews 1 and 2 of the fix): how far the fix may go.
+ *
+ * Against each version (`artifacts/lev-218-reread-own-writes/run-jsdom-variants.sh`, `jsdom-*.log`): the fix passes
+ * all 25, and all 25 with the epoch check taken out too. The code before it fails 10 (the 8 of the second describe and
+ * the 2 layout-button rows of the third), 18 with the epoch check also taken out. Keeping every write on a read of the
+ * text on screen (this branch's first fix) fails 5 of the third, keeping those recorded during the read without the
+ * other two rules fails 3. Of the rows that never fail, 4 are this map's own ⌥↑ and ⌘Z, on both shapes: they are shown
+ * and spent the moment they land (`showOwnWrite`, LEV-219), so no read ever holds them. They are not regression tests
+ * of either; they pin that the user's own next key keeps the fold through the window.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
@@ -68,8 +72,11 @@ const SOURCE = [
 const SLOW_MS = 200;
 /** When, inside a read of the text on screen, the second write is made. */
 const INSIDE_MS = 100;
-/** How late the note's `modify` arrives in the rows where the watcher comes after the store's word: past the read's answer. */
-const LATE_MS = 150;
+/**
+ * How late the note's `modify` arrives in the rows where the watcher comes after the store's word: well past the read's
+ * answer (SLOW_MS after the read has its text, which may itself wait behind the store's queue).
+ */
+const LATE_MS = 400;
 
 interface ViewState {
   document: MindDocument | undefined; epoch: number; saving: boolean; ownWrites: unknown[];
@@ -421,5 +428,77 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
       await settled(mounted, other);
       expectFolded(mounted, label, index - 1, id);
     });
+
+    it(`a layout button pressed while the map re-reads the put-back note keeps the fold of ${shape}`, async () => {
+      // The write taken back is still at the end of the record while the re-read of the put-back note reads: the button
+      // pressed meanwhile starts from the text on screen, not from that write's end, and must be recorded all the same
+      // (it replaces the record). Refused, its re-read would match nodes by title and the fold would go (LEV-150).
+      const mounted = await mount();
+      const other = await mount(mounted.app, storeOf(mounted));
+      const id = foldAndSelect(mounted, label, index);
+      click(nodeNamed(other, '子2'));
+      other.key(other.canvas, 'ArrowUp', { altKey: true });
+      await vi.waitFor(() => { expect(mounted.source()).not.toBe(SOURCE); }, { timeout: 1000, interval: 1 });
+      // The re-read of the put-back note is answered SLOW_MS late, and the button is pressed INSIDE_MS into it.
+      const view = state(mounted);
+      const store = storeOf(mounted);
+      const read = store.read.bind(store);
+      let pressed: { stale: boolean; recorded: boolean | null; answered: boolean } | null = null;
+      let slowed = false;
+      let answered = false;
+      vi.spyOn(store, 'read').mockImplementation(async file => {
+        const text = await read(file);
+        if (slowed || text !== SOURCE || view.document?.source !== SOURCE) return text;
+        slowed = true;
+        setTimeout(() => {
+          pressed = { stale: view.ownWrites.length === 1, recorded: null, answered: false };
+          clickLayout(mounted, 'timeline');
+        }, INSIDE_MS);
+        await new Promise(resolve => setTimeout(resolve, SLOW_MS));
+        answered = true;
+        return text;
+      });
+      const internals = mounted.view as unknown as { recordWrite(file: unknown, write: { after: string }): void };
+      const recordWrite = internals.recordWrite.bind(mounted.view);
+      vi.spyOn(internals, 'recordWrite').mockImplementation((file, write) => {
+        recordWrite(file, write);
+        if (pressed && pressed.recorded === null && write.after.includes('mappy-layout: timeline')) {
+          pressed = { ...pressed, answered, recorded: view.ownWrites.some(own => (own as { after: string }).after === write.after) };
+        }
+      });
+      mounted.app.put(PATH, SOURCE);
+      await vi.waitFor(() => { expect(pressed?.recorded).not.toBeNull(); }, { timeout: 2000, interval: 2 });
+      await settled(mounted, other);
+      // The stale write was still there when the button was pressed, the read had not answered when the store told the
+      // map, and the map recorded the button's write.
+      expect(pressed).toEqual({ stale: true, answered: false, recorded: true });
+      expect(mounted.source()).toContain('mappy-layout: timeline\n');
+      expectFolded(mounted, label, index, id);
+    });
   }
+
+  it('a read of the text on screen keeps only writes that lead on from it', async () => {
+    // White-box: the record is [W1: S→A] when the read begins, W2 (A→B) is recorded while it reads, and the read finds S
+    // (someone put the note back). W1 goes (recorded before the read), and W2 with it: kept, it would start the record
+    // at A, a text the map does not show, and no write made on the text on screen could follow it.
+    const mounted = await mount();
+    const view = state(mounted);
+    const internals = mounted.view as unknown as {
+      recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void; refresh(): Promise<void>;
+    };
+    const a = SOURCE.replace('  - 子2\n', '  - 子二\n');
+    const b = a.replace('  - 子1\n', '  - 子一\n');
+    internals.recordWrite(mounted.file, { before: SOURCE, after: a, edits: [] });
+    expect(view.ownWrites).toHaveLength(1);
+    const store = storeOf(mounted);
+    const read = store.read.bind(store);
+    vi.spyOn(store, 'read').mockImplementation(async file => {
+      internals.recordWrite(mounted.file, { before: a, after: b, edits: [] });
+      expect(view.ownWrites).toHaveLength(2);
+      return read(file);
+    });
+    await internals.refresh();
+    expect(view.document?.source).toBe(SOURCE);
+    expect(view.ownWrites).toEqual([]);
+  });
 });
