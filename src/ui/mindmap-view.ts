@@ -162,6 +162,9 @@ const POPOVER_MAX_WIDTH = 320;
 const POPOVER_GAP = 6;
 const POPOVER_MARGIN = 16;
 
+/** A free drop's save, for the hold of its trees (`settling`): see `endTopicDrag`. */
+interface TopicSave { written: string; write: number; positions: ReadonlyMap<string, TopicPosition>; layout: LayoutMode }
+
 /**
  * The map is a `FileView` (LEV-89), as the Markdown editor, Kanban or a PDF are: the note it shows is `file`, which
  * Obsidian reads through `getActiveFileView()` while the map is active — the core file commands (copy path, delete,
@@ -177,9 +180,6 @@ const POPOVER_MARGIN = 16;
  * Not an `EditableFileView`: 1.14.2 makes the view header's title editable there and renames the note to whatever
  * it shows, which the ` · マップ` suffix would end up in.
  */
-/** A free drop's save, for the hold of its trees (`settling`): see `endTopicDrag`. */
-interface TopicSave { written: string; write: number; positions: ReadonlyMap<string, TopicPosition>; layout: LayoutMode }
-
 export class MindmapView extends FileView {
   /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
   file: TFile | null = null;
