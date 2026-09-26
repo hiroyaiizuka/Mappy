@@ -28,8 +28,8 @@ describe('WriteRecord', () => {
     record.record(write, A);
     const read = record.take(write.after, shown, 'n');
     expect(second(read)).toBe(second(shown));
-    // Spent: the same text read again is matched by titles, from the parse the reader now shows.
-    expect(second(record.take(write.after, read, 'n'))).toBe(second(read));
+    // Spent: a later write leads on from the text the reader now shows, not from the end of the old record (code review 2).
+    expect(record.size).toBe(0);
   });
 
   it('keeps a write for the next read when the read found the text on screen (it came before the write)', () => {
@@ -64,7 +64,7 @@ describe('WriteRecord', () => {
     const back: RecordedWrite = { before: there.after, after: A, edits: [{ from: there.edits[0]!.from, to: there.edits[0]!.from + 'ずっと長い題名'.length, text: '子1' }] };
     record.record(there, A);
     record.record(back, there.after);
-    record.spend(A, shown, 'n');
+    record.spend(A);
     // Not kept until some later read: each holds two copies of the note (code review 1).
     expect(record.size).toBe(0);
     const next = rename(A, '子1', '別の長い題名');

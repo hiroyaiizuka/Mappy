@@ -10,7 +10,7 @@
  * folded as new, so what the reader loses is a branch they opened: it closes again. The 通常 and トピック rows hold
  * before the fix too; they pin that the carried ids do not move a node matched by its title. The E05 row pins what
  * the fix must not do: an external change is still matched by titles alone (it holds before the fix too). The last
- * row fails when a record the re-read could not use is kept (`artifacts/lev-217-embed-onwrite/mutations.txt`).
+ * row fails when a record the re-read could not use is kept (`artifacts/lev-217-embed-onwrite/mutations.txt`, `mutations-review2.txt`).
  *
  * Before the fix the 空題名 and 同名 rows failed at the first edit: a new id, folded again
  * (`artifacts/lev-217-embed-onwrite/tests-before-fix.log`).
@@ -92,6 +92,32 @@ async function settled({ map, embeds }: Opened, reached: (source: string) => boo
   await map.settle();
 }
 
+/**
+ * The 45 ms re-read debounces (the embed's and the tab's) held instead of run, until `release` runs the ones still set;
+ * every other timer runs as usual.
+ */
+function holdDebounces(): { release: () => void } {
+  const set = window.setTimeout.bind(window);
+  const clear = window.clearTimeout.bind(window);
+  let next = -1;
+  const held = new Map<number, () => void>();
+  window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+    if (delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
+    const id = next--;
+    held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
+    return id;
+  }) as unknown as typeof window.setTimeout;
+  window.clearTimeout = (id => { if (typeof id === 'number' && held.delete(id)) return; clear(id); });
+  return {
+    release: () => {
+      window.setTimeout = set;
+      window.clearTimeout = clear;
+      for (const run of Array.from(held.values())) set(run, 45);
+      held.clear();
+    },
+  };
+}
+
 /** The `index`-th node with this label (an untitled node reads as 空のノード) inside `root`. */
 function nodeNamed(root: ParentNode, label: string, index = 0): HTMLElement {
   const found = Array.from(root.querySelectorAll<HTMLElement>('.mappy-node')).filter(node => accessibleName(node) === label)[index];
@@ -161,7 +187,7 @@ describe("the embed's folds through the writes of the note's map tab (LEV-217)",
     expect({ step: '⌘Z', ...seen(section, label, index) }).toEqual({ step: '⌘Z', ...toggled });
     await history(opened, true, source => source.includes('- ずっと長い題名に改名\n'));
     expect({ step: '⌘⇧Z', ...seen(section, label, index) }).toEqual({ step: '⌘⇧Z', ...toggled });
-  });
+  }, 20_000); // five writes, each waited for in the tab and the embed: past the default 5 s on a loaded machine
 
   it('an external change is still matched by titles alone, and a same-titled node is not guessed (E05)', async () => {
     // Not a regression test of the bug: it pins what the fix must not do — take someone else's change for the map's own.
@@ -184,12 +210,18 @@ describe("the embed's folds through the writes of the note's map tab (LEV-217)",
     await map.settle();
     const store = (map.view as unknown as { store: DocumentStore }).store;
     const from = SOURCE.indexOf('子1');
-    await store.applyLatest(map.file, () => [{ from, to: from + 2, text: '改名' }]);
-    await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
-    // The row's premise: the embed has not re-read the rename yet (its debounce is still waiting). Were it to, the
-    // record would be spent correctly and the row would pass whatever the record does with a write it cannot use.
-    const [embed] = (opened.embeds as unknown as { live: Set<EmbedState> }).live;
-    expect({ drawn: embed?.drawnSource, waiting: embed?.refreshTimer !== undefined }).toEqual({ drawn: SOURCE, waiting: true });
+    // The row's premise: the embed does not re-read the rename before the external change lands. Were it to, the record
+    // would be spent correctly and the row would pass whatever the record does with a write it cannot use. The re-read
+    // debounces (45 ms) are held until both writes are in, so the premise does not depend on how fast the machine is.
+    const held = holdDebounces();
+    try {
+      await store.applyLatest(map.file, () => [{ from, to: from + 2, text: '改名' }]);
+      await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
+      const [embed] = (opened.embeds as unknown as { live: Set<EmbedState> }).live;
+      expect(embed?.drawnSource).toBe(SOURCE);
+    } finally {
+      held.release();
+    }
     await settled(opened, source => source.includes('- 外から\n') && source.includes('- 改名\n'));
     // Titles alone: the second untitled node is not guessed, and comes back folded as new.
     const after = seen(section, EMPTY_LABEL, 1);

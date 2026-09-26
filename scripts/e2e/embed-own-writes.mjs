@@ -54,7 +54,13 @@ const run = makeStep(record);
 /** A row, unless `--only` names the rows to run by the start of their name (a partial run is recorded as such). */
 const only = value('--only');
 if (only) record.only = only;
-const step = (name, body) => (!only || name === 'plugin' || name === 'clean' || name.startsWith(only) ? run(name, body) : undefined);
+/** The rows `--only` let through; none means the run checked nothing, and that is not a PASS. */
+let rowsRun = 0;
+const step = (name, body) => {
+  if (only && name !== 'plugin' && name !== 'clean' && !name.startsWith(only)) return undefined;
+  if (name !== 'plugin' && name !== 'clean') rowsRun += 1;
+  return run(name, body);
+};
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const rename = makeRename(cdp, evaluate);
@@ -194,6 +200,8 @@ try {
       return { rows };
     });
   }
+
+  check(rowsRun > 0, `no row ran${only ? ` (--only ${only} matches none of ${SHAPES.map(shape => shape.name).join('・')})` : ''}`);
 
   if (!flag('--keep')) {
     await step('clean', () => evaluate(`

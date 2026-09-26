@@ -188,7 +188,7 @@ export class MapEmbed extends MarkdownRenderChild {
     if (epoch !== this.epoch) return;
     if (text === this.drawnSource && this.document?.root.title === file.basename) {
       // Writes that came back to the text on screen (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
-      this.writes.spend(text, this.document, file.basename);
+      this.writes.spend(text);
       return;
     }
     const mode = readMapFromSource(text);
