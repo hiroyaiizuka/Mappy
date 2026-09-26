@@ -46,6 +46,7 @@ export const CASES = [
   { name: 'drop-flicker', file: 'drop-flicker.mjs', description: 'E53 フリーツリーを離した直後、保存後の原文が描かれるまでのフレーム', shot: false },
   { name: 'own-write-flicker', file: 'own-write-flicker.mjs', description: 'E54 自分の書き込み（改名・追加・キー移動・⌘Z／⌘⇧Z・スロットへのドロップ・切り離し）のあと、書き込み前の原文が描かれないこと', shot: false },
   { name: 'window-blur-draft', file: 'window-blur-draft.mjs', description: 'E56 下書きの途中でウィンドウのフォーカスが外れて戻ったあとの Enter・押下', shot: false },
+  { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
 ];
 
 const args = process.argv.slice(2);
