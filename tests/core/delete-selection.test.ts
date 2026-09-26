@@ -35,6 +35,7 @@ describe('selection after delete (LEV-204)', () => {
       expect(selectedAfterDelete(items, title, 'list')).toBe(expected);
     });
 
+    // Passes with the fix reverted too: it pins the rule's parent side, which the old code always took.
     it('selects the parent of an only child', () => {
       expect(selectedAfterDelete('## R\n- A\n  - X\n- B\n', 'X', 'list')).toBe('A');
       expect(selectedAfterDelete('## R\n- X\n', 'X', 'list')).toBe('R');
@@ -49,10 +50,13 @@ describe('selection after delete (LEV-204)', () => {
     });
 
     it('tells same-titled siblings apart by place', () => {
-      expect(selectedAfterDelete('## R\n- 同じ\n- 同じ\n- 同じ\n', '同じ', 'list', 2)).toBe('同じ');
-      const doc = parseMarkdown('## R\n- 同じ\n- 同じ\n', 'Note', undefined, 'list');
-      const [first, second] = doc.nodes.filter(node => node.title === '同じ');
-      expect(planEdit(doc, { type: 'delete', nodeId: second?.id ?? '' }).selectionOffset).toBe(first?.titleFrom);
+      // The third goes: the second, not the first, is selected (the text before both is unchanged, so their offsets hold).
+      const three = parseMarkdown('## R\n- 同じ\n- 同じ\n- 同じ\n', 'Note', undefined, 'list');
+      const [, second, third] = three.nodes.filter(node => node.title === '同じ');
+      expect(planEdit(three, { type: 'delete', nodeId: third?.id ?? '' }).selectionOffset).toBe(second?.titleFrom);
+      const two = parseMarkdown('## R\n- 同じ\n- 同じ\n', 'Note', undefined, 'list');
+      const [first, last] = two.nodes.filter(node => node.title === '同じ');
+      expect(planEdit(two, { type: 'delete', nodeId: last?.id ?? '' }).selectionOffset).toBe(first?.titleFrom);
     });
 
     it('treats a called map (`![[…]]`) like any other item', () => {
@@ -65,6 +69,7 @@ describe('selection after delete (LEV-204)', () => {
   describe('the seam between an H2 and its items', () => {
     it('selects an H2 root\'s own items, never the neighbouring H2, and the H2 once its last item goes', () => {
       const source = '## R\n- A\n- B\n\n## T\n- C\n';
+      // Passes with the fix reverted too (the parent side of the rule); the next line is the one that pins the fix.
       expect(selectedAfterDelete(source, 'C', 'list')).toBe('T');
       expect(selectedAfterDelete(source, 'A', 'list')).toBe('B');
     });
@@ -97,6 +102,7 @@ describe('selection after delete (LEV-204)', () => {
       // so the focus stays in the map.
       expect(selectedAfterDelete('- a\n\n## T\n', 'T', 'list')).toBe('a');
       expect(selectedAfterDelete('- a\n\n## T\n', 'a', 'list')).toBe('T');
+      // Passes with the fix reverted too: nothing is left to select.
       expect(selectedAfterDelete('- a\n', 'a', 'list')).toBeNull();
     });
 
@@ -114,6 +120,7 @@ describe('selection after delete (LEV-204)', () => {
       ['last', 'C', 'B'],
       ['middle', 'B', 'A'],
       ['first', 'A', 'B'],
+      // Passes with the fix reverted too: the parent side of the rule.
       ['only child', 'A1', 'A'],
     ])('selects the right node for the %s heading', (_, title, expected) => {
       expect(selectedAfterDelete(source, title, 'headings')).toBe(expected);
@@ -122,7 +129,20 @@ describe('selection after delete (LEV-204)', () => {
     it('selects the section below the first one at the top of the note, and nothing once none is left', () => {
       expect(selectedAfterDelete('# One\n\n# Two\n', 'One', 'headings')).toBe('Two');
       expect(selectedAfterDelete('# Two\n\n# One', 'One', 'headings')).toBe('Two');
+      // Passes with the fix reverted too: nothing is left to select.
       expect(selectedAfterDelete('# Only\n', 'Only', 'headings')).toBeNull();
+    });
+
+    // Code review of LEV-204 (round 3): removing a section can join the paragraph above with a Setext heading below.
+    // The count check alone let that through: the heading changed its title and nothing was selected.
+    it('keeps a blank line where the removal would join a paragraph with a Setext heading, and selects beside it', () => {
+      expect(selectedAfterDelete('# T\npara\n## A\nB\n---\n', 'A', 'headings')).toBe('B');
+      expect(selectedAfterDelete('# T\n\n## A\ntext\n## B\nC\n---\n', 'B', 'headings')).toBe('A');
+      const doc = parseMarkdown('# T\n\n## A\ntext\n## B\nC\n---\n', 'Note', undefined, 'headings');
+      const b = doc.nodes.find(node => node.title === 'B');
+      const result = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: b?.id ?? '' }).edits);
+      expect(result).toBe('# T\n\n## A\ntext\n\nC\n---\n');
+      expect(parseMarkdown(result, 'Note', undefined, 'headings').nodes.map(node => node.title)).toEqual(['T', 'A', 'C']);
     });
 
     // The offset is moved, not looked up again: these are the shapes where the removal reaches back over the blank
