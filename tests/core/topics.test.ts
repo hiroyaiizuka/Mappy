@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { applyEdits, planEdit, resolveDrop } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
+import { nodeAt } from '../../src/core/text-edits';
 import {
   TOPICS_KEY, planTopicMoves, planTopicPositions, planTopicRekey, readTopicPositions,
   serializeTopicPositions, topicKeys, topicPositionsFromValue, type TopicPositionMap,
@@ -542,8 +543,8 @@ describe('delete removes a topic section together with its position', () => {
     const plan = planEdit(doc, { type: 'delete', nodeId: first.id });
     const promoted = applyEdits(doc.source, plan.edits);
     expect(promoted).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## A\n- Second\n`);
-    // The selection (the parent, here the virtual root: none) is unaffected by the frontmatter shrinking.
-    expect(plan.selectionOffset).toBeNull();
+    // The selection (the section above, here the body root: LEV-204) follows the frontmatter shrinking.
+    expect(nodeAt(parse(promoted), plan.selectionOffset)?.title).toBe('Root');
     // Without an entry of its own, the second topic's promotion just drops the first's entry.
     const single = parse(doc.source.replace('  A (2): { mindmap: [3, 4] }\n', ''));
     expect(applyEdits(single.source, planEdit(single, { type: 'delete', nodeId: projectMap(single).topics[0]?.id ?? '' }).edits))

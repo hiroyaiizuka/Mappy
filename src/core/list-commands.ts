@@ -1,5 +1,5 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom,
+  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, selectionAfterDelete,
   swapSections, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
@@ -251,16 +251,16 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true);
     case 'delete': {
-      const parent = getNode(doc, node.parentId ?? 'root');
       const count = doc.nodes.length - branchSize(node);
-      const selected = parent.kind === 'root' ? null : parent.from;
-      if (node.kind !== 'list') return validate(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }], count, selected);
+      const remove = (edits: TextEdit[]): EditPlan =>
+        validate(doc, edits, count, selectionAfterDelete(doc, node, edits, selected => selected.from));
+      if (node.kind !== 'list') return remove([{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }]);
       try {
         // An item leaves with its line break, as it does when moved.
-        return validate(doc, [{ ...removalRange(doc, node), text: '' }], count, selected);
+        return remove([{ ...removalRange(doc, node), text: '' }]);
       } catch {
         // The lines around the item would join into another block (`Intro` + `---` is a Setext heading): keep the break, as a blank line.
-        return validate(doc, [{ from: node.from, to: node.to, text: '' }], count, selected);
+        return remove([{ from: node.from, to: node.to, text: '' }]);
       }
     }
     case 'move-up': return move(doc, node, -1);

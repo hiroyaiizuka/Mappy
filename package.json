@@ -25,6 +25,7 @@
     "harness:preflight": "node scripts/preflight.mjs",
     "harness:e2e": "node scripts/e2e/run.mjs",
     "harness:e2e:add-delete": "node scripts/e2e/add-delete.mjs",
+    "harness:e2e:delete-selection": "node scripts/e2e/delete-selection.mjs",
     "harness:e2e:undo-redo": "node scripts/e2e/undo-redo.mjs",
     "harness:e2e:deep-branches": "node scripts/e2e/deep-branches.mjs",
     "harness:e2e:convert-to-list": "node scripts/e2e/convert-to-list.mjs",

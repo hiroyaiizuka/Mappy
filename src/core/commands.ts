@@ -49,6 +49,27 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   return result;
 }
 
+/**
+ * Where the selection goes once `node` is deleted (LEV-204): the sibling just above, else the one just below,
+ * else the parent, in source order whatever the layout draws (XMind, MarkMind). The virtual root is never
+ * selected, and under it the body's items and the topics are apart on screen, so only one of the same kind is
+ * a sibling there. The answer is an offset (`pick` takes the node's `titleFrom` or `from`) in the text the
+ * removal `edits` leave: text removed before it shifts it, a removal that starts at or after it does not.
+ */
+export function selectionAfterDelete(
+  doc: MindDocument, node: MindNode, edits: readonly TextEdit[], pick: (selected: MindNode) => number,
+): number | null {
+  const parent = getNode(doc, node.parentId ?? 'root');
+  const siblings = parent.kind === 'root'
+    ? parent.children.filter((child) => (child.kind === 'list') === (node.kind === 'list'))
+    : parent.children;
+  const index = siblings.findIndex((child) => child.id === node.id);
+  const selected = siblings[index - 1] ?? siblings[index + 1] ?? (parent.kind === 'root' ? undefined : parent);
+  if (!selected) return null;
+  const offset = pick(selected);
+  return edits.reduce((moved, edit) => offset >= edit.to ? moved + edit.text.length - (edit.to - edit.from) : moved, offset);
+}
+
 function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: number | null, count: number): EditPlan {
   const source = applyEdits(doc.source, edits);
   if (parseMarkdown(source, doc.root.title, undefined, doc.format).nodes.length !== count) {
@@ -397,8 +418,11 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true);
-    case 'delete': return checkedPlan(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }],
-      getNode(doc, node.parentId ?? 'root').titleFrom, doc.nodes.length - branchNodes(doc, node).length);
+    case 'delete': {
+      const edits = [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }];
+      return checkedPlan(doc, edits, selectionAfterDelete(doc, node, edits, (selected) => selected.titleFrom),
+        doc.nodes.length - branchNodes(doc, node).length);
+    }
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
     case 'reparent': return moveHeadingSection(doc, node, command.parentId,

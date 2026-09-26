@@ -212,12 +212,13 @@ describe('source-preserving list commands', () => {
       expect(result.nodes.map(node => node.title)).toEqual(['R']);
     });
 
-    it('selects the parent and keeps its descendants count, so a following outside item is untouched', () => {
+    // LEV-204: the sibling below is selected when there is none above (tests/core/delete-selection.test.ts has the whole rule).
+    it('selects the sibling below and keeps its descendants count, so a following outside item is untouched', () => {
       const doc = parse('## R\n- A\n  - X\n    - deep\n  - Y\n- B\n');
       const plan = planEdit(doc, { type: 'delete', nodeId: find(doc, 'X').id });
       expect(plan.edits).toEqual([{ from: find(doc, 'X').from, to: find(doc, 'Y').from, text: '' }]);
-      expect(plan.selectionOffset).toBe(find(doc, 'A').titleFrom);
       const result = parse(applyEdits(doc.source, plan.edits), doc);
+      expect(plan.selectionOffset).toBe(find(result, 'Y').titleFrom);
       expect(result.source).toBe('## R\n- A\n  - Y\n- B\n');
       expect(result.nodes.map(node => node.title)).toEqual(['R', 'A', 'Y', 'B']);
     });
