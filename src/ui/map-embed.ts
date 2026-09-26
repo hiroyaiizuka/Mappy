@@ -7,7 +7,7 @@ import { parseMarkdown, type MindDocument } from "../core/markdown";
 import { readTopicPositions, type TopicPositionMap } from "../core/topics";
 import { fitToBounds } from "../interaction/viewport";
 import { layoutTree, type LayoutBounds, type LayoutMode } from "../layout/layout";
-import type { DocumentStore } from "../obsidian/document-store";
+import type { DocumentStore, LatestWrite } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
 import { EdgeLayer } from "./edge-layer";
@@ -67,6 +67,13 @@ export class MapEmbed extends MarkdownRenderChild {
   private bounds: LayoutBounds | null = null;
   private mode: LayoutMode = "mindmap";
   private collapsed = new Set<string>();
+  /**
+   * The store's writes on the note since the last parse, in order (`DocumentStore.onWrite`): an edit, a layout button,
+   * ⌘Z／⌘⇧Z in a map tab of the note. The re-read carries the ids over with their edits, as the tab does (`MindmapView`'s
+   * `ownWrites`, LEV-150), so the reader's folds stay on a node whose title repeats or is empty (LEV-217). Anything
+   * else — an external change (E05) — is matched by titles alone.
+   */
+  private writes: LatestWrite[] = [];
   private epoch = 0;
   private refreshTimer: number | undefined;
   private layoutFrame: number | undefined;
@@ -113,6 +120,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerEvent(this.app.vault.on("modify", file => { if (file.path === path()) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("rename", file => { if (file === this.source.file) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("delete", file => { if (file === this.source.file) this.scheduleRefresh(); }));
+    this.register(this.store.onWrite((file, write) => { if (file === this.source.file) this.record(write); }));
     if (typeof ResizeObserver !== "undefined") {
       // Only the fit depends on the frame's size; the layout itself does not.
       this.observer = new ResizeObserver(() => { if (this.bounds) this.fit(this.bounds); });
@@ -131,6 +139,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.observer?.disconnect();
     this.observer = undefined;
     this.document = undefined;
+    this.writes = [];
     this.trees = null;
     this.drawnSource = null;
     this.frame.empty();
@@ -182,7 +191,7 @@ export class MapEmbed extends MarkdownRenderChild {
     }
     // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
     const previous = this.document;
-    this.document = parseMarkdown(text, file.basename, previous);
+    this.document = this.replay(text, file.basename) ?? parseMarkdown(text, file.basename, previous);
     this.mode = mode;
     this.positions = readTopicPositions(text);
     const trees = embedTrees(this.document, this.source.subpath);
@@ -199,6 +208,34 @@ export class MapEmbed extends MarkdownRenderChild {
     this.collapsed = collapsed;
     this.drawnSource = text;
     this.draw();
+  }
+
+  /**
+   * `write` kept for the re-read where the record leads to its start: the end of the record, or the text last parsed.
+   * A write on a text the embed has not reached (the note changed under it first) cannot lead on from it and is left out.
+   */
+  private record(write: LatestWrite): void {
+    const last = this.writes[this.writes.length - 1];
+    if (write.before !== (last?.after ?? this.document?.source)) return;
+    this.writes.push(write);
+  }
+
+  /**
+   * The parse of `text` from the recorded writes: each re-parses its text from the parse before it, starting at the
+   * last one, until one wrote exactly `text`; the writes up to it are spent, the rest kept for the next read. Undefined,
+   * and the record dropped, when they do not lead there: someone else wrote, and the ids are then a guess (E05).
+   */
+  private replay(text: string, basename: string): MindDocument | undefined {
+    let document = this.document;
+    for (const [index, write] of this.writes.entries()) {
+      if (!document || document.source !== write.before) break;
+      document = parseMarkdown(write.after, basename, document, undefined, write.edits);
+      if (write.after !== text) continue;
+      this.writes = this.writes.slice(index + 1);
+      return document;
+    }
+    this.writes = [];
+    return undefined;
   }
 
   /** A frame with a sentence instead of a map: the note stopped being one, lost the heading, or could not be read. */

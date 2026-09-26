@@ -306,14 +306,17 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     expect(section.querySelector('.mappy-embed-message')?.textContent).toContain('マップではなくなりました');
   });
 
-  it('releases the component, its DOM subscriptions and its vault/workspace listeners when the section goes', async () => {
-    const { app, renderer, section, embeds } = await render({ 'Host.md': '![[Map]]', 'Map.md': MAP }, 'Host.md');
+  it('releases the component, its DOM subscriptions, its vault/workspace listeners and its store listener when the section goes', async () => {
+    const { app, renderer, section, embeds, store } = await render({ 'Host.md': '![[Map]]', 'Map.md': MAP }, 'Host.md');
     expect(app.vaultEvents.count()).toBeGreaterThan(0);
     expect(app.workspaceEvents.count()).toBeGreaterThan(0);
+    const writeListeners = (store as unknown as { writeListeners: Set<unknown> }).writeListeners;
+    expect(writeListeners.size).toBe(1);
     renderer.unload();
     expect(embeds.size).toBe(0);
     expect(app.vaultEvents.count()).toBe(0);
     expect(app.workspaceEvents.count()).toBe(0);
+    expect(writeListeners.size).toBe(0);
     expect(section.querySelector('.mappy-node')).toBeNull();
     // A later change of the source is nobody's business any more.
     app.put('Map.md', MAP.replace('- 葉', '- 後で'));
