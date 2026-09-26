@@ -204,6 +204,68 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     expect(Notice.log).toEqual([]);
   });
 
+  it.each([
+    { action: 'a longer rename', run: (mounted: MountedMapView) => rename(mounted, 'ずっと長い題名に改名'), reached: (source: string) => source.includes('ずっと長い題名に改名') },
+    {
+      action: 'a layout button', reached: (source: string) => source.includes('mappy-layout: timeline\n'),
+      run: async (mounted: MountedMapView) => {
+        mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${LAYOUT_LABELS.timeline}"]`)?.click();
+        await settled(mounted, source => source.includes('mappy-layout: timeline\n'));
+      },
+    },
+  ])('$action in one map keeps the fold and the selection of another map of the note (code review 2)', async ({ run, reached }) => {
+    // Every write the store makes reaches every map of the note with its edits, not only the history's steps.
+    const first = await mount();
+    const store = (first.view as unknown as { store: DocumentStore }).store;
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
+    opened.push(second);
+    const id = await foldAndSelect(second, '同名', 1);
+    await run(first);
+    await settled(second, reached);
+    expectKept(second, '同名', 1, id);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('Escape on a node just added in one map keeps the fold and the selection of another map (retract)', async () => {
+    // Code review 2: taking the addition back is a step of the shared history too (LEV-203's `retract`).
+    const first = await mount();
+    const store = (first.view as unknown as { store: DocumentStore }).store;
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
+    opened.push(second);
+    const id = await foldAndSelect(second, '同名', 1);
+    click(nodeNamed(first, '子1'));
+    first.key(first.canvas, 'Tab');
+    await settled(first, source => source.includes('サブトピック'));
+    await settled(second, source => source.includes('サブトピック'));
+    const input = first.editor();
+    if (!input) throw new Error('Tab opened no editor');
+    first.key(input, 'Escape');
+    await settled(first, source => source === SOURCE);
+    await settled(second, source => source === SOURCE);
+    expectKept(second, '同名', 1, id);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('⌘Z, ⌘⇧Z, ⌘Z before the other map re-reads, then an edit there: its fold and selection stay', async () => {
+    // Code review 2: the three steps write the same texts twice; each is recorded in order, none matched to an earlier one.
+    const first = await mount();
+    const store = (first.view as unknown as { store: DocumentStore }).store;
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
+    opened.push(second);
+    await rename(first, 'ずっと長い題名に改名');
+    await settled(second, source => source.includes('ずっと長い題名に改名'));
+    const id = await foldAndSelect(second, EMPTY_LABEL, 1);
+    await store.undo(first.file);
+    await store.redo(first.file);
+    await store.undo(first.file);
+    await settled(second, source => source.includes('  - 子1\n'));
+    expectKept(second, EMPTY_LABEL, 1, id);
+    // The rename selects 子1 (the click that starts F2); the fold and the node's id are what must stay.
+    await rename(second, 'ずっと長い題名に改名');
+    expect({ collapsed: [...state(second).collapsed], id: nodeNamed(second, EMPTY_LABEL, 1).dataset.nodeId }).toEqual({ collapsed: [id], id });
+    expect(Notice.log).toEqual([]);
+  });
+
   it('a refused ⌘Z re-reads the note even when no watcher reports the change', async () => {
     // Not about the ids: the one own write of the view that did not re-read on a refusal (as `writeOwn` does).
     const mounted = await mount();
@@ -228,6 +290,8 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     expect(nodeNamed(mounted, EMPTY_LABEL, 1).dataset.nodeId).not.toBe(id);
     const after = nodeNamed(mounted, EMPTY_LABEL, 1).dataset.nodeId;
     mounted.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+    // The store's queue has taken the ⌘Z (a read waits behind it) before the map is looked at.
+    await (mounted.view as unknown as { store: DocumentStore }).store.read(mounted.file);
     await settled(mounted, () => true);
     expect(mounted.source()).toContain('- 改名\n');
     expect(nodeNamed(mounted, EMPTY_LABEL, 1).dataset.nodeId).toBe(after);

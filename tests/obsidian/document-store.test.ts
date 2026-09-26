@@ -116,11 +116,25 @@ describe('DocumentStore', () => {
     expect(independent.state.source).toBe('a!bc');
   });
 
+  it('every write it makes is told to its listeners: an edit, a layout write (LEV-150)', async () => {
+    const { store, file } = harness('---\nmappy: true\n---\na');
+    const heard: unknown[] = [];
+    store.onWrite((target, write) => { heard.push({ path: target.path, write }); });
+    const edit = await store.applyOver(file, '---\nmappy: true\n---\na', [{ from: 21, to: 21, text: 'b' }]);
+    const layout = await store.applyLatest(file, source => planMapLayout(source, 'timeline'));
+    // Nothing written (the layout already asked for): nobody told.
+    await store.applyLatest(file, source => planMapLayout(source, 'timeline'));
+    expect(heard).toEqual([
+      { path: file.path, write: { before: edit.before, after: edit.after, edits: edit.edits } },
+      { path: file.path, write: layout },
+    ]);
+  });
+
   it('Undo and Redo return the write they made, and tell every listener of the store (LEV-150)', async () => {
     const { store, file } = harness('a');
     const heard: unknown[] = [];
-    const unsubscribe = store.onHistoryWrite((target, write) => { heard.push({ path: target.path, write }); });
     await store.apply(file, 'a', [{ from: 1, to: 1, text: 'bc' }]);
+    const unsubscribe = store.onWrite((target, write) => { heard.push({ path: target.path, write }); });
     const undone = { before: 'abc', after: 'a', edits: [{ from: 1, to: 3, text: '' }] };
     const redone = { before: 'a', after: 'abc', edits: [{ from: 1, to: 1, text: 'bc' }] };
     expect(await store.undo(file)).toEqual(undone);
@@ -131,6 +145,29 @@ describe('DocumentStore', () => {
     unsubscribe();
     await store.undo(file);
     expect(heard).toHaveLength(2);
+  });
+
+  it('a listener that throws neither fails the step nor keeps the others from hearing it', async () => {
+    const { store, file } = harness('a');
+    const heard: string[] = [];
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    store.onWrite(() => { throw new Error('broken view'); });
+    store.onWrite((_file, write) => { heard.push(write.after); });
+    expect(await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }])).toBe('ab');
+    expect((await store.undo(file)).after).toBe('a');
+    expect(heard).toEqual(['ab', 'a']);
+    expect(store.canRedo(file)).toBe(true);
+    expect(error).toHaveBeenCalledTimes(2);
+    error.mockRestore();
+  });
+
+  it('retract tells the listeners the write that took the step back', async () => {
+    const { store, file } = harness('a');
+    const heard: unknown[] = [];
+    const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'bc' }], { retractable: true });
+    store.onWrite((_file, write) => { heard.push(write); });
+    await store.retract(file, added);
+    expect(heard).toEqual([{ before: 'abc', after: 'a', edits: [{ from: 1, to: 3, text: '' }] }]);
   });
 
   it('keeps its history when UI queries it synchronously during an editor transaction', async () => {

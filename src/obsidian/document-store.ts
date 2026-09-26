@@ -60,17 +60,19 @@ export const conflictMessage = 'Markdown が変更されています。マップ
 /** One file's map operations share a queue and a bounded, source-checked history. */
 export class DocumentStore {
   private readonly sessions = new WeakMap<TFile, DocumentSession>();
-  private readonly historyListeners = new Set<(file: TFile, write: LatestWrite) => void>();
+  private readonly writeListeners = new Set<(file: TFile, write: LatestWrite) => void>();
 
   constructor(private readonly app: DocumentStoreApp) {}
 
   /**
-   * Called with every write Undo or Redo makes, whichever view asked for it: the history is the note's, so every map
-   * of the note re-reads the step as a write whose edits it knows (LEV-150). Returns the unsubscribe.
+   * Called with every write the store makes — an edit (`applyOver`), a layout button (`applyLatest`), Undo, Redo and
+   * `retract` — whichever view asked for it: several maps of a note share the store, and each re-reads the write as
+   * one whose edits it knows, so a node whose title repeats or is empty keeps its id in every one of them (LEV-150).
+   * Returns the unsubscribe.
    */
-  onHistoryWrite(listener: (file: TFile, write: LatestWrite) => void): () => void {
-    this.historyListeners.add(listener);
-    return () => { this.historyListeners.delete(listener); };
+  onWrite(listener: (file: TFile, write: LatestWrite) => void): () => void {
+    this.writeListeners.add(listener);
+    return () => { this.writeListeners.delete(listener); };
   }
 
   read(file: TFile): Promise<string> {
@@ -113,6 +115,7 @@ export class DocumentStore {
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
       session.latest = [];
+      this.tell(file, { before, after, edits: requestedEdits });
       return { before, after, edits: requestedEdits, carried };
     });
   }
@@ -156,6 +159,7 @@ export class DocumentStore {
       if (session.plans.length > planLimit) session.plans.shift();
       session.latest.push({ before, after, edits });
       if (session.latest.length > latestLimit) session.latest.shift();
+      this.tell(file, { before, after, edits });
       return { before, after, edits };
     });
   }
@@ -236,7 +240,9 @@ export class DocumentStore {
       session.past.pop();
       session.future = entry.dropped ?? [];
       delete entry.dropped;
-      return { before: entry.after, after: entry.before, edits: entry.inverse };
+      const taken = { before: entry.after, after: entry.before, edits: entry.inverse };
+      this.tell(file, taken);
+      return taken;
     });
   }
 
@@ -365,10 +371,19 @@ export class DocumentStore {
       delete entry.dropped;
       to.push(entry);
       const write = { before, after, edits };
-      // Told before the queue moves on: the watcher's re-read of this very write comes after its debounce.
-      for (const listener of this.historyListeners) listener(file, write);
+      this.tell(file, write);
       return write;
     });
+  }
+
+  /**
+   * The write's listeners (`onWrite`), told before the queue moves on (the watcher's re-read of this very write comes after its
+   * debounce). A listener that throws neither undoes the step that was written nor keeps the others from hearing it.
+   */
+  private tell(file: TFile, write: LatestWrite): void {
+    for (const listener of this.writeListeners) {
+      try { listener(file, write); } catch (error) { console.error('Mappy: a write listener failed', error); }
+    }
   }
 
   private async writeSafely(
