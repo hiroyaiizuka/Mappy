@@ -30,7 +30,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeRename, makeAddNamed, makeClickIn, makePress, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
-import { HANDLERS, handlerDiff, preciseGc, makeTrack, makeAppTheme, ERRORS, COLOR, WINDOW_LOG, foreignKeys } from './window-helpers.mjs';
+import { HANDLERS, handlerDiff, preciseGc, makeTrack, makeAppTheme, ERRORS, COLOR, WINDOW_LOG, foreignKeys, forwardErrors, LAID_OUT } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -65,11 +65,7 @@ let serial = 0;
 const watch = (winExpression, mark) => `{ const target = ${winExpression};
   target.document.body.dataset.mappyE2ePopout = ${JSON.stringify(mark)};
   (window.__mappyE2EPopouts ??= {})[${JSON.stringify(mark)}] = target;
-  if (!target.__mappyE2EWatched) {
-    target.__mappyE2EWatched = true;
-    target.addEventListener('error', event => { window.__mappyE2EErrors.push(${JSON.stringify(mark)} + ': ' + String(event.error?.stack ?? event.message)); });
-    target.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(${JSON.stringify(mark)} + ': ' + String(event.reason?.stack ?? event.reason)); });
-  } }`;
+  ${forwardErrors('target', mark)} }`;
 
 const settle = mark => `const win = leaf.view.contentEl.win;
   if (win === window) throw new Error('the leaf is not in a popout window');
@@ -79,12 +75,7 @@ const settle = mark => `const win = leaf.view.contentEl.win;
   // tell one key acted on twice (the inline editor and the map) from a second key, and a draft closed by the window's
   // blur (LEV-216).
   ${WINDOW_LOG}
-  let laid = false;
-  for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
-    const node = leaf.view.contentEl.querySelector('.mappy-node');
-    laid = !!node && node.getBoundingClientRect().width > 0;
-  }
-  if (!laid) throw new Error('the map did not lay out in the popout within 5 s');`;
+  ${LAID_OUT}`;
 
 /** Opens the note as a map in a new popout window; returns its mark. */
 const openPopout = async () => {

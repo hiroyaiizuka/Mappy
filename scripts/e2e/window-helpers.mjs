@@ -113,6 +113,26 @@ export const ERRORS = `if (!window.__mappyE2EErrorsWatched) {
 window.__mappyE2EErrors = [];`;
 
 /**
+ * Script: sends the uncaught errors and rejections of the window `winExpression` (a popout) to the main window's
+ * `__mappyE2EErrors` (`ERRORS`), each prefixed with `label`, once per window: a case's page-error check reads only the
+ * main window's list.
+ */
+export const forwardErrors = (winExpression, label) => `{ const forwarded = ${winExpression};
+  if (forwarded !== window && !forwarded.__mappyE2EWatched) {
+    forwarded.__mappyE2EWatched = true;
+    forwarded.addEventListener('error', event => { window.__mappyE2EErrors.push(${JSON.stringify(label)} + ': ' + String(event.error?.stack ?? event.message)); });
+    forwarded.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(${JSON.stringify(label)} + ': ' + String(event.reason?.stack ?? event.reason)); });
+  } }`;
+
+/** Script, with `leaf` in scope: waits up to 5 s for its map to lay out (a node with a width), and throws if it does not. */
+export const LAID_OUT = `{ let laid = false;
+  for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
+    const node = leaf.view.contentEl.querySelector('.mappy-node');
+    laid = !!node && node.getBoundingClientRect().width > 0;
+  }
+  if (!laid) throw new Error('the map did not lay out within 5 s'); }`;
+
+/**
  * Script, with `win` a window in scope: logs into `win.__mappyE2EWindowLog` every key the window receives (capture
  * phase: Obsidian's keymap and the inline editor stop some keys before they bubble) with the element it went to and —
  * read once the event's task is over — whether something took it, and every blur／focus of the window itself (the OS

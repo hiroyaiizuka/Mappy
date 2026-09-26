@@ -3,18 +3,19 @@
  * to another app (or another Obsidian window) blurs the focused textarea while it stays the document's active element
  * (`document.hasFocus()` is false). Builds through 0.3.7 saved the draft on that blur and closed it, so the Enter the
  * person pressed on coming back to confirm it reached the selected node instead and added a sibling 「サブトピック」
- * (seen once in E50's step 6, a map moved to a new window). The window's focus is taken away with Electron's own
+ * (seen once in E50's step 6, a map moved to a new window). The draft is still saved on leaving the window, but stays
+ * open. The window's focus is taken away with Electron's own
  * `BrowserWindow.blur()` and given back with `focus()`, as another app taking it would; the case checks that the blur
  * really happened (the textarea still active, the document without focus) before it counts the Enter.
  *
- * 1. main: F2 → text → the window blurs and comes back → Enter: the note has the rename and nothing else, no draft is
- *    left open.
+ * 1. main: F2 → text → the window blurs (the note has the rename, the draft is still open and active) and comes back
+ *    → Enter: the note has the rename and nothing else, no draft is left open.
  * 2. moved: the same in a map moved to a new window (`moveLeafToPopout`, the tab menu's 「新規ウィンドウに移動」).
  * 3. click-after: F2 → text → the window blurs and comes back → a press on the empty canvas: the draft is saved (a
  *    blur inside the window still commits it).
- * 4. close-moved: F2 → text → the moved window blurs and, still in the background, is closed: the draft is saved, as
- *    closing a focused window saves it (through 0.3.7 the blur itself saved it; a window without the focus sends no blur
- *    as the draft goes, so the view saves it on close — without that it was dropped, review 1 of LEV-216).
+ * 4. close-moved: F2 → text → the moved window blurs and, still in the background, is closed: the draft is in the
+ *    note (a window without the focus sends the draft no blur as it goes, so what saves it is the save on leaving;
+ *    review 1 of LEV-216 found a build that kept the draft unsaved losing it here).
  * 5. close-main: the same with the main window's tab closed (`leaf.detach()`) while the window is in the background.
  * Steps 1–3 also record the keys their window received; a key the case did not send (someone typing while the test
  * window has the OS focus) fails the step as foreign input, not as the build's. Steps 4 and 5 send no key after F2.
@@ -24,7 +25,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeAfter, makePress, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
-import { ERRORS, WINDOW_LOG, foreignKeys } from './window-helpers.mjs';
+import { ERRORS, WINDOW_LOG, foreignKeys, forwardErrors, LAID_OUT } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -52,17 +53,8 @@ const reset = () => evaluate(`const file = app.vault.getAbstractFileByPath(${JSO
 const watch = `const win = leaf.view.contentEl.win;
   win.__mappyE2E = leaf;
   ${WINDOW_LOG}
-  if (win !== window && !win.__mappyE2EWatched) {
-    win.__mappyE2EWatched = true;
-    win.addEventListener('error', event => { window.__mappyE2EErrors.push('popout: ' + String(event.error?.stack ?? event.message)); });
-    win.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push('popout: ' + String(event.reason?.stack ?? event.reason)); });
-  }
-  let laid = false;
-  for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
-    const node = leaf.view.contentEl.querySelector('.mappy-node');
-    laid = !!node && node.getBoundingClientRect().width > 0;
-  }
-  if (!laid) throw new Error('the map did not lay out within 5 s');`;
+  ${forwardErrors('win', 'moved')}
+  ${LAID_OUT}`;
 
 /**
  * Script (main window): a new tab in the main window as `tab`. `getLeaf('tab')` opens it beside the active leaf, which
@@ -152,6 +144,7 @@ const draftAcrossWindow = async (cdp, windowEval, { title, finishWith }) => {
   const left = await leaveWindow(windowEval);
   const kept = await windowEval(`${VIEW} return { editing: !!input(), active: document.activeElement === input(), source: await source() };`);
   const before = kept.source;
+  const saved = before === expectRenamed(title);
   let sent;
   if (finishWith === 'Enter') {
     await cdp.realKey('Enter');
@@ -165,7 +158,7 @@ const draftAcrossWindow = async (cdp, windowEval, { title, finishWith }) => {
   await wait(400);
   const { keys, foreign } = await keysOf(windowEval, sent);
   const final = await read();
-  return { left, kept: { editing: kept.editing, active: kept.active, unchanged: before === SOURCE }, source: final, editing: done.editing, keys, foreign };
+  return { left, kept: { editing: kept.editing, active: kept.active, saved }, source: final, editing: done.editing, keys, foreign };
 };
 
 /** Closes every map of the note in the main window, so the next step finds only its own. */
@@ -201,6 +194,18 @@ const readSettled = async () => { await wait(1500); return read(); };
 
 const expectRenamed = title => SOURCE.replace('- 通常のノード\n', `- ${title}\n`);
 
+/** Step 5's body: the draft opened in the main tab, the window left without coming back, the tab closed. */
+const closeInBackground = async () => {
+  await openDraft(main, evaluate, '背景で閉じたタブの下書き');
+  const left = await leaveWindow(evaluate, { back: false });
+  const kept = await evaluate(`${VIEW} return { editing: !!input(), saved: (await source()) === ${JSON.stringify(expectRenamed('背景で閉じたタブの下書き'))} };`);
+  await detach();
+  const source = await readSettled();
+  check(kept.editing && kept.saved, `5-close-main: leaving the window closed the draft or did not save it: ${JSON.stringify(kept)}`);
+  check(source === expectRenamed('背景で閉じたタブの下書き'), `5-close-main: closing the tab in the background lost the draft: ${JSON.stringify(source)}`);
+  return { left, kept, source };
+};
+
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(main, evaluate, flag)));
   required(record, 'setup', await step('setup', makeNoteStep(evaluate, { note: NOTE, source: SOURCE, errors: ERRORS })));
@@ -210,7 +215,7 @@ try {
     await openInMain();
     const result = await draftAcrossWindow(main, evaluate, { title: '戻って確定', finishWith: 'Enter' }).finally(detach);
     check(result.foreign.length === 0, `1-main: keys the case did not send reached the window (foreign input; the step proves nothing): ${JSON.stringify(result.foreign)}`);
-    check(result.kept.editing && result.kept.active && result.kept.unchanged, `1-main: leaving the window closed or saved the draft: ${JSON.stringify(result.kept)}`);
+    check(result.kept.editing && result.kept.active && result.kept.saved, `1-main: leaving the window closed the draft or did not save it: ${JSON.stringify(result.kept)}`);
     check(result.source === expectRenamed('戻って確定') && !result.editing, `1-main: the Enter after coming back wrote ${JSON.stringify(result.source)} (editing ${result.editing})`);
     return result;
   });
@@ -224,7 +229,7 @@ try {
     try {
       const result = await draftAcrossWindow(moved, inMoved, { title: '移動先で戻って確定', finishWith: 'Enter' });
       check(result.foreign.length === 0, `2-moved: keys the case did not send reached the window (foreign input; the step proves nothing): ${JSON.stringify(result.foreign)}`);
-      check(result.kept.editing && result.kept.active && result.kept.unchanged, `2-moved: leaving the window closed or saved the draft: ${JSON.stringify(result.kept)}`);
+      check(result.kept.editing && result.kept.active && result.kept.saved, `2-moved: leaving the window closed the draft or did not save it: ${JSON.stringify(result.kept)}`);
       check(result.source === expectRenamed('移動先で戻って確定') && !result.editing, `2-moved: the Enter after coming back wrote ${JSON.stringify(result.source)} (editing ${result.editing})`);
       return result;
     } finally {
@@ -238,7 +243,7 @@ try {
     await openInMain();
     const result = await draftAcrossWindow(main, evaluate, { title: '押して確定', finishWith: 'press' }).finally(detach);
     check(result.foreign.length === 0, `3-click-after: keys the case did not send reached the window (foreign input; the step proves nothing): ${JSON.stringify(result.foreign)}`);
-    check(result.kept.editing && result.kept.unchanged, `3-click-after: leaving the window closed or saved the draft: ${JSON.stringify(result.kept)}`);
+    check(result.kept.editing && result.kept.saved, `3-click-after: leaving the window closed the draft or did not save it: ${JSON.stringify(result.kept)}`);
     check(result.source === expectRenamed('押して確定') && !result.editing, `3-click-after: a press inside the window after coming back did not save the draft: ${JSON.stringify(result.source)} (editing ${result.editing})`);
     return result;
   });
@@ -252,13 +257,13 @@ try {
     try {
       await openDraft(moved, inMoved, '背景で閉じた下書き');
       left = await leaveWindow(inMoved, { back: false });
-      kept = await inMoved(`${VIEW} return { editing: !!input(), unchanged: (await source()) === ${JSON.stringify(SOURCE)} };`);
+      kept = await inMoved(`${VIEW} return { editing: !!input(), saved: (await source()) === ${JSON.stringify(expectRenamed('背景で閉じた下書き'))} };`);
     } finally {
       moved.close();
       closed = await closeMoved();
     }
     const source = await readSettled();
-    check(kept.editing && kept.unchanged, `4-close-moved: leaving the window closed or saved the draft: ${JSON.stringify(kept)}`);
+    check(kept?.editing && kept.saved, `4-close-moved: leaving the window closed the draft or did not save it: ${JSON.stringify(kept)}`);
     check(closed, '4-close-moved: the window did not close');
     check(source === expectRenamed('背景で閉じた下書き'), `4-close-moved: closing the window in the background lost the draft: ${JSON.stringify(source)}`);
     return { left, kept, closed, source };
@@ -267,16 +272,10 @@ try {
   await step('5-close-main', async () => {
     await reset();
     await openInMain();
-    await openDraft(main, evaluate, '背景で閉じたタブの下書き');
-    const left = await leaveWindow(evaluate, { back: false });
-    const kept = await evaluate(`${VIEW} return { editing: !!input(), unchanged: (await source()) === ${JSON.stringify(SOURCE)} };`);
-    await detach();
-    const source = await readSettled();
-    // The main window stays in the background otherwise; the later cleanup and the next case expect it in front.
-    await evaluate(`require('electron').remote.app.focus({ steal: true }); require('electron').remote.getCurrentWindow().focus(); return true;`);
-    check(kept.editing && kept.unchanged, `5-close-main: leaving the window closed or saved the draft: ${JSON.stringify(kept)}`);
-    check(source === expectRenamed('背景で閉じたタブの下書き'), `5-close-main: closing the tab in the background lost the draft: ${JSON.stringify(source)}`);
-    return { left, kept, source };
+    // The main window would stay in the background otherwise, whatever this step ends with; the cleanup and the next
+    // case expect it in front.
+    const front = () => evaluate(`require('electron').remote.app.focus({ steal: true }); require('electron').remote.getCurrentWindow().focus(); return true;`);
+    try { return await closeInBackground(); } finally { await front(); }
   });
 
   await step('after', async () => {

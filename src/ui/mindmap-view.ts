@@ -772,8 +772,6 @@ export class MindmapView extends FileView {
 
   /** The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, with no save). */
   onClose(): Promise<void> {
-    // A draft left in a window without the OS focus gets no blur as it goes, and would be dropped (LEV-216).
-    this.inlineEditor?.closing();
     this.closed = true;
     this.dropDraft();
     this.closePopover(false);
