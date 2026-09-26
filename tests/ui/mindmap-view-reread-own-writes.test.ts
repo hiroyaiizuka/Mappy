@@ -8,8 +8,8 @@
  * W2's own re-read, with no edits to carry the ids, would match nodes by title: the fold and the selection of the
  * second untitled or same-titled node would go (the LEV-146／LEV-150 symptom).
  *
- * The matrix is what the user does while the rename's re-reads are reading (every read answered 80 ms late, E53's
- * `slow`, so the second write lands inside a read) × the node folded and selected. What keeps the record here is
+ * The matrix is what the user does while the rename's re-reads are reading (every read answered 200 ms late, past the
+ * watcher's debounce like E53's `slow`, so the second write lands inside a read) × the node folded and selected. What keeps the record here is
  * the epoch check right after the read: every write the record takes is one the store has just made on this note,
  * and the note's watcher (`modify` for a note no editor holds, `editor-change` for one it does) moves the epoch
  * before the store tells the view (`DocumentStore.tell` after `writeSafely`), so the read that would drop the
@@ -52,10 +52,10 @@ const SOURCE = [
   '- 同名', '  - 同名の子B',
   '',
 ].join('\n');
-/** How late every read answers: longer than the watcher's 45 ms debounce, as E53's `slow`. */
-const SLOW_MS = 80;
+/** How late every read answers: past the watcher's 45 ms debounce (E53's `slow` is 80 ms), with room for a loaded machine. */
+const SLOW_MS = 200;
 /** When, inside a read of the text on screen, the second write is made. */
-const INSIDE_MS = 40;
+const INSIDE_MS = 100;
 
 interface ViewState {
   document: MindDocument | undefined; epoch: number; saving: boolean; ownWrites: unknown[];
@@ -242,11 +242,16 @@ describe('a read of the text on screen, with a write of the map\'s own recorded 
       const mounted = await mount();
       const other = await mount(mounted.app, storeOf(mounted));
       const id = foldAndSelect(mounted, label, index);
+      // The other map has re-read the rename by then (its reads are not slowed): an edit planned on the note before it
+      // would be refused as someone else's change, which is not this row.
+      let caughtUp: boolean | null = null;
       const found = await renameThen(mounted, () => {
+        caughtUp = state(other).document?.source === mounted.source();
         other.view.containerEl.querySelector<HTMLElement>('.mappy-canvas')?.focus();
         rename(other, '子2', 0, '別の改名');
       });
       await settled(mounted, other);
+      expect(caughtUp).toBe(true);
       expectWindowHit(found);
       expect(mounted.source()).toContain('- 別の改名\n');
       expectFolded(mounted, label, index, id);

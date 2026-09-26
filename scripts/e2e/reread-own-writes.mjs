@@ -145,6 +145,8 @@ const reset = () => evaluate(`${VIEW}
     if (map.collapsed.size > 0) { map.collapsed.clear(); map.draw(); }
   }
   if (await view.store.read(view.file) !== ${JSON.stringify(SOURCE)}) throw new Error('the note did not go back to the case source');
+  // The splits (the second map below, the editor beside) left the first map's nodes where the whole pane placed them: 全体表示.
+  view.viewport.fit(view.layout.bounds);
   await new Promise(resolve => setTimeout(resolve, 400));
   return true;`);
 
