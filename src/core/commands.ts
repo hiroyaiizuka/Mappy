@@ -49,25 +49,36 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   return result;
 }
 
+/** The sibling just above `node` in `list`, else the one just below. */
+function besideIn(list: readonly MindNode[], node: MindNode): MindNode | undefined {
+  const index = list.findIndex((candidate) => candidate.id === node.id);
+  return index === -1 ? undefined : list[index - 1] ?? list[index + 1];
+}
+
 /**
- * Where the selection goes once `node` is deleted (LEV-204): the sibling just above, else the one just below,
- * else the parent, in source order whatever the layout draws (XMind, MarkMind). The virtual root is never
- * selected, and under it the body's items and the topics are apart on screen, so only one of the same kind is
- * a sibling there. The answer is an offset (`pick` takes the node's `titleFrom` or `from`) in the text the
- * removal `edits` leave: text removed before it shifts it, a removal that starts at or after it does not.
+ * The node selected once `node` is deleted (LEV-204): the sibling just above, else the one just below, else
+ * the parent, in source order whatever the layout draws (XMind, MarkMind). On the map the free topics are
+ * siblings of each other and the body root stands for their parent; the virtual root is never selected, so
+ * under it the nearest node left at the top level is, which keeps the focus in the map.
  */
-export function selectionAfterDelete(
-  doc: MindDocument, node: MindNode, edits: readonly TextEdit[], pick: (selected: MindNode) => number,
-): number | null {
+function deletionTarget(doc: MindDocument, node: MindNode): MindNode | undefined {
   const parent = getNode(doc, node.parentId ?? 'root');
-  const siblings = parent.kind === 'root'
-    ? parent.children.filter((child) => (child.kind === 'list') === (node.kind === 'list'))
-    : parent.children;
-  const index = siblings.findIndex((child) => child.id === node.id);
-  const selected = siblings[index - 1] ?? siblings[index + 1] ?? (parent.kind === 'root' ? undefined : parent);
-  if (!selected) return null;
-  const offset = pick(selected);
-  return edits.reduce((moved, edit) => offset >= edit.to ? moved + edit.text.length - (edit.to - edit.from) : moved, offset);
+  if (parent.kind !== 'root') return besideIn(parent.children, node) ?? parent;
+  const { root: body, topics } = projectMap(doc);
+  const topic = topics.some((candidate) => candidate.id === node.id);
+  const kin = topic ? topics : parent.children.filter((child) => (child.kind === 'list') === (node.kind === 'list'));
+  return besideIn(kin, node) ?? (topic && body.kind !== 'root' ? body : undefined) ?? besideIn(parent.children, node);
+}
+
+/**
+ * Where `deletionTarget` stands in the text the removal `edits` leave, found by id in that parse (the edits carry
+ * every standing node's id), so a caller reads the offset it matches on (`titleFrom`, or `from` for `validate`).
+ */
+export function selectionAfterDelete(doc: MindDocument, node: MindNode, edits: TextEdit[]): MindNode | undefined {
+  const target = deletionTarget(doc, node);
+  if (!target) return undefined;
+  const after = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, doc, doc.format, edits);
+  return after.nodes.find((candidate) => candidate.id === target.id);
 }
 
 function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: number | null, count: number): EditPlan {
@@ -420,7 +431,7 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
     case 'add-sibling': return add(doc, node, true);
     case 'delete': {
       const edits = [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }];
-      return checkedPlan(doc, edits, selectionAfterDelete(doc, node, edits, (selected) => selected.titleFrom),
+      return checkedPlan(doc, edits, selectionAfterDelete(doc, node, edits)?.titleFrom ?? null,
         doc.nodes.length - branchNodes(doc, node).length);
     }
     case 'move-up': return move(doc, node, -1);

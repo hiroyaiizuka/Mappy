@@ -77,9 +77,11 @@ describe('selection after delete (LEV-204)', () => {
       expect(selectedAfterDelete('## Body\n\n## T\n- a\n- b\n', 'a', 'list')).toBe('b');
     });
 
-    it('selects the topic above a deleted topic root, the body above the first, and the one below when it has none', () => {
+    // The topics are siblings of each other; the body root, drawn apart from them, stands for their parent.
+    it('selects the topic above a deleted topic root, else the one below, and the body once no topic is left', () => {
       expect(selectedAfterDelete(source, 'T2', 'list')).toBe('T1');
-      expect(selectedAfterDelete(source, 'T1', 'list')).toBe('Body');
+      expect(selectedAfterDelete(source, 'T1', 'list')).toBe('T2');
+      expect(selectedAfterDelete('## Body\n- b\n\n## T\n- t\n', 'T', 'list')).toBe('Body');
       expect(selectedAfterDelete(source, 'Body', 'list')).toBe('T1');
     });
 
@@ -91,13 +93,17 @@ describe('selection after delete (LEV-204)', () => {
       expect(selectedAfterDelete(loose, 'b', 'list')).toBe('a');
       expect(selectedAfterDelete(loose, 'T1', 'list')).toBe('T2');
       expect(selectedAfterDelete(loose, 'T2', 'list')).toBe('T1');
-      // The only topic has no topic beside it and no parent on screen: nothing is selected, as before.
-      expect(selectedAfterDelete('- a\n\n## T\n', 'T', 'list')).toBeNull();
+      // The virtual root is never selected: with no node of the same kind left, the nearest one at the top level is,
+      // so the focus stays in the map.
+      expect(selectedAfterDelete('- a\n\n## T\n', 'T', 'list')).toBe('a');
+      expect(selectedAfterDelete('- a\n\n## T\n', 'a', 'list')).toBe('T');
+      expect(selectedAfterDelete('- a\n', 'a', 'list')).toBeNull();
     });
 
     it('carries the offset past the frontmatter rewrite of `mappy-topics`', () => {
       const keyed = '---\nmappy-topics:\n  T1: { mindmap: [1, 2] }\n  T2: { mindmap: [3, 4] }\n---\n## Body\n\n## T1\n\n## T2\n';
-      expect(selectedAfterDelete(keyed, 'T1', 'list')).toBe('Body');
+      expect(selectedAfterDelete(keyed, 'T1', 'list')).toBe('T2');
+      expect(selectedAfterDelete(keyed, 'T2', 'list')).toBe('T1');
       expect(selectedAfterDelete(keyed, 'Body', 'list')).toBe('T1');
     });
   });

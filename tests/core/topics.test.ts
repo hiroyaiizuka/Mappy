@@ -543,8 +543,8 @@ describe('delete removes a topic section together with its position', () => {
     const plan = planEdit(doc, { type: 'delete', nodeId: first.id });
     const promoted = applyEdits(doc.source, plan.edits);
     expect(promoted).toBe(`---\n${TOPICS_KEY}:\n  A: { mindmap: [3, 4] }\n---\n## Root\n- Child\n\n## A\n- Second\n`);
-    // The selection (the section above, here the body root: LEV-204) follows the frontmatter shrinking.
-    expect(nodeAt(parse(promoted), plan.selectionOffset)?.title).toBe('Root');
+    // The selection (the topic below, the promoted `A`: LEV-204) follows the frontmatter shrinking.
+    expect(nodeAt(parse(promoted), plan.selectionOffset)?.children.map((node) => node.title)).toEqual(['Second']);
     // Without an entry of its own, the second topic's promotion just drops the first's entry.
     const single = parse(doc.source.replace('  A (2): { mindmap: [3, 4] }\n', ''));
     expect(applyEdits(single.source, planEdit(single, { type: 'delete', nodeId: projectMap(single).topics[0]?.id ?? '' }).edits))

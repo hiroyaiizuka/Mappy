@@ -6,8 +6,8 @@
  * ノードに残ることも見る。最後に、選択先が画面の外にあるとき削除で表示の中へ入ることを見る。
  *
  * 選択は `src/core/commands.ts` の `selectionAfterDelete` が決め（見出し形式・リスト形式の両方の `delete` が使う）、
- * view の `reveal` が折りたたみを開いて選択・表示する。修正前のビルド（常に親）では、一人っ子とトピックのルート以外の
- * 行がすべて FAIL する。
+ * view の `reveal` が折りたたみを開いて選択・表示する。修正前のビルド（常に親）で走らせた結果は docs/harness.md の
+ * 「E2E ケース一覧」の行に書く。
  *
  * Usage: npm run harness:e2e:delete-selection -- [--reload] [--json <out.json>] [--keep]
  */
@@ -35,19 +35,22 @@ const SOURCE = [
 ].join('\n');
 const HEADINGS_SOURCE = ['---', 'mappy: true', '---', '# 見出し', '', '## A', '', '## B', '', '## C', ''].join('\n');
 const LAYOUTS = ['mindmap', 'timeline', 'hierarchy', 'balanced'];
-// [what is deleted, the key, what must be selected after]. The keys alternate so each shape is pressed with both over the layouts.
+// [what is deleted, what must be selected after]. The key alternates by row and by layout (`keyFor`), so over the
+// four layouts every shape is pressed with Delete twice and with Backspace twice.
 const ROWS = [
-  ['aaaa', 'Delete', 'aaaaaaaa'],
-  ['aaaaaaaa', 'Backspace', '作業途中で、ひと言メモを残す'],
-  ['作業途中で、ひと言メモを残す', 'Delete', 'aaaaaaaa'],
-  ['一人っ子', 'Backspace', '次の枝'],
+  ['aaaa', 'aaaaaaaa'],
+  ['aaaaaaaa', '作業途中で、ひと言メモを残す'],
+  ['作業途中で、ひと言メモを残す', 'aaaaaaaa'],
+  ['一人っ子', '次の枝'],
   // The calling item shows the called map's root title (§5 M12); the item itself is deletable, its branch goes with it.
-  ['呼び出し先', 'Delete', '次の枝'],
-  ['t2', 'Backspace', 't1'],
-  ['t1', 'Delete', 't2'],
-  ['トピック', 'Backspace', '注意残余の対策'],
+  ['呼び出し先', '次の枝'],
+  ['t2', 't1'],
+  ['t1', 't2'],
+  // The only topic: no topic beside it, so the body root, which stands for the topics' parent on the map.
+  ['トピック', '注意残余の対策'],
 ];
-const HEADING_ROWS = [['C', 'Delete', 'B'], ['A', 'Backspace', 'B'], ['B', 'Delete', 'A']];
+const HEADING_ROWS = [['C', 'B'], ['A', 'B'], ['B', 'A']];
+const keyFor = (row, pass) => (row + pass) % 2 === 0 ? 'Delete' : 'Backspace';
 
 const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
@@ -73,17 +76,22 @@ const selection = () => evaluate(`${VIEW}
 
 /**
  * ⌘Z with the focus where the delete left it (the selected node): no blank click first, so the selection is the
- * one the delete made. Refused unless the focus is in the map and no draft is open — a modified key that reaches
- * macOS instead opens a native dialog and hangs CDP (docs/harness.md 実機検証).
+ * one the delete made. Not sent unless the focus is in the map and no draft is open — a modified key that reaches
+ * macOS instead opens a native dialog and hangs CDP (docs/harness.md 実機検証). Then the row is recorded as a
+ * failure and the note is written back, so the rows after it still run on the note they were written for.
  */
-async function undo(before) {
+async function undo(before, initial, what) {
   const now = await selection();
-  if (!now.focused) throw new Error('the focus is not in the map after the delete; ⌘Z not sent');
+  check(now.focused, `${what}: the focus is not in the map after the delete; ⌘Z not sent, the note was written back`);
+  if (!now.focused) {
+    await evaluate(`${VIEW} await app.vault.modify(view.file, ${JSON.stringify(initial)}); return true;`);
+    return { ...await after(before), undoSent: false };
+  }
   await cdp.realKey('z', 4);
-  return after(before);
+  return { ...await after(before), undoSent: true };
 }
 
-async function deleteRow(initial, [title, key, expected], layout) {
+async function deleteRow(initial, [title, expected], key, layout) {
   await select(title);
   await markSeen();
   const before = (await state()).source;
@@ -94,12 +102,12 @@ async function deleteRow(initial, [title, key, expected], layout) {
   check(!result.labels.includes(title), `${layout} ${key} ${title}: the node is still on the map`);
   check(JSON.stringify(chosen.titles) === JSON.stringify([expected]), `${layout} ${key} ${title}: selected ${JSON.stringify(chosen.titles)}, expected ${expected}`);
   check(chosen.inside, `${layout} ${key} ${title}: the selected node is not inside the canvas`);
-  const undone = await undo(result.source);
+  const undone = await undo(result.source, initial, `${layout} ${key} ${title}`);
   const kept = await selection();
   check(undone.source === initial, `${layout} ${key} ${title}: ⌘Z did not restore the note byte for byte`);
   check(undone.labels.includes(title), `${layout} ${key} ${title}: ⌘Z did not bring the node back`);
   check(JSON.stringify(kept.titles) === JSON.stringify([expected]), `${layout} ${key} ${title}: after ⌘Z selected ${JSON.stringify(kept.titles)}, expected ${expected} to stay`);
-  return { key, deleted: title, selected: chosen.titles, inside: chosen.inside, afterUndo: kept.titles, restored: undone.source === initial };
+  return { key, deleted: title, selected: chosen.titles, inside: chosen.inside, undoSent: undone.undoSent, afterUndo: kept.titles, restored: undone.source === initial };
 }
 
 const closeNote = () => evaluate(`${VIEW}
@@ -115,11 +123,11 @@ try {
     else await app.vault.create(${JSON.stringify(CALLED)}, ${JSON.stringify(CALLED_SOURCE)});
     return true;`));
 
-  for (const layout of LAYOUTS) {
+  for (const [pass, layout] of LAYOUTS.entries()) {
     const opened = required(record, `open-${layout}`, await step(`open-${layout}`, makeOpenStep(evaluate, { note: NOTE, source: SOURCE, layout })));
     await step(`rows-${layout}`, async () => {
       const results = [];
-      for (const row of ROWS) results.push(await deleteRow(opened.source, row, layout));
+      for (const [index, row] of ROWS.entries()) results.push(await deleteRow(opened.source, row, keyFor(index, pass), layout));
       return results;
     });
     await step(`close-${layout}`, closeNote);
@@ -146,7 +154,7 @@ try {
     const chosen = await selection();
     check(JSON.stringify(chosen.titles) === '["aaaaaaaa"]', `off-screen: selected ${JSON.stringify(chosen.titles)}`);
     check(chosen.inside, 'off-screen: the selected sibling was not brought inside the canvas');
-    const undone = await undo((await state()).source);
+    const undone = await undo((await state()).source, offscreen.source, 'off-screen');
     check(undone.source === offscreen.source, 'off-screen: ⌘Z did not restore the note byte for byte');
     return { outsideBefore: before.outside, selected: chosen.titles, inside: chosen.inside };
   });
@@ -155,7 +163,7 @@ try {
   const headings = required(record, 'open-headings', await step('open-headings', makeOpenStep(evaluate, { note: HEADINGS, source: HEADINGS_SOURCE })));
   await step('rows-headings', async () => {
     const results = [];
-    for (const row of HEADING_ROWS) results.push(await deleteRow(headings.source, row, 'headings'));
+    for (const [index, row] of HEADING_ROWS.entries()) results.push(await deleteRow(headings.source, row, keyFor(index, 0), 'headings'));
     return results;
   });
 

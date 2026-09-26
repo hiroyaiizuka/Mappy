@@ -253,7 +253,7 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'delete': {
       const count = doc.nodes.length - branchSize(node);
       const remove = (edits: TextEdit[]): EditPlan =>
-        validate(doc, edits, count, selectionAfterDelete(doc, node, edits, selected => selected.from));
+        validate(doc, edits, count, selectionAfterDelete(doc, node, edits)?.from ?? null);
       if (node.kind !== 'list') return remove([{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }]);
       try {
         // An item leaves with its line break, as it does when moved.

@@ -65,4 +65,13 @@ describe('selection after Delete／Backspace in the view (LEV-204)', () => {
     });
   });
 
+  // Code review of LEV-204: with the virtual root as the parent and no node of the same kind left, nothing was
+  // selected and the focus left the map with the deleted element, so the next key did not reach it.
+  it('keeps a node selected and focused when the last topic of a body without an H2 goes', async () => {
+    const mounted = await mountMapView(PATH, '---\nmappy: true\n---\n- a\n\n## T\n- t\n', 'mindmap');
+    opened.push(mounted);
+    await remove(mounted, 'T', 'Delete');
+    expect(selectedTitles(mounted)).toEqual(['a']);
+    expect(mounted.canvas.contains(document.activeElement)).toBe(true);
+  });
 });
