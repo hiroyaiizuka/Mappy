@@ -17,6 +17,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildBrowserHarness } from './browser-harness.mjs';
 import { CdpClosedError, Page, chromeVersion, findChrome, withHarnessPage } from './browser-harness-cdp.mjs';
+import { MEASURE_NODE_BOX, draftProblems, sameBox, showBox } from './node-box.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WINDOW = { width: 1640, height: 1000 };
@@ -1194,31 +1195,15 @@ export async function captureNewNode(recorder, page) {
     await page.settle();
   };
   const editing = () => page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') === true`);
-  /** The node being edited (or else the selected one): its box, and the draft's rows, height and centre against the node's text box. */
+  /** The node being edited (or else the selected one): its box, and the draft's rows, height and top (scripts/node-box.mjs). */
   const box = () => page.evaluate(`(() => {
     const pane = document.getElementById('harness-pane');
     const input = pane.querySelector('.mappy-inline-input');
     const node = input ? input.closest('.mappy-node') : pane.querySelector('.mappy-node.is-selected');
-    if (!node) return null;
-    const rect = node.getBoundingClientRect();
-    // World units: the layout's position of the node and its size at scale 1. Confirming selects the node, which can
-    // pan the viewport to bring a wide node into view; the box on the map is what must not change.
-    const scale = rect.width / node.offsetWidth;
-    const placed = node.style.transform.match(/translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/u);
-    const result = { x: Number(placed?.[1]), y: Number(placed?.[2]), width: rect.width / scale, height: rect.height / scale,
-      title: node.querySelector('.mappy-node-label')?.textContent ?? '' };
-    if (!input) return result;
-    const style = getComputedStyle(input);
-    const line = parseFloat(style.lineHeight);
-    const own = input.getBoundingClientRect();
-    const rows = Math.round(input.offsetHeight / line);
-    const nodeStyle = getComputedStyle(node);
-    const top = rect.y + (parseFloat(nodeStyle.paddingTop) + parseFloat(nodeStyle.borderTopWidth)) * scale;
-    return { ...result, value: input.value, rows, draftHeight: input.offsetHeight, line,
-      selected: input.selectionStart === 0 && input.selectionEnd === input.value.length, offsetTop: (own.y - top) / scale };
+    return node ? (${MEASURE_NODE_BOX})(node, input) : null;
   })()`);
-  const same = (left, right) => ['x', 'y', 'width', 'height'].every(key => Math.abs(left[key] - right[key]) <= 0.5);
-  const show = rect => `${rect.width.toFixed(1)}×${rect.height.toFixed(1)}@${rect.x.toFixed(1)},${rect.y.toFixed(1)}`;
+  const same = sameBox;
+  const show = showBox;
   const waitEditing = async (wanted = true) => {
     for (let wait = 0; wait < 20 && (await editing()) !== wanted; wait += 1) await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
     expect((await editing()) === wanted, wanted ? 'the inline editor did not open' : 'the inline editor did not close');
@@ -1243,9 +1228,8 @@ export async function captureNewNode(recorder, page) {
   };
   /** A draft is exactly its rows high (no floor above the text): the caret is in the middle of its row. */
   const checkDraft = (draft, rows, label) => {
-    expect(draft.rows === rows, `${label}: the draft has ${draft.rows} rows, not ${rows}`);
-    expect(Math.abs(draft.draftHeight - rows * draft.line) <= 1, `${label}: the draft is ${draft.draftHeight}px high for ${rows} rows of ${draft.line}px`);
-    expect(Math.abs(draft.offsetTop) <= 0.5, `${label}: the draft starts ${draft.offsetTop.toFixed(1)}px below the node's text box`);
+    const problems = draftProblems(draft, rows, label);
+    expect(problems.length === 0, problems.join('; '));
   };
   const TARGETS = [
     { id: 'plain', label: '通常ノード「休息の取り方」', title: '休息の取り方' },

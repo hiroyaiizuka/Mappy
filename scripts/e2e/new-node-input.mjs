@@ -19,6 +19,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeFocusCanvas, makeOpenStep, makePluginStep, makeSelect } from './dom-helpers.mjs';
+import { MEASURE_NODE_BOX, draftProblems, sameBox, showBox } from '../node-box.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -56,23 +57,13 @@ const focusCanvas = makeFocusCanvas(cdp, evaluate);
 
 const source = () => evaluate(`${VIEW} return await source();`);
 const editing = () => evaluate(`${VIEW} return !!input();`);
-/** The node being edited (or else the selected one), in world units, and the draft's rows, height and top against the node's text box. */
+/** The node being edited (or else the selected one): its box, and the draft's rows, height and top (scripts/node-box.mjs). */
 const box = () => evaluate(`${VIEW}
   const draft = input();
   const node = draft ? draft.closest('.mappy-node') : el.querySelector('.mappy-node.is-selected');
-  if (!node) return null;
-  const rect = node.getBoundingClientRect();
-  const scale = rect.width / node.offsetWidth;
-  const placed = node.style.transform.match(/translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/u);
-  const result = { x: Number(placed?.[1]), y: Number(placed?.[2]), width: rect.width / scale, height: rect.height / scale, name: label(node) };
-  if (!draft) return result;
-  const line = parseFloat(getComputedStyle(draft).lineHeight);
-  const style = getComputedStyle(node);
-  const top = rect.y + (parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth)) * scale;
-  return { ...result, value: draft.value, rows: Math.round(draft.offsetHeight / line), height_: draft.offsetHeight, line,
-    selected: draft.selectionStart === 0 && draft.selectionEnd === draft.value.length, offsetTop: (draft.getBoundingClientRect().y - top) / scale };`);
-const same = (left, right) => ['x', 'y', 'width', 'height'].every(key => Math.abs(left[key] - right[key]) <= 0.5);
-const show = rect => `${rect.width.toFixed(1)}x${rect.height.toFixed(1)}@${rect.x},${rect.y}`;
+  return node ? (${MEASURE_NODE_BOX})(node, draft) : null;`);
+const same = sameBox;
+const show = showBox;
 
 async function waitEditing(wanted = true, timeout = 3000) {
   const started = Date.now();
@@ -109,9 +100,7 @@ async function typeDraft(text) {
 }
 
 function checkDraft(draft, rows, label) {
-  check(draft.rows === rows, `${label}: ${draft.rows} rows, not ${rows}`);
-  check(Math.abs(draft.height_ - rows * draft.line) <= 1, `${label}: the draft is ${draft.height_}px high for ${rows} rows of ${draft.line}px`);
-  check(Math.abs(draft.offsetTop) <= 0.5, `${label}: the draft starts ${draft.offsetTop.toFixed(1)}px below the node's text box`);
+  for (const problem of draftProblems(draft, rows, label)) check(false, problem);
 }
 
 /** Close the map under test and delete its note (`--keep` leaves both). */

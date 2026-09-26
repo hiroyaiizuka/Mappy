@@ -93,6 +93,10 @@ describe('InlineEditor DOM interactions', () => {
     input.value = '';
     input.dispatchEvent(new InputEvent('input', { bubbles: true }));
     expect(host.classList.contains('is-draft-empty')).toBe(true);
+    // Spaces only: the saved title is trimmed to nothing, so the draft is as empty as the node it leaves (review 1).
+    input.value = '  ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: ' ' }));
+    expect(host.classList.contains('is-draft-empty')).toBe(true);
     editor.dispose();
     expect(host.classList.contains('is-draft-empty')).toBe(false);
     expect(fixture('名前').host.classList.contains('is-draft-empty')).toBe(false);

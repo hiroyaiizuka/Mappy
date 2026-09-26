@@ -16,6 +16,8 @@ interface HistoryEntry {
   after: string;
   forward: TextEdit[];
   inverse: TextEdit[];
+  /** The Redo steps this write dropped, kept while it is the last step so that `retract` can give them back. */
+  dropped?: HistoryEntry[];
 }
 
 /** A write `applyLatest` made: the text before and after it, and its edits. */
@@ -75,7 +77,9 @@ export class DocumentStore {
       const forward = mergeAdjacentEdits(requestedEdits);
       const inverse = invertEdits(before, forward);
       await this.writeSafely(file, session, before, after, forward);
-      session.past.push({ before, after, forward, inverse });
+      const last = session.past[session.past.length - 1];
+      if (last) delete last.dropped;
+      session.past.push({ before, after, forward, inverse, ...(session.future.length > 0 ? { dropped: session.future } : {}) });
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
       session.latest = [];
@@ -147,7 +151,7 @@ export class DocumentStore {
 
   /**
    * Take back `write`, the history's last step, as if it had never been made: the note goes back to the text
-   * before it, and neither Undo nor Redo has a step for it. For a node the map added and the user dismissed at
+   * before it, neither Undo nor Redo has a step for it, and the Redo steps the write dropped are back. For a node the map added and the user dismissed at
    * once (LEV-203: Escape on the new node's draft), which is no edit of theirs to undo or redo. Refused, with the
    * note left as it is, when anything has come after the write (another step, a change from outside). Returns
    * the write that took it back.
@@ -163,6 +167,8 @@ export class DocumentStore {
       await this.writeSafely(file, session, entry.after, entry.before, entry.inverse);
       session.latest = [];
       session.past.pop();
+      session.future = entry.dropped ?? [];
+      delete entry.dropped;
       return { before: entry.after, after: entry.before, edits: entry.inverse };
     });
   }
@@ -279,6 +285,7 @@ export class DocumentStore {
       await this.writeSafely(file, session, before, after, edits);
       session.latest = [];
       from.pop();
+      delete entry.dropped;
       to.push(entry);
       return after;
     });

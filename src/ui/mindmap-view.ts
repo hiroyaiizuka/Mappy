@@ -47,13 +47,13 @@ export const EXPORT_RENDER_STALLED_MESSAGE = "描画が終わらないノード�
 const TOPIC_RENDER_WAIT_MS = 300;
 /** A draft whose node is no longer in the note: the one thing the user can do is pick a node again. */
 export const NODE_GONE_MESSAGE = "編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。";
-/** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
 /**
  * The provisional names a node added on the map is written with, selected in its inline editor so that typing
  * replaces them (LEV-203, as MarkMind): a child or sibling (Tab／Enter), and a free topic (the empty canvas).
  */
 export const NEW_NODE_TITLE = "サブトピック";
 export const NEW_TOPIC_TITLE = "トピック";
+/** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
 export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り専用です。ダブルクリックで元のマップを開けます。";
 
 /** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
@@ -196,6 +196,8 @@ export class MindmapView extends FileView {
    * with nothing selected adds the map as a free topic (§5 M12).
    */
   private deselected = false;
+  /** Image attachments under way (`attachImage`): written onto the selected node once the file is stored. */
+  private attaching = 0;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
   private theme: MapTheme = "follow";
@@ -1844,18 +1846,22 @@ export class MindmapView extends FileView {
    * Take back a node this view has just added, whose draft was dismissed with Escape before anything was
    * written to it (LEV-203): the note goes back to its text before the addition, with no step left for Undo or
    * Redo, and the node selected before the addition is selected again. Taken back as this view's own write, so
-   * the re-read carries every id over (folds, the selection), same-titled nodes included. The caller asks only
-   * while the note is as the addition left it; the store still refuses (the node stays, a Notice says why) if
-   * a change lands in between.
+   * the re-read carries every id over (folds, the selection), same-titled nodes included; with nothing selected
+   * before, nothing is selected after. The caller asks only while the note is as the addition left it and
+   * nothing else is being written; the store still refuses (the node stays, a Notice says why) if a change
+   * lands in between. A topic keeps the point it was pressed at until the section is really gone.
    */
-  private async retract(file: TFile, created: Created): Promise<void> {
-    if (file !== this.file || this.closed) return;
+  private async retract(file: TFile, created: Created, nodeId: string): Promise<void> {
+    if (file !== this.file || this.closed || this.saving) return;
     this.saving = true;
     try {
       let write: LatestWrite;
       try { write = await this.store.retract(file, created.write); }
       catch (error) { this.scheduleRefresh(); throw error; }
       this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
+      if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
+      // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
+      if (!created.previous) this.deselect();
       if (!this.unloading) await this.refresh();
     } finally { this.saving = false; }
     if (this.file !== file || this.closed || !this.document) return;
@@ -1920,11 +1926,11 @@ export class MindmapView extends FileView {
         this.renderer.editing(node.id, false);
         if (this.closed || this.unloading || file !== this.file) return;
         // Dismissed right after the addition, the note still as the addition left it: the node goes too. Once
-        // something else has been written (an image pasted onto it, a change from outside), Escape only closes
-        // the draft, as on any node: the node now holds more than the addition.
-        if (cancelled && created && this.document?.source === created.write.after) {
-          if (this.pendingTopic?.id === node.id) this.pendingTopic = null;
-          this.run(() => this.retract(file, created));
+        // something else has been written or is on its way (an image pasted onto it, the draft's own save that an
+        // Escape pressed during it cannot stop, a change from outside), Escape only closes the draft, as on any
+        // node: the node holds more than the addition.
+        if (cancelled && created && !this.saving && this.attaching === 0 && this.document?.source === created.write.after) {
+          this.run(() => this.retract(file, created, node.id));
           return;
         }
         this.draw();
@@ -2067,6 +2073,13 @@ export class MindmapView extends FileView {
     this.assertEditable(node.id);
     if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
     if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
+    // Counted from here until its write lands or fails: an Escape on a new node's draft meanwhile must not take the
+    // node away from under the image about to be written onto it (LEV-203).
+    this.attaching += 1;
+    try { await this.attachTo(image, node, document, file); } finally { this.attaching -= 1; }
+  }
+
+  private async attachTo(image: File, node: MindNode, document: MindDocument, file: TFile): Promise<void> {
     const binary = await image.arrayBuffer();
     // The note as the map shows it, or as the view's own layout buttons have since written it (LEV-196): the store
     // carries the link over those.

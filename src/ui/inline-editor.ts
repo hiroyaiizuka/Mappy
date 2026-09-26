@@ -93,8 +93,9 @@ export class InlineEditor {
    * Either way the map lays out again for the node's new size.
    */
   private resize(): void {
-    // An emptied draft takes the empty node's box, which its node takes once confirmed (styles.css, LEV-203).
-    this.host.classList.toggle("is-draft-empty", this.input.value === "");
+    // An emptied draft takes the empty node's box, which its node takes once confirmed (styles.css, LEV-203): the
+    // saved title is trimmed, so a draft of spaces is as empty as the node it leaves (NodeRenderer's `is-empty`).
+    this.host.classList.toggle("is-draft-empty", this.input.value.trim() === "");
     if (!this.sizesItself) this.measure();
     this.options.resize();
   }

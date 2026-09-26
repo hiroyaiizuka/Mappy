@@ -16,7 +16,7 @@ import { HarnessApp } from '../../harness/browser/app';
 import { installObsidianDom } from '../../harness/browser/dom';
 import type { MindDocument } from '../../src/core/markdown';
 import type { LayoutMode } from '../../src/layout/layout';
-import { DocumentStore } from '../../src/obsidian/document-store';
+import { DocumentStore, conflictMessage } from '../../src/obsidian/document-store';
 import { NEW_NODE_TITLE, NEW_TOPIC_TITLE } from '../../src/ui/mindmap-view';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -228,6 +228,68 @@ describe('a node added on the map opens under its provisional name, selected (LE
     await mounted.settle();
     await mounted.settle();
     expect(mounted.source()).toBe(`${written}- 外から\n`);
+  });
+
+  it('Escape pressed while the draft\'s own Enter is saving keeps what Enter saves, with no Notice (review 1)', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    input.value = '着替え';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    mounted.key(input, 'Enter');
+    mounted.key(input, 'Escape');
+    await mounted.settle();
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - 着替え\n'));
+    expect(document.querySelector('.notice')).toBeNull();
+  });
+
+  it('Escape while an image is still on its way onto the new node keeps the node for it (review 1)', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const attach = (mounted.view as unknown as { attachImage(image: File): Promise<void> }).attachImage.bind(mounted.view);
+    // Not awaited: the file is read and stored before anything is written to the note.
+    const pasting = attach(new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' }));
+    mounted.key(input, 'Escape');
+    await pasting;
+    await mounted.settle();
+    expect(mounted.source()).toMatch(new RegExp(`- 持ち物\\n  - ${NEW_NODE_TITLE}\\n\\n    !\\[\\[\\d*-?shot\\.png\\]\\]`, 'u'));
+    expect(document.querySelector('.notice')).toBeNull();
+  });
+
+  it('with nothing selected before a topic was added, nothing is selected once Escape takes it back (review 1)', async () => {
+    const mounted = await mount(LIST);
+    (mounted.view as unknown as { deselect(): void }).deselect();
+    mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await mounted.settle();
+    mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST);
+    expect(selectedNames(mounted)).toEqual([]);
+  });
+
+  it('a topic whose taking back the store refuses keeps the point it was pressed at (review 1)', async () => {
+    const mounted = await mount(LIST);
+    mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await mounted.settle();
+    // A change the view could not see before the store's turn (a race): the store refuses, the section stays.
+    mounted.store.retract = () => Promise.reject(new Error(conflictMessage));
+    mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${LIST}\n## ${NEW_TOPIC_TITLE}\n`);
+    expect(document.querySelector('.notice')?.textContent ?? '').toContain('Markdown が変更されています');
+    // Named later, the topic is stored where it was pressed.
+    mounted.key(mounted.select(NEW_TOPIC_TITLE), 'F2');
+    const input = mounted.editor();
+    if (!input) throw new Error('F2 did not open the editor');
+    input.value = '後で付けた名前';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    mounted.key(input, 'Enter');
+    await mounted.settle();
+    expect(mounted.source()).toMatch(/\n {2}後で付けた名前: \{ mindmap: \[-?\d+, -?\d+\] \}\n/u);
   });
 });
 
