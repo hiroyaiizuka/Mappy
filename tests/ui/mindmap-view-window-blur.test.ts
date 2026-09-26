@@ -84,10 +84,36 @@ describe('a draft whose window loses the OS focus (LEV-216)', () => {
     expect(mounted.source()).toBe(RENAMED);
   });
 
+  // Passes on 0.3.7 too (it saved and closed on leaving): this pins that keeping the draft open does not lose it. The
+  // build after review 1 (no save on leaving, a save on close) failed it on the real Obsidian, which takes the view's
+  // element out before `onClose` (E56 4・5).
   it('is in the note when the view closes while the window is still in the background', async () => {
     const { mounted } = await draftInBackgroundWindow();
     await closeView(mounted);
     expect(mounted.source()).toBe(RENAMED);
+  });
+
+  // Passes on 0.3.7 too (by another way: its blur closed the draft, and the Escape reached the closed editor's own
+  // listener). It pins that the save on leaving does not stand in the way of taking the addition back; that such a save
+  // writes nothing at all is inline-editor.test.ts's (review 3: a write of the same text dropped the Redo steps the
+  // store keeps for the take-back).
+  it('leaves a node just added under its provisional name to Escape: nothing is written on leaving, and Escape takes it back', async () => {
+    const mounted = await mountMapView(PATH, SOURCE);
+    opened.push(mounted);
+    mounted.key(mounted.select('別のノード'), 'Tab');
+    await mounted.settle();
+    const added = mounted.source();
+    expect(added).toContain(`  - ${NEW_NODE_TITLE}`);
+    const input = mounted.editor();
+    if (!input) throw new Error('Tab did not open the new node\'s draft');
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    input.dispatchEvent(new FocusEvent('blur'));
+    await mounted.settle();
+    expect(mounted.source()).toBe(added);
+    windowFocus.mockReturnValue(true);
+    mounted.key(input, 'Escape');
+    await mounted.settle();
+    expect(mounted.source()).toBe(SOURCE);
   });
 
   it('applies over a change another view wrote to the note while the window was away', async () => {
@@ -98,6 +124,9 @@ describe('a draft whose window loses the OS focus (LEV-216)', () => {
     // The map re-reads a change from outside on its debounce.
     await new Promise(resolve => setTimeout(resolve, 400));
     await mounted.settle();
+    // Still the same draft, open over the re-read note: through 0.3.7 it had closed on leaving (and this test would
+    // pass without the fix but for this line, review 3).
+    expect(mounted.editor()).toBe(input);
     windowFocus.mockReturnValue(true);
     mounted.key(input, 'Enter');
     await mounted.settle();

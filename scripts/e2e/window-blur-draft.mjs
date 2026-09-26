@@ -11,8 +11,9 @@
  * 1. main: F2 → text → the window blurs (the note has the rename, the draft is still open and active) and comes back
  *    → Enter: the note has the rename and nothing else, no draft is left open.
  * 2. moved: the same in a map moved to a new window (`moveLeafToPopout`, the tab menu's 「新規ウィンドウに移動」).
- * 3. click-after: F2 → text → the window blurs and comes back → a press on the empty canvas: the draft is saved (a
- *    blur inside the window still commits it).
+ * 3. click-after: F2 → text → the window blurs and comes back → more text typed → a press on the empty canvas: the
+ *    draft closes with the added text saved (a blur inside the window still commits it; the text on leaving was saved
+ *    already, so the added text is what shows the press saved anything).
  * 4. close-moved: F2 → text → the moved window blurs and, still in the background, is closed: the draft is in the
  *    note (a window without the focus sends the draft no blur as it goes, so what saves it is the save on leaving;
  *    review 1 of LEV-216 found a build that kept the draft unsaved losing it here).
@@ -138,13 +139,17 @@ const openDraft = async (cdp, windowEval, title) => {
 };
 
 /** One step: F2 on 「通常のノード」, a title, the window left and come back to, then `finish` (Enter or a canvas press). */
-const draftAcrossWindow = async (cdp, windowEval, { title, finishWith }) => {
+const draftAcrossWindow = async (cdp, windowEval, { title, finishWith, typeAfter = '' }) => {
   const after = makeAfter(windowEval);
   await openDraft(cdp, windowEval, title);
   const left = await leaveWindow(windowEval);
   const kept = await windowEval(`${VIEW} return { editing: !!input(), active: document.activeElement === input(), source: await source() };`);
   const before = kept.source;
   const saved = before === expectRenamed(title);
+  if (typeAfter) {
+    await cdp.insertText(typeAfter);
+    await wait(300);
+  }
   let sent;
   if (finishWith === 'Enter') {
     await cdp.realKey('Enter');
@@ -241,10 +246,10 @@ try {
   await step('3-click-after', async () => {
     await reset();
     await openInMain();
-    const result = await draftAcrossWindow(main, evaluate, { title: '押して確定', finishWith: 'press' }).finally(detach);
+    const result = await draftAcrossWindow(main, evaluate, { title: '押して確定', finishWith: 'press', typeAfter: '（書き足し）' }).finally(detach);
     check(result.foreign.length === 0, `3-click-after: keys the case did not send reached the window (foreign input; the step proves nothing): ${JSON.stringify(result.foreign)}`);
     check(result.kept.editing && result.kept.saved, `3-click-after: leaving the window closed the draft or did not save it: ${JSON.stringify(result.kept)}`);
-    check(result.source === expectRenamed('押して確定') && !result.editing, `3-click-after: a press inside the window after coming back did not save the draft: ${JSON.stringify(result.source)} (editing ${result.editing})`);
+    check(result.source === expectRenamed('押して確定（書き足し）') && !result.editing, `3-click-after: a press inside the window after coming back did not close the draft with what was typed after: ${JSON.stringify(result.source)} (editing ${result.editing})`);
     return result;
   });
 

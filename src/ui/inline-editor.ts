@@ -16,6 +16,8 @@ export interface InlineEditorOptions {
 /** Shown in place of a conflict line once the map has re-read the note: the same Enter now applies the draft to it. */
 export const REFRESHED_MESSAGE = "Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。";
 
+const SAVE_FAILED_MESSAGE = "保存できませんでした。";
+
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
 const CARET_ALLOWANCE = 2;
 
@@ -30,6 +32,13 @@ export class InlineEditor {
   private blurAfterComposition = false;
   private compositionBlurTimer: number | undefined;
   private disposed = false;
+  /**
+   * The save that keeps the draft open (the window lost the focus, LEV-216), while it runs: an Enter, Tab or blur that
+   * comes meanwhile waits for it instead of being dropped as a second save would be.
+   */
+  private inPlace: Promise<void> | undefined;
+  /** The text the note has for this draft: the title it opened on, then what a save in place wrote. */
+  private written: string;
   private readonly suggestion: InlineSuggestion | undefined;
   /** Whether the stylesheet sizes the draft to its text (`field-sizing: content`); if not, `measure` does. */
   private readonly sizesItself: boolean;
@@ -41,6 +50,7 @@ export class InlineEditor {
       cls: "mappy-inline-input", attr: { rows: "1", "aria-label": "ノードのテキスト" },
     });
     this.input.value = options.initial;
+    this.written = options.initial;
     this.sizesItself = this.input.ownerDocument.defaultView?.CSS?.supports?.("field-sizing", "content") === true;
     this.suggestion = options.suggest?.(this.input);
     this.error = host.createDiv({ cls: "mappy-inline-error", attr: { role: "alert" } });
@@ -53,8 +63,11 @@ export class InlineEditor {
       // Some browsers deliver the final input event after compositionend.
       this.compositionBlurTimer = this.input.ownerDocument.defaultView?.setTimeout(() => {
         this.compositionBlurTimer = undefined;
-        if (!this.disposed && !this.composing && this.input.ownerDocument.activeElement !== this.input
-          && !this.error.textContent) void this.commit("none");
+        if (this.disposed || this.composing || this.error.textContent) return;
+        const doc = this.input.ownerDocument;
+        if (doc.activeElement !== this.input) void this.commit("none");
+        // The window was left mid-composition: what the composition ended with is saved as the blur's own would be.
+        else if (!doc.hasFocus()) void this.saveInPlace();
       }, 0);
     });
     this.input.addEventListener("input", () => { this.resize(); });
@@ -157,6 +170,7 @@ export class InlineEditor {
   }
 
   private commit(next: "none" | "child"): Promise<void> {
+    if (this.inPlace) return this.inPlace.then(() => this.commit(next));
     if (this.busy || this.disposed) return Promise.resolve();
     const task = this.settle(next).finally(() => { if (this.pending === task) this.pending = undefined; });
     this.pending = task;
@@ -164,23 +178,22 @@ export class InlineEditor {
   }
 
   /**
-   * Save the draft and keep it open (the window lost the focus: LEV-216). A refusal shows its reason on the error line
-   * as Enter's does; the draft is not focused for it, since the window it is in has no focus to give.
+   * Save the draft and keep it open (the window lost the focus: LEV-216). Text the note already has is not written again
+   * (a round trip to another app with nothing typed; a provisional name left as it is, which Escape can still take
+   * back). The draft stays editable meanwhile: what is typed on coming back is the next save's. A refusal shows its
+   * reason on the error line as Enter's does; the draft is not focused for it, since its window has no focus to give.
    */
   private saveInPlace(): Promise<void> {
-    if (this.busy || this.disposed) return Promise.resolve();
-    const task = (async () => {
-      this.busy = true;
-      this.input.readOnly = true;
-      try {
-        await this.options.save(this.input.value);
-      } catch (error) {
-        if (!this.disposed) this.error.setText(error instanceof Error ? error.message : "保存できませんでした。");
-      } finally {
-        this.busy = false;
-        this.input.readOnly = false;
-      }
-    })().finally(() => { if (this.pending === task) this.pending = undefined; });
+    const text = this.input.value;
+    if (this.busy || this.inPlace || this.disposed || text === this.written) return Promise.resolve();
+    const task = this.options.save(text)
+      .then(() => { this.written = text; })
+      .catch((error: unknown) => { if (!this.disposed) this.error.setText(failure(error)); })
+      .finally(() => {
+        if (this.inPlace === task) this.inPlace = undefined;
+        if (this.pending === task) this.pending = undefined;
+      });
+    this.inPlace = task;
     this.pending = task;
     return task;
   }
@@ -196,7 +209,7 @@ export class InlineEditor {
       this.options.finish(next, false, this.input.value);
     } catch (error) {
       if (this.disposed) return;
-      this.error.setText(error instanceof Error ? error.message : "保存できませんでした。");
+      this.error.setText(failure(error));
       this.input.focus({ preventScroll: true });
     } finally {
       this.busy = false;
@@ -257,4 +270,9 @@ export class InlineEditor {
     this.host.removeClass("is-draft-empty");
     this.options.restore();
   }
+}
+
+/** The reason a refused save shows on the draft's error line. */
+function failure(error: unknown): string {
+  return error instanceof Error ? error.message : SAVE_FAILED_MESSAGE;
 }
