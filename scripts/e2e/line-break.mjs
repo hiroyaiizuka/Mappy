@@ -1,5 +1,5 @@
 /**
- * E39 (docs/harness.md): a line break inside a node (LEV-202). 本人の操作（F2 で開いて Shift+Enter で改行し、Enter で
+ * E40 (docs/harness.md): a line break inside a node (LEV-202). 本人の操作（F2 で開いて Shift+Enter で改行し、Enter で
  * 確定する）を対象の形ごとに回す: リストのノートの項目・本文のルート（H2）・トピック・Tab で作った空のノードと、見出しの
  * ノートの ATX 見出し・1 行の Setext 見出し、拒否される形（複数行の Setext 見出し・\ の直後）。続けて、そのまま
  * 確定しても原文が変わらないこと、⌘Z／⌘⇧Z、複数行の文の挿入（貼り付けと同じ input）、拒否された下書きがダブルクリックで
@@ -8,7 +8,7 @@
  *
  * Shift+Enter は文字を伴う実キー（`realKey(..., '\r')`）で送る: 既定動作（textarea の改行の挿入）が走るのはそのときだけ。
  * ネイティブ IME はここでは送れない（CDP の insertText は変換の確定と同じ input を出すだけ）ので、IME の変換中の
- * Enter／Shift+Enter は人の手で確かめる（docs/harness.md E39 (3)）。
+ * Enter／Shift+Enter は人の手で確かめる（docs/harness.md E40 (3)）。
  *
  * Usage: npm run harness:e2e:line-break -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
  */
