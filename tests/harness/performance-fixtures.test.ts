@@ -3,7 +3,7 @@ import { parseMarkdown } from '../../src/core/markdown';
 import { nodeBody } from '../../src/core/body';
 import { attachmentMarkdown } from '../../src/core/attachments';
 import {
-  DEEP_CHAIN_LEVELS, IMAGE_EVERY, makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
+  DEEP_CHAIN_LEVELS, IMAGE_EVERY, MIXED_BARE_STAGE_EVERY, MIXED_CHAIN_LEVELS, MIXED_FIRST_BARE_STAGE, makeEmbedFixture, makeMixedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
 } from '../../scripts/performance-fixtures.mjs';
 
 function parse(nodeCount: number, shape: string) {
@@ -96,6 +96,37 @@ describe('performance fixture shapes', () => {
     const withImage = items.filter(node => attachmentMarkdown(nodeBody(doc, node)) === '![[sample-image.svg]]');
     expect(withImage).toHaveLength(Math.floor(99 / IMAGE_EVERY));
     expect(source.match(/!\[\[sample-image\.svg\]\]/gu)).toHaveLength(Math.floor(99 / IMAGE_EVERY));
+  });
+
+  it.each([500, 2000])('mixes deep chains, long titles, images and bare stages in the %i-node timeline document (E45)', count => {
+    const [filename, source] = makeMixedFixture(count);
+    expect(filename).toBe(`timeline-mixed-${count}.md`);
+    expect(source.startsWith(`---\nmappy: true\n---\n## 大規模タイムライン（${count}ノード）\n`)).toBe(true);
+    const doc = parseMarkdown(source, filename.replace(/\.md$/u, ''));
+    expect(doc.nodes).toHaveLength(count);
+    const top = doc.root.children[0]!;
+    expect(doc.root.children).toHaveLength(1);
+    const stages = top.children;
+    expect(stages).toHaveLength(Math.round(count / 40));
+    const bare = stages.flatMap((stage, index) => (stage.children.length === 0 ? [index] : []));
+    expect(bare[0]).toBe(MIXED_FIRST_BARE_STAGE);
+    expect(bare.every((index, at) => index === MIXED_FIRST_BARE_STAGE + at * MIXED_BARE_STAGE_EVERY)).toBe(true);
+    expect(bare).toHaveLength(count === 500 ? 1 : 5);
+    expect(Math.max(...doc.nodes.map(node => node.level)) - top.level - 1).toBe(MIXED_CHAIN_LEVELS);
+    const titles = doc.nodes.map(node => node.title);
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(titles.filter(title => title.length >= 40).length).toBeGreaterThan(count / 10);
+    const images = doc.nodes.map(node => attachmentMarkdown(nodeBody(doc, node))).filter(Boolean);
+    expect(images).toContain('![[sample-image.svg]]');
+    expect(images).toContain('![説明](sample-image.svg)');
+    expect(images.filter(image => image === '![[存在しない画像.png|120]]')).toHaveLength(1);
+    expect(attachmentMarkdown(nodeBody(doc, stages[2]!))).toBe('![[sample-image.svg|120]]');
+    // E45 folds the first stage's chain at depth 8, then 4, then the stage: the first 段 8／段 4 lines of the note are in it.
+    const chain = [stages[0]!];
+    while (chain.at(-1)!.children.length > 0) chain.push(chain.at(-1)!.children[0]!);
+    expect(chain.length - 1).toBe(MIXED_CHAIN_LEVELS);
+    expect(source.match(/^ {16}- (\d+ 段 8)$/mu)?.[1]).toBe(chain[8]!.title);
+    expect(source.match(/^ {8}- (\d+ 段 4)$/mu)?.[1]).toBe(chain[4]!.title);
   });
 
   it('rejects unknown shapes', () => {

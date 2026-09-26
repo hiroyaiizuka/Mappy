@@ -36,6 +36,7 @@ export const CASES = [
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },
+  { name: 'timeline-large', file: 'timeline-large.mjs', description: 'E45 長文・画像・深い枝が混在する大規模タイムライン', shot: true },
 ];
 
 const args = process.argv.slice(2);
