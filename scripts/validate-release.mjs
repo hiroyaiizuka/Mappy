@@ -2,13 +2,24 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+export const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const pluginId = /^[a-z]+(?:-[a-z]+)*$/u;
 // README's known-limitations section, where an item may be limited to a release, e.g.
-// 「（0.3.5 まで）」 (harness.md「リリース手順」1). Any "x.y.z まで" in the section counts, so
-// 「（v0.3.5 まで。0.3.6 で修正）」 and 「Android では 0.3.5 までの版」 are checked too.
-const knownLimitationsHeading = '## 既知の制限';
-const versionLimit = /(?<![\d.])v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?![\d.])\s*まで/gu;
+// 「（0.3.5 まで）」 (harness.md「リリース手順」1). The heading text is load-bearing; README
+// marks it with a comment.
+const knownLimitationsHeading = /^ {0,3}##[ \t]+既知の制限/u;
+const sectionEnd = /^ {0,3}#{1,2}(?:[ \t]|$)/u;
+const fenceOpen = /^ {0,3}(`{3,}|~{3,})/u;
+const version = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`;
+const versionPrefix = String.raw`(?:v|ver\.?[ \t]*)?`;
+// 「x.y.z まで」「x.y.z 以前」 and 「〜x.y.z」, allowing a v / Ver. prefix and a soft wrap.
+const versionLimits = [
+  new RegExp(String.raw`(?<![\d.])${versionPrefix}(${version})(?![\d.])\s*(?:まで|以前)`, 'giu'),
+  new RegExp(String.raw`[〜~]\s*${versionPrefix}(${version})(?![\d.])`, 'giu'),
+];
+// A version written right after a Latin product name (「Obsidian 1.4.0 まで」「iOS 16.0.0 以前」)
+// belongs to that product, so it is not compared with Mappy's.
+const otherProductBefore = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+-]*)[ \t]+$/u;
 const manifestKeys = new Set([
   'id', 'name', 'version', 'minAppVersion', 'description', 'author',
   'isDesktopOnly', 'authorUrl', 'fundingUrl',
@@ -24,35 +35,61 @@ function compareVersions(left, right) {
 }
 
 /**
- * Report README known limitations limited to a release older than `version`. Only the
- * `## 既知の制限` section is read (outside code fences), so versions of Obsidian or other
- * tools elsewhere in README are not compared with Mappy's. A README without the section is
- * reported rather than silently passing.
+ * Blank out fenced code blocks (CommonMark: a fence closes on the same character, at least as
+ * long, with nothing after it; an unclosed fence runs to the end), keeping the line count.
  */
-export function staleKnownLimitations(readmeText, version) {
-  const lines = readmeText.split(/\r?\n/u);
-  const start = lines.findIndex((line) => line.trim() === knownLimitationsHeading);
+function blankFencedCode(lines) {
+  let fence;
+  return lines.map((line) => {
+    if (fence) {
+      const closing = new RegExp(String.raw`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}[ \t]*$`, 'u');
+      if (closing.test(line)) fence = undefined;
+      return '';
+    }
+    const open = line.match(fenceOpen);
+    if (open && !(open[1][0] === '`' && line.slice(open[0].length).includes('`'))) {
+      fence = open[1];
+      return '';
+    }
+    return line;
+  });
+}
+
+/**
+ * Report README known limitations limited to a Mappy release older than `targetVersion`.
+ * Only the `## 既知の制限` section is read, outside fenced code and HTML comments, after NFKC
+ * (so full-width digits count). A README without the section is reported rather than passing.
+ */
+export function staleKnownLimitations(readmeText, targetVersion) {
+  const lines = blankFencedCode(readmeText.normalize('NFKC').split(/\r?\n/u));
+  const start = lines.findIndex((line) => knownLimitationsHeading.test(line));
   if (start < 0) {
-    return [`README.md: missing the "${knownLimitationsHeading}" section, so version-limited known limitations cannot be checked.`];
+    return ['README.md: missing the "## 既知の制限" section, so version-limited known limitations cannot be checked.'];
+  }
+  let end = lines.findIndex((line, index) => index > start && sectionEnd.test(line));
+  if (end < 0) end = lines.length;
+  const section = lines.slice(start + 1, end).join('\n')
+    .replace(/<!--[\s\S]*?-->/gu, (comment) => comment.replace(/[^\n]/gu, ''));
+
+  const found = new Map();
+  for (const pattern of versionLimits) {
+    for (const match of section.matchAll(pattern)) {
+      const versionIndex = match.index + match[0].indexOf(match[1]);
+      if (found.has(versionIndex)) continue;
+      const lineStart = section.lastIndexOf('\n', match.index) + 1;
+      const product = section.slice(lineStart, match.index).match(otherProductBefore);
+      if (product && product[1].toLowerCase() !== 'mappy') continue;
+      found.set(versionIndex, match);
+    }
   }
   const errors = [];
-  let inFence = false;
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (/^\s*(```|~~~)/u.test(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
-    if (/^#{1,2}\s/u.test(line)) break;
-    for (const match of line.matchAll(versionLimit)) {
-      if (compareVersions(match[1], version) < 0) {
-        errors.push(
-          `README.md:${index + 1}: known limitation "${match[0]}" is limited to a release older than ${version}. `
-          + `If its fix ships in ${version}, remove the item; if not, update the version in the item.`,
-        );
-      }
-    }
+  for (const [, match] of [...found].sort(([a], [b]) => a - b)) {
+    if (compareVersions(match[1], targetVersion) >= 0) continue;
+    const line = start + 2 + (section.slice(0, match.index).match(/\n/gu)?.length ?? 0);
+    errors.push(
+      `README.md:${line}: known limitation "${match[0].replace(/\s+/gu, ' ')}" is limited to a release older than ${targetVersion}. `
+      + `If its fix ships in ${targetVersion}, remove the item; if not, update the version in the item.`,
+    );
   }
   return errors;
 }
@@ -61,8 +98,13 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Validate source metadata and, optionally, the distributable plugin directory. */
-export function validateRelease(rootDir, { artifacts = false } = {}) {
+/**
+ * Validate source metadata and, optionally, the distributable plugin directory. README's
+ * version-limited known limitations are checked unless `knownLimitations` is false: packaging
+ * for the test vault must not stop on README prose, and `npm run validate` (first in
+ * `npm run check`, and so in release.yml) still runs the check.
+ */
+export function validateRelease(rootDir, { artifacts = false, knownLimitations = true } = {}) {
   const root = resolve(rootDir);
   const errors = [];
 
@@ -131,6 +173,7 @@ export function validateRelease(rootDir, { artifacts = false } = {}) {
   readRequired('LICENSE');
   const readme = readRequired('README.md');
 
+  let manifestVersionOk = false;
   if (manifest) {
     // Official schema: https://docs.obsidian.md/Reference/Manifest
     for (const key of Object.keys(manifest)) {
@@ -162,14 +205,14 @@ export function validateRelease(rootDir, { artifacts = false } = {}) {
         requireString(manifest, 'fundingUrl', 'manifest.json');
       }
     }
-    requireVersion(manifest, 'version', 'manifest.json');
+    manifestVersionOk = requireVersion(manifest, 'version', 'manifest.json');
     requireVersion(manifest, 'minAppVersion', 'manifest.json');
     if (typeof manifest.isDesktopOnly !== 'boolean') {
       errors.push('manifest.json.isDesktopOnly: expected a boolean.');
     }
   }
 
-  if (readme && manifest && typeof manifest.version === 'string' && releaseVersion.test(manifest.version)) {
+  if (knownLimitations && readme && manifestVersionOk) {
     errors.push(...staleKnownLimitations(readme.toString('utf8'), manifest.version));
   }
 
@@ -245,7 +288,9 @@ if (invokedAsScript) {
   const unknownArgs = args.filter((argument) => argument !== '--artifacts');
   const errors = unknownArgs.length > 0
     ? [`Unknown arguments: ${unknownArgs.join(', ')}. Usage: node scripts/validate-release.mjs [--artifacts]`]
-    : validateRelease(process.cwd(), { artifacts: args.includes('--artifacts') });
+    // `--artifacts` is the packaging run (`npm run package`); like package-plugin.mjs it leaves
+    // README's known limitations to the plain run.
+    : validateRelease(process.cwd(), { artifacts: args.includes('--artifacts'), knownLimitations: !args.includes('--artifacts') });
 
   if (errors.length > 0) {
     for (const error of errors) console.error(`Release validation: ${error}`);

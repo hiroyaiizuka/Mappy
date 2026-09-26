@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { validateRelease } from "./validate-release.mjs";
 
-const errors = validateRelease(process.cwd());
+// README's known limitations are checked by `npm run validate`, not when packaging for the test vault.
+const errors = validateRelease(process.cwd(), { knownLimitations: false });
 if (errors.length > 0) throw new Error(errors.join("\n"));
 
 const manifest = JSON.parse(await readFile("manifest.json", "utf8"));

@@ -1,10 +1,7 @@
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { staleKnownLimitations } from './validate-release.mjs';
-
-// Same rule as validate-release.mjs: a release version is x.y.z without a "v" prefix.
-const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+import { releaseVersion, staleKnownLimitations } from './validate-release.mjs';
 
 function readJsonObject(path, label) {
   let value;
