@@ -197,7 +197,7 @@ export function refuseOpenLeaves(paths, types = ['markdown', 'mappy-map']) {
 }
 
 /** Script: `source` written to `note` (created if missing), then a moment for the metadata cache to read it. */
-function writeNote(note, source) {
+export function writeNote(note, source) {
   return `const existing = app.vault.getAbstractFileByPath(${JSON.stringify(note)});
     if (existing) await app.vault.modify(existing, ${JSON.stringify(source)});
     else await app.vault.create(${JSON.stringify(note)}, ${JSON.stringify(source)});

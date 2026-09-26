@@ -43,7 +43,7 @@ export const CASES = [
   { name: 'popout', file: 'popout.mjs', description: 'E50 別ウィンドウでの描画・キー操作・移動・閉じたあとの残留', shot: true },
   { name: 'view-lifecycle', file: 'view-lifecycle.mjs', description: 'E51 開閉 50 回・プラグイン再読込・ウィンドウ再読込の残留と多重イベント', shot: false },
   { name: 'drop-flicker', file: 'drop-flicker.mjs', description: 'E53 フリーツリーを離した直後、保存後の原文が描かれるまでのフレーム', shot: false },
-  { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: false },
+  { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
 ];
 
 const args = process.argv.slice(2);
