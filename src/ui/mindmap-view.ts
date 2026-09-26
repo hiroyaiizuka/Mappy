@@ -1817,9 +1817,11 @@ export class MindmapView extends FileView {
     const open = this.inlineEditor;
     if (open) {
       const wanted = this.selectedId;
+      const file = this.file;
       this.run(async () => {
         if (!await open.confirm()) { open.focus(); return; }
-        if (this.inlineEditor || this.closed) return;
+        // Ids are only this note's: another note taking the leaf while the save ran has its own `node-N`s.
+        if (this.inlineEditor || this.closed || this.file !== file) return;
         // Closing the draft selects its node again; the node asked for is the one to edit.
         if (wanted && this.document && findNode(this.document, wanted)) this.select(wanted, true);
         this.editTitle();

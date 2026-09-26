@@ -491,4 +491,15 @@ describe('NodeRenderer idle (§5 M13: the export waits for the renders in flight
     await expect(closing).resolves.toBe(true);
     expect(renderer.entries.size).toBe(0);
   });
+
+  it('keeps a title\'s `<br>` as a break when its render fails and the text is shown plain (LEV-202)', async () => {
+    const { parsed, renderer } = setup('## Course\n- 温泉 <br> 旅行\n');
+    const renders = deferRenders();
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Course'), mode: 'mindmap' });
+    await renders.settle(0);
+    await renders.settle(1, 'reject');
+    const label = renderer.entries.get(id(parsed, '温泉 <br> 旅行'))?.content.querySelector('.mappy-node-label');
+    expect(label?.querySelectorAll('br')).toHaveLength(1);
+    expect(label?.textContent).toBe('温泉旅行');
+  });
 });

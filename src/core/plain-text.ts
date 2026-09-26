@@ -1,8 +1,5 @@
 import { autolinkUrl, type LinkSyntax } from './wiki-link';
-import { GFM, parser } from '@lezer/markdown';
-import { displayTitle } from './title-breaks';
-
-const inlineParser = parser.configure(GFM);
+import { inlineParser, isBreakTag } from './title-breaks';
 
 export interface PlainTitle {
   /** Visible text without Markdown markers. */
@@ -31,8 +28,7 @@ function wikiReplacement(match: RegExpMatchArray): Replacement {
 }
 
 /** Reduce a node title to plain text for renderers that cannot show Markdown; a `<br>` in it is a line break (LEV-202). */
-export function plainTitle(written: string): PlainTitle {
-  const title = displayTitle(written);
+export function plainTitle(title: string): PlainTitle {
   const replacements: Replacement[] = [];
   for (const match of title.matchAll(/(!?)\[\[([^\]\r\n]+?)\]\]/gu)) replacements.push(wikiReplacement(match));
   const tree = inlineParser.parse(title);
@@ -55,6 +51,10 @@ export function plainTitle(written: string): PlainTitle {
         const url = raw.replace(/^<|>$/gu, '');
         // The title shows what the note wrote; the link carries the scheme an autolink leaves out.
         replacements.push({ from: node.from, to: node.to, text: url, link: autolinkUrl(url), syntax: 'autolink' });
+        return false;
+      }
+      if (node.name === 'HTMLTag' && isBreakTag(title.slice(node.from, node.to))) {
+        replacements.push({ from: node.from, to: node.to, text: '\n', link: null, syntax: null });
         return false;
       }
       if (MARKER_NODES.has(node.name)) removed.push({ from: node.from, to: node.to });

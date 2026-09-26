@@ -77,10 +77,32 @@ describe('line breaks inside a node (LEV-202)', () => {
     expect(applyEdits(source, plan.edits)).toBe(source);
   });
 
-  it('writes only the title range when one line of a broken title changes', () => {
+  it('writes only the title range when one line of a broken title changes, keeping its tags as written', () => {
     const source = '---\nmappy: true\n---\n## 計画\r\n\r\n- 温泉<BR/>旅行 [[宿]]\r\n  本文\r\n';
     expect(renamed(source, '温泉<BR/>旅行 [[宿]]', '温泉\n一泊旅行 [[宿]]', 'list'))
-      .toBe(source.replace('温泉<BR/>旅行 [[宿]]', '温泉<br>一泊旅行 [[宿]]'));
+      .toBe(source.replace('温泉<BR/>旅行 [[宿]]', '温泉<BR/>一泊旅行 [[宿]]'));
+  });
+
+  // Review of LEV-202: every tag of an edited draft was written again as `<br>`.
+  it.each([
+    ['a <BR/> b c', 'a\nb d', 'a <BR/> b d'],
+    ['a<br />b<BR>c', 'a\nB\nc', 'a<br />B<BR>c'],
+    // A break added or removed: the breaks cannot be told from one another, so each is `<br>` (as before the review: these two pin it).
+    ['a <BR/> b', 'a\nb\nc', 'a<br>b<br>c'],
+    ['a <BR/> b<br/>c', 'a\nbc', 'a<br>bc'],
+  ])('keeps the tags of %j when the draft becomes %j', (title, draft, stored) => {
+    expect(storedTitle(draft, title)).toBe(stored);
+  });
+
+  // Review of LEV-202: a break there was saved as the text `<br>`, and the node showed it.
+  it.each([
+    ['C:\\\ndir', 'after a backslash'],
+    ['`a\nb`', 'inside inline code'],
+    ['[説明](a\nb)', 'inside a link\'s target'],
+  ])('refuses the draft %j: a break %s would be text', (draft) => {
+    expect(() => storedTitle(draft, '元の名前')).toThrow('この位置では改行できません');
+    const doc = parseMarkdown('## 計画\n\n- 元の名前\n', 'Note', undefined, 'list');
+    expect(() => planEdit(doc, { type: 'rename', nodeId: find(doc, '元の名前').id, title: draft })).toThrow('この位置では改行できません');
   });
 
   it('keeps a free topic\'s stored position under its new title', () => {
@@ -91,9 +113,19 @@ describe('line breaks inside a node (LEV-202)', () => {
     expect(written).not.toMatch(/^ {2}温泉旅行:/mu);
   });
 
-  it('refuses a break in a Setext heading, whose lines are the note\'s own', () => {
-    const doc = parseMarkdown('温泉旅行\n===\n', 'Note', undefined, 'headings');
-    expect(() => planEdit(doc, { type: 'rename', nodeId: find(doc, '温泉旅行').id, title: '温泉\n旅行' })).toThrow('Setext');
+  // Review of LEV-202: the first version refused any break in a Setext heading, which locked out one that already had a `<br>`.
+  it.each([
+    ['温泉旅行\n===\n', '温泉旅行', '温泉\n旅行', '温泉<br>旅行\n===\n'],
+    ['温泉<br>旅行\n===\n', '温泉<br>旅行', '温泉\n旅行記', '温泉<br>旅行記\n===\n'],
+  ])('writes a break in the one line of the Setext heading %j', (source, title, draft, expected) => {
+    expect(renamed(source, title, draft, 'headings')).toBe(expected);
+  });
+
+  it('refuses a break in a multi-line Setext heading, whose lines are the note\'s own', () => {
+    const doc = parseMarkdown('温泉\n旅行\n===\n', 'Note', undefined, 'headings');
+    expect(() => planEdit(doc, { type: 'rename', nodeId: find(doc, '温泉\n旅行').id, title: '温泉\n旅行記' })).toThrow('Setext');
+    // Without a break it is one line, as before LEV-202. (This test held before the review too: it pins the refusal that stays.)
+    expect(renamed('温泉\n旅行\n===\n', '温泉\n旅行', '温泉旅行', 'headings')).toBe('温泉旅行\n===\n');
   });
 
   it('leaves a multi-line Setext heading as written when its draft is confirmed untouched', () => {
@@ -111,5 +143,11 @@ describe('line breaks inside a node (LEV-202)', () => {
   it('gives renderers without Markdown the break as a line break', () => {
     expect(plainTitle('温泉 <br> **旅行**').text).toBe('温泉\n旅行');
     expect(plainTitle('`a<br>b`').text).toBe('a<br>b');
+  });
+
+  // Review of LEV-202: reading the title with real newlines let the text after a break start a block.
+  it('reads the text after a break as the same line of Markdown', () => {
+    expect(plainTitle('見出し<br>```x [[Note]]')).toEqual({ text: '見出し\n```x Note', link: 'Note', linkSyntax: 'vault' });
+    expect(plainTitle('一行目<br># 二行目 [[Note|別名]]')).toEqual({ text: '一行目\n# 二行目 別名', link: 'Note', linkSyntax: 'vault' });
   });
 });

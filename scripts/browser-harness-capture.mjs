@@ -998,11 +998,6 @@ async function captureInlineWidth(recorder, page) {
 }
 
 /**
- * M8 rows (LEV-46) on heading-document: the stages「回復する」「記録する」carry images, so
- * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
- * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
- */
-/**
  * LEV-202: a line break inside a node, typed the way the user does (Shift+Enter in the inline editor, real key
  * events with the text Chrome inserts). The draft keeps the break, Enter writes it as `<br>` in the item's one
  * line, the label breaks there, editing again gives the break back, and the SVG export carries it.
@@ -1070,6 +1065,11 @@ async function captureLineBreak(recorder, page) {
   await loadFixture(page, OPERATION_FIXTURE);
 }
 
+/**
+ * M8 rows (LEV-46) on heading-document: the stages「回復する」「記録する」carry images, so
+ * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
+ * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
+ */
 async function captureHierarchyRows(recorder, page) {
   const nodeRect = async name => (await nodeInfo(page, name)).rect;
   const gapBelow = (parent, child) => child.y - (parent.y + parent.height);

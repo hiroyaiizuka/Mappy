@@ -180,3 +180,26 @@ describe('a draft the save refused (LEV-202: 拒否される入力でも下書�
     expect(mounted.editor()?.value).toBe('持ち物');
   });
 });
+
+describe('a draft confirmed on the way to another edit while the note leaves (review of LEV-202)', () => {
+  // Not a regression test: it passes without the `this.file !== file` check in editTitle too. A navigation waits for
+  // the same save (`onUnloadFile` → `flush`) and then drops every draft (`dropDraft`), so the confirm's continuation
+  // runs before the leaf changes and whatever it opens is dropped. It pins that outcome; the check guards the order.
+  it('opens nothing on the note that took the leaf while the save ran', async () => {
+    const mounted = await mount(LIST);
+    const other = ['---', 'mappy: true', '---', '## 別のノート', '', '- 一つ目', '- 二つ目', ''].join('\n');
+    mounted.app.put('Fixtures/other.md', other);
+    const input = openEditor(mounted, '温泉旅行');
+    input.value = '温泉\n旅行';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // The double click asks for another edit: the draft is saved first, and the leaf moves on meanwhile.
+    mounted.node('持ち物').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    const navigation = mounted.view.setState({ file: 'Fixtures/other.md' }, { history: false });
+    await navigation;
+    await mounted.settle();
+    await mounted.settle();
+    expect(mounted.source()).toContain('- 温泉<br>旅行\n');
+    expect(mounted.view.containerEl.querySelector('.mappy-node')).not.toBeNull();
+    expect(mounted.editor()).toBeNull();
+  });
+});

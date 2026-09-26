@@ -156,6 +156,16 @@ describe('browser harness obsidian mock', () => {
     expect(element.textContent).toContain('<b>');
   });
 
+  it('renders a `<br>` as a break only where Obsidian does: not in code, after a backslash or in a link label (LEV-202)', async () => {
+    const app = new HarnessApp();
+    const element = document.body.createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '温泉<BR/>旅行 `a<br>b` c\\<br>d [[note|x<br>y]]', element, 'Fixtures/note.md');
+    expect(element.querySelectorAll('br')).toHaveLength(1);
+    expect(element.textContent).toContain('a<br>b');
+    expect(element.textContent).toContain('c\\<br>d');
+    expect(element.querySelector('a.internal-link')?.textContent).toBe('x<br>y');
+  });
+
   it('keeps edits in memory, notifies the view through modify, and never rewrites frontmatter text', async () => {
     const app = new HarnessApp();
     const source = '---\nmappy: true\ntags: [a, b]\naliases:\n  - "前の名前"\n---\n## Root\n- Child\n';

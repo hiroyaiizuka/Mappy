@@ -198,7 +198,12 @@ export class NodeRenderer extends Component {
         changed();
       }).catch(() => {
         if (this.entries.get(node.id) === current && current.key === key) {
-          label.setText(displayTitle(node.title));
+          // The text as it reads, its breaks (`<br>`) kept as breaks: the label's white-space folds a newline.
+          label.empty();
+          displayTitle(node.title).split("\n").forEach((line, index) => {
+            if (index > 0) label.createEl("br");
+            label.append(line);
+          });
           attachmentsEl.empty();
           this.changed();
         }
