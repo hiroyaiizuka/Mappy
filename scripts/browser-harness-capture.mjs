@@ -72,11 +72,40 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/**
+ * What the note holds after the layout writes the buttons queued so far have run (`view.layoutWritten()`, the store's
+ * queue): `value` the raw `mappy-layout` (undefined when absent), `map` the layout the product opens it in as a map
+ * (null when it is not one), `source` the text. A note without frontmatter at the top fails. A button rewrites the
+ * note through the map's save path (`DocumentStore.applyLatest`, LEV-196), so the text is where the preference lands;
+ * the page's `processFrontMatter` only records an entry in `h.activity` and leaves the text as it was (LEV-212).
+ */
+async function writtenLayout(page) {
+  await page.harness('h.view.layoutWritten()');
+  const { header, value, map } = await page.harness('h.layoutKey()');
+  expect(header, 'the note has no frontmatter at the top');
+  return { value, map, source: await page.harness('h.source()') };
+}
+
 /** `mode` opens the fixture in that layout without writing `mappy-layout`; omitted, the note (or the view's current mode) decides. */
 async function loadFixture(page, id, mode) {
   const timing = await page.harness(`h.load(${JSON.stringify(id)}${mode ? `, ${JSON.stringify(mode)}` : ''})`);
   await page.settle();
   return timing;
+}
+
+/**
+ * `loadFixture` on the fixture's text as it ships, in `mode` (the regular map when omitted). The page's vault keeps
+ * every edit, and a layout button writes the text (LEV-196), so a group that starts here inherits neither a
+ * `mappy-layout` nor a layout a failed case of an earlier group left: the view does not re-read the key when the same
+ * note is opened again. The text is put back while another fixture is shown (as `putOriginal` does): written under
+ * an open view, the note would be re-read 45 ms later and redrawn, taking the focus from what the next case opens.
+ */
+async function loadFreshFixture(page, id, mode = 'mindmap') {
+  // A write an earlier case's button queued lands before the text is put back, not after it.
+  await page.harness('h.view?.layoutWritten()');
+  await loadFixture(page, id === 'heading-document' ? OPERATION_FIXTURE : 'heading-document', 'mindmap');
+  await page.harness(`h.restoreFixture(${JSON.stringify(id)})`);
+  return loadFixture(page, id, mode);
 }
 
 async function emptyCanvasPoint(page, margin = 24) {
@@ -190,7 +219,7 @@ async function openInlineEditor(page, name) {
 }
 
 async function captureOperations(recorder, page) {
-  await loadFixture(page, OPERATION_FIXTURE);
+  await loadFreshFixture(page, OPERATION_FIXTURE);
   const title = '多数の兄弟';
   const nodeRect = name => nodeInfo(page, name);
 
@@ -290,7 +319,7 @@ async function captureOperations(recorder, page) {
     return `scale ${before.scale.toFixed(3)} → ${zoomed.scale.toFixed(3)} → Fit ${(await page.harness('h.viewport()')).scale.toFixed(3)}`;
   });
 
-  await recorder.run('timeline', '左下の「タイムライン」', '同じ内容が横軸レイアウトになり、ノード数は変わらない', async () => {
+  await recorder.run('timeline', '左下の「タイムライン」', '同じ内容が横軸レイアウトになり、ノード数は変わらない。`mappy-layout: timeline` が書かれる', async () => {
     const before = (await page.harness('h.nodes()')).length;
     const button = await page.harness('h.button("タイムライン")');
     expect(button, 'timeline button missing');
@@ -298,8 +327,8 @@ async function captureOperations(recorder, page) {
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline').length`);
     expect(timeline === before, `${timeline} timeline nodes of ${before}`);
-    const activity = await page.harness('h.activity');
-    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('timeline')), 'layout preference was not written through processFrontMatter');
+    const written = await writtenLayout(page);
+    expect(written.value === 'timeline' && written.map === 'timeline', `the note holds mappy-layout ${written.value} and opens as ${written.map}, not timeline`);
   });
 
   await recorder.run('hierarchy', '左下の「階層図」', 'ルートが上、同じ親の子が同じ段、親の下辺から子までの隙間が深さごとに一定で、ノード数は変わらない。`mappy-layout: hierarchy` が書かれる', async () => {
@@ -345,8 +374,8 @@ async function captureOperations(recorder, page) {
     for (const entry of rows.parents) gapByLevel.set(entry.level, [...(gapByLevel.get(entry.level) ?? []), ...entry.gaps.map(gap => gap / scale)]);
     const uneven = [...gapByLevel].filter(([, gaps]) => Math.max(...gaps) - Math.min(...gaps) > 1.5).map(([level, gaps]) => `${level}: ${Math.min(...gaps).toFixed(1)}–${Math.max(...gaps).toFixed(1)}`);
     expect(uneven.length === 0, `gap under the parents differs within a depth: ${uneven.join(', ')}`);
-    const activity = await page.harness('h.activity');
-    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"hierarchy"')), 'hierarchy preference was not written through processFrontMatter');
+    const written = await writtenLayout(page);
+    expect(written.value === 'hierarchy' && written.map === 'hierarchy', `the note holds mappy-layout ${written.value} and opens as ${written.map}, not hierarchy`);
     const gaps = [...gapByLevel].map(([level, values]) => `${level}: ${(values.reduce((sum, gap) => sum + gap, 0) / values.length).toFixed(1)}`).join(', ');
     return `${hierarchy} nodes, ${rows.parents.length} parents each with one row of children, gap by aria-level (px) ${gaps}`;
   });
@@ -397,8 +426,8 @@ async function captureOperations(recorder, page) {
     // The root sits between the two columns, vertically centred on each.
     expect(Math.abs(sides.rightCentre - sides.rootCentre) < 1.5 && Math.abs(sides.leftCentre - sides.rootCentre) < 1.5,
       `columns not centred on the root: root ${sides.rootCentre.toFixed(1)}, right ${sides.rightCentre.toFixed(1)}, left ${sides.leftCentre.toFixed(1)}`);
-    const activity = await page.harness('h.activity');
-    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"balanced"')), 'balanced preference was not written through processFrontMatter');
+    const written = await writtenLayout(page);
+    expect(written.value === 'balanced' && written.map === 'balanced', `the note holds mappy-layout ${written.value} and opens as ${written.map}, not balanced`);
     return `${balanced} nodes, 第一階層 ${sides.stages.map(stage => `${stage.index}:${stage.side === 'right' ? '右' : '左'}`).join(' ')}、右 ${sides.rightCount} / 左 ${sides.leftCount} ノード`;
   });
 
@@ -467,14 +496,16 @@ async function captureOperations(recorder, page) {
   });
 
   await recorder.run('timeline-back', '左下の「通常マップ」', '通常マップへ戻る。任意キー `mappy-layout` が消える', async () => {
+    // The key the cases above wrote: without it there would be no removal to see.
+    const before = await writtenLayout(page);
+    expect(before.value !== undefined, 'precondition: the note holds no mappy-layout to remove');
     const button = await page.harness('h.button("通常マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy, .mappy-node.is-balanced').length`);
     expect(timeline === 0, `${timeline} nodes still in timeline, hierarchy or balanced`);
-    const activity = await page.harness('h.activity');
-    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
-    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    const left = await writtenLayout(page);
+    expect(left.value === undefined && left.map === 'mindmap', `layout key still present: mappy-layout: ${left.value} (opens as ${left.map})`);
   });
 
   for (const [width, height] of [[640, 480], [390, 700]]) {
@@ -1008,7 +1039,7 @@ async function captureInlineWidth(recorder, page) {
  * line, the label breaks there, editing again gives the break back, and the SVG export carries it.
  */
 async function captureLineBreak(recorder, page) {
-  await loadFixture(page, OPERATION_FIXTURE);
+  await loadFreshFixture(page, OPERATION_FIXTURE);
   const target = '空に近い枝';
   const original = await page.harness('h.source()');
   const draft = () => page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') ? document.activeElement.value : null`);
@@ -1067,9 +1098,8 @@ async function captureLineBreak(recorder, page) {
     expect(/温泉<br(?: class="[^"]*")?\/>旅行/u.test(svg), `the exported node has no <br/> between its lines: ${svg.match(/.{0,80}旅行.{0,20}/u)?.[0] ?? 'no 旅行 in the SVG'}`);
     return 'export-line-break.svg';
   });
-  // The cases after this one read the fixture as it was.
-  await page.harness(`h.putNote(${JSON.stringify(`Fixtures/${OPERATION_FIXTURE}.md`)}, ${JSON.stringify(original)})`);
-  await loadFixture(page, OPERATION_FIXTURE);
+  // The cases after this one read the fixture as it was (the group started from it as it ships).
+  await loadFreshFixture(page, OPERATION_FIXTURE);
 }
 
 /**
@@ -1080,12 +1110,17 @@ async function captureLineBreak(recorder, page) {
 async function captureHierarchyRows(recorder, page) {
   const nodeRect = async name => (await nodeInfo(page, name)).rect;
   const gapBelow = (parent, child) => child.y - (parent.y + parent.height);
-  await recorder.run('hierarchy-rows', 'heading-document を階層図にする', '兄弟は同じ上辺。画像付きの「回復する」「記録する」の子だけが下がり、「はじめに」→「この講座で学ぶこと」の隙間は画像付きの親の子と同じ長さ', async () => {
-    await loadFixture(page, 'heading-document');
+  // heading-document has no `mappy: true`: a layout button records the preference of a map and does not make one
+  // (`planMapLayout`, LEV-196), so neither button may touch its text.
+  let original;
+  await recorder.run('hierarchy-rows', 'heading-document を階層図にする', '兄弟は同じ上辺。画像付きの「回復する」「記録する」の子だけが下がり、「はじめに」→「この講座で学ぶこと」の隙間は画像付きの親の子と同じ長さ。`mappy: true` の無いノートなので原文は変わらない', async () => {
+    await loadFreshFixture(page, 'heading-document');
+    original = await page.harness('h.source()');
     const button = await page.harness('h.button("階層図")');
     expect(button, 'hierarchy button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
+    expect((await writtenLayout(page)).source === original, 'the source changed');
     const { scale } = await page.harness('h.viewport()');
     const stages = await Promise.all(['はじめに', '回復する', '記録する', '習慣化する'].map(nodeRect));
     const tops = stages.map(rect => rect.y);
@@ -1101,15 +1136,16 @@ async function captureHierarchyRows(recorder, page) {
   });
 
   // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
-  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、原文は階層図にする前のまま（任意キー `mappy-layout` は書かれない）', async () => {
     const button = await page.harness('h.button("通常マップ")');
     expect(button, 'map button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     const remaining = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
     expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
-    const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
-    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    expect(original !== undefined, 'heading-document was not loaded');
+    // The text as it ships holds no key, so an unchanged text is also one without `mappy-layout`.
+    expect((await writtenLayout(page)).source === original, 'the source changed');
   });
 }
 
@@ -1432,7 +1468,7 @@ export async function captureNewNode(recorder, page) {
  * as it was (page light, map following the page).
  */
 async function captureThemes(recorder, page) {
-  await loadFixture(page, OPERATION_FIXTURE);
+  await loadFreshFixture(page, OPERATION_FIXTURE);
   let lightLink = null;
   await recorder.run('theme-follow-light', 'ページ明色、マップ「Obsidian に従う」（既定）→ F2 でインライン入力 → Escape', 'コンテナに theme class がなく、キャンバスはページと同じ明色の配色。インライン入力のキャレット・選択色も明色のまま', async () => {
     await page.harness('h.setPageTheme("light")');
@@ -1528,7 +1564,7 @@ function describeButtons(buttons) {
  * `setVisibleLayouts()`, as the plugin does; the settings tab itself is not on this page.
  */
 async function captureVisibleLayouts(recorder, page) {
-  await loadFixture(page, OPERATION_FIXTURE);
+  await loadFreshFixture(page, OPERATION_FIXTURE);
   const original = await page.harness('h.source()');
 
   await recorder.run('visible-layouts', '設定「左下に表示するレイアウト」を通常マップ・階層図だけにする', '左下のボタンがタイムラインと左右バランスを除く 2 つになる（hidden と display: none）。ノードと原文は変わらない', async () => {
@@ -1561,15 +1597,17 @@ async function captureVisibleLayouts(recorder, page) {
   });
 
   await recorder.run('visible-layouts-switch', '左下の「通常マップ」→「閉じて開き直す」', 'タイムラインのボタンが消えて 2 つに戻る。開き直した view も 2 つのまま。任意キー mappy-layout は書かれない（通常マップ選択はキーを削除する）', async () => {
+    // The group loaded the fixture as it ships (`loadFreshFixture`), which holds no key: choosing the map has nothing to remove.
+    const before = (await writtenLayout(page)).value;
+    expect(before === undefined, `precondition: the note already holds mappy-layout: ${before}`);
     const button = await page.harness('h.button("通常マップ")');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     let buttons = await page.harness('h.layoutButtons()');
     expect(buttons.map(button => button.displayed).join() === 'true,false,true,false', `after the switch: ${describeButtons(buttons)}`);
     expect(buttons[0].active, `通常マップ is not the active button: ${describeButtons(buttons)}`);
-    const activity = await page.harness('h.activity');
-    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
-    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    // The note never held the key (the timeline came from the view state), so choosing the map writes nothing at all.
+    expect((await writtenLayout(page)).source === original, 'the source changed');
     await page.harness('h.reopen()');
     await page.settle();
     buttons = await page.harness('h.layoutButtons()');
@@ -2525,7 +2563,7 @@ async function renderSvgFile(page, file, screenshot, expectedNodes) {
  * to confirm foreignObject nodes and data URL images render; the PNG is checked by size.
  */
 export async function captureExport(recorder, page) {
-  await loadFixture(page, OPERATION_FIXTURE);
+  await loadFreshFixture(page, OPERATION_FIXTURE);
   const title = '多数の兄弟';
   const node = await nodeInfo(page, title);
   expect(node.toggle, 'fold control missing');
