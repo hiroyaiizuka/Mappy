@@ -639,7 +639,7 @@ describe('NodeDrag when the viewport moves under a drag (LEV-194)', () => {
     expect(drag.pointer(id('Body'))).toBeNull();
   });
 
-  it('a slot previewed before the view moved is let go, and a free tree asks for its snap again at once', () => {
+  it('a slot previewed before the view moved is let go, so a release without a further move does not join it', () => {
     const { canvas, actions, drag, node, id, pointer, center } = fixture(TOPIC_SOURCE, ['Topic']);
     const join = { type: 'move', nodeId: id('Topic'), parentId: id('Body'), index: 0 } as const;
     actions.snap.mockImplementation(() => join);
@@ -648,10 +648,8 @@ describe('NodeDrag when the viewport moves under a drag (LEV-194)', () => {
     pointer('pointermove', canvas, x + 8, y);
     pointer('pointermove', canvas, 400, 400);
     expect(actions.preview).toHaveBeenLastCalledWith(join);
-    // The map panned away from the slot while the tree stays on the pointer: the view finds nothing near it now.
-    actions.snap.mockImplementation(() => null);
+    // The map panned away from the slot while the tree stays on the pointer.
     drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: -300, y: 0, scale: 1 });
-    expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 400 - 100, y: 400 - 20, width: 200, height: 40 }, null);
     expect(actions.preview).toHaveBeenLastCalledWith(null);
     pointer('pointerup', canvas, 400, 400);
     expect(actions.command).not.toHaveBeenCalled();
@@ -670,6 +668,38 @@ describe('NodeDrag when the viewport moves under a drag (LEV-194)', () => {
     expect(actions.preview).toHaveBeenLastCalledWith(null);
     pointer('pointerup', canvas, bx, by);
     expect(actions.command).not.toHaveBeenCalled();
+  });
+
+  it('after the view moved, the next move over a node takes its slot at once, without first travelling away', () => {
+    const { canvas, actions, drag, node, pointer, center } = fixture();
+    const [x, y] = center('A3');
+    pointer('pointerdown', node('A3'), x, y);
+    pointer('pointermove', canvas, x + 8, y);
+    const [bx, by] = center('B');
+    pointer('pointermove', canvas, bx, by);
+    const slot = actions.preview.mock.lastCall?.[0];
+    expect(slot).not.toBeNull();
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: 0, y: 0, scale: 1.2 });
+    expect(actions.preview).toHaveBeenLastCalledWith(null);
+    // One pixel on, still over B (the mock's boxes do not move with the zoom).
+    pointer('pointermove', canvas, bx + 1, by);
+    expect(actions.preview).toHaveBeenLastCalledWith(slot);
+    pointer('pointerup', canvas, bx + 1, by);
+    expect(actions.command).toHaveBeenCalledExactlyOnceWith(slot);
+  });
+
+  it('a free tree released outside the canvas after the view moved goes back, joining nothing', () => {
+    const { canvas, actions, drag, node, id, pointer, center } = fixture(TOPIC_SOURCE, ['Topic']);
+    actions.snap.mockImplementation(() => ({ type: 'move', nodeId: id('Topic'), parentId: id('Body'), index: 0 } as const));
+    const [x, y] = center('Topic');
+    pointer('pointerdown', node('Topic'), x, y);
+    pointer('pointermove', canvas, x + 8, y);
+    pointer('pointermove', canvas, 900, 700);
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: -100, y: 0, scale: 1.5 });
+    pointer('pointerup', canvas, 900, 700);
+    expect(actions.command).not.toHaveBeenCalled();
+    expect(actions.place).not.toHaveBeenCalled();
+    expect(actions.shift).toHaveBeenLastCalledWith(id('Topic'), null);
   });
 
   it('reports no pointer and ignores a move of the viewport with no drag under way', () => {
