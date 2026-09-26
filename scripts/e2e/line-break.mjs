@@ -1,7 +1,7 @@
 /**
  * E40 (docs/harness.md): a line break inside a node (LEV-202). 本人の操作（F2 で開いて Shift+Enter で改行し、Enter で
  * 確定する）を対象の形ごとに回す: リストのノートの項目・本文のルート（H2）・トピック・Tab で作った空のノードと、見出しの
- * ノートの ATX 見出し・1 行の Setext 見出し、拒否される形（複数行の Setext 見出し・\ の直後）。続けて、そのまま
+ * ノートの ATX 見出し・1 行の Setext 見出し・複数行の Setext 見出し（原文の行として書く）、拒否される形（\ の直後）。続けて、そのまま
  * 確定しても原文が変わらないこと、⌘Z／⌘⇧Z、複数行の文の挿入（貼り付けと同じ input）、拒否された下書きがダブルクリックで
  * 消えないこと、Markdown 側（外部の書き込み）で書いた `<br>` がマップに改行で現れること、Obsidian 自身の描画
  * （閲覧モード）が `<br>` を改行にし、インラインコードの中は文字のままにすることを見る。
@@ -237,9 +237,9 @@ try {
   if (value('--shot')) await step('shot', async () => ({ path: await cdp.screenshot(value('--shot')) }));
   if (!flag('--keep')) await step('clean', clean);
 
-  // A note in the older heading format: an ATX heading, a one-line Setext heading (written with `<br>` as ATX is),
-  // and the refusals, whose drafts stay with their reason — a multi-line Setext heading keeping its break, and a
-  // break right after a backslash (the tag would be text there).
+  // A note in the older heading format: an ATX heading, a one-line Setext heading (written with `<br>` as ATX is), a
+  // multi-line one (written as its own lines), and the refusal of a break right after a backslash (the tag would be
+  // text there), whose draft stays with its reason.
   required(record, 'open-headings', await step('open-headings', makeOpenStep(evaluate, { note: HEADINGS_NOTE, source: HEADINGS })));
   await step('break-atx', async () => {
     const result = await breakAndConfirm('温泉旅行', '温泉', '旅行');
@@ -256,21 +256,26 @@ try {
     check(result.source === want, `Setext: unexpected source:\nexpected: ${JSON.stringify(want)}\nactual:   ${JSON.stringify(result.source)}`);
     return result;
   });
-  for (const refusal of [
-    { id: 'refused-multi-line-setext', title: '複数 行', first: '複数', second: '行の見出し' },
-    { id: 'refused-after-backslash', title: '温泉 旅行', first: 'C:\\', second: 'dir' },
-  ]) {
-    await step(refusal.id, async () => {
-      const before = await source();
-      const result = await breakAndConfirm(refusal.title, refusal.first, refusal.second);
-      check(result.messages.length > 0 && result.editing, `${refusal.id}: not refused (${JSON.stringify(result.messages)})`);
-      check(await draft() === `${refusal.first}\n${refusal.second}`, `${refusal.id}: the draft was not kept`);
-      check(result.source === before, `${refusal.id}: the note changed`);
-      await cdp.realKey('Escape');
-      await wait(300);
-      return { messages: result.messages };
-    });
-  }
+  // A multi-line Setext heading keeps its lines: the edited line is written in place, the heading stays two lines
+  // (本人の決定 2026-09-26; before, the edit was refused).
+  await step('break-setext-multi-line', async () => {
+    const before = await source();
+    const result = await breakAndConfirm('複数 行', '複数', '行の見出し');
+    check(result.messages.length === 0 && !result.editing, `multi-line Setext: ${JSON.stringify(result.messages)}`);
+    const want = before.replace('\n複数\n行\n---\n', '\n複数\n行の見出し\n---\n');
+    check(result.source === want, `multi-line Setext: unexpected source:\nexpected: ${JSON.stringify(want)}\nactual:   ${JSON.stringify(result.source)}`);
+    return result;
+  });
+  await step('refused-after-backslash', async () => {
+    const before = await source();
+    const result = await breakAndConfirm('温泉 旅行', 'C:\\', 'dir');
+    check(result.messages.length > 0 && result.editing, `not refused (${JSON.stringify(result.messages)})`);
+    check(await draft() === 'C:\\\ndir', 'the draft was not kept');
+    check(result.source === before, 'the note changed');
+    await cdp.realKey('Escape');
+    await wait(300);
+    return { messages: result.messages };
+  });
   if (!flag('--keep')) await step('clean-headings', clean);
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;

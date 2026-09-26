@@ -165,10 +165,33 @@ describe('line breaks inside a node (LEV-202)', () => {
     expect(renamed(source, title, draft, 'headings')).toBe(expected);
   });
 
-  it('refuses a break in a multi-line Setext heading, whose lines are the note\'s own', () => {
-    const doc = parseMarkdown('温泉\n旅行\n===\n', 'Note', undefined, 'headings');
-    expect(() => planEdit(doc, { type: 'rename', nodeId: find(doc, '温泉\n旅行').id, title: '温泉\n旅行記' })).toThrow('Setext');
-    // Without a break it is one line, as before LEV-202. (This test held before the review too: it pins the refusal that stays.)
+  // 本人の決定（2026-09-26）: 複数行の Setext 見出しも改行を残したまま編集できる。改行はその見出しがすでにそう書いて
+  // いるとおり原文の行として書き（字下げ・改行コードもそのまま）、読み直すと同じ改行に戻る。行にすると別のブロックに
+  // なる改行（空行・`- `・`===`）だけは `<br>` にする。修正前はこれらを「複数行の Setext 見出しの中では改行できません」で拒否した。
+  it.each([
+    ['one line changed', '温泉\n旅行\n===\n', '温泉\n旅行記', '温泉\n旅行記\n===\n'],
+    ['its indent kept', '温泉\n  旅行\n===\n', '温泉\n旅行記', '温泉\n  旅行記\n===\n'],
+    ['a line added', '温泉\n旅行\n===\n', '温泉\n一泊\n旅行', '温泉\n一泊\n旅行\n===\n'],
+    ['CRLF kept', '温泉\r\n旅行\r\n===\r\n', '温泉\n一泊\n旅行', '温泉\r\n一泊\r\n旅行\r\n===\r\n'],
+    ['a line removed', '温泉\n一泊\n旅行\n===\n', '温泉\n旅行', '温泉\n旅行\n===\n'],
+    ['a `<br>` beside its lines', '温泉<BR/>旅行\nです\n===\n', '温泉\n旅行\nでした', '温泉<BR/>旅行\nでした\n===\n'],
+    ['an empty line, which would end the heading: `<br>`', '温泉\n旅行\n===\n', '温泉\n\n旅行', '温泉<br><br>旅行\n===\n'],
+    ['a line a list would start: `<br>`', '温泉\n旅行\n===\n', '温泉\n- 旅行', '温泉<br>- 旅行\n===\n'],
+  ])('writes a multi-line Setext heading with %s', (_case, source, draft, expected) => {
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    const node = doc.nodes[0];
+    if (!node) throw new Error('Missing fixture heading');
+    const written = applyEdits(source, planEdit(doc, { type: 'rename', nodeId: node.id, title: draft }).edits);
+    expect(written).toBe(expected);
+    const reread = parseMarkdown(written, 'Note', undefined, 'headings');
+    expect(reread.nodes).toHaveLength(1);
+    expect(reread.nodes[0]?.kind).toBe('setext');
+    expect(displayTitle(reread.nodes[0]?.title ?? '')).toBe(draft);
+  });
+
+  it('opens a multi-line Setext heading as its lines, whatever their indent', () => {
+    expect(displayTitle('温泉\n  旅行 <br> です')).toBe('温泉\n旅行\nです');
+    // Without a break it becomes one line, as before LEV-202 (this row held then too: it pins the plain rename).
     expect(renamed('温泉\n旅行\n===\n', '温泉\n旅行', '温泉旅行', 'headings')).toBe('温泉旅行\n===\n');
   });
 

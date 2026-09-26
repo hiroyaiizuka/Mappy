@@ -1,7 +1,7 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, paragraphGap } from './text-edits';
-import { hasLineBreak, storedTitle } from './title-breaks';
+import { storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -193,25 +193,26 @@ export function assertSingleLine(title: string): void {
 }
 
 function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicPlacement): EditPlan {
-  // A multi-line Setext heading's text is a paragraph whose lines are the note's own, and the draft shows them as
-  // breaks: written as `<br>` they would fold the heading into one line, so an edit keeping them is Markdown's to make.
-  // An untouched draft is the title as written (storedTitle), and a one-line Setext heading takes `<br>` as ATX does.
-  const title = storedTitle(draft, node.title);
-  if (node.kind === 'setext' && /[\r\n]/u.test(node.title) && title !== node.title && hasLineBreak(draft)) {
-    throw new Error('複数行の Setext 見出しの中では改行できません。Markdown 側で編集してください。');
-  }
-  if (node.kind === 'setext' && title.trim().length === 0) {
+  if (node.kind === 'setext' && draft.trim().length === 0) {
     throw new Error('Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。');
   }
   const before = (node.kind === 'atx' || node.kind === 'list') && !/[ \t]/u.test(doc.source.charAt(node.titleFrom - 1)) ? ' ' : '';
   const after = node.kind === 'atx' && node.titleFrom === node.titleTo && doc.source.charAt(node.titleTo) === '#' ? ' ' : '';
-  const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
-  const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
-  const updated = parsed.nodes.find((candidate) => candidate.from === node.from);
-  if (parsed.nodes.length !== doc.nodes.length || updated?.kind !== node.kind
-    || updated.level !== node.level || updated.title !== title.trim()) {
-    throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
-  }
+  const attempt = (title: string): { edit: TextEdit; updated: MindNode } | null => {
+    const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
+    const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
+    const updated = parsed.nodes.find((candidate) => candidate.from === node.from);
+    return parsed.nodes.length === doc.nodes.length && updated?.kind === node.kind
+      && updated.level === node.level && updated.title === title.trim() ? { edit, updated } : null;
+  };
+  // A multi-line Setext heading's text is a paragraph whose lines are the note's own (LEV-202, 本人の決定 2026-09-26):
+  // a new break there is another such line, as the heading is already written, and reads back as the same break. A
+  // line that would start another block (an empty line, `- `, `===`) cannot be one; the breaks are then `<br>`, which
+  // every other title takes.
+  const multiLine = node.kind === 'setext' && /[\r\n]/u.test(node.title);
+  const done = (multiLine ? attempt(storedTitle(draft, node.title, doc.eol)) : null) ?? attempt(storedTitle(draft, node.title));
+  if (!done) throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
+  const { edit, updated } = done;
   // A free topic's stored position follows its key within the same edit set (another topic of the old heading
   // may become its first, and take the plain key). Only topics carry entries: a list item or the body root
   // that happens to share a topic's text does not.
