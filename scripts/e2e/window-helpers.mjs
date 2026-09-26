@@ -97,12 +97,80 @@ export function makeAppTheme(evaluate) {
   };
 }
 
-/** Script: collects this window's uncaught errors and rejections into `window.__mappyE2EErrors` (once). */
-export const ERRORS = `if (!window.__mappyE2EErrors) {
-  window.__mappyE2EErrors = [];
-  window.addEventListener('error', event => { window.__mappyE2EErrors.push(String(event.error?.stack ?? event.message)); });
-  window.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(String(event.reason?.stack ?? event.reason)); });
-}`;
+/**
+ * Script: collects this window's uncaught errors and rejections into `window.__mappyE2EErrors`. The listeners go on
+ * once per window; the list starts empty on every run, or one error would fail every later case run in the same
+ * Obsidian (LEV-216: E50 reported an error of the run before it for the seven runs after it). Evaluate it once, at the
+ * start of a run (the setup step): evaluated again mid-run it would empty the list of what the run has seen so far.
+ */
+export const ERRORS = `if (!window.__mappyE2EErrorsWatched) {
+  window.__mappyE2EErrorsWatched = true;
+  // A window where the script before LEV-216 ran (it installed on a missing list) has its listeners already.
+  if (!window.__mappyE2EErrors) {
+    window.addEventListener('error', event => { window.__mappyE2EErrors.push(String(event.error?.stack ?? event.message)); });
+    window.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(String(event.reason?.stack ?? event.reason)); });
+  }
+}
+window.__mappyE2EErrors = [];`;
+
+/**
+ * Script: sends the uncaught errors and rejections of the window `winExpression` (a popout) to the main window's
+ * `__mappyE2EErrors` (`ERRORS`), each prefixed with `label`, once per window: a case's page-error check reads only the
+ * main window's list.
+ */
+export const forwardErrors = (winExpression, label) => `{ const forwarded = ${winExpression};
+  if (forwarded !== window && !forwarded.__mappyE2EWatched) {
+    forwarded.__mappyE2EWatched = true;
+    forwarded.addEventListener('error', event => { window.__mappyE2EErrors.push(${JSON.stringify(label)} + ': ' + String(event.error?.stack ?? event.message)); });
+    forwarded.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(${JSON.stringify(label)} + ': ' + String(event.reason?.stack ?? event.reason)); });
+  } }`;
+
+/** Script, with `leaf` in scope: waits up to 5 s for its map to lay out (a node with a width), and throws if it does not. */
+export const LAID_OUT = `{ let laid = false;
+  for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
+    const node = leaf.view.contentEl.querySelector('.mappy-node');
+    laid = !!node && node.getBoundingClientRect().width > 0;
+  }
+  if (!laid) throw new Error('the map did not lay out within 5 s'); }`;
+
+/**
+ * Script, with `win` a window in scope: logs into `win.__mappyE2EWindowLog` every key the window receives (capture
+ * phase: Obsidian's keymap and the inline editor stop some keys before they bubble) with the element it went to and —
+ * read once the event's task is over — whether something took it, and every blur／focus of the window itself (the OS
+ * focus: another app, another window) with whether the map's draft was the active element then and whether the
+ * document had the focus. The listeners go on once per window and read the property on every event; the log starts
+ * empty each time, and a case sets it to null before the window closes (a key arriving after that is not recorded).
+ */
+export const WINDOW_LOG = `if (!win.__mappyE2EWindowLogged) {
+  win.__mappyE2EWindowLogged = true;
+  win.addEventListener('keydown', event => {
+    const entry = { key: event.key, target: String(event.target.className || event.target.tagName) };
+    win.__mappyE2EWindowLog?.push(entry);
+    win.setTimeout(() => { entry.prevented = event.defaultPrevented; }, 0);
+  }, true);
+  for (const type of ['blur', 'focus']) {
+    win.addEventListener(type, event => {
+      if (event.target !== win) return;
+      win.__mappyE2EWindowLog?.push({ window: type, draftActive: !!win.document.activeElement?.matches?.('textarea.mappy-inline-input'), hasFocus: win.document.hasFocus() });
+    }, true);
+  }
+}
+win.__mappyE2EWindowLog = [];`;
+
+/**
+ * The keys in a `WINDOW_LOG` that the case did not send (`sent`, in any order, each once): input from outside the case,
+ * such as a person typing while a test window has the OS focus (a popout takes it when it opens). LEV-216 saw a Space,
+ * ⌘, ⌥ and ↓ arrive during its runs.
+ */
+export function foreignKeys(log, sent) {
+  const expected = [...sent];
+  return log.filter(entry => {
+    if (!entry.key) return false;
+    const at = expected.indexOf(entry.key);
+    if (at !== -1) expected.splice(at, 1);
+    return at === -1;
+  });
+}
 
 /**
  * Script prelude: `rgba(css)` → [r, g, b, a] (0–255, alpha 0–1) for any colour the browser can paint;
