@@ -77,7 +77,7 @@ function expect(condition, message) {
  * queue): `value` the raw `mappy-layout` (undefined when absent), `map` the layout the product opens it in as a map
  * (null when it is not one), `source` the text. A note without frontmatter at the top fails. A button rewrites the
  * note through the map's save path (`DocumentStore.applyLatest`, LEV-196), so the text is where the preference lands;
- * the page's `processFrontMatter` only records an entry in `h.activity` and leaves the text as it was (LEV-212).
+ * no `frontmatter` entry reaches `h.activity` (only the page's `processFrontMatter` leaves one, LEV-212).
  */
 async function writtenLayout(page) {
   await page.harness('h.view.layoutWritten()');
@@ -2722,11 +2722,7 @@ async function tooltipFacts(page, scope) {
 
 /** docs/harness.md E34 on this page: a note that embeds maps, in the reading-view path and the live-preview path. */
 async function captureEmbeds(recorder, page) {
-  // Earlier cases wrote `mappy: true` into heading-document's in-memory frontmatter (the page never rewrites the text);
-  // re-putting the notes as they are re-reads the frontmatter from the text, so the host sees the fixtures as shipped.
-  for (const path of ['Fixtures/heading-document.md', ...EMBED_NOTES]) {
-    await page.harness(`h.putNote(${JSON.stringify(path)}, h.noteSource(${JSON.stringify(path)}))`);
-  }
+  // The page's cache is read from the text on every write (LEV-214), so the host sees each note as its text holds it.
   const sources = await noteSources(page);
   let timing = null;
 

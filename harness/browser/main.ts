@@ -741,9 +741,8 @@ const api = {
    * The current fixture's `mappy-layout` read from its own text with the product's reader (`frontmatterReader`, the
    * one `readMapFromSource` uses): `header` false when the note has no closed frontmatter at the top, `value` the raw
    * value (undefined when the key is absent), and `map` the layout the product opens the note in as a map
-   * (`readMapFromSource`: null when it is not one, e.g. without `mappy: true`). A layout button writes the text (`DocumentStore`, LEV-196); this page's
-   * `processFrontMatter` only records an entry in `activity`, so the text, not that record, says what the note asks
-   * for (LEV-212).
+   * (`readMapFromSource`: null when it is not one, e.g. without `mappy: true`). A layout button writes the text (`DocumentStore`, LEV-196)
+   * and leaves no `frontmatter` entry in `activity`, so the text, not that record, says what the note asks for (LEV-212).
    */
   layoutKey: (): { header: boolean; value?: unknown; map: LayoutMode | null } => {
     const file = current ? app.vault.getAbstractFileByPath(current.path) : null;

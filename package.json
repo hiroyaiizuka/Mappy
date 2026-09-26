@@ -45,6 +45,7 @@
     "harness:e2e:popout": "node scripts/e2e/popout.mjs",
     "harness:e2e:drag-viewport": "node scripts/e2e/drag-viewport.mjs",
     "harness:e2e:drop-flicker": "node scripts/e2e/drop-flicker.mjs",
+    "harness:e2e:own-write-flicker": "node scripts/e2e/own-write-flicker.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",
