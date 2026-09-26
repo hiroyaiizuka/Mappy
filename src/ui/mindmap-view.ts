@@ -285,6 +285,11 @@ export class MindmapView extends FileView {
   private refreshing: Promise<void> | undefined;
   private layoutFrame: number | undefined;
   private epoch = 0;
+  /**
+   * How many re-reads have got past their last check (and so publish and draw what they read), and how many times a
+   * note has been let go: a read's own re-read may outlive a newer epoch only while this is what it was (LEV-197).
+   */
+  private published = 0;
   private ready = false;
   private closed = false;
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
@@ -495,6 +500,7 @@ export class MindmapView extends FileView {
       finally { this.unloading = false; }
     }
     this.dropDraft();
+    this.published += 1;
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
     this.targets = new Map(); this.knownCalled.clear();
@@ -1133,15 +1139,16 @@ export class MindmapView extends FileView {
     if (!this.ready || this.closed) return;
     const epoch = ++this.epoch;
     const file = this.file;
-    const shown = this.document;
+    const published = this.published;
     // A read superseded by a newer epoch gives up and leaves the note to the newer one, except the re-read after this
-    // view's own write when it found exactly that text and nothing has been drawn since it started: the modify
+    // view's own write when it found exactly that text and no other read has drawn since it started (a newer read
+    // that found the note unchanged draws too, without replacing `document`, and may have found it put back): the modify
     // watcher of that very write can land while it reads (LEV-197), and giving up then would leave the note from
     // before the write on screen until the watcher's re-read draws — a dropped tree jumping back to where it was
     // pressed for those frames, and a reveal, the export or the snap reading that note meanwhile. The newer read
     // still runs; it finds the same text, or draws whatever came after.
     const gone = (source: string): boolean => this.closed || file !== this.file
-      || (epoch !== this.epoch && !(written !== undefined && source === written && this.document === shown));
+      || (epoch !== this.epoch && !(written !== undefined && source === written && this.published === published));
     if (!file) {
       this.emptyState.hidden = false;
       this.renderer.update([], parseMarkdown("", ""), "", this.collapsed, { visualRootId: "root", mode: this.mode });
@@ -1162,6 +1169,7 @@ export class MindmapView extends FileView {
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
     if (gone(source)) return;
+    this.published += 1;
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one.
@@ -1962,9 +1970,9 @@ export class MindmapView extends FileView {
       const carried = this.recordCarried(write.carried);
       this.recordOwn(write);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
-      // was scheduled and it found anything but this text, so waiting for it would leave the draft on the old
-      // note now and then, and adopting whatever came back would bless an external change that landed in
-      // between. Both are the E05 refusal this fix exists to keep (LEV-140).
+      // was scheduled and it found anything but this text, or another read drew meanwhile, so waiting for it would
+      // leave the draft on the old note now and then, and adopting whatever came back would bless an external
+      // change that landed in between. Both are the E05 refusal this fix exists to keep (LEV-140).
       const base = this.writeBase(planned, source, write, carried, file.basename);
       if (drafts.length > 0 && base) this.rebaseDrafts(drafts, base, written, write.edits);
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
@@ -2177,11 +2185,13 @@ export class MindmapView extends FileView {
     if (!file) return;
     this.run(async () => {
       // A step refused because the note changed under it re-reads the note here too, as a refused edit does (`writeOwn`).
-      try { await this.store[direction](file); } catch (error) {
+      let write: LatestWrite;
+      try { write = await this.store[direction](file); } catch (error) {
         if (error instanceof Error && error.message === conflictMessage) this.scheduleRefresh();
         throw error;
       }
-      await this.refresh();
+      // As after `writeOwn`: the re-read of the step's text is not given up to the watcher of that very step (LEV-197).
+      await this.refresh(write.after);
     });
   }
 

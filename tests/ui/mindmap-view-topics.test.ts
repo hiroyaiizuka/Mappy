@@ -1788,9 +1788,10 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
 
   /**
    * A topic carried across a layout switch by button and dropped far to the right (so the drop widens the map and a
-   * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, but
-   * that read gives up when a newer one was scheduled meanwhile — the modify watcher of this very write can land after
-   * the read started (see `commit`). Until the watcher's re-read draws, frames lay out the note from before the drop.
+   * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, and
+   * the modify watcher of this very write can schedule a newer one after the read started. That read used to give up
+   * then, and frames laid out the note from before the drop until the watcher's re-read drew; since LEV-197 it draws
+   * the text it wrote, and the held fit still waits for the watcher's re-read.
    * `frameAfterSwitch` lets a frame run between the switch and the drop; `watcher` stands in for the watcher's read.
    */
   const dropSuperseded = async (mounted: Mounted, options: { frameAfterSwitch: boolean; watcher?: () => Promise<string> }) => {
@@ -2113,7 +2114,8 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
   // The matrix is the tree dropped (a topic, the body) × whether the layout was switched mid-drag (LEV-182).
   const SOURCE = `---\nmappy: true\nmappy-topics:\n  資料: { mindmap: [40, 200], balanced: [40, 200] }\n  補足: { mindmap: [40, 360], balanced: [40, 360] }\n---\n${THREE_SECTIONS}`;
   type Point = { x: number; y: number };
-  type Watched = { released: Map<string, Point>; frames: Map<string, Point>[] };
+  type Watched = { released: Map<string, Point>; frames: Map<string, Point>[]; read: { saving: boolean; superseded: boolean } | null };
+  type Internals = { scheduleRefresh(): void; epoch: number; saving: boolean; refreshTimer: number | undefined; refreshing: Promise<void> | undefined };
   const shiftOf = (view: MindmapView) =>
     (view as unknown as { shiftTopic(id: string, delta: Point | null): void }).shiftTopic.bind(view);
   const select = (view: MindmapView, mode: LayoutMode): void => {
@@ -2141,15 +2143,20 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     shift(id, drop);
     await frame();
     const released = roots(mounted);
+    const state = view as unknown as Internals;
     const read = store.read.bind(store);
+    // The first read after the release is the save's re-read (checked below: made while saving, and superseded).
+    let seen: Watched['read'] = null;
     const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
-      setTimeout(() => { (view as unknown as { scheduleRefresh(): void }).scheduleRefresh(); }, 0);
+      const epoch = state.epoch;
+      const saving = state.saving;
+      setTimeout(() => { state.scheduleRefresh(); }, 0);
       await new Promise(resolve => setTimeout(resolve, 10));
+      seen = { saving, superseded: state.epoch !== epoch };
       return read(file);
     });
     await placeOf(view)(id, drop);
     reads.mockRestore();
-    const state = view as unknown as { refreshTimer: number | undefined; refreshing: Promise<void> | undefined };
     const frames: Map<string, Point>[] = [];
     for (let round = 0; round < 200; round += 1) {
       await frame();
@@ -2158,9 +2165,10 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     }
     await frame();
     frames.push(roots(mounted));
-    return { released, frames };
+    return { released, frames, read: seen };
   };
-  const expectKept = ({ released, frames }: Watched): void => {
+  const expectKept = ({ released, frames, read }: Watched): void => {
+    expect(read).toEqual({ saving: true, superseded: true });
     expect(frames.length).toBeGreaterThan(1);
     for (const [index, shown] of frames.entries()) {
       for (const [title, at] of released) {
@@ -2185,4 +2193,67 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
       expectKept(await dropAndWatch(mounted, '本体', switched));
     });
   }
+
+  it('a note put back while the save\'s re-read reads is shown put back: a newer read that drew it unchanged is not overwritten', async () => {
+    // The newer read finds the text the map already shows, so it draws without replacing the document; the save's
+    // re-read, which read the text written, must still give up to it.
+    const mounted = await mount(SOURCE, 'mindmap');
+    const { view, store, app } = mounted;
+    const state = view as unknown as Internals;
+    const dragged = mounted.topic('資料');
+    const shift = shiftOf(view);
+    shift(dragged.id, { x: 160, y: 120 });
+    await frame();
+    const read = store.read.bind(store);
+    let drawnMeanwhile = false;
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      const written = await read(file);
+      app.put(PATH, SOURCE);
+      expect(state.refreshTimer).toBeDefined();
+      await vi.waitFor(() => { expect(state.refreshTimer).toBeUndefined(); }, { timeout: 1000, interval: 2 });
+      // The watcher's re-read of the note put back runs to its draw before this read answers.
+      await new Promise(resolve => setTimeout(resolve, 10));
+      drawnMeanwhile = documentOf(view).source === SOURCE;
+      return written;
+    });
+    await placeOf(view)(dragged.id, { x: 160, y: 120 });
+    reads.mockRestore();
+    await mounted.settle();
+    expect(drawnMeanwhile).toBe(true);
+    expect(mounted.source()).toBe(SOURCE);
+    expect(documentOf(view).source).toBe(SOURCE);
+  });
+
+  it('the re-read after ⌘Z draws the step at once, even when the watcher of the step schedules a newer one while it reads', async () => {
+    const mounted = await mount(SOURCE, 'mindmap');
+    const { view, store } = mounted;
+    const state = view as unknown as Internals;
+    const dragged = mounted.topic('資料');
+    shiftOf(view)(dragged.id, { x: 160, y: 120 });
+    await frame();
+    await placeOf(view)(dragged.id, { x: 160, y: 120 });
+    await vi.waitFor(() => { expect({ timer: state.refreshTimer, read: state.refreshing }).toEqual({ timer: undefined, read: undefined }); });
+    const dropped = mounted.source();
+    expect(dropped).not.toBe(SOURCE);
+    const read = store.read.bind(store);
+    let answered: (() => void) | undefined;
+    const done = new Promise<void>(resolve => { answered = resolve; });
+    let superseded = false;
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      const epoch = state.epoch;
+      setTimeout(() => { state.scheduleRefresh(); }, 0);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      superseded = state.epoch !== epoch;
+      setTimeout(() => answered?.(), 0);
+      return read(file);
+    });
+    mounted.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+    await done;
+    reads.mockRestore();
+    expect(superseded).toBe(true);
+    expect(mounted.source()).toBe(SOURCE);
+    // Drawn by the step's own re-read, before the watcher's (still waiting on its debounce).
+    expect(state.refreshTimer).toBeDefined();
+    expect(documentOf(view).source).toBe(SOURCE);
+  });
 });

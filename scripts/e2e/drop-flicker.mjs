@@ -22,7 +22,8 @@
  * Every drop presses a root, carries it 60 × 30 px in steps, holds still, and releases. From just before the release,
  * every root's place on screen is sampled once per painted frame (a task queued from each animation frame, so it
  * reads what that frame painted) for 1.5 s. It checks: no sample puts any root more than 1 px (or the zoom) away
- * from where it was shown at the release; the save wrote the note; no Notice or error line.
+ * from where it was shown at the release; the save wrote the note; no Notice or error line; and in `slow`, that the
+ * save's re-read was superseded (otherwise the drop did not reach what the row is for).
  *
  * Usage: npm run harness:e2e:drop-flicker -- [--reload] [--json <out.json>] [--keep] [--repeat <n>] [--only <row>[,<row>…]]
  */
@@ -169,7 +170,9 @@ const arm = slow => evaluate(`${VIEW}
     probe.log.push({ at: now(), what: 'schedule', saving: view.saving });
     return schedule.apply(this, args);
   };
+  // The store is the plugin's one for every map, embed and the Excalidraw bridge: only this note's reads are logged and slowed.
   store.read = async function (...args) {
+    if (args[0] !== view.file) return storeRead.apply(this, args);
     const entry = { at: now(), what: 'read', saving: view.saving, epoch: view.epoch };
     probe.log.push(entry);
     try {
@@ -238,6 +241,8 @@ const drop = async ({ target, form }) => {
   // still reads); superseded when the epoch moved while it read.
   const own = log.find(entry => entry.what === 'read' && entry.saving) ?? null;
   const superseded = own ? own.epochEnd !== own.epoch : null;
+  // The form exists to reach the race: a drop that did not reach it says nothing about the fix, and must not pass.
+  if (form === 'slow') expect(superseded === true, `the save's re-read was not superseded (${JSON.stringify(own)}): the race was not reached`);
   return { failures, frames: frames.length, off: off.slice(0, 6), offCount: off.length, superseded, own, log };
 };
 
