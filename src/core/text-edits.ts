@@ -49,13 +49,16 @@ export function offsetAfter(edits: readonly TextEdit[], offset: number): number 
  * overlapping within itself), or undefined when one of them touches what `applied` replaced or inserts into it:
  * then the two do not commute, and the edit has to be planned again. Text `applied` inserted exactly where an
  * edit starts stays before it; text inserted exactly where an edit ends stays after it. For an edit planned
- * before one of the view's own frontmatter writes landed (a layout button, LEV-196).
+ * before one of the view's own frontmatter writes landed (a layout button, LEV-196). With `insertionsAfter`, text
+ * `applied` inserted exactly where an insertion of `edits` goes lands after it instead (the other order of the tie).
  */
-export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEdit[]): TextEdit[] | undefined {
+export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEdit[], insertionsAfter = false): TextEdit[] | undefined {
   const rebased: TextEdit[] = [];
   for (const edit of edits) {
     let shift = 0;
     for (const other of applied) {
+      const tie = other.from === other.to && edit.from === edit.to && other.from === edit.from;
+      if (tie && insertionsAfter) continue;
       if (other.to <= edit.from) shift += other.text.length - (other.to - other.from);
       else if (other.from < edit.to) return undefined;
     }

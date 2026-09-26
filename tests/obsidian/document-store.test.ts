@@ -382,6 +382,48 @@ describe('DocumentStore', () => {
       await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n');
     });
 
+    it('hands an open editor the step\'s own edits, not one replace from the first to the last', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const initial = `${MAP}# A\n- b\n`;
+      const { store, file, leaves } = harness(initial);
+      const editor = makeEditor(initial);
+      leaves.push({ view: new MarkdownView(file, editor) });
+      // A key written where the layout line goes, and a rename far below it, in one step.
+      await store.apply(file, initial, [{ from: 16, to: 16, text: 'mappy-topics: []\n' }, { from: initial.length - 2, to: initial.length - 1, text: 'c' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      editor.transaction.mockClear();
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n- b\n');
+      expect(editor.transaction.mock.calls[0]?.[0].changes).toHaveLength(2);
+      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n- c\n');
+    });
+
+    it('makes a step that touched the layout line\'s place the one edit between its texts, not splitting a character', async () => {
+      const initial = '---\nmappy: true\n---\n# 😀\n';
+      const { store, file, leaves } = harness(initial);
+      const editor = makeEditor(initial);
+      leaves.push({ view: new MarkdownView(file, editor) });
+      // One edit over the header's end and the title: the layout line lands inside what it replaced.
+      await store.apply(file, initial, [{ from: 4, to: 24, text: 'mappy: true\n---\n# 😃' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      editor.transaction.mockClear();
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😀\n');
+      // The two texts differ in the emoji's second half only; the edit starts at the emoji, not inside it.
+      expect(editor.transaction.mock.calls[0]?.[0].changes).toEqual([{ from: { line: 4, ch: 2 }, to: { line: 4, ch: 4 }, text: '😀' }]);
+      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😃\n');
+    });
+
+    it('drops the whole history, and still writes, when the plan cannot plan on an older text', async () => {
+      const { store, file, disk } = harness('# A\n');
+      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      const plan = (source: string) => {
+        if (source !== '# B\n') throw new Error('not this text');
+        return [{ from: 0, to: 0, text: '---\nmappy: true\n---\n' }];
+      };
+      await expect(store.applyLatest(file, plan)).resolves.toMatchObject({ after: '---\nmappy: true\n---\n# B\n' });
+      expect(disk.get(file.path)).toBe('---\nmappy: true\n---\n# B\n');
+      expect(store.canUndo(file)).toBe(false);
+    });
+
     it('still drops the steps at a change from outside after it (E05)', async () => {
       const MAP = '---\nmappy: true\n---\n';
       const { store, file, disk } = harness(`${MAP}# A\n`);
