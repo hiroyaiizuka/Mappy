@@ -305,8 +305,6 @@ export class MindmapView extends FileView {
   private bodyDraft: DraftBase | undefined;
   /** The writes this view made since its last re-parse, in order, for the re-parse that reads them back; see `OwnWrite`. */
   private ownWrites: OwnWrite[] = [];
-  /** The document the last write of this view's own put on screen before any read (`showOwnWrite`). */
-  private ownShown: MindDocument | undefined;
   /** How many times a note has left this view (`onUnloadFile`): a layout write started before the last one is not this record's. */
   private loads = 0;
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
@@ -498,7 +496,7 @@ export class MindmapView extends FileView {
     }
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
-    this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.ownShown = undefined; this.loads += 1;
+    this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
   }
@@ -1118,7 +1116,7 @@ export class MindmapView extends FileView {
 
   /**
    * One refresh, tracked while it runs (the last one started wins, as with the epoch), so the export can wait for it.
-   * `own`: the re-read right after a write of this view's own, which `showOwnWrite` has already drawn (`reread`).
+   * `own`: the re-read right after a write of this view's own that `showOwnWrite` has already drawn (`reread`).
    */
   private refresh(own = false): Promise<void> {
     const task = this.reread(own).finally(() => {
@@ -1159,13 +1157,13 @@ export class MindmapView extends FileView {
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one.
     this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
-    // The write's own re-read finding the text the write put on screen (`showOwnWrite`), with the same called maps, has
+    // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
-    if (own && !changed && this.document === this.ownShown && sameTargets(this.targets, targets)) return;
+    if (own && !changed && sameTargets(this.targets, targets)) return;
     this.publish(changed ? document : undefined, targets);
     // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that.
-    if (changed && !this.saving) { this.inlineEditor?.refreshed(conflictMessage); this.bodyModal?.refreshed(conflictMessage); }
+    if (changed && !this.saving) this.tellKeptDrafts();
   }
 
   /** `document` (when the note changed) and the called maps become what the map shows, and are drawn. */
@@ -1190,22 +1188,37 @@ export class MindmapView extends FileView {
    * was pressed. The text is the note as the store left it, so it is no guess: a change after it comes with a
    * watcher of its own, whose re-read draws it. The caller re-reads right after (`refresh`, in the same task), which
    * drops the reads begun before the write (the epoch): they may have read the note from before it. The maps the
-   * items call are kept for the items whose text the write left alone; an item it made or changed waits for that
-   * read, so no caller shows the map another text called. Nothing is shown when the record does not lead from the
-   * note shown to the text written (a re-read published another text meanwhile): the re-read decides then. Nor for
-   * a note being left (`unloading`), which is neither re-read nor drawn again: the next note follows.
+   * items call are kept for the items that embed the same note as before; an item the write made a call or pointed
+   * elsewhere waits for that read, so no caller shows the map another text called. Nothing is shown when the record
+   * does not lead from the note shown to the text written (a re-read published another text meanwhile): the re-read
+   * decides then. Nor for a note being left (`unloading`), which is neither re-read nor drawn again: the next note
+   * follows. True when it drew. `step`: ⌘Z／⌘⇧Z, which tell a draft kept by a conflict, as a re-read of a change does.
    */
-  private showOwnWrite(file: TFile, written: string): void {
+  private showOwnWrite(file: TFile, written: string, step = false): boolean {
     const previous = this.document;
-    if (this.closed || this.unloading || file !== this.file || !previous || written === previous.source) return;
+    if (this.closed || this.unloading || file !== this.file || !previous || written === previous.source) return false;
     const replayed = this.replayOwnWrites(written, file.basename);
-    if (!replayed) return;
+    if (!replayed) return false;
     this.ownWrites = this.ownWrites.slice(replayed.used);
-    const kept = new Map(Array.from(this.targets).filter(([id]) => findNode(previous, id)?.title === findNode(replayed.document, id)?.title));
+    // By what each item embeds, not its text: an alias added to a call (`![[map|A]]`) still calls the same map.
+    const calls = (document: MindDocument, id: string): string | null => {
+      const node = findNode(document, id);
+      return node ? embedOnlyTitle(node.title) : null;
+    };
+    const kept = new Map(Array.from(this.targets).filter(([id]) => {
+      const before = calls(previous, id);
+      return before !== null && before === calls(replayed.document, id);
+    }));
     this.publish(replayed.document, kept);
-    this.ownShown = replayed.document;
     // ⌘Z／⌘⇧Z are not saves: a draft kept by a conflict learns the note moved on, as from the re-read they used to wait for.
-    if (!this.saving) { this.inlineEditor?.refreshed(conflictMessage); this.bodyModal?.refreshed(conflictMessage); }
+    if (step) this.tellKeptDrafts();
+    return true;
+  }
+
+  /** A draft kept by a conflict (its error line up) learns that the note has moved on, and that saving it again may now apply. */
+  private tellKeptDrafts(): void {
+    this.inlineEditor?.refreshed(conflictMessage);
+    this.bodyModal?.refreshed(conflictMessage);
   }
 
   /**
@@ -1997,9 +2010,9 @@ export class MindmapView extends FileView {
       // change that landed in between. Both are the E05 refusal this fix exists to keep (LEV-140).
       const base = this.writeBase(planned, source, write, carried, file.basename);
       if (drafts.length > 0 && base) this.rebaseDrafts(drafts, base, written, write.edits);
-      this.showOwnWrite(file, written);
+      const shown = this.showOwnWrite(file, written);
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
-      if (!this.unloading) await this.refresh(true);
+      if (!this.unloading) await this.refresh(shown);
       return write;
     } finally { this.saving = false; }
   }
@@ -2213,8 +2226,7 @@ export class MindmapView extends FileView {
         if (error instanceof Error && error.message === conflictMessage) this.scheduleRefresh();
         throw error;
       }
-      this.showOwnWrite(file, write.after);
-      await this.refresh(true);
+      await this.refresh(this.showOwnWrite(file, write.after, true));
     });
   }
 

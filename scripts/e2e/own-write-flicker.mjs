@@ -16,7 +16,9 @@
  * (`Input.dispatchKeyEvent`), the drags are the real mouse. ⌘Z／⌘⇧Z take back／redo an F2 rename made first (not
  * slowed). From just before the operation's last input, the probe marks when the store's write for this note resolves
  * (`applyOver`, `undo`, `redo`), and from then samples, once per painted frame, whether the note the map shows is the
- * one from before the write, for 1.5 s. It checks: no sample after the write shows the note from before it; the note
+ * one from before the write, and whether what is painted (every node's label and transform) is what was painted
+ * before it, for 1.5 s. It checks: no sample after the write shows the note from before it or paints what was painted
+ * before it, and the last one paints something else (each operation renames, adds or moves a node); the note
  * was written; the save's re-read (the first read begun after the write) was superseded (otherwise the row did not
  * reach the race, and fails rather than pass); no Notice or error line.
  *
@@ -141,6 +143,9 @@ const arm = () => evaluate(`${VIEW}
   const probe = window.__mappyE2EOwn = { frames: [], log: [], t0: performance.now(), done: false, landed: null };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
   const before = view.document?.source;
+  // What is painted: every node's label and place (the map positions each node with a transform).
+  const paint = () => nodes().map(node => label(node) + '@' + node.style.transform).join('\\n');
+  const painted = paint();
   const store = view.store;
   const own = {};
   // The store is the plugin's one for every map, embed and the Excalidraw bridge: only this note's calls are slowed or marked.
@@ -169,7 +174,10 @@ const arm = () => evaluate(`${VIEW}
     if (probe.done) return;
     requestAnimationFrame(() => setTimeout(() => {
       if (probe.done) return;
-      if (probe.landed !== null) probe.frames.push({ at: now(), stale: view.document?.source === before, nodes: nodes().length });
+      if (probe.landed !== null) {
+        const now_ = paint();
+        probe.frames.push({ at: now(), stale: view.document?.source === before, old: now_ === painted, nodes: nodes().length });
+      }
       sample();
     }, 0));
   };
@@ -196,14 +204,16 @@ const drag = async (shape, points, ready) => {
   await mouse('mousePressed', press);
   let at = press;
   let reached = null;
+  const seen = [];
   for (const point of points) {
     await carryTo(at, point);
     at = point;
     await wait(250);
     const state = await read();
+    seen.push({ x: Math.round(point.x), y: Math.round(point.y), preview: state.preview });
     if (ready(state)) { reached = state; break; }
   }
-  return { at, reached };
+  return { at, reached, seen };
 };
 
 /** Runs `op` on `shape` with the probe armed just before its last input; returns what the probe saw. */
@@ -242,14 +252,15 @@ const run = async ({ op, shape }) => {
     const topic = SHAPES.find(item => item.name === 'topic');
     const { node, id } = await rects(shape.label, shape.index);
     const y = node.top + node.height / 2;
-    const points = [30, 70, 110, 150].map(dx => ({ x: node.right + dx, y }));
-    const { at, reached } = await drag(topic, points, state => state.preview?.parentId === id);
+    // The carried tree hangs from the point pressed on its root (16 px into it): the slot is judged by where the tree is.
+    const points = [0, 0.5, 1].flatMap(row => [20, 60, 100, 140, 180].map(dx => ({ x: node.right + dx, y: y + (row - 0.5) * node.height })));
+    const { at, reached, seen } = await drag(topic, points, state => state.preview?.parentId === id);
     if (!reached) {
       await mouse('mouseMoved', { x: 5, y: 5 });
       await cdp.realKey('Escape');
       await mouse('mouseReleased', { x: 5, y: 5 });
       await wait(600);
-      return { failures: [`no slot under ${shape.label} #${shape.index} was offered on the way`] };
+      return { failures: [`no slot under ${shape.label} #${shape.index} was offered on the way: ${JSON.stringify(seen)}`] };
     }
     release = () => mouse('mouseReleased', at);
   }
@@ -269,10 +280,15 @@ const run = async ({ op, shape }) => {
   expect(frames.length > 10, `only ${frames.length} frames were sampled after the write (a throttled window?)`);
   const stale = frames.filter(frame => frame.stale);
   expect(stale.length === 0, `${stale.length} frames after the write showed the note from before it: first at ${stale[0]?.at} ms (write at ${landed} ms)`);
+  // What was painted: the last frame differs from before the write (each operation moves or renames something), and no
+  // frame after the write painted what was on screen before it.
+  const old = frames.filter(frame => frame.old);
+  expect(frames.length > 0 && !frames[frames.length - 1].old, 'the last frame paints what was on screen before the write');
+  expect(old.length === 0, `${old.length} frames after the write painted what was on screen before it: first at ${old[0]?.at} ms`);
   const own = log.find(entry => entry.what === 'read' && entry.afterWrite) ?? null;
   const superseded = own ? own.epochEnd !== own.epoch : null;
   expect(superseded === true, `the re-read after the write was not superseded (${JSON.stringify(own)}): the race was not reached`);
-  return { failures, frames: frames.length, stale: stale.length, firstStale: stale[0] ?? null, landed, superseded, own, log };
+  return { failures, frames: frames.length, stale: stale.length, old: old.length, firstStale: stale[0] ?? null, landed, superseded, own, log };
 };
 
 try {

@@ -84,6 +84,11 @@ function labels(mounted: MountedMapView): string[] {
   return Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'), node => accessibleName(node));
 }
 
+/** What is painted: each node on screen, its label and where it is placed. */
+function painted(mounted: MountedMapView): string {
+  return Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'), node => `${accessibleName(node)}@${node.style.transform}`).join('\n');
+}
+
 function click(element: HTMLElement): void {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 }
@@ -106,10 +111,12 @@ function rename(mounted: MountedMapView, label: string, index: number, title: st
 }
 
 interface Watched {
-  /** What the map showed on each frame from the write's landing until everything settled: the note, and the labels drawn. */
-  frames: { source: string; labels: string[] }[];
+  /** What the map showed on each frame from the write's landing until everything settled: the note, the labels, what is painted. */
+  frames: { source: string; labels: string[]; painted: string }[];
   /** Whether the first re-read begun after the write gave up to a newer one (the order under test). */
   superseded: boolean | null;
+  /** What was painted before the write. */
+  painted: string;
 }
 
 /**
@@ -143,11 +150,12 @@ async function watch(mounted: MountedMapView, act: () => void | Promise<void>): 
     });
   }
   const frames: Watched['frames'] = [];
+  const drawn = painted(mounted);
   let done = false;
   const sampling = (async () => {
     while (!done) {
       await frame();
-      if (landed) frames.push({ source: view.document?.source ?? '', labels: labels(mounted) });
+      if (landed) frames.push({ source: view.document?.source ?? '', labels: labels(mounted), painted: painted(mounted) });
     }
   })();
   await act();
@@ -156,16 +164,22 @@ async function watch(mounted: MountedMapView, act: () => void | Promise<void>): 
   done = true;
   await sampling;
   vi.restoreAllMocks();
-  return { frames, superseded };
+  return { frames, superseded, painted: drawn };
 }
 
-/** No frame after the write showed `before`, and the write's own re-read was superseded (the order under test). */
+/**
+ * No frame after the write showed `before` — neither the note the map holds nor what is painted (every node's label
+ * and place, which each of these writes changes) — and the write's own re-read was superseded (the order under test).
+ */
 function expectNoStaleFrame(watched: Watched, before: string, after: string): void {
   expect(watched.superseded).toBe(true);
   expect(watched.frames.length).toBeGreaterThan(1);
   expect(after).not.toBe(before);
+  const last = watched.frames[watched.frames.length - 1];
   const stale = watched.frames.flatMap((shown, index) => shown.source === before ? [index] : []);
-  expect({ stale, last: watched.frames[watched.frames.length - 1]?.source === after }).toEqual({ stale: [], last: true });
+  const redrawn = last !== undefined && last.painted !== watched.painted;
+  const old = watched.frames.flatMap((shown, index) => shown.painted === watched.painted ? [index] : []);
+  expect({ stale, old, redrawn, last: last?.source === after }).toEqual({ stale: [], old: [], redrawn: true, last: true });
 }
 
 const SHAPES = [
@@ -279,6 +293,17 @@ describe('the maps the items call, shown with a write of the map\'s own before i
     const before = mounted.source();
     const watched = await watch(mounted, () => { rename(mounted, '子1', 0, '改名後'); });
     expectNoStaleFrame(watched, before, mounted.source());
+    const missing = watched.frames.flatMap((shown, index) => shown.labels.includes('A の枝') ? [] : [index]);
+    expect(missing).toEqual([]);
+  });
+
+  it('an item given an alias keeps the map it calls on every frame', async () => {
+    const mounted = await mountCalls();
+    const before = mounted.source();
+    const watched = await watch(mounted, () => { rename(mounted, '地図A', 0, '![[map-a|A]]'); });
+    expect(watched.superseded).toBe(true);
+    expect(mounted.source()).toContain('- ![[map-a|A]]\n');
+    expect(watched.frames.flatMap((shown, index) => shown.source === before ? [index] : [])).toEqual([]);
     const missing = watched.frames.flatMap((shown, index) => shown.labels.includes('A の枝') ? [] : [index]);
     expect(missing).toEqual([]);
   });
