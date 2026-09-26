@@ -325,8 +325,7 @@ describe('DocumentStore', () => {
       const layout = store.applyLatest(file, source => { seen.push(source); return addHeader(); });
       await expect(edit).resolves.toBe('# B\n');
       await expect(layout).resolves.toEqual({ before: '# B\n', after: `${HEADER}# B\n`, edits: addHeader() });
-      // Planned first on the note as it is; then on the texts of the history (LEV-206), '# A\n' here.
-      expect(seen).toEqual(['# B\n', '# A\n']);
+      expect(seen).toEqual(['# B\n']);
       expect(disk.get(file.path)).toBe(`${HEADER}# B\n`);
     });
 
@@ -412,7 +411,8 @@ describe('DocumentStore', () => {
       await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😃\n');
     });
 
-    it('drops the whole history, and still writes, when the plan cannot plan on an older text', async () => {
+    // Pins the fail-safe, not the fix: before LEV-206 every step went at the write, so this passes there too.
+    it('drops the whole stack, and writes nothing, when the plan cannot plan on the step Undo reaches', async () => {
       const { store, file, disk } = harness('# A\n');
       await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
       const plan = (source: string) => {
@@ -420,10 +420,34 @@ describe('DocumentStore', () => {
         return [{ from: 0, to: 0, text: '---\nmappy: true\n---\n' }];
       };
       await expect(store.applyLatest(file, plan)).resolves.toMatchObject({ after: '---\nmappy: true\n---\n# B\n' });
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\n---\n# B\n');
       expect(disk.get(file.path)).toBe('---\nmappy: true\n---\n# B\n');
       expect(store.canUndo(file)).toBe(false);
     });
 
+    it('carries nothing until Undo or Redo reaches a step: a switch does not plan on the history', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      const seen: string[] = [];
+      await store.applyLatest(file, (source) => { seen.push(source); return planMapLayout(source, 'timeline'); });
+      expect(seen).toEqual([`${MAP}# B\n`]);
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+    });
+
+    it('drops a step made before more switches than it keeps the plans of', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      for (let index = 0; index < 17; index += 1) {
+        await store.applyLatest(file, (source) => planMapLayout(source, index % 2 === 0 ? 'timeline' : 'mindmap'));
+      }
+      const current = await store.read(file);
+      await expect(store.undo(file)).resolves.toBe(current);
+      expect(store.canUndo(file)).toBe(false);
+    });
+
+    // Pins E05, which LEV-206 leaves as it was: this passes before the fix too.
     it('still drops the steps at a change from outside after it (E05)', async () => {
       const MAP = '---\nmappy: true\n---\n';
       const { store, file, disk } = harness(`${MAP}# A\n`);

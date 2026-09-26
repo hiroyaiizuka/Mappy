@@ -67,6 +67,29 @@ export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEd
   return rebased;
 }
 
+/**
+ * The one edit that turns `from` into `to`: what lies between their common start and their common end, widened so
+ * that neither end splits a surrogate pair or a CRLF (an editor maps its positions by characters and lines). For a
+ * step of the history that no finer edits carry over a layout write (LEV-206).
+ */
+export function diffEdit(from: string, to: string): TextEdit {
+  let start = 0;
+  while (start < from.length && start < to.length && from[start] === to[start]) start += 1;
+  let end = 0;
+  while (end < from.length - start && end < to.length - start && from[from.length - 1 - end] === to[to.length - 1 - end]) end += 1;
+  while (start > 0 && (splitsCharacter(from, start) || splitsCharacter(to, start))) start -= 1;
+  while (end > 0 && (splitsCharacter(from, from.length - end) || splitsCharacter(to, to.length - end))) end -= 1;
+  return { from: start, to: from.length - end, text: to.slice(start, to.length - end) };
+}
+
+/** Whether offset `at` of `text` falls inside a surrogate pair or a CRLF. */
+function splitsCharacter(text: string, at: number): boolean {
+  if (at <= 0 || at >= text.length) return false;
+  const previous = text.charCodeAt(at - 1);
+  const next = text.charCodeAt(at);
+  return (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) || (previous === 13 && next === 10);
+}
+
 /** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
 export function getNode(doc: MindDocument, id: string): MindNode {
   const node = findNode(doc, id);

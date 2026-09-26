@@ -1,6 +1,6 @@
 import { MarkdownView, type App, type Editor, type TFile } from 'obsidian';
 import { applyEdits, type TextEdit } from '../core/commands';
-import { rebaseEdits } from '../core/text-edits';
+import { diffEdit, rebaseEdits } from '../core/text-edits';
 
 interface DocumentStoreApp {
   workspace: {
@@ -18,7 +18,12 @@ interface HistoryEntry {
   inverse: TextEdit[];
   /** The Redo steps this write dropped, kept (for a `retractable` write) while it is the last step so that `retract` can give them back. */
   dropped?: HistoryEntry[];
+  /** How many `applyLatest` writes of the note its texts have been carried over (`DocumentSession.switches`; `carryTop`). */
+  switches: number;
 }
+
+/** An `applyLatest` write's plan, kept to carry the history's steps over it when Undo or Redo reaches them (LEV-206). */
+interface SwitchPlan { switches: number; plan: (source: string) => TextEdit[] }
 
 /** A write `applyLatest` made: the text before and after it, and its edits. */
 export interface LatestWrite { before: string; after: string; edits: TextEdit[] }
@@ -33,6 +38,10 @@ interface DocumentSession {
   future: HistoryEntry[];
   /** `applyLatest`'s writes since the last edit or change of the note, in order; see `carry`. */
   latest: LatestWrite[];
+  /** How many `applyLatest` writes the session has made; a step made or carried after the last one holds this many. */
+  switches: number;
+  /** The plans of the last `applyLatest` writes (at most `latestLimit`), for `carryTop`. */
+  plans: SwitchPlan[];
   pending: Promise<void>;
   writing: boolean;
 }
@@ -85,7 +94,7 @@ export class DocumentStore {
       const last = session.past[session.past.length - 1];
       if (last) delete last.dropped;
       // A write `retract` may take back keeps the Redo steps it drops; any other lets them go at once.
-      session.past.push({ before, after, forward, inverse, ...(options.retractable && session.future.length > 0 ? { dropped: session.future } : {}) });
+      session.past.push({ before, after, forward, inverse, switches: session.switches, ...(options.retractable && session.future.length > 0 ? { dropped: session.future } : {}) });
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
       session.latest = [];
@@ -111,10 +120,10 @@ export class DocumentStore {
    * saw: a preference the map keeps in the frontmatter (the layout buttons, LEV-196), which no edit of the
    * note's content decides for or against. Queued with the map's edits, so an edit already on its way lands
    * first, and one planned before it but queued after it is carried over it (`carry`). It is no step of the history — Undo would revert
-   * a key the view does not read back — and the steps of the history are carried over it (`carryHistory`, LEV-206),
-   * so Undo and Redo still walk the edits around it: `plan` is planned on each of their texts too, and must answer
-   * from the text alone. Returns the text before and after, and the edits between
-   * (none when nothing changed).
+   * a key the view does not read back — and the steps of the history are carried over it when Undo or Redo
+   * reaches them (`carryTop`, LEV-206), so they still walk the edits around it: `plan` is kept and planned on
+   * their texts then, and must answer from the text alone. Returns the text before and after, and the edits
+   * between (none when nothing changed).
    */
   applyLatest(file: TFile, plan: (source: string) => TextEdit[]): Promise<LatestWrite> {
     return this.enqueue(file, async (session) => {
@@ -124,7 +133,12 @@ export class DocumentStore {
       const after = applyEdits(before, edits);
       if (after === before) return { before, after, edits: [] };
       await this.writeSafely(file, session, before, after, edits);
-      this.carryHistory(session, plan, { before, after, edits });
+      // The Redo steps a `retractable` step dropped are `retract`'s no more: it refuses once this has come after it.
+      const last = session.past[session.past.length - 1];
+      if (last) delete last.dropped;
+      session.switches += 1;
+      session.plans.push({ switches: session.switches, plan });
+      if (session.plans.length > latestLimit) session.plans.shift();
       session.latest.push({ before, after, edits });
       if (session.latest.length > latestLimit) session.latest.shift();
       return { before, after, edits };
@@ -157,60 +171,34 @@ export class DocumentStore {
   }
 
   /**
-   * The history's steps, carried over an `applyLatest` write of `plan` (LEV-206): every text the steps lead
-   * through gets the write `plan` makes on it, so the texts meet the note where it is now and each step changes
-   * what it changed before. Without this Undo would find a text the steps do not lead to and do nothing. A step
-   * keeps its own edits, carried over the plan's (`rebaseEdits`, the tie of two insertions at one place taken
-   * either way), so Undo and Redo still hand an open editor small transactions and the edits of the step (what
-   * a re-parse carries ids with, LEV-150); only where neither leads from one planned text to the other (they
-   * touch the plan's lines) is the step the one edit between the two texts. A step the plan leaves changing
-   * nothing goes, and so do the steps beyond it. Should carrying fail in any other way (`plan` throws on an
-   * older text), the whole history goes, as before LEV-206: never a history the note does not lead through.
-   * The Redo steps a `retractable` step dropped go too: `retract` refuses once the write has come after it.
+   * The last step of `stack` (the next Undo or Redo), carried over the `applyLatest` writes made since it was made
+   * or carried last (LEV-206): each of its texts gets the write the kept plan makes on it, so it meets the note where
+   * it is now and changes what it changed before; without this Undo would find a text the step does not lead to and
+   * do nothing. Only the step Undo or Redo reaches is carried, when it does: a layout button costs nothing more for a
+   * long history of a large note, and the steps below are carried in turn over the same plans, which the same texts
+   * give the same answers. The step keeps its own edits, carried over the plan's (`rebaseEdits`, the tie of two
+   * insertions at one place taken either way), so an open editor still gets small transactions; only where neither
+   * leads from one planned text to the other (they touch the plan's lines) is it the one edit between the two
+   * (`diffEdit`). A step the plans leave changing nothing, one made before more writes than the plans kept
+   * (`latestLimit`), and a plan that throws on its texts take the whole stack with them, as every step did before
+   * LEV-206: never a history the note does not lead through.
    */
-  private carryHistory(session: DocumentSession, plan: (source: string) => TextEdit[], write: LatestWrite): void {
-    const planned = new Map([[write.before, { text: write.after, edits: write.edits }]]);
-    const carryText = (text: string) => {
-      let carried = planned.get(text);
-      if (!carried) {
-        const edits = plan(text);
-        carried = { text: applyEdits(text, edits), edits };
-        planned.set(text, carried);
-      }
-      return carried;
-    };
-    const carryEdits = (edits: TextEdit[], before: { text: string; edits: TextEdit[] }, after: string): TextEdit[] => {
-      for (const insertionsAfter of [false, true]) {
-        const rebased = rebaseEdits(edits, before.edits, insertionsAfter);
-        if (rebased && applyEdits(before.text, rebased) === after) return mergeAdjacentEdits(rebased);
-      }
-      return [diffEdit(before.text, after)];
-    };
-    const carryEntry = (entry: HistoryEntry): HistoryEntry | undefined => {
-      const before = carryText(entry.before);
-      const after = carryText(entry.after).text;
-      if (before.text === after) return undefined;
-      const forward = carryEdits(entry.forward, before, after);
-      return { before: before.text, after, forward, inverse: invertEdits(before.text, forward) };
-    };
-    // Outward from the note: the last Undo step first, then the last Redo step.
-    const carryStack = (stack: HistoryEntry[]): HistoryEntry[] => {
-      const carried: HistoryEntry[] = [];
-      for (let index = stack.length - 1; index >= 0; index -= 1) {
-        const entry = carryEntry(stack[index] as HistoryEntry);
-        if (!entry) break;
-        carried.push(entry);
-      }
-      return carried.reverse();
-    };
+  private carryTop(session: DocumentSession, stack: HistoryEntry[]): void {
+    const entry = stack[stack.length - 1];
+    if (!entry || entry.switches === session.switches) return;
+    const plans = session.plans.filter((plan) => plan.switches > entry.switches);
+    let carried: HistoryEntry | undefined = entry;
     try {
-      const past = carryStack(session.past);
-      session.future = carryStack(session.future);
-      session.past = past;
+      if (plans.length !== session.switches - entry.switches) carried = undefined;
+      for (const { plan } of plans) {
+        if (!carried) break;
+        carried = carryStep(carried, plan);
+      }
     } catch {
-      session.past = [];
-      session.future = [];
+      carried = undefined;
     }
+    if (carried) stack[stack.length - 1] = { ...carried, switches: session.switches };
+    else stack.length = 0;
   }
 
   /**
@@ -256,7 +244,7 @@ export class DocumentStore {
   private sessionFor(file: TFile): DocumentSession {
     let session = this.sessions.get(file);
     if (!session) {
-      session = { source: null, revision: 0, past: [], future: [], latest: [], pending: Promise.resolve(), writing: false };
+      session = { source: null, revision: 0, past: [], future: [], latest: [], switches: 0, plans: [], pending: Promise.resolve(), writing: false };
       this.sessions.set(file, session);
     }
     return session;
@@ -303,6 +291,7 @@ export class DocumentStore {
       session.past = [];
       session.future = [];
       session.latest = [];
+      session.plans = [];
     }
     if (session.source !== source) session.revision += 1;
     session.source = source;
@@ -315,6 +304,7 @@ export class DocumentStore {
     session.past = [];
     session.future = [];
     session.latest = [];
+    session.plans = [];
   }
 
   private hasHistory(file: TFile, direction: 'past' | 'future'): boolean {
@@ -337,6 +327,7 @@ export class DocumentStore {
       if (this.observe(session, current)) throw new Error(conflictMessage);
       const from = direction === 'undo' ? session.past : session.future;
       const to = direction === 'undo' ? session.future : session.past;
+      this.carryTop(session, from);
       const entry = from[from.length - 1];
       if (!entry) return current;
       const before = direction === 'undo' ? entry.after : entry.before;
@@ -426,23 +417,19 @@ function invertEdits(source: string, edits: TextEdit[]): TextEdit[] {
 }
 
 /**
- * The one edit that turns `from` into `to`: what lies between their common start and their common end, widened so
- * that neither end splits a surrogate pair or a CRLF (an editor maps its positions by characters and lines).
+ * `entry` carried over the write `plan` makes on each of its texts (`carryTop`), or undefined when that leaves it
+ * changing nothing.
  */
-function diffEdit(from: string, to: string): TextEdit {
-  let start = 0;
-  while (start < from.length && start < to.length && from[start] === to[start]) start += 1;
-  let end = 0;
-  while (end < from.length - start && end < to.length - start && from[from.length - 1 - end] === to[to.length - 1 - end]) end += 1;
-  while (start > 0 && (splits(from, start) || splits(to, start))) start -= 1;
-  while (end > 0 && (splits(from, from.length - end) || splits(to, to.length - end))) end -= 1;
-  return { from: start, to: from.length - end, text: to.slice(start, to.length - end) };
-}
-
-/** Whether offset `at` of `text` falls inside a surrogate pair or a CRLF. */
-function splits(text: string, at: number): boolean {
-  if (at <= 0 || at >= text.length) return false;
-  const previous = text.charCodeAt(at - 1);
-  const next = text.charCodeAt(at);
-  return (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) || (previous === 13 && next === 10);
+function carryStep(entry: HistoryEntry, plan: (source: string) => TextEdit[]): HistoryEntry | undefined {
+  const planned = plan(entry.before);
+  const before = applyEdits(entry.before, planned);
+  const after = applyEdits(entry.after, plan(entry.after));
+  if (before === after) return undefined;
+  let forward: TextEdit[] | undefined;
+  for (const insertionsAfter of [false, true]) {
+    const rebased = rebaseEdits(entry.forward, planned, insertionsAfter);
+    if (rebased && applyEdits(before, rebased) === after) { forward = mergeAdjacentEdits(rebased); break; }
+  }
+  forward ??= [diffEdit(before, after)];
+  return { before, after, forward, inverse: invertEdits(before, forward), switches: entry.switches };
 }
