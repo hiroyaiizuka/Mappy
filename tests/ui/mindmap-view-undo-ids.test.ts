@@ -261,7 +261,7 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     await settled(second, source => source.includes('  - 子1\n'));
     expectKept(second, EMPTY_LABEL, 1, id);
     // The rename selects 子1 (the click that starts F2); the fold and the node's id are what must stay.
-    await rename(second, 'ずっと長い題名に改名');
+    await rename(second, '別のもっと長い題名');
     expect({ collapsed: [...state(second).collapsed], id: nodeNamed(second, EMPTY_LABEL, 1).dataset.nodeId }).toEqual({ collapsed: [id], id });
     expect(Notice.log).toEqual([]);
   });
