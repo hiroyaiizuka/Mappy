@@ -1,9 +1,9 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom,
+  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, selectionAfterDelete,
   swapSections, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
-import { endsWithBlankLine, getNode, lineGap, paragraphGap } from './text-edits';
+import { endsWithBlankLine, getNode, lineGap, paragraphGap, siblingOf } from './text-edits';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
 
@@ -139,12 +139,6 @@ function lineEndBefore(source: string, offset: number): number {
   return 0;
 }
 
-/** The child of the node's parent that follows it in source order. */
-function nextSibling(doc: MindDocument, node: MindNode): MindNode | undefined {
-  const siblings = getNode(doc, node.parentId ?? 'root').children;
-  return siblings[siblings.findIndex(child => child.id === node.id) + 1];
-}
-
 /**
  * The item's own lines, including the line break that ends them. A blank line after the item goes
  * with it when it was the seam to the next sibling, or when a blank precedes the item too, so a loose
@@ -162,7 +156,7 @@ function removalRange(doc: MindDocument, node: MindNode): { from: number; to: nu
   let to = Math.min(source.length, node.to + (source.startsWith('\r\n', node.to) ? 2 : source.charAt(node.to) === '\n' ? 1 : 0));
   const blankBefore = from === 0 || endsWithBlankLine(before);
   const blankAfter = /^[ \t]*\r?\n/u.exec(source.slice(to));
-  if (blankAfter && (blankBefore || nextSibling(doc, node)?.from === to + blankAfter[0].length)) to += blankAfter[0].length;
+  if (blankAfter && (blankBefore || siblingOf(getNode(doc, node.parentId ?? 'root').children, node, 1)?.from === to + blankAfter[0].length)) to += blankAfter[0].length;
   else if (blankBefore && to === source.length && from > 0) from -= /[ \t]*\r?\n$/u.exec(before)?.[0].length ?? 0;
   return { from, to };
 }
@@ -251,16 +245,16 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true, command.title);
     case 'delete': {
-      const parent = getNode(doc, node.parentId ?? 'root');
       const count = doc.nodes.length - branchSize(node);
-      const selected = parent.kind === 'root' ? null : parent.from;
-      if (node.kind !== 'list') return validate(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }], count, selected);
+      const remove = (edits: TextEdit[]): EditPlan =>
+        validate(doc, edits, count, selectionAfterDelete(doc, node, edits));
+      if (node.kind !== 'list') return remove([{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }]);
       try {
         // An item leaves with its line break, as it does when moved.
-        return validate(doc, [{ ...removalRange(doc, node), text: '' }], count, selected);
+        return remove([{ ...removalRange(doc, node), text: '' }]);
       } catch {
         // The lines around the item would join into another block (`Intro` + `---` is a Setext heading): keep the break, as a blank line.
-        return validate(doc, [{ from: node.from, to: node.to, text: '' }], count, selected);
+        return remove([{ from: node.from, to: node.to, text: '' }]);
       }
     }
     case 'move-up': return move(doc, node, -1);

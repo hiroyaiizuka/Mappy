@@ -234,6 +234,29 @@ describe('a node added on the map opens under its provisional name, selected (LE
     expect(mounted.source()).toBe(`${written}- 外から\n`);
   });
 
+  it('taking a new node back is not a delete: the node selected before comes back, and a Delete after it follows LEV-204', async () => {
+    const mounted = await mount(LIST);
+    // Escape: the addition never happened, so the selection is the one before it (not LEV-204's sibling or parent).
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Escape');
+    await mounted.settle();
+    expect(selectedNames(mounted)).toEqual(['持ち物']);
+    // A confirmed new node deleted afterwards is a delete: its only parent's child gone, the parent is selected.
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Enter');
+    await mounted.settle();
+    mounted.key(mounted.select(NEW_NODE_TITLE), 'Delete');
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST);
+    expect(selectedNames(mounted)).toEqual(['持ち物']);
+    // And Delete on 「持ち物」 goes to the sibling above (LEV-204), not to a node the retract remembered.
+    mounted.key(mounted.node('持ち物'), 'Delete');
+    await mounted.settle();
+    expect(selectedNames(mounted)).toEqual(['温泉旅行']);
+  });
+
   it('Escape puts back the fold the addition opened and the viewport it panned (review 3)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('温泉旅行'), ' ');

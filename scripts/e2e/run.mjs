@@ -24,6 +24,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 export const CASES = [
   { name: 'add-delete', file: 'add-delete.mjs', description: 'E02 兄弟・子の追加と削除', shot: false },
+  { name: 'delete-selection', file: 'delete-selection.mjs', description: 'E41 削除後の選択（上の兄弟→下の兄弟→親）と Undo', shot: false },
   { name: 'undo-redo', file: 'undo-redo.mjs', description: 'E03 Undo/Redo と表裏切替', shot: false },
   { name: 'deep-branches', file: 'deep-branches.mjs', description: 'E17 7 段以上の枝の追加・移動・インデント', shot: false },
   { name: 'convert-to-list', file: 'convert-to-list.mjs', description: 'E18 旧見出し形式→リスト形式→Undo', shot: false },
