@@ -1788,9 +1788,10 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
 
   /**
    * A topic carried across a layout switch by button and dropped far to the right (so the drop widens the map and a
-   * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, but
-   * that read gives up when a newer one was scheduled meanwhile — the modify watcher of this very write can land after
-   * the read started (see `commit`). Until the watcher's re-read draws, frames lay out the note from before the drop.
+   * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, and
+   * the modify watcher of this very write can schedule a newer one after the read started, and that read then gives
+   * up. Until the watcher's re-read draws, the note shown is the one from before the drop (since LEV-197 with the
+   * dropped trees held where they were dropped), and the held fit waits for that re-read.
    * `frameAfterSwitch` lets a frame run between the switch and the drop; `watcher` stands in for the watcher's read.
    */
   const dropSuperseded = async (mounted: Mounted, options: { frameAfterSwitch: boolean; watcher?: () => Promise<string> }) => {
@@ -2102,5 +2103,237 @@ describe('MindmapView keeps a carried free tree on the pointer when the viewport
     // The save put it where it was released, and the map panned over it.
     const shown = screenOf(mounted, carried.id);
     expect(Math.abs(shown.y - (start.y + 30 - 100))).toBeLessThanOrEqual(viewport().scale);
+  });
+});
+
+describe('MindmapView keeps a dropped free tree where it was released until the saved note is drawn (LEV-197)', () => {
+  // `commit` re-reads the note after its write, but the modify watcher of that very write can land while the read is
+  // under way (`scheduleRefresh` moves the epoch on), and the read then gave up. The drop's end let go of the drag's
+  // overrides at once, so every frame until the watcher's re-read drew (its 45 ms debounce and its read) laid out the
+  // note from before the drop: the released tree jumped back to where it was pressed, then to where it was dropped.
+  // The matrix is the tree dropped (a topic, the body) × whether the layout was switched mid-drag (LEV-182).
+  const SOURCE = `---\nmappy: true\nmappy-topics:\n  資料: { mindmap: [40, 200], balanced: [40, 200] }\n  補足: { mindmap: [40, 360], balanced: [40, 360] }\n---\n${THREE_SECTIONS}`;
+  type Point = { x: number; y: number };
+  type Watched = { released: Map<string, Point>; frames: Map<string, Point>[]; read: { saving: boolean; superseded: boolean } | null };
+  type Internals = { scheduleRefresh(): void; epoch: number; saving: boolean; refreshTimer: number | undefined; refreshing: Promise<void> | undefined };
+  const shiftOf = (view: MindmapView) =>
+    (view as unknown as { shiftTopic(id: string, delta: Point | null): void }).shiftTopic.bind(view);
+  const select = (view: MindmapView, mode: LayoutMode): void => {
+    (view as unknown as { selectMode(mode: LayoutMode): void }).selectMode(mode);
+  };
+  /** Where every root (the body's and each topic's) is on screen, by title. */
+  const roots = (mounted: Mounted): Map<string, Point> => {
+    const { root, topics } = projectMap(documentOf(mounted.view));
+    return new Map([root, ...topics].map(node => [node.title, screenOf(mounted, node.id)]));
+  };
+  /**
+   * Drops `title` (the body when it is 本体) after a pointer travel of `drop`, with the save's own re-read superseded
+   * by the watcher, and samples every root on each frame from the release until the watcher's re-read has drawn.
+   */
+  const dropAndWatch = async (mounted: Mounted, title: string, switched: boolean): Promise<Watched> => {
+    const { view, store } = mounted;
+    const { root, topics } = projectMap(documentOf(view));
+    const id = title === root.title ? root.id : topics.find(topic => topic.title === title)?.id;
+    if (!id) throw new Error(`Missing ${title}`);
+    const shift = shiftOf(view);
+    shift(id, { x: 40, y: 30 });
+    await frame();
+    if (switched) { select(view, 'balanced'); await frame(); }
+    const drop = { x: 160, y: 120 };
+    shift(id, drop);
+    await frame();
+    const released = roots(mounted);
+    const state = view as unknown as Internals;
+    const read = store.read.bind(store);
+    // The first read after the release is the save's re-read (checked below: made while saving, and superseded).
+    let seen: Watched['read'] = null;
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      const epoch = state.epoch;
+      const saving = state.saving;
+      setTimeout(() => { state.scheduleRefresh(); }, 0);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      seen = { saving, superseded: state.epoch !== epoch };
+      return read(file);
+    });
+    await placeOf(view)(id, drop);
+    reads.mockRestore();
+    const frames: Map<string, Point>[] = [];
+    for (let round = 0; round < 200; round += 1) {
+      await frame();
+      frames.push(roots(mounted));
+      if (state.refreshTimer === undefined && state.refreshing === undefined) break;
+    }
+    await frame();
+    frames.push(roots(mounted));
+    return { released, frames, read: seen };
+  };
+  const expectKept = ({ released, frames, read }: Watched): void => {
+    expect(read).toEqual({ saving: true, superseded: true });
+    expect(frames.length).toBeGreaterThan(1);
+    for (const [index, shown] of frames.entries()) {
+      for (const [title, at] of released) {
+        const now = shown.get(title) ?? { x: Infinity, y: Infinity };
+        // The save rounds to whole world units: a pixel of slack at scale ≤ 1.
+        expect({ index, title, x: Math.abs(now.x - at.x) <= 1, y: Math.abs(now.y - at.y) <= 1 })
+          .toEqual({ index, title, x: true, y: true });
+      }
+    }
+  };
+
+  for (const switched of [false, true]) {
+    const how = switched ? 'after a layout switch mid-drag' : 'in the layout it was pressed in';
+    it(`a topic dropped ${how} stays where it was released on every frame until the saved note is drawn`, async () => {
+      const mounted = await mount(SOURCE, 'mindmap');
+      expectKept(await dropAndWatch(mounted, '資料', switched));
+      expect(readTopicPositions(mounted.source()).get('資料')?.[switched ? 'balanced' : 'mindmap']).not.toEqual([40, 200]);
+    });
+
+    it(`the body dropped ${how} keeps its topics where they were shown on every frame until the saved note is drawn`, async () => {
+      const mounted = await mount(SOURCE, 'mindmap');
+      expectKept(await dropAndWatch(mounted, '本体', switched));
+    });
+  }
+
+  it('a note put back while the save\'s re-read reads is shown put back, the dropped topic with it', async () => {
+    // Passes before the fix too (the dropped topic went back at once then): it pins that the hold of the dropped trees
+    // ends with any read that publishes, here one of a note put back by someone else, not only with the written text.
+    const mounted = await mount(SOURCE, 'mindmap');
+    const { view, store, app } = mounted;
+    const state = view as unknown as Internals;
+    const dragged = mounted.topic('資料');
+    const pressed = mounted.layout().nodes.find(node => node.id === dragged.id);
+    const shift = shiftOf(view);
+    shift(dragged.id, { x: 160, y: 120 });
+    await frame();
+    const read = store.read.bind(store);
+    let drawnMeanwhile = false;
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      const written = await read(file);
+      app.put(PATH, SOURCE);
+      expect(state.refreshTimer).toBeDefined();
+      await vi.waitFor(() => { expect(state.refreshTimer).toBeUndefined(); }, { timeout: 1000, interval: 2 });
+      // The watcher's re-read of the note put back runs to its draw before this read answers.
+      await new Promise(resolve => setTimeout(resolve, 10));
+      drawnMeanwhile = documentOf(view).source === SOURCE;
+      return written;
+    });
+    await placeOf(view)(dragged.id, { x: 160, y: 120 });
+    reads.mockRestore();
+    await mounted.settle();
+    expect(drawnMeanwhile).toBe(true);
+    expect(mounted.source()).toBe(SOURCE);
+    expect(documentOf(view).source).toBe(SOURCE);
+    await frame();
+    expect(pressed).toBeDefined();
+    expect(mounted.layout().nodes.find(node => node.id === dragged.id)).toMatchObject({ x: pressed?.x, y: pressed?.y });
+  });
+
+  /** Where the dropped topic is laid out now: its root's layout position. */
+  const placed = (mounted: Mounted, id: string): Point => {
+    const node = mounted.layout().nodes.find(item => item.id === id);
+    if (!node) throw new Error(`No layout node ${id}`);
+    return { x: node.x, y: node.y };
+  };
+  /** Until the watcher's re-read (45 ms after it was scheduled) has drawn, then one frame. */
+  const settled = async (mounted: Mounted): Promise<void> => {
+    const state = mounted.view as unknown as Internals;
+    await vi.waitFor(() => { expect({ timer: state.refreshTimer, read: state.refreshing }).toEqual({ timer: undefined, read: undefined }); }, { timeout: 2000, interval: 5 });
+    await frame();
+  };
+  /** The save's own re-read superseded as in `dropAndWatch`: the first read after this call is that re-read. */
+  const supersedeNextRead = (mounted: Mounted) => {
+    const { store } = mounted;
+    const state = mounted.view as unknown as Internals;
+    const read = store.read.bind(store);
+    return vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      setTimeout(() => { state.scheduleRefresh(); }, 0);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return read(file);
+    });
+  };
+
+  it('a re-read begun before the save, publishing while the save writes, does not end the hold of the dropped topic', async () => {
+    // It read the note from before the drop (the watcher of an earlier change, say), so what it shows is no newer
+    // than what the hold stands in for.
+    const mounted = await mount(SOURCE, 'mindmap');
+    const { view, store } = mounted;
+    const dragged = mounted.topic('資料');
+    shiftOf(view)(dragged.id, { x: 160, y: 120 });
+    await frame();
+    const released = placed(mounted, dragged.id);
+    const read = store.read.bind(store);
+    // The earlier re-read: it reads before the write and answers while the write is still under way.
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      const before = await read(file);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return before;
+    });
+    const apply = store.applyOver.bind(store);
+    const writes = vi.spyOn(store, 'applyOver').mockImplementationOnce(async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return apply(...args);
+    });
+    void (view as unknown as { refresh(): Promise<void> }).refresh();
+    const own = read;
+    reads.mockImplementationOnce(async file => {
+      setTimeout(() => { (view as unknown as Internals).scheduleRefresh(); }, 0);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return own(file);
+    });
+    await placeOf(view)(dragged.id, { x: 160, y: 120 });
+    reads.mockRestore();
+    writes.mockRestore();
+    await frame();
+    expect(placed(mounted, dragged.id)).toEqual(released);
+    await settled(mounted);
+    expect(placed(mounted, dragged.id)).toEqual(released);
+  });
+
+  it('a layout switched while the drop saves shows the new layout\'s own positions, not the drop held over them', async () => {
+    const mounted = await mount(SOURCE, 'mindmap');
+    const { view, store } = mounted;
+    const dragged = mounted.topic('資料');
+    shiftOf(view)(dragged.id, { x: 160, y: 120 });
+    await frame();
+    const apply = store.applyOver.bind(store);
+    const writes = vi.spyOn(store, 'applyOver').mockImplementationOnce(async (...args) => {
+      select(view, 'balanced');
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return apply(...args);
+    });
+    const reads = supersedeNextRead(mounted);
+    await placeOf(view)(dragged.id, { x: 160, y: 120 });
+    writes.mockRestore();
+    reads.mockRestore();
+    await frame();
+    const shown = placed(mounted, dragged.id);
+    await settled(mounted);
+    // The drop stored the mindmap entry only; balanced shows its own entry before and after the re-read alike.
+    expect(readTopicPositions(mounted.source()).get('資料')?.balanced).toEqual({ x: 40, y: 200 });
+    expect(placed(mounted, dragged.id)).toEqual(shown);
+  });
+
+  it('⌘Z made while the dropped topic is held ends the hold, even when no re-read gets to publish', async () => {
+    const mounted = await mount(SOURCE, 'mindmap');
+    const { view, store } = mounted;
+    const dragged = mounted.topic('資料');
+    const pressed = placed(mounted, dragged.id);
+    shiftOf(view)(dragged.id, { x: 160, y: 120 });
+    await frame();
+    const reads = supersedeNextRead(mounted);
+    await placeOf(view)(dragged.id, { x: 160, y: 120 });
+    reads.mockRestore();
+    await frame();
+    expect(placed(mounted, dragged.id)).not.toEqual(pressed);
+    // Every read fails from here on (two editors of the note that disagree, say).
+    const failing = vi.spyOn(store, 'read').mockRejectedValue(new Error('read failed'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await mounted.undo();
+    await frame();
+    failing.mockRestore();
+    errors.mockRestore();
+    expect(mounted.source()).toBe(SOURCE);
+    // The note shown is the one from before the drop, which is again what the note says.
+    expect(placed(mounted, dragged.id)).toEqual(pressed);
   });
 });
