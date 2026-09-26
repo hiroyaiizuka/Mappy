@@ -198,21 +198,18 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
   }
   const before = (node.kind === 'atx' || node.kind === 'list') && !/[ \t]/u.test(doc.source.charAt(node.titleFrom - 1)) ? ' ' : '';
   const after = node.kind === 'atx' && node.titleFrom === node.titleTo && doc.source.charAt(node.titleTo) === '#' ? ' ' : '';
-  const attempt = (title: string): { edit: TextEdit; updated: MindNode } | null => {
-    const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
-    const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
-    const updated = parsed.nodes.find((candidate) => candidate.from === node.from);
-    return parsed.nodes.length === doc.nodes.length && updated?.kind === node.kind
-      && updated.level === node.level && updated.title === title.trim() ? { edit, updated } : null;
-  };
-  // A multi-line Setext heading's text is a paragraph whose lines are the note's own (LEV-202, 本人の決定 2026-09-26):
-  // a new break there is another such line, as the heading is already written, and reads back as the same break. A
-  // line that would start another block (an empty line, `- `, `===`) cannot be one; the breaks are then `<br>`, which
-  // every other title takes.
-  const multiLine = node.kind === 'setext' && /[\r\n]/u.test(node.title);
-  const done = (multiLine ? attempt(storedTitle(draft, node.title, doc.eol)) : null) ?? attempt(storedTitle(draft, node.title));
-  if (!done) throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
-  const { edit, updated } = done;
+  // A multi-line Setext heading (its text over two or more lines) is written as one line, its breaks as `<br>` like
+  // every other title's (LEV-202, 本人の決定 2026-09-26): Obsidian does not read those lines as a heading at all (a
+  // paragraph, then a rule for `---`; artifacts/lev-202-node-line-break/record.md), and the one line it does, with
+  // the same breaks the map shows. Only the heading's own text changes; an untouched draft changes nothing.
+  const title = storedTitle(draft, node.title);
+  const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
+  const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
+  const updated = parsed.nodes.find((candidate) => candidate.from === node.from);
+  if (parsed.nodes.length !== doc.nodes.length || updated?.kind !== node.kind
+    || updated.level !== node.level || updated.title !== title.trim()) {
+    throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
+  }
   // A free topic's stored position follows its key within the same edit set (another topic of the old heading
   // may become its first, and take the plain key). Only topics carry entries: a list item or the body root
   // that happens to share a topic's text does not.

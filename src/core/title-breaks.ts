@@ -109,14 +109,14 @@ function draftLines(draft: string, keep = { lead: false, trail: false }): string
  * each keeps the break it came from as the note wrote it (`<BR/>`, `<br />`, the spaces around, a Setext
  * heading's own line and its indent), so changing one line rewrites only that line (AGENTS.md: 無関係な内容を
  * 再シリアライズしない); with a break added or removed, the breaks cannot be told apart and every one is written
- * as `newBreak` — `<br>`, or for a multi-line Setext heading a line of the note (`commands.ts` rename). With
- * `<br>` over such a heading, its lines become tags too: the heading is written as one line.
+ * as `<br>`. A multi-line Setext heading's own lines become `<br>` too, so it is written as one line (rename in
+ * `commands.ts` says why).
  *
  * A `<br>` where a tag would not be read as one — right after a backslash, inside inline code, a link's
  * target, a wiki link or math — would be saved as the text `<br>`, and is refused instead (the draft stays
  * with its reason).
  */
-export function storedTitle(draft: string, current: string, newBreak = '<br>'): string {
+export function storedTitle(draft: string, current: string): string {
   const ranges = titleBreaks(current);
   const shown = displayed(current, ranges);
   const keep = { lead: /^[ \t]*\n/u.test(shown), trail: /\n[ \t]*$/u.test(shown) };
@@ -126,11 +126,9 @@ export function storedTitle(draft: string, current: string, newBreak = '<br>'): 
   let stored = lines[0] ?? '';
   const inserted: { from: number; to: number }[] = [];
   lines.slice(1).forEach((line, index) => {
-    // A tag as `newBreak` is also what a line of the note becomes: the heading could not keep its lines (rename).
     const own = kept[index];
-    const separator = own !== undefined && !(/[\r\n]/u.test(own) && !/[\r\n]/u.test(newBreak)) ? own : newBreak;
-    // A line of the note is a break by itself; only a tag has to be read as one.
-    if (!/[\r\n]/u.test(separator)) inserted.push({ from: stored.length, to: stored.length + separator.length });
+    const separator = own !== undefined && !/[\r\n]/u.test(own) ? own : '<br>';
+    inserted.push({ from: stored.length, to: stored.length + separator.length });
     stored += separator + line;
   });
   const read = breakRanges(stored);

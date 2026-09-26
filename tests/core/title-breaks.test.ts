@@ -165,19 +165,20 @@ describe('line breaks inside a node (LEV-202)', () => {
     expect(renamed(source, title, draft, 'headings')).toBe(expected);
   });
 
-  // 本人の決定（2026-09-26）: 複数行の Setext 見出しも改行を残したまま編集できる。改行はその見出しがすでにそう書いて
-  // いるとおり原文の行として書き（字下げ・改行コードもそのまま）、読み直すと同じ改行に戻る。行にすると別のブロックに
-  // なる改行（空行・`- `・`===`）だけは `<br>` にする。修正前はこれらを「複数行の Setext 見出しの中では改行できません」で拒否した。
+  // 本人の決定（2026-09-26）: 複数行の Setext 見出しも改行を残したまま編集できる。修正前は「複数行の Setext 見出しの
+  // 中では改行できません」で拒否した。Obsidian はこの形を見出しとして読まない（段落と、`---` なら水平線）ので、原文の
+  // 行のままでは閲覧モードとマップの見え方がずれる。見出しを 1 行にして改行を `<br>` で書けば、Obsidian も改行入りの
+  // 見出しとして描き、読み直すと同じ改行に戻る（artifacts/lev-202-node-line-break/record.md）。
   it.each([
-    ['one line changed', '温泉\n旅行\n===\n', '温泉\n旅行記', '温泉\n旅行記\n===\n'],
-    ['its indent kept', '温泉\n  旅行\n===\n', '温泉\n旅行記', '温泉\n  旅行記\n===\n'],
-    ['a line added', '温泉\n旅行\n===\n', '温泉\n一泊\n旅行', '温泉\n一泊\n旅行\n===\n'],
-    ['CRLF kept', '温泉\r\n旅行\r\n===\r\n', '温泉\n一泊\n旅行', '温泉\r\n一泊\r\n旅行\r\n===\r\n'],
-    ['a line removed', '温泉\n一泊\n旅行\n===\n', '温泉\n旅行', '温泉\n旅行\n===\n'],
-    ['a `<br>` beside its lines', '温泉<BR/>旅行\nです\n===\n', '温泉\n旅行\nでした', '温泉<BR/>旅行\nでした\n===\n'],
-    ['an empty line, which would end the heading: `<br>`', '温泉\n旅行\n===\n', '温泉\n\n旅行', '温泉<br><br>旅行\n===\n'],
-    ['a line a list would start: `<br>`', '温泉\n旅行\n===\n', '温泉\n- 旅行', '温泉<br>- 旅行\n===\n'],
-  ])('writes a multi-line Setext heading with %s', (_case, source, draft, expected) => {
+    ['one line changed', '温泉\n旅行\n===\n', '温泉\n旅行記', '温泉<br>旅行記\n===\n'],
+    ['an indented line', '温泉\n  旅行\n===\n', '温泉\n旅行記', '温泉<br>旅行記\n===\n'],
+    ['a line added', '温泉\n旅行\n===\n', '温泉\n一泊\n旅行', '温泉<br>一泊<br>旅行\n===\n'],
+    ['CRLF', '温泉\r\n旅行\r\n===\r\n', '温泉\n一泊\n旅行', '温泉<br>一泊<br>旅行\r\n===\r\n'],
+    ['a line removed', '温泉\n一泊\n旅行\n---\n', '温泉\n旅行', '温泉<br>旅行\n---\n'],
+    ['a `<br>` beside its lines (the tag kept)', '温泉<BR/>旅行\nです\n===\n', '温泉\n旅行\nでした', '温泉<BR/>旅行<br>でした\n===\n'],
+    ['an empty line', '温泉\n旅行\n===\n', '温泉\n\n旅行', '温泉<br><br>旅行\n===\n'],
+    ['a line a list would start', '温泉\n旅行\n===\n', '温泉\n- 旅行', '温泉<br>- 旅行\n===\n'],
+  ])('writes a multi-line Setext heading with %s as one line', (_case, source, draft, expected) => {
     const doc = parseMarkdown(source, 'Note', undefined, 'headings');
     const node = doc.nodes[0];
     if (!node) throw new Error('Missing fixture heading');
