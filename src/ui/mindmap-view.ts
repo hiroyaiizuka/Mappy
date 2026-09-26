@@ -1771,8 +1771,11 @@ export class MindmapView extends FileView {
     this.saving = true;
     try {
       // A layout button pressed since the edit was planned (LEV-196): its write lands first, and the edit is
-      // carried over it.
-      await this.layoutWrite.catch(() => undefined);
+      // carried over it — every one pressed until then, a second press while the first was being written too.
+      for (let awaited: Promise<void> | undefined; awaited !== this.layoutWrite;) {
+        awaited = this.layoutWrite;
+        await awaited.catch(() => undefined);
+      }
       if (file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
       ({ source, edits, planned } = this.overLayoutWrites(source, edits, planned, file.basename));
       let written: string;

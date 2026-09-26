@@ -202,6 +202,19 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     expect(readTopicPositions(mounted.source()).get('トピック')?.timeline).toBeDefined();
   });
 
+  // Pins the outcome of two presses around one edit, not which of them lands first: here the edit's write is queued
+  // before the second button's (which then plans on it), so `commit` waiting for the second press as well is not
+  // what this row exercises; it fails on the view from before LEV-196 like the rows above.
+  it('a second button pressed while the edit waits for the first is saved with the edit', async () => {
+    const mounted = await mount();
+    selectNode(mounted, '子1');
+    clickLayout(mounted, 'timeline');
+    mounted.key(mounted.canvas, 'Delete');
+    clickLayout(mounted, 'hierarchy');
+    await settled(mounted, source => asks('hierarchy')(source) && !source.includes('子1'));
+    expect(refusals()).toEqual([]);
+  });
+
   it('Undo after the button and an edit takes back the edit only; the layout stays', async () => {
     const mounted = await mount();
     selectNode(mounted, '子1');
