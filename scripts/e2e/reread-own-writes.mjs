@@ -247,6 +247,7 @@ const arm = (kind, late) => evaluate(`${VIEW}
   mine.scheduleRefresh = view.scheduleRefresh;
   // late: held back while the read that carries W2 is under way, and scheduled once it has answered.
   const held = [];
+  const flush = () => { for (const schedule of held.splice(0)) schedule(); };
   view.scheduleRefresh = function (...args) {
     probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch, held: late && inFlight !== null && !probe.answered });
     if (late && inFlight !== null && !probe.answered) { held.push(() => mine.scheduleRefresh.apply(this, args)); return; }
@@ -281,14 +282,19 @@ const arm = (kind, late) => evaluate(`${VIEW}
       }, inside);
     }
     // Read first, answered late: the second write lands between the read and its answer.
-    const text = await own.read.apply(this, args);
-    await new Promise(resolve => setTimeout(resolve, slow));
-    entry.end = now(); entry.epochEnd = view.epoch; entry.unchanged = text === shown;
-    if (carries) probe.answered = true;
-    if (carries) { probe.found.landedIn = text === shown; probe.found.gaveUp = view.epoch !== epoch; }
-    // After this read has gone on (it continues in this task once it has the text): the held re-reads, W2's among them.
-    if (carries && held.length > 0) setTimeout(() => { for (const schedule of held.splice(0)) schedule(); }, 0);
-    return text;
+    try {
+      const text = await own.read.apply(this, args);
+      await new Promise(resolve => setTimeout(resolve, slow));
+      entry.end = now(); entry.epochEnd = view.epoch; entry.unchanged = text === shown;
+      if (carries) { probe.found.landedIn = text === shown; probe.found.gaveUp = view.epoch !== epoch; }
+      return text;
+    } finally {
+      if (carries) {
+        probe.answered = true;
+        // After this read has gone on (it continues once it has the text), or failed: the held re-reads, W2's among them.
+        setTimeout(flush, 0);
+      }
+    }
   };
   own.applyOver = store.applyOver;
   store.applyOver = async function (...args) {
@@ -301,6 +307,7 @@ const arm = (kind, late) => evaluate(`${VIEW}
     for (const key of Object.keys(own)) delete store[key];
     for (const key of Object.keys(mine)) delete view[key];
     for (const [source, ref] of refs) source.offref(ref);
+    flush();
   };
   return true;`);
 

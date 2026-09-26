@@ -22,12 +22,14 @@
  *   view (`DocumentStore.tell` after `writeSafely`), so the read gives up at the epoch check right after `store.read`.
  * The first describe keeps the order (in jsdom by construction: the harness vault fires `modify` inside its write; on
  * Obsidian's own events it is E58, `scripts/e2e/reread-own-writes.mjs`) and also checks that the read gave up. The
- * second breaks it — `modify` reaches the maps late — so only the fix holds there: those rows fail with the fix
+ * second breaks it — `modify` reaches the maps late — so only the fix holds there: those 8 rows fail with the fix
  * reverted (`artifacts/lev-218-reread-own-writes/tests-late-unfixed.log`). With the epoch check also taken out, 16 of
- * the 20 fail with the fix reverted (`tests-m1-unfixed.log`) and all 20 pass with it (`tests-fixed-m1.log`). The 4 that
- * never fail are this map's own ⌥↑ and ⌘Z, on both shapes: they are shown and spent the moment they land
+ * the 22 fail with the fix reverted (`tests-m1-unfixed.log`) and all 22 pass with it (`tests-fixed-m1.log`). Of the 6
+ * that never fail, 4 are this map's own ⌥↑ and ⌘Z, on both shapes: they are shown and spent the moment they land
  * (`showOwnWrite`, LEV-219), so no read ever holds them. They are not regression tests of either; they pin that the
- * user's own next key keeps the fold through the window.
+ * user's own next key keeps the fold through the window. The other 2 (the last describe) pin how far the fix goes:
+ * only the writes recorded while the read was under way are kept, and they fail with every write kept
+ * (`tests-aba-keep-all.log`).
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
@@ -388,6 +390,36 @@ describe('the same window with the note\'s watcher arriving after the store has 
       expectLateWindow(found);
       expect(mounted.source()).toBe(SOURCE);
       expectFolded(mounted, label, index, id);
+    });
+  }
+});
+
+describe('a write taken back by someone else before the map re-read it (LEV-218, code review 1)', () => {
+  // A read of the text on screen keeps only the writes recorded while it was under way. One recorded before it began
+  // was there for the read to find; finding the text on screen instead means someone put the note back (Undo in the
+  // Markdown pane, a sync), and kept, that write would stand at the end of the record, so the map's next own write —
+  // whose start is the text on screen, not that write's end — could not be recorded, nor shown at once, and its
+  // re-read would match nodes by title: with the twin before it renamed, the folded node would take the twin's id. With
+  // every write kept on such a read, these rows fail
+  // (`artifacts/lev-218-reread-own-writes/tests-aba-keep-all.log`).
+  for (const { shape, label, index } of SHAPES) {
+    it(`a rename of the twin before ${shape} after another map's move was put back keeps its fold`, async () => {
+      const mounted = await mount();
+      const other = await mount(mounted.app, storeOf(mounted));
+      const id = foldAndSelect(mounted, label, index);
+      click(nodeNamed(other, '子2'));
+      other.key(other.canvas, 'ArrowUp', { altKey: true });
+      // Put back the moment it lands, before either map's watcher re-reads it (45 ms).
+      await vi.waitFor(() => { expect(mounted.source()).not.toBe(SOURCE); }, { timeout: 1000, interval: 1 });
+      expect(state(mounted).ownWrites).toHaveLength(1);
+      mounted.app.put(PATH, SOURCE);
+      await settled(mounted, other);
+      expect(state(mounted).document?.source).toBe(SOURCE);
+      // Its twin before it renamed: matched by titles alone, the folded node would take the twin's id.
+      rename(mounted, label, index - 1, '命名');
+      await vi.waitFor(() => { expect(mounted.source()).toContain('命名'); }, { timeout: 1000, interval: 2 });
+      await settled(mounted, other);
+      expectFolded(mounted, label, index - 1, id);
     });
   }
 });

@@ -1139,16 +1139,21 @@ export class MindmapView extends FileView {
       this.drawEdges([]);
       return;
     }
+    // The writes recorded before the read begins, which it will find if nobody else takes them back.
+    const recorded = new Set(this.ownWrites);
     const source = await this.store.read(file);
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
-    const changed = source !== this.document?.source || this.document.root.title !== file.basename;
+    const onScreen = source === this.document?.source;
+    const changed = !onScreen || this.document?.root.title !== file.basename;
     // The view's own writes answer for this read while they lead from the text this view last parsed to
     // exactly the text found; their edits then carry the ids across (LEV-146). Another text means someone
     // else has written, and the writes are of no use to any later read either. The text on screen found again
-    // is no one else's: the writes lead on from it, and one recorded while this read was under way is the next
-    // read's to replay (LEV-218; as the embedded maps' `WriteRecord`, LEV-217).
+    // keeps the writes recorded while this read was under way: they lead on from it, and are the next read's to
+    // replay (LEV-218). Not those recorded before it began: the read would have found them, so someone put the
+    // note back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where
+    // the next write, made on the text on screen, could not follow them.
     const replayed = this.replayOwnWrites(source, file.basename);
-    if (!replayed && source !== this.document?.source) this.ownWrites = [];
+    if (!replayed) this.ownWrites = onScreen ? this.ownWrites.filter(write => !recorded.has(write)) : [];
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together

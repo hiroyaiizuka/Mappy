@@ -15,8 +15,8 @@ export interface RecordedWrite {
  *
  * Used by a map embedded in another note (`MapEmbed`, LEV-217). `MindmapView` keeps its own record (`ownWrites`,
  * LEV-150) on the same idea, but not the same rules: it skips a write already at the end (it records its own writes
- * twice), and drops the record on any read the writes do not lead to, a read of the text on screen included. Bringing
- * the view here is LEV-66's.
+ * twice), and a read of the text on screen keeps only the writes recorded while that read was under way (LEV-218),
+ * where this keeps them all. Bringing the view here is LEV-66's.
  */
 export class WriteRecord {
   private writes: RecordedWrite[] = [];
