@@ -16,6 +16,8 @@ interface HistoryEntry {
   after: string;
   forward: TextEdit[];
   inverse: TextEdit[];
+  /** The Redo steps this write dropped, kept (for a `retractable` write) while it is the last step so that `retract` can give them back. */
+  dropped?: HistoryEntry[];
 }
 
 /** A write `applyLatest` made: the text before and after it, and its edits. */
@@ -63,7 +65,7 @@ export class DocumentStore {
    * `apply`, telling what it wrote: the text it found, the text it left, and the edits between — the caller's,
    * or the caller's carried over `applyLatest` writes that landed after `expectedSource` (`carry`, LEV-196).
    */
-  applyOver(file: TFile, expectedSource: string, edits: TextEdit[]): Promise<CarriedWrite> {
+  applyOver(file: TFile, expectedSource: string, edits: TextEdit[], options: { retractable?: boolean } = {}): Promise<CarriedWrite> {
     const requested = edits.map((edit) => ({ ...edit }));
     return this.enqueue(file, async (session) => {
       const before = await this.readCurrent(file);
@@ -71,11 +73,19 @@ export class DocumentStore {
       const { edits: requestedEdits, carried } = this.carry(session, expectedSource, requested, before);
       // Validate the caller's ranges before merging adjacent edits for inversion.
       const after = applyEdits(before, requestedEdits);
-      if (after === before) return { before, after, edits: requestedEdits, carried };
+      // Nothing written is still a step past the last one: its dropped Redo steps are not `retract`'s any more.
+      if (after === before) {
+        const last = session.past[session.past.length - 1];
+        if (last) delete last.dropped;
+        return { before, after, edits: requestedEdits, carried };
+      }
       const forward = mergeAdjacentEdits(requestedEdits);
       const inverse = invertEdits(before, forward);
       await this.writeSafely(file, session, before, after, forward);
-      session.past.push({ before, after, forward, inverse });
+      const last = session.past[session.past.length - 1];
+      if (last) delete last.dropped;
+      // A write `retract` may take back keeps the Redo steps it drops; any other lets them go at once.
+      session.past.push({ before, after, forward, inverse, ...(options.retractable && session.future.length > 0 ? { dropped: session.future } : {}) });
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
       session.latest = [];
@@ -143,6 +153,30 @@ export class DocumentStore {
       if (at === current) return { edits: rebasedEdits, carried };
     }
     throw new Error(conflictMessage);
+  }
+
+  /**
+   * Take back `write`, the history's last step, as if it had never been made: the note goes back to the text
+   * before it, neither Undo nor Redo has a step for it, and the Redo steps the write dropped are back. For a node the map added and the user dismissed at
+   * once (LEV-203: Escape on the new node's draft), which is no edit of theirs to undo or redo. Refused, with the
+   * note left as it is, when anything has come after the write (another step, a change from outside). Returns
+   * the write that took it back.
+   */
+  retract(file: TFile, write: LatestWrite): Promise<LatestWrite> {
+    return this.enqueue(file, async (session) => {
+      const current = await this.readCurrent(file);
+      if (this.observe(session, current)) throw new Error(conflictMessage);
+      const entry = session.past[session.past.length - 1];
+      if (!entry || entry.before !== write.before || entry.after !== write.after || current !== entry.after) {
+        throw new Error(conflictMessage);
+      }
+      await this.writeSafely(file, session, entry.after, entry.before, entry.inverse);
+      session.latest = [];
+      session.past.pop();
+      session.future = entry.dropped ?? [];
+      delete entry.dropped;
+      return { before: entry.after, after: entry.before, edits: entry.inverse };
+    });
   }
 
   undo(file: TFile): Promise<string> {
@@ -257,6 +291,7 @@ export class DocumentStore {
       await this.writeSafely(file, session, before, after, edits);
       session.latest = [];
       from.pop();
+      delete entry.dropped;
       to.push(entry);
       return after;
     });

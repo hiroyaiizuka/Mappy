@@ -37,12 +37,19 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const paste = makePaste(evaluate);
 
-/** Tab: a new child, named in place. Answered by the inline editor being open on an empty node. */
-const addChild = async () => {
+/**
+ * Tab: a new child, named in place (LEV-203: written as 「サブトピック」 and opened with that name selected). With
+ * `clear`, Backspace takes the selected name, so the node the case pastes onto can be confirmed untitled.
+ */
+const addChild = async (clear = false) => {
   await cdp.realKey('Tab');
   await wait(1200);
   const editing = await evaluate(`${VIEW} return !!input();`);
   if (!editing) throw new Error('Tab did not open the inline editor on a new child');
+  if (clear) {
+    await cdp.realKey('Backspace');
+    await wait(300);
+  }
 };
 const state = () => evaluate(`${VIEW}
   // What the node being edited actually shows: an image pasted onto it has to be on screen right away, not
@@ -57,7 +64,8 @@ try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
 
-  // 1. A new node, an image pasted onto it, and the node left as the user leaves it: untitled.
+  // 1. The user's operation as reported: a new node, an image pasted onto it, and Escape. Since LEV-203 the node is
+  // written as 「サブトピック」; the paste wrote its body, so Escape gives up the draft only and the node keeps that name.
   await step('first-paste', async () => {
     await select('記録する');
     await addChild();
@@ -69,8 +77,25 @@ try {
     const settled = await state();
     check(after.messages.length === 0, `first paste showed ${JSON.stringify(after.messages)}`);
     check(after.shownImages >= 1, 'the first image is not drawn on the node while its text is being edited');
-    check(/!\[\[first[^\]]*\.png\]\]/u.test(settled.source), 'the first image was not written into the note');
-    check(settled.labels.includes('空のノード'), 'the node that took the image should still be untitled');
+    check(settled.messages.length === 0, `Escape showed ${JSON.stringify(settled.messages)}`);
+    check(/- サブトピック\n\n? *!\[\[first[^\]]*\.png\]\]/u.test(settled.source), 'the node with the first image did not stay as 「サブトピック」');
+    return { after, settled };
+  });
+
+  // 1b. The untitled shape LEV-142 and LEV-146 broke on: the provisional name cleared, an image pasted, Enter.
+  await step('untitled-paste', async () => {
+    await select('学ぶこと');
+    await addChild(true);
+    await paste('untitled.png');
+    await wait(2500);
+    const after = await state();
+    await cdp.realKey('Enter');
+    await wait(600);
+    const settled = await state();
+    check(after.messages.length === 0, `the untitled paste showed ${JSON.stringify(after.messages)}`);
+    check(after.shownImages >= 1, 'the image is not drawn on the untitled node while its text is being edited');
+    check(/!\[\[untitled[^\]]*\.png\]\]/u.test(settled.source), 'the image was not written into the note');
+    check(settled.labels.includes('空のノード'), 'the node that took the image should be untitled');
     return { after, settled };
   });
 

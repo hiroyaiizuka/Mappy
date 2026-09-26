@@ -123,6 +123,8 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
+      // The empty node's box, which the inline editor keeps while its draft is empty too (styles.css, LEV-203).
+      entry.element.toggleClass("is-empty", node.title.trim() === "");
       entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       // Written only when it changes: a text node replaced on every refresh of a large map is a mutation each.
       // A `<br>` in the title is a break on screen and a space when read out (LEV-202).
@@ -159,6 +161,8 @@ export class NodeRenderer extends Component {
       if (node.children.length > 0) entry.element.setAttribute("aria-expanded", String(!collapsed.has(node.id)));
       else entry.element.removeAttribute("aria-expanded");
       const attachments = attachmentMarkdown(source && !source.root ? nodeBody(source.document, source.node) : nodeBody(document, node));
+      // A node showing images or links under its title: with an empty title, it is those, not the empty node's box (LEV-203).
+      entry.element.toggleClass("has-attachments", attachments !== "");
       const key = `${path}\0${node.title}\0${attachments}${source?.root ? "\0called-root" : ""}`;
       if (entry.key === key) continue;
       entry.key = key;

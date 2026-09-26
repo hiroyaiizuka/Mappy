@@ -1,6 +1,6 @@
 /**
  * E40 (docs/harness.md): a line break inside a node (LEV-202). 本人の操作（F2 で開いて Shift+Enter で改行し、Enter で
- * 確定する）を対象の形ごとに回す: リストのノートの項目・本文のルート（H2）・トピック・Tab で作った空のノードと、見出しの
+ * 確定する）を対象の形ごとに回す: リストのノートの項目・本文のルート（H2）・トピック・Tab で作ったノード（仮の名前を上書き）と、見出しの
  * ノートの ATX 見出し・1 行の Setext 見出し・複数行の Setext 見出し（1 行にして <br>）、拒否される形（\ の直後）。続けて、そのまま
  * 確定しても原文が変わらないこと、⌘Z／⌘⇧Z、複数行の文の挿入（貼り付けと同じ input）、拒否された下書きがダブルクリックで
  * 消えないこと、Markdown 側（外部の書き込み）で書いた `<br>` がマップに改行で現れること、Obsidian 自身の描画
@@ -73,7 +73,8 @@ async function breakAndConfirm(title, first, second, open = 'F2') {
   if (open === 'F2') { await select(title); await cdp.realKey('F2'); }
   else { await select(title); await cdp.realKey('Tab'); }
   await waitForEditor();
-  // F2 selects the whole title (`InlineEditor` calls `select()`), so the typing replaces it. Tab opens an empty draft.
+  // F2 selects the whole title (`InlineEditor` calls `select()`), so the typing replaces it. Tab opens the new node's
+  // provisional name 「サブトピック」 selected the same way (LEV-203).
   if (open === 'Tab') await wait(800);
   await cdp.insertText(first);
   await cdp.realKey('Enter', 8, '\r');

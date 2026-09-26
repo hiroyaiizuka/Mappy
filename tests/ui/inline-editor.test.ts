@@ -84,6 +84,24 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.save).not.toHaveBeenCalled();
   });
 
+  it('gives an emptied draft the empty node\'s box, and takes it away with the text or the editor (LEV-203)', () => {
+    const { host, input, editor } = fixture('');
+    expect(host.classList.contains('is-draft-empty')).toBe(true);
+    input.value = 'あ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'あ' }));
+    expect(host.classList.contains('is-draft-empty')).toBe(false);
+    input.value = '';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    expect(host.classList.contains('is-draft-empty')).toBe(true);
+    // Spaces only: the saved title is trimmed to nothing, so the draft is as empty as the node it leaves (review 1).
+    input.value = '  ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: ' ' }));
+    expect(host.classList.contains('is-draft-empty')).toBe(true);
+    editor.dispose();
+    expect(host.classList.contains('is-draft-empty')).toBe(false);
+    expect(fixture('名前').host.classList.contains('is-draft-empty')).toBe(false);
+  });
+
   describe('the draft box (LEV-198)', () => {
     /** Whether the page reports `field-sizing: content` as supported. */
     const fieldSizing = (supported: boolean): void => {
@@ -226,7 +244,7 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.restore).not.toHaveBeenCalled();
     pending.resolve();
     await pending.promise;
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
     expect(options.restore).toHaveBeenCalledTimes(1);
     expect(host.querySelector('textarea')).toBeNull();
     expect(host.classList.contains('is-editing')).toBe(false);
@@ -241,7 +259,7 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.finish).not.toHaveBeenCalled();
     pending.resolve();
     await pending.promise;
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('child', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('child', false, expect.any(String));
     expect(options.restore).toHaveBeenCalledTimes(1);
   });
 
@@ -250,7 +268,7 @@ describe('InlineEditor DOM interactions', () => {
     input.value = '保存しない下書き';
     expect(key(input, 'Escape').defaultPrevented).toBe(true);
     expect(options.save).not.toHaveBeenCalled();
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, '保存しない下書き');
     expect(options.restore).toHaveBeenCalledTimes(1);
     expect(host.querySelector('textarea')).toBeNull();
     editor.dispose();
@@ -286,7 +304,7 @@ describe('InlineEditor DOM interactions', () => {
     expect(key(input, 'Enter').defaultPrevented).toBe(true);
     await Promise.resolve();
     expect(options.save).toHaveBeenCalledExactlyOnceWith('日本語');
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
   });
 
   it('waits for compositionend and the final input before saving after blur', async () => {
@@ -300,7 +318,7 @@ describe('InlineEditor DOM interactions', () => {
     input.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText' }));
     await new Promise(resolve => setTimeout(resolve, 5));
     expect(options.save).toHaveBeenCalledExactlyOnceWith('変換途中');
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
   });
 
   it('does not save a composition blur if focus returns before completion', async () => {
@@ -354,7 +372,7 @@ describe('InlineEditor DOM interactions', () => {
     key(input, 'Enter');
     await Promise.resolve();
     expect(options.save).toHaveBeenNthCalledWith(2, '修正して再試行');
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
     expect(options.restore).toHaveBeenCalledTimes(1);
     expect(host.querySelector('textarea')).toBeNull();
   });
@@ -369,7 +387,7 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.save).toHaveBeenCalledTimes(1);
     pending.resolve();
     await pending.promise;
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
     expect(options.restore).toHaveBeenCalledTimes(1);
   });
 
@@ -378,7 +396,7 @@ describe('InlineEditor DOM interactions', () => {
     input.dispatchEvent(new FocusEvent('blur'));
     await Promise.resolve();
     expect(options.save).toHaveBeenCalledExactlyOnceWith('フォーカス移動');
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
   });
 
   it('does not emit finish when a disposed editor later completes a pending save', async () => {
