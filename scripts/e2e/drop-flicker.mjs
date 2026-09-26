@@ -10,7 +10,13 @@
  * Rows are the tree dropped (a topic, the body) × how the note is open:
  * - `alone`: in the map only — the store writes through `Vault.process`, the modify watcher reports it;
  * - `editor`: also in a Markdown editor split beside the map — the store writes through the editor's transaction,
- *   `editor-change` reports it at once and the disk (the modify watcher) follows on Obsidian's save debounce.
+ *   `editor-change` reports it at once and the disk (the modify watcher) follows on Obsidian's save debounce;
+ * - `slow`: as `alone`, with every read of the note answered `SLOW_MS` late, as from a slow disk. Neither form above
+ *   reaches the order the ticket asks about on its own: on 1.14.2 the watcher of the write lands just before the
+ *   save's re-read starts, and an editor's `editor-change` re-read draws the written text while the drag still holds
+ *   its overrides. A read longer than the watcher's 45 ms debounce does reach it: the watcher's re-read starts while
+ *   the save's is still reading, and ends after it. The watcher, both re-reads and every frame are Obsidian's own;
+ *   only the answers are late.
  * Each row repeats `--repeat` times (3 by default): whether the watcher lands inside the read is a race.
  *
  * Every drop presses a root, carries it 60 × 30 px in steps, holds still, and releases. From just before the release,
@@ -51,9 +57,11 @@ const ROOTS = ['本体', '資料', '補足'];
 /** The view each drop starts from: away from the fit, so a fit afterwards would show as a move too. */
 const START = { x: 120, y: 120, scale: 0.9 };
 const SAMPLE_MS = 1500;
+/** How late the `slow` form answers each read: longer than the watcher's 45 ms debounce. */
+const SLOW_MS = 80;
 
 const TARGETS = [{ name: 'topic', title: '資料' }, { name: 'body', title: '本体' }];
-const FORMS = ['alone', 'editor'];
+const FORMS = ['alone', 'editor', 'slow'];
 const ROWS = FORMS.flatMap(form => TARGETS.map(target => ({ id: `${target.name}-${form}`, target, form })));
 const only = value('--only')?.split(',').map(item => item.trim()).filter(Boolean);
 if (only) {
@@ -120,10 +128,12 @@ const setForm = form => evaluate(`${VIEW}
   const path = ${JSON.stringify(NOTE)};
   const editors = [];
   app.workspace.iterateAllLeaves(item => { if (item.view?.getViewType?.() === 'markdown' && item.view.file?.path === path) editors.push(item); });
-  if (${JSON.stringify(form)} === 'alone') { for (const item of editors) item.detach(); }
+  if (${JSON.stringify(form)} !== 'editor') { for (const item of editors) item.detach(); }
   else if (editors.length === 0) {
+    // Through the plugin's router, as its own 右に Markdown を開く does: a plain markdown state of a map note is
+    // routed to a map (\`src/obsidian/view-routing.ts\`).
     const side = app.workspace.createLeafBySplit(leaf, 'vertical');
-    await side.setViewState({ type: 'markdown', state: { file: path, mode: 'source' }, active: false });
+    await view.router.openMarkdown(side, view.file, false);
   }
   await new Promise(resolve => setTimeout(resolve, 800));
   app.workspace.setActiveLeaf(leaf, { focus: true });
@@ -148,17 +158,25 @@ const reset = () => evaluate(`${VIEW}
  * Installs the probe: every root sampled once per painted frame, and the view's re-reads and the watcher's schedules
  * logged with the epoch, so a read that the watcher superseded shows as one whose epoch moved while it read.
  */
-const arm = () => evaluate(`${VIEW}
+const arm = slow => evaluate(`${VIEW}
+  const slow = ${JSON.stringify(slow)};
   const probe = window.__mappyE2EDrop = { frames: [], log: [], t0: performance.now(), done: false };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
   const store = view.store;
   const schedule = view.scheduleRefresh;
   const storeRead = store.read;
-  view.scheduleRefresh = function (...args) { probe.log.push({ at: now(), what: 'schedule', saving: view.saving }); return schedule.apply(this, args); };
+  view.scheduleRefresh = function (...args) {
+    probe.log.push({ at: now(), what: 'schedule', saving: view.saving });
+    return schedule.apply(this, args);
+  };
   store.read = async function (...args) {
     const entry = { at: now(), what: 'read', saving: view.saving, epoch: view.epoch };
     probe.log.push(entry);
-    try { return await storeRead.apply(this, args); } finally { entry.end = now(); entry.epochEnd = view.epoch; }
+    try {
+      const text = await storeRead.apply(this, args);
+      if (slow > 0) await new Promise(resolve => setTimeout(resolve, slow));
+      return text;
+    } finally { entry.end = now(); entry.epochEnd = view.epoch; }
   };
   // Both were the prototype's: deleting the own properties puts them back.
   probe.release = () => { delete view.scheduleRefresh; delete store.read; probe.done = true; };
@@ -175,7 +193,7 @@ const arm = () => evaluate(`${VIEW}
 
 const collect = () => evaluate(`const probe = window.__mappyE2EDrop; probe.release(); return { frames: probe.frames, log: probe.log };`);
 
-const drop = async ({ target }) => {
+const drop = async ({ target, form }) => {
   const failures = [];
   const expect = (condition, message) => { if (!condition) failures.push(message); };
   await reset();
@@ -193,7 +211,7 @@ const drop = async ({ target }) => {
   await wait(300);
   const carried = await read();
   expect(carried.dragging, 'the press and move did not start a free drag');
-  await arm();
+  await arm(form === 'slow' ? SLOW_MS : 0);
   await wait(50);
   await mouse('mouseReleased', held);
   await wait(SAMPLE_MS);
@@ -216,8 +234,9 @@ const drop = async ({ target }) => {
   }
   expect(frames.length > 10, `only ${frames.length} frames were sampled (a throttled window?)`);
   expect(off.length === 0, `${off.length} root placements off the release: first ${JSON.stringify(off[0])}`);
-  // The save's own re-read is the last read made while the view is saving; superseded when the epoch moved while it read.
-  const own = log.filter(entry => entry.what === 'read' && entry.saving).at(-1) ?? null;
+  // The save's own re-read is the first read made while the view is saving (a watcher's re-read can start while it
+  // still reads); superseded when the epoch moved while it read.
+  const own = log.find(entry => entry.what === 'read' && entry.saving) ?? null;
   const superseded = own ? own.epochEnd !== own.epoch : null;
   return { failures, frames: frames.length, off: off.slice(0, 6), offCount: off.length, superseded, own, log };
 };
