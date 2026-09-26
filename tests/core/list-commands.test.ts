@@ -354,7 +354,10 @@ describe('source-preserving list commands', () => {
     const child = find(doc, 'Child');
     expect(() => planEdit(doc, { type: 'reparent', nodeId: parent.id, parentId: child.id })).toThrow();
     expect(() => planEdit(doc, { type: 'reparent', nodeId: parent.id, parentId: parent.id })).toThrow();
-    expect(() => planEdit(doc, { type: 'rename', nodeId: child.id, title: 'Break\n- injected' })).toThrow();
+    // A break in a name is written as `<br>` in the item's one line (LEV-202): it cannot start another item.
+    const renamed = applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: child.id, title: 'Break\n- injected' }).edits);
+    expect(renamed).toBe('## Root\n- Parent\n  - Break<br>- injected');
+    expect(parse(renamed).nodes.map(node => node.title)).toEqual(['Root', 'Parent', 'Break<br>- injected']);
   });
 });
 

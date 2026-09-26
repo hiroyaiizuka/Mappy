@@ -44,9 +44,17 @@ describe('partial Markdown edits', () => {
       .toBe('新しい見出し\r\n======\r\nbody');
   });
 
-  it.each(['改行\n禁止', '改行\r禁止', '改行\u2028禁止'])('rejects malformed titles %j', (title) => {
+  // A rename writes the draft's breaks as `<br>` (LEV-202, tests/core/title-breaks.test.ts); text handed to
+  // the other commands is written as it is, so a break there would still start another block.
+  it.each(['改行\n禁止', '改行\r禁止', '改行\u2028禁止'])('writes the breaks of a renamed title %j as `<br>`', (title) => {
     const doc = parseMarkdown('# Old', 'Note');
-    expect(() => planEdit(doc, { type: 'rename', nodeId: find(doc, 'Old').id, title })).toThrow();
+    expect(applyEdits(doc.source, planEdit(doc, { type: 'rename', nodeId: find(doc, 'Old').id, title }).edits)).toBe('# 改行<br>禁止');
+  });
+
+  it.each(['改行\n禁止', '改行\r禁止', '改行\u2028禁止'])('rejects a new node\'s text %j with a line break', (title) => {
+    const doc = parseMarkdown('# Old', 'Note');
+    expect(() => planEdit(doc, { type: 'add-child', nodeId: find(doc, 'Old').id, title })).toThrow('改行');
+    expect(() => planEdit(doc, { type: 'add-topic', title })).toThrow('改行');
   });
 
   it('rejects a Setext rename that would change Markdown structure', () => {

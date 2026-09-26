@@ -184,9 +184,10 @@ export class Page {
     await this.mouse('mouseWheel', x, y, { deltaX, deltaY, modifiers });
   }
 
-  async key(key, code, keyCode, modifiers = 0) {
+  /** `text` is what the key types (`'\r'` for Enter): without it Chrome runs no default action, such as a textarea's line break. */
+  async key(key, code, keyCode, modifiers = 0, text) {
     const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers };
-    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base });
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, ...(text ? { text, unmodifiedText: text } : {}) });
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
   }
 

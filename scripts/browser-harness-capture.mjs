@@ -998,6 +998,76 @@ async function captureInlineWidth(recorder, page) {
 }
 
 /**
+ * LEV-202: a line break inside a node, typed the way the user does (Shift+Enter in the inline editor, real key
+ * events with the text Chrome inserts). The draft keeps the break, Enter writes it as `<br>` in the item's one
+ * line, the label breaks there, editing again gives the break back, and the SVG export carries it.
+ */
+async function captureLineBreak(recorder, page) {
+  await loadFixture(page, OPERATION_FIXTURE);
+  const target = '空に近い枝';
+  const original = await page.harness('h.source()');
+  const draft = () => page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') ? document.activeElement.value : null`);
+  const labelRows = name => page.evaluate(`(() => {
+    const node = Array.from(document.querySelectorAll('#harness-pane .mappy-node')).find(item => item.querySelector('.mappy-node-label')?.innerText.replace(/\\s+/g, ' ').trim() === ${JSON.stringify(name)});
+    const label = node?.querySelector('.mappy-node-label');
+    if (!label) return null;
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    return { rows: new Set(Array.from(range.getClientRects(), rect => Math.round(rect.top))).size, breaks: label.querySelectorAll('br').length };
+  })()`);
+
+  await recorder.run('line-break-type', `「${target}」で F2（題名が選択された状態で開く）→「温泉」→ Shift+Enter →「旅行」→ Enter`,
+    '入力欄に改行が入り確定しない。Enter で `温泉<br>旅行` が項目の 1 行に書かれ、ノードは 2 行で表示される。ほかの行は変わらない', async () => {
+      await openInlineEditor(page, target);
+      // InlineEditor opens with the title selected, so the typing replaces it; the case says so if it ever does not.
+      const selected = await page.evaluate(`(() => { const input = document.activeElement; return input.selectionStart === 0 && input.selectionEnd === input.value.length; })()`);
+      expect(selected, 'F2 did not open the draft with its title selected');
+      await page.type('温泉');
+      await page.key('Enter', 'Enter', 13, 8, '\r');
+      await page.settle();
+      const typed = await draft();
+      expect(typed === '温泉\n', `after Shift+Enter the draft is ${JSON.stringify(typed)}`);
+      await page.type('旅行');
+      await page.key('Enter', 'Enter', 13, 0, '\r');
+      await page.settle();
+      expect(await draft() === null, 'Enter did not close the inline editor');
+      const written = await page.harness('h.source()');
+      expect(written === original.replace(target, '温泉<br>旅行'), `unexpected source:\n${written}`);
+      const shown = await labelRows('温泉 旅行');
+      expect(shown?.breaks === 1 && shown.rows === 2, `label: ${JSON.stringify(shown)}`);
+      return `label ${shown.rows} rows`;
+    });
+
+  await recorder.run('line-break-reedit', '同じノードで F2 → そのまま Enter',
+    '入力欄に「温泉⏎旅行」が 2 行で戻り、確定しても原文は変わらない', async () => {
+      const before = await page.harness('h.source()');
+      // The harness names a node by its label's text, which a `<br>` adds nothing to.
+      await openInlineEditor(page, '温泉旅行');
+      const reopened = await draft();
+      expect(reopened === '温泉\n旅行', `draft ${JSON.stringify(reopened)}`);
+      const rows = await page.evaluate(`(() => { const input = document.activeElement; return Math.round(input.scrollHeight / parseFloat(getComputedStyle(input).lineHeight)); })()`);
+      expect(rows === 2, `${rows} rows in the draft`);
+      await page.key('Enter', 'Enter', 13, 0, '\r');
+      await page.settle();
+      const after = await page.harness('h.source()');
+      expect(after === before, 'confirming the untouched draft changed the note');
+      return `draft ${rows} rows`;
+    });
+
+  await recorder.run('line-break-export', 'h.export.svg() で SVG を書き出す', 'そのノードの foreignObject に `<br/>` が入り、2 行のまま書き出される', async () => {
+    const exported = await page.harness('h.export.svg()');
+    const svg = exported.svg;
+    await writeFile(join(recorder.directory, 'export-line-break.svg'), svg);
+    // The exporter gives each element the class of its computed style (`<br class="m5"/>`).
+    expect(/温泉<br(?: class="[^"]*")?\/>旅行/u.test(svg), `the exported node has no <br/> between its lines: ${svg.match(/.{0,80}旅行.{0,20}/u)?.[0] ?? 'no 旅行 in the SVG'}`);
+    return 'export-line-break.svg';
+  });
+  // The cases after this one read the fixture as it was.
+  await page.harness(`h.putNote(${JSON.stringify(`Fixtures/${OPERATION_FIXTURE}.md`)}, ${JSON.stringify(original)})`);
+  await loadFixture(page, OPERATION_FIXTURE);
+}
+
+/**
  * M8 rows (LEV-46) on heading-document: the stages「回復する」「記録する」carry images, so
  * their children hang lower, while「はじめに」→「この講座で学ぶこと」keeps a connector as
  * long as the row gap. Before the fix every depth-2 node sat under the tallest stage.
@@ -3052,6 +3122,7 @@ async function main() {
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
       await captureInlineWidth(recorder, page);
+      await captureLineBreak(recorder, page);
       await captureThemes(recorder, page);
       await captureVisibleLayouts(recorder, page);
       await captureTopicOperations(recorder, page);
