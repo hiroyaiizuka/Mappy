@@ -57,12 +57,12 @@ describe('browser harness fixtures', () => {
   it('uses the same vault paths as test-vault/Fixtures', () => {
     expect(FIXTURES.map(fixture => fixture.path)).toEqual([
       'Fixtures/heading-document.md', 'Fixtures/roundtrip-edge-cases.md', 'Fixtures/uneven-branches.md', 'Fixtures/free-topics.md',
-      'Fixtures/embed-nodes.md', 'Fixtures/embed-cycle.md',
+      'Fixtures/embed-nodes.md', 'Fixtures/embed-cycle.md', 'Fixtures/timeline-stages.md',
       'Fixtures/performance-10.md', 'Fixtures/performance-100.md', 'Fixtures/performance-500.md', 'Fixtures/performance-2000.md',
       ...['list', 'deep', 'wide', 'japanese', 'links'].flatMap(shape => performanceNodeCounts.map(count => `Fixtures/performance-${count}-${shape}.md`)),
     ]);
     expect(FIXTURES.filter(fixture => !fixture.performance).map(fixture => fixture.id))
-      .toEqual(['heading-document', 'roundtrip-edge-cases', 'uneven-branches', 'free-topics', 'embed-nodes', 'embed-cycle']);
+      .toEqual(['heading-document', 'roundtrip-edge-cases', 'uneven-branches', 'free-topics', 'embed-nodes', 'embed-cycle', 'timeline-stages']);
     expect(SAMPLE_IMAGE.url.startsWith('data:image/svg+xml')).toBe(true);
   });
 

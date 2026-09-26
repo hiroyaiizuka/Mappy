@@ -11,6 +11,7 @@ import embedTimeline from "../../tests/fixtures/embed-timeline.md?raw";
 import embedHierarchy from "../../tests/fixtures/embed-hierarchy.md?raw";
 import embedNodes from "../../tests/fixtures/embed-nodes.md?raw";
 import embedCycle from "../../tests/fixtures/embed-cycle.md?raw";
+import timelineStages from "../../tests/fixtures/timeline-stages.md?raw";
 import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
 import { makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
 
@@ -77,6 +78,13 @@ const staticFixtures: HarnessFixture[] = [
     label: "embed-cycle（embed-nodes と互いに呼び出す）",
     covers: "embed-nodes を呼び出し、embed-nodes からも呼び出される（A ↔ B）。呼び出したマップの中の呼び出しはリンクのまま描かれ、循環しても描画が止まらない。自分自身はリンク",
     source: embedCycle,
+  },
+  {
+    id: "timeline-stages",
+    path: `${FIXTURE_DIRECTORY}/timeline-stages.md`,
+    label: "timeline-stages（タイムライン: 同じ側に続くステージ）",
+    covers: "`mappy-layout: timeline`。下側の深い森（末端「ビジランス効果」「ポモドーロ」）の右に同じ側の次のステージの縦線が立つ間隔（LEV-205）、上側の画像つき・幅の違う枝",
+    source: timelineStages,
   },
 ];
 
