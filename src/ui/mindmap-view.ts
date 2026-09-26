@@ -343,6 +343,14 @@ export class MindmapView extends FileView {
     });
   }
 
+  /**
+   * Resolves once the layout writes the buttons queued so far have run (`selectMode`), failed ones included: the end
+   * point the browser page waits on before reading what the note holds, instead of a time window (LEV-212).
+   */
+  layoutWritten(): Promise<void> {
+    return this.layoutWrite.catch(() => undefined);
+  }
+
   /** Current presentation, for exports that mirror what the user sees: the folds and the called maps as drawn (§5 M12). */
   snapshot(): { file: TFile; mode: LayoutMode; collapsed: ReadonlySet<string>; document?: MindDocument; calls: CallTargets } | null {
     if (!this.file) return null;
