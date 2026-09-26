@@ -19,6 +19,9 @@ import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import { LAYOUT_LABELS, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
+import { LAYOUT_KEY } from "../../src/core/map-keys";
+import { frontmatterLayout } from "../../src/core/markdown";
+import { locateFrontmatterKey, parseYamlValue } from "../../src/core/yaml-lite";
 import { TIMELINE_STAGE_CLEARANCE } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
 import { isMapTheme, readVisibleLayouts, type MapTheme } from "../../src/obsidian/settings";
@@ -734,6 +737,26 @@ const api = {
   source: () => {
     const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
     return file ? app.content(file) : null;
+  },
+  /**
+   * The current fixture's `mappy-layout` read from its own text the way the product reads it (`frontmatterLayout`,
+   * then the key's YAML value): `header` false when the note has no frontmatter at the top, `value` undefined when
+   * the key is absent. A layout button writes the text (`DocumentStore`, LEV-196); this page's `processFrontMatter`
+   * only records an entry in `activity`, so the text, not that record, says what the note asks for (LEV-212).
+   */
+  layoutKey: (): { header: boolean; value?: unknown } => {
+    const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
+    const text = file ? app.content(file) : null;
+    const header = text === null ? null : frontmatterLayout(text);
+    if (text === null || !header) return { header: false };
+    const key = locateFrontmatterKey(text, header, LAYOUT_KEY);
+    return { header: true, value: key ? parseYamlValue(key.inline, key.nested) : undefined };
+  },
+  /** Put a fixture's text back as it ships, undoing what earlier cases wrote to it (the in-memory vault keeps every edit). */
+  restoreFixture: (id: string) => {
+    const fixture = findFixture(id);
+    if (!fixture) throw new Error(`Unknown fixture: ${id}`);
+    app.put(fixture.path, fixture.source);
   },
   ready: Promise.resolve(),
 };
