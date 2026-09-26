@@ -137,7 +137,7 @@ function fixture(source = '# Course\n\n## A\n\n### A1\n\n### A2\n\n### A3\n\n## 
   };
   const ghost = (): HTMLElement | null => canvas.querySelector('.mappy-drag-ghost');
   const showPlaceholder = (rect: Rect | null): void => { placeholderRect = rect; placeholder.hidden = !rect; };
-  return { parsed, canvas, actions, node, id, pointer, center, begin, ghost, rects, showPlaceholder, placeholder, capture };
+  return { parsed, canvas, actions, drag, node, id, pointer, center, begin, ghost, rects, showPlaceholder, placeholder, capture };
 }
 
 describe('NodeDrag pointer dragging', () => {
@@ -583,5 +583,64 @@ describe('NodeDrag pointer dragging', () => {
 
   it('exposes the placeholder id the view must mark on its element', () => {
     expect(PLACEHOLDER_ID).toBe('mappy-drop-placeholder');
+  });
+});
+
+describe('NodeDrag when the viewport moves under a drag (LEV-194)', () => {
+  // The session measures the press on screen: the grab offset inside the node, the ghost's scale, the node's own box.
+  // A pan or zoom mid-drag (the wheel, a zoom button) moves the map under them; the view reports it through
+  // `viewportMoved`, and each is carried into the new viewport.
+  const TOPIC_SOURCE = '# Course\n\n## Body\n\n## Topic\n';
+
+  it('the node\'s own box moves with the map, so a release where it now sits is no detach and one where it was is', () => {
+    const { canvas, actions, drag, node, pointer, center } = fixture();
+    const [x, y] = center('A3');
+    pointer('pointerdown', node('A3'), x, y);
+    pointer('pointermove', canvas, x + 8, y);
+    pointer('pointermove', canvas, 600, 500);
+    // The map panned up 200 px: A3 (340–380) now shows at 140–180, over the gap between two nodes of the mock.
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: 0, y: -200, scale: 1 });
+    pointer('pointermove', canvas, x, 150);
+    pointer('pointerup', canvas, x, 150);
+    expect(actions.detach).not.toHaveBeenCalled();
+    // Pressed again, and the map panned down 200 px: A3 shows at 540–580, and the gap at 150 is empty canvas.
+    pointer('pointerdown', node('A3'), x, y);
+    pointer('pointermove', canvas, x + 8, y);
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: 0, y: 200, scale: 1 });
+    pointer('pointermove', canvas, x, 150);
+    pointer('pointerup', canvas, x, 150);
+    expect(actions.detach).toHaveBeenCalledOnce();
+  });
+
+  it('a zoom scales the ghost and its grab offset, so the point grabbed stays under the pointer', () => {
+    const { canvas, drag, node, pointer, center, ghost } = fixture();
+    const [x, y] = center('A3');
+    pointer('pointerdown', node('A3'), x, y);
+    pointer('pointermove', canvas, 600, 500);
+    expect(ghost()?.style.transform).toBe(`translate(${600 - 100}px, ${500 - 20}px) scale(1)`);
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: -600, y: -500, scale: 2 });
+    // At once, with the pointer still: grabbed 100 × 20 px in at scale 1, now 200 × 40 px in.
+    expect(ghost()?.style.transform).toBe(`translate(${600 - 200}px, ${500 - 40}px) scale(2)`);
+    pointer('pointermove', canvas, 610, 500);
+    expect(ghost()?.style.transform).toBe(`translate(${610 - 200}px, ${500 - 40}px) scale(2)`);
+  });
+
+  it('a free tree asks for its snap from the root as it sits at the new scale', () => {
+    const { canvas, actions, drag, node, id, pointer, center } = fixture(TOPIC_SOURCE, ['Topic']);
+    const [x, y] = center('Topic');
+    pointer('pointerdown', node('Topic'), x, y);
+    pointer('pointermove', canvas, x + 8, y);
+    pointer('pointermove', canvas, 400, 400);
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: -400, y: -400, scale: 2 });
+    pointer('pointermove', canvas, 401, 400);
+    expect(actions.snap).toHaveBeenLastCalledWith(id('Topic'), { x: 401 - 200, y: 400 - 40, width: 200, height: 40 }, null);
+    expect(drag.pointer()).toEqual({ x: 401, y: 400 });
+  });
+
+  it('reports no pointer and ignores a move of the viewport with no drag under way', () => {
+    const { drag, ghost } = fixture();
+    expect(drag.pointer()).toBeNull();
+    drag.viewportMoved({ x: 0, y: 0, scale: 1 }, { x: 10, y: 10, scale: 2 });
+    expect(ghost()).toBeNull();
   });
 });

@@ -218,6 +218,7 @@ export class MindmapView extends FileView {
   private zoomLabel!: HTMLButtonElement;
   private renderer!: NodeRenderer;
   private viewport!: MapViewport;
+  private nodeDrag!: NodeDrag;
   /** The canvas listeners, which also answer the view's scope; set with the DOM in `onOpen`. */
   private events: MapEvents | undefined;
   private modeButtons = new Map<LayoutMode, HTMLButtonElement>();
@@ -236,12 +237,20 @@ export class MindmapView extends FileView {
   private edgePaths = new Map<string, SVGPathElement>();
   private dropPreview: MoveCommand | null = null;
   /**
-   * A free tree following the pointer: the dragged root, where each affected topic started and where
-   * it shows now (origin-relative), and, for the body root, the viewport at the press. Dragging the
-   * body moves it against its topics: they keep their place on screen while the viewport follows the pointer.
+   * A free tree following the pointer: the dragged root, and where each affected topic started and where
+   * it shows now (origin-relative). Dragging the body moves it against its topics: they keep their place
+   * on screen while the viewport follows the pointer.
    */
   private topicDrag: {
-    id: string; body: boolean; from: Map<string, TopicPosition>; overrides: Map<string, TopicPosition>; viewport: Viewport | null;
+    id: string; body: boolean; from: Map<string, TopicPosition>; overrides: Map<string, TopicPosition>;
+    /**
+     * The viewport the pointer's travel is measured under: the map's own for a topic, and for the body the one its
+     * topics are seen under (the map's own is that one panned by the body's travel). The press viewport until
+     * something else moves the view mid-drag (`viewportMoved`, LEV-194).
+     */
+    view: Viewport;
+    /** How far the tree had come in world units (`moved`) when the pointer had travelled `mark`; `delta` is the travel now. See `travelled`. */
+    moved: LayoutPoint; mark: DragDelta; delta: DragDelta;
     /** Node ids marked as moving; cleared by id, since a joined topic keeps its element under a new tree. */
     marked: string[];
     /**
@@ -281,6 +290,8 @@ export class MindmapView extends FileView {
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
   private unloading = false;
   private needsFit = true;
+  /** True while a free drag writes the viewport itself (the body's pan), which is no move of the view under it (`viewportMoved`). */
+  private carrying = false;
   /**
    * Whether `needsFit` outlived a free drag (LEV-182), set when the drag ends: only that fit also waits for a re-read
    * (see the layout frame), and a pan or zoom made before it runs cancels it (`clearFit`).
@@ -617,11 +628,12 @@ export class MindmapView extends FileView {
     this.button(zoom, "拡大", "plus", () => { this.viewport.zoom(1.2); });
     this.button(zoom, "全体表示", "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
     this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }));
-    this.viewport = this.addChild(new MapViewport(this.canvas, world, view => {
+    this.viewport = this.addChild(new MapViewport(this.canvas, world, (view, previous) => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
       // A pan or zoom between a drop and the fit held through it is where the view is wanted now (LEV-182).
       if (this.fitHeld && !this.topicDrag) this.clearFit();
+      if (!this.carrying) this.viewportMoved(previous, view);
     }, () => { this.deselect(); }));
     this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
@@ -638,7 +650,7 @@ export class MindmapView extends FileView {
       addTopic: point => { this.run(() => this.addTopic(point)); },
       open: (id, newLeaf) => this.openCalled(id, newLeaf),
     }));
-    this.addChild(new NodeDrag(this.canvas, {
+    this.nodeDrag = this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
       readOnly: id => this.isCalled(id),
       free: id => this.isFree(id),
@@ -1066,12 +1078,10 @@ export class MindmapView extends FileView {
         // body. Panning by the origins' difference in screen units keeps the body from jumping without
         // touching the topics (shifting `overrides` too would double-correct: the origin term they sit
         // against moves with them already).
-        if (drag.viewport && (dx !== 0 || dy !== 0)) {
-          const scale = drag.viewport.scale;
-          const panDx = dx * scale;
-          const panDy = dy * scale;
-          drag.viewport = { ...drag.viewport, x: drag.viewport.x + panDx, y: drag.viewport.y + panDy };
-          this.viewport.set({ ...this.viewport.value, x: this.viewport.value.x + panDx, y: this.viewport.value.y + panDy });
+        if (dx !== 0 || dy !== 0) {
+          const scale = drag.view.scale;
+          drag.view = { ...drag.view, x: drag.view.x + dx * scale, y: drag.view.y + dy * scale };
+          this.carry(drag);
         }
       } else {
         if (dx !== 0 || dy !== 0) {
@@ -1406,9 +1416,9 @@ export class MindmapView extends FileView {
         this.placeholder.style.transform = `translate(${slot.x}px, ${slot.y}px)`;
       }
       this.drawEdges(this.layout.edges);
-      // A free drag places its tree (a topic by `overrides`, the body by the viewport pan) through the viewport it
-      // started under, so a fit asked for mid-drag (a layout button pressed by a second pointer) waits until the drag
-      // ends; fitting now would pull the tree off the pointer (LEV-182). A fit that outlived a drag (`fitHeld`) also
+      // A fit asked for mid-drag (a layout button pressed by a second pointer) waits until the drag ends (LEV-182): the
+      // carried tree would now stay on the pointer through it (`viewportMoved`, LEV-194), but the map would reframe
+      // under the hand for a request the drag did not make. A fit that outlived a drag (`fitHeld`) also
       // waits for a re-read scheduled or under way: after a drop, the save's own re-read gives up when the watcher
       // schedules a newer one (`commit`), and until that one draws, this frame lays out the note from before the drop.
       // Any other fit runs at once, as it always has.
@@ -1689,7 +1699,8 @@ export class MindmapView extends FileView {
     const body = projection.root.id === id;
     const from = rootOffsets(layout, (body ? projection.topics : projection.topics.filter(topic => topic.id === id)).map(topic => topic.id));
     this.topicDrag = {
-      id, body, from, overrides: new Map(from), viewport: body ? { ...this.viewport.value } : null, marked: this.markMoving(id),
+      id, body, from, overrides: new Map(from), view: { ...this.viewport.value },
+      moved: { x: 0, y: 0 }, mark: { x: 0, y: 0 }, delta: { x: 0, y: 0 }, marked: this.markMoving(id),
       base: layout, sizes: this.renderer.sizes(), index: null,
     };
     return this.topicDrag;
@@ -1701,7 +1712,8 @@ export class MindmapView extends FileView {
     this.topicDrag = null;
     for (const marked of drag.marked) this.renderer.entries.get(marked)?.element.removeClass("is-drag-moving");
     this.renderer.entries.get(id)?.element.removeClass("is-merging");
-    if (restore && drag.viewport) this.viewport.set(drag.viewport);
+    // The body goes back where it was among its topics, which stay as they are seen (a pan or zoom made mid-drag is kept).
+    if (restore && drag.body) this.viewport.set(drag.view);
     // Set here, after the drag's own viewport is back, rather than by a frame that saw the drag: a frame can come late
     // or the release land inside one frame interval of the switch, and the hold must not hang on that (LEV-182).
     if (this.needsFit) this.fitHeld = true;
@@ -1723,13 +1735,55 @@ export class MindmapView extends FileView {
     if (!delta) { this.endTopicDrag(id, true); return; }
     const drag = this.topicDrag?.id === id ? this.topicDrag : this.startTopicDrag(id);
     if (!drag) return;
-    const scale = drag.viewport?.scale ?? this.viewport.value.scale;
+    drag.delta = delta;
+    this.carry(drag);
+  }
+
+  /** How far the tree has come, in world units, once the pointer has travelled `delta` (screen pixels) since the press. */
+  private travelled(drag: NonNullable<MindmapView["topicDrag"]>, delta: DragDelta): LayoutPoint {
+    const scale = drag.view.scale;
+    return { x: drag.moved.x + (delta.x - drag.mark.x) / scale, y: drag.moved.y + (delta.y - drag.mark.y) / scale };
+  }
+
+  /** Puts the tree where the drag has brought it: a topic through `overrides`; the body by the pan, its topics the other way. */
+  private carry(drag: NonNullable<MindmapView["topicDrag"]>): void {
+    const moved = this.travelled(drag, drag.delta);
     const sign = drag.body ? -1 : 1;
-    for (const [topicId, start] of drag.from) drag.overrides.set(topicId, { x: start.x + sign * delta.x / scale, y: start.y + sign * delta.y / scale });
-    if (drag.viewport) this.viewport.set({ ...drag.viewport, x: drag.viewport.x + delta.x, y: drag.viewport.y + delta.y });
+    for (const [topicId, start] of drag.from) drag.overrides.set(topicId, { x: start.x + sign * moved.x, y: start.y + sign * moved.y });
+    if (drag.body) {
+      this.carrying = true;
+      try { this.viewport.set({ ...drag.view, x: drag.view.x + moved.x * drag.view.scale, y: drag.view.y + moved.y * drag.view.scale }); }
+      finally { this.carrying = false; }
+    }
     // Only a topic carries one tree; the body root moves every topic at once, which is no base the snap can keep.
     if (drag.body) this.scheduleLayout();
     else this.scheduleCarriedLayout();
+  }
+
+  /**
+   * The viewport moved under a drag by anything but the drag (the wheel, ⌘/Ctrl + wheel, a zoom or fit button, a
+   * second pointer's pan or pinch, a node revealed, a restored state — LEV-194). The map moves as asked; the tree
+   * carried stays with the pointer, the point grabbed under it at the new scale. So the tree's travel so far is
+   * re-read under the new viewport: it is what it was, plus how far the world point under the pointer moved. For the
+   * body, what the user sees move is its topics (the map's viewport is theirs panned by the body's travel), so the
+   * viewport they are now seen under takes that travel back off. Without a pointer on the canvas (a drag driven
+   * directly), the canvas centre stands in for it.
+   */
+  private viewportMoved(previous: Viewport, next: Viewport): void {
+    this.nodeDrag.viewportMoved(previous, next);
+    const drag = this.topicDrag;
+    if (!drag) return;
+    const pointer = this.nodeDrag.pointer() ?? { x: this.canvas.clientWidth / 2, y: this.canvas.clientHeight / 2 };
+    const moved = this.travelled(drag, drag.delta);
+    const scale = next.scale;
+    const view = drag.body ? { x: next.x - moved.x * scale, y: next.y - moved.y * scale, scale } : { ...next };
+    const under = (at: Viewport): LayoutPoint => ({ x: (pointer.x - at.x) / at.scale, y: (pointer.y - at.y) / at.scale });
+    const before = under(drag.view);
+    const after = under(view);
+    drag.moved = { x: moved.x + after.x - before.x, y: moved.y + after.y - before.y };
+    drag.mark = drag.delta;
+    drag.view = view;
+    this.carry(drag);
   }
 
   /** A free tree released on the canvas: only `mappy-topics` entries for this layout change (all of them for the body). */
@@ -1740,14 +1794,14 @@ export class MindmapView extends FileView {
     const drag = this.topicDrag?.id === id ? this.topicDrag : this.startTopicDrag(id);
     try {
       if (!document || !file || !projection || !drag) return;
-      const scale = drag.viewport?.scale ?? this.viewport.value.scale;
+      const moved = this.travelled(drag, delta);
       const sign = drag.body ? -1 : 1;
       // By node id: the plan derives each topic's key from the heading as written (a topic that calls a map shows the called
       // root's text instead). A topic whose id an external change replaced during the drag is left out rather than refused.
       const moves = new Map<string, TopicPosition>();
       for (const [topicId, start] of drag.from) {
         if (!projection.topics.some(topic => topic.id === topicId)) continue;
-        moves.set(topicId, { x: Math.round(start.x + sign * delta.x / scale), y: Math.round(start.y + sign * delta.y / scale) });
+        moves.set(topicId, { x: Math.round(start.x + sign * moved.x), y: Math.round(start.y + sign * moved.y) });
       }
       const edit = planTopicMoves(document, this.mode, moves);
       if (edit) await this.commit(document.source, [edit], file);

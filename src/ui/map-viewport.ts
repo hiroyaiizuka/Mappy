@@ -18,7 +18,8 @@ export class MapViewport extends Component {
   constructor(
     private readonly canvas: HTMLElement,
     private readonly world: HTMLElement,
-    private readonly changed: (viewport: Viewport) => void,
+    /** Every write, with the viewport it replaced: a drag under way re-reads its tree against the new one (LEV-194). */
+    private readonly changed: (viewport: Viewport, previous: Viewport) => void,
     private readonly clicked?: () => void,
   ) { super(); }
 
@@ -75,9 +76,10 @@ export class MapViewport extends Component {
   }
 
   set(viewport: Viewport): void {
+    const previous = this.value;
     this.value = { x: viewport.x, y: viewport.y, scale: clampScale(viewport.scale) };
     this.world.style.transform = `translate(${this.value.x}px, ${this.value.y}px) scale(${this.value.scale})`;
-    this.changed(this.value);
+    this.changed(this.value, previous);
   }
 
   zoom(factor: number): void {

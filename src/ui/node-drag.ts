@@ -1,5 +1,6 @@
 import { Component } from "obsidian";
 import type { DropPosition, MoveCommand } from "../core/commands";
+import type { Viewport } from "../interaction/viewport";
 import { PRESS_TRAVEL, nodeOf } from "./map-events";
 
 /** Pointer travel since the press, in screen pixels. */
@@ -122,6 +123,35 @@ export class NodeDrag extends Component {
     this.press = null;
   }
 
+  /** Where the pointer of the drag under way is, in canvas pixels; null when no drag is under way. */
+  pointer(): { x: number; y: number } | null {
+    const session = this.session;
+    if (!session) return null;
+    const canvas = this.canvas.getBoundingClientRect();
+    return { x: session.last.x - canvas.left, y: session.last.y - canvas.top };
+  }
+
+  /**
+   * The viewport changed under a drag by something other than the drag itself (the wheel, the zoom and fit buttons,
+   * a restored state — LEV-194). What the session measured on screen at the press is carried into the new viewport:
+   * the grab offset and the ghost's scale follow the zoom (the view keeps the grabbed point under the pointer, so the
+   * root sits that much farther from it), and the node's own box moves with the map, so a release back on the node
+   * is still no detach.
+   */
+  viewportMoved(previous: Viewport, next: Viewport): void {
+    const session = this.session;
+    if (!session || !(previous.scale > 0)) return;
+    const ratio = next.scale / previous.scale;
+    const canvas = this.canvas.getBoundingClientRect();
+    const x = (value: number): number => (value - canvas.left - previous.x) * ratio + next.x + canvas.left;
+    const y = (value: number): number => (value - canvas.top - previous.y) * ratio + next.y + canvas.top;
+    const home = session.home;
+    session.home = { left: x(home.left), top: y(home.top), right: x(home.right), bottom: y(home.bottom) };
+    session.grab = { x: session.grab.x * ratio, y: session.grab.y * ratio };
+    session.scale *= ratio;
+    this.placeGhost(session, canvas);
+  }
+
   private element(target: Node | null): Element | null {
     return target?.instanceOf(Element) ? target : null;
   }
@@ -207,9 +237,7 @@ export class NodeDrag extends Component {
     session.last = { x: event.clientX, y: event.clientY };
     if (session.free) this.actions.shift(session.id, this.delta(session));
     const canvas = this.canvas.getBoundingClientRect();
-    const x = event.clientX - canvas.left - session.grab.x;
-    const y = event.clientY - canvas.top - session.grab.y;
-    if (session.ghost) session.ghost.style.transform = `translate(${x}px, ${y}px) scale(${session.scale})`;
+    this.placeGhost(session, canvas);
     if (!this.insideCanvas(session, canvas)) {
       this.retarget(session, null, null, event);
       return;
@@ -228,6 +256,13 @@ export class NodeDrag extends Component {
     if (!sameNode && session.switched && Math.hypot(event.clientX - session.switched.x, event.clientY - session.switched.y) < SWITCH_DISTANCE) return;
     const command = this.actions.dropTarget(session.id, id, position);
     this.retarget(session, command, command ? { id, position } : null, event);
+  }
+
+  private placeGhost(session: Session, canvas: DOMRect): void {
+    if (!session.ghost) return;
+    const x = session.last.x - canvas.left - session.grab.x;
+    const y = session.last.y - canvas.top - session.grab.y;
+    session.ghost.style.transform = `translate(${x}px, ${y}px) scale(${session.scale})`;
   }
 
   private retarget(session: Session, command: MoveCommand | null, anchor: Session["anchor"], event: PointerEvent): void {
