@@ -230,11 +230,16 @@ export class DocumentStore {
     });
   }
 
-  undo(file: TFile): Promise<string> {
+  /**
+   * Undo and Redo return the write they made, edits included, so the map re-parses the note as its own write and
+   * carries every node's id over — a node whose title repeats or is empty has nothing else to carry it (LEV-150).
+   * With no step to take, nothing is written: `before` and `after` are the current text and there are no edits.
+   */
+  undo(file: TFile): Promise<LatestWrite> {
     return this.navigateHistory(file, 'undo');
   }
 
-  redo(file: TFile): Promise<string> {
+  redo(file: TFile): Promise<LatestWrite> {
     return this.navigateHistory(file, 'redo');
   }
 
@@ -328,7 +333,7 @@ export class DocumentStore {
     }
   }
 
-  private navigateHistory(file: TFile, direction: 'undo' | 'redo'): Promise<string> {
+  private navigateHistory(file: TFile, direction: 'undo' | 'redo'): Promise<LatestWrite> {
     return this.enqueue(file, async (session) => {
       const current = await this.readCurrent(file);
       if (this.observe(session, current)) throw new Error(conflictMessage);
@@ -336,7 +341,7 @@ export class DocumentStore {
       const to = direction === 'undo' ? session.future : session.past;
       this.carryTop(session, from);
       const entry = from[from.length - 1];
-      if (!entry) return current;
+      if (!entry) return { before: current, after: current, edits: [] };
       const before = direction === 'undo' ? entry.after : entry.before;
       const after = direction === 'undo' ? entry.before : entry.after;
       const edits = direction === 'undo' ? entry.inverse : entry.forward;
@@ -349,7 +354,7 @@ export class DocumentStore {
       from.pop();
       delete entry.dropped;
       to.push(entry);
-      return after;
+      return { before, after, edits };
     });
   }
 

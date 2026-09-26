@@ -127,8 +127,8 @@ describe('DocumentStore', () => {
       store.canUndo(file);
     });
     await store.apply(file, 'ab', [{ from: 2, to: 2, text: 'c' }]);
-    expect(await store.undo(file)).toBe('ab');
-    expect(await store.undo(file)).toBe('a');
+    expect((await store.undo(file)).after).toBe('ab');
+    expect((await store.undo(file)).after).toBe('a');
   });
 
   it('checks disk source inside Vault.process and preserves a concurrent external edit', async () => {
@@ -171,9 +171,9 @@ describe('DocumentStore', () => {
     ]);
     expect(after).toBe('ALPHABET beta G');
     expect(store.canUndo(file)).toBe(true);
-    expect(await store.undo(file)).toBe('alpha beta gamma');
+    expect((await store.undo(file)).after).toBe('alpha beta gamma');
     expect(store.canRedo(file)).toBe(true);
-    expect(await store.redo(file)).toBe(after);
+    expect((await store.redo(file)).after).toBe(after);
     expect(disk.get(file.path)).toBe(after);
   });
 
@@ -182,8 +182,8 @@ describe('DocumentStore', () => {
     expect(await store.apply(file, 'abcdef', [
       { from: 1, to: 3, text: '' }, { from: 3, to: 5, text: '' },
     ])).toBe('af');
-    expect(await store.undo(file)).toBe('abcdef');
-    expect(await store.redo(file)).toBe('af');
+    expect((await store.undo(file)).after).toBe('abcdef');
+    expect((await store.redo(file)).after).toBe('af');
   });
 
   it('discards unsafe history after an external edit, including editor-side undo', async () => {
@@ -212,7 +212,7 @@ describe('DocumentStore', () => {
     await store.undo(file);
     await store.apply(file, 'a', [{ from: 1, to: 1, text: 'c' }]);
     expect(store.canRedo(file)).toBe(false);
-    expect(await store.redo(file)).toBe('ac');
+    expect((await store.redo(file)).after).toBe('ac');
   });
 
   it('retracts its last write with no step left for Undo or Redo, the steps before it kept (LEV-203)', async () => {
@@ -223,9 +223,9 @@ describe('DocumentStore', () => {
     expect(back).toEqual({ before: 'abc', after: 'ab', edits: [{ from: 2, to: 3, text: '' }] });
     expect(disk.get(file.path)).toBe('ab');
     expect(store.canRedo(file)).toBe(false);
-    expect(await store.undo(file)).toBe('a');
+    expect((await store.undo(file)).after).toBe('a');
     expect(store.canUndo(file)).toBe(false);
-    expect(await store.redo(file)).toBe('ab');
+    expect((await store.redo(file)).after).toBe('ab');
     expect(store.canRedo(file)).toBe(false);
   });
 
@@ -237,7 +237,7 @@ describe('DocumentStore', () => {
     const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'c' }], { retractable: true });
     expect(store.canRedo(file)).toBe(false);
     await store.retract(file, added);
-    expect(await store.redo(file)).toBe('ab');
+    expect((await store.redo(file)).after).toBe('ab');
     // Only a retractable write keeps them: any other lets them go at once (review 2: they hold whole notes).
     await store.undo(file);
     const plain = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'd' }]);
@@ -282,7 +282,7 @@ describe('DocumentStore', () => {
     await expect(own.store.retract(own.file, first)).rejects.toThrow(conflictMessage);
     expect(own.disk.get(own.file.path)).toBe('abc');
     // The later step is still there to undo.
-    expect(await own.store.undo(own.file)).toBe('ab');
+    expect((await own.store.undo(own.file)).after).toBe('ab');
 
     const external = harness('a');
     const added = await external.store.applyOver(external.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
@@ -310,7 +310,7 @@ describe('DocumentStore', () => {
     for (let index = 0; index < 50; index += 1) await store.undo(file);
     expect(await store.read(file)).toBe('1');
     expect(store.canUndo(file)).toBe(false);
-    expect(await store.undo(other)).toBe('Other');
+    expect((await store.undo(other)).after).toBe('Other');
   });
 
   describe('applyLatest (a layout button, LEV-196)', () => {
@@ -341,13 +341,13 @@ describe('DocumentStore', () => {
       expect(store.canUndo(file)).toBe(true);
       expect(store.canRedo(file)).toBe(true);
       // The switch itself is no step: Redo and Undo walk the edits, each text keeping the layout.
-      await expect(store.redo(file)).resolves.toBe(`${TIMELINE}# C\n`);
-      await expect(store.undo(file)).resolves.toBe(`${TIMELINE}# B\n`);
-      await expect(store.undo(file)).resolves.toBe(`${TIMELINE}# A\n`);
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe(`${TIMELINE}# C\n`);
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe(`${TIMELINE}# B\n`);
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe(`${TIMELINE}# A\n`);
       expect(store.canUndo(file)).toBe(false);
       expect(disk.get(file.path)).toBe(`${TIMELINE}# A\n`);
-      await expect(store.redo(file)).resolves.toBe(`${TIMELINE}# B\n`);
-      await expect(store.redo(file)).resolves.toBe(`${TIMELINE}# C\n`);
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe(`${TIMELINE}# B\n`);
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe(`${TIMELINE}# C\n`);
       expect(store.canRedo(file)).toBe(false);
     });
 
@@ -360,11 +360,11 @@ describe('DocumentStore', () => {
       await store.apply(file, `${TIMELINE}# B\n`, [{ from: TIMELINE.length + 2, to: TIMELINE.length + 3, text: 'C' }]);
       await store.applyLatest(file, (source) => planMapLayout(source, 'hierarchy'));
       const HIERARCHY = '---\nmappy: true\nmappy-layout: hierarchy\n---\n';
-      await expect(store.undo(file)).resolves.toBe(`${HIERARCHY}# B\n`);
-      await expect(store.undo(file)).resolves.toBe(`${HIERARCHY}# A\n`);
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe(`${HIERARCHY}# B\n`);
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe(`${HIERARCHY}# A\n`);
       await store.applyLatest(file, (source) => planMapLayout(source, 'mindmap'));
-      await expect(store.redo(file)).resolves.toBe(`${MAP}# B\n`);
-      await expect(store.redo(file)).resolves.toBe(`${MAP}# C\n`);
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe(`${MAP}# B\n`);
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe(`${MAP}# C\n`);
     });
 
     it('carries a step that wrote beside the layout line, and one that made the note a map', async () => {
@@ -374,11 +374,11 @@ describe('DocumentStore', () => {
       await store.apply(file, '# A\n', [{ from: 0, to: 0, text: MAP }]);
       await store.apply(file, `${MAP}# A\n`, [{ from: 16, to: 16, text: 'mappy-topics: []\n' }]);
       await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
       // Before the note was a map there was no layout to keep.
-      await expect(store.undo(file)).resolves.toBe('# A\n');
-      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
-      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('# A\n');
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n');
     });
 
     it('hands an open editor the step\'s own edits, not one replace from the first to the last', async () => {
@@ -391,9 +391,9 @@ describe('DocumentStore', () => {
       await store.apply(file, initial, [{ from: 16, to: 16, text: 'mappy-topics: []\n' }, { from: initial.length - 2, to: initial.length - 1, text: 'c' }]);
       await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
       editor.transaction.mockClear();
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n- b\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n- b\n');
       expect(editor.transaction.mock.calls[0]?.[0].changes).toHaveLength(2);
-      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n- c\n');
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n- c\n');
     });
 
     it('makes a step that touched the layout line\'s place the one edit between its texts, not splitting a character', async () => {
@@ -405,10 +405,10 @@ describe('DocumentStore', () => {
       await store.apply(file, initial, [{ from: 4, to: 24, text: 'mappy: true\n---\n# 😃' }]);
       await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
       editor.transaction.mockClear();
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😀\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😀\n');
       // The two texts differ in the emoji's second half only; the edit starts at the emoji, not inside it.
       expect(editor.transaction.mock.calls[0]?.[0].changes).toEqual([{ from: { line: 4, ch: 2 }, to: { line: 4, ch: 4 }, text: '😀' }]);
-      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😃\n');
+      await expect(store.redo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😃\n');
     });
 
     // Pins the fail-safe, not the fix: before LEV-206 every step went at the write, so this passes there too.
@@ -420,7 +420,7 @@ describe('DocumentStore', () => {
         return [{ from: 0, to: 0, text: '---\nmappy: true\n---\n' }];
       };
       await expect(store.applyLatest(file, plan)).resolves.toMatchObject({ after: '---\nmappy: true\n---\n# B\n' });
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\n---\n# B\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\n---\n# B\n');
       expect(disk.get(file.path)).toBe('---\nmappy: true\n---\n# B\n');
       expect(store.canUndo(file)).toBe(false);
     });
@@ -432,7 +432,7 @@ describe('DocumentStore', () => {
       const seen: string[] = [];
       await store.applyLatest(file, (source) => { seen.push(source); return planMapLayout(source, 'timeline'); });
       expect(seen).toEqual([`${MAP}# B\n`]);
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
     });
 
     it('keeps the steps across many switches (more than the edits carried over them, 16)', async () => {
@@ -443,7 +443,7 @@ describe('DocumentStore', () => {
         await store.applyLatest(file, (source) => planMapLayout(source, index % 2 === 0 ? 'timeline' : 'mindmap'));
       }
       expect(store.canUndo(file)).toBe(true);
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
     });
 
     it('drops only a step the switch leaves changing nothing, and carries the next one in its place', async () => {
@@ -454,7 +454,7 @@ describe('DocumentStore', () => {
       await store.apply(file, `${MAP}# B\n`, [{ from: 16, to: 16, text: 'mappy-layout: hierarchy\n' }]);
       await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
       expect(store.canUndo(file)).toBe(true);
-      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
       expect(store.canUndo(file)).toBe(false);
     });
 
@@ -468,7 +468,7 @@ describe('DocumentStore', () => {
       }
       expect(store.canUndo(file)).toBe(false);
       const current = await store.read(file);
-      await expect(store.undo(file)).resolves.toBe(current);
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe(current);
     });
 
     // Pins E05, which LEV-206 leaves as it was: this passes before the fix too.
@@ -480,7 +480,7 @@ describe('DocumentStore', () => {
       disk.set(file.path, `${disk.get(file.path) ?? ''}- 外から\n`);
       await store.read(file);
       expect(store.canUndo(file)).toBe(false);
-      await expect(store.undo(file)).resolves.toBe(disk.get(file.path));
+      await expect(store.undo(file).then(write => write.after)).resolves.toBe(disk.get(file.path));
     });
 
     it('carries an edit planned before it over it, and says what it wrote', async () => {

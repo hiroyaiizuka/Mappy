@@ -2080,10 +2080,20 @@ export class MindmapView extends FileView {
     new Notice("H2 とリストの形式に変更しました。元に戻す操作で復元できます。");
   }
 
+  /**
+   * Undo／Redo, recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the folds and
+   * the selection stay on a node whose title repeats or is empty. As with the layout buttons (`writeLayout`), a
+   * view that left the note, or left it and came back, while the step was under way does not record it.
+   */
   private history(direction: "undo" | "redo"): void {
     const file = this.file;
     if (!file) return;
-    this.run(async () => { await this.store[direction](file); await this.refresh(); });
+    const loaded = this.loads;
+    this.run(async () => {
+      const write = await this.store[direction](file);
+      if (write.edits.length > 0 && file === this.file && !this.closed && loaded === this.loads) this.ownWrites.push({ ...write });
+      await this.refresh();
+    });
   }
 
   async showSource(split: boolean): Promise<void> {
