@@ -101,6 +101,8 @@ async function loadFixture(page, id, mode) {
  * an open view, the note would be re-read 45 ms later and redrawn, taking the focus from what the next case opens.
  */
 async function loadFreshFixture(page, id, mode = 'mindmap') {
+  // A write an earlier case's button queued lands before the text is put back, not after it.
+  await page.harness('h.view?.layoutWritten()');
   await loadFixture(page, id === 'heading-document' ? OPERATION_FIXTURE : 'heading-document', 'mindmap');
   await page.harness(`h.restoreFixture(${JSON.stringify(id)})`);
   return loadFixture(page, id, mode);
