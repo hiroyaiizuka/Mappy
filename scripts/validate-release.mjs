@@ -4,8 +4,11 @@ import { pathToFileURL } from 'node:url';
 
 const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const pluginId = /^[a-z]+(?:-[a-z]+)*$/u;
-// A known limitation limited to a release, e.g. 「（0.3.5 まで）」 (harness.md「リリース手順」1).
-const versionLimitedItem = /[（(]\s*((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\s*まで\s*[）)]/gu;
+// README's known-limitations section, where an item may be limited to a release, e.g.
+// 「（0.3.5 まで）」 (harness.md「リリース手順」1). Any "x.y.z まで" in the section counts, so
+// 「（v0.3.5 まで。0.3.6 で修正）」 and 「Android では 0.3.5 までの版」 are checked too.
+const knownLimitationsHeading = '## 既知の制限';
+const versionLimit = /(?<![\d.])v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?![\d.])\s*まで/gu;
 const manifestKeys = new Set([
   'id', 'name', 'version', 'minAppVersion', 'description', 'author',
   'isDesktopOnly', 'authorUrl', 'fundingUrl',
@@ -18,6 +21,40 @@ function compareVersions(left, right) {
     if (a[index] !== b[index]) return a[index] - b[index];
   }
   return 0;
+}
+
+/**
+ * Report README known limitations limited to a release older than `version`. Only the
+ * `## 既知の制限` section is read (outside code fences), so versions of Obsidian or other
+ * tools elsewhere in README are not compared with Mappy's. A README without the section is
+ * reported rather than silently passing.
+ */
+export function staleKnownLimitations(readmeText, version) {
+  const lines = readmeText.split(/\r?\n/u);
+  const start = lines.findIndex((line) => line.trim() === knownLimitationsHeading);
+  if (start < 0) {
+    return [`README.md: missing the "${knownLimitationsHeading}" section, so version-limited known limitations cannot be checked.`];
+  }
+  const errors = [];
+  let inFence = false;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^\s*(```|~~~)/u.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (/^#{1,2}\s/u.test(line)) break;
+    for (const match of line.matchAll(versionLimit)) {
+      if (compareVersions(match[1], version) < 0) {
+        errors.push(
+          `README.md:${index + 1}: known limitation "${match[0]}" is limited to a release older than ${version}. `
+          + `If its fix ships in ${version}, remove the item; if not, update the version in the item.`,
+        );
+      }
+    }
+  }
+  return errors;
 }
 
 function isRecord(value) {
@@ -133,16 +170,7 @@ export function validateRelease(rootDir, { artifacts = false } = {}) {
   }
 
   if (readme && manifest && typeof manifest.version === 'string' && releaseVersion.test(manifest.version)) {
-    readme.toString('utf8').split('\n').forEach((line, index) => {
-      for (const match of line.matchAll(versionLimitedItem)) {
-        if (compareVersions(match[1], manifest.version) < 0) {
-          errors.push(
-            `README.md:${index + 1}: known limitation "${match[0]}" is older than manifest.json.version ${manifest.version}; `
-            + 'remove or rewrite it before releasing.',
-          );
-        }
-      }
-    });
+    errors.push(...staleKnownLimitations(readme.toString('utf8'), manifest.version));
   }
 
   if (packageJson) {
