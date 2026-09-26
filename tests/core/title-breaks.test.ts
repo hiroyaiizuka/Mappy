@@ -30,7 +30,7 @@ describe('line breaks inside a node (LEV-202)', () => {
   });
 
   // Not regressions (the rule is new in LEV-202): these pin what the rule must not read as a break.
-  it.each(['`a<br>b`', 'a\\<br>b', 'a<bra>b', 'a<br class="x">b', 'a&lt;br&gt;b'])('leaves %j as text: no `<br>` tag the parser reads', (title) => {
+  it.each(['`a<br>b`', 'a\\<br>b', 'a<bra>b', 'a&lt;br&gt;b'])('leaves %j as text: no `<br>` tag the parser reads', (title) => {
     expect(displayTitle(title)).toBe(title);
   });
 
@@ -71,6 +71,23 @@ describe('line breaks inside a node (LEV-202)', () => {
   it('keeps the spaces between two tags once', () => {
     expect(displayTitle('a <br> <br> b')).toBe('a\n\nb');
     expect(storedTitle('A\n\nb', 'a <br> <br> b')).toBe('A <br> <br> b');
+  });
+
+  // Review 3 of LEV-202: Obsidian draws a tag with attributes as a break, and hides a comment.
+  it('reads `<br class="x">` as a break and a `<br>` in a %%comment%% as text', () => {
+    expect(displayTitle('温泉<br class="x">旅行')).toBe('温泉\n旅行');
+    expect(storedTitle('温泉\n一泊旅行', '温泉<br class="x">旅行')).toBe('温泉<br class="x">一泊旅行');
+    expect(displayTitle('見出し %%a<br>b%%')).toBe('見出し %%a<br>b%%');
+  });
+
+  // Review 3 of LEV-202: the draft was trimmed of every break, so a `<br>` the note wrote at an end went on any edit.
+  it.each([
+    ['<br>見出し', '\n見出し2', '<br>見出し2'],
+    ['項目<br>', '項目2\n', '項目2<br>'],
+    // A title with no break at its ends still loses the breaks a paste brings there (the rows above `writes the draft`).
+    ['項目', '\n項目2\n', '項目2'],
+  ])('keeps the break %j starts or ends with when the draft becomes %j', (title, draft, stored) => {
+    expect(storedTitle(draft, title)).toBe(stored);
   });
 
   // What 「そのまま確定しても原文が変わらない」 rests on: a draft that reads as the title is the title as written.

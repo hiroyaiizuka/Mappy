@@ -194,6 +194,19 @@ export class InlineEditor {
     }
   }
 
+  /**
+   * Whether the draft is held with a reason on its error line (a refusal, a conflict, the map re-read under it):
+   * only Enter saves it then, as blur does not (LEV-202: a double click elsewhere must not either).
+   */
+  held(): boolean {
+    return !this.disposed && Boolean(this.error.textContent);
+  }
+
+  /** Bring the keyboard back to a held draft another edit was asked for over. */
+  focus(): void {
+    if (!this.disposed) this.input.focus({ preventScroll: true });
+  }
+
   /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */
   refreshed(stale: string): void {
     if (this.disposed || this.error.textContent !== stale) return;

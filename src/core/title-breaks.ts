@@ -3,16 +3,11 @@ import { GFM, parser } from '@lezer/markdown';
 /** The inline Markdown parser node titles are read with (`plainTitle` shares it). */
 export const inlineParser = parser.configure(GFM);
 
-/** One `<br>` tag as CommonMark reads raw HTML: `<br>`, `<br/>`, `<br />`, any case. */
-const BREAK_TAG = /^<br[ \t]*\/?>$/iu;
+/** One `<br>` tag as CommonMark reads raw HTML: `<br>`, `<br/>`, `<br />`, any case, with attributes (`<br class="x">`). */
+const BREAK_TAG = /^<br(?:[ \t][^>]*)?\/?>$/iu;
 
 /** Any line break a draft can hold: typed (Shift+Enter), pasted from another platform, or a Unicode separator. */
 const LINE_BREAK = /[ \t]*(?:\r\n?|[\n\u2028\u2029])[ \t]*/gu;
-
-/** Whether an `HTMLTag` of the inline parser is a line break (`plainTitle` reads it as one too). */
-export function isBreakTag(tag: string): boolean {
-  return BREAK_TAG.test(tag);
-}
 
 /**
  * What a title is read inside: the inline content of a heading or a list item, never a block of its own. A
@@ -23,9 +18,10 @@ const INLINE_LEAD = 'x ';
 
 /**
  * Obsidian's own inline syntax the Markdown parser does not know: a wiki link or embed (`[[…]]`,
- * `![[…]]`) and inline math (`$…$`). Nothing inside is Markdown, so a `<br>` there is text.
+ * `![[…]]`), a comment (`%%…%%`, hidden) and inline math (`$…$`). Nothing inside is Markdown, so a `<br>`
+ * there is not a break on screen.
  */
-const OBSIDIAN_SPANS = /!?\[\[[^\]\r\n]*?\]\]|\$(?=\S)[^$\r\n]*?\S\$|\$[^\s$]\$/gu;
+const OBSIDIAN_SPANS = /%%.*?%%|!?\[\[[^\]\r\n]*?\]\]|\$(?=\S)[^$\r\n]*?\S\$|\$[^\s$]\$/gu;
 
 /**
  * The line breaks written into a node's title (LEV-202). A heading or a list item is one line of Markdown,
@@ -42,7 +38,7 @@ export function breakRanges(title: string): { from: number; to: number }[] {
     enter(node) {
       const from = node.from - INLINE_LEAD.length;
       const to = node.to - INLINE_LEAD.length;
-      if (node.name !== 'HTMLTag' || from < 0 || !isBreakTag(title.slice(from, to))) return true;
+      if (node.name !== 'HTMLTag' || from < 0 || !BREAK_TAG.test(title.slice(from, to))) return true;
       if (!spans.some((span) => span.from <= from && to <= span.to)) tags.push({ from, to });
       return false;
     },
@@ -61,7 +57,10 @@ export function breakRanges(title: string): { from: number; to: number }[] {
 
 /** A title as the node shows it and the inline editor edits it: each `<br>` is a line break. */
 export function displayTitle(title: string): string {
-  const ranges = breakRanges(title);
+  return displayed(title, breakRanges(title));
+}
+
+function displayed(title: string, ranges: readonly { from: number; to: number }[]): string {
   if (ranges.length === 0) return title;
   let text = '';
   let cursor = 0;
@@ -72,9 +71,16 @@ export function displayTitle(title: string): string {
   return text + title.slice(cursor);
 }
 
-/** A draft's lines: trimmed, split at each line break (the spaces around it go with the break). */
-function draftLines(draft: string): string[] {
-  return draft.trim().split(LINE_BREAK);
+/**
+ * A draft's lines, split at each line break (the spaces around it go with the break). The spaces at either end
+ * are trimmed, as a title's are; so are the breaks, a pasted line's last one included, unless the title as it
+ * reads already starts (`keep.lead`) or ends (`keep.trail`) with one: a `<br>` the note wrote there stays.
+ */
+function draftLines(draft: string, keep = { lead: false, trail: false }): string[] {
+  let text = draft.replace(/^[ \t]+|[ \t]+$/gu, '');
+  if (!keep.lead) text = text.replace(/^\s+/u, '');
+  if (!keep.trail) text = text.replace(/\s+$/u, '');
+  return text.split(LINE_BREAK);
 }
 
 /** Whether a draft holds a line break (before it is written as `<br>`). */
@@ -96,10 +102,11 @@ export function hasLineBreak(draft: string): boolean {
  * with its reason).
  */
 export function storedTitle(draft: string, current: string): string {
-  const lines = draftLines(draft);
-  const plain = lines.join('\n');
-  if (plain === draftLines(displayTitle(current)).join('\n')) return current;
   const ranges = breakRanges(current);
+  const shown = displayed(current, ranges);
+  const keep = { lead: /^[ \t]*\n/u.test(shown), trail: /\n[ \t]*$/u.test(shown) };
+  const lines = draftLines(draft, keep);
+  if (lines.join('\n') === draftLines(shown, keep).join('\n')) return current;
   const tags = ranges.length === lines.length - 1 ? ranges.map((range) => current.slice(range.from, range.to)) : [];
   let stored = lines[0] ?? '';
   const inserted: { from: number; to: number }[] = [];

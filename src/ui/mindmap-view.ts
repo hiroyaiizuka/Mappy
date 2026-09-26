@@ -43,6 +43,8 @@ const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元の�
  */
 export const EXPORT_RENDER_WAIT_MS = 2000;
 export const EXPORT_RENDER_STALLED_MESSAGE = "描画が終わらないノードがあるため、画面に見えているまま書き出します。";
+/** How long a topic added right after a confirmed draft waits for the labels to render before it is measured. */
+const TOPIC_RENDER_WAIT_MS = 300;
 /** A draft whose node is no longer in the note: the one thing the user can do is pick a node again. */
 export const NODE_GONE_MESSAGE = "編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。";
 /** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
@@ -1563,13 +1565,17 @@ export class MindmapView extends FileView {
    * does now, the popover of LEV-81 having no such item).
    */
   private async addTopic(point?: { x: number; y: number }): Promise<void> {
-    if (this.saving) return;
-    // As for a command (`execute`): a draft kept by a refusal is written first, or stays with its reason, and no topic is added.
-    if (this.inlineEditor) {
-      if (!await this.inlineEditor.confirm()) return;
+    const open = this.inlineEditor;
+    // A draft held with a reason is saved only by its own Enter (editTitle): it stays, and no topic is added.
+    if (open?.held()) { open.focus(); return; }
+    // The save under way may be the draft's own (the blur of this very double click): confirm waits for it.
+    if (this.saving && !open) return;
+    if (open) {
+      // Written first, as blur would, then the topic; a refusal keeps the draft with its reason and adds nothing.
+      if (!await open.confirm()) return;
       // The write can resize its node and move the body root, which topic positions are measured from: the point
-      // is read against the layout of the note the draft left, once its labels are drawn and placed.
-      await this.renderer.idle(EXPORT_RENDER_WAIT_MS);
+      // is read once the labels are drawn and placed (a short wait: a slow render elsewhere does not hold the topic).
+      await this.renderer.idle(TOPIC_RENDER_WAIT_MS);
       if (this.layoutFrame !== undefined) await this.nextFrame();
     }
     const document = this.document;
@@ -1818,9 +1824,11 @@ export class MindmapView extends FileView {
   }
 
   private editTitle(): void {
-    // The draft already open is confirmed before another opens (a double click on a node, F2 from the menu): one a
-    // refusal keeps (its error line up) stays where it is instead of being dropped for the node's old text (LEV-202).
+    // The draft already open is confirmed before another opens (a double click on a node, F2 from the menu), as blur
+    // would save it; one held with a reason (a refusal, a conflict: its error line up) is saved only by its own Enter,
+    // so it stays where it is, instead of being dropped for the node's old text or written unasked (LEV-202).
     const open = this.inlineEditor;
+    if (open?.held()) { open.focus(); return; }
     if (open) {
       const wanted = this.selectedId;
       const file = this.file;

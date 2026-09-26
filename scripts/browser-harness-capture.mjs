@@ -1016,10 +1016,12 @@ async function captureLineBreak(recorder, page) {
     return { rows: new Set(Array.from(range.getClientRects(), rect => Math.round(rect.top))).size, breaks: label.querySelectorAll('br').length };
   })()`);
 
-  await recorder.run('line-break-type', `「${target}」で F2 → 全選択して「温泉」→ Shift+Enter →「旅行」→ Enter`,
+  await recorder.run('line-break-type', `「${target}」で F2（題名が選択された状態で開く）→「温泉」→ Shift+Enter →「旅行」→ Enter`,
     '入力欄に改行が入り確定しない。Enter で `温泉<br>旅行` が項目の 1 行に書かれ、ノードは 2 行で表示される。ほかの行は変わらない', async () => {
       await openInlineEditor(page, target);
-      await page.key('a', 'KeyA', 65, 4);
+      // InlineEditor opens with the title selected, so the typing replaces it; the case says so if it ever does not.
+      const selected = await page.evaluate(`(() => { const input = document.activeElement; return input.selectionStart === 0 && input.selectionEnd === input.value.length; })()`);
+      expect(selected, 'F2 did not open the draft with its title selected');
       await page.type('温泉');
       await page.key('Enter', 'Enter', 13, 8, '\r');
       await page.settle();

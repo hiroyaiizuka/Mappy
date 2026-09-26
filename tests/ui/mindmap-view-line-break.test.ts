@@ -181,6 +181,23 @@ describe('a draft the save refused (LEV-202: 拒否される入力でも下書�
   });
 });
 
+describe('a topic asked for while the blur is saving the draft (review 3 of LEV-202)', () => {
+  it('waits for that save and adds the topic', async () => {
+    const mounted = await mount(LIST);
+    const input = openEditor(mounted, '温泉旅行');
+    input.value = '温泉\n旅行';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // The double click's first press blurs the draft, which starts its save; the double click lands while it runs.
+    input.blur();
+    mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await mounted.settle();
+    await mounted.settle();
+    await mounted.settle();
+    expect(mounted.source()).toContain('- 温泉<br>旅行\n');
+    expect(mounted.source()).toMatch(/\n## \n?$/u);
+  });
+});
+
 describe('a draft confirmed on the way to another edit while the note leaves (review of LEV-202)', () => {
   // Not a regression test: it passes without the `this.file !== file` check in editTitle too. A navigation waits for
   // the same save (`onUnloadFile` → `flush`) and then drops every draft (`dropDraft`), so the confirm's continuation

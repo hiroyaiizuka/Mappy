@@ -164,6 +164,11 @@ describe('browser harness obsidian mock', () => {
     expect(element.textContent).toContain('a<br>b');
     expect(element.textContent).toContain('c\\<br>d');
     expect(element.querySelector('a.internal-link')?.textContent).toBe('x<br>y');
+    // Review 3 of LEV-202: a Markdown link's label, an escaped backslash before the tag and a tag with attributes break.
+    const more = document.body.createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '[a<br>b](u) c\\\\<br>d e<br class="x">f', more, 'Fixtures/note.md');
+    expect(more.querySelectorAll('br')).toHaveLength(3);
+    expect(more.querySelector('a.external-link')?.querySelectorAll('br')).toHaveLength(1);
   });
 
   it('keeps edits in memory, notifies the view through modify, and never rewrites frontmatter text', async () => {
