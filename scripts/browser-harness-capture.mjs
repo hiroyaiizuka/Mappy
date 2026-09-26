@@ -77,7 +77,7 @@ function expect(condition, message) {
  * queue): `value` the raw `mappy-layout` (undefined when absent), `map` the layout the product opens it in as a map
  * (null when it is not one), `source` the text. A note without frontmatter at the top fails. A button rewrites the
  * note through the map's save path (`DocumentStore.applyLatest`, LEV-196), so the text is where the preference lands;
- * the page's `processFrontMatter` only records an entry in `h.activity` and leaves the text as it was (LEV-212).
+ * no `frontmatter` entry reaches `h.activity` (only the page's `processFrontMatter` leaves one, LEV-212).
  */
 async function writtenLayout(page) {
   await page.harness('h.view.layoutWritten()');

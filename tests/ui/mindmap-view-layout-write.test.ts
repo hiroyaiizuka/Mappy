@@ -7,8 +7,8 @@
  * `document.source` stayed on the text before it until the watcher's re-read: an edit planned in between was
  * refused as someone else's change (「Markdown が変更されています」), and the re-read, having no edits to carry
  * ids, dropped the fold and the selection of a node whose title repeats or is empty (LEV-150's layout half). The
- * harness's own `processFrontMatter` edits its metadata cache only, so every row here swaps in one that rewrites
- * the header in the text, as Obsidian's does (`vault.process`); the fixed view does not call it at all.
+ * harness's own `processFrontMatter` rewrites the header in the text through `vault.process`, as Obsidian's does
+ * (LEV-214); the fixed view does not call it at all.
  *
  * `scripts/e2e/layout-switch.mjs` runs the draft, key and fold rows on the real Obsidian; the drop rows are here only
  * (a mouse cannot reach the button during a drag, and CDP's touch does not start the map's drag on desktop).
@@ -18,9 +18,8 @@
  * what the fix must not do — carry an edit over someone else's change, or give a note that is not a map a layout.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { App, TFile } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
+import { HarnessApp } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
 import { LAYOUT_LABELS, type LayoutMode } from '../../src/core/layout-mode';
 import { readTopicPositions } from '../../src/core/topics';
@@ -54,21 +53,8 @@ const SOURCE = [
   '- 枝', '',
 ].join('\n');
 
-/** Obsidian's `processFrontMatter`: the header is rewritten in the note's text, and the watcher reports the change. */
-function rewritingFrontmatter(app: HarnessApp): void {
-  app.fileManager.processFrontMatter = async (file, change) => {
-    await app.asApp<App>().vault.process(file as unknown as TFile, text => {
-      const properties = parseFrontmatter(text) ?? {};
-      change(properties);
-      const body = text.replace(/^---\n[\s\S]*?\n---\n/u, '');
-      return `---\n${Object.entries(properties).map(([key, value]) => `${key}: ${String(value)}`).join('\n')}\n---\n${body}`;
-    });
-  };
-}
-
 async function mount(source = SOURCE): Promise<MountedMapView> {
   const app = new HarnessApp();
-  rewritingFrontmatter(app);
   const mounted = await mountMapView(PATH, source, 'mindmap', app);
   opened.push(mounted);
   return mounted;

@@ -4,13 +4,15 @@
  * link resolution and frontmatter persistence remain Obsidian-only checks.
  */
 import { Events, Notice, Scope, TFile, WorkspaceLeaf } from "./obsidian";
+import { frontmatterLayout } from "../../src/core/markdown";
+import { locateFrontmatterKey } from "../../src/core/yaml-lite";
 
 interface VaultEntry {
   file: TFile;
   content: string;
   /** Resource URL for binary attachments; Markdown has none. */
   url: string | undefined;
-  /** Frontmatter as the map view sees it; `processFrontMatter` edits this object only. */
+  /** Frontmatter as the map view sees it, read from `content` whenever it changes. */
   frontmatter: Record<string, unknown> | undefined;
 }
 
@@ -47,6 +49,55 @@ export function parseFrontmatter(source: string): Record<string, unknown> | unde
 
 function unquote(value: string): string {
   return /^(['"]).*\1$/u.test(value) ? value.slice(1, -1) : value;
+}
+
+/** A value as one YAML line after `key:` (lists as `- item` lines below it), in the subset `parseFrontmatter` reads back. */
+function serializeFrontmatterEntry(key: string, value: unknown, eol: string): string {
+  if (Array.isArray(value)) {
+    return value.length === 0 ? `${key}: []${eol}` : `${key}:${eol}${value.map(item => `  - ${serializeScalar(item)}${eol}`).join("")}`;
+  }
+  return `${key}: ${serializeScalar(value)}${eol}`;
+}
+
+function serializeScalar(value: unknown): string {
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  if (typeof value !== "string") return JSON.stringify(value ?? null);
+  const plain = /^[^\s"'#{}[\],&*!|>%@`?:-]/u.test(value) && !/:\s|\s#|:$|\s$|[\r\n]/u.test(value)
+    && !/^(?:true|false|null|~|[-+]?[\d.]+)$/iu.test(value);
+  return plain ? value : JSON.stringify(value);
+}
+
+/**
+ * The note's text with its header rewritten from `before` to `after`, Obsidian's `processFrontMatter` in this page
+ * (LEV-214). Only a key whose value changed moves (`locateFrontmatterKey`, the product's own locator): every other key
+ * keeps its bytes, nested ones `parseFrontmatter` cannot read (`mappy-topics`) included. Obsidian re-serializes the
+ * whole YAML instead, so a case may read the keys but must not pin the header's formatting. A header left without
+ * a line is dropped, a note without one gets one; an unclosed header is left as it is. How Obsidian leaves an
+ * emptied header is not checked against the app.
+ */
+function rewriteFrontmatter(text: string, before: Record<string, unknown>, after: Record<string, unknown>): string {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const changed = (key: string) => JSON.stringify(before[key]) !== JSON.stringify(after[key]);
+  const header = frontmatterLayout(text);
+  if (!header) {
+    const lines = Object.keys(after).filter(key => after[key] !== undefined).map(key => serializeFrontmatterEntry(key, after[key], eol)).join("");
+    return lines ? `---${eol}${lines}---${eol}${text}` : text;
+  }
+  if (!header.closed) return text;
+  const edits: { from: number; to: number; text: string }[] = [];
+  let added = "";
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!changed(key)) continue;
+    const line = after[key] === undefined ? "" : serializeFrontmatterEntry(key, after[key], eol);
+    const found = locateFrontmatterKey(text, header, key);
+    if (found) edits.push({ from: found.from, to: found.to, text: line });
+    else added += line;
+  }
+  if (edits.length === 0 && !added) return text;
+  let next = text.slice(0, header.closingFrom) + added + text.slice(header.closingFrom);
+  for (const edit of edits.sort((a, b) => b.from - a.from)) next = next.slice(0, edit.from) + edit.text + next.slice(edit.to);
+  const rewritten = frontmatterLayout(next);
+  return rewritten && next.slice(rewritten.bodyFrom, rewritten.closingFrom).trim() === "" ? next.slice(rewritten.end) : next;
 }
 
 export class HarnessApp {
@@ -129,16 +180,20 @@ export class HarnessApp {
 
   readonly fileManager = {
     /**
-     * Changes the metadata cache and records an `activity` entry, but not the note's text: `source()` stays as it was.
-     * A case checking what a write left in the note reads the text (`layoutKey()`), not this record (LEV-212).
+     * Rewrites the header in the note's text (`rewriteFrontmatter`) through `vault.process`, so the view hears
+     * `modify` and the cache re-reads the text, as with Obsidian's. Before LEV-214 it changed the cache only and a
+     * case reading the text after the product's conversion (`writeMapLayout`) saw the note as it was. The callback
+     * gets `parseFrontmatter`'s reading, so a nested key it cannot read (`mappy-topics`) arrives as `[]`: deleting
+     * it works, reading it does not.
      */
-    processFrontMatter: (file: TFile, change: (properties: Record<string, unknown>) => void): Promise<void> => {
-      const entry = this.entry(file);
-      const properties = { ...(entry.frontmatter ?? {}) };
-      change(properties);
-      entry.frontmatter = properties;
-      this.record("frontmatter", `${file.path}: ${JSON.stringify(properties)}（原文は書き換えません）`);
-      return Promise.resolve();
+    processFrontMatter: async (file: TFile, change: (properties: Record<string, unknown>) => void): Promise<void> => {
+      await this.vault.process(file, text => {
+        const before = parseFrontmatter(text) ?? {};
+        const after = structuredClone(before);
+        change(after);
+        return rewriteFrontmatter(text, before, after);
+      });
+      this.record("frontmatter", `${file.path}: ${JSON.stringify(this.entry(file).frontmatter ?? {})}`);
     },
     getAvailablePathForAttachment: (name: string): Promise<string> => {
       this.attachmentCount += 1;
