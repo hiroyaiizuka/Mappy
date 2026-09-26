@@ -1929,3 +1929,178 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     expect(mounted.viewport()).toEqual(fitted(mounted));
   });
 });
+
+describe('MindmapView keeps a carried free tree on the pointer when the viewport changes mid-drag (LEV-194)', () => {
+  // A free drag places its tree through the viewport it started under: a topic by `overrides` (origin-relative
+  // world units, pointer travel over the press scale), the body by panning the viewport itself from the press
+  // viewport. Anything else that writes the viewport mid-drag — the wheel (a single mouse reaches it while it holds
+  // the drag), ⌘/Ctrl + wheel, the zoom and fit buttons, a restored state — used to pull the tree off the pointer,
+  // and for the body the next move wrote the press viewport back, losing the pan or zoom. The matrix is the
+  // operation × the tree carried (a topic, the body), driven through real pointer and wheel events.
+  // Both topics stored, so every root's place after the release is its stored one (an unstored topic takes a default
+  // slot again once the drag's hold ends, which says nothing about the drop).
+  const SOURCE = `---\nmappy: true\nmappy-topics:\n  資料: { mindmap: [40, 200] }\n  補足: { mindmap: [40, 360] }\n---\n${THREE_SECTIONS}`;
+  type Point = { x: number; y: number };
+  /** A screen-affine map (s ↦ a·s + b), what an operation does to everything it is not carrying. */
+  type Affine = { a: number; b: Point };
+  const apply = (map: Affine, point: Point): Point => ({ x: point.x * map.a + map.b.x, y: point.y * map.a + map.b.y });
+  const zoomAround = (at: Point, factor: number): Affine => ({ a: factor, b: { x: at.x - at.x * factor, y: at.y - at.y * factor } });
+  const expectNear = (actual: Point, expected: Point | undefined, digits = 6): void => {
+    if (!expected) throw new Error('Missing position');
+    expect(actual.x).toBeCloseTo(expected.x, digits);
+    expect(actual.y).toBeCloseTo(expected.y, digits);
+  };
+  /** The canvas of `CANVAS` gets its size (jsdom has none), and the fit that waited for one runs first. */
+  const sized = async (mounted: Mounted): Promise<void> => {
+    Object.defineProperty(mounted.canvas, 'clientWidth', { value: CANVAS.width, configurable: true });
+    Object.defineProperty(mounted.canvas, 'clientHeight', { value: CANVAS.height, configurable: true });
+    (mounted.view as unknown as { scheduleLayout(): void }).scheduleLayout();
+    await frame();
+  };
+  const wheel = (target: EventTarget, pointer: Point, init: WheelEventInit): void => {
+    target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: pointer.x, clientY: pointer.y, ...init }));
+  };
+  const button = (mounted: Mounted, label: string): void => {
+    const found = mounted.view.containerEl.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+    if (!found) throw new Error(`No ${label} button`);
+    found.click();
+  };
+  /** The pointer in canvas pixels, the frame every screen position here is measured in. */
+  const local = (pointer: Point): Point => ({ x: pointer.x - CANVAS.left, y: pointer.y - CANVAS.top });
+  const center = { x: CANVAS.width / 2, y: CANVAS.height / 2 };
+
+  interface Operation {
+    name: string;
+    /** Changes the viewport with the pointer held still at `pointer` (client pixels) over `under`. */
+    run: (mounted: Mounted, pointer: Point, under: Element) => Promise<void> | void;
+    /** What it does on screen to what the drag is not carrying, from the viewport before it; null when that is the fit's own choice. */
+    expected: (before: { x: number; y: number; scale: number }, pointer: Point) => Affine | null;
+  }
+  const operations: Operation[] = [
+    { name: 'the wheel pans', run: (_, pointer, under) => { wheel(under, pointer, { deltaY: 100 }); }, expected: () => ({ a: 1, b: { x: 0, y: -100 } }) },
+    { name: 'the wheel pans sideways', run: (_, pointer, under) => { wheel(under, pointer, { deltaX: -60, deltaY: 40 }); }, expected: () => ({ a: 1, b: { x: 60, y: -40 } }) },
+    { name: 'Ctrl + wheel zooms in', run: (_, pointer, under) => { wheel(under, pointer, { deltaY: -100, ctrlKey: true }); }, expected: (_, pointer) => zoomAround(local(pointer), Math.exp(0.5)) },
+    { name: '⌘ + wheel zooms out', run: (_, pointer, under) => { wheel(under, pointer, { deltaY: 100, metaKey: true }); }, expected: (_, pointer) => zoomAround(local(pointer), Math.exp(-0.5)) },
+    { name: 'the 拡大 button', run: mounted => { button(mounted, '拡大'); }, expected: () => zoomAround(center, 1.2) },
+    { name: 'the 縮小 button', run: mounted => { button(mounted, '縮小'); }, expected: () => zoomAround(center, 1 / 1.2) },
+    { name: 'the 100% button', run: mounted => { button(mounted, '100%'); }, expected: before => zoomAround(center, 1 / before.scale) },
+    { name: 'the 全体表示 button', run: mounted => { button(mounted, '全体表示'); }, expected: () => null },
+    {
+      name: 'a restored state',
+      run: async mounted => { await mounted.view.setState({ viewport: { x: -40, y: 25, scale: 0.8 } }, { history: false } satisfies ViewStateResult); },
+      expected: before => {
+        const a = 0.8 / before.scale;
+        return { a, b: { x: -40 - before.x * a, y: 25 - before.y * a } };
+      },
+    },
+  ];
+
+  /**
+   * Presses the tree's root, carries it a little, runs the operation with the pointer still, then checks: the point
+   * grabbed stays under the pointer (the tree scales around it), everything else moves as the operation says, a
+   * further move carries the tree by exactly its travel, and the release stores what was shown.
+   */
+  const carry = async (target: 'topic' | 'body', operation: Operation): Promise<void> => {
+    const mounted = await mount(SOURCE, 'mindmap');
+    await sized(mounted);
+    // Away from the fit, to a scale no zoom here runs into the clamp from (3×) and where 100% is a step of its own.
+    button(mounted, '100%');
+    button(mounted, '縮小');
+    await frame();
+    const { view, canvas, nodes, pointer, settle, viewport, source } = mounted;
+    const { root, topics } = projectMap(documentOf(view));
+    const carried = target === 'body' ? root : topics.find(topic => topic.title === '資料');
+    if (!carried) throw new Error('Missing tree');
+    const roots = [root, ...topics];
+    const element = nodes().get(carried.id);
+    if (!element) throw new Error('No element');
+    const start = screenOf(mounted, carried.id);
+    // Pressed a little inside the root, then carried 60 × 30 pixels.
+    const press = { x: start.x + CANVAS.left + 12, y: start.y + CANVAS.top + 8 };
+    pointer('pointerdown', element, press.x, press.y);
+    pointer('pointermove', canvas, press.x + 6, press.y);
+    const held = { x: press.x + 60, y: press.y + 30 };
+    pointer('pointermove', canvas, held.x, held.y);
+    await frame();
+    const viewBefore = viewport();
+    const grabBefore = (() => {
+      const shown = screenOf(mounted, carried.id);
+      return { x: (local(held).x - shown.x) / viewBefore.scale, y: (local(held).y - shown.y) / viewBefore.scale };
+    })();
+    const othersBefore = new Map(roots.filter(item => item.id !== carried.id).map(item => [item.id, screenOf(mounted, item.id)]));
+
+    await operation.run(mounted, held, element);
+    await frame();
+    const viewAfter = viewport();
+    // The point grabbed is still under the pointer, at the new scale.
+    const shown = screenOf(mounted, carried.id);
+    const scale = operation.expected(viewBefore, held)?.a ?? viewAfter.scale / viewBefore.scale;
+    expectNear(shown, { x: local(held).x - grabBefore.x * viewBefore.scale * scale, y: local(held).y - grabBefore.y * viewBefore.scale * scale });
+    const map = operation.expected(viewBefore, held);
+    if (map) for (const [id, before] of othersBefore) expectNear(screenOf(mounted, id), apply(map, before));
+    // The fit, whose frame is its own choice, did run: it rescales this small map.
+    else expect(viewAfter.scale).not.toBeCloseTo(viewBefore.scale, 6);
+
+    // The drag goes on from there: 30 more pixels of travel move the tree 30 pixels, and nothing else.
+    const othersAfter = new Map(Array.from(othersBefore.keys(), id => [id, screenOf(mounted, id)]));
+    const moved = { x: held.x + 30, y: held.y };
+    pointer('pointermove', canvas, moved.x, moved.y);
+    await frame();
+    expectNear(screenOf(mounted, carried.id), { x: shown.x + 30, y: shown.y });
+    for (const [id, before] of othersAfter) expectNear(screenOf(mounted, id), before);
+
+    // Released there: what is stored is what was shown (to the rounding of a stored world unit).
+    const shownAtRelease = new Map(roots.map(item => [item.id, screenOf(mounted, item.id)]));
+    pointer('pointerup', canvas, moved.x, moved.y);
+    await vi.waitFor(() => { expect((view as unknown as { topicDrag: unknown; saving: boolean }).saving).toBe(false); });
+    await settle();
+    await settle();
+    expect(source()).not.toBe(SOURCE);
+    const tolerance = viewport().scale * 0.5 + 1e-6;
+    for (const item of roots) {
+      const expected = shownAtRelease.get(item.id);
+      const actual = screenOf(mounted, item.id);
+      if (!expected) throw new Error('Missing position');
+      expect(Math.abs(actual.x - expected.x)).toBeLessThanOrEqual(tolerance);
+      expect(Math.abs(actual.y - expected.y)).toBeLessThanOrEqual(tolerance);
+    }
+  };
+
+  for (const operation of operations) {
+    it(`a topic drag: ${operation.name}`, async () => { await carry('topic', operation); });
+    it(`a body drag: ${operation.name}`, async () => { await carry('body', operation); });
+  }
+
+  // Released, the tree's place is computed and the save is under way (`placeTopic` awaits the write) while the drag
+  // is still the view's: a wheel turned then pans the map with the released tree in it, which is where the save puts
+  // it. Holding the tree on a pointer no longer there (the canvas centre stood in for it) kept it still on screen until
+  // the save ended and dropped it back where it was stored, and for the body pinned the map's viewport in place.
+  it.each(['topic', 'body'] as const)('a %s released: a wheel turned while the save is under way pans it with the map', async target => {
+    const mounted = await mount(SOURCE, 'mindmap');
+    await sized(mounted);
+    const { view, canvas, nodes, pointer, settle, viewport } = mounted;
+    const { root, topics } = projectMap(documentOf(view));
+    const carried = target === 'body' ? root : topics.find(topic => topic.title === '資料');
+    const element = carried ? nodes().get(carried.id) : undefined;
+    if (!carried || !element) throw new Error('No element');
+    const start = screenOf(mounted, carried.id);
+    const press = { x: start.x + CANVAS.left + 12, y: start.y + CANVAS.top + 8 };
+    pointer('pointerdown', element, press.x, press.y);
+    pointer('pointermove', canvas, press.x + 6, press.y);
+    pointer('pointermove', canvas, press.x + 60, press.y + 30);
+    await frame();
+    const drag = view as unknown as { topicDrag: { overrides: Map<string, { x: number; y: number }> } | null };
+    pointer('pointerup', canvas, press.x + 60, press.y + 30);
+    expect(drag.topicDrag).not.toBeNull();
+    const overrides = new Map(drag.topicDrag?.overrides);
+    const viewBefore = viewport();
+    wheel(element, { x: press.x + 60, y: press.y + 30 }, { deltaY: 100 });
+    expect(drag.topicDrag?.overrides).toEqual(overrides);
+    expect(viewport()).toEqual({ ...viewBefore, y: viewBefore.y - 100 });
+    await vi.waitFor(() => { expect(drag.topicDrag).toBeNull(); });
+    await settle();
+    // The save put it where it was released, and the map panned over it.
+    const shown = screenOf(mounted, carried.id);
+    expect(Math.abs(shown.y - (start.y + 30 - 100))).toBeLessThanOrEqual(viewport().scale);
+  });
+});

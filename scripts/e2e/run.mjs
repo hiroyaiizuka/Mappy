@@ -31,6 +31,7 @@ export const CASES = [
   { name: 'move-parent-text', file: 'move-parent-text.mjs', description: 'E19 親本文を挟む移動', shot: false },
   { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
   { name: 'layout-switch', file: 'layout-switch.mjs', description: 'E39 レイアウトボタンと同時の編集・折りたたみ', shot: false },
+  { name: 'undo-ids', file: 'undo-ids.mjs', description: 'E47 Undo/Redo の前後の同名・空題名ノードの折りたたみと選択', shot: false },
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
@@ -38,8 +39,9 @@ export const CASES = [
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },
   { name: 'timeline-large', file: 'timeline-large.mjs', description: 'E45 長文・画像・深い枝が混在する大規模タイムライン', shot: true },
   { name: 'theme', file: 'theme.mjs', description: 'E48 明色・暗色テーマ × テーマ設定（従う／明色／暗色）のコントラストと色', shot: true },
-  { name: 'view-lifecycle', file: 'view-lifecycle.mjs', description: 'E49 開閉 50 回・プラグイン再読込・ウィンドウ再読込の残留と多重イベント', shot: false },
+  { name: 'drag-viewport', file: 'drag-viewport.mjs', description: 'E49 フリーツリーのドラッグ中のホイール・ズーム／全体表示と保存位置', shot: false },
   { name: 'popout', file: 'popout.mjs', description: 'E50 別ウィンドウでの描画・キー操作・移動・閉じたあとの残留', shot: true },
+  { name: 'view-lifecycle', file: 'view-lifecycle.mjs', description: 'E51 開閉 50 回・プラグイン再読込・ウィンドウ再読込の残留と多重イベント', shot: false },
 ];
 
 const args = process.argv.slice(2);

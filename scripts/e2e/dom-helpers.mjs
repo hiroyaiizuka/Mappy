@@ -198,7 +198,7 @@ function writeNote(note, source) {
 }
 
 /**
- * Step body for a case that opens its note itself (E49, E50): refuses a note already open (`refuseOpenLeaves`) and
+ * Step body for a case that opens its note itself (E50, E51): refuses a note already open (`refuseOpenLeaves`) and
  * any map leaf at all (the case's baseline would count its handlers), installs the page-error collector `errors`
  * (window-helpers.mjs `ERRORS`), then writes `source` to `note`. `extra` (script) adds fields to what it returns.
  */

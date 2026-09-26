@@ -156,7 +156,7 @@ try {
     await track.reset();
     return result;
   }));
-  // Warm-up (as E49): one popout opened and closed, so Obsidian's own lazily created handlers are in the baseline.
+  // Warm-up (as E51): one popout opened and closed, so Obsidian's own lazily created handlers are in the baseline.
   required(record, 'warm-up', await step('warm-up', async () => {
     // A warm-up window left open would put its views' handlers into the baseline and hide a leak: it has to close.
     if (!await closePopout(await openPopout())) throw new Error('the warm-up popout did not close');

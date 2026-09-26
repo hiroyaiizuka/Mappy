@@ -1,5 +1,5 @@
 /**
- * Shared parts of E48–E50 (docs/harness.md, LEV-14): what a view leaves behind once it is closed, and how a
+ * Shared parts of E48, E50 and E51 (docs/harness.md, LEV-14): what a view leaves behind once it is closed, and how a
  * theme reads on screen.
  *
  * - `HANDLERS` counts the handlers on Obsidian's own event hubs (`app.workspace`, `app.vault`,

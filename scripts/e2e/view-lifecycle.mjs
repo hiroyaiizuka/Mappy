@@ -1,5 +1,5 @@
 /**
- * E49 (docs/harness.md, E09 の開閉・再読込): open and close the map 50 times, reload the plugin with a map open, and
+ * E51 (docs/harness.md, E09 の開閉・再読込): open and close the map 50 times, reload the plugin with a map open, and
  * reload the whole window, on the real Obsidian (LEV-14). What each close has to leave is read, not assumed
  * (window-helpers.mjs):
  *
