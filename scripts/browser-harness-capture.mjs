@@ -72,6 +72,20 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/**
+ * The `mappy-layout` value in the note's own frontmatter (`h.source()`), or undefined when the key is absent.
+ * A layout button rewrites the note through the map's save path (`DocumentStore.applyLatest`, LEV-196), so the
+ * text is where the preference lands; the page's `processFrontMatter` only records an entry in `h.activity` and
+ * leaves the text as it was, so an entry there says nothing about what the note holds (LEV-212).
+ */
+async function layoutKey(page) {
+  const source = await page.harness('h.source()');
+  const header = /^---\r?\n([\s\S]*?)^---/mu.exec(source ?? '');
+  expect(header, `the note has no frontmatter: ${JSON.stringify(source?.slice(0, 80))}`);
+  const line = header[1].split(/\r?\n/u).find(candidate => /^mappy-layout\s*:/u.test(candidate));
+  return line?.replace(/^mappy-layout\s*:\s*/u, '').trim();
+}
+
 /** `mode` opens the fixture in that layout without writing `mappy-layout`; omitted, the note (or the view's current mode) decides. */
 async function loadFixture(page, id, mode) {
   const timing = await page.harness(`h.load(${JSON.stringify(id)}${mode ? `, ${JSON.stringify(mode)}` : ''})`);
@@ -290,7 +304,7 @@ async function captureOperations(recorder, page) {
     return `scale ${before.scale.toFixed(3)} → ${zoomed.scale.toFixed(3)} → Fit ${(await page.harness('h.viewport()')).scale.toFixed(3)}`;
   });
 
-  await recorder.run('timeline', '左下の「タイムライン」', '同じ内容が横軸レイアウトになり、ノード数は変わらない', async () => {
+  await recorder.run('timeline', '左下の「タイムライン」', '同じ内容が横軸レイアウトになり、ノード数は変わらない。`mappy-layout: timeline` が書かれる', async () => {
     const before = (await page.harness('h.nodes()')).length;
     const button = await page.harness('h.button("タイムライン")');
     expect(button, 'timeline button missing');
@@ -298,8 +312,8 @@ async function captureOperations(recorder, page) {
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline').length`);
     expect(timeline === before, `${timeline} timeline nodes of ${before}`);
-    const activity = await page.harness('h.activity');
-    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('timeline')), 'layout preference was not written through processFrontMatter');
+    const written = await layoutKey(page);
+    expect(written === 'timeline', `mappy-layout in the note is ${written}, not timeline`);
   });
 
   await recorder.run('hierarchy', '左下の「階層図」', 'ルートが上、同じ親の子が同じ段、親の下辺から子までの隙間が深さごとに一定で、ノード数は変わらない。`mappy-layout: hierarchy` が書かれる', async () => {
@@ -345,8 +359,8 @@ async function captureOperations(recorder, page) {
     for (const entry of rows.parents) gapByLevel.set(entry.level, [...(gapByLevel.get(entry.level) ?? []), ...entry.gaps.map(gap => gap / scale)]);
     const uneven = [...gapByLevel].filter(([, gaps]) => Math.max(...gaps) - Math.min(...gaps) > 1.5).map(([level, gaps]) => `${level}: ${Math.min(...gaps).toFixed(1)}–${Math.max(...gaps).toFixed(1)}`);
     expect(uneven.length === 0, `gap under the parents differs within a depth: ${uneven.join(', ')}`);
-    const activity = await page.harness('h.activity');
-    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"hierarchy"')), 'hierarchy preference was not written through processFrontMatter');
+    const written = await layoutKey(page);
+    expect(written === 'hierarchy', `mappy-layout in the note is ${written}, not hierarchy`);
     const gaps = [...gapByLevel].map(([level, values]) => `${level}: ${(values.reduce((sum, gap) => sum + gap, 0) / values.length).toFixed(1)}`).join(', ');
     return `${hierarchy} nodes, ${rows.parents.length} parents each with one row of children, gap by aria-level (px) ${gaps}`;
   });
@@ -397,8 +411,8 @@ async function captureOperations(recorder, page) {
     // The root sits between the two columns, vertically centred on each.
     expect(Math.abs(sides.rightCentre - sides.rootCentre) < 1.5 && Math.abs(sides.leftCentre - sides.rootCentre) < 1.5,
       `columns not centred on the root: root ${sides.rootCentre.toFixed(1)}, right ${sides.rightCentre.toFixed(1)}, left ${sides.leftCentre.toFixed(1)}`);
-    const activity = await page.harness('h.activity');
-    expect(activity.some(entry => entry.kind === 'frontmatter' && entry.detail.includes('"mappy-layout":"balanced"')), 'balanced preference was not written through processFrontMatter');
+    const written = await layoutKey(page);
+    expect(written === 'balanced', `mappy-layout in the note is ${written}, not balanced`);
     return `${balanced} nodes, 第一階層 ${sides.stages.map(stage => `${stage.index}:${stage.side === 'right' ? '右' : '左'}`).join(' ')}、右 ${sides.rightCount} / 左 ${sides.leftCount} ノード`;
   });
 
@@ -472,9 +486,8 @@ async function captureOperations(recorder, page) {
     await page.settle();
     const timeline = await page.evaluate(`document.querySelectorAll('.mappy-node.is-timeline, .mappy-node.is-hierarchy, .mappy-node.is-balanced').length`);
     expect(timeline === 0, `${timeline} nodes still in timeline, hierarchy or balanced`);
-    const activity = await page.harness('h.activity');
-    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
-    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    const left = await layoutKey(page);
+    expect(left === undefined, `layout key still present: mappy-layout: ${left}`);
   });
 
   for (const [width, height] of [[640, 480], [390, 700]]) {
@@ -1080,12 +1093,17 @@ async function captureLineBreak(recorder, page) {
 async function captureHierarchyRows(recorder, page) {
   const nodeRect = async name => (await nodeInfo(page, name)).rect;
   const gapBelow = (parent, child) => child.y - (parent.y + parent.height);
-  await recorder.run('hierarchy-rows', 'heading-document を階層図にする', '兄弟は同じ上辺。画像付きの「回復する」「記録する」の子だけが下がり、「はじめに」→「この講座で学ぶこと」の隙間は画像付きの親の子と同じ長さ', async () => {
+  // heading-document has no `mappy: true`: a layout button records the preference of a map and does not make one
+  // (`planMapLayout`, LEV-196), so neither button may touch its text.
+  let original;
+  await recorder.run('hierarchy-rows', 'heading-document を階層図にする', '兄弟は同じ上辺。画像付きの「回復する」「記録する」の子だけが下がり、「はじめに」→「この講座で学ぶこと」の隙間は画像付きの親の子と同じ長さ。`mappy: true` の無いノートなので原文は変わらない', async () => {
     await loadFixture(page, 'heading-document');
+    original = await page.harness('h.source()');
     const button = await page.harness('h.button("階層図")');
     expect(button, 'hierarchy button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
+    expect((await page.harness('h.source()')) === original, `the button wrote to a note that is not a map: mappy-layout ${await layoutKey(page)}`);
     const { scale } = await page.harness('h.viewport()');
     const stages = await Promise.all(['はじめに', '回復する', '記録する', '習慣化する'].map(nodeRect));
     const tops = stages.map(rect => rect.y);
@@ -1101,15 +1119,17 @@ async function captureHierarchyRows(recorder, page) {
   });
 
   // Runs even when the case above failed, so the fixture is left as it was loaded (as `timeline-back` does for uneven-branches).
-  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、任意キー `mappy-layout` が消える', async () => {
+  await recorder.run('hierarchy-rows-back', '左下の「通常マップ」', 'heading-document が通常マップへ戻り、原文は階層図にする前のまま（任意キー `mappy-layout` は書かれない）', async () => {
     const button = await page.harness('h.button("通常マップ")');
     expect(button, 'map button missing');
     await page.click(center(button).x, center(button).y);
     await page.settle();
     const remaining = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
     expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
-    const last = [...await page.harness('h.activity')].reverse().find(entry => entry.kind === 'frontmatter');
-    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    const left = await layoutKey(page);
+    expect(left === undefined, `layout key still present: mappy-layout: ${left}`);
+    expect(original !== undefined, 'heading-document was not loaded');
+    expect((await page.harness('h.source()')) === original, 'the source changed');
   });
 }
 
@@ -1567,9 +1587,11 @@ async function captureVisibleLayouts(recorder, page) {
     let buttons = await page.harness('h.layoutButtons()');
     expect(buttons.map(button => button.displayed).join() === 'true,false,true,false', `after the switch: ${describeButtons(buttons)}`);
     expect(buttons[0].active, `通常マップ is not the active button: ${describeButtons(buttons)}`);
-    const activity = await page.harness('h.activity');
-    const last = [...activity].reverse().find(entry => entry.kind === 'frontmatter');
-    expect(last && !last.detail.includes('mappy-layout'), `layout key still present: ${last?.detail}`);
+    // The note never held the key (the timeline came from the view state), so choosing the map writes nothing at all.
+    // `original` is the text this group loaded, which an earlier group's write may already have changed: the key is read too.
+    const left = await layoutKey(page);
+    expect(left === undefined, `layout key still present: mappy-layout: ${left}`);
+    expect((await page.harness('h.source()')) === original, 'the source changed');
     await page.harness('h.reopen()');
     await page.settle();
     buttons = await page.harness('h.layoutButtons()');
