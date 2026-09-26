@@ -293,3 +293,23 @@ describe('the maps the items call, shown with a write of the map\'s own before i
     expect(labels(mounted)).toEqual(expect.arrayContaining(['地図B', 'B の枝']));
   });
 });
+
+describe('the re-read after a write the map already shows (LEV-219, code review 1)', () => {
+  // The save shows the text it wrote before its re-read reads it; that re-read then finds the same text, and drawing
+  // it again would be one more full redraw of every node per edit on a large map. The watcher's re-read of the write
+  // still draws once, as the save's re-read and the watcher's drew twice before LEV-219: one draw by a read in all.
+  it('draws it once more, by the watcher\'s re-read only', async () => {
+    const mounted = await mount();
+    const view = state(mounted);
+    let drawnByReads = 0;
+    const draw = (mounted.view as unknown as { draw(): void }).draw.bind(mounted.view);
+    vi.spyOn(mounted.view as unknown as { draw(): void }, 'draw').mockImplementation(() => {
+      if (view.refreshing !== undefined) drawnByReads += 1;
+      draw();
+    });
+    rename(mounted, '子1', 0, '改名後');
+    await settled(mounted);
+    expect(mounted.source()).toContain('- 改名後\n');
+    expect(drawnByReads).toBe(1);
+  });
+});
