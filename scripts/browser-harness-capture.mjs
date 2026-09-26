@@ -1335,8 +1335,24 @@ export async function captureNewNode(recorder, page) {
       return `変換中の入力欄 ${JSON.stringify(composing)}`;
     });
 
+  /** Whether the canvas menu's 元に戻す／やり直す are disabled; the menu is closed again. */
+  const historyItems = async () => {
+    const point = await emptyCanvasPoint(page);
+    await page.mouse('mouseMoved', point.x, point.y);
+    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
+    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
+    const disabled = await page.evaluate(`(() => {
+      const item = title => Array.from(document.querySelectorAll('.menu .menu-item')).find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
+      return { undo: item('元に戻す')?.classList.contains('is-disabled') ?? null, redo: item('やり直す')?.classList.contains('is-disabled') ?? null };
+    })()`);
+    // Closed without a key: the page's menu is DOM only (headless Chrome stopped answering after Escape on it).
+    await page.evaluate(`document.querySelectorAll('.menu').forEach(menu => menu.remove())`);
+    await page.settle();
+    return disabled;
+  };
+
   await recorder.run('new-node-escape', '「記録する」で Tab → すぐ Escape（4 レイアウト）',
-    'ノードが消え、原文は元のまま。「記録する」が選択に戻る', async () => {
+    'ノードが消え、原文は元のまま。「記録する」が選択に戻り、右クリックの「元に戻す」「やり直す」とも無効', async () => {
       for (const mode of ['mindmap', 'timeline', 'hierarchy', 'balanced']) {
         await reset(mode);
         const node = await nodeInfo(page, '記録する');
@@ -1352,8 +1368,31 @@ export async function captureNewNode(recorder, page) {
         expect(await page.harness('h.source()') === original, `${mode}: the note changed`);
         const selected = (await page.harness('h.nodes()')).filter(item => item.selected).map(item => item.title);
         expect(selected.length === 1 && selected[0] === '記録する', `${mode}: selected ${selected.join(', ')}`);
+        // Taken back, not undone: the map's history has no step either way (the reset's external write emptied it).
+        const history = await historyItems();
+        expect(history.undo && history.redo, `${mode}: 元に戻す disabled ${history.undo}, やり直す disabled ${history.redo}`);
       }
-      return '4 レイアウトとも原文は元のまま';
+      return '4 レイアウトとも原文は元のまま、元に戻す・やり直すとも無効';
+    });
+  await recorder.run('new-node-image-only', '画像だけを持つ題名が空のノード（E37 の形）と、題名も本文もないノードを並べて開く',
+    '画像だけのノードは従来どおり画像の箱（空の行も 96px の最小幅もない）。何もないノードは 96px・1 行の高さ', async () => {
+      // In place of free-topics for this case (the page opens fixtures only); the reset after it puts the fixture back.
+      await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify('---\nmappy: true\n---\n## 本体\n\n- \n\n  ![[sample-image.svg]]\n- 文字\n- \n')})`);
+      await loadFixture(page, FIXTURE, 'mindmap');
+      const shapes = await page.evaluate(`(() => {
+        const nodes = Array.from(document.getElementById('harness-pane').querySelectorAll('.mappy-node.is-empty'));
+        return nodes.map(node => {
+          const label = node.querySelector('.mappy-node-label');
+          return { image: !!node.querySelector('.mappy-node-attachments img, .mappy-node-attachments .image-embed'),
+            before: getComputedStyle(label, '::before').content, minWidth: getComputedStyle(node).minWidth, labelHeight: label.getBoundingClientRect().height };
+        });
+      })()`);
+      const image = shapes.filter(shape => shape.image);
+      const bare = shapes.filter(shape => !shape.image);
+      expect(image.length === 1 && bare.length === 1, `untitled nodes: ${JSON.stringify(shapes)}`);
+      expect(image[0].before === 'none' && image[0].minWidth === '24px' && image[0].labelHeight === 0, `the image-only node: ${JSON.stringify(image[0])}`);
+      expect(bare[0].before !== 'none' && bare[0].minWidth === '96px' && bare[0].labelHeight > 0, `the bare node: ${JSON.stringify(bare[0])}`);
+      return JSON.stringify(shapes);
     });
   await reset('mindmap');
 }

@@ -233,14 +233,21 @@ describe('DocumentStore', () => {
     await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }]);
     await store.undo(file);
     expect(store.canRedo(file)).toBe(true);
-    const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'c' }]);
+    const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'c' }], { retractable: true });
     expect(store.canRedo(file)).toBe(false);
     await store.retract(file, added);
     expect(await store.redo(file)).toBe('ab');
+    // Only a retractable write keeps them: any other lets them go at once (review 2: they hold whole notes).
+    await store.undo(file);
+    const plain = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'd' }]);
+    await store.retract(file, plain);
+    expect(store.canRedo(file)).toBe(false);
+    await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    await store.undo(file);
     // Only the last step keeps them: once another step has followed, they are gone as after any edit, and the Redo
     // left by undoing that later step (planned on the retracted text) goes with the retract.
     await store.undo(file);
-    const first = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'x' }]);
+    const first = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'x' }], { retractable: true });
     await store.apply(file, 'ax', [{ from: 2, to: 2, text: 'y' }]);
     await store.undo(file);
     await expect(store.retract(file, first)).resolves.toEqual({ before: 'ax', after: 'a', edits: [{ from: 1, to: 2, text: '' }] });

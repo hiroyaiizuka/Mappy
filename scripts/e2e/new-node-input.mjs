@@ -9,8 +9,8 @@
  *      F2 → 入力 → Enter → F2 → Escape の各時点のノードの外形（配置位置と倍率 1 の幅・高さ）が同じこと、入力欄が行数
  *      ちょうどの高さでノードの文字の枠の上端から始まること（カーソルが行の縦の中央）。
  *   2. 仮の名前（本人の決定 2026-09-26）: 4 レイアウト × Tab（子）・Enter（兄弟）・空白のダブルクリック（トピック）で
- *      「サブトピック」「トピック」が全選択で開き、その外形が確定後も同じこと。すぐ Escape で原文が元に戻り、Undo の手順が
- *      残らないこと（⌘Z が何も戻さない）。そのまま Enter で仮の名前のまま確定すること。
+ *      「サブトピック」「トピック」が全選択で開き、その外形が確定後も同じこと。すぐ Escape で原文が元に戻り、Undo／Redo の
+ *      手順が残らないこと（⌘Z も ⌘⇧Z も何も変えない）。そのまま Enter で仮の名前のまま確定すること。
  *   3. IME: 全選択の仮の名前の上で変換を始める（CDP の Input.imeSetComposition。OS の IME そのものではない）と置き換わり、
  *      確定した文字が書かれること。
  *
@@ -190,6 +190,10 @@ try {
             await cdp.realKey('z', 4);
             await wait(800);
             check(await source() === SOURCE, `${label}: ⌘Z after Escape changed the note`);
+            // Nor ⌘⇧Z: the addition was taken back, not undone.
+            await cdp.realKey('z', 12);
+            await wait(800);
+            check(await source() === SOURCE, `${label}: ⌘⇧Z after Escape changed the note`);
             results.push({ label, draft: show(draft) });
           } else {
             await cdp.realKey('Enter');

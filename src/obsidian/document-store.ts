@@ -16,7 +16,7 @@ interface HistoryEntry {
   after: string;
   forward: TextEdit[];
   inverse: TextEdit[];
-  /** The Redo steps this write dropped, kept while it is the last step so that `retract` can give them back. */
+  /** The Redo steps this write dropped, kept (for a `retractable` write) while it is the last step so that `retract` can give them back. */
   dropped?: HistoryEntry[];
 }
 
@@ -65,7 +65,7 @@ export class DocumentStore {
    * `apply`, telling what it wrote: the text it found, the text it left, and the edits between — the caller's,
    * or the caller's carried over `applyLatest` writes that landed after `expectedSource` (`carry`, LEV-196).
    */
-  applyOver(file: TFile, expectedSource: string, edits: TextEdit[]): Promise<CarriedWrite> {
+  applyOver(file: TFile, expectedSource: string, edits: TextEdit[], options: { retractable?: boolean } = {}): Promise<CarriedWrite> {
     const requested = edits.map((edit) => ({ ...edit }));
     return this.enqueue(file, async (session) => {
       const before = await this.readCurrent(file);
@@ -79,7 +79,8 @@ export class DocumentStore {
       await this.writeSafely(file, session, before, after, forward);
       const last = session.past[session.past.length - 1];
       if (last) delete last.dropped;
-      session.past.push({ before, after, forward, inverse, ...(session.future.length > 0 ? { dropped: session.future } : {}) });
+      // A write `retract` may take back keeps the Redo steps it drops; any other lets them go at once.
+      session.past.push({ before, after, forward, inverse, ...(options.retractable && session.future.length > 0 ? { dropped: session.future } : {}) });
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
       session.latest = [];

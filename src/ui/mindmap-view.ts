@@ -91,6 +91,8 @@ interface OwnWrite {
 interface Created {
   readonly write: LatestWrite;
   readonly previous: string | null;
+  /** The provisional name the node was written with: a draft still holding it is untouched. */
+  readonly name: string;
 }
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
@@ -1519,10 +1521,10 @@ export class MindmapView extends FileView {
     const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
     const previous = this.selectedId;
     const plan = planEdit(document, provisional ? { ...command, title: NEW_NODE_TITLE } : command);
-    const write = await this.commit(document.source, plan.edits, file);
+    const write = await this.commit(document.source, plan.edits, file, provisional);
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(plan.selectionOffset);
-    if (selected && provisional) this.editTitle({ write, previous });
+    if (selected && provisional) this.editTitle({ write, previous, name: NEW_NODE_TITLE });
   }
 
   /**
@@ -1601,12 +1603,12 @@ export class MindmapView extends FileView {
     const position = point ? this.topicPoint(point) : null;
     const previous = this.selectedId;
     const plan = planEdit(document, { type: "add-topic", title: NEW_TOPIC_TITLE });
-    const write = await this.commit(document.source, plan.edits, file);
+    const write = await this.commit(document.source, plan.edits, file, true);
     if (this.file !== file || this.closed) return;
     const created = this.document ? nodeAt(this.document, plan.selectionOffset) : undefined;
     // The first heading of a note becomes its body root and has no position.
     if (created && position && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
-    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, previous });
+    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, previous, name: NEW_TOPIC_TITLE });
   }
 
   /** The tree under a root on the map: the body's own subtree, or a topic's. */
@@ -1811,7 +1813,19 @@ export class MindmapView extends FileView {
     finally { this.endTopicDrag(command.nodeId, true); }
   }
 
-  private async commit(source: string, edits: TextEdit[], file = this.file): Promise<CarriedWrite> {
+  /**
+   * `retractable`: the edit adds a node that Escape on its draft may take back (`retract`); the store keeps the Redo
+   * steps it drops until then.
+   */
+  private commit(source: string, edits: TextEdit[], file = this.file, retractable = false): Promise<CarriedWrite> {
+    return this.writeOwn(source, file, target => this.store.applyOver(target, source, edits, { retractable }));
+  }
+
+  /**
+   * One write of this view's own, planned on `source`: `perform` makes it in the store, and the view records it so
+   * the re-read carries the ids over, rebases the open drafts and reads the note again.
+   */
+  private async writeOwn(source: string, file: TFile | null, perform: (file: TFile) => Promise<CarriedWrite>): Promise<CarriedWrite> {
     if (!file || file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
     if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
     // Read before the write: a draft that already disagrees with the note is left alone, so an external
@@ -1822,7 +1836,7 @@ export class MindmapView extends FileView {
     try {
       let write: CarriedWrite;
       // A layout button pressed after the edit was planned (LEV-196) is carried over by the store.
-      try { write = await this.store.applyOver(file, source, edits); }
+      try { write = await perform(file); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
       const written = write.after;
@@ -1843,8 +1857,8 @@ export class MindmapView extends FileView {
   }
 
   /**
-   * Take back a node this view has just added, whose draft was dismissed with Escape before anything was
-   * written to it (LEV-203): the note goes back to its text before the addition, with no step left for Undo or
+   * Take back a node this view has just added, whose draft was dismissed with Escape untouched and before anything
+   * was written to it (LEV-203): the note goes back to its text before the addition, with no step left for Undo or
    * Redo, and the node selected before the addition is selected again. Taken back as this view's own write, so
    * the re-read carries every id over (folds, the selection), same-titled nodes included; with nothing selected
    * before, nothing is selected after. The caller asks only while the note is as the addition left it and
@@ -1853,17 +1867,13 @@ export class MindmapView extends FileView {
    */
   private async retract(file: TFile, created: Created, nodeId: string): Promise<void> {
     if (file !== this.file || this.closed || this.saving) return;
-    this.saving = true;
-    try {
-      let write: LatestWrite;
-      try { write = await this.store.retract(file, created.write); }
-      catch (error) { this.scheduleRefresh(); throw error; }
-      this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
+    await this.writeOwn(created.write.after, file, async target => {
+      const write = await this.store.retract(target, created.write);
       if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
       // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
       if (!created.previous) this.deselect();
-      if (!this.unloading) await this.refresh();
-    } finally { this.saving = false; }
+      return { ...write, carried: [] };
+    });
     if (this.file !== file || this.closed || !this.document) return;
     if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
   }
@@ -1920,16 +1930,17 @@ export class MindmapView extends FileView {
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
-      finish: (next, cancelled) => {
+      finish: (next, cancelled, text) => {
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
         this.renderer.editing(node.id, false);
         if (this.closed || this.unloading || file !== this.file) return;
-        // Dismissed right after the addition, the note still as the addition left it: the node goes too. Once
-        // something else has been written or is on its way (an image pasted onto it, the draft's own save that an
-        // Escape pressed during it cannot stop, a change from outside), Escape only closes the draft, as on any
-        // node: the node holds more than the addition.
-        if (cancelled && created && !this.saving && this.attaching === 0 && this.document?.source === created.write.after) {
+        // Dismissed right after the addition — the provisional name untouched, the note still as the addition left
+        // it — the node goes too. Once the user has typed, or something else has been written or is on its way (an
+        // image pasted onto it, the draft's own save that an Escape pressed during it cannot stop, a change from
+        // outside), Escape only closes the draft, as on any node.
+        if (cancelled && created && text === created.name && !this.saving && this.attaching === 0
+          && this.document?.source === created.write.after) {
           this.run(() => this.retract(file, created, node.id));
           return;
         }

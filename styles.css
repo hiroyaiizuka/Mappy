@@ -285,9 +285,12 @@
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
 /* A node without text, and a draft emptied in the inline editor, share one box (LEV-203): wide enough to aim at and
    type into, and one line high (the zero-width space), as the draft's one row is. Opening or closing the editor on it
-   changes neither its size nor, with it, the map. */
-.mappy-view .mappy-node.is-empty:not(.is-editing), .mappy-view .mappy-node.is-editing.is-draft-empty { min-width: 96px; }
-.mappy-view .mappy-node.is-empty > .mappy-node-content > .mappy-node-label::before { content: "\200b"; }
+   changes neither its size nor, with it, the map. Not a node that shows images or links under its empty title (an
+   image pasted onto an untitled node, E37): that node is its attachments, as it always was, and an empty line above
+   them would move every such map on upgrade; the draft's row over it is the one thing editing it adds. */
+.mappy-view .mappy-node.is-empty:not(.is-editing):not(:has(> .mappy-node-content > .mappy-node-attachments:not(:empty))),
+.mappy-view .mappy-node.is-editing.is-draft-empty:not(:has(> .mappy-node-content > .mappy-node-attachments:not(:empty))) { min-width: 96px; }
+.mappy-view .mappy-node.is-empty:not(:has(> .mappy-node-content > .mappy-node-attachments:not(:empty))) > .mappy-node-content > .mappy-node-label::before { content: "\200b"; }
 /* While the inline editor stands in for a node's text, the node hides that text and keeps its attachments on
    screen; both parts set `display`, so the browser's own rule for `hidden` needs saying again here. */
 .mappy-view .mappy-node-label[hidden], .mappy-view .mappy-node-call-mark[hidden] { display: none; }

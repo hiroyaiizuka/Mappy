@@ -115,7 +115,7 @@ describe("node wikilink suggestions", () => {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", cancelable: true, bubbles: true }));
     await Promise.resolve();
     expect(save).toHaveBeenCalledExactlyOnceWith("前 [[運動]]");
-    expect(finish).toHaveBeenCalledExactlyOnceWith("none", false);
+    expect(finish).toHaveBeenCalledExactlyOnceWith("none", false, "前 [[運動]]");
   });
 
   it("actual InlineEditor keeps candidate mouse selection within the draft", async () => {

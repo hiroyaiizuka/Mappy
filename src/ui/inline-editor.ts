@@ -6,7 +6,8 @@ export interface InlineSuggestion {
 export interface InlineEditorOptions {
   initial: string;
   save: (text: string) => Promise<void>;
-  finish: (next: "none" | "child", cancelled: boolean) => void;
+  /** `draft`: the text in the editor as it closed (on Escape, the text given up). */
+  finish: (next: "none" | "child", cancelled: boolean, draft: string) => void;
   resize: () => void;
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
@@ -67,7 +68,7 @@ export class InlineEditor {
       if (event.key === "Escape") {
         event.preventDefault();
         this.dispose();
-        this.options.finish("none", true);
+        this.options.finish("none", true, this.input.value);
       } else if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         // A line break inside the node (LEV-202), as XMind's Shift+Enter: the textarea's own insertion, which its
         // Undo knows. The save writes it as `<br>` in the title's one line (core/title-breaks).
@@ -163,7 +164,7 @@ export class InlineEditor {
       await this.options.save(this.input.value);
       if (this.disposed) return;
       this.dispose();
-      this.options.finish(next, false);
+      this.options.finish(next, false, this.input.value);
     } catch (error) {
       if (this.disposed) return;
       this.error.setText(error instanceof Error ? error.message : "保存できませんでした。");
@@ -190,7 +191,7 @@ export class InlineEditor {
       await this.options.save(this.input.value);
       if (this.disposed) return;
       this.dispose();
-      this.options.finish("none", false);
+      this.options.finish("none", false, this.input.value);
     } finally {
       this.busy = false;
       this.input.readOnly = false;

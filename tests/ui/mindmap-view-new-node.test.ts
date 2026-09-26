@@ -110,6 +110,10 @@ describe('a node added on the map opens under its provisional name, selected (LE
         expect(nodeElements(mounted, NEW_NODE_TITLE)).toHaveLength(0);
         expect(mounted.store.canUndo(mounted.file)).toBe(false);
         expect(mounted.store.canRedo(mounted.file)).toBe(false);
+        // ⌘⇧Z brings nothing back either: the addition was taken back, not undone.
+        mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: true });
+        await mounted.settle();
+        expect(mounted.source()).toBe(shape.source);
         // The node the addition was made from is selected again, so the next Tab／Enter goes where it went.
         expect(selectedNames(mounted)).toEqual([shape.target]);
       });
@@ -228,6 +232,20 @@ describe('a node added on the map opens under its provisional name, selected (LE
     await mounted.settle();
     await mounted.settle();
     expect(mounted.source()).toBe(`${written}- 外から\n`);
+  });
+
+  it('Escape after typing over the provisional name gives up the typing only: the node stays as 「サブトピック」 (review 2)', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    input.value = '打ちかけ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    mounted.key(input, 'Escape');
+    await mounted.settle();
+    expect(mounted.editor()).toBeNull();
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - ${NEW_NODE_TITLE}\n`));
+    expect(selectedNames(mounted)).toEqual([NEW_NODE_TITLE]);
   });
 
   it('Escape pressed while the draft\'s own Enter is saving keeps what Enter saves, with no Notice (review 1)', async () => {
