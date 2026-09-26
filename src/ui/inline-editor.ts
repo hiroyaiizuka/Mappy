@@ -79,6 +79,12 @@ export class InlineEditor {
       }
     });
     this.input.addEventListener("blur", () => {
+      // Only the window lost the focus (another app, another Obsidian window): the draft is still the active element and
+      // gets the keyboard back with the window. Saving here closed it under the person, and the Enter they came back to
+      // confirm it with reached the selected node instead — a sibling added (LEV-216). A draft taken out of the
+      // document (a closing tab or window) is not active any more and still saves (LEV-215).
+      const doc = this.input.ownerDocument;
+      if (this.input.isConnected && doc.activeElement === this.input && !doc.hasFocus()) return;
       if (this.composing) { this.blurAfterComposition = true; return; }
       // Keep an invalid/conflicted draft available instead of repeatedly saving on blur.
       if (!this.disposed && !this.error.textContent) void this.commit("none");

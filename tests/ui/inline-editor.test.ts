@@ -391,6 +391,39 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.restore).toHaveBeenCalledTimes(1);
   });
 
+  // LEV-216: the window losing the OS focus (another app, another Obsidian window) blurs the draft while it stays the
+  // document's active element. Saving then closed the draft under the person, and the Enter they pressed on coming
+  // back to confirm it reached the selected node instead, adding a sibling 「サブトピック」.
+  it('keeps the draft open when only the window loses focus, and the Enter after it saves the draft once', async () => {
+    const { options, input, host } = fixture('元の名前');
+    input.value = 'ウィンドウを離れた下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).not.toHaveBeenCalled();
+    expect(host.querySelector('textarea')).toBe(input);
+    expect(document.activeElement).toBe(input);
+    windowFocus.mockReturnValue(true);
+    expect(key(input, 'Enter').defaultPrevented).toBe(true);
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('ウィンドウを離れた下書き');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
+  });
+
+  it('still saves on the blur of a draft taken out of the document while its window is in the background', async () => {
+    // Closing a tab or a popout window removes the focused draft, which Chromium blurs (LEV-215 decides whether that
+    // save should happen; LEV-216 must not change it).
+    const { options, input } = fixture('元の名前');
+    input.value = '閉じるときの下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.remove();
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('閉じるときの下書き');
+  });
+
   it('commits once when the input loses focus without a previous error', async () => {
     const { options, input } = fixture('フォーカス移動');
     input.dispatchEvent(new FocusEvent('blur'));

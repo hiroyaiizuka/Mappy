@@ -76,14 +76,18 @@ const settle = mark => `const win = leaf.view.contentEl.win;
   ${watch('win', mark)}
   win.__mappyE2E = leaf;
   // Every key the popout's window receives (capture phase: Obsidian's keymap and the inline editor stop some keys before
-  // they bubble), the element it was sent to, and — read once the event's task is over — whether something took it.
-  // Kept in the record of step 6, to tell one key acted on twice (the inline editor and the map) from a second key.
+  // they bubble), the element it was sent to, and — read once the event's task is over — whether something took it;
+  // and every time the window itself loses or gets the OS focus. Kept in the record of step 6, to tell one key acted on
+  // twice (the inline editor and the map) from a second key, and a draft closed by the window's blur (LEV-216).
+  // The list is dropped when the window closes (\`closePopout\`); a key arriving after that is not recorded.
   win.__mappyE2EKeys = [];
   win.addEventListener('keydown', event => {
     const entry = { key: event.key, target: String(event.target.className || event.target.tagName) };
-    win.__mappyE2EKeys.push(entry);
+    win.__mappyE2EKeys?.push(entry);
     win.setTimeout(() => { entry.prevented = event.defaultPrevented; }, 0);
   }, true);
+  win.addEventListener('blur', event => { if (event.target === win) win.__mappyE2EKeys?.push({ window: 'blur', draftActive: !!win.document.activeElement?.matches?.('textarea.mappy-inline-input') }); }, true);
+  win.addEventListener('focus', event => { if (event.target === win) win.__mappyE2EKeys?.push({ window: 'focus' }); }, true);
   let laid = false;
   for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
     const node = leaf.view.contentEl.querySelector('.mappy-node');
@@ -279,9 +283,20 @@ try {
     const renamed = await moved.rename('移動先で改名');
     const keys = await moved.evaluate('return window.__mappyE2EKeys;');
     moved.cdp.close();
-    // Once in six runs (2026-09-26, LEV-216) the Enter also added a sibling 「サブトピック」 here; not reproduced in 15
-    // isolated tries. `keys` says whether that is one Enter handled twice or a second key.
+    // Once in six runs (2026-09-26) the Enter also added a sibling 「サブトピック」 here. LEV-216 found two ways to it: the
+    // window losing the OS focus mid-draft (builds through 0.3.7 saved the draft on that blur, so the Enter reached the
+    // node; the fix is pinned by E56), and keys the case never sent (a person typing while the popout, which takes the OS focus when
+    // it opens, is the frontmost window: a Space, ⌘ and ⌥ reached the test windows during the runs). The case sends F2
+    // and Enter only; anything else in `keys` is foreign input, reported as such instead of as the build's failure.
     const expected = before.replace('- 通常のノード\n', '- 移動先で改名\n');
+    const sent = ['F2', 'Enter'];
+    const foreign = keys.filter(entry => {
+      if (!entry.key) return false;
+      const at = sent.indexOf(entry.key);
+      if (at !== -1) sent.splice(at, 1);
+      return at === -1;
+    });
+    check(foreign.length === 0, `6-move-to-popout: keys the case did not send reached the moved window (foreign input): ${JSON.stringify(foreign)}`);
     check(renamed.source === expected, `6-move-to-popout: F2 rename after the move wrote ${JSON.stringify(renamed.source)} (keys ${JSON.stringify(keys)})`);
     const closed = await closePopout(mark);
     check(closed, '6-move-to-popout: the window did not close');

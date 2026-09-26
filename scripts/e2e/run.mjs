@@ -43,6 +43,7 @@ export const CASES = [
   { name: 'popout', file: 'popout.mjs', description: 'E50 別ウィンドウでの描画・キー操作・移動・閉じたあとの残留', shot: true },
   { name: 'view-lifecycle', file: 'view-lifecycle.mjs', description: 'E51 開閉 50 回・プラグイン再読込・ウィンドウ再読込の残留と多重イベント', shot: false },
   { name: 'drop-flicker', file: 'drop-flicker.mjs', description: 'E53 フリーツリーを離した直後、保存後の原文が描かれるまでのフレーム', shot: false },
+  { name: 'window-blur-draft', file: 'window-blur-draft.mjs', description: 'E56 下書きの途中でウィンドウのフォーカスが外れて戻ったあとの Enter・押下', shot: false },
 ];
 
 const args = process.argv.slice(2);

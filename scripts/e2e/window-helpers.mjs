@@ -97,9 +97,14 @@ export function makeAppTheme(evaluate) {
   };
 }
 
-/** Script: collects this window's uncaught errors and rejections into `window.__mappyE2EErrors` (once). */
-export const ERRORS = `if (!window.__mappyE2EErrors) {
-  window.__mappyE2EErrors = [];
+/**
+ * Script: collects this window's uncaught errors and rejections into `window.__mappyE2EErrors`. The listeners go on
+ * once per window; the list starts empty on every run, or one error would fail every later case run in the same
+ * Obsidian (LEV-216: E50 reported an error of the run before it for the seven runs after it).
+ */
+export const ERRORS = `window.__mappyE2EErrors = [];
+if (!window.__mappyE2EErrorsWatched) {
+  window.__mappyE2EErrorsWatched = true;
   window.addEventListener('error', event => { window.__mappyE2EErrors.push(String(event.error?.stack ?? event.message)); });
   window.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push(String(event.reason?.stack ?? event.reason)); });
 }`;
