@@ -72,6 +72,19 @@ describe('WriteRecord', () => {
     expect(second(record.take(next.after, shown, 'n'))).toBe(second(shown));
   });
 
+  it('spends every write up to the last one that wrote the text read (a rename, ⌘Z, ⌘⇧Z before one re-read)', () => {
+    // Code review 3: stopping at the first one left ⌘Z and ⌘⇧Z behind, held until some later write.
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    const back: RecordedWrite = { before: there.after, after: A, edits: [{ from: there.edits[0]!.from, to: there.edits[0]!.from + 'ずっと長い題名'.length, text: '子1' }] };
+    record.record(there, A);
+    record.record(back, there.after);
+    record.record(there, A);
+    const read = record.take(there.after, shown, 'n');
+    expect({ size: record.size, second: second(read) }).toEqual({ size: 0, second: second(shown) });
+  });
+
   it('leaves out a write that does not start where the record leads, so it does not block the ones that do', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();

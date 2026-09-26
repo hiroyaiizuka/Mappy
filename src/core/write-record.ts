@@ -8,12 +8,6 @@ export interface RecordedWrite {
   readonly edits: readonly TextEdit[];
 }
 
-/** A recorded write and its `after` parsed from a document with its edits, kept so a later read does not parse it again. */
-interface Entry {
-  readonly write: RecordedWrite;
-  parsed?: { from: MindDocument; basename: string; document: MindDocument };
-}
-
 /**
  * The writes the store made on a note since a reader of it last parsed it, in order, so the next parse carries every
  * node's id over with their edits: nothing else carries a node whose title repeats or is empty (LEV-146). A text they
@@ -25,64 +19,70 @@ interface Entry {
  * the view here is LEV-66's.
  */
 export class WriteRecord {
-  private entries: Entry[] = [];
+  private writes: RecordedWrite[] = [];
 
   /** `write` kept where the record leads to its start: its end, or `shown` (the text last parsed) when it is empty. */
   record(write: RecordedWrite, shown: string | undefined): void {
-    const last = this.entries[this.entries.length - 1];
-    if (write.before !== (last?.write.after ?? shown)) return;
-    this.entries.push({ write });
+    const last = this.writes[this.writes.length - 1];
+    if (write.before !== (last?.after ?? shown)) return;
+    this.writes.push(write);
   }
 
   /** How many writes wait for a read; each holds two copies of the note. */
   get size(): number {
-    return this.entries.length;
+    return this.writes.length;
   }
 
   clear(): void {
-    this.entries = [];
+    this.writes = [];
   }
 
   /**
-   * `text` parsed from `from`: through the recorded writes up to the one that wrote exactly `text` (those are spent,
-   * the rest kept for a later read). When they do not lead there, a parse matched by titles: from `from` for its own
-   * text (the note renamed, or a read that came before a write the record already holds, which is kept), else from
-   * the last text the writes reached, and the record dropped.
+   * `text` parsed from `from`: through the recorded writes up to the last one that wrote exactly `text` (those are
+   * spent — ⌘Z then ⌘⇧Z behind it included — the rest kept for a later read). When they do not lead there, a parse
+   * matched by titles: from `from` for its own text (the note renamed, or a read that came before a write the record
+   * already holds, which is kept), else from the last text the writes reached, and the record dropped. The writes are
+   * parsed only once the texts show where they lead.
    */
   take(text: string, from: MindDocument | undefined, basename: string): MindDocument {
-    let document = from;
-    for (const [index, entry] of this.entries.entries()) {
-      if (!document || document.source !== entry.write.before) break;
-      document = this.parse(entry, document, basename);
-      if (entry.write.after !== text) continue;
-      this.entries = this.entries.slice(index + 1);
+    const { reaches, led } = this.follow(from?.source, text);
+    if (from && reaches > 0) {
+      const document = this.parse(from, reaches, basename);
+      this.writes = this.writes.slice(reaches);
       return document;
     }
     if (from && text === from.source) return parseMarkdown(text, basename, from);
-    this.entries = [];
-    return parseMarkdown(text, basename, document);
+    const reached = from ? this.parse(from, led, basename) : undefined;
+    this.writes = [];
+    return parseMarkdown(text, basename, reached);
+  }
+
+  /** The writes that lead from `shown` back to it (⌘Z then ⌘⇧Z) spent, for a reader that keeps what it shows. */
+  spend(shown: string): void {
+    this.writes = this.writes.slice(this.follow(shown, shown).reaches);
   }
 
   /**
-   * The writes that lead from `shown` back to it (⌘Z then ⌘⇧Z) spent, for a reader that keeps what it shows. Only the
-   * texts are followed; nothing is parsed.
+   * How far the writes lead from `start`, by their texts alone: `led` writes follow one another from it, and the
+   * `reaches` first of them end on `text` (0 when none does).
    */
-  spend(shown: string): void {
-    let at = shown;
-    let spent = 0;
-    for (const [index, entry] of this.entries.entries()) {
-      if (entry.write.before !== at) break;
-      at = entry.write.after;
-      if (at === shown) spent = index + 1;
+  private follow(start: string | undefined, text: string): { reaches: number; led: number } {
+    let at = start;
+    let reaches = 0;
+    let led = 0;
+    for (const write of this.writes) {
+      if (at === undefined || write.before !== at) break;
+      at = write.after;
+      led += 1;
+      if (at === text) reaches = led;
     }
-    this.entries = this.entries.slice(spent);
+    return { reaches, led };
   }
 
-  /** `entry`'s text parsed from `from` with its edits, once per base document. */
-  private parse(entry: Entry, from: MindDocument, basename: string): MindDocument {
-    if (entry.parsed?.from !== from || entry.parsed.basename !== basename) {
-      entry.parsed = { from, basename, document: parseMarkdown(entry.write.after, basename, from, undefined, entry.write.edits) };
-    }
-    return entry.parsed.document;
+  /** `from` carried through the first `count` writes, each parsed with its edits. */
+  private parse(from: MindDocument, count: number, basename: string): MindDocument {
+    let document = from;
+    for (const write of this.writes.slice(0, count)) document = parseMarkdown(write.after, basename, document, undefined, write.edits);
+    return document;
   }
 }

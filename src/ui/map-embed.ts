@@ -120,7 +120,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerEvent(this.app.vault.on("modify", file => { if (file.path === path()) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("rename", file => { if (file === this.source.file) this.scheduleRefresh(); }));
     this.registerEvent(this.app.vault.on("delete", file => { if (file === this.source.file) this.scheduleRefresh(); }));
-    this.register(this.store.onWrite((file, write) => { if (file === this.source.file) this.writes.record(write, this.document?.source); }));
+    this.register(this.store.onWrite((file, write) => { if (file.path === path()) this.writes.record(write, this.document?.source); }));
     if (typeof ResizeObserver !== "undefined") {
       // Only the fit depends on the frame's size; the layout itself does not.
       this.observer = new ResizeObserver(() => { if (this.bounds) this.fit(this.bounds); });
