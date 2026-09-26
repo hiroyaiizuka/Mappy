@@ -283,6 +283,14 @@
 .mappy-view .mappy-edges path.is-preview { stroke: var(--mappy-drop); stroke-width: 4; stroke-linecap: round; }
 .mappy-view .mappy-node-content { min-width: 0; }
 .mappy-view .mappy-node-label { display: inline; font-weight: 400; white-space: normal; }
+/* A node without text, and a draft emptied in the inline editor, share one box (LEV-203): wide enough to aim at and
+   type into, and one line high (the zero-width space), as the draft's one row is. Opening or closing the editor on it
+   changes neither its size nor, with it, the map. Not a node that shows images or links under its empty title (an
+   image pasted onto an untitled node, E37): that node is its attachments, as it always was, and an empty line above
+   them would move every such map on upgrade; the draft's row over it is the one thing editing it adds. */
+.mappy-view .mappy-node.is-empty:not(.is-editing):not(.has-attachments),
+.mappy-view .mappy-node.is-editing.is-draft-empty:not(.has-attachments) { min-width: 96px; }
+.mappy-view .mappy-node.is-empty:not(.has-attachments) > .mappy-node-content > .mappy-node-label::before { content: "\200b"; }
 /* While the inline editor stands in for a node's text, the node hides that text and keeps its attachments on
    screen; both parts set `display`, so the browser's own rule for `hidden` needs saying again here. */
 .mappy-view .mappy-node-label[hidden], .mappy-view .mappy-node-call-mark[hidden] { display: none; }
@@ -302,13 +310,17 @@
   /* One row as wide as the text, then more rows once it reaches the node's own cap (max-width above: 420px, the root
      360px), which is where the confirmed label wraps too (LEV-198). The 100% is cyclic while the node sizes itself, so
      the text's full width asks for the cap; laid out, it is the node's content box. Where `field-sizing` is
-     unsupported InlineEditor.resize sets the width and height instead. At least the node's width (an image or the
-     error line can make it wider), so a click beside the text still lands in the editor, not on the node. */
+     unsupported InlineEditor.resize sets the width and height instead. At least the node's width (an image, the
+     error line or the empty node's floor below can make it wider), so a click beside the text still lands in the
+     editor, not on the node. No fixed floor of its own: a floor the node does not share sticks out of it or
+     resizes it when the draft closes, and engines disagree on how a 40px floor taken with the percentage counts
+     toward the node's width (Obsidian's Chromium 124 counted none, so the draft stuck out of an empty node, LEV-203). */
   field-sizing: content;
-  min-width: max(40px, 100%);
+  min-width: 100%;
   max-width: 100%;
-  /* The floor InlineEditor.measure has always given the height; the same on both paths. */
-  min-height: 26px;
+  /* One row is the line's own height, as the label's is: a taller box would put the caret above the middle and
+     resize the node when the draft closes (LEV-203). */
+  min-height: 0;
   margin: 0;
   padding: 0;
   border: 0;

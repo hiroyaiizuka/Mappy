@@ -33,6 +33,7 @@
     "harness:e2e:paste": "node scripts/e2e/paste-image.mjs",
     "harness:e2e:layout-switch": "node scripts/e2e/layout-switch.mjs",
     "harness:e2e:line-break": "node scripts/e2e/line-break.mjs",
+    "harness:e2e:new-node": "node scripts/e2e/new-node-input.mjs",
     "harness:e2e:excalidraw-frame": "node scripts/e2e/excalidraw-frame.mjs",
     "harness:e2e:excalidraw-lifecycle": "node scripts/e2e/excalidraw-lifecycle.mjs",
     "harness:e2e:timeline-stage-gap": "node scripts/e2e/timeline-stage-gap.mjs",

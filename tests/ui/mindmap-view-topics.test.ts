@@ -290,7 +290,7 @@ describe('MindmapView with free topics', () => {
 });
 
 describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
-  it('double-clicking empty canvas appends `## `, edits it in place where pressed, and Enter stores title and position as one step', async () => {
+  it('double-clicking empty canvas appends `## トピック`, edits it in place where pressed, and Enter stores title and position as one step', async () => {
     const source = fixtureSource();
     const mounted = await mount(source);
     const { view, canvas, store, file, layout, transform, nodes, source: current, settle, dblclick, key, editor, undo, redo } = mounted;
@@ -300,15 +300,17 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     // Press 300 px right of and 500 px below the canvas corner, in screen pixels.
     dblclick(canvas, CANVAS.left + 300, CANVAS.top + 500);
     await settle();
-    expect(current()).toBe(`${source}\n## \n`);
+    // Written under its provisional name, which the draft holds selected, so typing replaces it (LEV-203).
+    expect(current()).toBe(`${source}\n## トピック\n`);
     const added = projectMap(documentOf(view)).topics.at(-1);
     if (!added) throw new Error('No topic was added');
-    expect(added.title).toBe('');
+    expect(added.title).toBe('トピック');
     expect(documentOf(view).nodes).toHaveLength(before.nodes.length + 1);
     expect(nodes().get(added.id)?.classList.contains('is-topic')).toBe(true);
     const input = editor();
     expect(input).not.toBeNull();
     expect(nodes().get(added.id)?.contains(input)).toBe(true);
+    expect([input?.value, input?.selectionStart, input?.selectionEnd]).toEqual(['トピック', 0, 'トピック'.length]);
     const expected = {
       x: Math.round((300 - viewport.x) / viewport.scale - origin.x), y: Math.round((500 - viewport.y) / viewport.scale - origin.y),
     };
@@ -330,10 +332,10 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     if (!named) throw new Error('The named topic is missing');
     expect(nodes().get(named.id)?.classList.contains('is-selected')).toBe(true);
     expect(transform(named.id)).toEqual({ x: origin.x + expected.x, y: origin.y + expected.y });
-    // One history step names and places the topic; the previous one added the empty section.
+    // One history step names and places the topic; the previous one added the section under its provisional name.
     await undo();
-    expect(current()).toBe(`${source}\n## \n`);
-    expect(projectMap(documentOf(view)).topics.at(-1)?.title).toBe('');
+    expect(current()).toBe(`${source}\n## トピック\n`);
+    expect(projectMap(documentOf(view)).topics.at(-1)?.title).toBe('トピック');
     await undo();
     expect(current()).toBe(source);
     expect(store.canUndo(file)).toBe(false);
@@ -390,9 +392,57 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(current()).toBe(source);
   });
 
-  it('Escape keeps the empty section where it was pressed; a later drag stores that position under the empty heading', async () => {
+  it('Escape on the new topic\'s draft takes the topic back: the note as before, and no step for Undo or Redo (LEV-203)', async () => {
     const source = fixtureSource();
-    const { view, canvas, layout, transform, source: current, settle, dblclick, key, pointer, editor, nodes, undo } = await mount(source);
+    const { view, canvas, store, file, source: current, settle, dblclick, key, editor, nodes } = await mount(source);
+    const before = documentOf(view).nodes.length;
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    expect(current()).toBe(`${source}\n## トピック\n`);
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    key(input, 'Escape');
+    await settle();
+    expect(current()).toBe(source);
+    expect(editor()).toBeNull();
+    expect(documentOf(view).nodes).toHaveLength(before);
+    expect(nodes().size).toBe(before);
+    expect(store.canUndo(file)).toBe(false);
+    expect(store.canRedo(file)).toBe(false);
+  });
+
+  it('Escape after typing keeps 「トピック」 where it was pressed; a later drag stores that position (review 3: the path the old Escape test covered)', async () => {
+    const source = fixtureSource();
+    const { view, canvas, layout, transform, source: current, settle, dblclick, key, pointer, editor, nodes } = await mount(source);
+    const origin = layout().origin;
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    input.value = '打ちかけ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    key(input, 'Escape');
+    await settle();
+    expect(current()).toBe(`${source}\n## トピック\n`);
+    const kept = projectMap(documentOf(view)).topics.at(-1);
+    if (!kept) throw new Error('No topic');
+    expect(transform(kept.id)).toEqual(pressed);
+    const element = nodes().get(kept.id);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 400, 400);
+    pointer('pointermove', canvas, 410, 400);
+    pointer('pointermove', canvas, 450, 430);
+    pointer('pointerup', canvas, 450, 430);
+    await settle();
+    expect(readTopicPositions(current()).get('トピック')).toEqual({ mindmap: { x: Math.round(pressed.x - origin.x + 50), y: Math.round(pressed.y - origin.y + 30) } });
+    expect(transform(kept.id)).toEqual({ x: pressed.x + 50, y: pressed.y + 30 });
+  });
+
+  it('Enter on the untouched draft keeps 「トピック」 where it was pressed, as one step with its position', async () => {
+    const source = fixtureSource();
+    const { view, canvas, layout, transform, source: current, settle, dblclick, key, editor, undo } = await mount(source);
     const origin = layout().origin;
     const viewport = view.getState().viewport as { x: number; y: number; scale: number };
     // World coordinates of the pressed point: the topic root's top-left lands exactly there.
@@ -401,43 +451,32 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     await settle();
     const input = editor();
     if (!input) throw new Error('No inline editor');
-    key(input, 'Escape');
+    key(input, 'Enter');
     await settle();
-    expect(current()).toBe(`${source}\n## \n`);
     expect(editor()).toBeNull();
-    const blank = projectMap(documentOf(view)).topics.at(-1);
-    if (!blank) throw new Error('No blank topic');
-    expect(transform(blank.id)).toEqual(pressed);
-    const element = nodes().get(blank.id);
-    if (!element) throw new Error('No element');
-    pointer('pointerdown', element, 400, 400);
-    pointer('pointermove', canvas, 410, 400);
-    pointer('pointermove', canvas, 450, 430);
-    pointer('pointerup', canvas, 450, 430);
-    await settle();
-    expect(readTopicPositions(current()).get('')).toEqual({ mindmap: { x: Math.round(pressed.x - origin.x + 50), y: Math.round(pressed.y - origin.y + 30) } });
-    expect(current().endsWith('\n## \n')).toBe(true);
-    expect(transform(blank.id)).toEqual({ x: pressed.x + 50, y: pressed.y + 30 });
+    expect(current().endsWith('\n## トピック\n')).toBe(true);
+    expect(readTopicPositions(current()).get('トピック')).toEqual({ mindmap: { x: Math.round(pressed.x - origin.x), y: Math.round(pressed.y - origin.y) } });
+    const named = projectMap(documentOf(view)).topics.at(-1);
+    if (!named) throw new Error('No topic');
+    expect(transform(named.id)).toEqual(pressed);
     await undo();
+    expect(current()).toBe(`${source}\n## トピック\n`);
     await undo();
     expect(current()).toBe(source);
   });
 
   it('keeps a just-added, unnamed topic where it was pressed when the layout switches by button before it is named (LEV-129)', async () => {
     // pendingTopic is tagged with the mode it was pressed in (topicLayouts() only uses it when that tag
-    // matches this.mode); Escape closes the inline editor without saving (InlineEditor.dispose(), not
-    // save()) but leaves pendingTopic itself in place. Before the fix, a layout switch by button left the
-    // tag stale, so the guard failed and the still-unnamed topic fell back to the default stacked slot.
+    // matches this.mode), and stays until the draft names the topic. Before the fix, a layout switch by button
+    // left the tag stale, so the guard failed and the still-unnamed topic fell back to the default stacked slot.
+    // (Before LEV-203 the draft was closed with Escape first, which kept the topic; Escape now takes it back.)
     const source = fixtureSource();
-    const { view, canvas, layout, transform, dblclick, key, editor, settle } = await mount(source, 'mindmap');
+    const { view, canvas, layout, transform, dblclick, editor, settle } = await mount(source, 'mindmap');
     const viewport = view.getState().viewport as { x: number; y: number; scale: number };
     const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
     dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
     await settle();
-    const input = editor();
-    if (!input) throw new Error('No inline editor');
-    key(input, 'Escape');
-    await settle();
+    if (!editor()) throw new Error('No inline editor');
     const blank = projectMap(documentOf(view)).topics.at(-1);
     if (!blank) throw new Error('No blank topic');
     expect(transform(blank.id)).toEqual(pressed);
@@ -501,13 +540,14 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(items).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
     menuItem('トピックを追加').click();
     await settle();
-    expect(current()).toBe(`${source}\n## \n`);
+    expect(current()).toBe(`${source}\n## トピック\n`);
     expect(editor()).not.toBeNull();
     const added = projectMap(documentOf(view)).topics.at(-1);
     if (!added) throw new Error('No topic');
     expect(transform(added.id)).toEqual({ x: (200 - viewport.x) / viewport.scale, y: (300 - viewport.y) / viewport.scale });
     editor()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     await settle();
+    expect(current()).toBe(source);
     const reference = documentOf(view).nodes.find(node => node.title === '参考資料');
     const child = documentOf(view).nodes.find(node => node.title === '回復する');
     if (!reference || !child) throw new Error('Missing nodes');

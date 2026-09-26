@@ -6,7 +6,8 @@ export interface InlineSuggestion {
 export interface InlineEditorOptions {
   initial: string;
   save: (text: string) => Promise<void>;
-  finish: (next: "none" | "child", cancelled: boolean) => void;
+  /** `draft`: the text in the editor as it closed (on Escape, the text given up). */
+  finish: (next: "none" | "child", cancelled: boolean, draft: string) => void;
   resize: () => void;
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
@@ -67,7 +68,7 @@ export class InlineEditor {
       if (event.key === "Escape") {
         event.preventDefault();
         this.dispose();
-        this.options.finish("none", true);
+        this.options.finish("none", true, this.input.value);
       } else if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         // A line break inside the node (LEV-202), as XMind's Shift+Enter: the textarea's own insertion, which its
         // Undo knows. The save writes it as `<br>` in the title's one line (core/title-breaks).
@@ -93,13 +94,16 @@ export class InlineEditor {
    * Either way the map lays out again for the node's new size.
    */
   private resize(): void {
+    // An emptied draft takes the empty node's box, which its node takes once confirmed (styles.css, LEV-203): the
+    // saved title is trimmed, so a draft of spaces is as empty as the node it leaves (NodeRenderer's `is-empty`).
+    this.host.classList.toggle("is-draft-empty", this.input.value.trim() === "");
     if (!this.sizesItself) this.measure();
     this.options.resize();
   }
 
   /**
    * Width first: the text's width on one row (measured unwrapped), which the CSS max-width caps. The height then
-   * follows the rows, never under the 26px the stylesheet's min-height gives the other path. The width follows the
+   * follows the rows: one row is the line's height, as the label's is (LEV-203). The width follows the
    * IME's composition too, as `field-sizing` does: a draft typed in kana stays one row as it grows.
    */
   private measure(): void {
@@ -117,7 +121,7 @@ export class InlineEditor {
     }
     this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
     this.input.style.removeProperty("height");
-    this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
+    this.input.style.height = `${this.input.scrollHeight}px`;
   }
 
   /**
@@ -160,7 +164,7 @@ export class InlineEditor {
       await this.options.save(this.input.value);
       if (this.disposed) return;
       this.dispose();
-      this.options.finish(next, false);
+      this.options.finish(next, false, this.input.value);
     } catch (error) {
       if (this.disposed) return;
       this.error.setText(error instanceof Error ? error.message : "保存できませんでした。");
@@ -187,7 +191,7 @@ export class InlineEditor {
       await this.options.save(this.input.value);
       if (this.disposed) return;
       this.dispose();
-      this.options.finish("none", false);
+      this.options.finish("none", false, this.input.value);
     } finally {
       this.busy = false;
       this.input.readOnly = false;
@@ -221,6 +225,7 @@ export class InlineEditor {
     this.input.remove();
     this.error.remove();
     this.host.removeClass("is-editing");
+    this.host.removeClass("is-draft-empty");
     this.options.restore();
   }
 }

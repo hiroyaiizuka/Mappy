@@ -17,11 +17,12 @@ export type EditCommand =
    */
   | { type: 'rename'; nodeId: string; title: string; position?: TopicPlacement }
   /**
-   * A new last child. Empty by default (the inline editor names it); `title` writes the item's
-   * text in the same edit, so `![[map]]` called from the search (§5 M12) is one step, as Tab is.
+   * A new last child, or a sibling right after the node's branch. Empty by default; `title` writes the item's
+   * text in the same edit, so `![[map]]` called from the search (§5 M12) is one step, as Tab is, and so is a
+   * node the map adds under its provisional name (LEV-203: 「サブトピック」, which the inline editor then selects).
    */
-  | { type: 'add-child'; nodeId: string; title?: string }
-  | { type: 'add-sibling' | 'delete' | 'move-up' | 'move-down'; nodeId: string }
+  | { type: 'add-child' | 'add-sibling'; nodeId: string; title?: string }
+  | { type: 'delete' | 'move-up' | 'move-down'; nodeId: string }
   | { type: 'reparent'; nodeId: string; parentId: string }
   /**
    * Append a top-level section at the end of the document: a new free topic (§5 M7). Empty by default
@@ -451,7 +452,7 @@ function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<Edi
 function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
-    case 'add-sibling': return add(doc, node, true);
+    case 'add-sibling': return add(doc, node, true, command.title);
     case 'delete': return deleteHeadingBranch(doc, node);
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
