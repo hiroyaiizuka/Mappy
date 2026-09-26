@@ -1,0 +1,83 @@
+/**
+ * E39 (docs/harness.md): on the timeline, the next stage's stem on a side stands clear of the previous forest
+ * on that side (LEV-205). The note is tests/fixtures/timeline-stages.md: Section2's forest hangs below the axis
+ * and ends in 「ビジランス効果」「ポモドーロ」, and Section4, the next stage below, raises its stem beside it.
+ *
+ * - The distance from the forest's right edge (its nodes and their fold controls) to Section4's stem, in layout
+ *   px (screen px over the map's zoom), is `TIMELINE_STAGE_CLEARANCE` in `src/layout/layout.ts`.
+ * - Opening the note as a timeline does not write it.
+ *
+ * Usage: npm run harness:e2e:timeline-stage-gap -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>]
+ *   --clearance  the distance the installed build is expected to keep (default: the shipped value), for a build made
+ *                with another value to compare screenshots
+ */
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { connect, VAULT, wait } from './cdp.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
+import { VIEW, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+
+const { flag, value } = parseArgs();
+
+/** `src/layout/layout.ts`'s TIMELINE_STAGE_CLEARANCE, written out so a build that drops back to the old 24 px fails here. */
+const CLEARANCE = Number(value('--clearance') ?? 72);
+const NOTE = 'Fixtures/E2E-timeline-stage-gap.md';
+const SOURCE = await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
+const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ', '環境'];
+const STAGE = 'Section4: 記録する';
+
+const record = createRecord(VAULT, NOTE);
+const cdp = await connect();
+const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
+const step = makeStep(record);
+const check = makeCheck(record);
+
+let opened;
+const clean = () => step('clean', () => evaluate(`${VIEW}
+  const file = view.file;
+  leaf.detach();
+  if (file && ${JSON.stringify(!flag('--keep'))}) await app.vault.delete(file, true);
+  delete window.__mappyE2E;
+  delete window.__mappyE2EBefore;
+  return { removed: ${JSON.stringify(!flag('--keep'))} ? file?.path ?? null : null };`));
+
+try {
+  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
+  opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE, layout: 'timeline' })));
+
+  await step('gap', async () => {
+    // Fit and the image's load re-lay the map out; wait for it to settle.
+    await wait(1500);
+    const measured = await evaluate(`${VIEW}
+      if (!el.querySelector('.mappy-node.is-timeline')) throw new Error('the map is not drawn as a timeline');
+      const find = title => { const node = nth(title, 0); if (!node) throw new Error('No node ' + title); return node; };
+      const stage = find(${JSON.stringify(STAGE)});
+      const scale = stage.getBoundingClientRect().width / stage.offsetWidth;
+      const right = Math.max(...${JSON.stringify(FOREST)}.flatMap(title => {
+        const node = find(title);
+        const toggle = node.querySelector(':scope > .mappy-node-toggle');
+        return [node.getBoundingClientRect().right, toggle && !toggle.hidden ? toggle.getBoundingClientRect().right : -Infinity];
+      }));
+      const rect = stage.getBoundingClientRect();
+      return { scale, gap: (rect.left + rect.width / 2 - right) / scale };`);
+    // Node rects are integers scaled by the zoom: a pixel of rounding is allowed.
+    check(Math.abs(measured.gap - CLEARANCE) <= 1.5, `Section4's stem stands ${measured.gap.toFixed(1)} px from Section2's forest, not ${CLEARANCE}`);
+    const shot = value('--shot');
+    if (shot) measured.shot = await cdp.screenshot(shot);
+    return measured;
+  });
+
+  await step('unchanged', async () => {
+    const source = await evaluate(`${VIEW} return source();`);
+    check(source === SOURCE, 'opening the note as a timeline changed it');
+    return { same: source === SOURCE };
+  });
+} catch (error) {
+  if (!(error instanceof StopCase)) record.failures.push(String(error));
+} finally {
+  if (opened) await clean();
+  cdp.close();
+}
+
+process.exit(await finish(record, value('--json')));

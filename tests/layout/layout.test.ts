@@ -546,7 +546,9 @@ describe("timeline stage clearance", () => {
     },
   };
 
-  // The ticket asks for 64–80 px, about three times the 24 px it replaces (LEV-205).
+  // The cases below compare the layout with the constant, so they follow whatever value it holds; this pins the
+  // value itself to the 64–80 px the ticket asks for (about three times the 24 px it replaces, LEV-205), and is
+  // what fails if the constant is set back to 24.
   it("keeps the clearance within the range the stage gap was chosen from", () => {
     expect(TIMELINE_STAGE_CLEARANCE).toBeGreaterThanOrEqual(64);
     expect(TIMELINE_STAGE_CLEARANCE).toBeLessThanOrEqual(80);

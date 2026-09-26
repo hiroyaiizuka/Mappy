@@ -1038,6 +1038,36 @@ async function captureHierarchyRows(recorder, page) {
   });
 }
 
+/** `layout.ts`'s TIMELINE_STAGE_CLEARANCE: from the right edge of a forest to the next stem on its side (LEV-205). */
+const TIMELINE_STAGE_CLEARANCE = 72;
+/** timeline-stages: Section2's lower forest, whose last leaves (ビジランス効果, ポモドーロ) the next lower stem (Section4) stands beside. */
+const TIMELINE_STAGES_FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ', '環境'];
+
+async function captureTimelineStageGap(recorder, page) {
+  await recorder.run('timeline-stage-gap', 'timeline-stages をタイムラインで開く', `下側の Section2 の森の右端（ノードと開閉ボタン）から Section4 の縦線まで ${TIMELINE_STAGE_CLEARANCE} px（layout px）。Excalidraw に挿入する scene でも同じ距離。原文不変`, async () => {
+    await loadFixture(page, 'timeline-stages', 'timeline');
+    const original = await page.harness('h.source()');
+    const { scale } = await page.harness('h.viewport()');
+    const forest = await Promise.all(TIMELINE_STAGES_FOREST.map(name => nodeInfo(page, name)));
+    const stage = await nodeInfo(page, 'Section4: 記録する');
+    const right = Math.max(...forest.flatMap(node => [node.rect.x + node.rect.width, node.toggle ? node.toggle.x + node.toggle.width : -Infinity]));
+    const gap = (stage.rect.x + stage.rect.width / 2 - right) / scale;
+    // Node rects are measured as integers and scaled: a pixel of rounding is allowed.
+    expect(Math.abs(gap - TIMELINE_STAGE_CLEARANCE) <= 1.5, `view: Section4's stem stands ${gap.toFixed(1)} px from Section2's forest, not ${TIMELINE_STAGE_CLEARANCE}`);
+    const scene = await page.harness('h.scene()');
+    expect(scene && scene.mode === 'timeline', `scene mode ${scene?.mode}`);
+    const block = id => scene.blocks.find(item => item.id === id);
+    const sceneStage = block(stage.id);
+    const sceneBlocks = forest.map(node => block(node.id));
+    expect(sceneStage && sceneBlocks.every(Boolean), 'the scene lacks a node of the forest or Section4');
+    const sceneGap = sceneStage.x + sceneStage.width / 2 - Math.max(...sceneBlocks.map(item => item.x + item.width));
+    // The scene has no fold controls; this forest's rightmost thing is a leaf, so its right edge is the forest's.
+    expect(Math.abs(sceneGap - gap) <= 1.5, `scene: ${sceneGap.toFixed(1)} px, view: ${gap.toFixed(1)} px`);
+    expect((await page.harness('h.source()')) === original, 'the source changed');
+    return `縦線まで ${gap.toFixed(1)} px（view、scale ${scale.toFixed(3)}）／ ${sceneGap.toFixed(1)} px（Excalidraw scene）、原文不変`;
+  });
+}
+
 /** Computed colours that tell the two placeholder palettes apart: the page, the map canvas, one node and one link. */
 async function themeColors(page) {
   return page.evaluate(`(() => {
@@ -3051,6 +3081,7 @@ async function main() {
       await captureFixtures(recorder, page, timings);
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
+      await captureTimelineStageGap(recorder, page);
       await captureInlineWidth(recorder, page);
       await captureThemes(recorder, page);
       await captureVisibleLayouts(recorder, page);
