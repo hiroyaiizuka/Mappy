@@ -4,7 +4,7 @@
  * ノートの ATX 見出し・1 行の Setext 見出し、拒否される形（複数行の Setext 見出し・\ の直後）。続けて、そのまま
  * 確定しても原文が変わらないこと、⌘Z／⌘⇧Z、複数行の文の挿入（貼り付けと同じ input）、拒否された下書きがダブルクリックで
  * 消えないこと、Markdown 側（外部の書き込み）で書いた `<br>` がマップに改行で現れること、Obsidian 自身の描画
- * （MarkdownRenderer）が `<br>` を改行にすることを見る。
+ * （閲覧モード）が `<br>` を改行にし、インラインコードの中は文字のままにすることを見る。
  *
  * Shift+Enter は文字を伴う実キー（`realKey(..., '\r')`）で送る: 既定動作（textarea の改行の挿入）が走るのはそのときだけ。
  * ネイティブ IME はここでは送れない（CDP の insertText は変換の確定と同じ input を出すだけ）ので、IME の変換中の
@@ -14,7 +14,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeAfter, makeFocusCanvas, makeHistory, makeOpenStep, makePluginStep, makeSelect, makeState } from './dom-helpers.mjs';
+import { VIEW, makeAfter, makeFocusCanvas, makeHistory, makeOpenStep, makePluginStep, makeSelect, makeState, refuseOpenLeaves } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -28,6 +28,7 @@ const SOURCE = [
 ].join('\n');
 
 const HEADINGS_NOTE = 'Fixtures/E2E-line-break-headings.md';
+const PREVIEW_NOTE = 'Fixtures/E2E-line-break-preview.md';
 const HEADINGS = [
   '---', 'mappy: true', '---',
   '# 旅の計画', '',
@@ -210,16 +211,28 @@ try {
   });
 
   // What Obsidian itself makes of the same text (the reading view and live preview go through it too).
+  // What Obsidian itself makes of the same text: the note opened in its reading view (a Markdown leaf in preview
+  // mode), whose `<br>` count is read from the rendered section. The window's `require` does not reach `obsidian`.
   await step('obsidian-renders-br', () => evaluate(`
-    const obsidian = require('obsidian');
-    const host = document.createElement('div');
-    const component = new obsidian.Component();
-    component.load();
-    await obsidian.MarkdownRenderer.render(app, '- 温泉<br>旅行\\n\\n## 温泉<BR/>旅行', host, '', component);
-    const result = { breaks: host.querySelectorAll('br').length, html: host.innerHTML.slice(0, 300) };
-    component.unload();
-    if (result.breaks !== 2) throw new Error('Obsidian rendered ' + result.breaks + ' breaks: ' + result.html);
-    return result;`));
+    const path = ${JSON.stringify(PREVIEW_NOTE)};
+    ${refuseOpenLeaves([PREVIEW_NOTE])}
+    const existing = app.vault.getAbstractFileByPath(path);
+    const text = '- 温泉<br>旅行\\n\\n## 温泉<BR/>旅行\\n\\n\\x60a<br>b\\x60\\n';
+    const file = existing ?? await app.vault.create(path, text);
+    if (existing) await app.vault.modify(file, text);
+    const preview = app.workspace.getLeaf('tab');
+    await preview.setViewState({ type: 'markdown', state: { file: path, mode: 'preview' }, active: true });
+    let breaks = 0;
+    for (let tries = 0; tries < 30 && breaks < 2; tries += 1) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      breaks = preview.view.containerEl.querySelectorAll('.markdown-preview-view br').length;
+    }
+    const code = preview.view.containerEl.querySelector('.markdown-preview-view code')?.textContent ?? null;
+    const html = preview.view.containerEl.querySelector('.markdown-preview-view')?.innerText.slice(0, 200) ?? '';
+    preview.detach();
+    await app.vault.delete(file, true);
+    if (breaks !== 2 || code !== 'a<br>b') throw new Error('reading view: ' + breaks + ' breaks, code ' + JSON.stringify(code) + ': ' + JSON.stringify(html));
+    return { breaks, code };`));
 
   if (value('--shot')) await step('shot', async () => ({ path: await cdp.screenshot(value('--shot')) }));
   if (!flag('--keep')) await step('clean', clean);
