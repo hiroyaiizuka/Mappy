@@ -1,5 +1,5 @@
 /**
- * E39 (docs/harness.md): on the timeline, the next stage's stem on a side stands clear of the previous forest
+ * E42 (docs/harness.md): on the timeline, the next stage's stem on a side stands clear of the previous forest
  * on that side (LEV-205). The note is tests/fixtures/timeline-stages.md: Section2's forest hangs below the axis
  * and ends in 「ビジランス効果」「ポモドーロ」, and Section4, the next stage below, raises its stem beside it.
  *
