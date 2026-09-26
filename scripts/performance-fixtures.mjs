@@ -124,6 +124,63 @@ export function makeEmbedFixture() {
   return ['embed-2000.md', `---\nmappy: true\n---\n${body}`];
 }
 
+/** Levels of each chain in a mixed document's deep stages: deeper than any other branch in it. */
+export const MIXED_CHAIN_LEVELS = 16;
+/** Every this many-th stage of a mixed document has no children (a bare stage on the axis)… */
+export const MIXED_BARE_STAGE_EVERY = 9;
+/** …starting with this stage (0-based: the 6th), so a 500-node document (13 stages) has one too. */
+export const MIXED_FIRST_BARE_STAGE = 5;
+
+/**
+ * A timeline-sized document that mixes every shape the layout has to keep apart (docs/harness.md E45, LEV-20):
+ * about one first-level stage per 40 nodes, cycling through a deep single chain (MIXED_CHAIN_LEVELS levels),
+ * long Japanese titles with an image every third node, many flat siblings, and a mixed branch of long and short
+ * titles with images (Vault, Markdown-style and one missing) partway down. Every MIXED_BARE_STAGE_EVERY-th stage from
+ * MIXED_FIRST_BARE_STAGE on is bare, every third stage title (the 2nd, 5th, 8th…) is a long sentence, and the third stage carries an image of
+ * its own, which widens the band every forest starts from. `mappy: true` with no layout key: the case chooses the layout it opens with.
+ * Parses to exactly `nodeCount` nodes; every title starts with its own number, so no two are the same.
+ */
+export function makeMixedFixture(nodeCount) {
+  const stageCount = Math.max(6, Math.round(nodeCount / 40));
+  const items = nodeCount - 1 - stageCount;
+  if (items < stageCount) throw new Error(`A mixed fixture needs at least ${stageCount * 2 + 1} nodes, not ${nodeCount}`);
+  const bare = index => index >= MIXED_FIRST_BARE_STAGE && (index - MIXED_FIRST_BARE_STAGE) % MIXED_BARE_STAGE_EVERY === 0;
+  const filled = Array.from({ length: stageCount }, (_, index) => index).filter(index => !bare(index));
+  const budgets = new Array(stageCount).fill(0);
+  filled.forEach((index, at) => { budgets[index] = Math.floor(items / filled.length) + (at < items % filled.length ? 1 : 0); });
+  let number = 0;
+  let missing = false;
+  const lines = ['---', 'mappy: true', '---', `## 大規模タイムライン（${nodeCount}ノード）`, ''];
+  const push = (depth, title, body) => {
+    const indent = '  '.repeat(depth);
+    lines.push(`${indent}- ${title}`);
+    if (body) lines.push(`${indent}  ${body}`);
+  };
+  const MIX = [1, 2, 3, 4, 5, 6, 2, 2, 3, 1];
+  budgets.forEach((budget, stage) => {
+    number += 1;
+    const phrase = PHRASES[stage % PHRASES.length];
+    push(0, stage % 3 === 1 ? `${number} 第${stage + 1}段階：${phrase}` : `${number} 第${stage + 1}段階`, stage === 2 ? '![[sample-image.svg|120]]' : '');
+    const kind = filled.indexOf(stage) % 4;
+    const depths = kind === 1 ? balancedDepths(budget) : [];
+    for (let at = 0; at < budget; at += 1) {
+      number += 1;
+      if (kind === 0) push((at % MIXED_CHAIN_LEVELS) + 1, `${number} 段 ${(at % MIXED_CHAIN_LEVELS) + 1}`);
+      else if (kind === 1) push(depths[at] ?? 1, japaneseTitle(number), at % 3 === 2 ? '![[sample-image.svg]]' : '');
+      else if (kind === 2) push(1, `${number} 兄弟`);
+      else {
+        const depth = MIX[at % MIX.length] ?? 1;
+        let body = '';
+        if (depth === 5) body = '![[sample-image.svg|80]]';
+        else if (depth === 3 && at % 20 === 2) body = '![説明](sample-image.svg)';
+        else if (depth === 6 && !missing) { body = '![[存在しない画像.png|120]]'; missing = true; }
+        push(depth, at % 2 === 0 ? japaneseTitle(number) : `${number} 短い`, body);
+      }
+    }
+  });
+  return [`timeline-mixed-${nodeCount}.md`, `${lines.join('\n')}\n`];
+}
+
 /** Every count × shape pair, the original heading documents first. */
 export function performanceFixtureMatrix() {
   const matrix = [];

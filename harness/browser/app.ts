@@ -128,6 +128,10 @@ export class HarnessApp {
   };
 
   readonly fileManager = {
+    /**
+     * Changes the metadata cache and records an `activity` entry, but not the note's text: `source()` stays as it was.
+     * A case checking what a write left in the note reads the text (`layoutKey()`), not this record (LEV-212).
+     */
     processFrontMatter: (file: TFile, change: (properties: Record<string, unknown>) => void): Promise<void> => {
       const entry = this.entry(file);
       const properties = { ...(entry.frontmatter ?? {}) };

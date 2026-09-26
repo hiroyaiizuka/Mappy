@@ -18,14 +18,22 @@ import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
  * other note. Same verdict as the metadata cache (`readMapLayout`).
  */
 export function readMapFromSource(source: string): LayoutMode | null {
+  const read = frontmatterReader(source);
+  if (!read || read(MAPPY_KEY) !== true || read(EXCALIDRAW_KEY) !== undefined) return null;
+  return layoutFromValue(read(LAYOUT_KEY));
+}
+
+/**
+ * A key's YAML value in a note's own frontmatter, as `readMapFromSource` reads it: undefined when the key is absent,
+ * no reader when the note has no closed frontmatter at the top. The browser page reads `mappy-layout` through it.
+ */
+export function frontmatterReader(source: string): ((key: string) => unknown) | null {
   const layout = frontmatterLayout(source);
   if (!layout?.closed) return null;
-  const read = (key: string): unknown => {
+  return key => {
     const block = locateFrontmatterKey(source, layout, key);
     return block ? parseYamlValue(block.inline, block.nested) : undefined;
   };
-  if (read(MAPPY_KEY) !== true || read(EXCALIDRAW_KEY) !== undefined) return null;
-  return layoutFromValue(read(LAYOUT_KEY));
 }
 
 /**
