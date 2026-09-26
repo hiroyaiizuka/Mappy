@@ -19,7 +19,7 @@ import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import { LAYOUT_LABELS, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
-import { frontmatterReader } from "../../src/core/embed";
+import { frontmatterReader, readMapFromSource } from "../../src/core/embed";
 import { LAYOUT_KEY } from "../../src/core/map-keys";
 import { TIMELINE_STAGE_CLEARANCE } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
@@ -738,16 +738,18 @@ const api = {
     return file ? app.content(file) : null;
   },
   /**
-   * The current fixture's `mappy-layout` read from its own text the way the product reads it (`frontmatterReader`,
-   * the reader of `readMapFromSource`): `header` false when the note has no closed frontmatter at the top, `value`
-   * undefined when the key is absent. A layout button writes the text (`DocumentStore`, LEV-196); this page's
+   * The current fixture's `mappy-layout` read from its own text with the product's reader (`frontmatterReader`, the
+   * one `readMapFromSource` uses): `header` false when the note has no closed frontmatter at the top, `value` the raw
+   * value (undefined when the key is absent), and `map` the layout the product opens the note in as a map
+   * (`readMapFromSource`: null when it is not one, e.g. without `mappy: true`). A layout button writes the text (`DocumentStore`, LEV-196); this page's
    * `processFrontMatter` only records an entry in `activity`, so the text, not that record, says what the note asks
    * for (LEV-212).
    */
-  layoutKey: (): { header: boolean; value?: unknown } => {
+  layoutKey: (): { header: boolean; value?: unknown; map: LayoutMode | null } => {
     const file = current ? app.vault.getAbstractFileByPath(current.path) : null;
-    const read = file ? frontmatterReader(app.content(file)) : null;
-    return read ? { header: true, value: read(LAYOUT_KEY) } : { header: false };
+    const text = file ? app.content(file) : "";
+    const read = frontmatterReader(text);
+    return read ? { header: true, value: read(LAYOUT_KEY), map: readMapFromSource(text) } : { header: false, map: null };
   },
   /** Put a fixture's text back as it ships, undoing what earlier cases wrote to it (the in-memory vault keeps every edit). */
   restoreFixture: (id: string) => {
