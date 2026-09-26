@@ -14,6 +14,12 @@ export function findNode(doc: MindDocument, id: string | null): MindNode | undef
   return id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
 }
 
+/** The node beside `node` in `siblings` in source order: `step` -1 is the one above, 1 the one below. */
+export function siblingOf(siblings: readonly MindNode[], node: MindNode, step: -1 | 1): MindNode | undefined {
+  const index = siblings.findIndex(candidate => candidate.id === node.id);
+  return index === -1 ? undefined : siblings[index + step];
+}
+
 /**
  * The node whose title starts at `offset`: what a plan's `selectionOffset` points at, and how a node
  * written by one edit set is found in the parse of the text that edit set produced. The body root has no
@@ -36,6 +42,26 @@ export function offsetAfter(edits: readonly TextEdit[], offset: number): number 
     else if (edit.from <= offset) return undefined;
   }
   return offset + shift;
+}
+
+/**
+ * `edits`, planned on a text, carried onto that text once `applied` has changed it (each list sorted and not
+ * overlapping within itself), or undefined when one of them touches what `applied` replaced or inserts into it:
+ * then the two do not commute, and the edit has to be planned again. Text `applied` inserted exactly where an
+ * edit starts stays before it; text inserted exactly where an edit ends stays after it. For an edit planned
+ * before one of the view's own frontmatter writes landed (a layout button, LEV-196).
+ */
+export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEdit[]): TextEdit[] | undefined {
+  const rebased: TextEdit[] = [];
+  for (const edit of edits) {
+    let shift = 0;
+    for (const other of applied) {
+      if (other.to <= edit.from) shift += other.text.length - (other.to - other.from);
+      else if (other.from < edit.to) return undefined;
+    }
+    rebased.push({ from: edit.from + shift, to: edit.to + shift, text: edit.text });
+  }
+  return rebased;
 }
 
 /** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type EditorPosition, type EditorTransaction } from 'obsidian';
-import { DocumentStore } from '../../src/obsidian/document-store';
+import { DocumentStore, conflictMessage } from '../../src/obsidian/document-store';
 import { MarkdownView } from '../mocks/obsidian';
 
 function makeFile(path = 'Note.md'): TFile {
@@ -226,5 +226,79 @@ describe('DocumentStore', () => {
     expect(await store.read(file)).toBe('1');
     expect(store.canUndo(file)).toBe(false);
     expect(await store.undo(other)).toBe('Other');
+  });
+
+  describe('applyLatest (a layout button, LEV-196)', () => {
+    const HEADER = '---\nmappy: true\n---\n';
+    const addHeader = () => [{ from: 0, to: 0, text: HEADER }];
+
+    it('plans on the text as it is when its turn comes, behind an edit already queued', async () => {
+      const { store, file, disk } = harness('# A\n');
+      await store.read(file);
+      const edit = store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      const seen: string[] = [];
+      const layout = store.applyLatest(file, source => { seen.push(source); return addHeader(); });
+      await expect(edit).resolves.toBe('# B\n');
+      await expect(layout).resolves.toEqual({ before: '# B\n', after: `${HEADER}# B\n`, edits: addHeader() });
+      expect(seen).toEqual(['# B\n']);
+      expect(disk.get(file.path)).toBe(`${HEADER}# B\n`);
+    });
+
+    it('is no step of the history, and drops the steps before it as any change the history did not make', async () => {
+      const { store, file } = harness('# A\n');
+      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      expect(store.canUndo(file)).toBe(true);
+      await store.applyLatest(file, addHeader);
+      expect(store.canUndo(file)).toBe(false);
+      // An edit after it is measured against it and is undone on its own.
+      await store.apply(file, `${HEADER}# B\n`, [{ from: HEADER.length + 2, to: HEADER.length + 3, text: 'C' }]);
+      await expect(store.undo(file)).resolves.toBe(`${HEADER}# B\n`);
+    });
+
+    it('carries an edit planned before it over it, and says what it wrote', async () => {
+      const { store, file, disk } = harness('---\nmappy: true\n---\n# A\n');
+      await store.read(file);
+      const layout = [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }];
+      await store.applyLatest(file, () => layout);
+      const planned = [{ from: 22, to: 23, text: 'B' }];
+      await expect(store.applies(file, '---\nmappy: true\n---\n# A\n')).resolves.toBe(true);
+      await expect(store.applyOver(file, '---\nmappy: true\n---\n# A\n', planned)).resolves.toEqual({
+        before: '---\nmappy: true\nmappy-layout: timeline\n---\n# A\n',
+        after: '---\nmappy: true\nmappy-layout: timeline\n---\n# B\n',
+        edits: [{ from: 45, to: 46, text: 'B' }],
+        carried: [{ before: '---\nmappy: true\n---\n# A\n', after: '---\nmappy: true\nmappy-layout: timeline\n---\n# A\n', edits: layout }],
+      });
+      expect(disk.get(file.path)).toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# B\n');
+      // Spent: an edit planned before it again is planned before this edit too, and is refused.
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', planned)).rejects.toThrow(conflictMessage);
+    });
+
+    it('refuses as before an edit that touches its lines, and one planned before someone else\'s change', async () => {
+      const { store, file, disk } = harness('---\nmappy: true\n---\n# A\n');
+      await store.read(file);
+      await store.applyLatest(file, () => [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }]);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 4, to: 20, text: '' }])).rejects.toThrow(conflictMessage);
+      disk.set(file.path, `${disk.get(file.path) ?? ''}- 外から\n`);
+      await expect(store.applies(file, '---\nmappy: true\n---\n# A\n')).resolves.toBe(false);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 22, to: 23, text: 'B' }])).rejects.toThrow(conflictMessage);
+    });
+
+    it('writes nothing and keeps the history when the plan changes nothing', async () => {
+      const { store, file, process } = harness('# A\n');
+      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      process.mockClear();
+      await expect(store.applyLatest(file, () => [])).resolves.toEqual({ before: '# B\n', after: '# B\n', edits: [] });
+      expect(process).not.toHaveBeenCalled();
+      expect(store.canUndo(file)).toBe(true);
+    });
+
+    it('goes through an open editor, as every write of an open note does', async () => {
+      const { store, file, leaves, process } = harness('# A\n');
+      const editor = makeEditor('# A\n');
+      leaves.push({ view: new MarkdownView(file, editor) });
+      await store.applyLatest(file, addHeader);
+      expect(editor.state.source).toBe(`${HEADER}# A\n`);
+      expect(process).not.toHaveBeenCalled();
+    });
   });
 });

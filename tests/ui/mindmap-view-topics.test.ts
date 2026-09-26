@@ -1683,6 +1683,8 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   // leaves the pointer; a dragged body, carried by the viewport pan itself, jumps until the next move puts the pan
   // back and the fit is lost. A single mouse cannot reach the button (the canvas holds pointer capture), but a
   // second pointer (a finger) can, so the view is driven here directly.
+  // A map note as the plugin writes it: the button rewrites `mappy-layout` in its frontmatter (LEV-196).
+  const MAP_THREE_SECTIONS = `---\nmappy: true\n---\n${THREE_SECTIONS}`;
   const select = (view: MindmapView, mode: LayoutMode): void => {
     (view as unknown as { selectMode(mode: LayoutMode): void }).selectMode(mode);
   };
@@ -1720,7 +1722,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   };
 
   it('a topic drag: the viewport and the carried tree stay put on screen through the switch; releasing fits', async () => {
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    const mounted = await mount(MAP_THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const { view, topic, viewport } = mounted;
     const dragged = topic('資料');
@@ -1775,7 +1777,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   it('the fit held through a drop waits for the re-read that shows the drop, when the save\'s own re-read is superseded', async () => {
     // A fit taken on the frame the drag's end requests measures the map before the drop, and the re-read that follows
     // 45 ms later moves the topic out of the fitted view.
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    const mounted = await mount(MAP_THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const reads = await dropSuperseded(mounted, { frameAfterSwitch: true });
     reads.mockRestore();
@@ -1787,7 +1789,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   it('the fit is held through the drop even when no frame ran between the switch and the release', async () => {
     // Whether the fit waits must not hang on a frame having seen the drag: a frame can be late (a throttled window) or
     // the release can land inside one frame interval of the tap.
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    const mounted = await mount(MAP_THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const reads = await dropSuperseded(mounted, { frameAfterSwitch: false });
     reads.mockRestore();
@@ -1796,7 +1798,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   });
 
   it('a held fit whose re-read fails still runs once that read is over, not on some unrelated frame later', async () => {
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    const mounted = await mount(MAP_THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const reads = await dropSuperseded(mounted, { frameAfterSwitch: true, watcher: () => Promise.reject(new Error('read failed')) });
     await reread(mounted);
@@ -1810,7 +1812,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   });
 
   it('a pan made after the release, before the re-read, cancels the held fit instead of being thrown away by it', async () => {
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    const mounted = await mount(MAP_THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const reads = await dropSuperseded(mounted, { frameAfterSwitch: true });
     reads.mockRestore();
@@ -1821,7 +1823,7 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   });
 
   it('a topic drag cancelled after the switch also fits once it has put the tree back', async () => {
-    const mounted = await mount(THREE_SECTIONS, 'mindmap');
+    const mounted = await mount(MAP_THREE_SECTIONS, 'mindmap');
     await sized(mounted);
     const { view, topic, viewport } = mounted;
     const dragged = topic('資料');
@@ -1833,7 +1835,9 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
     await frame();
     expect(viewport()).toEqual(viewBefore);
     shift(dragged.id, null);
-    await frame();
+    // The button's own write is re-read too (the watcher, as for any write to the note), and a fit held through the
+    // drag waits for that read like it waits for a drop's.
+    await reread(mounted);
     expect(viewport()).toEqual(fitted(mounted));
   });
 

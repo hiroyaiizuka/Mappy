@@ -24,11 +24,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 export const CASES = [
   { name: 'add-delete', file: 'add-delete.mjs', description: 'E02 兄弟・子の追加と削除', shot: false },
+  { name: 'delete-selection', file: 'delete-selection.mjs', description: 'E41 削除後の選択（上の兄弟→下の兄弟→親）と Undo', shot: false },
   { name: 'undo-redo', file: 'undo-redo.mjs', description: 'E03 Undo/Redo と表裏切替', shot: false },
   { name: 'deep-branches', file: 'deep-branches.mjs', description: 'E17 7 段以上の枝の追加・移動・インデント', shot: false },
   { name: 'convert-to-list', file: 'convert-to-list.mjs', description: 'E18 旧見出し形式→リスト形式→Undo', shot: false },
   { name: 'move-parent-text', file: 'move-parent-text.mjs', description: 'E19 親本文を挟む移動', shot: false },
   { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
+  { name: 'layout-switch', file: 'layout-switch.mjs', description: 'E39 レイアウトボタンと同時の編集・折りたたみ', shot: false },
+  { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },

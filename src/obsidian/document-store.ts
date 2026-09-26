@@ -1,5 +1,6 @@
 import { MarkdownView, type App, type Editor, type TFile } from 'obsidian';
 import { applyEdits, type TextEdit } from '../core/commands';
+import { rebaseEdits } from '../core/text-edits';
 
 interface DocumentStoreApp {
   workspace: {
@@ -17,16 +18,26 @@ interface HistoryEntry {
   inverse: TextEdit[];
 }
 
+/** A write `applyLatest` made: the text before and after it, and its edits. */
+export interface LatestWrite { before: string; after: string; edits: TextEdit[] }
+
+/** What `applyOver` wrote, and the `applyLatest` writes it carried the edit over to get there (in order; none when it did not). */
+export interface CarriedWrite extends LatestWrite { carried: readonly LatestWrite[] }
+
 interface DocumentSession {
   source: string | null;
   revision: number;
   past: HistoryEntry[];
   future: HistoryEntry[];
+  /** `applyLatest`'s writes since the last edit or change of the note, in order; see `carry`. */
+  latest: LatestWrite[];
   pending: Promise<void>;
   writing: boolean;
 }
 
 const historyLimit = 50;
+/** `applyLatest` writes kept to carry an edit over; an edit planned before more layout switches than this is refused. */
+const latestLimit = 16;
 /** What a refused write says; the map view swaps it out once it has re-read the note. */
 export const conflictMessage = 'Markdown が変更されています。マップを更新してから再編集してください。';
 
@@ -45,22 +56,93 @@ export class DocumentStore {
   }
 
   apply(file: TFile, expectedSource: string, edits: TextEdit[]): Promise<string> {
-    const requestedEdits = edits.map((edit) => ({ ...edit }));
+    return this.applyOver(file, expectedSource, edits).then(({ after }) => after);
+  }
+
+  /**
+   * `apply`, telling what it wrote: the text it found, the text it left, and the edits between — the caller's,
+   * or the caller's carried over `applyLatest` writes that landed after `expectedSource` (`carry`, LEV-196).
+   */
+  applyOver(file: TFile, expectedSource: string, edits: TextEdit[]): Promise<CarriedWrite> {
+    const requested = edits.map((edit) => ({ ...edit }));
     return this.enqueue(file, async (session) => {
       const before = await this.readCurrent(file);
       this.observe(session, before);
-      if (before !== expectedSource) throw new Error(conflictMessage);
+      const { edits: requestedEdits, carried } = this.carry(session, expectedSource, requested, before);
       // Validate the caller's ranges before merging adjacent edits for inversion.
       const after = applyEdits(before, requestedEdits);
-      if (after === before) return before;
+      if (after === before) return { before, after, edits: requestedEdits, carried };
       const forward = mergeAdjacentEdits(requestedEdits);
       const inverse = invertEdits(before, forward);
       await this.writeSafely(file, session, before, after, forward);
       session.past.push({ before, after, forward, inverse });
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
-      return after;
+      session.latest = [];
+      return { before, after, edits: requestedEdits, carried };
     });
+  }
+
+  /**
+   * Whether an edit planned on `expectedSource` still applies (`apply` would not refuse it for the text): the note
+   * holds that text, or only `applyLatest` writes changed it since. Queued, so it answers for the note as the edits
+   * queued before it leave it. For a caller with work to do between planning and applying (an image to store).
+   */
+  applies(file: TFile, expectedSource: string): Promise<boolean> {
+    return this.enqueue(file, async (session) => {
+      const current = await this.readCurrent(file);
+      this.observe(session, current);
+      try { this.carry(session, expectedSource, [], current); return true; } catch { return false; }
+    });
+  }
+
+  /**
+   * A write planned on whatever the note holds when its turn in the queue comes, not on a text the caller
+   * saw: a preference the map keeps in the frontmatter (the layout buttons, LEV-196), which no edit of the
+   * note's content decides for or against. Queued with the map's edits, so an edit already on its way lands
+   * first, and one planned before it but queued after it is carried over it (`carry`). It is no step of the history — Undo would revert
+   * a key the view does not read back — and the steps before it are dropped, as after any change the history
+   * did not make. Returns the text before and after, and the edits between (none when nothing changed).
+   */
+  applyLatest(file: TFile, plan: (source: string) => TextEdit[]): Promise<LatestWrite> {
+    return this.enqueue(file, async (session) => {
+      const before = await this.readCurrent(file);
+      this.observe(session, before);
+      const edits = plan(before);
+      const after = applyEdits(before, edits);
+      if (after === before) return { before, after, edits: [] };
+      await this.writeSafely(file, session, before, after, edits);
+      session.past = [];
+      session.future = [];
+      session.latest.push({ before, after, edits });
+      if (session.latest.length > latestLimit) session.latest.shift();
+      return { before, after, edits };
+    });
+  }
+
+  /**
+   * The edits planned on `expectedSource`, as they apply to `current`: unchanged when the note still holds that
+   * text; carried over the `applyLatest` writes that lead from it to `current` otherwise (LEV-196: an edit planned
+   * right before a layout button, which the view could not have seen). Those writes change only the lines of a
+   * preference key, which no planned edit decides for or against, so an edit clear of their lines is the same
+   * edit after them (`rebaseEdits`). Anything else — an edit that touches their lines, a text they do not lead
+   * to (someone else's change, E05) — is the refusal it always was.
+   */
+  private carry(session: DocumentSession, expectedSource: string, edits: TextEdit[], current: string): { edits: TextEdit[]; carried: LatestWrite[] } {
+    if (expectedSource === current) return { edits, carried: [] };
+    let at = expectedSource;
+    let rebasedEdits = edits;
+    const carried: LatestWrite[] = [];
+    for (const write of session.latest) {
+      if (write.before !== at) continue;
+      const rebased = rebaseEdits(rebasedEdits, write.edits);
+      if (!rebased) break;
+      rebasedEdits = rebased;
+      carried.push(write);
+      at = write.after;
+      if (at === current) return { edits: rebasedEdits, carried };
+    }
+    throw new Error(conflictMessage);
   }
 
   undo(file: TFile): Promise<string> {
@@ -82,7 +164,7 @@ export class DocumentStore {
   private sessionFor(file: TFile): DocumentSession {
     let session = this.sessions.get(file);
     if (!session) {
-      session = { source: null, revision: 0, past: [], future: [], pending: Promise.resolve(), writing: false };
+      session = { source: null, revision: 0, past: [], future: [], latest: [], pending: Promise.resolve(), writing: false };
       this.sessions.set(file, session);
     }
     return session;
@@ -128,6 +210,7 @@ export class DocumentStore {
     if (changed) {
       session.past = [];
       session.future = [];
+      session.latest = [];
     }
     if (session.source !== source) session.revision += 1;
     session.source = source;
@@ -139,6 +222,7 @@ export class DocumentStore {
     session.revision += 1;
     session.past = [];
     session.future = [];
+    session.latest = [];
   }
 
   private hasHistory(file: TFile, direction: 'past' | 'future'): boolean {
@@ -171,6 +255,7 @@ export class DocumentStore {
         throw new Error(conflictMessage);
       }
       await this.writeSafely(file, session, before, after, edits);
+      session.latest = [];
       from.pop();
       to.push(entry);
       return after;

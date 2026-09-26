@@ -2,9 +2,11 @@ import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbst
 import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { findNode, getNode, nodeAt } from "../core/text-edits";
+import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle } from "../core/embed";
+import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
 import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
@@ -13,9 +15,9 @@ import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_LABELS, LAYOUT_MODES, axisBand, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
-import { DocumentStore, conflictMessage } from "../obsidian/document-store";
+import { DocumentStore, conflictMessage, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
 import { resolveEmbedTarget } from "../obsidian/embed-target";
-import { readMapLayout, writeMapLayout } from "../obsidian/frontmatter";
+import { readMapLayout } from "../obsidian/frontmatter";
 import { CallReader, sameTargets } from "../obsidian/map-calls";
 import type { MapTheme } from "../obsidian/settings";
 import { exportMap, type ExportFormat } from "../obsidian/image-export";
@@ -41,6 +43,8 @@ const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元の�
  */
 export const EXPORT_RENDER_WAIT_MS = 2000;
 export const EXPORT_RENDER_STALLED_MESSAGE = "描画が終わらないノードがあるため、画面に見えているまま書き出します。";
+/** How long a topic added right after a confirmed draft waits for the labels to render before it is measured. */
+const TOPIC_RENDER_WAIT_MS = 300;
 /** A draft whose node is no longer in the note: the one thing the user can do is pick a node again. */
 export const NODE_GONE_MESSAGE = "編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。";
 /** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
@@ -56,17 +60,26 @@ function draftFingerprint(document: MindDocument, node: MindNode): string {
  * note (`draftFingerprint`). A save refuses when the two no longer agree, so the draft cannot overwrite
  * someone else's edit (E05). The text is re-based after the map's own writes — an image the user pasted
  * into the node being edited is not someone else's edit (LEV-140) — while the id needs no re-basing:
- * a write of this view's own carries every node's id across the re-parse (`ownWrite`, LEV-146).
+ * a write of this view's own carries every node's id across the re-parse (`ownWrites`, LEV-146).
  */
 interface DraftBase { nodeId: string; value: string }
 
 /**
  * A write this view made: what the note read before it, what it wrote, and the edits between. The re-parse
  * that follows takes them so the nodes keep their ids — nothing else carries a node whose title repeats or
- * is empty (LEV-146) — and it is used once, for the read that finds exactly that text: anything else means
- * someone else has written since, and then the ids are as much of a guess as E05 says they are.
+ * is empty (LEV-146) — and it is used once, for the read that finds exactly that text, or a text a run of
+ * such writes led to from the one the view last parsed (a draft saved by the blur of the click on a layout
+ * button, then the button's own write — LEV-150): anything else means someone else has written, and then the
+ * ids are as much of a guess as E05 says they are. The layout buttons' writes are among them (LEV-196), this view's
+ * own and those the store carried one of its edits over (`recordCarried`), from whichever view they came.
  */
-interface OwnWrite { before: string; after: string; edits: readonly TextEdit[] }
+interface OwnWrite {
+  readonly before: string;
+  readonly after: string;
+  readonly edits: readonly TextEdit[];
+  /** `after` parsed from a document with these edits, kept so a replay and a draft's base do not parse it again (`parseOwn`). */
+  parsed?: { from: MindDocument; basename: string; document: MindDocument };
+}
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
 interface SnapIndex {
@@ -258,8 +271,10 @@ export class MindmapView extends FileView {
   /** The base of the open title draft and of the open body draft; see `DraftBase`. */
   private inlineDraft: DraftBase | undefined;
   private bodyDraft: DraftBase | undefined;
-  /** The write this view last made, for the re-parse that reads it back; see `OwnWrite`. */
-  private ownWrite: OwnWrite | undefined;
+  /** The writes this view made since its last re-parse, in order, for the re-parse that reads them back; see `OwnWrite`. */
+  private ownWrites: OwnWrite[] = [];
+  /** How many times a note has left this view (`onUnloadFile`): a layout write started before the last one is not this record's. */
+  private loads = 0;
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
   private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; release: () => void } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
@@ -441,7 +456,7 @@ export class MindmapView extends FileView {
     }
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
-    this.pendingTopic = null; this.topicDrag = null; this.ownWrite = undefined;
+    this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
   }
@@ -886,7 +901,10 @@ export class MindmapView extends FileView {
       .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history("redo"); }));
   }
 
-  /** A deliberate layout switch is the note's next-open preference. */
+  /**
+   * A deliberate layout switch is the note's next-open preference. The key is written as this view's own
+   * edit, through the store's queue (`writeLayout`), not beside it.
+   */
   private selectMode(mode: LayoutMode): void {
     if (mode === this.mode) return;
     this.applyMode(mode);
@@ -896,9 +914,69 @@ export class MindmapView extends FileView {
     this.app.workspace.requestSaveLayout();
     const file = this.file;
     if (!file) return;
-    const write = this.layoutWrite.catch(() => undefined).then(() => writeMapLayout(this.app, file, mode));
+    const loaded = this.loads;
+    const write = this.layoutWrite.catch(() => undefined).then(() => this.writeLayout(file, mode, loaded));
     this.layoutWrite = write;
     this.run(() => write);
+  }
+
+  /**
+   * `mappy-layout` rewritten on whatever the note holds when the store gets to it (`planMapLayout`), in the
+   * queue of the map's own edits (LEV-196). Written beside that queue (`processFrontMatter`, before), it
+   * changed the note under the view: the view's text stayed the old one until the watcher's re-read (≈60 ms),
+   * an edit planned in between — a draft saved by the blur of the click on the button itself, a key, a topic
+   * dropped by the finger still on it — was refused as someone else's change, and the re-read had no edits to
+   * carry the ids of a node whose title repeats or is empty (LEV-150). Queued, an edit already on its way
+   * lands first, and one planned before it is carried over it by the store (`DocumentStore.applyOver`); recorded,
+   * the re-read carries the ids (`ownWrites`). The note of a view that moved on keeps the preference but none of
+   * the rest — nor does a view that left the note and came back while the write was under way (`loaded`): its
+   * record starts again from the note it re-read, which a write from before that cannot lead on from.
+   */
+  private async writeLayout(file: TFile, mode: LayoutMode, loaded: number): Promise<void> {
+    const write = await this.store.applyLatest(file, source => planMapLayout(source, mode));
+    if (write.edits.length === 0 || file !== this.file || this.closed || loaded !== this.loads) return;
+    this.ownWrites.push({ ...write });
+  }
+
+  /**
+   * The layout writes the store carried this view's edit over (`CarriedWrite.carried`), recorded where the view's
+   * own record leads to their start: another view's button (several views share the store), or this view's own
+   * write that a re-read has spent and the record no longer holds. Without them the re-read could not replay
+   * from the text this view shows to the edit's (LEV-150 through LEV-196's carry). Returns them as recorded.
+   */
+  private recordCarried(carried: readonly LatestWrite[]): OwnWrite[] {
+    let at = this.ownWrites[this.ownWrites.length - 1]?.after ?? this.document?.source;
+    const recorded: OwnWrite[] = [];
+    for (const write of carried) {
+      const own = this.ownWrites.find(item => item.before === write.before && item.after === write.after);
+      if (own) { recorded.push(own); continue; }
+      if (write.before !== at) continue;
+      const added: OwnWrite = { ...write };
+      this.ownWrites.push(added);
+      recorded.push(added);
+      at = write.after;
+    }
+    return recorded;
+  }
+
+  /**
+   * The parse an edit planned on `planned` (from `source`) stands on in the text the store found (`write.before`):
+   * `planned` carried over the writes the store carried it over, or the view's own parse when a re-read got there
+   * first. Undefined when neither is that text; the drafts are then left for the re-read to measure.
+   */
+  private writeBase(planned: MindDocument | undefined, source: string, write: CarriedWrite, carried: readonly OwnWrite[], basename: string): MindDocument | undefined {
+    let base = planned?.source === source ? planned : undefined;
+    for (const own of carried) if (base?.source === own.before) base = this.parseOwn(own, base, basename);
+    if (base?.source === write.before) return base;
+    return this.document?.source === write.before ? this.document : undefined;
+  }
+
+  /** `own.after` parsed from `from` with its edits, once per base document. */
+  private parseOwn(own: OwnWrite, from: MindDocument, basename: string): MindDocument {
+    if (own.parsed?.from !== from || own.parsed.basename !== basename) {
+      own.parsed = { from, basename, document: parseMarkdown(own.after, basename, from, undefined, own.edits) };
+    }
+    return own.parsed.document;
   }
 
   /**
@@ -1006,21 +1084,21 @@ export class MindmapView extends FileView {
     const source = await this.store.read(file);
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
     const changed = source !== this.document?.source || this.document.root.title !== file.basename;
-    // The view's own write answers for this read while it finds exactly the text that write left on a note
-    // this view has not re-read since; the edits then carry the ids across (LEV-146). Anything else means
-    // someone else has written, and the write is of no use to any later read either.
-    const own = this.ownWrite;
-    const written = own && source === own.after && this.document?.source === own.before ? own.edits : undefined;
-    if (own && !written) this.ownWrite = undefined;
+    // The view's own writes answer for this read while they lead from the text this view last parsed to
+    // exactly the text found; their edits then carry the ids across (LEV-146). Anything else means someone
+    // else has written, and the writes are of no use to any later read either.
+    const replayed = this.replayOwnWrites(source, file.basename);
+    if (!replayed) this.ownWrites = [];
     const document = changed || !this.document
-      ? parseMarkdown(source, file.basename, this.document, undefined, written) : this.document;
+      ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
-    // Spent only now: a read superseded above leaves the write for the read that wins, which finds the same
-    // text on the same note and carries the ids after all.
-    this.ownWrite = undefined;
+    // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
+    // text on the same note and carries the ids after all. A write made while this read was under way is
+    // kept for the next one.
+    this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
     if (changed) {
       this.document = document;
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
@@ -1032,6 +1110,21 @@ export class MindmapView extends FileView {
     this.adopt(targets);
     this.emptyState.hidden = true;
     this.draw();
+  }
+
+  /**
+   * The parse of `source` from the view's own writes (`ownWrites`): each re-parses its text from the parse
+   * before it, starting at the one the view shows, until one of them wrote exactly `source`. `used` is how
+   * many were spent. Undefined when they do not lead there.
+   */
+  private replayOwnWrites(source: string, basename: string): { document: MindDocument; used: number } | undefined {
+    let document = this.document;
+    for (const [index, own] of this.ownWrites.entries()) {
+      if (!document || document.source !== own.before) return undefined;
+      document = this.parseOwn(own, document, basename);
+      if (own.after === source) return { document, used: index + 1 };
+    }
+    return undefined;
   }
 
   /** True when a node's title is one embed: only then can another note's change alter what this map shows. */
@@ -1472,6 +1565,19 @@ export class MindmapView extends FileView {
    * does now, the popover of LEV-81 having no such item).
    */
   private async addTopic(point?: { x: number; y: number }): Promise<void> {
+    const open = this.inlineEditor;
+    // A draft held with a reason is saved only by its own Enter (editTitle): it stays, and no topic is added.
+    if (open?.held()) { open.focus(); return; }
+    // The save under way may be the draft's own (the blur of this very double click): confirm waits for it.
+    if (this.saving && !open) return;
+    if (open) {
+      // Written first, as blur would, then the topic; a refusal keeps the draft with its reason and adds nothing.
+      if (!await open.confirm()) return;
+      // The write can resize its node and move the body root, which topic positions are measured from: the point
+      // is read once the labels are drawn and placed (a short wait: a slow render elsewhere does not hold the topic).
+      await this.renderer.idle(TOPIC_RENDER_WAIT_MS);
+      if (this.layoutFrame !== undefined) await this.nextFrame();
+    }
     const document = this.document;
     const file = this.file;
     if (!document || !file || this.saving) return;
@@ -1696,24 +1802,47 @@ export class MindmapView extends FileView {
     const planned = this.document;
     this.saving = true;
     try {
-      let written: string;
-      try { written = await this.store.apply(file, source, edits); }
+      let write: CarriedWrite;
+      // A layout button pressed after the edit was planned (LEV-196) is carried over by the store.
+      try { write = await this.store.applyOver(file, source, edits); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
+      const written = write.after;
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
-      this.ownWrite = { before: source, after: written, edits };
+      const carried = this.recordCarried(write.carried);
+      this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external
       // change that landed in between. Both are the E05 refusal this fix exists to keep (LEV-140).
-      if (drafts.length > 0 && planned?.source === source) this.rebaseDrafts(drafts, planned, written, edits);
+      const base = this.writeBase(planned, source, write, carried, file.basename);
+      if (drafts.length > 0 && base) this.rebaseDrafts(drafts, base, written, write.edits);
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh();
     } finally { this.saving = false; }
   }
 
   private editTitle(): void {
+    // The draft already open is confirmed before another opens (a double click on a node, F2 from the menu), as blur
+    // would save it; one held with a reason (a refusal, a conflict: its error line up) is saved only by its own Enter,
+    // so it stays where it is, instead of being dropped for the node's old text or written unasked (LEV-202).
+    const open = this.inlineEditor;
+    if (open?.held()) { open.focus(); return; }
+    if (open) {
+      const wanted = this.selectedId;
+      const file = this.file;
+      this.run(async () => {
+        // A refused save keeps the draft focused with its reason (InlineEditor.settle).
+        if (!await open.confirm()) return;
+        // Ids are only this note's: another note taking the leaf while the save ran has its own `node-N`s.
+        if (this.inlineEditor || this.closed || this.file !== file) return;
+        // Closing the draft selects its node again; the node asked for is the one to edit.
+        if (wanted && this.document && findNode(this.document, wanted)) this.select(wanted, true);
+        this.editTitle();
+      });
+      return;
+    }
     const node = this.selected();
     const document = this.document;
     const file = this.file;
@@ -1722,7 +1851,6 @@ export class MindmapView extends FileView {
     if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
-    this.inlineEditor?.dispose();
     // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
     // draft is open appears at once instead of when the draft is confirmed (報告: 2026-09-22).
     this.renderer.editing(node.id, true);
@@ -1730,7 +1858,8 @@ export class MindmapView extends FileView {
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
     this.inlineEditor = new InlineEditor(entry.element, {
-      initial: node.title,
+      // Its `<br>` tags are line breaks in the draft; the rename writes them back (core/title-breaks, LEV-202).
+      initial: displayTitle(node.title),
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
         // A topic added on the map is placed where it was pressed by the same edit set that names it.
@@ -1891,7 +2020,9 @@ export class MindmapView extends FileView {
     if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
     if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
     const binary = await image.arrayBuffer();
-    if (await this.store.read(file) !== document.source) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
+    // The note as the map shows it, or as the view's own layout buttons have since written it (LEV-196): the store
+    // carries the link over those.
+    if (!await this.store.applies(file, document.source)) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
     const name = image.name.replace(/[\\/:*?"<>|]/gu, "-") || "image.png";
     const path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
     const attachment = await this.app.vault.createBinary(path, binary);
