@@ -20,15 +20,17 @@
  * 子1 renamed with F2, real keys and Enter. The probe answers this map's reads SLOW_MS late (read first, answered late:
  * E53's `slow`) but for the save's own re-read (`reread(true)`: slowed, the save would still be under way and this
  * map's own key refused), and, INSIDE_MS into the rename's last re-read (the first read begun after the write with no
- * refresh scheduled), makes the second write from the page — a click on the button's element, a map's own move or
- * history command — since no hand can time a click into an 80 ms window; the writes, the watchers and the re-reads
- * are Obsidian's and the plugin's own. `key` and `undo` are shown and spent the moment they land (`showOwnWrite`,
+ * refresh scheduled), makes the second write from the page — a click on the button's element, a keydown (⌥↑ on 子2,
+ * ⌘Z) dispatched on the map's canvas, which the map's own key handling takes (not Obsidian's keymap) — since no hand
+ * can time a click or a key into an 80 ms window; the writes, the watchers and the re-reads are Obsidian's and the
+ * plugin's own. `key` and `undo` are shown and spent the moment they land (`showOwnWrite`,
  * LEV-219), so they hold without the epoch check too: they pin the user's own next key, not the check.
  *
  * Each row checks that the window was hit (the read found the text on screen, was still the newest right before W2,
- * the map recorded W2, and the read gave up), the order (the epoch had moved when the map recorded W2), and the
- * outcome: the node keeps its id and its fold, the note holds the rename and W2 (for ⌘Z, the rename taken back), the
- * map shows the note, no Notice or error line in either map. For `other-edit` the second map must have re-read the
+ * the map recorded W2, and the read gave up), the order (the map's watcher had scheduled a re-read after W2 was made
+ * and before the map recorded it, and the epoch had moved by then), and the
+ * outcome: the node keeps its id and its fold, the note holds the rename and W2 (for ⌘Z, the rename taken back), both
+ * maps show the note, no Notice or error line in either map. For `other-edit` the second map must have re-read the
  * rename before it moves 子2 (otherwise its edit is refused as someone else's change, a different row). A row whose
  * window was not hit fails rather than pass.
  *
@@ -124,13 +126,14 @@ const openSecond = () => step('second', () => evaluate(`${VIEW}
 /** A Markdown editor on the note beside the first map for `editor`, none for `alone` (as E53's `setForm`). */
 const setForm = form => evaluate(`${VIEW}
   ${LEAVES}
+  const changes = ${JSON.stringify(form)} === 'editor' ? editors.length === 0 : editors.length > 0;
   if (${JSON.stringify(form)} !== 'editor') { for (const item of editors) item.detach(); }
   else if (editors.length === 0) {
     // Through the plugin's router, as its own 右に Markdown を開く does: a plain markdown state of a map note is routed to a map.
     const side = app.workspace.createLeafBySplit(leaf, 'vertical');
     await view.router.openMarkdown(side, view.file, false);
   }
-  await new Promise(resolve => setTimeout(resolve, 800));
+  if (changes) await new Promise(resolve => setTimeout(resolve, 800));
   app.workspace.setActiveLeaf(leaf, { focus: true });
   const open = [];
   app.workspace.iterateAllLeaves(item => { if (item.view?.getViewType?.() === 'markdown' && item.view.file?.path === path) open.push(item); });
@@ -143,14 +146,26 @@ const reset = () => evaluate(`${VIEW}
   const editor = editors[0]?.view.editor ?? null;
   if (editor) editor.setValue(${JSON.stringify(SOURCE)});
   else await app.vault.modify(view.file, ${JSON.stringify(SOURCE)});
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  for (const map of [view, second?.view].filter(Boolean)) {
+  const maps = [view, second?.view].filter(Boolean);
+  // Until both maps show the case source with nothing left to read, or limit ms.
+  const until = async (limit) => {
+    const started = performance.now();
+    while (performance.now() - started < limit) {
+      if (maps.every(map => map.document?.source === ${JSON.stringify(SOURCE)} && map.refreshTimer === undefined && map.refreshing === undefined)) return true;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return false;
+  };
+  if (!await until(3000)) throw new Error('a map did not re-read the case source');
+  let moved = false;
+  for (const map of maps) {
     // A layout button of the row before left its map on another layout: back on the regular map, so the button writes again.
-    if (map.mode !== 'mindmap') await map.setState({ layout: 'mindmap' }, { history: false });
-    await new Promise(resolve => setTimeout(resolve, 300));
-    if (map.document?.source !== ${JSON.stringify(SOURCE)}) throw new Error('a map did not re-read the case source');
+    if (map.mode !== 'mindmap') { await map.setState({ layout: 'mindmap' }, { history: false }); moved = true; }
     if (map.collapsed.size > 0) { map.collapsed.clear(); map.draw(); }
   }
+  // The switch back fits the map on its next frames: the nodes move until then.
+  if (moved) await new Promise(resolve => setTimeout(resolve, 800));
+  if (!await until(3000)) throw new Error('a map did not settle on the case source');
   if (await view.store.read(view.file) !== ${JSON.stringify(SOURCE)}) throw new Error('the note did not go back to the case source');
   // The splits (the second map below, the editor beside) left the first map's nodes where the whole pane placed them: 全体表示.
   view.viewport.fit(view.layout.bounds);
@@ -176,7 +191,7 @@ const arm = kind => evaluate(`${VIEW}
   const slow = ${SLOW_MS};
   const inside = ${INSIDE_MS};
   const kind = ${JSON.stringify(kind)};
-  const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, caughtUp: null, found: {
+  const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, caughtUp: null, scheduled: false, found: {
     landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null } };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
   const store = view.store;
@@ -185,20 +200,21 @@ const arm = kind => evaluate(`${VIEW}
   let asking = null;
   let inFlight = null;
   let fired = false;
+  /** A keydown on a map's canvas, as the map's own key handling takes it. */
+  const key = (map, init) => map.contentEl.querySelector('.mappy-canvas').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
   const secondWrite = () => {
     if (kind === 'button') el.querySelector('.mappy-modes button[aria-label="タイムライン"]').click();
     else if (kind === 'other-button') second.view.contentEl.querySelector('.mappy-modes button[aria-label="階層図"]').click();
     else if (kind === 'other-edit') {
       const other = second.view;
       probe.caughtUp = other.document?.source === view.document?.source;
-      const node = other.document.nodes.find(item => item.title === '子2');
-      other.select(node.id);
-      other.executeSelected('move-up');
-    } else if (kind === 'other-undo') second.view.history('undo');
+      other.select(other.document.nodes.find(item => item.title === '子2').id);
+      key(other, { key: 'ArrowUp', altKey: true });
+    } else if (kind === 'other-undo') key(second.view, { key: 'z', metaKey: true });
     else if (kind === 'key') {
       view.select(view.document.nodes.find(item => item.title === '子2').id);
-      view.executeSelected('move-up');
-    } else view.history('undo');
+      key(view, { key: 'ArrowUp', altKey: true });
+    } else key(view, { key: 'z', metaKey: true });
   };
   mine.reread = view.reread;
   view.reread = function (...args) {
@@ -211,12 +227,14 @@ const arm = kind => evaluate(`${VIEW}
     const found = probe.found;
     probe.log.push({ at: now(), what: 'recordWrite', epoch: view.epoch });
     if (!fired || found.recorded !== null || inFlight === null) return;
-    found.movedBeforeRecord = view.epoch !== inFlight;
+    // The epoch moved, and by a re-read this map's watcher scheduled after W2 was made: W2's own, not some other.
+    found.movedBeforeRecord = view.epoch !== inFlight && probe.scheduled;
     found.recorded = view.ownWrites.some(item => item.after === args[1].after);
   };
   mine.scheduleRefresh = view.scheduleRefresh;
   view.scheduleRefresh = function (...args) {
     probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch });
+    if (fired && probe.found.recorded === null) probe.scheduled = true;
     return mine.scheduleRefresh.apply(this, args);
   };
   // The store is the plugin's one for every map, embed and the Excalidraw bridge: only this map's reads are slowed.
@@ -261,6 +279,9 @@ const arm = kind => evaluate(`${VIEW}
   };
   return true;`);
 
+/** Whether the probe's read has answered and the map has recorded the second write. */
+const probed = () => evaluate(`const found = window.__mappyE2EReread?.found; return found?.gaveUp != null && found.recorded != null;`);
+
 const collect = () => evaluate(`const probe = window.__mappyE2EReread; probe.release(); return { found: probe.found, log: probe.log, landed: probe.landed, caughtUp: probe.caughtUp, error: probe.error ?? null };`);
 
 /** What each second write leaves in the note. */
@@ -304,7 +325,7 @@ const run = async ({ kind, form, shape }) => {
   while (Date.now() - started < 4000) {
     await wait(200);
     after = await read(shape);
-    if (WROTE[kind](after.text) && after.text === after.shown && (after.other === null || after.other === after.text)) break;
+    if (await probed() && WROTE[kind](after.text) && after.text === after.shown && after.other === after.text) break;
   }
   await wait(600);
   const { found, log, landed, caughtUp, error } = await collect();
@@ -314,12 +335,13 @@ const run = async ({ kind, form, shape }) => {
   expect(found.landedIn === true, `the read the second write landed in did not find the text on screen (${JSON.stringify(found)})`);
   expect(found.newestBefore === true, `that read was superseded before the second write (${JSON.stringify(found)}): not the window`);
   expect(found.recorded === true, `the map did not record the second write (${JSON.stringify(found)})`);
-  expect(found.movedBeforeRecord === true, `the epoch had not moved when the map recorded the second write (${JSON.stringify(found)})`);
+  expect(found.movedBeforeRecord === true, `the epoch had not moved by the map's watcher of the second write when the map recorded it (${JSON.stringify(found)})`);
   expect(found.gaveUp === true, `the read did not give up (${JSON.stringify(found)})`);
   expect(UNDOES.has(kind) || after.text.includes(`  - ${RENAMED}\n`), 'the note lost the rename');
   expect(kind !== 'other-edit' || caughtUp === true, `the second map had not re-read the rename when it moved 子2 (${caughtUp})`);
   expect(WROTE[kind](after.text), `the note does not hold the second write (${kind})`);
   expect(after.text === after.shown, 'the map does not show the note');
+  expect(after.other === after.text, 'the second map does not show the note');
   expect(after.id === folded.id, `the node's id changed (${folded.id} → ${after.id})`);
   expect(after.collapsed.includes(folded.id), `the fold went (${JSON.stringify(folded.collapsed)} → ${JSON.stringify(after.collapsed)})`);
   expect(after.messages.length === 0, `messages: ${after.messages.join(' / ')}`);

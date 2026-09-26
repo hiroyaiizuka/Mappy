@@ -273,7 +273,7 @@ describe('a read of the text on screen, with a write of the map\'s own recorded 
     });
 
     it(`another map's edit during the rename's last re-read keeps the fold of ${shape}`, async () => {
-      // The other map renames 子2 (Enter in its own draft): an edit whose start is the text this map shows.
+      // The other map moves 子2 up (⌥↑, as E58): an edit whose start is the text this map shows.
       const mounted = await mount();
       const other = await mount(mounted.app, storeOf(mounted));
       const id = foldAndSelect(mounted, label, index);
@@ -282,13 +282,13 @@ describe('a read of the text on screen, with a write of the map\'s own recorded 
       let caughtUp: boolean | null = null;
       const found = await renameThen(mounted, () => {
         caughtUp = state(other).document?.source === mounted.source();
-        other.view.containerEl.querySelector<HTMLElement>('.mappy-canvas')?.focus();
-        rename(other, '子2', 0, '別の改名');
+        click(nodeNamed(other, '子2'));
+        other.key(other.canvas, 'ArrowUp', { altKey: true });
       });
       await settled(mounted, other);
       expect(caughtUp).toBe(true);
       expectWindowHit(found);
-      expect(mounted.source()).toContain('- 別の改名\n');
+      expect(mounted.source()).toContain('  - 子2\n  - 改名後\n');
       expectFolded(mounted, label, index, id);
     });
 
