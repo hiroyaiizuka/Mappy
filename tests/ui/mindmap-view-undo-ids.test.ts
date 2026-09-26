@@ -14,13 +14,12 @@
  * `mutations-review1.txt`); the two-map row and the refused ⌘Z are from the first code review.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { App, TFile } from 'obsidian';
+import type { App } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
 import { LAYOUT_LABELS } from '../../src/core/layout-mode';
-import type { MindDocument } from '../../src/core/markdown';
-import { conflictMessage, type DocumentStore } from '../../src/obsidian/document-store';
+import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
+import { conflictMessage, type DocumentStore, type LatestWrite } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { accessibleName } from './accessible-name';
 
@@ -48,22 +47,9 @@ const SOURCE = [
   '- 枝', '',
 ].join('\n');
 
-/** Obsidian's `processFrontMatter` rewrites the header in the note's text (the harness's edits its cache only). */
-function rewritingFrontmatter(app: HarnessApp): void {
-  app.fileManager.processFrontMatter = async (file, change) => {
-    await app.asApp<App>().vault.process(file as unknown as TFile, text => {
-      const properties = parseFrontmatter(text) ?? {};
-      change(properties);
-      const body = text.replace(/^---\n[\s\S]*?\n---\n/u, '');
-      return `---\n${Object.entries(properties).map(([key, value]) => `${key}: ${String(value)}`).join('\n')}\n---\n${body}`;
-    });
-  };
-}
-
+// The layout buttons write through the store (`applyLatest`, LEV-196), so no `processFrontMatter` stand-in is needed here.
 async function mount(): Promise<MountedMapView> {
-  const app = new HarnessApp();
-  rewritingFrontmatter(app);
-  const mounted = await mountMapView(PATH, SOURCE, 'mindmap', app);
+  const mounted = await mountMapView(PATH, SOURCE, 'mindmap');
   opened.push(mounted);
   return mounted;
 }
@@ -264,6 +250,27 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     await rename(second, '別のもっと長い題名');
     expect({ collapsed: [...state(second).collapsed], id: nodeNamed(second, EMPTY_LABEL, 1).dataset.nodeId }).toEqual({ collapsed: [id], id });
     expect(Notice.log).toEqual([]);
+  });
+
+  it('a write a re-read has already spent is not recorded again when its caller gets the answer (code review 3)', async () => {
+    // The store tells the write (`recordWrite`) before the caller's `writeOwn`／`writeLayout` resumes; a re-read queued
+    // behind it can spend it in between. Recorded again, its start is behind the text the view shows, and the next
+    // re-read's replay would fail and drop every write after it.
+    const view = (await mount()).view;
+    const internals = view as unknown as {
+      ownWrites: { before: string; after: string }[]; document: MindDocument;
+      recordWrite(file: unknown, write: LatestWrite): void; recordOwn(write: LatestWrite): void; file: unknown;
+    };
+    const after = SOURCE.replace('  - 子1\n', '  - ずっと長い題名に改名\n');
+    const from = SOURCE.indexOf('子1');
+    const write: LatestWrite = { before: SOURCE, after, edits: [{ from, to: from + 2, text: 'ずっと長い題名に改名' }] };
+    internals.recordWrite(internals.file, write);
+    expect(internals.ownWrites).toHaveLength(1);
+    // The re-read spends it.
+    internals.document = parseMarkdown(after, 'undo-ids', internals.document, undefined, write.edits);
+    internals.ownWrites = [];
+    internals.recordOwn(write);
+    expect(internals.ownWrites).toEqual([]);
   });
 
   it('a refused ⌘Z re-reads the note even when no watcher reports the change', async () => {

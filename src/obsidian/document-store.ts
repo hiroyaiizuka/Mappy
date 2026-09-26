@@ -240,7 +240,7 @@ export class DocumentStore {
       session.past.pop();
       session.future = entry.dropped ?? [];
       delete entry.dropped;
-      const taken = { before: entry.after, after: entry.before, edits: entry.inverse };
+      const taken = { before: entry.after, after: entry.before, edits: entry.inverse.map((edit) => ({ ...edit })) };
       this.tell(file, taken);
       return taken;
     });
@@ -370,7 +370,7 @@ export class DocumentStore {
       from.pop();
       delete entry.dropped;
       to.push(entry);
-      const write = { before, after, edits };
+      const write = { before, after, edits: edits.map((edit) => ({ ...edit })) };
       this.tell(file, write);
       return write;
     });
@@ -382,7 +382,9 @@ export class DocumentStore {
    */
   private tell(file: TFile, write: LatestWrite): void {
     for (const listener of this.writeListeners) {
-      try { listener(file, write); } catch (error) { console.error('Mappy: a write listener failed', error); }
+      // Each its own copy of the edits: the history's steps hold these arrays, and a listener keeps what it is given.
+      const told = { before: write.before, after: write.after, edits: write.edits.map((edit) => ({ ...edit })) };
+      try { listener(file, told); } catch (error) { console.error('Mappy: a write listener failed', error); }
     }
   }
 

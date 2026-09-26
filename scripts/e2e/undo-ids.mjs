@@ -16,8 +16,8 @@
  * They pin that the carried ids do not move such a node.
  *
  * two-map: the note in a second map beside the first (a split). The fold and the selection are in the second map;
- * the longer rename, ⌘Z and ⌘⇧Z are in the first. Each write reaches the second map with its edits (the store tells
- * every map of the note), × 空題名・同名.
+ * the longer rename, a layout button, ⌘Z and ⌘⇧Z are in the first. Each write reaches the second map with its edits
+ * (the store tells every map of the note), × 空題名・同名.
  *
  * ⌘Z is sent with the focus left where the click on the fold toggle put it (inside the canvas): a blank click on the
  * canvas, which `makeHistory` uses to focus it, clears the selection this case is about. A row whose focus is not in
@@ -32,6 +32,8 @@ import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeRename, makeAfter, 
 
 /** VIEW, on the second map of the two-map rows (`window.__mappyE2ESecond`). */
 const SECOND = VIEW.replace('const leaf = window.__mappyE2E;', 'const leaf = window.__mappyE2ESecond;');
+// A VIEW that no longer starts so would leave SECOND on the first map, and the two-map rows would pass on it.
+if (SECOND === VIEW) throw new Error('SECOND did not replace the leaf of VIEW (scripts/e2e/dom-helpers.mjs changed)');
 
 const { flag, value } = parseArgs();
 
@@ -71,9 +73,9 @@ const reopen = async () => {
   return required(record, 'open', await makeOpenStep(evaluate, { note: NOTE, source: SOURCE })());
 };
 
-/** A real mouse click at the centre of what `locate` (a script returning an element) finds. */
-const clickAt = async locate => {
-  const box = await evaluate(`${VIEW}
+/** A real mouse click at the centre of what `locate` (a script returning an element) finds, in the first map or `view`. */
+const clickAt = async (locate, view = VIEW) => {
+  const box = await evaluate(`${view}
     const target = (() => { ${locate} })();
     if (!target) throw new Error('nothing to click');
     const rect = target.getBoundingClientRect();
@@ -152,7 +154,8 @@ try {
     }
   }
 
-  // two-map: the second map is a split of the first, on the same note, and holds the fold and the selection.
+  // two-map: the second map is a split of the first, on the same note, and holds the fold and the selection from the
+  // start; every write is made in the first map: the longer rename, a layout button, ⌘Z, ⌘⇧Z.
   for (const shape of SHAPES.filter(item => item.name === '空題名' || item.name === '同名')) {
     await step(`two-map-${shape.name}`, async () => {
       const opened = await reopen();
@@ -162,40 +165,23 @@ try {
         await new Promise(resolve => setTimeout(resolve, 1500));
         window.__mappyE2ESecond = second;
         return true;`);
-      const edited = opened.source.replace('  - 子1\n', '  - ずっと長い題名に改名\n');
-      await select('子1');
-      const renamed = await rename('ずっと長い題名に改名');
-      if (renamed.source !== edited) throw new Error(`the rename wrote something else:\n${renamed.source}`);
-      const clickIn = async (view, locate) => {
-        const box = await evaluate(`${view}
-          const target = (() => { ${locate} })();
-          if (!target) throw new Error('nothing to click');
-          const rect = target.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-        for (const type of ['mousePressed', 'mouseReleased']) {
-          await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-        }
-        await wait(400);
-      };
-      await clickIn(SECOND, `return nth(${JSON.stringify(shape.label)}, ${shape.index});`);
-      await clickIn(SECOND, `return nth(${JSON.stringify(shape.label)}, ${shape.index})?.querySelector('.mappy-node-toggle');`);
+      await clickAt(`return nth(${JSON.stringify(shape.label)}, ${shape.index});`, SECOND);
+      await wait(400);
+      await clickAt(`return nth(${JSON.stringify(shape.label)}, ${shape.index})?.querySelector('.mappy-node-toggle');`, SECOND);
+      await wait(400);
       const folded = await read(shape, SECOND);
       if (!folded.collapsed.includes(folded.id) || folded.selected !== folded.id) throw new Error(`the second map did not select and fold ${shape.name}: ${JSON.stringify(folded)}`);
-      // Back to the first map, on a node the rows do not look at, so ⌘Z goes to it with the focus in its canvas.
-      await select('子2');
       const rows = [{ label: 'folded', ...folded }];
-      const secondCurrent = async text => {
+      /** The second map shows `text` (it re-read the first map's write), then its fold, selection and the node's id. */
+      const expectSecond = async (label, result, expected) => {
         const started = Date.now();
         for (;;) {
-          const current = await evaluate(`${SECOND} return view.document?.source === await source() && await source() === ${JSON.stringify(text)};`);
-          if (current) return;
-          if (Date.now() - started > 3000) throw new Error('the second map did not re-read the note within 3 s');
+          const current = await evaluate(`${SECOND} const text = await source(); return view.document?.source === text && text === ${JSON.stringify(expected)};`);
+          if (current) break;
+          if (Date.now() - started > 3000) break;
           await wait(100);
         }
-      };
-      for (const [label, direction, expected] of [['⌘Z', 'undo', opened.source], ['⌘⇧Z', 'redo', edited]]) {
-        const result = await history(direction);
-        await secondCurrent(expected);
+        await wait(300);
         const state = await read(shape, SECOND);
         rows.push({ label, ...state, source: result.source, messages: result.messages });
         const row = `two-map-${shape.name} ${label}`;
@@ -204,7 +190,16 @@ try {
         check(state.id === folded.id, `${row}: the second map's node id changed (${folded.id} → ${state.id})`);
         check(state.collapsed.includes(state.id ?? ''), `${row}: the second map lost the fold (${JSON.stringify(folded)} → ${JSON.stringify(state)})`);
         check(state.id !== null && state.selected === state.id, `${row}: the second map's selection moved (${JSON.stringify(folded)} → ${JSON.stringify(state)})`);
-      }
+      };
+      const edited = opened.source.replace('  - 子1\n', '  - ずっと長い題名に改名\n');
+      await select('子1');
+      await expectSecond('改名', await rename('ずっと長い題名に改名'), edited);
+      await clickAt(`return el.querySelectorAll('.mappy-modes button')[1];`);
+      await expectSecond('ボタン', await after(edited), withTimeline(edited));
+      // A node of the first map the rows do not look at, so ⌘Z goes to it with the focus in its canvas.
+      await select('子2');
+      await expectSecond('⌘Z', await history('undo'), withTimeline(opened.source));
+      await expectSecond('⌘⇧Z', await history('redo'), withTimeline(edited));
       return { rows };
     });
   }

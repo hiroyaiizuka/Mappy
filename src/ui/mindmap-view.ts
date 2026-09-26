@@ -962,10 +962,17 @@ export class MindmapView extends FileView {
     this.recordOwn(write);
   }
 
-  /** `write`, made for this view, recorded unless the store's `onWrite` already has (`recordWrite`): then it is the last one. */
+  /**
+   * `write` recorded where the view's record leads to its start: the end of the record, or the text the view shows
+   * when a re-read has spent it. A write already there — the store's `onWrite` told it before the caller got its
+   * answer (`recordWrite`) — is the last one and is not added again; nor is one a re-read has spent in between (its
+   * start is behind the text the view shows). Not matched against earlier writes, as `recordCarried` does: ⌘Z, ⌘⇧Z,
+   * ⌘Z before one re-read write the same texts twice.
+   */
   private recordOwn(write: LatestWrite): void {
     const last = this.ownWrites[this.ownWrites.length - 1];
     if (last?.before === write.before && last.after === write.after) return;
+    if (write.before !== (last?.after ?? this.document?.source)) return;
     this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
   }
 
@@ -2106,15 +2113,13 @@ export class MindmapView extends FileView {
    * A write the store made on the note (`DocumentStore.onWrite`) — this view's, another map's of the note, or a step of
    * the shared history — recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the
    * folds and the selection stay on a node whose title repeats or is empty. Recorded only where the view's record
-   * leads to its start: a view that moved on, or whose text is not the one the write was made on, re-reads it as it
-   * would any change. Not matched against the writes already recorded, as `recordCarried` does: ⌘Z, ⌘⇧Z, ⌘Z before
-   * one re-read write the same texts twice. The view that asked for the write records it again once the store answers
-   * (`writeOwn`, `writeLayout`), which skips the copy (`recordOwn`).
+   * leads to its start (`recordOwn`): a view that moved on, or whose text is not the one the write was made on,
+   * re-reads it as it would any change. The view that asked for the write records it again once the store answers
+   * (`writeOwn`, `writeLayout`), which skips the copy.
    */
   private recordWrite(file: TFile, write: LatestWrite): void {
     if (file !== this.file || this.closed) return;
-    const at = this.ownWrites[this.ownWrites.length - 1]?.after ?? this.document?.source;
-    if (write.before === at) this.ownWrites.push({ ...write });
+    this.recordOwn(write);
   }
 
   async showSource(split: boolean): Promise<void> {

@@ -161,6 +161,16 @@ describe('DocumentStore', () => {
     error.mockRestore();
   });
 
+  it('what Undo／Redo return and tell is a copy: changing it leaves the history as it was (code review 3)', async () => {
+    const { store, file } = harness('a');
+    await store.apply(file, 'a', [{ from: 1, to: 1, text: 'bc' }]);
+    store.onWrite((_file, write) => { for (const edit of write.edits) { edit.from = 0; edit.text = 'x'; } });
+    const undone = await store.undo(file);
+    for (const edit of undone.edits) { edit.to = 0; edit.text = 'y'; }
+    expect((await store.redo(file)).after).toBe('abc');
+    expect((await store.undo(file)).after).toBe('a');
+  });
+
   it('retract tells the listeners the write that took the step back', async () => {
     const { store, file } = harness('a');
     const heard: unknown[] = [];
