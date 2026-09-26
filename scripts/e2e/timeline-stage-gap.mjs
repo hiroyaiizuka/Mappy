@@ -23,9 +23,13 @@ const { flag, value } = parseArgs();
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 /** The value this checkout builds; the unit tests pin it to the range the ticket asked for (LEV-205). */
-const shipped = (await readFile(resolve(root, 'src', 'layout', 'layout.ts'), 'utf8')).match(/export const TIMELINE_STAGE_CLEARANCE = (\d+);/u)?.[1];
-if (!shipped && value('--clearance') === undefined) throw new Error('TIMELINE_STAGE_CLEARANCE is not in src/layout/layout.ts; pass --clearance');
-const CLEARANCE = Number(value('--clearance') ?? shipped);
+// The installed plugin must be this checkout's build (`npm run harness:prepare`); the case cannot tell a stale one apart.
+const shipped = (await readFile(resolve(root, 'src', 'layout', 'layout.ts'), 'utf8'))
+  .match(/export const TIMELINE_STAGE_CLEARANCE\s*=\s*([\d_.]+)/u)?.[1]?.replaceAll('_', '');
+const given = value('--clearance');
+if (given === undefined && !shipped) throw new Error('TIMELINE_STAGE_CLEARANCE is not in src/layout/layout.ts; pass --clearance <px>');
+const CLEARANCE = Number(given ?? shipped);
+if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${JSON.stringify(given ?? shipped)}`);
 const NOTE = 'Fixtures/E2E-timeline-stage-gap.md';
 const SOURCE = await readFile(resolve(root, 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
 const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ', '環境'];
@@ -37,18 +41,26 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 
-let opened;
-const clean = () => step('clean', () => evaluate(`${VIEW}
-  const file = view.file;
-  leaf.detach();
-  if (file && ${JSON.stringify(!flag('--keep'))}) await app.vault.delete(file, true);
+/**
+ * Closes every leaf on the note and deletes it (unless --keep). Runs even when the open step failed part way:
+ * a note written or a leaf left open there would make the next run refuse to start (`refuseOpenLeaves`).
+ */
+const clean = () => step('clean', () => evaluate(`
+  const path = ${JSON.stringify(NOTE)};
+  app.workspace.iterateAllLeaves(item => {
+    const state = item.getViewState();
+    if (item.view?.file?.path === path || state.state?.file === path) item.detach();
+  });
+  const file = app.vault.getAbstractFileByPath(path);
+  const remove = ${JSON.stringify(!flag('--keep'))};
+  if (file && remove) await app.vault.delete(file, true);
   delete window.__mappyE2E;
   delete window.__mappyE2EBefore;
-  return { removed: ${JSON.stringify(!flag('--keep'))} ? file?.path ?? null : null };`));
+  return { removed: file && remove ? path : null };`));
 
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
-  opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE, layout: 'timeline' })));
+  required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE, layout: 'timeline' })));
 
   await step('gap', async () => {
     // Fit and the image's load re-lay the map out: measure until the image has loaded and two readings
@@ -90,7 +102,7 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(String(error));
 } finally {
-  if (opened) await clean();
+  await clean();
   cdp.close();
 }
 
