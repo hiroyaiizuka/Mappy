@@ -26,7 +26,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeClickIn } from './dom-helpers.mjs';
 import { COLOR, ERRORS } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -71,16 +71,8 @@ const setAppTheme = scheme => evaluate(`app.changeTheme(${JSON.stringify(APP_THE
   await new Promise(resolve => setTimeout(resolve, 400));
   return document.body.classList.contains('theme-dark') ? 'dark' : 'light';`);
 
-/** A real click at the centre of `selector` inside the view under test. */
-const clickIn = async selector => {
-  const box = await evaluate(`${VIEW} const target = el.querySelector(${JSON.stringify(selector)});
-    if (!target) throw new Error('no ' + ${JSON.stringify(selector)});
-    const rect = target.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-  }
-  await wait(250);
-};
+/** A real click at the centre of `selector` inside the view under test (dom-helpers' `makeClickIn`). */
+const clickIn = makeClickIn(cdp, evaluate);
 
 /**
  * Script: `pairs` of [name, foreground, background, minimum] for what is on screen now, each colour composited to
@@ -90,7 +82,14 @@ const READ = part => `${VIEW} ${COLOR}
   const nodeTitled = title => nodes().find(node => label(node) === title);
   const canvas = el.querySelector('.mappy-canvas');
   const ground = backdrop(canvas);
-  const text = element => onto(rgba(getComputedStyle(element).color), backdrop(element));
+  // What reaches the pixels: the colour with the element's and its ancestors' opacity folded into its alpha (a faded
+  // label is that much closer to its background).
+  const faded = element => { let alpha = 1; for (let at = element; at && at.nodeType === 1; at = at.parentElement) alpha *= Number(getComputedStyle(at).opacity); return alpha; };
+  const drawn = (element, css) => { const color = rgba(css); return [color[0], color[1], color[2], color[3] * faded(element)]; };
+  const text = element => onto(drawn(element, getComputedStyle(element).color), backdrop(element));
+  // An outline that is not drawn (outline: none, zero width) has the ground's own colour: contrast 1.
+  const outline = element => { const style = getComputedStyle(element);
+    return style.outlineStyle === 'none' || parseFloat(style.outlineWidth) === 0 ? ground : onto(drawn(element, style.outlineColor), ground); };
   const pairs = [];
   const add = (name, fg, bg, min) => pairs.push({ name, fg: css(fg), bg: css(bg), ratio: contrast(fg, bg), min });
   if (${JSON.stringify(part)} === 'map') {
@@ -110,9 +109,9 @@ const READ = part => `${VIEW} ${COLOR}
     add('link', text(link), backdrop(link), null);
     add('collapsed-count', text(folded), backdrop(folded), ${TEXT});
     add('zoom-label', text(zoomLabel), backdrop(zoomLabel), ${TEXT});
-    add('edge', onto(rgba(getComputedStyle(edge).stroke), ground), ground, ${NON_TEXT});
-    add('node-border', onto(rgba(getComputedStyle(bordered).borderTopColor), ground), ground, ${NON_TEXT});
-    add('selection', onto(rgba(getComputedStyle(selected).outlineColor), ground), ground, ${NON_TEXT});
+    add('edge', onto(drawn(edge, getComputedStyle(edge).stroke), ground), ground, ${NON_TEXT});
+    add('node-border', onto(drawn(bordered, getComputedStyle(bordered).borderTopColor), ground), ground, ${NON_TEXT});
+    add('selection', outline(selected), ground, ${NON_TEXT});
     add('button-icon', text(zoomIn), backdrop(zoomIn), ${NON_TEXT});
     add('canvas', ground, ground, 0);
   } else if (${JSON.stringify(part)} === 'popover') {

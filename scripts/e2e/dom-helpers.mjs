@@ -99,6 +99,30 @@ export function makeState(evaluate) {
  * command whose earlier step left focus elsewhere (blur, `showSource`'s `editor.focus()`) is not
  * `preventDefault`-ed and reaches the OS instead — the macOS-menu hang docs/harness.md warns about.
  */
+/**
+ * A real click at the centre of the first element in the view under test matching `selector` (the gear, a zoom
+ * button). As `makeAim` does for nodes, the topmost element at that point must be the target or inside it: a Notice
+ * there is dismissed and the point looked at again, anything else stops the step with what was in the way.
+ */
+export function makeClickIn(cdp, evaluate) {
+  return async selector => {
+    let box;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      box = await evaluate(`${VIEW} const node = el.querySelector(${JSON.stringify(selector)});
+        if (!node) throw new Error('no ' + ${JSON.stringify(selector)} + ' in the view');
+        ${AIM}
+        return { x, y, hit, cover };`);
+      if (box.hit) break;
+      await wait(400);
+    }
+    if (!box.hit) throw new Error(`${selector} cannot be reached at (${Math.round(box.x)},${Math.round(box.y)}): ${box.cover} is there`);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    }
+    await wait(250);
+  };
+}
+
 export function makeFocusCanvas(cdp, evaluate) {
   return async () => {
     const box = await evaluate(`${VIEW}

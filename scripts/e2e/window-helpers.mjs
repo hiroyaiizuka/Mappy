@@ -39,7 +39,11 @@ export function handlerDiff(before, after) {
  */
 export async function preciseGc(cdp) {
   await cdp.send('HeapProfiler.enable');
-  await cdp.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false, captureNumericValue: false });
+  try {
+    await cdp.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false, captureNumericValue: false });
+  } finally {
+    await cdp.send('HeapProfiler.disable');
+  }
   await wait(100);
 }
 

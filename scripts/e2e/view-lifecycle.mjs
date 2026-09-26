@@ -25,7 +25,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeClickIn, refuseOpenLeaves } from './dom-helpers.mjs';
 import { HANDLERS, handlerDiff, memory, preciseGc, makeTrack, ERRORS } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -39,8 +39,14 @@ const SOURCE = [
 ].join('\n');
 /** Every item of SOURCE is a node (the section's heading is the root); a cycle waits for all of them. */
 const NODES = 7;
+const CHECKPOINT = 10;
 const CYCLES = Number(value('--cycles') ?? 50);
-const CHECKPOINT = Math.min(10, CYCLES);
+// Fewer than 20 would leave the growth between the checkpoint and the last close too short to mean anything, and a
+// value that is not a whole number would run no cycle at all and still pass: refuse both before touching the vault.
+if (!Number.isInteger(CYCLES) || CYCLES < 2 * CHECKPOINT) {
+  console.error(`--cycles must be a whole number of at least ${2 * CHECKPOINT} (got ${value('--cycles')})`);
+  process.exit(2);
+}
 const RELOADS = 5;
 /**
  * Allowed growth between the 10th and the last close. A view that stayed reachable would keep its whole DOM (~120
@@ -78,16 +84,8 @@ const LEFT = `return {
   leaves: app.workspace.getLeavesOfType('mappy-map').length,
 };`;
 
-/** A real click at the centre of `selector` inside the view under test. */
-const clickIn = async selector => {
-  const box = await evaluate(`${VIEW} const target = el.querySelector(${JSON.stringify(selector)});
-    if (!target) throw new Error('no ' + ${JSON.stringify(selector)});
-    const rect = target.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-  }
-  await wait(200);
-};
+/** A real click at the centre of `selector` inside the view under test (dom-helpers' `makeClickIn`). */
+const clickIn = selector => makeClickIn(cdp, evaluate)(selector);
 
 /**
  * One open and close. `kind` is what happens while it is open (see the file comment); what it did is returned so a
@@ -174,14 +172,18 @@ try {
     check(diff.length === 0, `handlers after ${CYCLES} opens and closes differ from before: ${diff.join('; ')}`);
     const left = await evaluate(LEFT);
     check(Object.values(left).every(count => count === 0), `left in the window after the last close: ${JSON.stringify(left)}`);
-    await preciseGc(cdp);
+    // The last checkpoint (`memory`) collected just now, after the last close: the WeakRefs are read after it.
+    const first = checkpoints[CHECKPOINT]; const last = checkpoints[CYCLES];
+    if (!last) await preciseGc(cdp);
     const alive = await track.alive();
     const tracked = await track.count();
+    check(tracked === CYCLES + 1 + Math.floor((CYCLES + 1) / 5), `${tracked} views tracked, ${CYCLES + 1 + Math.floor((CYCLES + 1) / 5)} expected (warm-up, every cycle, and each split's second view)`);
     check(alive.length === 0, `${alive.length} of ${tracked} closed views are still reachable after a full GC: ${alive.slice(0, 12).join(', ')}`);
-    const first = checkpoints[CHECKPOINT]; const last = checkpoints[CYCLES];
+
     // A cycles step that stopped early has no last checkpoint; its own failure is already recorded.
     const growth = first && last ? Object.fromEntries(Object.keys(GROWTH).map(key => [key, Math.round((last[key] - first[key]) * 100) / 100])) : null;
-    if (growth && CYCLES > CHECKPOINT) {
+    check(growth !== null, `no memory reading at close ${CHECKPOINT} and close ${CYCLES} (the cycles stopped early)`);
+    if (growth) {
       for (const [key, limit] of Object.entries(GROWTH)) {
         check(growth[key] <= limit, `${key} grew by ${growth[key]} between close ${CHECKPOINT} and close ${CYCLES} (limit ${limit})`);
       }
@@ -204,7 +206,8 @@ try {
         settingTabs: app.setting.pluginTabs.filter(tab => tab.id === 'mappy').length,
         // Each distinct setViewState gets a number the first time it is seen: the one Obsidian has without Mappy
         // must be the same number after every disable, and a different one (a fresh wrapper) after every enable.
-        routing: (() => { const ids = window.__mappyE2ERouting ??= new Map(); if (!ids.has(proto.setViewState)) ids.set(proto.setViewState, ids.size); return ids.get(proto.setViewState); })(),
+        // Held weakly, so the harness does not keep an unloaded plugin (its wrapper closes over it) reachable.
+        routing: (() => { const seen = window.__mappyE2ERouting ??= []; let id = seen.findIndex(ref => ref.deref() === proto.setViewState); if (id === -1) { id = seen.length; seen.push(new WeakRef(proto.setViewState)); } return id; })(),
         handlers: ${HANDLERS},
       };`;
     const before = await evaluate(loaded);
@@ -240,6 +243,14 @@ try {
     return { before: { ...before, handlers: undefined }, rounds, alive };
   });
 
+  // The window reload below starts a new page, and with it an empty error list: what the cycles and the plugin
+  // reloads threw is read now.
+  await step('errors-before-reload', async () => {
+    const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
+    check(errors.length === 0, `page errors while opening, closing and reloading the plugin: ${JSON.stringify(errors).slice(0, 1500)}`);
+    return errors;
+  });
+
   // Window reload with the map open: the saved workspace brings the map back, once.
   await step('app-reload', async () => {
     await evaluate(`await app.workspace.requestSaveLayout.run?.(); await app.workspace.saveLayout?.(); return true;`);
@@ -247,26 +258,33 @@ try {
     cdp.close();
     await wait(3000);
     let restored = null;
-    for (const started = Date.now(); Date.now() - started < 30000 && !restored; await wait(500)) {
+    let connected = false;
+    // Until the map is drawn or 30 s pass. Each try uses one connection and closes it unless it is the one kept.
+    for (const started = Date.now(); Date.now() - started < 30000 && !(restored?.nodes > 0); await wait(500)) {
+      let next = null;
       try {
-        cdp = await connect();
-        restored = await evaluate(`if (!app.workspace.layoutReady || !app.plugins.plugins.mappy) return null;
+        next = await connect();
+        restored = await next.evaluate(`(async () => { if (!app.workspace.layoutReady || !app.plugins.plugins.mappy) return null;
           const leaves = app.workspace.getLeavesOfType('mappy-map');
-          const leaf = leaves.find(item => item.view.file?.path === ${JSON.stringify(NOTE)});
+          // By its view state: a tab restored in the background is deferred and has no \`view.file\` until loaded.
+          const leaf = leaves.find(item => item.getViewState().state?.file === ${JSON.stringify(NOTE)});
           if (!leaf) return { leaves: leaves.length, nodes: 0, views: document.querySelectorAll('.mappy-view').length };
-          // A tab restored in the background is not loaded until shown (deferred view): show it.
           app.workspace.revealLeaf?.(leaf); await leaf.loadIfDeferred?.();
           for (const started = Date.now(); Date.now() - started < 5000; await new Promise(resolve => setTimeout(resolve, 100))) {
             if (leaf.view.contentEl?.querySelector('.mappy-node')) break;
           }
           window.__mappyE2E = leaf;
           ${ERRORS}
-          return { leaves: leaves.length, nodes: leaf.view.contentEl.querySelectorAll('.mappy-node').length, views: document.querySelectorAll('.mappy-view').length };`);
+          return { leaves: leaves.length, nodes: leaf.view.contentEl.querySelectorAll('.mappy-node').length, views: document.querySelectorAll('.mappy-view').length }; })()`);
       } catch {
         restored = null;
       }
+      if (restored?.nodes > 0) { cdp = next; connected = true; } else next?.close();
     }
+    // Without a live connection the \`finally\` below would wait out a closed socket's timeouts: connect once more.
+    if (!connected) { try { cdp = await connect(); } catch { /* the finally records its own failure */ } }
     check(restored !== null, 'the window did not come back with Mappy loaded within 30 s');
+    check(connected, `the map was not drawn again within 30 s of the window reload: ${JSON.stringify(restored)}`);
     if (restored) {
       check(restored.leaves === 1 && restored.nodes > 0 && restored.views === 1, `after the window reload the map is not back exactly once: ${JSON.stringify(restored)}`);
     }

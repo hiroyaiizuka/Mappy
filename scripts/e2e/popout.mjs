@@ -29,7 +29,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeRename, makeAddNamed, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeRename, makeAddNamed, makeClickIn, refuseOpenLeaves } from './dom-helpers.mjs';
 import { HANDLERS, handlerDiff, preciseGc, makeTrack, ERRORS } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -96,25 +96,22 @@ const openPopout = async () => {
 const attach = async mark => {
   const cdp = await connect({ popout: mark });
   const inPopout = expression => cdp.evaluate(`(async () => { ${expression} })()`);
-  const clickIn = async selector => {
-    const box = await inPopout(`${VIEW} const target = el.querySelector(${JSON.stringify(selector)});
-      if (!target) throw new Error('no ' + ${JSON.stringify(selector)});
-      const rect = target.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-    }
-    await wait(250);
+  return {
+    cdp, evaluate: inPopout, select: makeSelect(cdp, inPopout), rename: makeRename(cdp, inPopout), add: makeAddNamed(cdp, inPopout),
+    clickIn: makeClickIn(cdp, inPopout),
   };
-  return { cdp, evaluate: inPopout, select: makeSelect(cdp, inPopout), rename: makeRename(cdp, inPopout), add: makeAddNamed(cdp, inPopout), clickIn };
 };
+
+/** Script (main window): `leaves`, the leaves whose view is in the popout marked `mark`. */
+const leavesOf = mark => `const leaves = [];
+  app.workspace.iterateAllLeaves(leaf => { if (leaf.view?.contentEl?.doc?.body?.dataset.mappyE2ePopout === ${JSON.stringify(mark)}) leaves.push(leaf); });`;
 
 /**
  * The popout window marked `mark`, closed as its close button closes it (`window.close()` → Obsidian detaches its
  * leaves); its views are tracked first. Resolves to whether the window is gone.
  */
 const closePopout = async mark => {
-  const closed = await evaluate(`const leaves = [];
-    app.workspace.iterateAllLeaves(leaf => { if (leaf.view?.contentEl?.doc?.body?.dataset.mappyE2ePopout === ${JSON.stringify(mark)}) leaves.push(leaf); });
+  const closed = await evaluate(`${leavesOf(mark)}
     const win = leaves[0]?.view.contentEl.win;
     if (!win) return false;
     for (const leaf of leaves) { const view = leaf.view; ${track.statement(mark)} }
@@ -122,7 +119,7 @@ const closePopout = async mark => {
     for (const started = Date.now(); Date.now() - started < 5000 && !win.closed; await new Promise(resolve => setTimeout(resolve, 50)));
     await new Promise(resolve => setTimeout(resolve, 200));
     return win.closed;`);
-  opened.delete(mark);
+  if (closed) opened.delete(mark);
   return closed;
 };
 
@@ -144,7 +141,11 @@ try {
     return result;
   }));
   // Warm-up (as E49): one popout opened and closed, so Obsidian's own lazily created handlers are in the baseline.
-  required(record, 'warm-up', await step('warm-up', async () => closePopout(await openPopout())));
+  required(record, 'warm-up', await step('warm-up', async () => {
+    // A warm-up window left open would put its views' handlers into the baseline and hide a leak: it has to close.
+    if (!await closePopout(await openPopout())) throw new Error('the warm-up popout did not close');
+    return true;
+  }));
   const baseline = await step('baseline', () => evaluate(`return ${HANDLERS};`));
 
   // 1–5 in one popout.
@@ -204,7 +205,7 @@ try {
     check(before !== after, `4-zoom-resize: the zoom button did not change the label (${before})`);
     const canvas = () => pop.evaluate(`${VIEW} const rect = el.querySelector('.mappy-canvas').getBoundingClientRect(); return [Math.round(rect.width), Math.round(rect.height)];`);
     const sizeBefore = await canvas();
-    await evaluate(`const leaves = []; app.workspace.iterateAllLeaves(leaf => { if (leaf.view?.contentEl?.doc?.body?.dataset.mappyE2ePopout === ${JSON.stringify(first)}) leaves.push(leaf); });
+    await evaluate(`${leavesOf(first)}
       leaves[0].view.contentEl.win.resizeTo(760, 560); await new Promise(resolve => setTimeout(resolve, 700)); return true;`);
     const sizeAfter = await canvas();
     const nodesAfter = await pop.evaluate(`${VIEW} return nodes().filter(node => node.getBoundingClientRect().width > 0).length;`);
@@ -214,15 +215,22 @@ try {
   });
 
   await step('5-theme', async () => {
-    await evaluate(`app.changeTheme('obsidian'); await new Promise(resolve => setTimeout(resolve, 600)); return true;`);
-    const dark = await pop.evaluate(`${VIEW}
-      const [r, g, b] = getComputedStyle(el.querySelector('.mappy-canvas')).backgroundColor.match(/\\d+/gu).map(Number);
-      return { body: document.body.classList.contains('theme-dark'), canvas: [r, g, b], canvasDark: r + g + b < 3 * 90 };`);
+    // Light first, confirmed in the popout, then dark: with the vault on "system" and the OS dark, a popout that never
+    // hears of a theme change would already be dark and pass a dark-only check.
+    const scheme = async theme => {
+      await evaluate(`app.changeTheme(${JSON.stringify(theme)}); await new Promise(resolve => setTimeout(resolve, 600)); return true;`);
+      return pop.evaluate(`${VIEW}
+        const [r, g, b] = getComputedStyle(el.querySelector('.mappy-canvas')).backgroundColor.match(/\\d+/gu).map(Number);
+        return { body: document.body.classList.contains('theme-dark') ? 'dark' : 'light', canvas: [r, g, b], canvasDark: r + g + b < 3 * 90 };`);
+    };
+    const light = await scheme('moonstone');
+    check(light.body === 'light' && !light.canvasDark, `5-theme: the popout did not turn light first: ${JSON.stringify(light)}`);
+    const dark = await scheme('obsidian');
     const shot = value('--shot');
     if (shot) await pop.cdp.screenshot(shot.replace(/\.png$/u, '-dark.png'));
     await evaluate(`app.changeTheme(${JSON.stringify(setup.appTheme)}); await new Promise(resolve => setTimeout(resolve, 400)); return true;`);
-    check(dark.body && dark.canvasDark, `5-theme: the popout did not follow the dark theme: ${JSON.stringify(dark)}`);
-    return dark;
+    check(dark.body === 'dark' && dark.canvasDark, `5-theme: the popout did not follow the dark theme: ${JSON.stringify(dark)}`);
+    return { light, dark };
   });
   pop.cdp.close();
   await step('close-first', async () => {
