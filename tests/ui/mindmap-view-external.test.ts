@@ -380,7 +380,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     await refreshed();
     // The draft was written, not thrown away, and the command ran.
     expect(source()).toContain('- 学ぶこと（編集）');
-    expect(documentOf(view).nodes.filter(node => node.title === '').length).toBe(1);
+    expect(documentOf(view).nodes.filter(node => node.title === 'サブトピック').length).toBe(1);
     expect(editor()).not.toBe(input);
   });
 

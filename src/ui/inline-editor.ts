@@ -93,13 +93,15 @@ export class InlineEditor {
    * Either way the map lays out again for the node's new size.
    */
   private resize(): void {
+    // An emptied draft takes the empty node's box, which its node takes once confirmed (styles.css, LEV-203).
+    this.host.classList.toggle("is-draft-empty", this.input.value === "");
     if (!this.sizesItself) this.measure();
     this.options.resize();
   }
 
   /**
    * Width first: the text's width on one row (measured unwrapped), which the CSS max-width caps. The height then
-   * follows the rows, never under the 26px the stylesheet's min-height gives the other path. The width follows the
+   * follows the rows: one row is the line's height, as the label's is (LEV-203). The width follows the
    * IME's composition too, as `field-sizing` does: a draft typed in kana stays one row as it grows.
    */
   private measure(): void {
@@ -117,7 +119,7 @@ export class InlineEditor {
     }
     this.input.style.width = `${natural + CARET_ALLOWANCE}px`;
     this.input.style.removeProperty("height");
-    this.input.style.height = `${Math.max(26, this.input.scrollHeight)}px`;
+    this.input.style.height = `${this.input.scrollHeight}px`;
   }
 
   /**
@@ -221,6 +223,7 @@ export class InlineEditor {
     this.input.remove();
     this.error.remove();
     this.host.removeClass("is-editing");
+    this.host.removeClass("is-draft-empty");
     this.options.restore();
   }
 }

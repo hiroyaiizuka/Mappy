@@ -835,7 +835,12 @@ async function captureInlineWidth(recorder, page) {
     const text = WRAP_SAMPLES[kind];
     await reset(fixture, mode);
     await open(target, how);
-    const empty = how === 'Enter' || how === 'Tab' ? await draft() : null;
+    // Enter／Tab open the new node under its provisional name, selected, so the first character typed replaces it (LEV-203).
+    const opened = how === 'Enter' || how === 'Tab' ? await draft() : null;
+    if (opened) {
+      const provisional = await page.evaluate(`(() => { const input = document.activeElement; return input.value === 'サブトピック' && input.selectionStart === 0 && input.selectionEnd === input.value.length; })()`);
+      expect(provisional, `${kind}: the new node's draft does not hold 「サブトピック」 selected`);
+    }
     const { steps, wrapAt } = await typeSlowly(text);
     await page.key('Escape', 'Escape', 27);
     await page.settle();
@@ -846,10 +851,9 @@ async function captureInlineWidth(recorder, page) {
     const oneRow = steps.slice(0, wrapAt - 1);
     expect(oneRow.every((step, index) => index === 0 || step.width >= oneRow[index - 1].width), `${kind}: the one-row draft narrowed while typing`);
     expect(oneRow[0].width < oneRow.at(-1).width, `${kind}: the draft did not widen with the text (${oneRow[0].width}px → ${oneRow.at(-1).width}px)`);
-    if (empty) {
-      expect(empty.width <= 60, `${kind}: an empty node's draft is ${empty.width}px wide`);
-      // The 40px floor counts in the node's own width: the empty draft does not stick out of its node's box.
-      expect(empty.width <= empty.inner + 0.5, `${kind}: an empty draft of ${empty.width}px in a node box of ${empty.inner}px`);
+    if (opened) {
+      // The draft fills its node's text box and does not stick out of it (LEV-203: on Chromium 124 an empty draft did).
+      expect(Math.abs(opened.width - opened.inner) <= 0.5, `${kind}: a new node's draft of ${opened.width}px in a node box of ${opened.inner}px`);
     }
     const lengths = [wrapAt - 1, wrapAt, text.length];
     const confirmed = [];
@@ -861,7 +865,7 @@ async function captureInlineWidth(recorder, page) {
       expect(typed.rows === shown.rows, `${kind}: ${lengths[index]} characters — ${typed.rows} rows while typing, ${shown.rows} once confirmed`);
     }
     expect(confirmed[0].draft.rows === 1 && confirmed[1].draft.rows === 2, `${kind}: rows ${confirmed[0].draft.rows} / ${confirmed[1].draft.rows} around the wrap`);
-    return { kind, fontSize, cap, wrapAt, emptyWidth: empty?.width ?? steps[0].width, widest, rows: confirmed.map(entry => `${entry.draft.rows}/${entry.label.rows}`), lengths, steps };
+    return { kind, fontSize, cap, wrapAt, emptyWidth: opened?.width ?? steps[0].width, widest, rows: confirmed.map(entry => `${entry.draft.rows}/${entry.label.rows}`), lengths, steps };
   };
   const summary = result => `${result.kind}: ${result.fontSize}px、${result.wrapAt} 文字目で 2 行目（開いた直後 ${result.emptyWidth}px → 最大 ${result.widest}px = ノードの文字の幅 ${result.cap}px）、`
     + `入力中/確定後の行数 ${result.lengths.map((length, index) => `${length} 文字 ${result.rows[index]}`).join('・')}`;
@@ -1163,6 +1167,213 @@ const PALETTE = {
   dark: { background: 'rgb(30, 30, 30)', page: 'rgb(38, 38, 38)', text: 'rgb(218, 218, 218)', selection: 'rgba(138, 92, 245, 0.25)' },
 };
 
+
+/**
+ * LEV-203: the inline editor and the node it confirms are one box. The user's report: a new node's draft was a tall
+ * narrow box with the caret above the middle, and the box changed size when the focus left it and again when it was
+ * edited, which moved the map. The matrix is the user's operation (F2 on a node, then leaving it by Enter, F2 again,
+ * Escape; Tab making a new node) × the node's shape (a plain node, the body root, a free topic, a first-level stage)
+ * × the text (empty, one character, a length that wraps, two lines by Shift+Enter) × the layout. The node's outer
+ * box (screen pixels, the viewport unchanged) must be the same while the draft is open, once it is confirmed, while
+ * it is edited again and after Escape; the draft is exactly its rows high, so the caret sits in the middle of a row.
+ * Then the provisional name (本人の決定): a new node opens as 「サブトピック」 selected, an IME composition replaces
+ * it, and Escape right away takes the node back.
+ */
+export async function captureNewNode(recorder, page) {
+  const FIXTURE = TOPIC_FIXTURE;
+  const path = `Fixtures/${FIXTURE}.md`;
+  await loadFixture(page, FIXTURE);
+  const original = await page.harness('h.source()');
+  const reset = async mode => {
+    await loadFixture(page, OPERATION_FIXTURE);
+    await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original)})`);
+    await loadFixture(page, FIXTURE, mode);
+    const fit = await page.harness('h.button("全体表示")');
+    expect(fit, 'fit button missing');
+    await page.click(center(fit).x, center(fit).y);
+    await page.settle();
+  };
+  const editing = () => page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input') === true`);
+  /** The node being edited (or else the selected one): its box, and the draft's rows, height and centre against the node's text box. */
+  const box = () => page.evaluate(`(() => {
+    const pane = document.getElementById('harness-pane');
+    const input = pane.querySelector('.mappy-inline-input');
+    const node = input ? input.closest('.mappy-node') : pane.querySelector('.mappy-node.is-selected');
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    // World units: the layout's position of the node and its size at scale 1. Confirming selects the node, which can
+    // pan the viewport to bring a wide node into view; the box on the map is what must not change.
+    const scale = rect.width / node.offsetWidth;
+    const placed = node.style.transform.match(/translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/u);
+    const result = { x: Number(placed?.[1]), y: Number(placed?.[2]), width: rect.width / scale, height: rect.height / scale,
+      title: node.querySelector('.mappy-node-label')?.textContent ?? '' };
+    if (!input) return result;
+    const style = getComputedStyle(input);
+    const line = parseFloat(style.lineHeight);
+    const own = input.getBoundingClientRect();
+    const rows = Math.round(input.offsetHeight / line);
+    const nodeStyle = getComputedStyle(node);
+    const top = rect.y + (parseFloat(nodeStyle.paddingTop) + parseFloat(nodeStyle.borderTopWidth)) * scale;
+    return { ...result, value: input.value, rows, draftHeight: input.offsetHeight, line,
+      selected: input.selectionStart === 0 && input.selectionEnd === input.value.length, offsetTop: (own.y - top) / scale };
+  })()`);
+  const same = (left, right) => ['x', 'y', 'width', 'height'].every(key => Math.abs(left[key] - right[key]) <= 0.5);
+  const show = rect => `${rect.width.toFixed(1)}×${rect.height.toFixed(1)}@${rect.x.toFixed(1)},${rect.y.toFixed(1)}`;
+  const waitEditing = async (wanted = true) => {
+    for (let wait = 0; wait < 20 && (await editing()) !== wanted; wait += 1) await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
+    expect((await editing()) === wanted, wanted ? 'the inline editor did not open' : 'the inline editor did not close');
+  };
+  const f2 = async title => {
+    const node = await nodeInfo(page, title);
+    await page.click(center(node.rect).x, center(node.rect).y);
+    await page.settle();
+    await page.key('F2', 'F2', 113);
+    await page.settle();
+    await waitEditing();
+  };
+  /** Replace the draft with `text` the way it is typed; `\n` is a Shift+Enter. */
+  const typeDraft = async text => {
+    await page.evaluate(`document.activeElement.select()`);
+    if (text === '') await page.key('Backspace', 'Backspace', 8);
+    for (const [index, part] of text.split('\n').entries()) {
+      if (index > 0) await page.key('Enter', 'Enter', 13, 8, '\r');
+      if (part) await page.type(part);
+    }
+    await page.settle();
+  };
+  /** A draft is exactly its rows high (no floor above the text): the caret is in the middle of its row. */
+  const checkDraft = (draft, rows, label) => {
+    expect(draft.rows === rows, `${label}: the draft has ${draft.rows} rows, not ${rows}`);
+    expect(Math.abs(draft.draftHeight - rows * draft.line) <= 1, `${label}: the draft is ${draft.draftHeight}px high for ${rows} rows of ${draft.line}px`);
+    expect(Math.abs(draft.offsetTop) <= 0.5, `${label}: the draft starts ${draft.offsetTop.toFixed(1)}px below the node's text box`);
+  };
+  const TARGETS = [
+    { id: 'plain', label: '通常ノード「休息の取り方」', title: '休息の取り方' },
+    { id: 'root', label: '本文のルート「講座の本体」', title: '講座の本体' },
+    { id: 'topic', label: 'トピック「参考資料」', title: '参考資料' },
+    { id: 'stage', label: 'ステージ「記録する」', title: '記録する' },
+  ];
+  const TEXTS = [
+    { id: 'empty', label: '空', text: '', rows: 1 },
+    { id: 'one', label: '1 文字', text: 'あ', rows: 1 },
+    { id: 'wrap', label: '折り返す長さ', text: WRAP_SAMPLES.全角, rows: 2 },
+    { id: 'lines', label: '複数行（Shift+Enter）', text: '温泉\n旅行', rows: 2 },
+  ];
+  for (const mode of ['mindmap', 'timeline', 'hierarchy', 'balanced']) {
+    await recorder.run(`new-node-box-${mode}`, `${mode}: ${TARGETS.map(target => target.label).join('・')}を F2 → ${TEXTS.map(text => text.label).join('・')}を入力 → Enter → F2 → Escape`,
+      '入力中・確定後・再編集・Escape 後でノードの外形（配置位置と、倍率 1 での幅・高さ）が 0.5px 以内で同じ。入力欄は行数ちょうどの高さでノードの文字の枠の上端から始まる（カーソルが行の縦の中央）', async () => {
+        const results = [];
+        for (const target of TARGETS) {
+          for (const text of TEXTS) {
+            await reset(mode);
+            await f2(target.title);
+            await typeDraft(text.text);
+            const draft = await box();
+            const label = `${target.id}/${text.id}`;
+            checkDraft(draft, text.rows, label);
+            await page.key('Enter', 'Enter', 13);
+            await page.settle();
+            await waitEditing(false);
+            const confirmed = await box();
+            // The node now bears the text (a heading's empty title is refused by nothing, so the name is the text).
+            const name = text.text.replace(/\n/gu, '');
+            expect(confirmed.title.replace(/\s+/gu, '') === name, `${label}: confirmed ${JSON.stringify(confirmed.title)}`);
+            await page.key('F2', 'F2', 113);
+            await page.settle();
+            await waitEditing();
+            const again = await box();
+            checkDraft(again, text.rows, `${label} again`);
+            await page.key('Escape', 'Escape', 27);
+            await page.settle();
+            await waitEditing(false);
+            const closed = await box();
+            expect(same(draft, confirmed) && same(confirmed, again) && same(again, closed),
+              `${label}: draft ${show(draft)}, confirmed ${show(confirmed)}, again ${show(again)}, after Escape ${show(closed)}`);
+            results.push(`${label} ${show(draft)}`);
+          }
+        }
+        await reset(mode);
+        return results.join('、');
+      });
+
+    await recorder.run(`new-node-tab-${mode}`, `${mode}: ステージ「記録する」で Tab → そのまま Enter → F2 → Escape`,
+      '「サブトピック」が全選択で開き、1 行の高さ。確定後・再編集・Escape 後も同じ外形', async () => {
+        await reset(mode);
+        const node = await nodeInfo(page, '記録する');
+        await page.click(center(node.rect).x, center(node.rect).y);
+        await page.settle();
+        await page.key('Tab', 'Tab', 9);
+        await page.settle();
+        await waitEditing();
+        const draft = await box();
+        expect(draft.value === 'サブトピック' && draft.selected, `the new node's draft is ${JSON.stringify(draft.value)}, selected: ${draft.selected}`);
+        checkDraft(draft, 1, 'new node');
+        await page.key('Enter', 'Enter', 13);
+        await page.settle();
+        await waitEditing(false);
+        const confirmed = await box();
+        await page.key('F2', 'F2', 113);
+        await page.settle();
+        await waitEditing();
+        const again = await box();
+        await page.key('Escape', 'Escape', 27);
+        await page.settle();
+        await waitEditing(false);
+        const closed = await box();
+        expect(same(draft, confirmed) && same(confirmed, again) && same(again, closed),
+          `draft ${show(draft)}, confirmed ${show(confirmed)}, again ${show(again)}, after Escape ${show(closed)}`);
+        expect((await page.harness('h.source()')).includes('  - ふりかえる\n  - サブトピック\n'), 'the new child is not written under its provisional name');
+        await reset(mode);
+        return `サブトピック ${show(draft)}`;
+      });
+  }
+
+  await recorder.run('new-node-ime', '「記録する」で Tab →（全選択の「サブトピック」に）IME で「にほん」を変換開始 →「日本」で確定 → Enter',
+    '変換の開始で仮の名前が置き換わり、確定した「日本」が書かれる', async () => {
+      await reset('mindmap');
+      const node = await nodeInfo(page, '記録する');
+      await page.click(center(node.rect).x, center(node.rect).y);
+      await page.settle();
+      await page.key('Tab', 'Tab', 9);
+      await page.settle();
+      await waitEditing();
+      await page.send('Input.imeSetComposition', { text: 'にほん', selectionStart: 3, selectionEnd: 3 });
+      const composing = await page.evaluate(`document.activeElement.value`);
+      expect(composing === 'にほん', `while composing the draft is ${JSON.stringify(composing)}`);
+      await page.type('日本');
+      await page.settle();
+      await page.key('Enter', 'Enter', 13);
+      await page.settle();
+      await waitEditing(false);
+      const source = await page.harness('h.source()');
+      expect(source.includes('  - ふりかえる\n  - 日本\n') && !source.includes('サブトピック'), 'the composed text did not replace the provisional name');
+      await reset('mindmap');
+      return `変換中の入力欄 ${JSON.stringify(composing)}`;
+    });
+
+  await recorder.run('new-node-escape', '「記録する」で Tab → すぐ Escape（4 レイアウト）',
+    'ノードが消え、原文は元のまま。「記録する」が選択に戻る', async () => {
+      for (const mode of ['mindmap', 'timeline', 'hierarchy', 'balanced']) {
+        await reset(mode);
+        const node = await nodeInfo(page, '記録する');
+        await page.click(center(node.rect).x, center(node.rect).y);
+        await page.settle();
+        await page.key('Tab', 'Tab', 9);
+        await page.settle();
+        await waitEditing();
+        await page.key('Escape', 'Escape', 27);
+        await page.settle();
+        await waitEditing(false);
+        await page.settle();
+        expect(await page.harness('h.source()') === original, `${mode}: the note changed`);
+        const selected = (await page.harness('h.nodes()')).filter(item => item.selected).map(item => item.title);
+        expect(selected.length === 1 && selected[0] === '記録する', `${mode}: selected ${selected.join(', ')}`);
+      }
+      return '4 レイアウトとも原文は元のまま';
+    });
+  await reset('mindmap');
+}
+
 /**
  * M14 (LEV-60): the settings' theme puts `theme-light` / `theme-dark` on the map container only,
  * and styles.css re-derives the palette there. Each combination of page theme and map theme is
@@ -1370,7 +1581,7 @@ async function captureTopicOperations(recorder, page) {
   const title = '追加した話題';
   let added = null;
 
-  await recorder.run('topic-add-dblclick', '空白をダブルクリック → 入力 → Enter', '文書末尾に `## ` が増えてその場で入力でき、確定で見出しの文と mappy-topics の位置が保存される', async () => {
+  await recorder.run('topic-add-dblclick', '空白をダブルクリック → 入力 → Enter', '文書末尾に仮の名前の `## トピック` が増え、全選択の入力欄に打った文で置き換わり、確定で見出しの文と mappy-topics の位置が保存される（LEV-203）', async () => {
     // Away from the edges, so revealing the new node does not pan the viewport under the comparison.
     const point = await emptyCanvasPoint(page, 80);
     const canvas = await page.harness('h.canvasRect()');
@@ -1379,11 +1590,13 @@ async function captureTopicOperations(recorder, page) {
     await page.dblclick(point.x, point.y);
     await page.settle();
     const blank = await page.harness('h.source()');
-    expect(blank === `${original}\n## \n`, 'the empty section was not appended at the end of the note');
+    expect(blank === `${original}\n## トピック\n`, 'the section was not appended at the end of the note under its provisional name');
     const editing = await page.evaluate(`document.activeElement?.classList.contains('mappy-inline-input')`);
     expect(editing, 'inline editor did not take focus on the new topic');
     const host = await page.evaluate(`document.activeElement?.closest('.mappy-node')?.classList.contains('is-topic')`);
     expect(host, 'the edited node is not a topic root');
+    const selected = await page.evaluate(`(() => { const input = document.activeElement; return input.value === 'トピック' && input.selectionStart === 0 && input.selectionEnd === input.value.length; })()`);
+    expect(selected, 'the draft does not hold the provisional name selected');
     await page.screenshot(join(recorder.directory, 'topic-add-editing.png'));
     await page.type(title);
     await page.key('Enter', 'Enter', 13);
@@ -1402,10 +1615,10 @@ async function captureTopicOperations(recorder, page) {
     return `${entry}、ノード ${before} → ${count}`;
   });
 
-  await recorder.run('topic-add-undo', '右クリック「元に戻す」×2 → 「やり直す」×2', '1 回目で名前と位置、2 回目で区画が消え、やり直しで戻る', async () => {
+  await recorder.run('topic-add-undo', '右クリック「元に戻す」×2 → 「やり直す」×2', '1 回目で名前と位置（仮の名前の区画に戻る）、2 回目で区画が消え、やり直しで戻る', async () => {
     expect(added, 'the previous case did not add a topic');
     await undo();
-    expect((await page.harness('h.source()')) === `${original}\n## \n`, 'first undo did not remove title and position together');
+    expect((await page.harness('h.source()')) === `${original}\n## トピック\n`, 'first undo did not remove title and position together');
     await undo();
     expect((await page.harness('h.source()')) === original, 'second undo did not remove the section');
     expect(!(await page.harness(`h.node(${JSON.stringify(title)})`)), 'the topic is still shown after undo');
@@ -3123,6 +3336,7 @@ async function main() {
       await captureHierarchyRows(recorder, page);
       await captureInlineWidth(recorder, page);
       await captureLineBreak(recorder, page);
+      await captureNewNode(recorder, page);
       await captureThemes(recorder, page);
       await captureVisibleLayouts(recorder, page);
       await captureTopicOperations(recorder, page);

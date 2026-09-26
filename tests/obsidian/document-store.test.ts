@@ -214,6 +214,54 @@ describe('DocumentStore', () => {
     expect(await store.redo(file)).toBe('ac');
   });
 
+  it('retracts its last write with no step left for Undo or Redo, the steps before it kept (LEV-203)', async () => {
+    const { store, file, disk } = harness('a');
+    await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    const added = await store.applyOver(file, 'ab', [{ from: 2, to: 2, text: 'c' }]);
+    const back = await store.retract(file, added);
+    expect(back).toEqual({ before: 'abc', after: 'ab', edits: [{ from: 2, to: 3, text: '' }] });
+    expect(disk.get(file.path)).toBe('ab');
+    expect(store.canRedo(file)).toBe(false);
+    expect(await store.undo(file)).toBe('a');
+    expect(store.canUndo(file)).toBe(false);
+    expect(await store.redo(file)).toBe('ab');
+    expect(store.canRedo(file)).toBe(false);
+  });
+
+  it('retracts through an open editor', async () => {
+    const editor = makeEditor('a');
+    const { store, file, leaves } = harness('a');
+    leaves.push({ view: new MarkdownView(file, editor) });
+    const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    await store.retract(file, added);
+    expect(editor.state.source).toBe('a');
+    expect(store.canUndo(file)).toBe(false);
+  });
+
+  it('refuses to retract a write something came after, leaving the note as it is', async () => {
+    const own = harness('a');
+    const first = await own.store.applyOver(own.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    await own.store.apply(own.file, 'ab', [{ from: 2, to: 2, text: 'c' }]);
+    await expect(own.store.retract(own.file, first)).rejects.toThrow(conflictMessage);
+    expect(own.disk.get(own.file.path)).toBe('abc');
+    // The later step is still there to undo.
+    expect(await own.store.undo(own.file)).toBe('ab');
+
+    const external = harness('a');
+    const added = await external.store.applyOver(external.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    external.disk.set(external.file.path, 'ab!');
+    await expect(external.store.retract(external.file, added)).rejects.toThrow(conflictMessage);
+    expect(external.disk.get(external.file.path)).toBe('ab!');
+    expect(external.store.canUndo(external.file)).toBe(false);
+
+    const undone = harness('a');
+    const gone = await undone.store.applyOver(undone.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    await undone.store.undo(undone.file);
+    await expect(undone.store.retract(undone.file, gone)).rejects.toThrow(conflictMessage);
+    expect(undone.disk.get(undone.file.path)).toBe('a');
+    expect(undone.store.canRedo(undone.file)).toBe(true);
+  });
+
   it('keeps histories separate for different files and caps each at 50 operations', async () => {
     const { store, file, disk } = harness('0');
     const other = makeFile('Other.md');

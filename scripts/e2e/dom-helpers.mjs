@@ -235,9 +235,10 @@ export function makeAfter(evaluate) {
 
 /**
  * A key that opens the inline editor on the selected node, then `title` and Enter to confirm it. With
- * `emptyWrite` (Enter／Tab: the new empty node is committed as its own history entry before the draft opens),
- * the text the Enter is compared against is read only once that empty node is on disk and the map has re-read
- * it — read earlier, a late empty-node write would pass for the title's.
+ * `emptyWrite` (Enter／Tab: the new node is committed under its provisional name 「サブトピック」 as its own history
+ * entry before the draft opens it selected, so the title typed replaces it — LEV-203), the text the Enter is compared
+ * against is read only once that new node is on disk and the map has re-read it — read earlier, a late write of the
+ * new node would pass for the title's.
  */
 function makeDraft(cdp, evaluate) {
   const after = makeAfter(evaluate);
@@ -251,7 +252,7 @@ function makeDraft(cdp, evaluate) {
       const current = emptyWrite ? await disk() : null;
       if (editing && (!emptyWrite || (current.text !== original && current.mapCurrent))) break;
       if (Date.now() - started > 3000) {
-        throw new Error(editing ? `${key}'s new empty node never reached the note` : `${key} did not open the inline editor`);
+        throw new Error(editing ? `${key}'s new node never reached the note` : `${key} did not open the inline editor`);
       }
       await wait(100);
     }

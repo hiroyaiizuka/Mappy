@@ -194,7 +194,7 @@ describe('a topic asked for while the blur is saving the draft (review 3 of LEV-
     await mounted.settle();
     await mounted.settle();
     expect(mounted.source()).toContain('- 温泉<br>旅行\n');
-    expect(mounted.source()).toMatch(/\n## \n?$/u);
+    expect(mounted.source()).toMatch(/\n## トピック\n?$/u);
   });
 });
 

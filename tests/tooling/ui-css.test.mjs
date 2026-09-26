@@ -16,20 +16,32 @@ describe("map editing CSS", () => {
     // click beside the text stays in the editor.
     const input = rule(".mappy-view .mappy-inline-input");
     expect(input).toMatch(/field-sizing:\s*content;/u);
-    expect(input).toMatch(/min-width:\s*max\(40px, 100%\);/u);
+    // No floor of its own (LEV-203): a floor the node does not share sticks out of an empty node or resizes it when
+    // the draft closes, and Obsidian's Chromium 124 counted none of `max(40px, 100%)` toward the node's width.
+    expect(input).toMatch(/min-width:\s*100%;/u);
+    expect(input).not.toMatch(/max\(/u);
     expect(input).toMatch(/max-width:\s*100%;/u);
     expect(input).not.toMatch(/(^|[^-])width:\s*100%/u);
-    // The label's weight (400) whatever a theme gives the ancestors, and the 26px floor the measuring path uses.
+    // The label's weight (400) whatever a theme gives the ancestors, and one row as high as the label's line (LEV-203:
+    // the 26px floor put the caret above the middle and made the node 34px while editing, 28 or 30.4 once confirmed).
     expect(input).toMatch(/font: inherit;[\s\S]*font-weight:\s*400;/u);
-    expect(input).toMatch(/min-height:\s*26px;/u);
+    expect(input).toMatch(/min-height:\s*0;/u);
     expect(css).toMatch(/\.mappy-node\.is-root > \.mappy-inline-input \{ font-weight: 700; \}/u);
     expect(css).toMatch(/\.mappy-node\.is-stage > \.mappy-inline-input \{ font-weight: 600; \}/u);
     expect(css).not.toMatch(/--mappy-text-wrap|@property/u);
     // The one-row width InlineEditor.resize reads.
-    // No min-width while measuring: `max(40px, 100%)` would floor the reading at the node's width.
+    // No min-width while measuring: `100%` would floor the reading at the node's width.
     expect(rule(".mappy-view .mappy-inline-input.is-measuring")).toMatch(/width:\s*0;\s*min-width:\s*0;\s*padding-right:\s*1px;\s*white-space:\s*pre;/u);
     // Spacing a theme gives the label reaches the draft too (the UA resets it on a textarea).
     for (const property of ["letter-spacing", "word-spacing", "text-transform"]) expect(input).toMatch(new RegExp(`${property}:\\s*inherit;`, "u"));
+  });
+
+  it("gives an empty node and an emptied draft one box, one line high (LEV-203)", async () => {
+    const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
+    // The same floor on both sides of the editor, so opening or closing it on an empty node changes nothing.
+    expect(css).toMatch(/\.mappy-view \.mappy-node\.is-empty:not\(\.is-editing\), \.mappy-view \.mappy-node\.is-editing\.is-draft-empty \{ min-width: 96px; \}/u);
+    // An empty label takes a line (a zero-width space), as the draft's one row does.
+    expect(css).toMatch(/\.mappy-node\.is-empty > \.mappy-node-content > \.mappy-node-label::before \{ content: "\\200b"; \}/u);
   });
 
   it("turns Obsidian's hover tooltips off over the map, fold controls aside (LEV-199)", async () => {

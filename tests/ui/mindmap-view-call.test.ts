@@ -324,9 +324,10 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     await settle();
     // The draft was written on its way, and the command ran against the note it left.
     expect(current()).toContain('- 回復する（編集）');
-    // add-child names its new node in place, so an editor is open again — on the child, not on the draft.
-    expect(editor()?.value).toBe('');
-    expect(parsed('記録する（編集）').children.some(child => child.title === '')).toBe(true);
+    // add-child names its new node in place, so an editor is open again — on the child (its provisional name,
+    // LEV-203), not on the draft.
+    expect(editor()?.value).toBe('サブトピック');
+    expect(parsed('記録する（編集）').children.some(child => child.title === 'サブトピック')).toBe(true);
   });
 
   it('says so instead of dropping the choice while a save is in flight', async () => {

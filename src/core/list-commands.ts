@@ -249,7 +249,7 @@ function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: numb
 export function planListEdit(doc: MindDocument, node: MindNode, command: StructureCommand): EditPlan {
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
-    case 'add-sibling': return add(doc, node, true);
+    case 'add-sibling': return add(doc, node, true, command.title);
     case 'delete': {
       const parent = getNode(doc, node.parentId ?? 'root');
       const count = doc.nodes.length - branchSize(node);

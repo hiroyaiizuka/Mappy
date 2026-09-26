@@ -37,12 +37,17 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const paste = makePaste(evaluate);
 
-/** Tab: a new child, named in place. Answered by the inline editor being open on an empty node. */
+/**
+ * Tab: a new child, named in place, then its provisional name cleared (LEV-203: Tab writes 「サブトピック」 and opens it
+ * selected; Backspace takes the selection), so the node this case pastes onto is still an untitled one once confirmed.
+ */
 const addChild = async () => {
   await cdp.realKey('Tab');
   await wait(1200);
   const editing = await evaluate(`${VIEW} return !!input();`);
   if (!editing) throw new Error('Tab did not open the inline editor on a new child');
+  await cdp.realKey('Backspace');
+  await wait(300);
 };
 const state = () => evaluate(`${VIEW}
   // What the node being edited actually shows: an image pasted onto it has to be on screen right away, not
@@ -57,14 +62,15 @@ try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
 
-  // 1. A new node, an image pasted onto it, and the node left as the user leaves it: untitled.
+  // 1. A new node, an image pasted onto it, and the node confirmed as the user leaves it: untitled. (Escape would
+  // keep the provisional name now: the paste wrote the node's body, so Escape no longer takes the node back.)
   await step('first-paste', async () => {
     await select('記録する');
     await addChild();
     await paste('first.png');
     await wait(2500);
     const after = await state();
-    await cdp.realKey('Escape');
+    await cdp.realKey('Enter');
     await wait(600);
     const settled = await state();
     check(after.messages.length === 0, `first paste showed ${JSON.stringify(after.messages)}`);

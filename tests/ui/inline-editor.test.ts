@@ -84,6 +84,20 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.save).not.toHaveBeenCalled();
   });
 
+  it('gives an emptied draft the empty node\'s box, and takes it away with the text or the editor (LEV-203)', () => {
+    const { host, input, editor } = fixture('');
+    expect(host.classList.contains('is-draft-empty')).toBe(true);
+    input.value = 'あ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'あ' }));
+    expect(host.classList.contains('is-draft-empty')).toBe(false);
+    input.value = '';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    expect(host.classList.contains('is-draft-empty')).toBe(true);
+    editor.dispose();
+    expect(host.classList.contains('is-draft-empty')).toBe(false);
+    expect(fixture('名前').host.classList.contains('is-draft-empty')).toBe(false);
+  });
+
   describe('the draft box (LEV-198)', () => {
     /** Whether the page reports `field-sizing: content` as supported. */
     const fieldSizing = (supported: boolean): void => {

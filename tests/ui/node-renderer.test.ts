@@ -122,6 +122,20 @@ describe('NodeRenderer hierarchy and folding appearance', () => {
     expect(classes('Topic')).not.toContain('is-stage');
   });
 
+  it('marks a node without text as empty, for the box an emptied draft shares (LEV-203)', () => {
+    const source = '## Body\n- \n-   \n- Text\n';
+    const { renderer } = setup(source);
+    const parsed = parseMarkdown(source, 'File root');
+    renderer.update(parsed.nodes, parsed, 'Course.md', new Set(), { visualRootId: id(parsed, 'Body'), mode: 'mindmap' });
+    const empty = parsed.nodes.filter(node => node.title === '').map(node => renderer.entries.get(node.id)?.element.classList.contains('is-empty'));
+    expect(empty).toEqual([true, true]);
+    expect(renderer.entries.get(id(parsed, 'Text'))?.element.classList.contains('is-empty')).toBe(false);
+    // Named later: the mark goes.
+    const renamed = parseMarkdown('## Body\n- 名前\n-   \n- Text\n', 'File root', parsed);
+    renderer.update(renamed.nodes, renamed, 'Course.md', new Set(), { visualRootId: id(renamed, 'Body'), mode: 'mindmap' });
+    expect(renderer.entries.get(id(renamed, '名前'))?.element.classList.contains('is-empty')).toBe(false);
+  });
+
   it('shows every hidden descendant in the collapsed badge, including a nested collapsed branch', () => {
     const { parsed, renderer } = setup('## Course\n### Stage\n#### One\n##### Deep\n#### Two\n##### Deep two\n');
     const stageId = id(parsed, 'Stage');

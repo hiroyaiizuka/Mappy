@@ -145,6 +145,28 @@ export class DocumentStore {
     throw new Error(conflictMessage);
   }
 
+  /**
+   * Take back `write`, the history's last step, as if it had never been made: the note goes back to the text
+   * before it, and neither Undo nor Redo has a step for it. For a node the map added and the user dismissed at
+   * once (LEV-203: Escape on the new node's draft), which is no edit of theirs to undo or redo. Refused, with the
+   * note left as it is, when anything has come after the write (another step, a change from outside). Returns
+   * the write that took it back.
+   */
+  retract(file: TFile, write: LatestWrite): Promise<LatestWrite> {
+    return this.enqueue(file, async (session) => {
+      const current = await this.readCurrent(file);
+      if (this.observe(session, current)) throw new Error(conflictMessage);
+      const entry = session.past[session.past.length - 1];
+      if (!entry || entry.before !== write.before || entry.after !== write.after || current !== entry.after) {
+        throw new Error(conflictMessage);
+      }
+      await this.writeSafely(file, session, entry.after, entry.before, entry.inverse);
+      session.latest = [];
+      session.past.pop();
+      return { before: entry.after, after: entry.before, edits: entry.inverse };
+    });
+  }
+
   undo(file: TFile): Promise<string> {
     return this.navigateHistory(file, 'undo');
   }

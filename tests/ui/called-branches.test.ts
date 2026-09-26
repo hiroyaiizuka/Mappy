@@ -418,7 +418,7 @@ describe('editing the calling item', () => {
     click(node('進行'));
     key(node('進行'), 'Tab');
     await settle();
-    expect(source()).toContain('  - ![[Timeline]]\n    - \n  - ![[Headings#同じ名前]]');
+    expect(source()).toContain('  - ![[Timeline]]\n    - サブトピック\n  - ![[Headings#同じ名前]]');
     const input = editor();
     if (!input) throw new Error('no editor');
     input.value = '自分の子';
@@ -430,14 +430,16 @@ describe('editing the calling item', () => {
     click(node('進行'));
     key(node('進行'), 'Enter');
     await settle();
-    expect(source()).toContain('    - 自分の子\n  - \n  - ![[Headings#同じ名前]]');
+    expect(source()).toContain('    - 自分の子\n  - サブトピック\n  - ![[Headings#同じ名前]]');
+    // Escape on the new sibling's draft takes the sibling back (LEV-203), and the calling item is selected again.
     key(editor() ?? document.body, 'Escape');
     await settle();
-    click(node('進行'));
+    expect(source()).toContain('    - 自分の子\n  - ![[Headings#同じ名前]]');
+    expect(node('進行').hasClass('is-selected')).toBe(true);
     key(node('進行'), 'Delete');
     await settle();
     expect(source()).not.toContain('![[Timeline]]');
-    expect(source()).toContain('  - ![[Map]]\n  - \n  - ![[Headings#同じ名前]]\n');
+    expect(source()).toContain('  - ![[Map]]\n  - ![[Headings#同じ名前]]\n');
     expect(titles()).not.toContain('第 1 週');
     expect(calledRoots()).toEqual(['講座', '同じ名前', '講座']);
     key(node('ホスト'), 'z', { metaKey: true });

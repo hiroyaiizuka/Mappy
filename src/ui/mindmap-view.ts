@@ -48,6 +48,12 @@ const TOPIC_RENDER_WAIT_MS = 300;
 /** A draft whose node is no longer in the note: the one thing the user can do is pick a node again. */
 export const NODE_GONE_MESSAGE = "編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。";
 /** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
+/**
+ * The provisional names a node added on the map is written with, selected in its inline editor so that typing
+ * replaces them (LEV-203, as MarkMind): a child or sibling (Tab／Enter), and a free topic (the empty canvas).
+ */
+export const NEW_NODE_TITLE = "サブトピック";
+export const NEW_TOPIC_TITLE = "トピック";
 export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り専用です。ダブルクリックで元のマップを開けます。";
 
 /** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
@@ -79,6 +85,12 @@ interface OwnWrite {
   readonly edits: readonly TextEdit[];
   /** `after` parsed from a document with these edits, kept so a replay and a draft's base do not parse it again (`parseOwn`). */
   parsed?: { from: MindDocument; basename: string; document: MindDocument };
+}
+
+/** A node the view has just added for the inline editor to name (LEV-203): the write that added it, and the node selected before. */
+interface Created {
+  readonly write: LatestWrite;
+  readonly previous: string | null;
 }
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
@@ -1500,13 +1512,15 @@ export class MindmapView extends FileView {
     const document = this.document;
     const file = this.file;
     if (!document || this.saving) return;
-    const plan = planEdit(document, command);
-    await this.commit(document.source, plan.edits, file);
+    // A node added without its text (Tab, Enter, the menu) is written under its provisional name and named in place;
+    // one added with its text (a called map) is only selected.
+    const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
+    const previous = this.selectedId;
+    const plan = planEdit(document, provisional ? { ...command, title: NEW_NODE_TITLE } : command);
+    const write = await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(plan.selectionOffset);
-    // A new empty node or topic is named in place; one added with its text (a called map) is only selected.
-    const named = "title" in command && command.title !== undefined;
-    if (selected && !named && (command.type === "add-child" || command.type === "add-sibling" || command.type === "add-topic")) this.editTitle();
+    if (selected && provisional) this.editTitle({ write, previous });
   }
 
   /**
@@ -1557,9 +1571,10 @@ export class MindmapView extends FileView {
   }
 
   /**
-   * A new empty top-level section at the end of the note, edited in place where the canvas was
-   * pressed (§5 M7). The position is stored by the edit that names it, so the title and the
-   * `mappy-topics` entry are one step of the history; Escape keeps the section, Undo removes it.
+   * A new top-level section at the end of the note under its provisional name (「トピック」, selected in the
+   * draft: LEV-203), edited in place where the canvas was pressed (§5 M7). The position is stored by the edit
+   * that names it, so the title and the `mappy-topics` entry are one step of the history; Escape takes the
+   * section back (no step left for Undo), Undo after a confirmed name removes the name, then the section.
    * Without a point no position is kept or stored: the topic takes the default place of a topic with
    * no `mappy-topics` entry until it is dragged (the 操作 menu of LEV-77 added topics this way; no caller
    * does now, the popover of LEV-81 having no such item).
@@ -1582,13 +1597,14 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!document || !file || this.saving) return;
     const position = point ? this.topicPoint(point) : null;
-    const plan = planEdit(document, { type: "add-topic" });
-    await this.commit(document.source, plan.edits, file);
+    const previous = this.selectedId;
+    const plan = planEdit(document, { type: "add-topic", title: NEW_TOPIC_TITLE });
+    const write = await this.commit(document.source, plan.edits, file);
     if (this.file !== file || this.closed) return;
     const created = this.document ? nodeAt(this.document, plan.selectionOffset) : undefined;
     // The first heading of a note becomes its body root and has no position.
     if (created && position && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
-    if (this.reveal(plan.selectionOffset)) this.editTitle();
+    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, previous });
   }
 
   /** The tree under a root on the map: the body's own subtree, or a topic's. */
@@ -1793,7 +1809,7 @@ export class MindmapView extends FileView {
     finally { this.endTopicDrag(command.nodeId, true); }
   }
 
-  private async commit(source: string, edits: TextEdit[], file = this.file): Promise<void> {
+  private async commit(source: string, edits: TextEdit[], file = this.file): Promise<CarriedWrite> {
     if (!file || file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
     if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
     // Read before the write: a draft that already disagrees with the note is left alone, so an external
@@ -1820,10 +1836,34 @@ export class MindmapView extends FileView {
       if (drafts.length > 0 && base) this.rebaseDrafts(drafts, base, written, write.edits);
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh();
+      return write;
     } finally { this.saving = false; }
   }
 
-  private editTitle(): void {
+  /**
+   * Take back a node this view has just added, whose draft was dismissed with Escape before anything was
+   * written to it (LEV-203): the note goes back to its text before the addition, with no step left for Undo or
+   * Redo, and the node selected before the addition is selected again. Taken back as this view's own write, so
+   * the re-read carries every id over (folds, the selection), same-titled nodes included. The caller asks only
+   * while the note is as the addition left it; the store still refuses (the node stays, a Notice says why) if
+   * a change lands in between.
+   */
+  private async retract(file: TFile, created: Created): Promise<void> {
+    if (file !== this.file || this.closed) return;
+    this.saving = true;
+    try {
+      let write: LatestWrite;
+      try { write = await this.store.retract(file, created.write); }
+      catch (error) { this.scheduleRefresh(); throw error; }
+      this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
+      if (!this.unloading) await this.refresh();
+    } finally { this.saving = false; }
+    if (this.file !== file || this.closed || !this.document) return;
+    if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
+  }
+
+  /** `created`: the draft names a node just added (its provisional name selected); Escape then takes the node back. */
+  private editTitle(created?: Created): void {
     // The draft already open is confirmed before another opens (a double click on a node, F2 from the menu), as blur
     // would save it; one held with a reason (a refusal, a conflict: its error line up) is saved only by its own Enter,
     // so it stays where it is, instead of being dropped for the node's old text or written unasked (LEV-202).
@@ -1879,6 +1919,14 @@ export class MindmapView extends FileView {
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
         this.renderer.editing(node.id, false);
         if (this.closed || this.unloading || file !== this.file) return;
+        // Dismissed right after the addition, the note still as the addition left it: the node goes too. Once
+        // something else has been written (an image pasted onto it, a change from outside), Escape only closes
+        // the draft, as on any node: the node now holds more than the addition.
+        if (cancelled && created && this.document?.source === created.write.after) {
+          if (this.pendingTopic?.id === node.id) this.pendingTopic = null;
+          this.run(() => this.retract(file, created));
+          return;
+        }
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
         const current = this.document?.nodes.find(item => item.id === node.id)
