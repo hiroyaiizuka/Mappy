@@ -2,9 +2,9 @@
  * E53 (docs/harness.md): a free tree (a topic, the body) dropped with the real mouse is not drawn back where it was
  * pressed on any frame between the release and the draw of the saved note (LEV-197).
  *
- * The save re-reads the note after its write (`writeOwn`), and that read gave up when the note's watcher scheduled a
- * newer re-read while it was reading (the epoch). The drop's end had already let go of the drag's overrides, so until
- * the watcher's re-read drew, frames laid out the note from before the drop. Whether the watcher lands inside that
+ * The save re-reads the note after its write (`writeOwn`), and that read gives up when the note's watcher schedules a
+ * newer re-read while it is reading (the epoch). The drop's end let go of the drag's overrides, so until the watcher's
+ * re-read drew, frames laid out the note from before the drop (since the fix, the dropped trees are held until then). Whether the watcher lands inside that
  * read on the real device is what this case records per drop (`superseded`), besides what was on screen.
  *
  * Rows are the tree dropped (a topic, the body) × how the note is open:
@@ -17,7 +17,8 @@
  *   its overrides. A read longer than the watcher's 45 ms debounce does reach it: the watcher's re-read starts while
  *   the save's is still reading, and ends after it. The watcher, both re-reads and every frame are Obsidian's own;
  *   only the answers are late.
- * Each row repeats `--repeat` times (3 by default): whether the watcher lands inside the read is a race.
+ * `slow` rows repeat `--repeat` times (3 by default); `alone` and `editor` run once each: they are controls that record
+ * the order the watcher lands in on the real device, and they pass without the fix too (only `slow` reaches the race).
  *
  * Every drop presses a root, carries it 60 × 30 px in steps, holds still, and releases. From just before the release,
  * every root's place on screen is sampled once per painted frame (a task queued from each animation frame, so it
@@ -257,7 +258,7 @@ try {
       check(opened.editors === (row.form === 'editor' ? 1 : 0), `${row.form}: ${opened.editors} Markdown editors on the note`);
       form = row.form;
     }
-    for (let round = 1; round <= repeat; round += 1) {
+    for (let round = 1; round <= (row.form === 'slow' ? repeat : 1); round += 1) {
       const id = `${row.id}#${round}`;
       const result = await step(id, async () => {
         try { return await drop(row); } finally {

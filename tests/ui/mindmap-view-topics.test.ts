@@ -1789,9 +1789,9 @@ describe('MindmapView holds the viewport through a layout switch made mid-drag, 
   /**
    * A topic carried across a layout switch by button and dropped far to the right (so the drop widens the map and a
    * fit of the map before it differs), with the save's own re-read superseded: `commit` re-reads after its write, and
-   * the modify watcher of this very write can schedule a newer one after the read started. That read used to give up
-   * then, and frames laid out the note from before the drop until the watcher's re-read drew; since LEV-197 it draws
-   * the text it wrote, and the held fit still waits for the watcher's re-read.
+   * the modify watcher of this very write can schedule a newer one after the read started, and that read then gives
+   * up. Until the watcher's re-read draws, the note shown is the one from before the drop (since LEV-197 with the
+   * dropped trees held where they were dropped), and the held fit waits for that re-read.
    * `frameAfterSwitch` lets a frame run between the switch and the drop; `watcher` stands in for the watcher's read.
    */
   const dropSuperseded = async (mounted: Mounted, options: { frameAfterSwitch: boolean; watcher?: () => Promise<string> }) => {
@@ -2194,13 +2194,14 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     });
   }
 
-  it('a note put back while the save\'s re-read reads is shown put back: a newer read that drew it unchanged is not overwritten', async () => {
-    // The newer read finds the text the map already shows, so it draws without replacing the document; the save's
-    // re-read, which read the text written, must still give up to it.
+  it('a note put back while the save\'s re-read reads is shown put back, the dropped topic with it', async () => {
+    // Passes before the fix too (the dropped topic went back at once then): it pins that the hold of the dropped trees
+    // ends with any read that publishes, here one of a note put back by someone else, not only with the written text.
     const mounted = await mount(SOURCE, 'mindmap');
     const { view, store, app } = mounted;
     const state = view as unknown as Internals;
     const dragged = mounted.topic('資料');
+    const pressed = mounted.layout().nodes.find(node => node.id === dragged.id);
     const shift = shiftOf(view);
     shift(dragged.id, { x: 160, y: 120 });
     await frame();
@@ -2222,38 +2223,8 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     expect(drawnMeanwhile).toBe(true);
     expect(mounted.source()).toBe(SOURCE);
     expect(documentOf(view).source).toBe(SOURCE);
-  });
-
-  it('the re-read after ⌘Z draws the step at once, even when the watcher of the step schedules a newer one while it reads', async () => {
-    const mounted = await mount(SOURCE, 'mindmap');
-    const { view, store } = mounted;
-    const state = view as unknown as Internals;
-    const dragged = mounted.topic('資料');
-    shiftOf(view)(dragged.id, { x: 160, y: 120 });
     await frame();
-    await placeOf(view)(dragged.id, { x: 160, y: 120 });
-    await vi.waitFor(() => { expect({ timer: state.refreshTimer, read: state.refreshing }).toEqual({ timer: undefined, read: undefined }); });
-    const dropped = mounted.source();
-    expect(dropped).not.toBe(SOURCE);
-    const read = store.read.bind(store);
-    let answered: (() => void) | undefined;
-    const done = new Promise<void>(resolve => { answered = resolve; });
-    let superseded = false;
-    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
-      const epoch = state.epoch;
-      setTimeout(() => { state.scheduleRefresh(); }, 0);
-      await new Promise(resolve => setTimeout(resolve, 10));
-      superseded = state.epoch !== epoch;
-      setTimeout(() => answered?.(), 0);
-      return read(file);
-    });
-    mounted.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
-    await done;
-    reads.mockRestore();
-    expect(superseded).toBe(true);
-    expect(mounted.source()).toBe(SOURCE);
-    // Drawn by the step's own re-read, before the watcher's (still waiting on its debounce).
-    expect(state.refreshTimer).toBeDefined();
-    expect(documentOf(view).source).toBe(SOURCE);
+    expect(pressed).toBeDefined();
+    expect(mounted.layout().nodes.find(node => node.id === dragged.id)).toMatchObject({ x: pressed?.x, y: pressed?.y });
   });
 });
