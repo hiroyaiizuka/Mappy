@@ -214,22 +214,61 @@ describe('README version-limited known limitations', () => {
     ]);
   });
 
-  it('detects Ver. prefixes, 以前, a leading 〜, full-width digits, and an item wrapped across lines', () => {
+  it('detects Ver. prefixes, full-width digits, and an item wrapped across lines', () => {
     const limitations = [
       '- a（Ver.0.3.1 まで）',
-      '- b（0.3.2 以前）',
-      '- c（〜0.3.3）',
       '- d（０.３.４ まで）',
       '- e: 長い説明で 0.3.5',
       '  まで起きます。',
     ].join('\n');
     expect(readmeErrors('0.3.6', limitations)).toEqual([
       stale(5, 'Ver.0.3.1 まで', '0.3.6'),
-      stale(6, '0.3.2 以前', '0.3.6'),
-      stale(7, '〜0.3.3', '0.3.6'),
-      stale(8, '0.3.4 まで', '0.3.6'),
-      stale(9, '0.3.5 まで', '0.3.6'),
+      stale(6, '0.3.4 まで', '0.3.6'),
+      stale(7, '0.3.5 まで', '0.3.6'),
     ]);
+  });
+
+  it('reads only 「まで」 as a version limit, so a lasting note about old versions or another product\'s range passes', () => {
+    const limitations = [
+      '- 0.3.2 以前の版で保存したノートは、開き直すと書き換わります。',
+      '- BRAT 0.8.0〜1.0.6 で確認しています。',
+    ].join('\n');
+    expect(readmeErrors('1.1.0', limitations)).toEqual([]);
+  });
+
+  it('reports a version limit that is not a full x.y.z instead of silently passing it', () => {
+    expect(readmeErrors('0.3.6', '- a（0.3 まで）\n- b（0.3.5-beta.1 まで）\n- c: H6 まで\n- d: Obsidian 1.4 まで')).toEqual([
+      'README.md:5: known limitation "0.3 まで" must name a release as x.y.z to be checked, like 「（0.3.5 まで）」.',
+      'README.md:6: known limitation "0.3.5-beta.1 まで" must name a release as x.y.z to be checked, like 「（0.3.5 まで）」.',
+    ]);
+  });
+
+  it('closes a fence when its list item ends, and reads fences inside a blockquote', () => {
+    const limitations = [
+      '- a',
+      '  ```',
+      '  x',
+      '- b（0.3.5 まで）',
+      '> ```',
+      '> 0.1.0 まで',
+      '> ```',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([stale(8, '0.3.5 まで', '0.3.6')]);
+  });
+
+  it('ends the section at a Setext heading but not at a heading inside an HTML comment', () => {
+    const limitations = [
+      '<!-- メモ',
+      '## 旧見出し',
+      '-->',
+      '- b（0.1.0 まで）',
+      '',
+      '困ったとき',
+      '---',
+      '',
+      '旧版（0.1.0 まで）の復旧',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([stale(8, '0.1.0 まで', '0.3.6')]);
   });
 
   it('does not compare a version written right after another product\'s name, or inside an HTML comment', () => {

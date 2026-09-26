@@ -4,21 +4,20 @@ import { pathToFileURL } from 'node:url';
 
 export const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const pluginId = /^[a-z]+(?:-[a-z]+)*$/u;
-// README's known-limitations section, where an item may be limited to a release, e.g.
-// 「（0.3.5 まで）」 (harness.md「リリース手順」1). The heading text is load-bearing; README
+// README's known-limitations section, where an item may be limited to a release with
+// 「（x.y.z まで）」 (harness.md「リリース手順」1). The heading text is load-bearing; README
 // marks it with a comment.
 const knownLimitationsHeading = /^ {0,3}##[ \t]+既知の制限/u;
-const sectionEnd = /^ {0,3}#{1,2}(?:[ \t]|$)/u;
-const fenceOpen = /^ {0,3}(`{3,}|~{3,})/u;
-const version = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`;
-const versionPrefix = String.raw`(?:v|ver\.?[ \t]*)?`;
-// 「x.y.z まで」「x.y.z 以前」 and 「〜x.y.z」, allowing a v / Ver. prefix and a soft wrap.
-const versionLimits = [
-  new RegExp(String.raw`(?<![\d.])${versionPrefix}(${version})(?![\d.])\s*(?:まで|以前)`, 'giu'),
-  new RegExp(String.raw`[〜~]\s*${versionPrefix}(${version})(?![\d.])`, 'giu'),
-];
-// A version written right after a Latin product name (「Obsidian 1.4.0 まで」「iOS 16.0.0 以前」)
-// belongs to that product, so it is not compared with Mappy's.
+const atxSectionEnd = /^ {0,3}#{1,2}(?:[ \t]|$)/u;
+const setextUnderline = /^ {0,3}(?:=+|-+)[ \t]*$/u;
+const listItem = /^[ \t]*(?:[-+*]|\d+[.)])(?:[ \t]|$)/u;
+const blockquotePrefix = /^[ \t]*(?:>[ \t]?)+/u;
+const fenceOpen = /^([ \t]*)(`{3,}|~{3,})(.*)$/u;
+// 「x.y.z まで」, allowing a v / Ver. prefix and a soft wrap before まで. Anything dotted is
+// captured so that 「0.3 まで」 or 「0.3.5-beta.1 まで」 is reported instead of silently passing.
+const versionLimit = /(?<![\d.])(?:v|ver\.?[ \t]*)?(\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?![\d.])\s*まで/giu;
+// A version written right after a Latin product name (「Obsidian 1.4.0 まで」) belongs to that
+// product, so it is not compared with Mappy's.
 const otherProductBefore = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+-]*)[ \t]+$/u;
 const manifestKeys = new Set([
   'id', 'name', 'version', 'minAppVersion', 'description', 'author',
@@ -34,21 +33,32 @@ function compareVersions(left, right) {
   return 0;
 }
 
+const indentOf = (line) => line.match(/^[ \t]*/u)[0].length;
+
 /**
- * Blank out fenced code blocks (CommonMark: a fence closes on the same character, at least as
- * long, with nothing after it; an unclosed fence runs to the end), keeping the line count.
+ * Blank out HTML comments and fenced code, keeping the line count. Fences follow CommonMark
+ * closely enough for README: they may sit in a blockquote or a list item, close on the same
+ * character at least as long, and also end when the list item holding them ends (a non-blank
+ * line indented less than the fence) or at the end of the text.
  */
-function blankFencedCode(lines) {
+function blankCommentsAndCode(text) {
+  const lines = text.replace(/<!--[\s\S]*?-->/gu, (comment) => comment.replace(/[^\n]/gu, '')).split('\n');
   let fence;
   return lines.map((line) => {
+    const content = line.replace(blockquotePrefix, '');
     if (fence) {
-      const closing = new RegExp(String.raw`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}[ \t]*$`, 'u');
-      if (closing.test(line)) fence = undefined;
-      return '';
+      const closing = content.trim();
+      const closes = closing.length >= fence.length && [...closing].every((char) => char === fence.char);
+      const leftItem = fence.indent > 0 && content.trim() !== '' && indentOf(content) < fence.indent;
+      if (!leftItem) {
+        if (closes) fence = undefined;
+        return '';
+      }
+      fence = undefined;
     }
-    const open = line.match(fenceOpen);
-    if (open && !(open[1][0] === '`' && line.slice(open[0].length).includes('`'))) {
-      fence = open[1];
+    const open = content.match(fenceOpen);
+    if (open && !(open[2][0] === '`' && open[3].includes('`'))) {
+      fence = { char: open[2][0], length: open[2].length, indent: open[1].length };
       return '';
     }
     return line;
@@ -56,40 +66,43 @@ function blankFencedCode(lines) {
 }
 
 /**
- * Report README known limitations limited to a Mappy release older than `targetVersion`.
- * Only the `## 既知の制限` section is read, outside fenced code and HTML comments, after NFKC
- * (so full-width digits count). A README without the section is reported rather than passing.
+ * Report README known limitations limited to a Mappy release older than `targetVersion`, and
+ * version limits that are not a full x.y.z (they could never be compared). Only the section
+ * under `## 既知の制限` is read, outside HTML comments and fenced code, after NFKC (so
+ * full-width digits count). A README without the section is reported rather than passing.
  */
 export function staleKnownLimitations(readmeText, targetVersion) {
-  const lines = blankFencedCode(readmeText.normalize('NFKC').split(/\r?\n/u));
+  const lines = blankCommentsAndCode(readmeText.normalize('NFKC').replace(/\r\n?/gu, '\n'));
   const start = lines.findIndex((line) => knownLimitationsHeading.test(line));
   if (start < 0) {
     return ['README.md: missing the "## 既知の制限" section, so version-limited known limitations cannot be checked.'];
   }
-  let end = lines.findIndex((line, index) => index > start && sectionEnd.test(line));
-  if (end < 0) end = lines.length;
-  const section = lines.slice(start + 1, end).join('\n')
-    .replace(/<!--[\s\S]*?-->/gu, (comment) => comment.replace(/[^\n]/gu, ''));
-
-  const found = new Map();
-  for (const pattern of versionLimits) {
-    for (const match of section.matchAll(pattern)) {
-      const versionIndex = match.index + match[0].indexOf(match[1]);
-      if (found.has(versionIndex)) continue;
-      const lineStart = section.lastIndexOf('\n', match.index) + 1;
-      const product = section.slice(lineStart, match.index).match(otherProductBefore);
-      if (product && product[1].toLowerCase() !== 'mappy') continue;
-      found.set(versionIndex, match);
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (atxSectionEnd.test(lines[index])) { end = index; break; }
+    const previous = lines[index - 1];
+    if (index > start + 1 && setextUnderline.test(lines[index]) && previous.trim() !== '' && !listItem.test(previous)) {
+      end = index - 1;
+      break;
     }
   }
+  const section = lines.slice(start + 1, end).join('\n');
+
   const errors = [];
-  for (const [, match] of [...found].sort(([a], [b]) => a - b)) {
-    if (compareVersions(match[1], targetVersion) >= 0) continue;
+  for (const match of section.matchAll(versionLimit)) {
+    const lineStart = section.lastIndexOf('\n', match.index) + 1;
+    const product = section.slice(lineStart, match.index).match(otherProductBefore);
+    if (product && product[1].toLowerCase() !== 'mappy') continue;
     const line = start + 2 + (section.slice(0, match.index).match(/\n/gu)?.length ?? 0);
-    errors.push(
-      `README.md:${line}: known limitation "${match[0].replace(/\s+/gu, ' ')}" is limited to a release older than ${targetVersion}. `
-      + `If its fix ships in ${targetVersion}, remove the item; if not, update the version in the item.`,
-    );
+    const item = match[0].replace(/\s+/gu, ' ');
+    if (!releaseVersion.test(match[1])) {
+      errors.push(`README.md:${line}: known limitation "${item}" must name a release as x.y.z to be checked, like 「（0.3.5 まで）」.`);
+    } else if (compareVersions(match[1], targetVersion) < 0) {
+      errors.push(
+        `README.md:${line}: known limitation "${item}" is limited to a release older than ${targetVersion}. `
+        + `If its fix ships in ${targetVersion}, remove the item; if not, update the version in the item.`,
+      );
+    }
   }
   return errors;
 }
