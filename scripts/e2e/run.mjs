@@ -32,6 +32,7 @@ export const CASES = [
   { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
   { name: 'layout-switch', file: 'layout-switch.mjs', description: 'E39 レイアウトボタンと同時の編集・折りたたみ', shot: false },
   { name: 'undo-ids', file: 'undo-ids.mjs', description: 'E47 Undo/Redo の前後の同名・空題名ノードの折りたたみと選択', shot: false },
+  { name: 'embed-own-writes', file: 'embed-own-writes.mjs', description: 'E55 マップのタブの編集・切替・Undo/Redo の前後で埋め込みの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
