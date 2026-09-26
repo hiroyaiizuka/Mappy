@@ -58,6 +58,8 @@ interface Session extends Press {
   switched: { x: number; y: number } | null;
   /** Last pointer position, so a release decides whether the free node stays. */
   last: { x: number; y: number };
+  /** The pointer of the last move, in canvas pixels: where the view last carried the tree to (`pointer`). */
+  at: { x: number; y: number };
   /** Where the node sat when pressed; a release back on it is not a detach. */
   home: Box;
 }
@@ -123,12 +125,12 @@ export class NodeDrag extends Component {
     this.press = null;
   }
 
-  /** Where the pointer of the drag under way is, in canvas pixels; null when no drag is under way. */
+  /**
+   * Where the pointer of the drag under way was at its last move, in canvas pixels: the point the travel handed to
+   * `shift` was measured to (a release records its point without a move); null when no drag is under way.
+   */
   pointer(): { x: number; y: number } | null {
-    const session = this.session;
-    if (!session) return null;
-    const canvas = this.canvas.getBoundingClientRect();
-    return { x: session.last.x - canvas.left, y: session.last.y - canvas.top };
+    return this.session ? { ...this.session.at } : null;
   }
 
   /**
@@ -142,13 +144,15 @@ export class NodeDrag extends Component {
     const session = this.session;
     if (!session || !(previous.scale > 0)) return;
     const ratio = next.scale / previous.scale;
+    session.grab = { x: session.grab.x * ratio, y: session.grab.y * ratio };
+    session.scale *= ratio;
+    // Only a tree drag has a ghost and a home box to read; a free drag's own tree moves, and no geometry is read for it.
+    if (!session.ghost) return;
     const canvas = this.canvas.getBoundingClientRect();
     const x = (value: number): number => (value - canvas.left - previous.x) * ratio + next.x + canvas.left;
     const y = (value: number): number => (value - canvas.top - previous.y) * ratio + next.y + canvas.top;
     const home = session.home;
     session.home = { left: x(home.left), top: y(home.top), right: x(home.right), bottom: y(home.bottom) };
-    session.grab = { x: session.grab.x * ratio, y: session.grab.y * ratio };
-    session.scale *= ratio;
     this.placeGhost(session, canvas);
   }
 
@@ -160,6 +164,7 @@ export class NodeDrag extends Component {
     this.press = null;
     const free = this.actions.free(press.id);
     const rect = press.element.getBoundingClientRect();
+    const canvas = this.canvas.getBoundingClientRect();
     const scale = press.element.offsetWidth > 0 ? rect.width / press.element.offsetWidth : 1;
     const ghost = free ? null : this.ghost(press.element);
     if (!free) press.element.addClass("is-drag-source");
@@ -168,7 +173,7 @@ export class NodeDrag extends Component {
     try { this.canvas.setPointerCapture(press.pointerId); } catch { /* InvalidPointerId */ }
     this.session = {
       ...press, ghost, free, scale, grab: { x: press.x - rect.left, y: press.y - rect.top }, target: null, anchor: null, switched: null,
-      last: { x: press.x, y: press.y }, home: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      last: { x: press.x, y: press.y }, at: { x: press.x - canvas.left, y: press.y - canvas.top }, home: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
     };
     this.actions.select(press.id);
     this.move(event);
@@ -235,8 +240,9 @@ export class NodeDrag extends Component {
     const session = this.session;
     if (!session) return;
     session.last = { x: event.clientX, y: event.clientY };
-    if (session.free) this.actions.shift(session.id, this.delta(session));
     const canvas = this.canvas.getBoundingClientRect();
+    session.at = { x: event.clientX - canvas.left, y: event.clientY - canvas.top };
+    if (session.free) this.actions.shift(session.id, this.delta(session));
     this.placeGhost(session, canvas);
     if (!this.insideCanvas(session, canvas)) {
       this.retarget(session, null, null, event);

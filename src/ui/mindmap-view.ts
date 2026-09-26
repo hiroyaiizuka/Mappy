@@ -1073,11 +1073,12 @@ export class MindmapView extends FileView {
     const drag = this.topicDrag;
     if (drag) {
       if (drag.body) {
-        // The body's own screen position comes from the viewport pan the drag drives (`shiftTopic`), not
-        // from `overrides` — only the topics read those, to stay screen-fixed while the pan carries the
-        // body. Panning by the origins' difference in screen units keeps the body from jumping without
-        // touching the topics (shifting `overrides` too would double-correct: the origin term they sit
-        // against moves with them already).
+        // The body's own screen position comes from the viewport pan the drag drives (`carry`), not from
+        // `overrides` — only the topics read those, to stay screen-fixed while the pan carries the body.
+        // Moving the view the travel is measured under by the origins' difference in screen units keeps
+        // the body from jumping; `carry` then pans by it and puts the topics back at `from` less the body's
+        // travel, which the switch does not change (shifting `from` too would double-correct: the origin
+        // term the topics sit against moves with them already).
         if (dx !== 0 || dy !== 0) {
           const scale = drag.view.scale;
           drag.view = { ...drag.view, x: drag.view.x + dx * scale, y: drag.view.y + dy * scale };
@@ -1766,23 +1767,31 @@ export class MindmapView extends FileView {
    * carried stays with the pointer, the point grabbed under it at the new scale. So the tree's travel so far is
    * re-read under the new viewport: it is what it was, plus how far the world point under the pointer moved. For the
    * body, what the user sees move is its topics (the map's viewport is theirs panned by the body's travel), so the
-   * viewport they are now seen under takes that travel back off. Without a pointer on the canvas (a drag driven
-   * directly), the canvas centre stands in for it.
+   * viewport they are now seen under takes that travel back off. With no pointer holding the tree (released, its
+   * place computed and being saved — `placeTopic` awaits the write — or a drag driven without one), the tree is
+   * left where it is in the world, which is what the save stores: only the view the travel is measured under
+   * follows. NodeDrag is told last, of the viewport as it ends up (the body's own pan included).
    */
   private viewportMoved(previous: Viewport, next: Viewport): void {
-    this.nodeDrag.viewportMoved(previous, next);
     const drag = this.topicDrag;
-    if (!drag) return;
-    const pointer = this.nodeDrag.pointer() ?? { x: this.canvas.clientWidth / 2, y: this.canvas.clientHeight / 2 };
+    const pointer = this.nodeDrag.pointer();
+    if (drag) this.rebaseDrag(drag, next, pointer);
+    this.nodeDrag.viewportMoved(previous, this.viewport.value);
+  }
+
+  /** `viewportMoved` for the free tree under way: its travel re-read under `next`, the pointer (canvas pixels) kept on the point grabbed. */
+  private rebaseDrag(drag: NonNullable<MindmapView["topicDrag"]>, next: Viewport, pointer: LayoutPoint | null): void {
     const moved = this.travelled(drag, drag.delta);
     const scale = next.scale;
     const view = drag.body ? { x: next.x - moved.x * scale, y: next.y - moved.y * scale, scale } : { ...next };
-    const under = (at: Viewport): LayoutPoint => ({ x: (pointer.x - at.x) / at.scale, y: (pointer.y - at.y) / at.scale });
-    const before = under(drag.view);
-    const after = under(view);
-    drag.moved = { x: moved.x + after.x - before.x, y: moved.y + after.y - before.y };
+    const previousView = drag.view;
     drag.mark = drag.delta;
     drag.view = view;
+    if (!pointer) { drag.moved = moved; return; }
+    const under = (at: Viewport): LayoutPoint => ({ x: (pointer.x - at.x) / at.scale, y: (pointer.y - at.y) / at.scale });
+    const before = under(previousView);
+    const after = under(view);
+    drag.moved = { x: moved.x + after.x - before.x, y: moved.y + after.y - before.y };
     this.carry(drag);
   }
 

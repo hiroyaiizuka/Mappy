@@ -102,7 +102,7 @@ const read = () => evaluate(`${VIEW}
   }
   return {
     canvas: { left: canvas.left, top: canvas.top, width: canvas.width, height: canvas.height },
-    scale: view.viewport.value.scale, dragging: view.topicDrag != null, source: await source(), messages: messages(),
+    scale: view.viewport.value.scale, view: { ...view.viewport.value }, dragging: view.topicDrag != null, source: await source(), messages: messages(),
   roots };`);
 
 const mouse = (type, point, extra = {}) => cdp.send('Input.dispatchMouseEvent', {
@@ -167,12 +167,18 @@ const runRow = async ({ id, target, operation }) => {
   expect(after.dragging, 'the drag ended with the operation');
   const ratio = after.scale / before.scale;
   if (operation.zoom) expect(Math.abs(ratio - 1) > 1e-3, `the ${operation.name} did not change the zoom (${before.scale} → ${after.scale})`);
+  // 全体表示 is checked against nothing below (its frame is its own choice): that it ran at all is checked here, or a tap
+  // that never reached the button would pass every check after it with nothing moved.
+  if (operation.tap && !operation.zoom) {
+    expect(Math.abs(after.view.x - before.view.x) > 0.5 || Math.abs(after.view.y - before.view.y) > 0.5 || Math.abs(ratio - 1) > 1e-3,
+      `the ${operation.name} did not change the viewport`);
+  }
   // The point grabbed is still under the pointer: a pixel of rounding (rects are laid out and scaled by the zoom).
   const grabAfter = grab({ ...after.roots[target.title], scale: after.scale });
   expect(near({ x: grabAfter.x * after.scale, y: grabAfter.y * after.scale }, { x: grabBefore.x * after.scale, y: grabBefore.y * after.scale }, 1),
     `${target.title} left the pointer: grabbed at ${fmt(grabBefore)}, now ${fmt(grabAfter)} (layout px)`);
   // Everything else moved as the operation says.
-  const others = ROOTS.filter(title => title !== target.title && !(target.name === 'body' && title === '本体'));
+  const others = ROOTS.filter(title => title !== target.title);
   const at = operation.zoom === 'pointer' ? held
     : operation.zoom === 'center' ? { x: after.canvas.left + after.canvas.width / 2, y: after.canvas.top + after.canvas.height / 2 } : null;
   for (const title of others) {
