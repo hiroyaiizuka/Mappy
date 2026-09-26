@@ -30,6 +30,8 @@ export class InlineEditor {
   private blurAfterComposition = false;
   private compositionBlurTimer: number | undefined;
   private disposed = false;
+  /** Left unsaved by its window losing the OS focus, and not focused again since (LEV-216): `closing` saves it. */
+  private leftWithWindow = false;
   private readonly suggestion: InlineSuggestion | undefined;
   /** Whether the stylesheet sizes the draft to its text (`field-sizing: content`); if not, `measure` does. */
   private readonly sizesItself: boolean;
@@ -57,6 +59,7 @@ export class InlineEditor {
           && !this.error.textContent) void this.commit("none");
       }, 0);
     });
+    this.input.addEventListener("focus", () => { this.leftWithWindow = false; });
     this.input.addEventListener("input", () => { this.resize(); });
     this.input.addEventListener("pointerdown", event => { event.stopPropagation(); });
     this.input.addEventListener("click", event => { event.stopPropagation(); });
@@ -84,7 +87,7 @@ export class InlineEditor {
       // confirm it with reached the selected node instead — a sibling added (LEV-216). A draft taken out of the
       // document (a closing tab or window) is not active any more and still saves (LEV-215).
       const doc = this.input.ownerDocument;
-      if (this.input.isConnected && doc.activeElement === this.input && !doc.hasFocus()) return;
+      if (doc.activeElement === this.input && !doc.hasFocus()) { this.leftWithWindow = true; return; }
       if (this.composing) { this.blurAfterComposition = true; return; }
       // Keep an invalid/conflicted draft available instead of repeatedly saving on blur.
       if (!this.disposed && !this.error.textContent) void this.commit("none");
@@ -202,6 +205,19 @@ export class InlineEditor {
       this.busy = false;
       this.input.readOnly = false;
     }
+  }
+
+  /**
+   * The view is closing with the draft open. Taken out of a focused document, the draft blurs and saves (the blur
+   * listener; whether closing should save at all is LEV-215's). In a window without the OS focus it gets no blur, and a
+   * draft left there by switching away (which no longer saves it, LEV-216) would be dropped: it starts the same save
+   * here instead, as the switch itself did through 0.3.7. Obsidian has taken the view's element out of the document by
+   * now, so what tells that draft apart is the blur that left it, not the focus. The save has to start before the view
+   * marks itself closed.
+   */
+  closing(): void {
+    if (this.disposed || !this.leftWithWindow || this.composing || this.error.textContent) return;
+    void this.commit("none");
   }
 
   /**

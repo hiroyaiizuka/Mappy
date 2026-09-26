@@ -30,7 +30,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeRename, makeAddNamed, makeClickIn, makePress, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
-import { HANDLERS, handlerDiff, preciseGc, makeTrack, makeAppTheme, ERRORS, COLOR } from './window-helpers.mjs';
+import { HANDLERS, handlerDiff, preciseGc, makeTrack, makeAppTheme, ERRORS, COLOR, WINDOW_LOG, foreignKeys } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -75,19 +75,10 @@ const settle = mark => `const win = leaf.view.contentEl.win;
   if (win === window) throw new Error('the leaf is not in a popout window');
   ${watch('win', mark)}
   win.__mappyE2E = leaf;
-  // Every key the popout's window receives (capture phase: Obsidian's keymap and the inline editor stop some keys before
-  // they bubble), the element it was sent to, and — read once the event's task is over — whether something took it;
-  // and every time the window itself loses or gets the OS focus. Kept in the record of step 6, to tell one key acted on
-  // twice (the inline editor and the map) from a second key, and a draft closed by the window's blur (LEV-216).
-  // The list is dropped when the window closes (\`closePopout\`); a key arriving after that is not recorded.
-  win.__mappyE2EKeys = [];
-  win.addEventListener('keydown', event => {
-    const entry = { key: event.key, target: String(event.target.className || event.target.tagName) };
-    win.__mappyE2EKeys?.push(entry);
-    win.setTimeout(() => { entry.prevented = event.defaultPrevented; }, 0);
-  }, true);
-  win.addEventListener('blur', event => { if (event.target === win) win.__mappyE2EKeys?.push({ window: 'blur', draftActive: !!win.document.activeElement?.matches?.('textarea.mappy-inline-input') }); }, true);
-  win.addEventListener('focus', event => { if (event.target === win) win.__mappyE2EKeys?.push({ window: 'focus' }); }, true);
+  // The keys and the OS focus changes the window gets (window-helpers \`WINDOW_LOG\`). Kept in the record of step 6, to
+  // tell one key acted on twice (the inline editor and the map) from a second key, and a draft closed by the window's
+  // blur (LEV-216).
+  ${WINDOW_LOG}
   let laid = false;
   for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
     const node = leaf.view.contentEl.querySelector('.mappy-node');
@@ -138,7 +129,7 @@ const closePopout = async mark => {
     if (win === window) throw new Error('refusing to close the main window as popout ' + ${JSON.stringify(mark)});
     for (const leaf of leaves) { const view = leaf.view; ${track.statement(mark)} }
     // What the harness itself holds on the popout's global goes first, so a view it kept is not counted as the build's.
-    win.__mappyE2E = null; win.__mappyE2EKeys = null;
+    win.__mappyE2E = null; win.__mappyE2EWindowLog = null;
     delete window.__mappyE2EPopouts[${JSON.stringify(mark)}];
     win.close();
     for (const started = Date.now(); Date.now() - started < 5000 && !win.closed; await new Promise(resolve => setTimeout(resolve, 50)));
@@ -281,7 +272,7 @@ try {
     const before = await read();
     await moved.select('通常のノード');
     const renamed = await moved.rename('移動先で改名');
-    const keys = await moved.evaluate('return window.__mappyE2EKeys;');
+    const keys = await moved.evaluate('return window.__mappyE2EWindowLog;');
     moved.cdp.close();
     // Once in six runs (2026-09-26) the Enter also added a sibling 「サブトピック」 here. LEV-216 found two ways to it: the
     // window losing the OS focus mid-draft (builds through 0.3.7 saved the draft on that blur, so the Enter reached the
@@ -289,13 +280,7 @@ try {
     // it opens, is the frontmost window: a Space, ⌘ and ⌥ reached the test windows during the runs). The case sends F2
     // and Enter only; anything else in `keys` is foreign input, reported as such instead of as the build's failure.
     const expected = before.replace('- 通常のノード\n', '- 移動先で改名\n');
-    const sent = ['F2', 'Enter'];
-    const foreign = keys.filter(entry => {
-      if (!entry.key) return false;
-      const at = sent.indexOf(entry.key);
-      if (at !== -1) sent.splice(at, 1);
-      return at === -1;
-    });
+    const foreign = foreignKeys(keys, ['F2', 'Enter']);
     check(foreign.length === 0, `6-move-to-popout: keys the case did not send reached the moved window (foreign input): ${JSON.stringify(foreign)}`);
     check(renamed.source === expected, `6-move-to-popout: F2 rename after the move wrote ${JSON.stringify(renamed.source)} (keys ${JSON.stringify(keys)})`);
     const closed = await closePopout(mark);

@@ -12,15 +12,19 @@
  * 2. moved: the same in a map moved to a new window (`moveLeafToPopout`, the tab menu's 「新規ウィンドウに移動」).
  * 3. click-after: F2 → text → the window blurs and comes back → a press on the empty canvas: the draft is saved (a
  *    blur inside the window still commits it).
- * Every step also records the keys its window received; a key the case did not send (someone typing while the test
- * window has the OS focus) fails the step as foreign input, not as the build's.
+ * 4. close-moved: F2 → text → the moved window blurs and, still in the background, is closed: the draft is saved, as
+ *    closing a focused window saves it (through 0.3.7 the blur itself saved it; a window without the focus sends no blur
+ *    as the draft goes, so the view saves it on close — without that it was dropped, review 1 of LEV-216).
+ * 5. close-main: the same with the main window's tab closed (`leaf.detach()`) while the window is in the background.
+ * Steps 1–3 also record the keys their window received; a key the case did not send (someone typing while the test
+ * window has the OS focus) fails the step as foreign input, not as the build's. Steps 4 and 5 send no key after F2.
  *
  * Usage: npm run harness:e2e:window-blur-draft -- [--reload] [--json <out.json>] [--keep]
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeAfter, makePress, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
-import { ERRORS } from './window-helpers.mjs';
+import { ERRORS, WINDOW_LOG, foreignKeys } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -41,35 +45,51 @@ const reset = () => evaluate(`const file = app.vault.getAbstractFileByPath(${JSO
   await new Promise(resolve => setTimeout(resolve, 600)); return true;`);
 
 /**
- * Script (main window): `leaf` shows the note. Remembers it as its window's `__mappyE2E` (dom-helpers' `VIEW`), and
- * logs in that window every key it receives (capture phase) and every blur／focus of the window itself.
+ * Script (main window): `leaf` shows the note. Remembers it as its window's `__mappyE2E` (dom-helpers' `VIEW`), logs
+ * the window's keys and OS focus changes (`WINDOW_LOG`), and sends a popout's uncaught errors to the main window's
+ * list, which `after` reads.
  */
 const watch = `const win = leaf.view.contentEl.win;
   win.__mappyE2E = leaf;
-  if (!win.__mappyE2EWindowLog) {
-    const log = win.__mappyE2EWindowLog = [];
-    win.addEventListener('keydown', event => { win.__mappyE2EWindowLog?.push({ key: event.key, target: String(event.target.className || event.target.tagName) }); }, true);
-    win.addEventListener('blur', event => {
-      if (event.target !== win) return;
-      const active = win.document.activeElement;
-      log.push({ window: 'blur', draftActive: !!active?.matches?.('textarea.mappy-inline-input'), hasFocus: win.document.hasFocus() });
-    }, true);
-    win.addEventListener('focus', event => { if (event.target === win) log.push({ window: 'focus' }); }, true);
+  ${WINDOW_LOG}
+  if (win !== window && !win.__mappyE2EWatched) {
+    win.__mappyE2EWatched = true;
+    win.addEventListener('error', event => { window.__mappyE2EErrors.push('popout: ' + String(event.error?.stack ?? event.message)); });
+    win.addEventListener('unhandledrejection', event => { window.__mappyE2EErrors.push('popout: ' + String(event.reason?.stack ?? event.reason)); });
   }
-  win.__mappyE2EWindowLog.length = 0;
-  for (let started = Date.now(); Date.now() - started < 5000 && !leaf.view.contentEl.querySelector('.mappy-node'); await new Promise(resolve => setTimeout(resolve, 50)));`;
+  let laid = false;
+  for (const started = Date.now(); Date.now() - started < 5000 && !laid; await new Promise(resolve => setTimeout(resolve, 50))) {
+    const node = leaf.view.contentEl.querySelector('.mappy-node');
+    laid = !!node && node.getBoundingClientRect().width > 0;
+  }
+  if (!laid) throw new Error('the map did not lay out within 5 s');`;
 
 /**
- * Script (main window): the Electron window `leaf` is in, as `bw`. A popout is the one `about:blank` window besides the
- * main one (the case opens no other).
+ * Script (main window): a new tab in the main window as `tab`. `getLeaf('tab')` opens it beside the active leaf, which
+ * can be in a popout (one Obsidian restored at launch from an earlier run's layout), so a main-window leaf is made
+ * active first.
+ */
+const MAIN_TAB = `const anchor = app.workspace.getMostRecentLeaf(app.workspace.rootSplit);
+  if (anchor) app.workspace.setActiveLeaf(anchor, { focus: false });
+  const tab = app.workspace.getLeaf('tab');
+  if (tab.getContainer().win !== window) { tab.detach(); throw new Error('a new tab did not open in the main window'); }`;
+
+/**
+ * Script (main window): the Electron window `leaf` is in, as `bw`. A popout is found by the mark step 2 puts on its body
+ * (each window's page is asked), so another vault's popout or one an earlier run left open is never taken.
  */
 const browserWindow = `const { BrowserWindow } = require('electron').remote;
-  const me = require('electron').remote.getCurrentWindow();
-  let bw = me;
+  let bw = require('electron').remote.getCurrentWindow();
   if (leaf.view.contentEl.win !== window) {
-    const others = BrowserWindow.getAllWindows().filter(item => item.webContents.id !== me.webContents.id && item.webContents.getURL() === 'about:blank');
-    if (others.length !== 1) throw new Error(others.length + ' popout windows; the case expects exactly one');
-    bw = others[0];
+    const mark = leaf.view.contentEl.doc.body.dataset.mappyE2ePopout;
+    const found = [];
+    for (const item of BrowserWindow.getAllWindows()) {
+      if (item.isDestroyed()) continue;
+      const its = await item.webContents.executeJavaScript('document.body?.dataset.mappyE2ePopout ?? null').catch(() => null);
+      if (mark && its === mark) found.push(item);
+    }
+    if (found.length !== 1) throw new Error(found.length + ' windows carry the popout mark ' + mark);
+    bw = found[0];
   }`;
 
 /** Script (main window) finding the case's leaf as `leaf`. */
@@ -78,48 +98,58 @@ const LEAF = `const leaf = app.workspace.getLeavesOfType('mappy-map').find(item 
 
 /**
  * Takes the OS focus from the window the map is in and gives it back, as switching to another app and back does.
- * Resolves to the window log entry of the blur, or throws when no blur with the draft still active happened (a
- * window that did not have the focus to lose — then the step would prove nothing).
+ * Resolves to the window log entries of the blur and of the focus after it. Throws when no blur with the draft still
+ * active happened (a window that did not have the focus to lose), or when the window did not get the focus back (a key
+ * sent then still reaches the page over CDP, so the step would pass without the person's return) — either way the
+ * step would prove nothing.
  */
-const leaveWindow = async windowEval => {
+const leaveWindow = async (windowEval, { back = true } = {}) => {
+  // Obsidian has to be the active app for its window to have a focus to lose or get back (macOS ignores focus() otherwise).
+  const refocus = `require('electron').remote.app.focus({ steal: true }); bw.focus(); await new Promise(resolve => setTimeout(resolve, 400));`;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const mark = await windowEval('return window.__mappyE2EWindowLog.length;');
     await evaluate(`${LEAF} ${browserWindow}
-      // Obsidian has to be the active app for its window to have a focus to lose (macOS ignores focus() otherwise).
-      require('electron').remote.app.focus({ steal: true });
-      bw.focus(); await new Promise(resolve => setTimeout(resolve, 300));
+      ${refocus}
       bw.blur(); await new Promise(resolve => setTimeout(resolve, 400));
-      bw.focus(); await new Promise(resolve => setTimeout(resolve, 400));
+      ${back ? refocus : ''}
       return true;`);
-    const blur = await windowEval(`return window.__mappyE2EWindowLog.slice(${mark}).find(entry => entry.window === 'blur') ?? null;`);
-    if (blur) {
-      if (!blur.draftActive || blur.hasFocus) throw new Error(`the window blurred, but not with the draft active and the document unfocused: ${JSON.stringify(blur)}`);
-      return blur;
+    const seen = await windowEval(`const log = window.__mappyE2EWindowLog.slice(${mark});
+      const blur = log.findIndex(entry => entry.window === 'blur');
+      return { blur: log[blur] ?? null, focus: blur === -1 ? null : log.slice(blur).find(entry => entry.window === 'focus') ?? null, hasFocus: document.hasFocus() };`);
+    if (!seen.blur) continue;
+    if (!seen.blur.draftActive || seen.blur.hasFocus) throw new Error(`the window blurred, but not with the draft active and the document unfocused: ${JSON.stringify(seen.blur)}`);
+    if (!back) {
+      if (seen.hasFocus) throw new Error(`the window got the OS focus back, which this step must not give it: ${JSON.stringify(seen)}`);
+      return { blur: seen.blur };
     }
+    if (!seen.focus || !seen.hasFocus) throw new Error(`the window did not get the OS focus back after the blur: ${JSON.stringify(seen)}`);
+    return { blur: seen.blur, focus: seen.focus };
   }
   throw new Error('the window never lost the OS focus (BrowserWindow.blur had no effect in 3 tries)');
 };
 
 /** The keys a step's window received, and the ones among them the step did not send. */
 const keysOf = async (windowEval, sent) => {
-  const keys = (await windowEval('return window.__mappyE2EWindowLog.filter(entry => entry.key);'));
-  const expected = [...sent];
-  const foreign = keys.filter(entry => { const at = expected.indexOf(entry.key); if (at === -1) return true; expected.splice(at, 1); return false; });
-  return { keys, foreign };
+  const keys = await windowEval('return window.__mappyE2EWindowLog.filter(entry => entry.key);');
+  return { keys, foreign: foreignKeys(keys, sent) };
 };
 
-/** One step: F2 on 「通常のノード」, a title, the window left and come back to, then `finish` (Enter or a canvas press). */
-const draftAcrossWindow = async (cdp, windowEval, { title, finishWith }) => {
-  const select = makeSelect(cdp, windowEval);
-  const after = makeAfter(windowEval);
-  await select('通常のノード');
+/** F2 on 「通常のノード」 and `title` typed into the draft. */
+const openDraft = async (cdp, windowEval, title) => {
+  await makeSelect(cdp, windowEval)('通常のノード');
   await cdp.realKey('F2');
   for (let started = Date.now(); !(await windowEval(`${VIEW} return !!input();`)); await wait(100)) {
     if (Date.now() - started > 3000) throw new Error('F2 did not open the draft');
   }
   await cdp.insertText(title);
   await wait(300);
-  const blur = await leaveWindow(windowEval);
+};
+
+/** One step: F2 on 「通常のノード」, a title, the window left and come back to, then `finish` (Enter or a canvas press). */
+const draftAcrossWindow = async (cdp, windowEval, { title, finishWith }) => {
+  const after = makeAfter(windowEval);
+  await openDraft(cdp, windowEval, title);
+  const left = await leaveWindow(windowEval);
   const kept = await windowEval(`${VIEW} return { editing: !!input(), active: document.activeElement === input(), source: await source() };`);
   const before = kept.source;
   let sent;
@@ -135,14 +165,39 @@ const draftAcrossWindow = async (cdp, windowEval, { title, finishWith }) => {
   await wait(400);
   const { keys, foreign } = await keysOf(windowEval, sent);
   const final = await read();
-  const errors = await evaluate('return window.__mappyE2EErrors.length;');
-  return { blur, kept: { editing: kept.editing, active: kept.active, unchanged: before === SOURCE }, source: final, editing: done.editing, keys, foreign, errorsSoFar: errors };
+  return { left, kept: { editing: kept.editing, active: kept.active, unchanged: before === SOURCE }, source: final, editing: done.editing, keys, foreign };
 };
 
 /** Closes every map of the note in the main window, so the next step finds only its own. */
 const detach = () => evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) {
     if (leaf.view.file?.path === ${JSON.stringify(NOTE)} && leaf.view.contentEl.win === window) { window.__mappyE2E = null; leaf.detach(); }
   } await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
+
+/** The note in a main-window tab, as the case's leaf. */
+const openInMain = () => evaluate(`${MAIN_TAB} const leaf = tab;
+  await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)} }, active: true });
+  app.workspace.setActiveLeaf(leaf, { focus: true });
+  ${watch} return true;`);
+
+/** The note opened in a main-window tab and moved to a new window (the tab menu's 「新規ウィンドウに移動」), marked for `connect`. */
+const openMoved = () => evaluate(`${MAIN_TAB}
+  await tab.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)} }, active: true });
+  await new Promise(resolve => setTimeout(resolve, 600));
+  app.workspace.moveLeafToPopout(tab);
+  await new Promise(resolve => setTimeout(resolve, 800));
+  ${LEAF}
+  if (leaf.view.contentEl.win === window) throw new Error('the map did not move to a new window');
+  leaf.view.contentEl.doc.body.dataset.mappyE2ePopout = 'blur-draft';
+  ${watch} return true;`);
+
+/** Closes the moved window, as its close button does. Resolves to whether it is gone. */
+const closeMoved = () => evaluate(`${LEAF} const win = leaf.view.contentEl.win; if (win === window) throw new Error('the map is not in a moved window');
+  win.__mappyE2E = null; win.__mappyE2EWindowLog = null; win.close();
+  for (let started = Date.now(); Date.now() - started < 5000 && !win.closed; await new Promise(resolve => setTimeout(resolve, 50)));
+  return win.closed;`);
+
+/** The note once the view's own save has had time to land (a save started on close ends after the view is gone). */
+const readSettled = async () => { await wait(1500); return read(); };
 
 const expectRenamed = title => SOURCE.replace('- 通常のノード\n', `- ${title}\n`);
 
@@ -152,10 +207,7 @@ try {
 
   await step('1-main', async () => {
     await reset();
-    await evaluate(`const leaf = app.workspace.getLeaf('tab');
-      await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)} }, active: true });
-      app.workspace.setActiveLeaf(leaf, { focus: true });
-      ${watch} return true;`);
+    await openInMain();
     const result = await draftAcrossWindow(main, evaluate, { title: '戻って確定', finishWith: 'Enter' }).finally(detach);
     check(result.foreign.length === 0, `1-main: keys the case did not send reached the window (foreign input; the step proves nothing): ${JSON.stringify(result.foreign)}`);
     check(result.kept.editing && result.kept.active && result.kept.unchanged, `1-main: leaving the window closed or saved the draft: ${JSON.stringify(result.kept)}`);
@@ -166,15 +218,7 @@ try {
   await step('2-moved', async () => {
     await detach();
     await reset();
-    await evaluate(`const tab = app.workspace.getLeaf('tab');
-      await tab.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)} }, active: true });
-      await new Promise(resolve => setTimeout(resolve, 600));
-      app.workspace.moveLeafToPopout(tab);
-      await new Promise(resolve => setTimeout(resolve, 800));
-      ${LEAF}
-      if (leaf.view.contentEl.win === window) throw new Error('the map did not move to a new window');
-      leaf.view.contentEl.doc.body.dataset.mappyE2ePopout = 'blur-draft';
-      ${watch} return true;`);
+    await openMoved();
     const moved = await connect({ popout: 'blur-draft' });
     const inMoved = expression => moved.evaluate(`(async () => { ${expression} })()`);
     try {
@@ -185,23 +229,54 @@ try {
       return result;
     } finally {
       moved.close();
-      await evaluate(`${LEAF} const win = leaf.view.contentEl.win; win.__mappyE2E = null; win.__mappyE2EWindowLog = null; win.close();
-        for (let started = Date.now(); Date.now() - started < 5000 && !win.closed; await new Promise(resolve => setTimeout(resolve, 50)));
-        return win.closed;`);
+      await closeMoved();
     }
   });
 
   await step('3-click-after', async () => {
     await reset();
-    await evaluate(`const leaf = app.workspace.getLeaf('tab');
-      await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)} }, active: true });
-      app.workspace.setActiveLeaf(leaf, { focus: true });
-      ${watch} return true;`);
+    await openInMain();
     const result = await draftAcrossWindow(main, evaluate, { title: '押して確定', finishWith: 'press' }).finally(detach);
     check(result.foreign.length === 0, `3-click-after: keys the case did not send reached the window (foreign input; the step proves nothing): ${JSON.stringify(result.foreign)}`);
     check(result.kept.editing && result.kept.unchanged, `3-click-after: leaving the window closed or saved the draft: ${JSON.stringify(result.kept)}`);
     check(result.source === expectRenamed('押して確定') && !result.editing, `3-click-after: a press inside the window after coming back did not save the draft: ${JSON.stringify(result.source)} (editing ${result.editing})`);
     return result;
+  });
+
+  await step('4-close-moved', async () => {
+    await reset();
+    await openMoved();
+    const moved = await connect({ popout: 'blur-draft' });
+    const inMoved = expression => moved.evaluate(`(async () => { ${expression} })()`);
+    let left; let kept; let closed;
+    try {
+      await openDraft(moved, inMoved, '背景で閉じた下書き');
+      left = await leaveWindow(inMoved, { back: false });
+      kept = await inMoved(`${VIEW} return { editing: !!input(), unchanged: (await source()) === ${JSON.stringify(SOURCE)} };`);
+    } finally {
+      moved.close();
+      closed = await closeMoved();
+    }
+    const source = await readSettled();
+    check(kept.editing && kept.unchanged, `4-close-moved: leaving the window closed or saved the draft: ${JSON.stringify(kept)}`);
+    check(closed, '4-close-moved: the window did not close');
+    check(source === expectRenamed('背景で閉じた下書き'), `4-close-moved: closing the window in the background lost the draft: ${JSON.stringify(source)}`);
+    return { left, kept, closed, source };
+  });
+
+  await step('5-close-main', async () => {
+    await reset();
+    await openInMain();
+    await openDraft(main, evaluate, '背景で閉じたタブの下書き');
+    const left = await leaveWindow(evaluate, { back: false });
+    const kept = await evaluate(`${VIEW} return { editing: !!input(), unchanged: (await source()) === ${JSON.stringify(SOURCE)} };`);
+    await detach();
+    const source = await readSettled();
+    // The main window stays in the background otherwise; the later cleanup and the next case expect it in front.
+    await evaluate(`require('electron').remote.app.focus({ steal: true }); require('electron').remote.getCurrentWindow().focus(); return true;`);
+    check(kept.editing && kept.unchanged, `5-close-main: leaving the window closed or saved the draft: ${JSON.stringify(kept)}`);
+    check(source === expectRenamed('背景で閉じたタブの下書き'), `5-close-main: closing the tab in the background lost the draft: ${JSON.stringify(source)}`);
+    return { left, kept, source };
   });
 
   await step('after', async () => {
