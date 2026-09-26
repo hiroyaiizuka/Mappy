@@ -48,6 +48,7 @@
     "harness:e2e:own-write-flicker": "node scripts/e2e/own-write-flicker.mjs",
     "harness:e2e:window-blur-draft": "node scripts/e2e/window-blur-draft.mjs",
     "harness:e2e:node-tooltip": "node scripts/e2e/node-tooltip.mjs",
+    "harness:e2e:reread-own-writes": "node scripts/e2e/reread-own-writes.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",
