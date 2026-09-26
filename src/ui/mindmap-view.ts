@@ -1192,26 +1192,21 @@ export class MindmapView extends FileView {
    * elsewhere waits for that read, so no caller shows the map another text called. Nothing is shown when the record
    * does not lead from the note shown to the text written (a re-read published another text meanwhile): the re-read
    * decides then. Nor for a note being left (`unloading`), which is neither re-read nor drawn again: the next note
-   * follows. True when it drew. `step`: ⌘Z／⌘⇧Z, which tell a draft kept by a conflict, as a re-read of a change does.
+   * follows. True when it drew.
    */
-  private showOwnWrite(file: TFile, written: string, step = false): boolean {
+  private showOwnWrite(file: TFile, written: string): boolean {
     const previous = this.document;
     if (this.closed || this.unloading || file !== this.file || !previous || written === previous.source) return false;
     const replayed = this.replayOwnWrites(written, file.basename);
     if (!replayed) return false;
     this.ownWrites = this.ownWrites.slice(replayed.used);
     // By what each item embeds, not its text: an alias added to a call (`![[map|A]]`) still calls the same map.
-    const calls = (document: MindDocument, id: string): string | null => {
-      const node = findNode(document, id);
-      return node ? embedOnlyTitle(node.title) : null;
-    };
-    const kept = new Map(Array.from(this.targets).filter(([id]) => {
-      const before = calls(previous, id);
-      return before !== null && before === calls(replayed.document, id);
-    }));
+    const embeds = (document: MindDocument): Map<string, string | null> => new Map(this.targets.size === 0 ? []
+      : document.nodes.filter(node => this.targets.has(node.id)).map(node => [node.id, embedOnlyTitle(node.title)]));
+    const before = embeds(previous);
+    const after = embeds(replayed.document);
+    const kept = new Map(Array.from(this.targets).filter(([id]) => (before.get(id) ?? null) !== null && before.get(id) === after.get(id)));
     this.publish(replayed.document, kept);
-    // ⌘Z／⌘⇧Z are not saves: a draft kept by a conflict learns the note moved on, as from the re-read they used to wait for.
-    if (step) this.tellKeptDrafts();
     return true;
   }
 
@@ -2226,7 +2221,11 @@ export class MindmapView extends FileView {
         if (error instanceof Error && error.message === conflictMessage) this.scheduleRefresh();
         throw error;
       }
-      await this.refresh(this.showOwnWrite(file, write.after, true));
+      const shown = this.showOwnWrite(file, write.after);
+      // ⌘Z／⌘⇧Z are not saves: a draft kept by a conflict learns the note moved on, whether or not a save is under way
+      // and whether this view or its re-read shows the step.
+      if (write.edits.length > 0) this.tellKeptDrafts();
+      await this.refresh(shown);
     });
   }
 
