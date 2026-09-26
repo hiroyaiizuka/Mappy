@@ -391,6 +391,118 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.restore).toHaveBeenCalledTimes(1);
   });
 
+  // LEV-216: the window losing the OS focus (another app, another Obsidian window) blurs the draft while it stays the
+  // document's active element. Closing it there put the keyboard on its node, and the Enter the person pressed on coming
+  // back to confirm it added a sibling 「サブトピック」. It is still saved there (as through 0.3.7: the note has it however
+  // Obsidian is left from there), but stays open.
+  it('saves the draft but keeps it open when only the window loses focus; the Enter after it closes it', async () => {
+    const { options, input, host } = fixture('元の名前');
+    input.value = 'ウィンドウを離れた下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('ウィンドウを離れた下書き');
+    expect(options.finish).not.toHaveBeenCalled();
+    expect(host.querySelector('textarea')).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.readOnly).toBe(false);
+    windowFocus.mockReturnValue(true);
+    expect(key(input, 'Enter').defaultPrevented).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, 'ウィンドウを離れた下書き');
+    expect(host.querySelector('textarea')).toBeNull();
+  });
+
+  it('does not write again on leaving the window when the note already has the text', async () => {
+    // A round trip to another app with nothing typed (or a provisional name left as it is, which Escape can still take
+    // back: a write of the same text would drop what the store keeps for that, review 3).
+    const { options, input, host } = fixture('元の名前');
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).not.toHaveBeenCalled();
+    input.value = '書いた';
+    input.dispatchEvent(new FocusEvent('blur'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    input.dispatchEvent(new FocusEvent('blur'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('書いた');
+    expect(host.querySelector('textarea')).toBe(input);
+  });
+
+  it.each(['Enter', 'blur'] as const)('holds %s given while the save on leaving is under way until it lands, then closes the draft', async (action) => {
+    // Coming back before the write lands (review 3): the Enter, or a press elsewhere in the window, must still close
+    // the draft — dropped as a second save, it left the draft open without the keyboard, and the next Enter went to
+    // the node.
+    const { options, input, host } = fixture('元の名前');
+    const pending = pendingSave();
+    options.save.mockReturnValueOnce(pending.promise);
+    input.value = '離れて戻った';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    expect(input.readOnly).toBe(false);
+    windowFocus.mockReturnValue(true);
+    if (action === 'Enter') key(input, 'Enter');
+    else { input.blur(); input.dispatchEvent(new FocusEvent('blur')); }
+    await Promise.resolve();
+    expect(options.finish).not.toHaveBeenCalled();
+    pending.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(options.save).toHaveBeenNthCalledWith(1, '離れて戻った');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, '離れて戻った');
+    expect(host.querySelector('textarea')).toBeNull();
+  });
+
+  it('shows the reason and keeps the draft when the save on leaving the window is refused', async () => {
+    const { options, input, error } = fixture('元の名前');
+    options.save.mockRejectedValueOnce(new Error('外部変更との競合'));
+    input.value = '離れたときの下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(error.textContent).toBe('外部変更との競合');
+    expect(input.value).toBe('離れたときの下書き');
+    expect(input.readOnly).toBe(false);
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
+  it('saves what the composition ended with, keeping the draft open, when the window was left mid-IME', async () => {
+    // A composition under way defers the blur's save to compositionend. In a window that only lost the focus the draft
+    // is still the active element then; through 0.3.7 nothing was saved in that case (review 3), now the draft is saved
+    // in place as the blur's own would be.
+    const { options, input, host } = fixture('元の名前');
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).not.toHaveBeenCalled();
+    input.dispatchEvent(new CompositionEvent('compositionend', { data: '変換' }));
+    input.value = '変換';
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('変換');
+    expect(options.finish).not.toHaveBeenCalled();
+    expect(host.querySelector('textarea')).toBe(input);
+  });
+
+  it('still saves on the blur of a draft taken out of the document while its window is in the background', async () => {
+    // Closing a tab or a popout window removes the focused draft, which Chromium blurs (LEV-215 decides whether that
+    // save should happen; LEV-216 must not change it).
+    const { options, input } = fixture('元の名前');
+    input.value = '閉じるときの下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.remove();
+    input.dispatchEvent(new FocusEvent('blur'));
+    await Promise.resolve();
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('閉じるときの下書き');
+  });
+
   it('commits once when the input loses focus without a previous error', async () => {
     const { options, input } = fixture('フォーカス移動');
     input.dispatchEvent(new FocusEvent('blur'));
