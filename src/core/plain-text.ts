@@ -1,5 +1,8 @@
 import { autolinkUrl, type LinkSyntax } from './wiki-link';
-import { inlineParser, isBreakTag } from './title-breaks';
+import { breakRanges, inlineParser } from './title-breaks';
+
+/** A `<br>` while the title is parsed: one character of text, so a break inside a link's label stays in its label. */
+const BREAK = '\uE000';
 
 export interface PlainTitle {
   /** Visible text without Markdown markers. */
@@ -28,7 +31,10 @@ function wikiReplacement(match: RegExpMatchArray): Replacement {
 }
 
 /** Reduce a node title to plain text for renderers that cannot show Markdown; a `<br>` in it is a line break (LEV-202). */
-export function plainTitle(title: string): PlainTitle {
+export function plainTitle(written: string): PlainTitle {
+  // The breaks the map shows (core/title-breaks), each read as text here and made a line break at the end.
+  let title = written;
+  for (const range of breakRanges(written).reverse()) title = title.slice(0, range.from) + BREAK + title.slice(range.to);
   const replacements: Replacement[] = [];
   for (const match of title.matchAll(/(!?)\[\[([^\]\r\n]+?)\]\]/gu)) replacements.push(wikiReplacement(match));
   const tree = inlineParser.parse(title);
@@ -53,10 +59,6 @@ export function plainTitle(title: string): PlainTitle {
         replacements.push({ from: node.from, to: node.to, text: url, link: autolinkUrl(url), syntax: 'autolink' });
         return false;
       }
-      if (node.name === 'HTMLTag' && isBreakTag(title.slice(node.from, node.to))) {
-        replacements.push({ from: node.from, to: node.to, text: '\n', link: null, syntax: null });
-        return false;
-      }
       if (MARKER_NODES.has(node.name)) removed.push({ from: node.from, to: node.to });
       return true;
     },
@@ -72,6 +74,6 @@ export function plainTitle(title: string): PlainTitle {
     cursor = edit.to;
   }
   parts.push(title.slice(cursor));
-  const text = parts.join('').replace(/[ \t]+/gu, ' ').replace(/ ?\n ?/gu, '\n').trim();
+  const text = parts.join('').replace(/[ \t]+/gu, ' ').replace(/ ?\uE000 ?/gu, '\n').trim();
   return { text, link: firstLink, linkSyntax: firstSyntax };
 }

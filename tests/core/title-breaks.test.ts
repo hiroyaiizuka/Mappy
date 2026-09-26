@@ -46,6 +46,33 @@ describe('line breaks inside a node (LEV-202)', () => {
     expect(storedTitle(draft, '別の名前')).toBe(title);
   });
 
+  // Review 2 of LEV-202: Obsidian's wiki links and math are not Markdown to the parser, so a break in them was
+  // accepted and saved as a broken link (`[[no<br>te]]`).
+  it.each(['[[no\nte]]', '[[note|a\nb]]', '![[図\n.png]]', '$a\nb$'])('refuses a break inside %j, where a tag is text', (draft) => {
+    expect(() => storedTitle(draft, '元の名前')).toThrow('この位置では改行できません');
+  });
+
+  it.each(['[[note|a<br>b]]', '$a<br>b$'])('leaves the `<br>` inside %j as text', (title) => {
+    expect(displayTitle(title)).toBe(title);
+  });
+
+  // Review 2 of LEV-202: parsed as a document of its own, a title that starts like a block lost its inline syntax.
+  it.each([
+    ['<div>a\nb', '<div>a<br>b'],
+    ['```js\nb', '```js<br>b'],
+    ['[a]: /u\nb', '[a]: /u<br>b'],
+    ['<!-- c -->a\nb', '<!-- c -->a<br>b'],
+  ])('reads %j as a heading\'s or an item\'s text, not as a block', (draft, stored) => {
+    expect(storedTitle(draft, '元の名前')).toBe(stored);
+    expect(displayTitle(stored)).toBe(draft);
+  });
+
+  // Review 2 of LEV-202: two tags walked over the same spaces, so rewriting them doubled the spaces between.
+  it('keeps the spaces between two tags once', () => {
+    expect(displayTitle('a <br> <br> b')).toBe('a\n\nb');
+    expect(storedTitle('A\n\nb', 'a <br> <br> b')).toBe('A <br> <br> b');
+  });
+
   // What 「そのまま確定しても原文が変わらない」 rests on: a draft that reads as the title is the title as written.
   it.each(['温泉<BR/>旅行', '温泉 <br /> 旅行', '温泉<br>旅行'])('keeps %j as written when the draft is left as it opened', (title) => {
     expect(storedTitle(displayTitle(title), title)).toBe(title);
@@ -143,6 +170,12 @@ describe('line breaks inside a node (LEV-202)', () => {
   it('gives renderers without Markdown the break as a line break', () => {
     expect(plainTitle('温泉 <br> **旅行**').text).toBe('温泉\n旅行');
     expect(plainTitle('`a<br>b`').text).toBe('a<br>b');
+  });
+
+  // Review 2 of LEV-202: the link was replaced by its label before the break in the label was seen.
+  it('keeps a break inside a link\'s label, as the map shows it', () => {
+    expect(plainTitle('[温泉<br>旅行](u)')).toEqual({ text: '温泉\n旅行', link: 'u', linkSyntax: 'vault' });
+    expect(plainTitle('[[note|a<br>b]]').text).toBe('a<br>b');
   });
 
   // Review of LEV-202: reading the title with real newlines let the text after a break start a block.

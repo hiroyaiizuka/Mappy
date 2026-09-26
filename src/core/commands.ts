@@ -196,12 +196,10 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
   // A multi-line Setext heading's text is a paragraph whose lines are the note's own, and the draft shows them as
   // breaks: written as `<br>` they would fold the heading into one line, so an edit keeping them is Markdown's to make.
   // An untouched draft is the title as written (storedTitle), and a one-line Setext heading takes `<br>` as ATX does.
-  if (node.kind === 'setext' && /[\r\n]/u.test(node.title) && hasLineBreak(draft)
-    && storedTitle(draft, node.title) !== node.title) {
+  const title = storedTitle(draft, node.title);
+  if (node.kind === 'setext' && /[\r\n]/u.test(node.title) && title !== node.title && hasLineBreak(draft)) {
     throw new Error('複数行の Setext 見出しの中では改行できません。Markdown 側で編集してください。');
   }
-  const title = storedTitle(draft, node.title);
-  if (title !== node.title) assertSingleLine(title);
   if (node.kind === 'setext' && title.trim().length === 0) {
     throw new Error('Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。');
   }

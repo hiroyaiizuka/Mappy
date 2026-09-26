@@ -15,25 +15,46 @@ export function isBreakTag(tag: string): boolean {
 }
 
 /**
+ * What a title is read inside: the inline content of a heading or a list item, never a block of its own. A
+ * title parsed alone would start an HTML block (`<div>…`), a fence or a link reference definition and lose
+ * its inline syntax; after this lead it is a paragraph's text. Offsets are the title's plus its length.
+ */
+const INLINE_LEAD = 'x ';
+
+/**
+ * Obsidian's own inline syntax the Markdown parser does not know: a wiki link or embed (`[[…]]`,
+ * `![[…]]`) and inline math (`$…$`). Nothing inside is Markdown, so a `<br>` there is text.
+ */
+const OBSIDIAN_SPANS = /!?\[\[[^\]\r\n]*?\]\]|\$(?=\S)[^$\r\n]*?\S\$|\$[^\s$]\$/gu;
+
+/**
  * The line breaks written into a node's title (LEV-202). A heading or a list item is one line of Markdown,
  * so a break inside a node is stored as a `<br>` tag in that line, which Obsidian's reading view, live
  * preview and other tools show as a break too. Only a tag the Markdown parser reads as raw HTML is one:
- * `<br>` in inline code or after a backslash is text. The spaces around a tag are not shown either side
- * of the break, so they go with it.
+ * `<br>` in inline code, after a backslash, in a wiki link or in math is text. The spaces around a tag are
+ * not shown either side of the break, so they go with it; two tags share none (the first takes them).
  */
-function breakRanges(title: string): { from: number; to: number }[] {
+export function breakRanges(title: string): { from: number; to: number }[] {
   if (!/<br/iu.test(title)) return [];
-  const ranges: { from: number; to: number }[] = [];
-  inlineParser.parse(title).iterate({
+  const spans = Array.from(title.matchAll(OBSIDIAN_SPANS), (match) => ({ from: match.index, to: match.index + match[0].length }));
+  const tags: { from: number; to: number }[] = [];
+  inlineParser.parse(INLINE_LEAD + title).iterate({
     enter(node) {
-      if (node.name !== 'HTMLTag' || !isBreakTag(title.slice(node.from, node.to))) return true;
-      let from = node.from;
-      let to = node.to;
-      while (from > 0 && /[ \t]/u.test(title.charAt(from - 1))) from--;
-      while (to < title.length && /[ \t]/u.test(title.charAt(to))) to++;
-      ranges.push({ from, to });
+      const from = node.from - INLINE_LEAD.length;
+      const to = node.to - INLINE_LEAD.length;
+      if (node.name !== 'HTMLTag' || from < 0 || !isBreakTag(title.slice(from, to))) return true;
+      if (!spans.some((span) => span.from <= from && to <= span.to)) tags.push({ from, to });
       return false;
     },
+  });
+  const ranges: { from: number; to: number }[] = [];
+  tags.forEach((tag, index) => {
+    let { from, to } = tag;
+    const floor = ranges[ranges.length - 1]?.to ?? 0;
+    const ceiling = tags[index + 1]?.from ?? title.length;
+    while (from > floor && /[ \t]/u.test(title.charAt(from - 1))) from--;
+    while (to < ceiling && /[ \t]/u.test(title.charAt(to))) to++;
+    ranges.push({ from, to });
   });
   return ranges;
 }
@@ -45,9 +66,8 @@ export function displayTitle(title: string): string {
   let text = '';
   let cursor = 0;
   for (const range of ranges) {
-    // Two tags can share the spaces between them: the second starts where the first ended.
-    text += title.slice(cursor, Math.max(cursor, range.from)) + '\n';
-    cursor = Math.max(cursor, range.to);
+    text += title.slice(cursor, range.from) + '\n';
+    cursor = range.to;
   }
   return text + title.slice(cursor);
 }
@@ -72,7 +92,8 @@ export function hasLineBreak(draft: string): boolean {
  * with a break added or removed, the breaks cannot be told apart and every one is written as `<br>`.
  *
  * A break where a tag would not be read as one — right after a backslash, inside inline code, a link's
- * target — would be saved as the text `<br>`, and is refused instead (the draft stays with its reason).
+ * target, a wiki link or math — would be saved as the text `<br>`, and is refused instead (the draft stays
+ * with its reason).
  */
 export function storedTitle(draft: string, current: string): string {
   const lines = draftLines(draft);
@@ -89,7 +110,7 @@ export function storedTitle(draft: string, current: string): string {
   });
   const read = breakRanges(stored);
   if (!inserted.every((tag) => read.some((range) => range.from <= tag.from && tag.to <= range.to))) {
-    throw new Error('この位置では改行できません（インラインコードの中や \\ の直後など）。改行を外すか、Markdown 側で編集してください。');
+    throw new Error('この位置では改行できません（インラインコード・リンク・数式の中や \\ の直後など）。改行を外すか、Markdown 側で編集してください。');
   }
   return stored;
 }

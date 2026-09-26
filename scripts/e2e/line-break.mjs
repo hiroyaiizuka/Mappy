@@ -1,6 +1,7 @@
 /**
  * E39 (docs/harness.md): a line break inside a node (LEV-202). 本人の操作（F2 で開いて Shift+Enter で改行し、Enter で
- * 確定する）を対象の形ごとに回す: リストの項目・本文のルート（H2）・トピック・Tab で作った空のノード。続けて、そのまま
+ * 確定する）を対象の形ごとに回す: リストのノートの項目・本文のルート（H2）・トピック・Tab で作った空のノードと、見出しの
+ * ノートの ATX 見出し・1 行の Setext 見出し、拒否される形（複数行の Setext 見出し・\ の直後）。続けて、そのまま
  * 確定しても原文が変わらないこと、⌘Z／⌘⇧Z、複数行の文の挿入（貼り付けと同じ input）、拒否された下書きがダブルクリックで
  * 消えないこと、Markdown 側（外部の書き込み）で書いた `<br>` がマップに改行で現れること、Obsidian 自身の描画
  * （MarkdownRenderer）が `<br>` を改行にすることを見る。
@@ -24,6 +25,15 @@ const SOURCE = [
   '- 温泉旅行', '  - 予約',
   '- 持ち物', '',
   '## 買うもの', '',
+].join('\n');
+
+const HEADINGS_NOTE = 'Fixtures/E2E-line-break-headings.md';
+const HEADINGS = [
+  '---', 'mappy: true', '---',
+  '# 旅の計画', '',
+  '## 温泉旅行', '',
+  '設定', '---', '',
+  '複数', '行', '---', '',
 ].join('\n');
 
 const record = createRecord(VAULT, NOTE);
@@ -74,6 +84,15 @@ async function breakAndConfirm(title, first, second, open = 'F2') {
   await cdp.realKey('Enter');
   return { typed, ...await after(before) };
 }
+
+/** Close the map under test and delete its note (`--keep` leaves both). */
+const clean = () => evaluate(`${VIEW}
+  const file = view.file;
+  leaf.detach();
+  if (file) await app.vault.delete(file, true);
+  delete window.__mappyE2E;
+  delete window.__mappyE2EBefore;
+  return { removed: file?.path ?? null };`);
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
@@ -203,16 +222,43 @@ try {
     return result;`));
 
   if (value('--shot')) await step('shot', async () => ({ path: await cdp.screenshot(value('--shot')) }));
+  if (!flag('--keep')) await step('clean', clean);
 
-  if (!flag('--keep')) {
-    await step('clean', () => evaluate(`${VIEW}
-      const file = view.file;
-      leaf.detach();
-      if (file) await app.vault.delete(file, true);
-      delete window.__mappyE2E;
-      delete window.__mappyE2EBefore;
-      return { removed: file?.path ?? null };`));
+  // A note in the older heading format: an ATX heading, a one-line Setext heading (written with `<br>` as ATX is),
+  // and the refusals, whose drafts stay with their reason — a multi-line Setext heading keeping its break, and a
+  // break right after a backslash (the tag would be text there).
+  required(record, 'open-headings', await step('open-headings', makeOpenStep(evaluate, { note: HEADINGS_NOTE, source: HEADINGS })));
+  await step('break-atx', async () => {
+    const result = await breakAndConfirm('温泉旅行', '温泉', '旅行');
+    check(result.messages.length === 0 && !result.editing, `ATX: ${JSON.stringify(result.messages)}`);
+    const want = HEADINGS.replace('## 温泉旅行', '## 温泉<br>旅行');
+    check(result.source === want, `ATX: unexpected source:\nexpected: ${JSON.stringify(want)}\nactual:   ${JSON.stringify(result.source)}`);
+    return result;
+  });
+  await step('break-setext-one-line', async () => {
+    const before = await source();
+    const result = await breakAndConfirm('設定', '設', '定');
+    check(result.messages.length === 0 && !result.editing, `Setext: ${JSON.stringify(result.messages)}`);
+    const want = before.replace('\n設定\n---\n', '\n設<br>定\n---\n');
+    check(result.source === want, `Setext: unexpected source:\nexpected: ${JSON.stringify(want)}\nactual:   ${JSON.stringify(result.source)}`);
+    return result;
+  });
+  for (const refusal of [
+    { id: 'refused-multi-line-setext', title: '複数 行', first: '複数', second: '行の見出し' },
+    { id: 'refused-after-backslash', title: '温泉 旅行', first: 'C:\\', second: 'dir' },
+  ]) {
+    await step(refusal.id, async () => {
+      const before = await source();
+      const result = await breakAndConfirm(refusal.title, refusal.first, refusal.second);
+      check(result.messages.length > 0 && result.editing, `${refusal.id}: not refused (${JSON.stringify(result.messages)})`);
+      check(await draft() === `${refusal.first}\n${refusal.second}`, `${refusal.id}: the draft was not kept`);
+      check(result.source === before, `${refusal.id}: the note changed`);
+      await cdp.realKey('Escape');
+      await wait(300);
+      return { messages: result.messages };
+    });
   }
+  if (!flag('--keep')) await step('clean-headings', clean);
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {

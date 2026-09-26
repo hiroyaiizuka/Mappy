@@ -1565,7 +1565,13 @@ export class MindmapView extends FileView {
   private async addTopic(point?: { x: number; y: number }): Promise<void> {
     if (this.saving) return;
     // As for a command (`execute`): a draft kept by a refusal is written first, or stays with its reason, and no topic is added.
-    if (this.inlineEditor && !await this.inlineEditor.confirm()) return;
+    if (this.inlineEditor) {
+      if (!await this.inlineEditor.confirm()) return;
+      // The write can resize its node and move the body root, which topic positions are measured from: the point
+      // is read against the layout of the note the draft left, once its labels are drawn and placed.
+      await this.renderer.idle(EXPORT_RENDER_WAIT_MS);
+      if (this.layoutFrame !== undefined) await this.nextFrame();
+    }
     const document = this.document;
     const file = this.file;
     if (!document || !file || this.saving) return;
@@ -1819,7 +1825,8 @@ export class MindmapView extends FileView {
       const wanted = this.selectedId;
       const file = this.file;
       this.run(async () => {
-        if (!await open.confirm()) { open.focus(); return; }
+        // A refused save keeps the draft focused with its reason (InlineEditor.settle).
+        if (!await open.confirm()) return;
         // Ids are only this note's: another note taking the leaf while the save ran has its own `node-N`s.
         if (this.inlineEditor || this.closed || this.file !== file) return;
         // Closing the draft selects its node again; the node asked for is the one to edit.

@@ -194,11 +194,6 @@ export class InlineEditor {
     }
   }
 
-  /** Bring the keyboard back to a draft that stays open (a refused one, while another edit was asked for). */
-  focus(): void {
-    if (!this.disposed) this.input.focus({ preventScroll: true });
-  }
-
   /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */
   refreshed(stale: string): void {
     if (this.disposed || this.error.textContent !== stale) return;
