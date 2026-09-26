@@ -32,6 +32,7 @@ export const CASES = [
   { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
   { name: 'layout-switch', file: 'layout-switch.mjs', description: 'E39 レイアウトボタンと同時の編集・折りたたみ', shot: false },
   { name: 'undo-ids', file: 'undo-ids.mjs', description: 'E47 Undo/Redo の前後の同名・空題名ノードの折りたたみと選択', shot: false },
+  { name: 'embed-own-writes', file: 'embed-own-writes.mjs', description: 'E55 マップのタブの編集・切替・Undo/Redo の前後で埋め込みの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
@@ -43,6 +44,7 @@ export const CASES = [
   { name: 'popout', file: 'popout.mjs', description: 'E50 別ウィンドウでの描画・キー操作・移動・閉じたあとの残留', shot: true },
   { name: 'view-lifecycle', file: 'view-lifecycle.mjs', description: 'E51 開閉 50 回・プラグイン再読込・ウィンドウ再読込の残留と多重イベント', shot: false },
   { name: 'drop-flicker', file: 'drop-flicker.mjs', description: 'E53 フリーツリーを離した直後、保存後の原文が描かれるまでのフレーム', shot: false },
+  { name: 'own-write-flicker', file: 'own-write-flicker.mjs', description: 'E54 自分の書き込み（改名・追加・キー移動・⌘Z／⌘⇧Z・スロットへのドロップ・切り離し）のあと、書き込み前の原文が描かれないこと', shot: false },
   { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
 ];
 

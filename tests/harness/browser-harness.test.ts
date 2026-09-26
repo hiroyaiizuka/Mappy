@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { App } from 'obsidian';
+import type { App, TFile } from 'obsidian';
+import { readMapLayout, writeMapLayout } from '../../src/obsidian/frontmatter';
 import { parseMarkdown, projectMap } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost } from '../../harness/browser/fixtures';
-import { embedOnlyTitle, readMapFromSource } from '../../src/core/embed';
+import { embedOnlyTitle, frontmatterReader, readMapFromSource } from '../../src/core/embed';
 import { Component, Events, MarkdownRenderer } from '../../harness/browser/obsidian';
 import { performanceFixtureMatrix, performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
 
@@ -171,7 +172,7 @@ describe('browser harness obsidian mock', () => {
     expect(more.querySelector('a.external-link')?.querySelectorAll('br')).toHaveLength(1);
   });
 
-  it('keeps edits in memory, notifies the view through modify, and never rewrites frontmatter text', async () => {
+  it('keeps edits in memory and notifies the view through modify', async () => {
     const app = new HarnessApp();
     const source = '---\nmappy: true\ntags: [a, b]\naliases:\n  - "前の名前"\n---\n## Root\n- Child\n';
     const file = app.put('Fixtures/map.md', source);
@@ -181,11 +182,203 @@ describe('browser harness obsidian mock', () => {
     await app.vault.process(file, current => `${current}- Added\n`);
     expect(modified).toHaveBeenCalledExactlyOnceWith(file);
     expect(app.content(file)).toContain('- Added');
-    await app.fileManager.processFrontMatter(file, properties => { properties['mappy-layout'] = 'timeline'; });
-    expect(app.metadataCache.getFileCache(file)?.frontmatter?.['mappy-layout']).toBe('timeline');
-    expect(app.content(file)).not.toContain('mappy-layout');
-    expect(app.activity.at(-1)?.kind).toBe('frontmatter');
     expect(parseFrontmatter('no frontmatter')).toBeUndefined();
+  });
+
+  /*
+   * LEV-214: the page's `processFrontMatter` changed the cache and `activity` only, so a case reading the text after
+   * the product's conversion (`writeMapLayout`) saw the note as it was. Rows: what the callback does × the header's shape.
+   */
+  describe('processFrontMatter rewrites the header in the text', () => {
+    async function run(source: string, change: (properties: Record<string, unknown>) => void) {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', source);
+      const modified = vi.fn();
+      app.vault.on('modify', modified);
+      await app.fileManager.processFrontMatter(file, change);
+      return { text: app.content(file), cache: app.metadataCache.getFileCache(file)?.frontmatter, modified, app };
+    }
+
+    it('adds a key before the closing line and keeps every other key\'s bytes', async () => {
+      const source = '---\n"quoted": x # note\ntags: [a, b]\nmappy: true\n---\n## Root\n';
+      const { text, cache, modified } = await run(source, properties => { properties['mappy-layout'] = 'timeline'; });
+      expect(text).toBe('---\n"quoted": x # note\ntags: [a, b]\nmappy: true\nmappy-layout: timeline\n---\n## Root\n');
+      expect(cache?.['mappy-layout']).toBe('timeline');
+      expect(modified).toHaveBeenCalledOnce();
+    });
+
+    it('changes a key where it is, list values included', async () => {
+      const source = '---\nmappy-layout: timeline\naliases:\n  - 前\nmappy: true\n---\nbody\n';
+      const { text } = await run(source, properties => { properties['mappy-layout'] = 'hierarchy'; properties.aliases = ['後', 'a: b']; });
+      expect(text).toBe('---\nmappy-layout: hierarchy\naliases:\n  - 後\n  - "a: b"\nmappy: true\n---\nbody\n');
+      expect(parseFrontmatter(text)).toEqual({ 'mappy-layout': 'hierarchy', aliases: ['後', 'a: b'], mappy: true });
+    });
+
+    it('removes a key with its nested lines and leaves an untouched nested key as it was', async () => {
+      const source = fixtureSource('free-topics');
+      const withLayout = source.replace(/^---\n/u, '---\nmappy-layout: timeline\n');
+      const { text } = await run(withLayout, properties => { delete properties['mappy-layout']; });
+      expect(text).toBe(source);
+      const released = await run(source, properties => { delete properties.mappy; delete properties['mappy-topics']; });
+      const body = source.slice(source.indexOf('\n---\n') + 5);
+      expect(released.text).toBe(`---\ntags:\n  - fixture\n---\n${body}`);
+      expect(readMapFromSource(released.text)).toBeNull();
+    });
+
+    it('drops a header left empty and adds one to a note without it', async () => {
+      const released = await run('---\nmappy: true\n---\n## Root\n', properties => { delete properties.mappy; });
+      expect(released.text).toBe('## Root\n');
+      expect(released.cache).toBeUndefined();
+      const converted = await run('## Root\n', properties => { properties.mappy = true; });
+      expect(converted.text).toBe('---\nmappy: true\n---\n## Root\n');
+      expect(readMapFromSource(converted.text)).toBe('mindmap');
+    });
+
+    it('keeps CRLF and leaves the text alone when nothing changes', async () => {
+      const crlf = await run('---\r\nmappy: true\r\n---\r\nbody\r\n', properties => { properties['mappy-layout'] = 'timeline'; });
+      expect(crlf.text).toBe('---\r\nmappy: true\r\nmappy-layout: timeline\r\n---\r\nbody\r\n');
+      const same = await run('---\nmappy: true\n---\nbody\n', properties => { properties.mappy = true; });
+      expect(same.text).toBe('---\nmappy: true\n---\nbody\n');
+      expect(same.modified).not.toHaveBeenCalled();
+    });
+
+    it('takes the product\'s conversion and release through the text (writeMapLayout)', async () => {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/plain.md', '## Root\n- Child\n');
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, 'timeline');
+      expect(readMapFromSource(app.content(file))).toBe('timeline');
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, null);
+      expect(app.content(file)).toBe('## Root\n- Child\n');
+      // Only this path leaves a `frontmatter` entry; the capture tells a conversion from a button's write by it.
+      expect(app.activity.filter(entry => entry.kind === 'frontmatter')).toHaveLength(2);
+    });
+
+    // Review 1 of LEV-214: the callback read the header with this page's own reader, not the product's, so a header
+    // the product reads as a map could be released to no effect, and a value it misread was written back.
+    it.each([
+      ['a BOM', '\uFEFF---\nmappy: true\n---\nbody\n', '\uFEFFbody\n'],
+      ['a `...` closing line', '---\nmappy: true\n...\nbody\n', 'body\n'],
+      ['a quoted key', '---\n"mappy": true\ntags: x\n---\nbody\n', '---\ntags: x\n---\nbody\n'],
+      ['a space before the colon', '---\nmappy : true\ntags: x\n---\nbody\n', '---\ntags: x\n---\nbody\n'],
+    ])('releases a map whose header has %s', async (_shape, source, released) => {
+      expect(readMapFromSource(source)).toBe('mindmap');
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', source);
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, null);
+      expect(app.content(file)).toBe(released);
+    });
+
+    it('reads what the product reads: a comment, a quoted comma and a nested key reach the callback as they are', async () => {
+      const source = '---\nmappy: true # keep\ntags: [a, "b, c"]\nmappy-topics:\n  参考: { mindmap: [1, 2] }\n---\nbody\n';
+      let seen: Record<string, unknown> = {};
+      const { text } = await run(source, properties => { seen = structuredClone(properties); properties['mappy-layout'] = 'timeline'; });
+      expect(seen).toEqual({ mappy: true, tags: ['a', 'b, c'], 'mappy-topics': { 参考: { mindmap: [1, 2] } } });
+      expect(text).toBe(source.replace('\n---\nbody', '\nmappy-layout: timeline\n---\nbody'));
+      const pushed = await run(source, properties => { (properties.tags as string[]).push('d'); });
+      expect(pushed.text).toBe(source.replace('tags: [a, "b, c"]', 'tags:\n  - a\n  - b, c\n  - d'));
+      expect(frontmatterReader(pushed.text)?.('tags')).toEqual(['a', 'b, c', 'd']);
+    });
+
+    // Review 2 of LEV-214: the product reads an unclosed leading `---` as a header that swallows the note, and its own
+    // writer refuses it; the page refuses too, instead of converting a note the product shows no nodes of.
+    it('refuses a note whose leading `---` never closes, as the product\'s writer does', async () => {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', '---\n## Root\n- a\n');
+      await expect(app.fileManager.processFrontMatter(file, properties => { properties.mappy = true; })).rejects.toThrow();
+      expect(app.content(file)).toBe('---\n## Root\n- a\n');
+      expect(app.activity).toEqual([]);
+    });
+
+    it('quotes a string YAML would read as something else', async () => {
+      const values = ['1e3', '0x1F', '0o17', '.inf', '-.inf', '+.inf', '+.Inf', '.nan', 'yes', 'Null', '12', 'plain'];
+      const { text } = await run('---\nmappy: true\n---\n', properties => { properties.aliases = values; });
+      expect(frontmatterReader(text)?.('aliases')).toEqual(values);
+      expect(text).toContain('  - plain\n');
+      expect(text).toContain('  - "+.inf"\n');
+    });
+
+    it('keeps a BOM in front of a new header and the header\'s own line endings', async () => {
+      expect((await run('\uFEFF## Root\n', properties => { properties.mappy = true; })).text).toBe('\uFEFF---\nmappy: true\n---\n## Root\n');
+      const mixed = await run('---\nmappy: true\n---\nbody\r\n', properties => { properties['mappy-layout'] = 'timeline'; });
+      expect(mixed.text).toBe('---\nmappy: true\nmappy-layout: timeline\n---\nbody\r\n');
+    });
+
+    // Review 2 of LEV-214: the cache read the header with a smaller reader than the one the write used.
+    it.each([
+      ['a BOM', '\uFEFF## Root\n'],
+      ['a `...` closing line', '---\ntags: x\n...\n## Root\n'],
+      ['a quoted key', '---\n"mappy": true\n---\n## Root\n'],
+    ])('lets the cache read the conversion the text holds, with %s', async (_shape, source) => {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', source);
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, 'timeline');
+      expect(readMapFromSource(app.content(file))).toBe('timeline');
+      expect(readMapLayout(app.asApp<App>(), file as unknown as TFile)).toBe('timeline');
+    });
+
+    it('reads `True` and a nested key into the cache as the product does', () => {
+      expect(parseFrontmatter('---\nmappy: True\nmappy-topics:\n  参考: { mindmap: [1, 2] }\n---\n'))
+        .toEqual({ mappy: true, 'mappy-topics': { 参考: { mindmap: [1, 2] } } });
+    });
+
+    it('writes a key that needs quotes quoted, and finds a quoted key with an escape', async () => {
+      const changed = await run('---\n"a: b": 1\nmappy: true\n---\n', properties => { properties['a: b'] = 2; properties['#x'] = 'y'; });
+      expect(frontmatterReader(changed.text)?.('a: b')).toBe(2);
+      expect(parseFrontmatter(changed.text)).toEqual({ 'a: b': 2, mappy: true, '#x': 'y' });
+      const escaped = await run("---\n'it''s': 1\nmappy: true\n---\n", properties => { properties["it's"] = 2; });
+      expect(parseFrontmatter(escaped.text)).toEqual({ "it's": 2, mappy: true });
+    });
+
+    it('removes every line of a key written twice', async () => {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', '---\nmappy: true\ntags: x\nmappy: true\n---\nbody\n');
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, null);
+      expect(app.content(file)).toBe('---\ntags: x\n---\nbody\n');
+      expect(readMapFromSource(app.content(file))).toBeNull();
+    });
+
+    it('records a `frontmatter` entry only when the text changed', async () => {
+      const { app } = await run('---\nmappy: true\n---\nbody\n', properties => { properties.mappy = true; });
+      expect(app.activity).toEqual([]);
+    });
+
+    // Review 3 of LEV-214: the cache read the whole header at once (a repeat wins, an unreadable line ends it), while the
+    // product reads one key at a time from its first line (`frontmatterReader`).
+    it.each([
+      ['a key written twice', '---\nmappy: false\nmappy: true\n---\nbody\n', 'timeline' as const],
+      ['a line that is not a key', '---\nfoo\nmappy: true\n---\nbody\n', null],
+      ['a list item at the top', '---\ntags: x\n- y\nmappy: true\n---\nbody\n', null],
+    ])('reads %s as the product does, and the write lands', async (_shape, source, layout) => {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', source);
+      expect(readMapLayout(app.asApp<App>(), file as unknown as TFile)).toBe(readMapFromSource(source));
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, layout);
+      expect(readMapFromSource(app.content(file))).toBe(layout);
+      expect(readMapLayout(app.asApp<App>(), file as unknown as TFile)).toBe(layout);
+    });
+
+    it('reads a list cut by a comment line as the product does, before and after a write', async () => {
+      const source = '---\ntags:\n  - a\n# c\n  - b\nmappy: true\n---\n';
+      expect(parseFrontmatter(source)?.tags).toEqual(frontmatterReader(source)?.('tags'));
+      const { text } = await run(source, properties => { properties.tags = ['z']; });
+      expect(parseFrontmatter(text)?.tags).toEqual(frontmatterReader(text)?.('tags'));
+    });
+
+    it('has no cache frontmatter for a header without a key', () => {
+      expect(parseFrontmatter('---\n---\nbody\n')).toBeUndefined();
+      expect(parseFrontmatter('---\n# only a comment\n---\nbody\n')).toBeUndefined();
+    });
+
+    it('refuses a value the product\'s reader cannot read back', async () => {
+      for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 'a\rb', '\u0001', { k: 'x\ry' }, [['\u0001']], { n: Number.NaN }]) {
+        const app = new HarnessApp();
+        const file = app.put('Fixtures/fm.md', '---\nmappy: true\n---\n');
+        await expect(app.fileManager.processFrontMatter(file, properties => { properties.n = value; })).rejects.toThrow();
+        expect(app.content(file)).toBe('---\nmappy: true\n---\n');
+      }
+      const { text } = await run('---\nmappy: true\n---\n', properties => { properties.s = 'a\n"b"\t\\'; });
+      expect(frontmatterReader(text)?.('s')).toBe('a\n"b"\t\\');
+    });
   });
 
   it('loads children with the parent and releases DOM and event subscriptions on unload', () => {
