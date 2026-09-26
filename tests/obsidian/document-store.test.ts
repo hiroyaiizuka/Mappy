@@ -116,6 +116,23 @@ describe('DocumentStore', () => {
     expect(independent.state.source).toBe('a!bc');
   });
 
+  it('Undo and Redo return the write they made, and tell every listener of the store (LEV-150)', async () => {
+    const { store, file } = harness('a');
+    const heard: unknown[] = [];
+    const unsubscribe = store.onHistoryWrite((target, write) => { heard.push({ path: target.path, write }); });
+    await store.apply(file, 'a', [{ from: 1, to: 1, text: 'bc' }]);
+    const undone = { before: 'abc', after: 'a', edits: [{ from: 1, to: 3, text: '' }] };
+    const redone = { before: 'a', after: 'abc', edits: [{ from: 1, to: 1, text: 'bc' }] };
+    expect(await store.undo(file)).toEqual(undone);
+    expect(await store.redo(file)).toEqual(redone);
+    // No step: nothing written, no edits, nobody told.
+    expect(await store.redo(file)).toEqual({ before: 'abc', after: 'abc', edits: [] });
+    expect(heard).toEqual([{ path: file.path, write: undone }, { path: file.path, write: redone }]);
+    unsubscribe();
+    await store.undo(file);
+    expect(heard).toHaveLength(2);
+  });
+
   it('keeps its history when UI queries it synchronously during an editor transaction', async () => {
     const { store, file, leaves } = harness('a');
     const editor = makeEditor('a');

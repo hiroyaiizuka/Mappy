@@ -8,8 +8,10 @@
  *
  * Before the fix the store's Undo／Redo returned only the text, the re-read had no edits, and a node matched only by
  * its title — the untitled one and the second 同名 — came back with a new id: its branch opened and the selection
- * left it (`artifacts/lev-150-undo-redo-ids/tests-before-fix.log`). The 通常 and トピック rows hold there too; they
- * pin that the carried ids do not move a node matched by its title.
+ * left it (`artifacts/lev-150-undo-redo-ids/tests-before-fix.log`, the same-length rename rows). The 通常 and トピック
+ * rows hold there too; they pin that the carried ids do not move a node matched by its title. The longer rename and
+ * the delete move the nodes after them, so only the edits the step really made carry the ids (a wrong set fails them:
+ * `mutations-review1.txt`); the two-map row and the refused ⌘Z are from the first code review.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, TFile } from 'obsidian';
@@ -142,8 +144,8 @@ const SHAPES = [
 ] as const;
 
 const BEFORE = [
-  { name: '', layout: false },
-  { name: ' and then a layout button', layout: true },
+  { before: 'with no layout button', layout: false },
+  { before: 'then a layout button', layout: true },
 ] as const;
 
 /** Select `label`'s `index`-th node and fold it with its toggle; returns its id. */
@@ -168,7 +170,7 @@ function expectKept(mounted: MountedMapView, label: string, index: number, id: s
 
 describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Redo half)', () => {
   it.each(EDITS.flatMap(edit => BEFORE.flatMap(before => SHAPES.map(shape => ({ ...edit, ...before, ...shape })))))(
-    '$edit$name, then ⌘Z and ⌘⇧Z: a folded, selected $shape node stays folded and selected', async ({ run, done, layout, label, index }) => {
+    '$edit, $before, then ⌘Z and ⌘⇧Z: a folded, selected $shape node stays folded and selected', async ({ run, done, layout, label, index }) => {
       const mounted = await mount();
       await run(mounted);
       if (layout) {
