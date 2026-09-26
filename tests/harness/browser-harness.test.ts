@@ -7,7 +7,7 @@ import { readTopicPositions } from '../../src/core/topics';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost } from '../../harness/browser/fixtures';
-import { embedOnlyTitle, readMapFromSource } from '../../src/core/embed';
+import { embedOnlyTitle, frontmatterReader, readMapFromSource } from '../../src/core/embed';
 import { Component, Events, MarkdownRenderer } from '../../harness/browser/obsidian';
 import { performanceFixtureMatrix, performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
 
@@ -249,6 +249,53 @@ describe('browser harness obsidian mock', () => {
       expect(readMapFromSource(app.content(file))).toBe('timeline');
       await writeMapLayout(app.asApp<App>(), file as unknown as TFile, null);
       expect(app.content(file)).toBe('## Root\n- Child\n');
+      // Only this path leaves a `frontmatter` entry; the capture tells a conversion from a button's write by it.
+      expect(app.activity.filter(entry => entry.kind === 'frontmatter')).toHaveLength(2);
+    });
+
+    // Review 1 of LEV-214: the callback read the header with this page's own reader, not the product's, so a header
+    // the product reads as a map could be released to no effect, and a value it misread was written back.
+    it.each([
+      ['a BOM', '﻿---\nmappy: true\n---\nbody\n', '﻿body\n'],
+      ['a `...` closing line', '---\nmappy: true\n...\nbody\n', 'body\n'],
+      ['a quoted key', '---\n"mappy": true\ntags: x\n---\nbody\n', '---\ntags: x\n---\nbody\n'],
+      ['a space before the colon', '---\nmappy : true\ntags: x\n---\nbody\n', '---\ntags: x\n---\nbody\n'],
+    ])('releases a map whose header has %s', async (_shape, source, released) => {
+      expect(readMapFromSource(source)).toBe('mindmap');
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', source);
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, null);
+      expect(app.content(file)).toBe(released);
+    });
+
+    it('reads what the product reads: a comment, a quoted comma and a nested key reach the callback as they are', async () => {
+      const source = '---\nmappy: true # keep\ntags: [a, "b, c"]\nmappy-topics:\n  参考: { mindmap: [1, 2] }\n---\nbody\n';
+      let seen: Record<string, unknown> = {};
+      const { text } = await run(source, properties => { seen = structuredClone(properties); properties['mappy-layout'] = 'timeline'; });
+      expect(seen).toEqual({ mappy: true, tags: ['a', 'b, c'], 'mappy-topics': { 参考: { mindmap: [1, 2] } } });
+      expect(text).toBe(source.replace('\n---\nbody', '\nmappy-layout: timeline\n---\nbody'));
+      const pushed = await run(source, properties => { (properties.tags as string[]).push('d'); });
+      expect(pushed.text).toBe(source.replace('tags: [a, "b, c"]', 'tags:\n  - a\n  - b, c\n  - d'));
+      expect(frontmatterReader(pushed.text)?.('tags')).toEqual(['a', 'b, c', 'd']);
+    });
+
+    it('converts a note whose leading `---` never closes, as a note without a header', async () => {
+      const source = '---\n## Root\n- a\n';
+      const { text } = await run(source, properties => { properties.mappy = true; });
+      expect(text).toBe(`---\nmappy: true\n---\n${source}`);
+    });
+
+    it('quotes a string YAML would read as something else', async () => {
+      const values = ['1e3', '0x1F', '0o17', '.inf', '-.inf', '.nan', 'yes', 'Null', '12', 'plain'];
+      const { text } = await run('---\nmappy: true\n---\n', properties => { properties.aliases = values; });
+      expect(frontmatterReader(text)?.('aliases')).toEqual(values);
+      expect(text).toContain('  - plain\n');
+    });
+
+    it('keeps a BOM in front of a new header and the header\'s own line endings', async () => {
+      expect((await run('﻿## Root\n', properties => { properties.mappy = true; })).text).toBe('﻿---\nmappy: true\n---\n## Root\n');
+      const mixed = await run('---\nmappy: true\n---\nbody\r\n', properties => { properties['mappy-layout'] = 'timeline'; });
+      expect(mixed.text).toBe('---\nmappy: true\nmappy-layout: timeline\n---\nbody\r\n');
     });
   });
 
