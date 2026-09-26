@@ -17,6 +17,13 @@
  *   fold    fold and select a node, then a layout button: the fold and the selection stay (LEV-150).
  * × 通常 (a unique title) ・空題名 (an item with no text) ・トピック (a top-level heading besides the body).
  *
+ * E44 (LEV-206): the history across a layout button. Before LEV-206 the button's write dropped every Undo and Redo
+ * step, as a change from outside does (E05), so ⌘Z after it did nothing. The rows are the user's order × the shape:
+ *   undo    F2 rename, a layout button, ⌘Z, ⌘⇧Z: the rename goes and comes back, the layout stays in the note and
+ *           on screen (the switch is no step of its own).
+ *   redo    F2 rename, ⌘Z, a layout button, ⌘⇧Z, ⌘Z: the Redo step waiting before the button is still there.
+ * × 通常・空題名・同名 (the second of two)・トピック.
+ *
  * The drop of a topic, and the drag of the body, while a second finger taps a button (LEV-182's touch) are not
  * here: one mouse cannot reach the button during a drag (lessons 12), and CDP's touch input on desktop Obsidian does
  * not start the map's pointer drag at all, so it would only prove the harness. `tests/ui/mindmap-view-layout-write.test.ts`
@@ -27,7 +34,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeOpenStep, makePaste, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makePaste, makeRename, makeHistory, refuseOpenLeaves } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -51,6 +58,8 @@ const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const paste = makePaste(evaluate);
+const rename = makeRename(cdp, evaluate);
+const history = makeHistory(cdp, evaluate);
 
 /** The shapes: the name the node is found by on screen (an untitled node is named 空のノード) and its index among equals. */
 const SHAPES = [
@@ -210,6 +219,50 @@ try {
       expectLayout(result, 'balanced', `fold-${shape.name}`);
       return { before, after, source: result.source };
     });
+  }
+
+  // 4. E44 (LEV-206): the history across a button × shape. The texts expected are computed from the note the row
+  // opened, not from what the map reports: a rename that also changed something else fails here.
+  const HISTORY_SHAPES = [
+    { name: '通常', title: '子1', index: 0, line: '  - 子1\n', renamed: title => `  - ${title}\n` },
+    { name: '空題名', title: '空のノード', index: 0, line: '- \n  - 空の子\n', renamed: title => `- ${title}\n  - 空の子\n` },
+    { name: '同名', title: '同名', index: 1, line: '- 同名\n  - 同名の子B\n', renamed: title => `- ${title}\n  - 同名の子B\n` },
+    { name: 'トピック', title: 'トピック', index: 0, line: '## トピック\n', renamed: title => `## ${title}\n` },
+  ];
+  const withTimeline = text => text.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n');
+  const mode = () => evaluate(`${VIEW} return view.mode;`);
+  for (const order of ['undo', 'redo']) {
+    for (const shape of HISTORY_SHAPES) {
+      await step(`${order}-${shape.name}`, async () => {
+        const opened = await reopen();
+        if (!opened.source.includes(shape.line)) throw new Error(`the fixture has no ${JSON.stringify(shape.line)}`);
+        const title = `${shape.name}履歴`;
+        const edited = opened.source.replace(shape.line, shape.renamed(title));
+        await select(shape.title, shape.index);
+        const renamed = await rename(title);
+        if (renamed.source !== edited) throw new Error(`the rename wrote something else:\n${renamed.source}`);
+        const rows = [];
+        const expectAt = (result, label, expected) => {
+          rows.push({ label, source: result.source, messages: result.messages });
+          check(result.messages.length === 0, `${order}-${shape.name} ${label}: showed ${JSON.stringify(result.messages)}`);
+          check(result.source === expected, `${order}-${shape.name} ${label}:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
+        };
+        if (order === 'redo') expectAt(await history('undo'), '⌘Z before the button', opened.source);
+        await clickLayout(1);
+        const switched = await settle(asks('timeline'));
+        expectAt(switched, 'the button', withTimeline(order === 'undo' ? edited : opened.source));
+        if (order === 'undo') {
+          expectAt(await history('undo'), '⌘Z', withTimeline(opened.source));
+          expectAt(await history('redo'), '⌘⇧Z', withTimeline(edited));
+        } else {
+          expectAt(await history('redo'), '⌘⇧Z', withTimeline(edited));
+          expectAt(await history('undo'), '⌘Z', withTimeline(opened.source));
+        }
+        const shown = await mode();
+        check(shown === 'timeline', `${order}-${shape.name}: the map left the layout of the button (${shown})`);
+        return { rows, mode: shown };
+      });
+    }
   }
 
   if (!flag('--keep')) {
