@@ -704,6 +704,7 @@ export class MindmapView extends FileView {
       if (info.file?.path === this.file?.path) this.scheduleRefresh();
     }));
     this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) this.scheduleRefresh(); }));
+    this.register(this.store.onWrite((file, write) => { this.recordWrite(file, write); }));
     // A rename of the note is `onRename` (FileView's own subscription). Its deletion is FileView's too, and comes
     // first (subscribed in `onload`): the leaf goes back in its history or to the empty view (`allowNoFile` is
     // false), which unloads the note here without a save; a kept draft outlives refreshes, but not its note, so it
@@ -966,7 +967,21 @@ export class MindmapView extends FileView {
   private async writeLayout(file: TFile, mode: LayoutMode, loaded: number): Promise<void> {
     const write = await this.store.applyLatest(file, source => planMapLayout(source, mode));
     if (write.edits.length === 0 || file !== this.file || this.closed || loaded !== this.loads) return;
-    this.ownWrites.push({ ...write });
+    this.recordOwn(write);
+  }
+
+  /**
+   * `write` recorded where the view's record leads to its start: the end of the record, or the text the view shows
+   * when a re-read has spent it. A write already there — the store's `onWrite` told it before the caller got its
+   * answer (`recordWrite`) — is the last one and is not added again; nor is one a re-read has spent in between (its
+   * start is behind the text the view shows). Not matched against earlier writes, as `recordCarried` does: ⌘Z, ⌘⇧Z,
+   * ⌘Z before one re-read write the same texts twice.
+   */
+  private recordOwn(write: LatestWrite): void {
+    const last = this.ownWrites[this.ownWrites.length - 1];
+    if (last?.before === write.before && last.after === write.after) return;
+    if (write.before !== (last?.after ?? this.document?.source)) return;
+    this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
   }
 
   /**
@@ -1877,7 +1892,7 @@ export class MindmapView extends FileView {
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
       const carried = this.recordCarried(write.carried);
-      this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
+      this.recordOwn(write);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external
@@ -2088,10 +2103,31 @@ export class MindmapView extends FileView {
     new Notice("H2 とリストの形式に変更しました。元に戻す操作で復元できます。");
   }
 
+  /** Undo／Redo: the store tells every map of the note what the step wrote (`recordWrite`). */
   private history(direction: "undo" | "redo"): void {
     const file = this.file;
     if (!file) return;
-    this.run(async () => { await this.store[direction](file); await this.refresh(); });
+    this.run(async () => {
+      // A step refused because the note changed under it re-reads the note here too, as a refused edit does (`writeOwn`).
+      try { await this.store[direction](file); } catch (error) {
+        if (error instanceof Error && error.message === conflictMessage) this.scheduleRefresh();
+        throw error;
+      }
+      await this.refresh();
+    });
+  }
+
+  /**
+   * A write the store made on the note (`DocumentStore.onWrite`) — this view's, another map's of the note, or a step of
+   * the shared history — recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the
+   * folds and the selection stay on a node whose title repeats or is empty. Recorded only where the view's record
+   * leads to its start (`recordOwn`): a view that moved on, or whose text is not the one the write was made on,
+   * re-reads it as it would any change. The view that asked for the write records it again once the store answers
+   * (`writeOwn`, `writeLayout`), which skips the copy.
+   */
+  private recordWrite(file: TFile, write: LatestWrite): void {
+    if (file !== this.file || this.closed) return;
+    this.recordOwn(write);
   }
 
   async showSource(split: boolean): Promise<void> {
