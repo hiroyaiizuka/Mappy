@@ -3,7 +3,7 @@ import { parseMarkdown } from '../../src/core/markdown';
 import { nodeBody } from '../../src/core/body';
 import { attachmentMarkdown } from '../../src/core/attachments';
 import {
-  DEEP_CHAIN_LEVELS, IMAGE_EVERY, makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
+  DEEP_CHAIN_LEVELS, IMAGE_EVERY, MIXED_BARE_STAGE_EVERY, MIXED_CHAIN_LEVELS, makeEmbedFixture, makeMixedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
 } from '../../scripts/performance-fixtures.mjs';
 
 function parse(nodeCount: number, shape: string) {
@@ -96,6 +96,28 @@ describe('performance fixture shapes', () => {
     const withImage = items.filter(node => attachmentMarkdown(nodeBody(doc, node)) === '![[sample-image.svg]]');
     expect(withImage).toHaveLength(Math.floor(99 / IMAGE_EVERY));
     expect(source.match(/!\[\[sample-image\.svg\]\]/gu)).toHaveLength(Math.floor(99 / IMAGE_EVERY));
+  });
+
+  it.each([500, 2000])('mixes deep chains, long titles, images and bare stages in the %i-node timeline document (E45)', count => {
+    const [filename, source] = makeMixedFixture(count);
+    expect(filename).toBe(`timeline-mixed-${count}.md`);
+    expect(source.startsWith(`---\nmappy: true\n---\n## 大規模タイムライン（${count}ノード）\n`)).toBe(true);
+    const doc = parseMarkdown(source, filename.replace(/\.md$/u, ''));
+    expect(doc.nodes).toHaveLength(count);
+    const top = doc.root.children[0]!;
+    expect(doc.root.children).toHaveLength(1);
+    const stages = top.children;
+    expect(stages).toHaveLength(Math.round(count / 40));
+    expect(stages.filter(stage => stage.children.length === 0).length).toBe(Math.ceil((stages.length - (MIXED_BARE_STAGE_EVERY - 4)) / MIXED_BARE_STAGE_EVERY));
+    expect(Math.max(...doc.nodes.map(node => node.level)) - top.level - 1).toBe(MIXED_CHAIN_LEVELS);
+    const titles = doc.nodes.map(node => node.title);
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(titles.filter(title => title.length >= 40).length).toBeGreaterThan(count / 10);
+    const images = doc.nodes.map(node => attachmentMarkdown(nodeBody(doc, node))).filter(Boolean);
+    expect(images).toContain('![[sample-image.svg]]');
+    expect(images).toContain('![説明](sample-image.svg)');
+    expect(images.filter(image => image === '![[存在しない画像.png|120]]')).toHaveLength(1);
+    expect(attachmentMarkdown(nodeBody(doc, stages[2]!))).toBe('![[sample-image.svg|120]]');
   });
 
   it('rejects unknown shapes', () => {
