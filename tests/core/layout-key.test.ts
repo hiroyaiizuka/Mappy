@@ -23,23 +23,15 @@ describe('planMapLayout (a layout button, LEV-196)', () => {
     expect(planMapLayout('---\nmappy: true\n---\n', 'mindmap')).toEqual([]);
   });
 
-  it('leaves `mappy` alone: a button records a preference and never makes a note a map, nor makes it one again', () => {
-    expect(write('---\ntags: [a]\n---\n# Map\n', 'timeline')).toBe('---\ntags: [a]\nmappy-layout: timeline\n---\n# Map\n');
-    expect(write('---\nmappy: "true"\nmappy-layout: timeline\n---\n# Map\n', 'mindmap')).toBe('---\nmappy: "true"\n---\n# Map\n');
-  });
-
-  it('creates the header only for a layout that has a key', () => {
-    expect(write('# Map\n', 'hierarchy')).toBe('---\nmappy-layout: hierarchy\n---\n# Map\n');
-    expect(write('﻿# Map\n', 'balanced')).toBe('﻿---\nmappy-layout: balanced\n---\n# Map\n');
-    expect(planMapLayout('# Map\n', 'mindmap')).toEqual([]);
+  it('writes nothing to a note that is not a map: a button neither makes one nor leaves a layout for the next conversion', () => {
+    expect(planMapLayout('---\ntags: [a]\n---\n# Note\n', 'timeline')).toEqual([]);
+    expect(planMapLayout('---\nmappy: "true"\nmappy-layout: timeline\n---\n# Note\n', 'mindmap')).toEqual([]);
+    expect(planMapLayout('# Note\n', 'hierarchy')).toEqual([]);
+    expect(planMapLayout('---\nmappy: true\n# an unfinished header\n', 'hierarchy')).toEqual([]);
   });
 
   it('keeps the note\'s line endings', () => {
     expect(write('---\r\nmappy: true\r\n---\r\n# Map\r\n', 'timeline')).toBe('---\r\nmappy: true\r\nmappy-layout: timeline\r\n---\r\n# Map\r\n');
-  });
-
-  it('refuses an unfinished header rather than guessing where it ends', () => {
-    expect(() => planMapLayout('---\nmappy: true\n# Map\n', 'timeline')).toThrow('frontmatter を閉じて');
   });
 
   it.each(['mindmap', 'timeline', 'hierarchy', 'balanced'] as const)('reads back as %s through the text reader', layout => {

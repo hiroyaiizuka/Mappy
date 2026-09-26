@@ -14,8 +14,8 @@
  * (a mouse cannot reach the button during a drag, and CDP's touch does not start the map's drag on desktop).
  *
  * With the view from before LEV-196, every row fails but two (`artifacts/lev-196-layout-switch/tests-reverted.log`):
- * the external change (E05) and the note with no frontmatter. Those two are not regression tests of the bug; they pin
- * what the fix must not do — carry an edit over someone else's change, or over a header both writes would create.
+ * the external change (E05) and the note that is not a map. Those two are not regression tests of the bug; they pin
+ * what the fix must not do — carry an edit over someone else's change, or give a note that is not a map a layout.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, TFile } from 'obsidian';
@@ -103,6 +103,14 @@ async function settled(mounted: MountedMapView, reached: (source: string) => boo
   await mounted.settle();
 }
 
+/**
+ * The next task, where a key or a finger's release after the click on a button arrives on the real Obsidian: by then
+ * the button's write is queued in the store, so the edit is queued behind it and planned on the text before it —
+ * the edit the store has to carry over it. (Sent in the click's own task, the edit is queued first and never meets
+ * the button's write; the draft rows are that order, since the blur comes before the click.)
+ */
+const nextTask = (): Promise<void> => new Promise(resolve => { setTimeout(resolve, 0); });
+
 /** The note asks for `mode`. */
 const asks = (mode: LayoutMode) => (source: string): boolean => source.includes(`mappy-layout: ${mode}\n`);
 
@@ -135,6 +143,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
       const mounted = await mount();
       selectNode(mounted, label);
       clickLayout(mounted, 'timeline');
+      await nextTask();
       const before = mounted.source();
       mounted.key(mounted.canvas, key);
       await settled(mounted, asks('timeline'));
@@ -148,6 +157,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     const mounted = await mount();
     selectNode(mounted, label);
     clickLayout(mounted, 'hierarchy');
+    await nextTask();
     mounted.key(mounted.canvas, 'F2');
     const editor = mounted.editor();
     if (!editor) throw new Error('F2 opened no editor');
@@ -195,6 +205,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     if (!id) throw new Error('No tree to drag');
     view.shiftTopic(id, { x: 40, y: 30 });
     clickLayout(mounted, 'timeline');
+    await nextTask();
     await view.placeTopic(id, { x: 80, y: 60 });
     await settled(mounted, asks('timeline'));
     expect(refusals()).toEqual([]);
@@ -209,6 +220,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     const mounted = await mount();
     selectNode(mounted, '子1');
     clickLayout(mounted, 'timeline');
+    await nextTask();
     mounted.key(mounted.canvas, 'Delete');
     clickLayout(mounted, 'hierarchy');
     await settled(mounted, source => asks('hierarchy')(source) && !source.includes('子1'));
@@ -219,6 +231,8 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     const mounted = await mount();
     selectNode(mounted, '子1');
     clickLayout(mounted, 'timeline');
+    // Queued after the edit, the button's write would drop the edit's step with the rest of the history (LEV-206).
+    await nextTask();
     mounted.key(mounted.canvas, 'Delete');
     await settled(mounted, source => asks('timeline')(source) && !source.includes('子1'));
     mounted.key(mounted.canvas, 'z', { metaKey: true });
@@ -244,6 +258,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     const mounted = await mount();
     selectNode(mounted, '子1');
     clickLayout(mounted, 'timeline');
+    await nextTask();
     const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
     const paste = new Event('paste', { bubbles: true, cancelable: true });
     Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
@@ -259,6 +274,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     selectNode(mounted, '子1');
     clickLayout(mounted, 'timeline');
     clickLayout(mounted, 'mindmap');
+    await nextTask();
     mounted.key(mounted.canvas, 'Delete');
     await settled(mounted, source => !source.includes('子1'));
     expect(refusals()).toEqual([]);
@@ -271,6 +287,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     const mounted = await mount();
     selectNode(mounted, '子1');
     clickLayout(mounted, 'timeline');
+    await nextTask();
     mounted.key(mounted.canvas, 'Delete');
     await settled(mounted, source => asks('timeline')(source) && !source.includes('子1'));
     mounted.app.put(PATH, SOURCE);
@@ -281,20 +298,11 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     expect(refusals()).toEqual([]);
   });
 
-  it('on a note with no frontmatter, an edit in the body right after the button follows the header it created', async () => {
+  it('a note that is not a map gets no layout from the button, and a drop right after it is saved as usual', async () => {
+    // The button records a preference of a map (`planMapLayout`): with no `mappy: true` it writes nothing, so a
+    // topic's first position, which creates the header, has nothing to be carried over.
     const bare = SOURCE.split('\n').slice(HEADER.length).join('\n');
     const mounted = await mount(bare);
-    selectNode(mounted, '子1');
-    clickLayout(mounted, 'timeline');
-    mounted.key(mounted.canvas, 'Delete');
-    await settled(mounted, source => asks('timeline')(source) && !source.includes('子1'));
-    expect(refusals()).toEqual([]);
-    expect(mounted.source()).toBe(`---\nmappy-layout: timeline\n---\n${bare.replace('  - 子1\n', '')}`);
-  });
-
-  it('on a note with no frontmatter, a drop after the button is refused rather than writing a second header', async () => {
-    // Both writes would create the header: carried after the button's, the drop's would land in the body.
-    const mounted = await mount(SOURCE.split('\n').slice(HEADER.length).join('\n'));
     const view = mounted.view as unknown as {
       shiftTopic(id: string, delta: { x: number; y: number } | null): void;
       placeTopic(id: string, delta: { x: number; y: number }): Promise<void>;
@@ -303,10 +311,34 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     if (!topic) throw new Error('No topic');
     view.shiftTopic(topic.id, { x: 40, y: 30 });
     clickLayout(mounted, 'timeline');
-    await expect(view.placeTopic(topic.id, { x: 80, y: 60 })).rejects.toThrow(conflictMessage);
-    await settled(mounted, asks('timeline'));
+    await view.placeTopic(topic.id, { x: 80, y: 60 });
+    await settled(mounted, source => readTopicPositions(source).get('トピック')?.timeline !== undefined);
+    expect(refusals()).toEqual([]);
+    expect(mounted.source()).not.toContain('mappy-layout');
     expect(mounted.source().split('\n').filter(line => line === '---')).toHaveLength(2);
-    expect(mounted.source()).toContain('mappy-layout: timeline\n');
+  });
+
+  it('an image whose reading outlasts the re-read of the button\'s write is still linked', async () => {
+    // The store keeps the button's write to carry the link over until the next edit, whatever the view re-reads
+    // in between; the view's own record of it (spent by that re-read) is not what the check asks.
+    const mounted = await mount();
+    selectNode(mounted, '子1');
+    clickLayout(mounted, 'timeline');
+    await nextTask();
+    const image = new File([new Uint8Array([1, 2, 3])], 'slow.png', { type: 'image/png' });
+    const bytes = image.arrayBuffer.bind(image);
+    let reread = false;
+    Object.defineProperty(image, 'arrayBuffer', { value: async () => {
+      await settled(mounted, asks('timeline'));
+      reread = true;
+      return bytes();
+    } });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+    mounted.canvas.dispatchEvent(paste);
+    await settled(mounted, source => source.includes('slow.png'));
+    expect(reread).toBe(true);
+    expect(Notice.log).toEqual([]);
   });
 });
 

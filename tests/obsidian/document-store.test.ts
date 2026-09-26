@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type EditorPosition, type EditorTransaction } from 'obsidian';
-import { DocumentStore } from '../../src/obsidian/document-store';
+import { DocumentStore, conflictMessage } from '../../src/obsidian/document-store';
 import { MarkdownView } from '../mocks/obsidian';
 
 function makeFile(path = 'Note.md'): TFile {
@@ -253,6 +253,33 @@ describe('DocumentStore', () => {
       // An edit after it is measured against it and is undone on its own.
       await store.apply(file, `${HEADER}# B\n`, [{ from: HEADER.length + 2, to: HEADER.length + 3, text: 'C' }]);
       await expect(store.undo(file)).resolves.toBe(`${HEADER}# B\n`);
+    });
+
+    it('carries an edit planned before it over it, and says what it wrote', async () => {
+      const { store, file, disk } = harness('---\nmappy: true\n---\n# A\n');
+      await store.read(file);
+      const layout = [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }];
+      await store.applyLatest(file, () => layout);
+      const planned = [{ from: 22, to: 23, text: 'B' }];
+      await expect(store.applies(file, '---\nmappy: true\n---\n# A\n')).resolves.toBe(true);
+      await expect(store.applyOver(file, '---\nmappy: true\n---\n# A\n', planned)).resolves.toEqual({
+        before: '---\nmappy: true\nmappy-layout: timeline\n---\n# A\n',
+        after: '---\nmappy: true\nmappy-layout: timeline\n---\n# B\n',
+        edits: [{ from: 45, to: 46, text: 'B' }],
+      });
+      expect(disk.get(file.path)).toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# B\n');
+      // Spent: an edit planned before it again is planned before this edit too, and is refused.
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', planned)).rejects.toThrow(conflictMessage);
+    });
+
+    it('refuses as before an edit that touches its lines, and one planned before someone else\'s change', async () => {
+      const { store, file, disk } = harness('---\nmappy: true\n---\n# A\n');
+      await store.read(file);
+      await store.applyLatest(file, () => [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }]);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 4, to: 20, text: '' }])).rejects.toThrow(conflictMessage);
+      disk.set(file.path, `${disk.get(file.path) ?? ''}- 外から\n`);
+      await expect(store.applies(file, '---\nmappy: true\n---\n# A\n')).resolves.toBe(false);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 22, to: 23, text: 'B' }])).rejects.toThrow(conflictMessage);
     });
 
     it('writes nothing and keeps the history when the plan changes nothing', async () => {

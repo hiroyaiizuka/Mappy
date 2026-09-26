@@ -1,7 +1,7 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
-import { frontmatterLayout, parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
+import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
-import { findNode, getNode, nodeAt, rebaseEdits } from "../core/text-edits";
+import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
@@ -67,15 +67,15 @@ interface DraftBase { nodeId: string; value: string }
  * is empty (LEV-146) — and it is used once, for the read that finds exactly that text, or a text a run of
  * such writes led to from the one the view last parsed (a draft saved by the blur of the click on a layout
  * button, then the button's own write — LEV-150): anything else means someone else has written, and then the
- * ids are as much of a guess as E05 says they are. `layout` marks the layout buttons' writes (LEV-196), the
- * only ones an edit planned before them is carried over (`overLayoutWrites`).
+ * ids are as much of a guess as E05 says they are. `layout` marks the layout buttons' writes (LEV-196), which the
+ * store may carry an edit planned before them over (`DocumentStore.applyOver`); `carriedPlan` follows it.
  */
 interface OwnWrite {
   readonly before: string;
   readonly after: string;
   readonly edits: readonly TextEdit[];
   readonly layout?: true;
-  /** `after` parsed from a document with these edits, kept so a replay and a carry do not parse it again (`parseOwn`). */
+  /** `after` parsed from a document with these edits, kept so a replay and `carriedPlan` do not parse it again (`parseOwn`). */
   parsed?: { from: MindDocument; basename: string; document: MindDocument };
 }
 
@@ -271,12 +271,6 @@ export class MindmapView extends FileView {
   private bodyDraft: DraftBase | undefined;
   /** The writes this view made since its last re-parse, in order, for the re-parse that reads them back; see `OwnWrite`. */
   private ownWrites: OwnWrite[] = [];
-  /**
-   * The layout buttons' writes an edit may still have been planned before (LEV-196): those that lead on from
-   * the text the view shows (`pruneLayoutWrites`, after every re-read while no save is under way — a save may
-   * hold a text from before them — and after every save). See `overLayoutWrites`.
-   */
-  private layoutWrites: OwnWrite[] = [];
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
   private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; release: () => void } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
@@ -458,7 +452,7 @@ export class MindmapView extends FileView {
     }
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
-    this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.layoutWrites = [];
+    this.pendingTopic = null; this.topicDrag = null; this.ownWrites = [];
     this.targets = new Map(); this.knownCalled.clear();
     await super.onUnloadFile(file);
   }
@@ -928,58 +922,28 @@ export class MindmapView extends FileView {
    * an edit planned in between — a draft saved by the blur of the click on the button itself, a key, a topic
    * dropped by the finger still on it — was refused as someone else's change, and the re-read had no edits to
    * carry the ids of a node whose title repeats or is empty (LEV-150). Queued, an edit already on its way
-   * lands first; recorded, the re-read carries the ids (`ownWrites`) and an edit planned before it is carried
-   * over it (`overLayoutWrites`). The note of a view that moved on keeps the preference but none of the rest.
+   * lands first, and one planned before it is carried over it by the store (`DocumentStore.applyOver`); recorded,
+   * the re-read carries the ids (`ownWrites`). The note of a view that moved on keeps the preference but none of
+   * the rest.
    */
   private async writeLayout(file: TFile, mode: LayoutMode): Promise<void> {
     const write = await this.store.applyLatest(file, source => planMapLayout(source, mode));
     if (write.edits.length === 0 || file !== this.file || this.closed) return;
-    const own: OwnWrite = { ...write, layout: true };
-    this.ownWrites.push(own);
-    this.layoutWrites.push(own);
+    this.ownWrites.push({ ...write, layout: true });
   }
 
   /**
-   * An edit planned on a text the layout buttons have since written over (LEV-196), carried over those writes:
-   * they change only `mappy` and `mappy-layout`, which no planned edit decides for or against, so an edit that
-   * stays clear of their lines is the same edit after them (`rebaseEdits`). `planned`, the parse the edit was
-   * planned on, is carried along for the drafts. An edit that does touch those lines is left as it was, for the
-   * store to refuse: it is planned against a note that is no longer there. So is every edit over a write that
-   * created the frontmatter: an edit planned on the note without one may create it too (a topic's first
-   * position), and two headers inserted at the same place do not commute — carried after the button's, the
-   * second would land in the body.
+   * The parse an edit planned on `planned` stands on once the store carried it to `before` over the layout
+   * buttons' writes (`DocumentStore.applyOver`), from the view's record of those writes; undefined when the record
+   * no longer holds them (a re-read spent them), and the drafts are then left for the re-read to measure.
    */
-  private overLayoutWrites(source: string, edits: TextEdit[], planned: MindDocument | undefined, basename: string): { source: string; edits: TextEdit[]; planned: MindDocument | undefined } {
-    const original = { source, edits, planned };
-    for (const own of this.layoutWrites) {
-      if (own.before !== source) continue;
-      // Only an edit at the very start competes with a header the button created; one in the body follows it.
-      if (!frontmatterLayout(own.before) && edits.some(edit => edit.from <= (own.edits[0]?.from ?? 0))) break;
-      const rebased = rebaseEdits(edits, own.edits);
-      if (!rebased) break;
-      if (planned?.source === source) planned = this.parseOwn(own, planned, basename);
-      source = own.after;
-      edits = rebased;
-      // Back at the text it was planned on (a button and then the one before it): the edit is the one planned.
-      if (source === original.source) ({ source, edits, planned } = original);
+  private carriedPlan(planned: MindDocument, before: string, basename: string): MindDocument | undefined {
+    let document = planned;
+    for (const own of this.ownWrites) {
+      if (document.source === before) break;
+      if (own.layout && own.before === document.source) document = this.parseOwn(own, document, basename);
     }
-    return { source, edits, planned };
-  }
-
-  /** Keeps the layout writes that lead on from `from`, in order; the rest no edit can still be planned before. */
-  private pruneLayoutWrites(from: string): void {
-    let at = from;
-    this.layoutWrites = this.layoutWrites.filter(own => own.before === at && (at = own.after, true));
-  }
-
-  /** Whether the view's own layout writes lead from `from` to `text` (`from` itself included). */
-  private reachedByLayoutWrites(from: string, text: string): boolean {
-    let at = from;
-    for (const own of this.layoutWrites) {
-      if (at === text) return true;
-      if (own.before === at) at = own.after;
-    }
-    return at === text;
+    return document.source === before ? document : undefined;
   }
 
   /** `own.after` parsed from `from` with its edits, once per base document. */
@@ -1110,9 +1074,6 @@ export class MindmapView extends FileView {
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one.
     this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
-    // Only an edit planned on the text now shown, or on one a write since led from, is still to come. Also when
-    // the text is the one shown already: the save's own re-read, which skips this, may have adopted it.
-    if (!this.saving) this.pruneLayoutWrites(document.source);
     if (changed) {
       this.document = document;
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
@@ -1800,31 +1761,24 @@ export class MindmapView extends FileView {
     // Read before the write: a draft that already disagrees with the note is left alone, so an external
     // change that arrived first is still refused when the draft is saved (E05).
     const drafts = this.currentDrafts();
-    let planned = this.document;
+    const planned = this.document;
     this.saving = true;
     try {
-      // A layout button pressed since the edit was planned (LEV-196): its write lands first, and the edit is
-      // carried over it — every one pressed until then, a second press while the first was being written too.
-      for (let awaited: Promise<void> | undefined; awaited !== this.layoutWrite;) {
-        awaited = this.layoutWrite;
-        await awaited.catch(() => undefined);
-      }
-      if (file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
-      ({ source, edits, planned } = this.overLayoutWrites(source, edits, planned, file.basename));
-      let written: string;
-      try { written = await this.store.apply(file, source, edits); }
+      let write: { before: string; after: string; edits: TextEdit[] };
+      // A layout button pressed after the edit was planned (LEV-196) is carried over by the store.
+      try { write = await this.store.applyOver(file, source, edits); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) { this.scheduleRefresh(); throw error; }
+      const written = write.after;
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
-      this.ownWrites.push({ before: source, after: written, edits });
-      // Every edit still to come is planned after this one (a second is refused while this one saves).
-      this.pruneLayoutWrites(written);
+      this.ownWrites.push(write);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external
       // change that landed in between. Both are the E05 refusal this fix exists to keep (LEV-140).
-      if (drafts.length > 0 && planned?.source === source) this.rebaseDrafts(drafts, planned, written, edits);
+      const base = planned?.source === source ? this.carriedPlan(planned, write.before, file.basename) : undefined;
+      if (drafts.length > 0 && base) this.rebaseDrafts(drafts, base, written, write.edits);
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh();
     } finally { this.saving = false; }
@@ -2008,10 +1962,9 @@ export class MindmapView extends FileView {
     if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
     if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
     const binary = await image.arrayBuffer();
-    // The note as the map shows it, or as the view's own layout buttons have since written it (LEV-196): `commit`
+    // The note as the map shows it, or as the view's own layout buttons have since written it (LEV-196): the store
     // carries the link over those.
-    const current = await this.store.read(file);
-    if (!this.reachedByLayoutWrites(document.source, current)) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
+    if (!await this.store.applies(file, document.source)) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
     const name = image.name.replace(/[\\/:*?"<>|]/gu, "-") || "image.png";
     const path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
     const attachment = await this.app.vault.createBinary(path, binary);
