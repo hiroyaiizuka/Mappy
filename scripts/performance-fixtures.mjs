@@ -126,15 +126,17 @@ export function makeEmbedFixture() {
 
 /** Levels of each chain in a mixed document's deep stages: deeper than any other branch in it. */
 export const MIXED_CHAIN_LEVELS = 16;
-/** Every this many-th stage of a mixed document has no children (a bare stage on the axis). */
+/** Every this many-th stage of a mixed document has no children (a bare stage on the axis)… */
 export const MIXED_BARE_STAGE_EVERY = 9;
+/** …starting with this stage (0-based: the 6th), so a 500-node document (13 stages) has one too. */
+export const MIXED_FIRST_BARE_STAGE = 5;
 
 /**
  * A timeline-sized document that mixes every shape the layout has to keep apart (docs/harness.md E45, LEV-20):
  * about one first-level stage per 40 nodes, cycling through a deep single chain (MIXED_CHAIN_LEVELS levels),
  * long Japanese titles with an image every third node, many flat siblings, and a mixed branch of long and short
- * titles with images (Vault, Markdown-style and one missing) partway down. Every MIXED_BARE_STAGE_EVERY-th stage
- * is bare, every third stage title (the 2nd, 5th, 8th…) is a long sentence, and the third stage carries an image of
+ * titles with images (Vault, Markdown-style and one missing) partway down. Every MIXED_BARE_STAGE_EVERY-th stage from
+ * MIXED_FIRST_BARE_STAGE on is bare, every third stage title (the 2nd, 5th, 8th…) is a long sentence, and the third stage carries an image of
  * its own, which widens the band every forest starts from. `mappy: true` with no layout key: the case chooses the layout it opens with.
  * Parses to exactly `nodeCount` nodes; every title starts with its own number, so no two are the same.
  */
@@ -142,7 +144,7 @@ export function makeMixedFixture(nodeCount) {
   const stageCount = Math.max(6, Math.round(nodeCount / 40));
   const items = nodeCount - 1 - stageCount;
   if (items < stageCount) throw new Error(`A mixed fixture needs at least ${stageCount * 2 + 1} nodes, not ${nodeCount}`);
-  const bare = index => index % MIXED_BARE_STAGE_EVERY === MIXED_BARE_STAGE_EVERY - 4;
+  const bare = index => index >= MIXED_FIRST_BARE_STAGE && (index - MIXED_FIRST_BARE_STAGE) % MIXED_BARE_STAGE_EVERY === 0;
   const filled = Array.from({ length: stageCount }, (_, index) => index).filter(index => !bare(index));
   const budgets = new Array(stageCount).fill(0);
   filled.forEach((index, at) => { budgets[index] = Math.floor(items / filled.length) + (at < items % filled.length ? 1 : 0); });

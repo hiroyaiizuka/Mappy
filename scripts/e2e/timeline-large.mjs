@@ -63,13 +63,16 @@ const state = makeState(evaluate);
  */
 const GEOMETRY = `
   const shown = nodes().filter(node => node.offsetWidth > 0);
-  const scale = shown[0].getBoundingClientRect().width / shown[0].offsetWidth;
+  if (shown.length === 0) throw new Error('no node on the map has a size');
+  // offsetWidth is rounded to whole px: the median ratio over the nodes keeps one rounding from skewing every gap.
+  const ratios = shown.map(node => node.getBoundingClientRect().width / node.offsetWidth).sort((a, b) => a - b);
+  const scale = ratios[Math.floor(ratios.length / 2)];
   const box = rect => ({ l: rect.left / scale, t: rect.top / scale, r: rect.right / scale, b: rect.bottom / scale });
   const items = [];
   const entries = new Map();
   for (const node of shown) {
     const id = node.dataset.nodeId;
-    const entry = { id, title: label(node), rect: box(node.getBoundingClientRect()), stage: node.classList.contains('is-stage') };
+    const entry = { id, title: label(node), rect: box(node.getBoundingClientRect()), stage: node.classList.contains('is-stage'), root: node.classList.contains('is-root') };
     entries.set(id, entry);
     items.push({ kind: 'node', owner: id, rect: entry.rect });
     const toggle = node.querySelector(':scope > .mappy-node-toggle');
@@ -106,10 +109,11 @@ const GEOMETRY = `
       forest.r = Math.max(forest.r, rect.r); forest.b = Math.max(forest.b, rect.b);
     }
     forest.nodes.push(entry.rect);
+    if (entry.toggle) forest.nodes.push(entry.toggle);
     forests.set(stage, forest);
   }
   // The band the layout keeps clear (axisBand in layout.ts): the root and every stage, centred on the axis.
-  const root = [...entries.values()].find(entry => el.querySelector('[data-node-id="' + CSS.escape(entry.id) + '"]')?.classList.contains('is-root'));
+  const root = [...entries.values()].find(entry => entry.root && !entry.stage);
   const band = [...stages, root].filter(Boolean);
   const bandTop = Math.min(...band.map(stage => stage.rect.t));
   const bandBottom = Math.max(...band.map(stage => stage.rect.b));
@@ -254,7 +258,15 @@ async function timed(action) {
     return { lastChangeMs: state.last === null ? null : Math.round(state.last - state.mark), frameAfterMs: frame === undefined || frame === null ? null : Math.round(frame - state.mark) };`);
   try {
     const result = await action(start);
+    // Settle only once the action has reached the DOM: two quiet readings before it lands would describe the map before it.
+    const reached = Date.now();
+    while (!await evaluate('return window.__mappyE2EReflect?.last != null;')) {
+      if (Date.now() - reached > 5000) throw new Error('the action changed nothing on the map within 5 s');
+      await wait(50);
+    }
     const settled = await settle();
+    // A re-render that broke an image would leave the geometry checks a map without its tall nodes.
+    if (settled.broken > 0) throw new Error(`${settled.broken} images are broken after the action`);
     return { result, reflect: await stop(), settled };
   } finally {
     await stop();
@@ -316,7 +328,9 @@ async function bring(title) {
     await wheel(at.canvas, dx, dy);
     await wait(300);
   }
-  return where(title);
+  const at = await where(title);
+  if (Math.abs(at.node.x - at.canvas.x) >= 40 || Math.abs(at.node.y - at.canvas.y) >= 40) throw new Error(`${title} did not come to the canvas's centre`);
+  return at;
 }
 
 /** Hovers the node's fold control, reads what the hover shows, then clicks it: the pointer path E13 describes. */
@@ -357,6 +371,8 @@ async function runCount(count) {
 
   const clean = () => step(name('clean'), () => evaluate(`
     const path = ${JSON.stringify(note)};
+    // The open step refused (a leaf was already on the note) before it wrote anything: those leaves are not this run's.
+    if (!window.__mappyE2EBefore) return { removed: null, skipped: 'the open step did not start' };
     app.workspace.iterateAllLeaves(item => {
       const state = item.getViewState();
       if (item.view?.file?.path === path || state.state?.file === path) item.detach();

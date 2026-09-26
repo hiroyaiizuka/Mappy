@@ -7,6 +7,7 @@ export function makePerformanceFixture(nodeCount: number, shape?: string): [file
 export function makeEmbedFixture(): [filename: string, contents: string];
 export const MIXED_CHAIN_LEVELS: number;
 export const MIXED_BARE_STAGE_EVERY: number;
+export const MIXED_FIRST_BARE_STAGE: number;
 export function makeMixedFixture(nodeCount: number): [filename: string, contents: string];
 export interface PerformanceFixtureEntry { id: string; nodeCount: number; shape: PerformanceShape }
 export function performanceFixtureMatrix(): PerformanceFixtureEntry[];

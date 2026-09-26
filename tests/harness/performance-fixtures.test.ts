@@ -3,7 +3,7 @@ import { parseMarkdown } from '../../src/core/markdown';
 import { nodeBody } from '../../src/core/body';
 import { attachmentMarkdown } from '../../src/core/attachments';
 import {
-  DEEP_CHAIN_LEVELS, IMAGE_EVERY, MIXED_BARE_STAGE_EVERY, MIXED_CHAIN_LEVELS, makeEmbedFixture, makeMixedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
+  DEEP_CHAIN_LEVELS, IMAGE_EVERY, MIXED_BARE_STAGE_EVERY, MIXED_CHAIN_LEVELS, MIXED_FIRST_BARE_STAGE, makeEmbedFixture, makeMixedFixture, makePerformanceFixture, performanceFixtureMatrix, performanceNodeCounts, performanceShapes,
 } from '../../scripts/performance-fixtures.mjs';
 
 function parse(nodeCount: number, shape: string) {
@@ -108,7 +108,10 @@ describe('performance fixture shapes', () => {
     expect(doc.root.children).toHaveLength(1);
     const stages = top.children;
     expect(stages).toHaveLength(Math.round(count / 40));
-    expect(stages.filter(stage => stage.children.length === 0).length).toBe(Math.ceil((stages.length - (MIXED_BARE_STAGE_EVERY - 4)) / MIXED_BARE_STAGE_EVERY));
+    const bare = stages.flatMap((stage, index) => (stage.children.length === 0 ? [index] : []));
+    expect(bare[0]).toBe(MIXED_FIRST_BARE_STAGE);
+    expect(bare.every((index, at) => index === MIXED_FIRST_BARE_STAGE + at * MIXED_BARE_STAGE_EVERY)).toBe(true);
+    expect(bare).toHaveLength(count === 500 ? 1 : 5);
     expect(Math.max(...doc.nodes.map(node => node.level)) - top.level - 1).toBe(MIXED_CHAIN_LEVELS);
     const titles = doc.nodes.map(node => node.title);
     expect(new Set(titles).size).toBe(titles.length);
