@@ -435,16 +435,40 @@ describe('DocumentStore', () => {
       await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
     });
 
-    it('drops a step made before more switches than it keeps the plans of', async () => {
+    it('keeps the steps across many switches (more than the edits carried over them, 16)', async () => {
       const MAP = '---\nmappy: true\n---\n';
       const { store, file } = harness(`${MAP}# A\n`);
       await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
       for (let index = 0; index < 17; index += 1) {
         await store.applyLatest(file, (source) => planMapLayout(source, index % 2 === 0 ? 'timeline' : 'mindmap'));
       }
+      expect(store.canUndo(file)).toBe(true);
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+    });
+
+    it('drops only a step the switch leaves changing nothing, and carries the next one in its place', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      // A step that wrote the layout key itself: once the switch sets it, it changes nothing.
+      await store.apply(file, `${MAP}# B\n`, [{ from: 16, to: 16, text: 'mappy-layout: hierarchy\n' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      expect(store.canUndo(file)).toBe(true);
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      expect(store.canUndo(file)).toBe(false);
+    });
+
+    // Pins the fail-safe, not the fix: before LEV-206 every step went at the first switch, so this passes there too.
+    it('drops a step made before more switches than it keeps the plans of, and does not offer it', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      for (let index = 0; index < 257; index += 1) {
+        await store.applyLatest(file, (source) => planMapLayout(source, index % 2 === 0 ? 'timeline' : 'mindmap'));
+      }
+      expect(store.canUndo(file)).toBe(false);
       const current = await store.read(file);
       await expect(store.undo(file)).resolves.toBe(current);
-      expect(store.canUndo(file)).toBe(false);
     });
 
     // Pins E05, which LEV-206 leaves as it was: this passes before the fix too.

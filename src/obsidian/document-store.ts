@@ -40,7 +40,10 @@ interface DocumentSession {
   latest: LatestWrite[];
   /** How many `applyLatest` writes the session has made; a step made or carried after the last one holds this many. */
   switches: number;
-  /** The plans of the last `applyLatest` writes (at most `latestLimit`), for `carryTop`. */
+  /**
+   * The plans of the last `applyLatest` writes (at most `planLimit`), for `carryTop`. Kept apart from `latest`, which
+   * an edit or a step of the history spends: these stay until the history they carry is gone.
+   */
   plans: SwitchPlan[];
   pending: Promise<void>;
   writing: boolean;
@@ -49,6 +52,8 @@ interface DocumentSession {
 const historyLimit = 50;
 /** `applyLatest` writes kept to carry an edit over; an edit planned before more layout switches than this is refused. */
 const latestLimit = 16;
+/** `applyLatest` plans kept to carry the history's steps over (small closures); a step made before more layout switches than this goes. */
+const planLimit = 256;
 /** What a refused write says; the map view swaps it out once it has re-read the note. */
 export const conflictMessage = 'Markdown が変更されています。マップを更新してから再編集してください。';
 
@@ -138,7 +143,7 @@ export class DocumentStore {
       if (last) delete last.dropped;
       session.switches += 1;
       session.plans.push({ switches: session.switches, plan });
-      if (session.plans.length > latestLimit) session.plans.shift();
+      if (session.plans.length > planLimit) session.plans.shift();
       session.latest.push({ before, after, edits });
       if (session.latest.length > latestLimit) session.latest.shift();
       return { before, after, edits };
@@ -174,31 +179,31 @@ export class DocumentStore {
    * The last step of `stack` (the next Undo or Redo), carried over the `applyLatest` writes made since it was made
    * or carried last (LEV-206): each of its texts gets the write the kept plan makes on it, so it meets the note where
    * it is now and changes what it changed before; without this Undo would find a text the step does not lead to and
-   * do nothing. Only the step Undo or Redo reaches is carried, when it does: a layout button costs nothing more for a
-   * long history of a large note, and the steps below are carried in turn over the same plans, which the same texts
-   * give the same answers. The step keeps its own edits, carried over the plan's (`rebaseEdits`, the tie of two
-   * insertions at one place taken either way), so an open editor still gets small transactions; only where neither
-   * leads from one planned text to the other (they touch the plan's lines) is it the one edit between the two
-   * (`diffEdit`). A step the plans leave changing nothing, one made before more writes than the plans kept
-   * (`latestLimit`), and a plan that throws on its texts take the whole stack with them, as every step did before
-   * LEV-206: never a history the note does not lead through.
+   * do nothing. Only the step Undo or Redo reaches is carried, when it does (or when the menu asks whether there is
+   * one, `hasHistory`): a layout button costs nothing more for a long history of a large note, and the steps below
+   * are carried in turn over the same plans, which the same texts give the same answers. The step keeps its own
+   * edits, carried over the plan's (`rebaseEdits`, the tie of two insertions at one place taken either way), so an
+   * open editor still gets small transactions; only where neither leads from one planned text to the other (they
+   * touch the plan's lines) is it the one edit between the two (`diffEdit`). A step the plans leave changing
+   * nothing goes and the next one is carried in its place: its text after is the one the step went from. A step
+   * made before more writes than the plans kept (`planLimit`), and a plan that throws on its texts, take the whole
+   * stack with them, as every step did before LEV-206: never a history the note does not lead through.
    */
   private carryTop(session: DocumentSession, stack: HistoryEntry[]): void {
-    const entry = stack[stack.length - 1];
-    if (!entry || entry.switches === session.switches) return;
-    const plans = session.plans.filter((plan) => plan.switches > entry.switches);
-    let carried: HistoryEntry | undefined = entry;
-    try {
-      if (plans.length !== session.switches - entry.switches) carried = undefined;
-      for (const { plan } of plans) {
-        if (!carried) break;
-        carried = carryStep(carried, plan);
+    for (let entry = stack[stack.length - 1]; entry && entry.switches !== session.switches; entry = stack[stack.length - 1]) {
+      const since = entry.switches;
+      const plans = session.plans.filter((plan) => plan.switches > since);
+      if (plans.length !== session.switches - since) { stack.length = 0; return; }
+      let carried: HistoryEntry | undefined = entry;
+      try {
+        for (const { plan } of plans) carried = carried && carryStep(carried, plan);
+      } catch {
+        stack.length = 0;
+        return;
       }
-    } catch {
-      carried = undefined;
+      if (carried) stack[stack.length - 1] = { ...carried, switches: session.switches };
+      else stack.pop();
     }
-    if (carried) stack[stack.length - 1] = { ...carried, switches: session.switches };
-    else stack.length = 0;
   }
 
   /**
@@ -314,6 +319,8 @@ export class DocumentStore {
     try {
       const buffer = this.editorSource(this.editorsFor(file));
       if (buffer !== undefined) this.observe(session, buffer);
+      // A step Undo or Redo could not carry over a layout switch is no step to offer.
+      this.carryTop(session, session[direction]);
       return session[direction].length > 0;
     } catch {
       this.invalidate(session);
