@@ -17,12 +17,12 @@
  * the note's watcher (`modify` for a note no editor holds, `editor-change` for one it does) moves the epoch before
  * the store tells the view (`DocumentStore.tell` after `writeSafely`), so the read that would drop the record gives
  * up first. Each row checks that the read W2 landed in found the text on screen, was still the newest right before
- * W2, and gave up, which is the window the ticket names; without them a row could pass because the window was never
+ * W2, had not answered yet when the map recorded W2, and gave up, which is the window the ticket names; without them a row could pass because the window was never
  * hit. That the epoch had moved when the map recorded W2 is checked too, but here it holds by construction: the
  * harness vault fires `modify` inside its write. It pins the harness, not Obsidian; the order on Obsidian's own
  * events is E58 (`scripts/e2e/reread-own-writes.mjs`). With the epoch check after `store.read` taken out of
- * `reread`, the rows fail (`artifacts/lev-218-reread-own-writes/tests-mutated.log`) but two: this map's own ⌥↑ and
- * ⌘Z. Those are shown and spent the moment they land (`showOwnWrite`, LEV-219), so the read never holds them and they
+ * `reread`, 8 of the 12 rows fail (`artifacts/lev-218-reread-own-writes/tests-mutated.log`); the 4 that pass are this
+ * map's own ⌥↑ and ⌘Z, on both shapes. Those are shown and spent the moment they land (`showOwnWrite`, LEV-219), so the read never holds them and they
  * pass without the epoch check too. They are not regression tests of it; they pin that the user's own next key keeps
  * the fold through the window.
  */
@@ -139,6 +139,8 @@ interface Found {
   movedBeforeRecord: boolean | null;
   /** Whether the map recorded the second write (its record held it right after). */
   recorded: boolean | null;
+  /** Whether it recorded it before that read answered: after, the read would have had nothing to drop, and the row no window. */
+  beforeAnswer: boolean | null;
 }
 
 /**
@@ -151,7 +153,8 @@ interface Found {
 async function renameThen(mounted: MountedMapView, second: () => void): Promise<Found> {
   const view = state(mounted);
   const store = storeOf(mounted);
-  const found: Found = { landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null };
+  const found: Found = { landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null, beforeAnswer: null };
+  let answered = false;
   let landed = false;
   let inFlight: number | null = null;
   // The store is shared with the other map: only the reads this map's re-read asks for (synchronously, as it starts) count.
@@ -181,6 +184,7 @@ async function renameThen(mounted: MountedMapView, second: () => void): Promise<
     const source = await read(file);
     await new Promise(resolve => setTimeout(resolve, SLOW_MS));
     if (carries) {
+      answered = true;
       found.landedIn = source === shown;
       found.gaveUp = view.epoch !== epoch;
     }
@@ -198,6 +202,7 @@ async function renameThen(mounted: MountedMapView, second: () => void): Promise<
     if (found.newestBefore === null || found.recorded !== null || inFlight === null) return;
     found.movedBeforeRecord = view.epoch !== inFlight;
     found.recorded = view.ownWrites.some(own => (own as { after: string }).after === write.after);
+    found.beforeAnswer = !answered;
   });
   rename(mounted, '子1', 0, '改名後');
   await vi.waitFor(() => { expect(found.landedIn).not.toBeNull(); }, { timeout: 3000, interval: 2 });
@@ -206,10 +211,11 @@ async function renameThen(mounted: MountedMapView, second: () => void): Promise<
 
 /**
  * The second write landed inside a read of the text on screen that nothing else had superseded, the map recorded
- * it, the epoch had moved by then, and the read gave up: the window of the ticket, closed by the epoch.
+ * it before that read answered, the epoch had moved by then, and the read gave up: the window of the ticket, closed
+ * by the epoch.
  */
 function expectWindowHit(found: Found): void {
-  expect(found).toEqual({ landedIn: true, newestBefore: true, recorded: true, movedBeforeRecord: true, gaveUp: true });
+  expect(found).toEqual({ landedIn: true, newestBefore: true, recorded: true, beforeAnswer: true, movedBeforeRecord: true, gaveUp: true });
 }
 
 function expectFolded(mounted: MountedMapView, label: string, index: number, id: string): void {

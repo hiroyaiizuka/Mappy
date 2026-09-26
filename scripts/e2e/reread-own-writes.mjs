@@ -27,8 +27,9 @@
  * LEV-219), so they hold without the epoch check too: they pin the user's own next key, not the check.
  *
  * Each row checks that the window was hit (the read found the text on screen, was still the newest right before W2,
- * the map recorded W2, and the read gave up), the order (the map's watcher had scheduled a re-read after W2 was made
- * and before the map recorded it, and the epoch had moved by then), and the
+ * the map recorded W2 before the read answered, and the read gave up), the order (the note's own watcher event —
+ * `modify` or `editor-change` for this note — had arrived after W2 was made and before the map recorded it, and the
+ * epoch had moved by then), and the
  * outcome: the node keeps its id and its fold, the note holds the rename and W2 (for ⌘Z, the rename taken back), both
  * maps show the note, no Notice or error line in either map. For `other-edit` the second map must have re-read the
  * rename before it moves 子2 (otherwise its edit is refused as someone else's change, a different row). A row whose
@@ -73,7 +74,8 @@ const SHAPES = [
   { name: 'empty', label: EMPTY_LABEL, index: 1 },
   { name: 'same', label: '同名', index: 1 },
 ];
-const ROWS = KINDS.flatMap(kind => FORMS.flatMap(form => SHAPES.map(shape => ({ id: `${kind}-${form}-${shape.name}`, kind, form, shape }))));
+// The form outermost: the Markdown editor is opened and closed once per run, not every other row.
+const ROWS = FORMS.flatMap(form => KINDS.flatMap(kind => SHAPES.map(shape => ({ id: `${kind}-${form}-${shape.name}`, kind, form, shape }))));
 const only = value('--only')?.split(',').map(item => item.trim()).filter(Boolean);
 if (only) {
   const unknown = only.filter(id => !ROWS.some(row => row.id === id));
@@ -191,8 +193,8 @@ const arm = kind => evaluate(`${VIEW}
   const slow = ${SLOW_MS};
   const inside = ${INSIDE_MS};
   const kind = ${JSON.stringify(kind)};
-  const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, caughtUp: null, scheduled: false, found: {
-    landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null } };
+  const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, caughtUp: null, watched: false, answered: false, found: {
+    landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null, beforeAnswer: null } };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
   const store = view.store;
   const own = {};
@@ -207,7 +209,8 @@ const arm = kind => evaluate(`${VIEW}
     else if (kind === 'other-button') second.view.contentEl.querySelector('.mappy-modes button[aria-label="階層図"]').click();
     else if (kind === 'other-edit') {
       const other = second.view;
-      probe.caughtUp = other.document?.source === view.document?.source;
+      // The second map shows the renamed note (the store's text), not merely what the first map shows.
+      probe.caughtUp = other.document?.source === view.store.sessions?.get?.(view.file)?.source && other.document?.source.includes('  - ${RENAMED}\\n');
       other.select(other.document.nodes.find(item => item.title === '子2').id);
       key(other, { key: 'ArrowUp', altKey: true });
     } else if (kind === 'other-undo') key(second.view, { key: 'z', metaKey: true });
@@ -227,16 +230,22 @@ const arm = kind => evaluate(`${VIEW}
     const found = probe.found;
     probe.log.push({ at: now(), what: 'recordWrite', epoch: view.epoch });
     if (!fired || found.recorded !== null || inFlight === null) return;
-    // The epoch moved, and by a re-read this map's watcher scheduled after W2 was made: W2's own, not some other.
-    found.movedBeforeRecord = view.epoch !== inFlight && probe.scheduled;
+    // The epoch moved, and the note's own watcher event had arrived since W2 was made (its re-read is what moved it).
+    found.movedBeforeRecord = view.epoch !== inFlight && probe.watched;
     found.recorded = view.ownWrites.some(item => item.after === args[1].after);
+    found.beforeAnswer = !probe.answered;
   };
   mine.scheduleRefresh = view.scheduleRefresh;
   view.scheduleRefresh = function (...args) {
     probe.log.push({ at: now(), what: 'schedule', epoch: view.epoch });
-    if (fired && probe.found.recorded === null) probe.scheduled = true;
     return mine.scheduleRefresh.apply(this, args);
   };
+  // The note's watcher events themselves, heard right after the map's own handlers (registered after them).
+  const heard = what => { probe.log.push({ at: now(), what }); if (fired && probe.found.recorded === null) probe.watched = true; };
+  const refs = [
+    [app.vault, app.vault.on('modify', file => { if (file === view.file) heard('modify'); })],
+    [app.workspace, app.workspace.on('editor-change', (_editor, info) => { if (info.file?.path === view.file.path) heard('editor-change'); })],
+  ];
   // The store is the plugin's one for every map, embed and the Excalidraw bridge: only this map's reads are slowed.
   own.read = store.read;
   store.read = async function (...args) {
@@ -263,6 +272,7 @@ const arm = kind => evaluate(`${VIEW}
     const text = await own.read.apply(this, args);
     await new Promise(resolve => setTimeout(resolve, slow));
     entry.end = now(); entry.epochEnd = view.epoch; entry.unchanged = text === shown;
+    if (carries) probe.answered = true;
     if (carries) { probe.found.landedIn = text === shown; probe.found.gaveUp = view.epoch !== epoch; }
     return text;
   };
@@ -276,6 +286,7 @@ const arm = kind => evaluate(`${VIEW}
   probe.release = () => {
     for (const key of Object.keys(own)) delete store[key];
     for (const key of Object.keys(mine)) delete view[key];
+    for (const [source, ref] of refs) source.offref(ref);
   };
   return true;`);
 
@@ -335,6 +346,7 @@ const run = async ({ kind, form, shape }) => {
   expect(found.landedIn === true, `the read the second write landed in did not find the text on screen (${JSON.stringify(found)})`);
   expect(found.newestBefore === true, `that read was superseded before the second write (${JSON.stringify(found)}): not the window`);
   expect(found.recorded === true, `the map did not record the second write (${JSON.stringify(found)})`);
+  expect(found.beforeAnswer === true, `the map recorded the second write only after the read answered (${JSON.stringify(found)}): not the window`);
   expect(found.movedBeforeRecord === true, `the epoch had not moved by the map's watcher of the second write when the map recorded it (${JSON.stringify(found)})`);
   expect(found.gaveUp === true, `the read did not give up (${JSON.stringify(found)})`);
   expect(UNDOES.has(kind) || after.text.includes(`  - ${RENAMED}\n`), 'the note lost the rename');
