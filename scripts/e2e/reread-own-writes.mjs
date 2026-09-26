@@ -14,23 +14,29 @@
  *
  * Rows are the second write × the note's form × the node folded: `button` (this map's layout button), `other-button`
  * (the layout button of a second map on the note, a split), `other-edit` (the second map moves 子2 up: an edit of its
- * own) × `alone` (no Markdown editor on the note) and `editor` (one beside the map) × `empty` (the second untitled
- * node) and `same` (the second 同名). The node is selected and folded by the real mouse, 子1 renamed with F2, real keys
- * and Enter. The probe answers this map's reads SLOW_MS late (read first, answered late: E53's `slow`) and, INSIDE_MS
- * into the rename's last re-read (the first read begun after the write with no refresh scheduled), makes the second
- * write from the page — a click on the button's element, or the second map's own move command — since no hand can
- * time a click into an 80 ms window; the writes, the watchers and the re-reads are Obsidian's and the plugin's own.
+ * own), `other-undo` (⌘Z in the second map: the shared history takes back this map's rename), `key` (this map moves
+ * 子2 up), `undo` (⌘Z in this map) × `alone` (no Markdown editor on the note) and `editor` (one beside the map) ×
+ * `empty` (the second untitled node) and `same` (the second 同名). The node is selected and folded by the real mouse,
+ * 子1 renamed with F2, real keys and Enter. The probe answers this map's reads SLOW_MS late (read first, answered late:
+ * E53's `slow`) but for the save's own re-read (`reread(true)`: slowed, the save would still be under way and this
+ * map's own key refused), and, INSIDE_MS into the rename's last re-read (the first read begun after the write with no
+ * refresh scheduled), makes the second write from the page — a click on the button's element, a map's own move or
+ * history command — since no hand can time a click into an 80 ms window; the writes, the watchers and the re-reads
+ * are Obsidian's and the plugin's own. `key` and `undo` are shown and spent the moment they land (`showOwnWrite`,
+ * LEV-219), so they hold without the epoch check too: they pin the user's own next key, not the check.
  *
  * Each row checks that the window was hit (the read found the text on screen, was still the newest right before W2,
  * the map recorded W2, and the read gave up), the order (the epoch had moved when the map recorded W2), and the
- * outcome: the node keeps its id and its fold, the note holds the rename and W2, the map shows the note, no Notice or
- * error line. A row whose window was not hit fails rather than pass.
+ * outcome: the node keeps its id and its fold, the note holds the rename and W2 (for ⌘Z, the rename taken back), the
+ * map shows the note, no Notice or error line in either map. For `other-edit` the second map must have re-read the
+ * rename before it moves 子2 (otherwise its edit is refused as someone else's change, a different row). A row whose
+ * window was not hit fails rather than pass.
  *
  * Usage: npm run harness:e2e:reread-own-writes -- [--reload] [--json <out.json>] [--keep] [--only <row>[,<row>…]]
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeFocusCanvas, makeOpenStep, makePluginStep, makePress, makeSelect } from './dom-helpers.mjs';
+import { VIEW, makeFocusCanvas, makeMarkSeen, makeOpenStep, makePluginStep, makePress, makeSelect } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -53,13 +59,13 @@ mappy: true
   - 同名の子B
 `;
 const EMPTY_LABEL = '空のノード';
-/** How late this map's reads answer: longer than the watcher's 45 ms debounce (E53's `slow`). */
+/** How late this map's reads answer (all but the save's own re-read): longer than the watcher's 45 ms debounce (E53's `slow`). */
 const SLOW_MS = 80;
 /** When, inside the rename's last re-read, the second write is made. */
 const INSIDE_MS = 40;
 const RENAMED = '改名後';
 
-const KINDS = ['button', 'other-button', 'other-edit'];
+const KINDS = ['button', 'other-button', 'other-edit', 'other-undo', 'key', 'undo'];
 const FORMS = ['alone', 'editor'];
 const SHAPES = [
   { name: 'empty', label: EMPTY_LABEL, index: 1 },
@@ -82,6 +88,7 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const press = makePress(cdp, evaluate);
 const focusCanvas = makeFocusCanvas(cdp, evaluate);
+const markSeen = makeMarkSeen(evaluate);
 
 /** Script: `second`, the second map on the note (a split of the first), and `editors`, the Markdown leaves on it. */
 const LEAVES = `const path = ${JSON.stringify(NOTE)};
@@ -156,7 +163,8 @@ const read = shape => evaluate(`${VIEW}
   const node = nth(${JSON.stringify(shape.label)}, ${shape.index});
   return { id: node?.dataset.nodeId ?? null, collapsed: [...view.collapsed], selected: view.selectedId, editing: !!input(),
     text: await view.store.read(view.file), shown: view.document?.source ?? null, other: second?.view.document?.source ?? null,
-    messages: messages() };`);
+    // The second map's inline error lines too (the notices are the window's, already in messages()).
+    messages: [...messages(), ...Array.from(second?.view.contentEl.querySelectorAll('.mappy-inline-error') ?? [], item => item.textContent.trim()).filter(Boolean)] };`);
 
 /**
  * Installs the probe on the first map: its reads (only those its `reread` asks for) answered SLOW_MS late; the rename's
@@ -168,29 +176,34 @@ const arm = kind => evaluate(`${VIEW}
   const slow = ${SLOW_MS};
   const inside = ${INSIDE_MS};
   const kind = ${JSON.stringify(kind)};
-  const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, found: {
+  const probe = window.__mappyE2EReread = { log: [], t0: performance.now(), landed: null, caughtUp: null, found: {
     landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null } };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
   const store = view.store;
   const own = {};
   const mine = {};
-  let asking = false;
+  let asking = null;
   let inFlight = null;
   let fired = false;
   const secondWrite = () => {
     if (kind === 'button') el.querySelector('.mappy-modes button[aria-label="タイムライン"]').click();
     else if (kind === 'other-button') second.view.contentEl.querySelector('.mappy-modes button[aria-label="階層図"]').click();
-    else {
+    else if (kind === 'other-edit') {
       const other = second.view;
+      probe.caughtUp = other.document?.source === view.document?.source;
       const node = other.document.nodes.find(item => item.title === '子2');
       other.select(node.id);
       other.executeSelected('move-up');
-    }
+    } else if (kind === 'other-undo') second.view.history('undo');
+    else if (kind === 'key') {
+      view.select(view.document.nodes.find(item => item.title === '子2').id);
+      view.executeSelected('move-up');
+    } else view.history('undo');
   };
   mine.reread = view.reread;
   view.reread = function (...args) {
-    asking = true;
-    try { return mine.reread.apply(this, args); } finally { asking = false; }
+    asking = args[0] ? 'own' : 'watch';
+    try { return mine.reread.apply(this, args); } finally { asking = null; }
   };
   mine.recordWrite = view.recordWrite;
   view.recordWrite = function (...args) {
@@ -210,8 +223,10 @@ const arm = kind => evaluate(`${VIEW}
   own.read = store.read;
   store.read = async function (...args) {
     const asked = asking;
-    asking = false;
-    if (!asked || args[0] !== view.file) return own.read.apply(this, args);
+    asking = null;
+    if (asked === null || args[0] !== view.file) return own.read.apply(this, args);
+    // The save's own re-read answers at once: slowed, the save would still be under way when this map's key comes.
+    if (asked === 'own') return own.read.apply(this, args);
     const epoch = view.epoch;
     const shown = view.document?.source;
     const carries = probe.landed !== null && inFlight === null && view.refreshTimer === undefined;
@@ -246,14 +261,18 @@ const arm = kind => evaluate(`${VIEW}
   };
   return true;`);
 
-const collect = () => evaluate(`const probe = window.__mappyE2EReread; probe.release(); return { found: probe.found, log: probe.log, landed: probe.landed, error: probe.error ?? null };`);
+const collect = () => evaluate(`const probe = window.__mappyE2EReread; probe.release(); return { found: probe.found, log: probe.log, landed: probe.landed, caughtUp: probe.caughtUp, error: probe.error ?? null };`);
 
 /** What each second write leaves in the note. */
 const WROTE = {
   button: text => text.includes('mappy-layout: timeline\n'),
   'other-button': text => text.includes('mappy-layout: hierarchy\n'),
   'other-edit': text => text.includes('  - 子2\n  - 改名後\n'),
+  'other-undo': text => text === SOURCE,
+  key: text => text.includes('  - 子2\n  - 改名後\n'),
+  undo: text => text === SOURCE,
 };
+const UNDOES = new Set(['other-undo', 'undo']);
 
 const run = async ({ kind, form, shape }) => {
   const failures = [];
@@ -261,6 +280,8 @@ const run = async ({ kind, form, shape }) => {
   const opened = await setForm(form);
   expect(opened.editors === (form === 'editor' ? 1 : 0), `${opened.editors} Markdown editors on the note`);
   await reset();
+  // A Notice of the row before (it lasts seconds) is not this row's.
+  await markSeen();
   // The node selected, then folded, by the real mouse.
   await select(shape.label, shape.index);
   await press(`const node = nth(${JSON.stringify(shape.label)}, ${shape.index})?.querySelector('.mappy-node-toggle');`);
@@ -286,7 +307,7 @@ const run = async ({ kind, form, shape }) => {
     if (WROTE[kind](after.text) && after.text === after.shown && (after.other === null || after.other === after.text)) break;
   }
   await wait(600);
-  const { found, log, landed, error } = await collect();
+  const { found, log, landed, caughtUp, error } = await collect();
   after = await read(shape);
   expect(error === null, `the second write threw: ${error}`);
   expect(landed !== null, 'the store wrote nothing for the rename');
@@ -295,13 +316,14 @@ const run = async ({ kind, form, shape }) => {
   expect(found.recorded === true, `the map did not record the second write (${JSON.stringify(found)})`);
   expect(found.movedBeforeRecord === true, `the epoch had not moved when the map recorded the second write (${JSON.stringify(found)})`);
   expect(found.gaveUp === true, `the read did not give up (${JSON.stringify(found)})`);
-  expect(after.text.includes(`  - ${RENAMED}\n`), 'the note lost the rename');
+  expect(UNDOES.has(kind) || after.text.includes(`  - ${RENAMED}\n`), 'the note lost the rename');
+  expect(kind !== 'other-edit' || caughtUp === true, `the second map had not re-read the rename when it moved 子2 (${caughtUp})`);
   expect(WROTE[kind](after.text), `the note does not hold the second write (${kind})`);
   expect(after.text === after.shown, 'the map does not show the note');
   expect(after.id === folded.id, `the node's id changed (${folded.id} → ${after.id})`);
   expect(after.collapsed.includes(folded.id), `the fold went (${JSON.stringify(folded.collapsed)} → ${JSON.stringify(after.collapsed)})`);
   expect(after.messages.length === 0, `messages: ${after.messages.join(' / ')}`);
-  return { failures, found, folded: { id: folded.id, collapsed: folded.collapsed }, after: { id: after.id, collapsed: after.collapsed }, landed, log };
+  return { failures, found, caughtUp, folded: { id: folded.id, collapsed: folded.collapsed }, after: { id: after.id, collapsed: after.collapsed }, landed, log };
 };
 
 try {
@@ -324,7 +346,8 @@ try {
   record.rows = {
     total: results.length,
     failed: results.filter(({ result }) => !result || result.error || result.failures?.length).map(({ id }) => id),
-    windowHit: results.filter(({ result }) => result?.found?.landedIn === true && result.found.newestBefore === true && result.found.recorded === true).length,
+    // Every flag the rows check: found the text on screen, still the newest, W2 recorded, the epoch moved first, gave up.
+    windowHit: results.filter(({ result }) => result?.found && Object.values(result.found).every(flag => flag === true)).length,
   };
   check(results.length > 0, 'no row ran');
 } catch (error) {

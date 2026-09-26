@@ -5,19 +5,26 @@
  * = []`). After LEV-219 the save shows what it wrote at once and spends the record (`showOwnWrite`), so both the
  * save's re-read and the watcher's find the text on screen. A second write W2 recorded while one of them reads —
  * its start is the text on screen, so the record takes it (`recordOwn`) — would then be dropped by that read, and
- * W2's own re-read, with no edits to carry the ids, would match nodes by title: the fold and the selection of the
- * second untitled or same-titled node would go (the LEV-146／LEV-150 symptom).
+ * W2's own re-read, with no edits to carry the ids, would match nodes by title: the fold of the second untitled or
+ * same-titled node would go (the LEV-146／LEV-150 symptom). The selection is not in the matrix: the rename itself
+ * selects 子1 before the window.
  *
- * The matrix is what the user does while the rename's re-reads are reading (every read answered 200 ms late, past the
- * watcher's debounce like E53's `slow`, so the second write lands inside a read) × the node folded and selected. What keeps the record here is
- * the epoch check right after the read: every write the record takes is one the store has just made on this note,
- * and the note's watcher (`modify` for a note no editor holds, `editor-change` for one it does) moves the epoch
- * before the store tells the view (`DocumentStore.tell` after `writeSafely`), so the read that would drop the
- * record gives up first. Each row checks that order and that the read W2 landed in found the text on screen and
- * gave up, which is the window the ticket names; without them a row could pass because the window was never hit.
- * With the epoch check after `store.read` taken out of `reread`, the rows fail
- * (`artifacts/lev-218-reread-own-writes/tests-mutated.log`). The same order on the real Obsidian is E58
- * (`scripts/e2e/reread-own-writes.mjs`).
+ * The matrix is what the user does while the rename's last re-read is reading (the map's reads answered 200 ms late,
+ * past the watcher's debounce like E53's `slow`, so the second write lands inside that read and its own re-read ends
+ * after it) — this map's layout button, another map's button, edit or ⌘Z (the shared history), and this map's next
+ * key (⌥↑) or ⌘Z — × the node folded. What keeps the record here is the
+ * epoch check right after the read: every write the record takes is one the store has just made on this note, and
+ * the note's watcher (`modify` for a note no editor holds, `editor-change` for one it does) moves the epoch before
+ * the store tells the view (`DocumentStore.tell` after `writeSafely`), so the read that would drop the record gives
+ * up first. Each row checks that the read W2 landed in found the text on screen, was still the newest right before
+ * W2, and gave up, which is the window the ticket names; without them a row could pass because the window was never
+ * hit. That the epoch had moved when the map recorded W2 is checked too, but here it holds by construction: the
+ * harness vault fires `modify` inside its write. It pins the harness, not Obsidian; the order on Obsidian's own
+ * events is E58 (`scripts/e2e/reread-own-writes.mjs`). With the epoch check after `store.read` taken out of
+ * `reread`, the rows fail (`artifacts/lev-218-reread-own-writes/tests-mutated.log`) but two: this map's own ⌥↑ and
+ * ⌘Z. Those are shown and spent the moment they land (`showOwnWrite`, LEV-219), so the read never holds them and they
+ * pass without the epoch check too. They are not regression tests of it; they pin that the user's own next key keeps
+ * the fold through the window.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
@@ -52,7 +59,7 @@ const SOURCE = [
   '- 同名', '  - 同名の子B',
   '',
 ].join('\n');
-/** How late every read answers: past the watcher's 45 ms debounce (E53's `slow` is 80 ms), with room for a loaded machine. */
+/** How late the map's reads answer (all but the save's own re-read): past the watcher's 45 ms debounce (E53's `slow` is 80 ms), with room for a loaded machine. */
 const SLOW_MS = 200;
 /** When, inside a read of the text on screen, the second write is made. */
 const INSIDE_MS = 100;
@@ -123,7 +130,7 @@ function foldAndSelect(mounted: MountedMapView, label: string, index: number): s
   return id;
 }
 
-interface Window {
+interface Found {
   /** The read the second write landed inside found the text on screen (`landedIn`) and gave up to a newer epoch (`gaveUp`). */
   landedIn: boolean | null; gaveUp: boolean | null;
   /** Right before the second write, whether that read was still the newest (nothing else had superseded it). */
@@ -135,33 +142,36 @@ interface Window {
 }
 
 /**
- * The rename of 子1 in `mounted`, with the map's reads answered SLOW_MS late. The read the second write lands in is
- * the rename's last one: the watcher's re-read (no refresh is scheduled when it starts), which finds the text the save
- * has already shown (LEV-219) and which nothing else supersedes. INSIDE_MS into it, `second` makes the second write.
+ * The rename of 子1 in `mounted`. The read the second write lands in is the rename's last one: the watcher's re-read
+ * (no refresh is scheduled when it starts), which finds the text the save has already shown (LEV-219) and which
+ * nothing else supersedes. INSIDE_MS into it, `second` makes the second write. The map's reads are answered SLOW_MS
+ * late but for the save's own re-read (`reread(true)`): with it slow the save would still be under way (`saving`)
+ * then, and this map's own key would be refused.
  */
-async function renameThen(mounted: MountedMapView, second: () => void): Promise<Window> {
+async function renameThen(mounted: MountedMapView, second: () => void): Promise<Found> {
   const view = state(mounted);
   const store = storeOf(mounted);
-  const found: Window = { landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null };
+  const found: Found = { landedIn: null, gaveUp: null, newestBefore: null, movedBeforeRecord: null, recorded: null };
   let landed = false;
   let inFlight: number | null = null;
   // The store is shared with the other map: only the reads this map's re-read asks for (synchronously, as it starts) count.
-  let asking = false;
+  let asking: 'own' | 'watch' | null = null;
   const internals = mounted.view as unknown as {
     reread(own?: boolean): Promise<void>; recordWrite(file: unknown, write: { after: string }): void;
   };
   const reread = internals.reread.bind(mounted.view);
   vi.spyOn(internals, 'reread').mockImplementation(own => {
-    asking = true;
-    try { return reread(own); } finally { asking = false; }
+    asking = own ? 'own' : 'watch';
+    try { return reread(own); } finally { asking = null; }
   });
   const read = store.read.bind(store);
   vi.spyOn(store, 'read').mockImplementation(async file => {
     const mine = asking;
-    asking = false;
-    if (!mine) return read(file);
+    asking = null;
+    if (mine === null) return read(file);
     const epoch = view.epoch;
     const shown = view.document?.source;
+    if (mine === 'own') return read(file);
     const carries = landed && inFlight === null && view.refreshTimer === undefined;
     if (carries) {
       inFlight = epoch;
@@ -198,7 +208,7 @@ async function renameThen(mounted: MountedMapView, second: () => void): Promise<
  * The second write landed inside a read of the text on screen that nothing else had superseded, the map recorded
  * it, the epoch had moved by then, and the read gave up: the window of the ticket, closed by the epoch.
  */
-function expectWindowHit(found: Window): void {
+function expectWindowHit(found: Found): void {
   expect(found).toEqual({ landedIn: true, newestBefore: true, recorded: true, movedBeforeRecord: true, gaveUp: true });
 }
 
@@ -215,6 +225,31 @@ const SHAPES = [
 
 describe('a read of the text on screen, with a write of the map\'s own recorded while it reads (LEV-218)', () => {
   for (const { shape, label, index } of SHAPES) {
+    it(`⌥↑ on 子2 (this map's next key) during the rename's last re-read keeps the fold of ${shape}`, async () => {
+      const mounted = await mount();
+      const id = foldAndSelect(mounted, label, index);
+      const found = await renameThen(mounted, () => {
+        click(nodeNamed(mounted, '子2'));
+        mounted.key(mounted.canvas, 'ArrowUp', { altKey: true });
+      });
+      await settled(mounted);
+      expectWindowHit(found);
+      expect(mounted.source()).toContain('  - 子2\n  - 改名後\n');
+      expectFolded(mounted, label, index, id);
+    });
+
+    it(`⌘Z (this map) during the rename's last re-read keeps the fold of ${shape}`, async () => {
+      const mounted = await mount();
+      const id = foldAndSelect(mounted, label, index);
+      const found = await renameThen(mounted, () => {
+        mounted.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+      });
+      await settled(mounted);
+      expectWindowHit(found);
+      expect(mounted.source()).toBe(SOURCE);
+      expectFolded(mounted, label, index, id);
+    });
+
     it(`a layout button pressed during the rename's last re-read keeps the fold of ${shape}`, async () => {
       const mounted = await mount();
       const id = foldAndSelect(mounted, label, index);
@@ -254,6 +289,20 @@ describe('a read of the text on screen, with a write of the map\'s own recorded 
       expect(caughtUp).toBe(true);
       expectWindowHit(found);
       expect(mounted.source()).toContain('- 別の改名\n');
+      expectFolded(mounted, label, index, id);
+    });
+
+    it(`another map's ⌘Z (the shared history) during the rename's last re-read keeps the fold of ${shape}`, async () => {
+      // The store keeps one history per note: ⌘Z in the other map takes back this map's rename, and this map only hears it.
+      const mounted = await mount();
+      const other = await mount(mounted.app, storeOf(mounted));
+      const id = foldAndSelect(mounted, label, index);
+      const found = await renameThen(mounted, () => {
+        other.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+      });
+      await settled(mounted, other);
+      expectWindowHit(found);
+      expect(mounted.source()).toBe(SOURCE);
       expectFolded(mounted, label, index, id);
     });
   }
