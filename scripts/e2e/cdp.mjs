@@ -37,13 +37,20 @@ const KEYS = {
   z: { code: 'KeyZ', keyCode: 90 },
 };
 
-export async function connect() {
+/**
+ * With `popout`, the connection is to a popout window of our vault instead (E50): Obsidian opens one as an
+ * `about:blank` page target of its own, with the same `app`, whose `document` is the popout's. The case marks
+ * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
+ * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
+ */
+export async function connect({ popout } = {}) {
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
   const targets = await fetch(`http://127.0.0.1:${PORT}/json/list`).then(response => response.json());
-  const pages = targets.filter(target => target.type === 'page' && target.url.startsWith('app://obsidian.md/index.html'));
-  if (pages.length === 0) throw new Error(`No Obsidian window on port ${PORT}. See docs/harness.md 実機検証.`);
+  const pages = targets.filter(target => target.type === 'page'
+    && (popout === undefined ? target.url.startsWith('app://obsidian.md/index.html') : target.url === 'about:blank'));
+  if (pages.length === 0) throw new Error(`No Obsidian ${popout === undefined ? 'window' : 'popout window'} on port ${PORT}. See docs/harness.md 実機検証.`);
 
   const open = async target => {
     const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -76,7 +83,9 @@ export async function connect() {
   for (const page of pages) {
     const connection = await open(page);
     const vault = await connection.evaluate('app.vault.adapter.basePath').catch(() => null);
-    if (vault !== VAULT) { connection.socket.close(); continue; }
+    const marked = popout === undefined
+      || await connection.evaluate(`document.body?.dataset.mappyE2ePopout === ${JSON.stringify(String(popout))}`).catch(() => false);
+    if (vault !== VAULT || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
     // frames and every screenshot; keep it running while the case does its steps (LEV-64, LEV-72).
@@ -117,7 +126,7 @@ export async function connect() {
       close: () => { socket.close(); },
     };
   }
-  throw new Error(`No Obsidian window for ${VAULT} on port ${PORT}. No action taken.`);
+  throw new Error(`No Obsidian ${popout === undefined ? 'window' : `popout window marked ${popout}`} for ${VAULT} on port ${PORT}. No action taken.`);
 }
 
 /** The plugin build the window is actually running, so a case cannot report on a stale install. */

@@ -38,14 +38,18 @@ export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; con
  * by the previous step. A Notice is dismissed (Obsidian closes one on a click; its text was read by the step
  * that showed it) so the next look can reach the node; anything else means a pointer event would land on
  * something other than the node, and the step would fail (or worse, pass) for a reason that is not the build's.
+ * `at` (script expression, may be undefined) moves the point off the centre; `avoid` (a selector) makes a point inside
+ * `node` that is also inside a match count as covered (a press meant for the empty canvas landing on a node).
  */
-const AIM = `const rect = node.getBoundingClientRect();
-  const x = rect.left + rect.width / 2; const y = rect.top + rect.height / 2;
+const aim = ({ at = 'undefined', avoid } = {}) => `const rect = node.getBoundingClientRect();
+  const point = ${at};
+  const x = point?.x ?? rect.left + rect.width / 2; const y = point?.y ?? rect.top + rect.height / 2;
   const top = document.elementFromPoint(x, y);
-  const hit = node.contains(top);
+  const hit = node.contains(top) && ${avoid ? `!top.closest(${JSON.stringify(avoid)})` : 'true'};
   const notice = hit ? null : top?.closest?.('.notice');
   if (notice) notice.click();
-  const cover = hit ? null : notice ? 'a Notice (dismissed)' : top ? (top.className || top.tagName) : 'nothing (outside the window)';`;
+  const cover = hit ? null : notice ? 'a Notice (dismissed)' : top ? String(top.className?.baseVal ?? top.className ?? '') || top.tagName : 'nothing (outside the window)';`;
+const AIM = aim();
 
 /**
  * The centre of the `index`-th node titled `title`, in the window's CSS pixels, once a real pointer there would
@@ -111,6 +115,39 @@ export function makeFocusCanvas(cdp, evaluate) {
   };
 }
 
+/**
+ * A real click where `locate` (script, run after `VIEW`) says: it defines `node`, the element to press, and may define
+ * `at` ({ x, y } in the window's CSS pixels; the centre of `node` otherwise). As `makeAim` does for nodes, the topmost
+ * element at that point must be `node` or inside it, and not inside `avoid` (a selector): a Notice there is dismissed
+ * and the point looked at again; anything else stops the step with what was in the way, so a press cannot pass for a
+ * reason that is not the build's (a press meant for the empty canvas landing on a node, say).
+ */
+export function makePress(cdp, evaluate) {
+  return async (locate, { avoid, hover = false } = {}) => {
+    let box;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      box = await evaluate(`${VIEW} let at; ${locate}
+        if (!node) throw new Error('nothing to press: ' + ${JSON.stringify(locate)});
+        ${aim({ at: 'at', avoid })}
+        return { x, y, hit, cover };`);
+      if (box.hit) break;
+      await wait(400);
+    }
+    if (!box.hit) throw new Error(`cannot press at (${Math.round(box.x)},${Math.round(box.y)}): ${box.cover} is there`);
+    if (hover) { await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y }); await wait(150); }
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    }
+    await wait(250);
+  };
+}
+
+/** A real click at the centre of the first element in the view under test matching `selector` (`makePress`). */
+export function makeClickIn(cdp, evaluate) {
+  const press = makePress(cdp, evaluate);
+  return selector => press(`const node = el.querySelector(${JSON.stringify(selector)});`);
+}
+
 /** Step body for `step('plugin', ...)`: optionally reloads the plugin, then asserts it is actually loaded. */
 export function makePluginStep(cdp, evaluate, flag) {
   return async () => {
@@ -152,6 +189,33 @@ export function refuseOpenLeaves(paths, types = ['markdown', 'mappy-map']) {
   }`;
 }
 
+/** Script: `source` written to `note` (created if missing), then a moment for the metadata cache to read it. */
+function writeNote(note, source) {
+  return `const existing = app.vault.getAbstractFileByPath(${JSON.stringify(note)});
+    if (existing) await app.vault.modify(existing, ${JSON.stringify(source)});
+    else await app.vault.create(${JSON.stringify(note)}, ${JSON.stringify(source)});
+    await new Promise(resolve => setTimeout(resolve, 400));`;
+}
+
+/**
+ * Step body for a case that opens its note itself (E50, E51): refuses a note already open (`refuseOpenLeaves`) and
+ * any map leaf at all (the case's baseline would count its handlers), installs the page-error collector `errors`
+ * (window-helpers.mjs `ERRORS`), then writes `source` to `note`. `extra` (script) adds fields to what it returns.
+ */
+export function makeNoteStep(evaluate, { note, source, errors = '', extra = '{}' }) {
+  return () => evaluate(`${refuseOpenLeaves([note])}
+    ${errors}
+    const open = app.workspace.getLeavesOfType('mappy-map').length;
+    if (open > 0) throw new Error(open + ' map leaves are already open; the baseline would count their handlers. Close them first.');
+    ${writeNote(note, source)}
+    return { obsidian: require('electron').ipcRenderer.sendSync('version'), ...(${extra}) };`);
+}
+
+/** Step body for the `clean` step: deletes the case's note if it is there. */
+export function makeDeleteNote(evaluate, note) {
+  return () => evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(note)}); if (file) await app.vault.delete(file); return true;`);
+}
+
 /**
  * Step body for `step('open', ...)`: writes the fixture note, opens it as a map, and records what the
  * vault already held (`window.__mappyE2EBefore`) so `clean` removes only what this run added.
@@ -165,10 +229,7 @@ export function refuseOpenLeaves(paths, types = ['markdown', 'mappy-map']) {
 export function makeOpenStep(evaluate, { note, source, layout = 'mindmap' }) {
   return () => evaluate(`
     ${refuseOpenLeaves([note])}
-    const existing = app.vault.getAbstractFileByPath(${JSON.stringify(note)});
-    if (existing) await app.vault.modify(existing, ${JSON.stringify(source)});
-    else await app.vault.create(${JSON.stringify(note)}, ${JSON.stringify(source)});
-    await new Promise(resolve => setTimeout(resolve, 400));
+    ${writeNote(note, source)}
     const opened = app.workspace.getLeaf('tab');
     await opened.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(note)}, layout: ${JSON.stringify(layout)} }, active: true });
     await new Promise(resolve => setTimeout(resolve, 1500));
