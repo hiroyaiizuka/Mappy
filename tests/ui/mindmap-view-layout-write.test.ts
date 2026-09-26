@@ -240,6 +240,24 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     expect(mounted.source()).toBe(SOURCE.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n'));
   });
 
+  it('an edit before the button is taken back by Undo and given again by Redo; the layout stays (LEV-206)', async () => {
+    const mounted = await mount();
+    selectNode(mounted, '子1');
+    mounted.key(mounted.canvas, 'Delete');
+    const edited = SOURCE.replace('  - 子1\n', '');
+    await settled(mounted, source => source === edited);
+    clickLayout(mounted, 'timeline');
+    const timeline = (text: string) => text.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n');
+    await settled(mounted, asks('timeline'));
+    // Before LEV-206 the button's write dropped the history, and ⌘Z did nothing.
+    mounted.key(mounted.canvas, 'z', { metaKey: true });
+    await settled(mounted, source => source === timeline(SOURCE));
+    mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: true });
+    await settled(mounted, source => source === timeline(edited));
+    expect(refusals()).toEqual([]);
+    expect((mounted.view as unknown as { mode: LayoutMode }).mode).toBe('timeline');
+  });
+
   it('an external change between the button and the edit is still refused (E05)', async () => {
     const mounted = await mount();
     selectNode(mounted, '子1');

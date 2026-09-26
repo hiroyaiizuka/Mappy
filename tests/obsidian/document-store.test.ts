@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TFile, type EditorPosition, type EditorTransaction } from 'obsidian';
 import { DocumentStore, conflictMessage } from '../../src/obsidian/document-store';
 import { MarkdownView } from '../mocks/obsidian';
+import { planMapLayout } from '../../src/core/layout-key';
 
 function makeFile(path = 'Note.md'): TFile {
   const file = new TFile();
@@ -328,15 +329,158 @@ describe('DocumentStore', () => {
       expect(disk.get(file.path)).toBe(`${HEADER}# B\n`);
     });
 
-    it('is no step of the history, and drops the steps before it as any change the history did not make', async () => {
-      const { store, file } = harness('# A\n');
-      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+    it('is no step of the history, and carries the steps before and after it over it (LEV-206)', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const TIMELINE = '---\nmappy: true\nmappy-layout: timeline\n---\n';
+      const { store, file, disk } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      await store.apply(file, `${MAP}# B\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'C' }]);
+      await store.undo(file);
+      const timeline = (source: string) => planMapLayout(source, 'timeline');
+      await expect(store.applyLatest(file, timeline)).resolves.toMatchObject({ after: `${TIMELINE}# B\n` });
       expect(store.canUndo(file)).toBe(true);
-      await store.applyLatest(file, addHeader);
+      expect(store.canRedo(file)).toBe(true);
+      // The switch itself is no step: Redo and Undo walk the edits, each text keeping the layout.
+      await expect(store.redo(file)).resolves.toBe(`${TIMELINE}# C\n`);
+      await expect(store.undo(file)).resolves.toBe(`${TIMELINE}# B\n`);
+      await expect(store.undo(file)).resolves.toBe(`${TIMELINE}# A\n`);
       expect(store.canUndo(file)).toBe(false);
-      // An edit after it is measured against it and is undone on its own.
-      await store.apply(file, `${HEADER}# B\n`, [{ from: HEADER.length + 2, to: HEADER.length + 3, text: 'C' }]);
-      await expect(store.undo(file)).resolves.toBe(`${HEADER}# B\n`);
+      expect(disk.get(file.path)).toBe(`${TIMELINE}# A\n`);
+      await expect(store.redo(file)).resolves.toBe(`${TIMELINE}# B\n`);
+      await expect(store.redo(file)).resolves.toBe(`${TIMELINE}# C\n`);
+      expect(store.canRedo(file)).toBe(false);
+    });
+
+    it('keeps the steps across several switches, and an edit after one is undone on its own', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      const TIMELINE = '---\nmappy: true\nmappy-layout: timeline\n---\n';
+      await store.apply(file, `${TIMELINE}# B\n`, [{ from: TIMELINE.length + 2, to: TIMELINE.length + 3, text: 'C' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'hierarchy'));
+      const HIERARCHY = '---\nmappy: true\nmappy-layout: hierarchy\n---\n';
+      await expect(store.undo(file)).resolves.toBe(`${HIERARCHY}# B\n`);
+      await expect(store.undo(file)).resolves.toBe(`${HIERARCHY}# A\n`);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'mindmap'));
+      await expect(store.redo(file)).resolves.toBe(`${MAP}# B\n`);
+      await expect(store.redo(file)).resolves.toBe(`${MAP}# C\n`);
+    });
+
+    it('carries a step that wrote beside the layout line, and one that made the note a map', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness('# A\n');
+      // A step that wrote the frontmatter, then one that inserted a key where the layout line goes.
+      await store.apply(file, '# A\n', [{ from: 0, to: 0, text: MAP }]);
+      await store.apply(file, `${MAP}# A\n`, [{ from: 16, to: 16, text: 'mappy-topics: []\n' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      // Before the note was a map there was no layout to keep.
+      await expect(store.undo(file)).resolves.toBe('# A\n');
+      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n');
+    });
+
+    it('hands an open editor the step\'s own edits, not one replace from the first to the last', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const initial = `${MAP}# A\n- b\n`;
+      const { store, file, leaves } = harness(initial);
+      const editor = makeEditor(initial);
+      leaves.push({ view: new MarkdownView(file, editor) });
+      // A key written where the layout line goes, and a rename far below it, in one step.
+      await store.apply(file, initial, [{ from: 16, to: 16, text: 'mappy-topics: []\n' }, { from: initial.length - 2, to: initial.length - 1, text: 'c' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      editor.transaction.mockClear();
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n- b\n');
+      expect(editor.transaction.mock.calls[0]?.[0].changes).toHaveLength(2);
+      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-topics: []\nmappy-layout: timeline\n---\n# A\n- c\n');
+    });
+
+    it('makes a step that touched the layout line\'s place the one edit between its texts, not splitting a character', async () => {
+      const initial = '---\nmappy: true\n---\n# 😀\n';
+      const { store, file, leaves } = harness(initial);
+      const editor = makeEditor(initial);
+      leaves.push({ view: new MarkdownView(file, editor) });
+      // One edit over the header's end and the title: the layout line lands inside what it replaced.
+      await store.apply(file, initial, [{ from: 4, to: 24, text: 'mappy: true\n---\n# 😃' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      editor.transaction.mockClear();
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😀\n');
+      // The two texts differ in the emoji's second half only; the edit starts at the emoji, not inside it.
+      expect(editor.transaction.mock.calls[0]?.[0].changes).toEqual([{ from: { line: 4, ch: 2 }, to: { line: 4, ch: 4 }, text: '😀' }]);
+      await expect(store.redo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# 😃\n');
+    });
+
+    // Pins the fail-safe, not the fix: before LEV-206 every step went at the write, so this passes there too.
+    it('drops the whole stack, and writes nothing, when the plan cannot plan on the step Undo reaches', async () => {
+      const { store, file, disk } = harness('# A\n');
+      await store.apply(file, '# A\n', [{ from: 2, to: 3, text: 'B' }]);
+      const plan = (source: string) => {
+        if (source !== '# B\n') throw new Error('not this text');
+        return [{ from: 0, to: 0, text: '---\nmappy: true\n---\n' }];
+      };
+      await expect(store.applyLatest(file, plan)).resolves.toMatchObject({ after: '---\nmappy: true\n---\n# B\n' });
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\n---\n# B\n');
+      expect(disk.get(file.path)).toBe('---\nmappy: true\n---\n# B\n');
+      expect(store.canUndo(file)).toBe(false);
+    });
+
+    it('carries nothing until Undo or Redo reaches a step: a switch does not plan on the history', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      const seen: string[] = [];
+      await store.applyLatest(file, (source) => { seen.push(source); return planMapLayout(source, 'timeline'); });
+      expect(seen).toEqual([`${MAP}# B\n`]);
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+    });
+
+    it('keeps the steps across many switches (more than the edits carried over them, 16)', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      for (let index = 0; index < 17; index += 1) {
+        await store.applyLatest(file, (source) => planMapLayout(source, index % 2 === 0 ? 'timeline' : 'mindmap'));
+      }
+      expect(store.canUndo(file)).toBe(true);
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+    });
+
+    it('drops only a step the switch leaves changing nothing, and carries the next one in its place', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      // A step that wrote the layout key itself: once the switch sets it, it changes nothing.
+      await store.apply(file, `${MAP}# B\n`, [{ from: 16, to: 16, text: 'mappy-layout: hierarchy\n' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      expect(store.canUndo(file)).toBe(true);
+      await expect(store.undo(file)).resolves.toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# A\n');
+      expect(store.canUndo(file)).toBe(false);
+    });
+
+    // Pins the fail-safe, not the fix: before LEV-206 every step went at the first switch, so this passes there too.
+    it('drops a step made before more switches than it keeps the plans of, and does not offer it', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      for (let index = 0; index < 257; index += 1) {
+        await store.applyLatest(file, (source) => planMapLayout(source, index % 2 === 0 ? 'timeline' : 'mindmap'));
+      }
+      expect(store.canUndo(file)).toBe(false);
+      const current = await store.read(file);
+      await expect(store.undo(file)).resolves.toBe(current);
+    });
+
+    // Pins E05, which LEV-206 leaves as it was: this passes before the fix too.
+    it('still drops the steps at a change from outside after it (E05)', async () => {
+      const MAP = '---\nmappy: true\n---\n';
+      const { store, file, disk } = harness(`${MAP}# A\n`);
+      await store.apply(file, `${MAP}# A\n`, [{ from: MAP.length + 2, to: MAP.length + 3, text: 'B' }]);
+      await store.applyLatest(file, (source) => planMapLayout(source, 'timeline'));
+      disk.set(file.path, `${disk.get(file.path) ?? ''}- 外から\n`);
+      await store.read(file);
+      expect(store.canUndo(file)).toBe(false);
+      await expect(store.undo(file)).resolves.toBe(disk.get(file.path));
     });
 
     it('carries an edit planned before it over it, and says what it wrote', async () => {

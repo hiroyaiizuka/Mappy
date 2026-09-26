@@ -49,19 +49,45 @@ export function offsetAfter(edits: readonly TextEdit[], offset: number): number 
  * overlapping within itself), or undefined when one of them touches what `applied` replaced or inserts into it:
  * then the two do not commute, and the edit has to be planned again. Text `applied` inserted exactly where an
  * edit starts stays before it; text inserted exactly where an edit ends stays after it. For an edit planned
- * before one of the view's own frontmatter writes landed (a layout button, LEV-196).
+ * before one of the view's own frontmatter writes landed (a layout button, LEV-196). With `insertionsAfter`, text
+ * `applied` inserted exactly where an insertion of `edits` goes lands after it instead (the other order of the tie).
  */
-export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEdit[]): TextEdit[] | undefined {
+export function rebaseEdits(edits: readonly TextEdit[], applied: readonly TextEdit[], insertionsAfter = false): TextEdit[] | undefined {
   const rebased: TextEdit[] = [];
   for (const edit of edits) {
     let shift = 0;
     for (const other of applied) {
+      const tie = other.from === other.to && edit.from === edit.to && other.from === edit.from;
+      if (tie && insertionsAfter) continue;
       if (other.to <= edit.from) shift += other.text.length - (other.to - other.from);
       else if (other.from < edit.to) return undefined;
     }
     rebased.push({ from: edit.from + shift, to: edit.to + shift, text: edit.text });
   }
   return rebased;
+}
+
+/**
+ * The one edit that turns `from` into `to`: what lies between their common start and their common end, widened so
+ * that neither end splits a surrogate pair or a CRLF (an editor maps its positions by characters and lines). For a
+ * step of the history that no finer edits carry over a layout write (LEV-206).
+ */
+export function diffEdit(from: string, to: string): TextEdit {
+  let start = 0;
+  while (start < from.length && start < to.length && from[start] === to[start]) start += 1;
+  let end = 0;
+  while (end < from.length - start && end < to.length - start && from[from.length - 1 - end] === to[to.length - 1 - end]) end += 1;
+  while (start > 0 && (splitsCharacter(from, start) || splitsCharacter(to, start))) start -= 1;
+  while (end > 0 && (splitsCharacter(from, from.length - end) || splitsCharacter(to, to.length - end))) end -= 1;
+  return { from: start, to: from.length - end, text: to.slice(start, to.length - end) };
+}
+
+/** Whether offset `at` of `text` falls inside a surrogate pair or a CRLF. */
+function splitsCharacter(text: string, at: number): boolean {
+  if (at <= 0 || at >= text.length) return false;
+  const previous = text.charCodeAt(at - 1);
+  const next = text.charCodeAt(at);
+  return (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) || (previous === 13 && next === 10);
 }
 
 /** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseMarkdown } from '../../src/core/markdown';
 import { applyEdits } from '../../src/core/commands';
-import { endsWithBlankLine, findNode, getNode, lineGap, nodeAt, offsetAfter, paragraphGap, rebaseEdits } from '../../src/core/text-edits';
+import { endsWithBlankLine, findNode, getNode, lineGap, nodeAt, offsetAfter, paragraphGap, rebaseEdits, diffEdit } from '../../src/core/text-edits';
 
 const DOC = parseMarkdown('# 講座\n\n本文。\n\n## はじめに\n\n- 学ぶこと\n', '講座');
 
@@ -107,5 +107,26 @@ describe('rebaseEdits: an edit planned before one of the view\'s own frontmatter
     const replaced = [{ from: 4, to: 16, text: 'mappy: true\nmappy-layout: timeline\n' }];
     expect(rebaseEdits([{ from: 10, to: 12, text: 'x' }], replaced)).toBeUndefined();
     expect(rebaseEdits([{ from: 0, to: before.length, text: '' }], layout)).toBeUndefined();
+  });
+});
+
+describe('diffEdit: the one edit between two texts, for a history step no finer edits carry (LEV-206)', () => {
+  it('is what lies between the common start and end', () => {
+    expect(diffEdit('# A\n- b\n', '# A\n- c\n')).toEqual({ from: 6, to: 7, text: 'c' });
+    expect(diffEdit('same', 'same')).toEqual({ from: 4, to: 4, text: '' });
+  });
+
+  it('does not split a surrogate pair or a CRLF', () => {
+    // 😀 and 😃 share their first half; the edit replaces the whole emoji.
+    expect(diffEdit('a😀b', 'a😃b')).toEqual({ from: 1, to: 3, text: '😃' });
+    expect(diffEdit('a\r\nb', 'a\nb')).toEqual({ from: 1, to: 3, text: '\n' });
+  });
+});
+
+describe('rebaseEdits with insertionsAfter: the other order of two insertions at one place (LEV-206)', () => {
+  it('puts the text applied after an insertion at the same offset, and changes nothing else', () => {
+    const layout = [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }];
+    expect(rebaseEdits([{ from: 16, to: 16, text: 'mappy-topics: x\n' }], layout, true)).toEqual([{ from: 16, to: 16, text: 'mappy-topics: x\n' }]);
+    expect(rebaseEdits([{ from: 20, to: 21, text: 'B' }], layout, true)).toEqual([{ from: 43, to: 44, text: 'B' }]);
   });
 });
