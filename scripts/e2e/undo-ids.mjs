@@ -6,13 +6,18 @@
  * the text, so the re-read after ⌘Z／⌘⇧Z matched by title, and such a node came back with a new id: its branch opened
  * and the selection left it.
  *
- * The rows are what the user did before ⌘Z × the shape of the folded, selected node:
- *   edit    F2 rename of 子1, then fold and select the node, ⌘Z, ⌘⇧Z.
- *   switch  F2 rename of 子1, a layout button (timeline), then fold and select the node, ⌘Z, ⌘⇧Z (LEV-206 carries the
- *           history over the button).
+ * The rows are the step ⌘Z takes back × what came after it × the shape of the folded, selected node:
+ *   step    F2 rename of 子1 to a title of the same length (no node moves), to a longer one, or Delete on 子1 (the
+ *           last two move every node after 子1, so only the edits the step really made carry the ids).
+ *   edit    then fold and select the node, ⌘Z, ⌘⇧Z.
+ *   switch  then a layout button (timeline), fold and select the node, ⌘Z, ⌘⇧Z (LEV-206 carries the history over it).
  * × 通常 (親, one title) ・空題名 (the second untitled node) ・同名 (the second of two) ・トピック.
  * The 通常 and トピック rows pass before the fix too: a title only one node has is carried by the text either way.
  * They pin that the carried ids do not move such a node.
+ *
+ * two-map: the note in a second map beside the first (a split). The fold and the selection are in the second map;
+ * the longer rename, ⌘Z and ⌘⇧Z are in the first. Each write reaches the second map with its edits (the store tells
+ * every map of the note), × 空題名・同名.
  *
  * ⌘Z is sent with the focus left where the click on the fold toggle put it (inside the canvas): a blank click on the
  * canvas, which `makeHistory` uses to focus it, clears the selection this case is about. A row whose focus is not in
@@ -24,6 +29,9 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeRename, makeAfter, refuseOpenLeaves } from './dom-helpers.mjs';
+
+/** VIEW, on the second map of the two-map rows (`window.__mappyE2ESecond`). */
+const SECOND = VIEW.replace('const leaf = window.__mappyE2E;', 'const leaf = window.__mappyE2ESecond;');
 
 const { flag, value } = parseArgs();
 
@@ -58,7 +66,7 @@ const SHAPES = [
 ];
 
 const reopen = async () => {
-  await evaluate(`const leaf = window.__mappyE2E; if (leaf) leaf.detach(); delete window.__mappyE2E; return true;`);
+  await evaluate(`for (const key of ['__mappyE2ESecond', '__mappyE2E']) { window[key]?.detach(); delete window[key]; } return true;`);
   await wait(200);
   return required(record, 'open', await makeOpenStep(evaluate, { note: NOTE, source: SOURCE })());
 };
@@ -76,9 +84,23 @@ const clickAt = async locate => {
 };
 
 /** The node by its place in the map's own parse (the n-th on screen is not a fixed node after a re-render), the folds and the selection. */
-const read = shape => evaluate(`${VIEW}
+const read = (shape, view = VIEW) => evaluate(`${view}
   const node = view.document.nodes.filter(item => item.title === ${JSON.stringify(shape.title)})[${shape.index}];
   return { collapsed: [...view.collapsed], selected: view.selectedId, id: node?.id ?? null, focused: el.querySelector('.mappy-canvas').contains(document.activeElement) };`);
+
+/** The steps ⌘Z takes back, and the text each leaves (`opened` is the fixture as the row opened it). */
+const STEPS = [
+  { name: '同じ長さ', run: () => rename('改名'), text: opened => opened.replace('  - 子1\n', '  - 改名\n') },
+  { name: '長い改名', run: () => rename('ずっと長い題名に改名'), text: opened => opened.replace('  - 子1\n', '  - ずっと長い題名に改名\n') },
+  {
+    name: '削除', text: opened => opened.replace('  - 子1\n', ''),
+    run: async () => {
+      const before = await evaluate(`${VIEW} return await source();`);
+      await cdp.realKey('Delete');
+      return after(before);
+    },
+  },
+];
 
 /** ⌘Z or ⌘⇧Z with the focus where the fold toggle left it; refused when it is not in the canvas (see the header). */
 const history = async direction => {
@@ -91,14 +113,14 @@ const history = async direction => {
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
   const withTimeline = text => text.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n');
-  for (const before of ['edit', 'switch']) {
+  for (const kind of STEPS) for (const before of ['edit', 'switch']) {
     for (const shape of SHAPES) {
-      await step(`${before}-${shape.name}`, async () => {
+      await step(`${kind.name}-${before}-${shape.name}`, async () => {
         const opened = await reopen();
-        const edited = opened.source.replace('  - 子1\n', '  - 改名\n');
+        const edited = kind.text(opened.source);
         await select('子1');
-        const renamed = await rename('改名');
-        if (renamed.source !== edited) throw new Error(`the rename wrote something else:\n${renamed.source}`);
+        const renamed = await kind.run();
+        if (renamed.source !== edited) throw new Error(`the step wrote something else:\n${renamed.source}`);
         let base = { opened: opened.source, edited };
         if (before === 'switch') {
           // The second layout button (LAYOUT_MODES: mindmap, timeline, …).
@@ -116,7 +138,7 @@ try {
         const expectAt = async (label, result, expected) => {
           const state = await read(shape);
           rows.push({ label, ...state, source: result.source, messages: result.messages });
-          const row = `${before}-${shape.name} ${label}`;
+          const row = `${kind.name}-${before}-${shape.name} ${label}`;
           check(result.messages.length === 0, `${row}: showed ${JSON.stringify(result.messages)}`);
           check(result.source === expected, `${row}:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
           check(state.id === folded.id, `${row}: the node's id changed (${folded.id} → ${state.id})`);
@@ -130,9 +152,68 @@ try {
     }
   }
 
+  // two-map: the second map is a split of the first, on the same note, and holds the fold and the selection.
+  for (const shape of SHAPES.filter(item => item.name === '空題名' || item.name === '同名')) {
+    await step(`two-map-${shape.name}`, async () => {
+      const opened = await reopen();
+      await evaluate(`
+        const second = app.workspace.createLeafBySplit(window.__mappyE2E, 'vertical');
+        await second.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: false });
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        window.__mappyE2ESecond = second;
+        return true;`);
+      const edited = opened.source.replace('  - 子1\n', '  - ずっと長い題名に改名\n');
+      await select('子1');
+      const renamed = await rename('ずっと長い題名に改名');
+      if (renamed.source !== edited) throw new Error(`the rename wrote something else:\n${renamed.source}`);
+      const clickIn = async (view, locate) => {
+        const box = await evaluate(`${view}
+          const target = (() => { ${locate} })();
+          if (!target) throw new Error('nothing to click');
+          const rect = target.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
+        for (const type of ['mousePressed', 'mouseReleased']) {
+          await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+        }
+        await wait(400);
+      };
+      await clickIn(SECOND, `return nth(${JSON.stringify(shape.label)}, ${shape.index});`);
+      await clickIn(SECOND, `return nth(${JSON.stringify(shape.label)}, ${shape.index})?.querySelector('.mappy-node-toggle');`);
+      const folded = await read(shape, SECOND);
+      if (!folded.collapsed.includes(folded.id) || folded.selected !== folded.id) throw new Error(`the second map did not select and fold ${shape.name}: ${JSON.stringify(folded)}`);
+      // Back to the first map, on a node the rows do not look at, so ⌘Z goes to it with the focus in its canvas.
+      await select('子2');
+      const rows = [{ label: 'folded', ...folded }];
+      const secondCurrent = async text => {
+        const started = Date.now();
+        for (;;) {
+          const current = await evaluate(`${SECOND} return view.document?.source === await source() && await source() === ${JSON.stringify(text)};`);
+          if (current) return;
+          if (Date.now() - started > 3000) throw new Error('the second map did not re-read the note within 3 s');
+          await wait(100);
+        }
+      };
+      for (const [label, direction, expected] of [['⌘Z', 'undo', opened.source], ['⌘⇧Z', 'redo', edited]]) {
+        const result = await history(direction);
+        await secondCurrent(expected);
+        const state = await read(shape, SECOND);
+        rows.push({ label, ...state, source: result.source, messages: result.messages });
+        const row = `two-map-${shape.name} ${label}`;
+        check(result.messages.length === 0, `${row}: showed ${JSON.stringify(result.messages)}`);
+        check(result.source === expected, `${row}:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
+        check(state.id === folded.id, `${row}: the second map's node id changed (${folded.id} → ${state.id})`);
+        check(state.collapsed.includes(state.id ?? ''), `${row}: the second map lost the fold (${JSON.stringify(folded)} → ${JSON.stringify(state)})`);
+        check(state.id !== null && state.selected === state.id, `${row}: the second map's selection moved (${JSON.stringify(folded)} → ${JSON.stringify(state)})`);
+      }
+      return { rows };
+    });
+  }
+
   if (!flag('--keep')) {
     await step('clean', () => evaluate(`${VIEW}
       const file = view.file;
+      window.__mappyE2ESecond?.detach();
+      delete window.__mappyE2ESecond;
       leaf.detach();
       ${refuseOpenLeaves([NOTE])}
       if (file) await app.vault.delete(file, true);
