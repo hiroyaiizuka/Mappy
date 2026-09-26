@@ -42,7 +42,7 @@ beforeEach(() => {
     packages: { '': { name: 'mappy-dev', version: '0.1.0' } },
   });
   writeFileSync(join(root, 'LICENSE'), 'Test license\n');
-  writeFileSync(join(root, 'README.md'), '# Mappy\n');
+  writeFileSync(join(root, 'README.md'), '# Mappy\n\n## 既知の制限\n');
 });
 
 afterEach(() => {
@@ -147,6 +147,177 @@ describe('release metadata validation', () => {
       'LICENSE: must not be empty.',
       'README.md: file is missing.',
     ]));
+  });
+});
+
+describe('README version-limited known limitations', () => {
+  const stale = (line, item, version) => `README.md:${line}: known limitation "${item}" is limited to a release older than ${version}. `
+    + `If its fix ships in ${version}, remove the item; if not, update the version in the item.`;
+
+  function readmeErrors(manifestVersion, limitations, { before = '', after = '' } = {}) {
+    changeJson('manifest.json', (manifest) => { manifest.version = manifestVersion; });
+    writeFileSync(join(root, 'README.md'), `# Mappy\n${before}\n## 既知の制限\n\n${limitations}\n${after}`);
+    return validateRelease(root).filter((error) => error.startsWith('README.md'));
+  }
+
+  // With an empty `before`, the heading is line 3 of the README written above, so the first
+  // limitation is on line 5.
+  it('rejects an item limited to a version older than the manifest (LEV-209: 0.3.5 left in the 0.3.6 README)', () => {
+    expect(readmeErrors('0.3.6', '- **切り替えと同時の保存（0.3.5 まで）**: 拒否されることがあります。')).toEqual([
+      stale(5, '0.3.5 まで', '0.3.6'),
+    ]);
+  });
+
+  it('accepts items limited to the current or a later version', () => {
+    expect(readmeErrors('0.3.6', '- **a（0.3.6 まで）**: x\n- **b（0.4.0 まで）**: y')).toEqual([]);
+  });
+
+  it('compares versions numerically, not as strings', () => {
+    expect(readmeErrors('0.10.0', '- a（0.9.0 まで）')).toHaveLength(1);
+    expect(readmeErrors('0.9.0', '- a（0.10.0 まで）')).toEqual([]);
+    expect(readmeErrors('1.0.0', '- a（0.99.99 まで）')).toHaveLength(1);
+  });
+
+  it('reports every stale item with its line, whatever the parentheses, spacing, prefix, or surrounding wording', () => {
+    const limitations = [
+      '- a (0.3.4 まで)',
+      '- b（0.3.5まで）',
+      '- c（ 0.3.6 まで ）',
+      '- d（0.2.0 まで）と（0.3.0 まで）',
+      '- e（v0.3.1 まで。0.3.2 で修正）',
+      '- f（Android では 0.3.2 まで）',
+      '- g: 0.3.3 までの版では起きます。',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([
+      stale(5, '0.3.4 まで', '0.3.6'),
+      stale(6, '0.3.5まで', '0.3.6'),
+      stale(8, '0.2.0 まで', '0.3.6'),
+      stale(8, '0.3.0 まで', '0.3.6'),
+      stale(9, 'v0.3.1 まで', '0.3.6'),
+      stale(10, '0.3.2 まで', '0.3.6'),
+      stale(11, '0.3.3 まで', '0.3.6'),
+    ]);
+  });
+
+  it('reads only the known-limitations section, outside code fences, so other tools\' versions are not compared', () => {
+    const errors = readmeErrors('2.0.0', '- Mappy（1.0.0 まで）\n\n```\nObsidian（1.4.16 まで）\n```\n\n### 詳細\n- BRAT（1.0.6 まで）', {
+      before: '\n## 対応環境\n\nObsidian（1.4.16 まで）では動きません。\n',
+      after: '\n## 困ったとき\n\n旧版（1.0.0 まで）の復旧\n',
+    });
+    expect(errors).toEqual([stale(9, '1.0.0 まで', '2.0.0'), stale(16, '1.0.6 まで', '2.0.0')]);
+  });
+
+  it('reports a README without the known-limitations section instead of silently passing', () => {
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## 制限\n\n- a（0.0.1 まで）\n');
+    expect(validateRelease(root)).toEqual([
+      'README.md: missing the "## 既知の制限" section, so version-limited known limitations cannot be checked.',
+    ]);
+  });
+
+  it('detects Ver. prefixes, full-width digits, and an item wrapped across lines', () => {
+    const limitations = [
+      '- a（Ver.0.3.1 まで）',
+      '- d（０.３.４ まで）',
+      '- e: 長い説明で 0.3.5',
+      '  まで起きます。',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([
+      stale(5, 'Ver.0.3.1 まで', '0.3.6'),
+      stale(6, '0.3.4 まで', '0.3.6'),
+      stale(7, '0.3.5 まで', '0.3.6'),
+    ]);
+  });
+
+  it('reads only 「まで」 as a version limit, so a lasting note about old versions or another product\'s range passes', () => {
+    const limitations = [
+      '- 0.3.2 以前の版で保存したノートは、開き直すと書き換わります。',
+      '- BRAT 0.8.0〜1.0.6 で確認しています。',
+    ].join('\n');
+    expect(readmeErrors('1.1.0', limitations)).toEqual([]);
+  });
+
+  it('reports a version limit that is not a full x.y.z instead of silently passing it', () => {
+    expect(readmeErrors('0.3.6', '- a（0.3 まで）\n- b（0.3.5-beta.1 まで）\n- c: H6 まで\n- d: Obsidian 1.4 まで')).toEqual([
+      'README.md:5: known limitation "0.3 まで" must name a release as x.y.z to be checked, like 「（0.3.5 まで）」.',
+      'README.md:6: known limitation "0.3.5-beta.1 まで" must name a release as x.y.z to be checked, like 「（0.3.5 まで）」.',
+    ]);
+  });
+
+  it('closes a fence when its list item ends, and reads fences inside a blockquote', () => {
+    const limitations = [
+      '- a',
+      '  ```',
+      '  x',
+      '- b（0.3.5 まで）',
+      '> ```',
+      '> 0.1.0 まで',
+      '> ```',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([stale(8, '0.3.5 まで', '0.3.6')]);
+  });
+
+  it('ends the section at a Setext heading but not at a heading inside an HTML comment', () => {
+    const limitations = [
+      '<!-- メモ',
+      '## 旧見出し',
+      '-->',
+      '- b（0.1.0 まで）',
+      '',
+      '困ったとき',
+      '---',
+      '',
+      '旧版（0.1.0 まで）の復旧',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([stale(8, '0.1.0 まで', '0.3.6')]);
+  });
+
+  it('does not compare a version written right after another product\'s name, or inside an HTML comment', () => {
+    const limitations = [
+      '- Obsidian 1.4.0 までは設定が別の場所にあります。',
+      '- iOS 16.0.0 以前では動きません。',
+      '<!-- 下書き（0.1.0 まで）',
+      '-->',
+      '- Mappy 0.3.5 までの切り替え',
+    ].join('\n');
+    expect(readmeErrors('2.0.0', limitations)).toEqual([stale(9, '0.3.5 まで', '2.0.0')]);
+  });
+
+  it('pairs fences by character and length, so a ``` inside a ~~~ block does not hide later items', () => {
+    const limitations = [
+      '~~~',
+      '```',
+      '- 例（0.1.0 まで）',
+      '~~~',
+      '- a（0.3.5 まで）',
+      '````',
+      '```',
+      '## 見出しではない',
+      '````',
+      '- b（0.3.4 まで）',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', limitations)).toEqual([
+      stale(9, '0.3.5 まで', '0.3.6'), stale(14, '0.3.4 まで', '0.3.6'),
+    ]);
+  });
+
+  it('accepts a reworded heading that still starts with 既知の制限, and ignores the heading inside a fence', () => {
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n```\n## 既知の制限\n```\n\n## 既知の制限と注意\n\n- a（0.0.1 まで）\n');
+    expect(validateRelease(root)).toEqual([stale(9, '0.0.1 まで', '0.1.0')]);
+  });
+
+  it('leaves README to the plain run when packaging, so a stale item does not block the test vault build', () => {
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## 既知の制限\n\n- a（0.0.1 まで）\n');
+    expect(validateRelease(root, { knownLimitations: false })).toEqual([]);
+    addArtifacts();
+    const packaging = spawnSync(process.execPath, [cliPath, '--artifacts'], { cwd: root, encoding: 'utf8' });
+    expect(packaging.status).toBe(0);
+    const plain = spawnSync(process.execPath, [cliPath], { cwd: root, encoding: 'utf8' });
+    expect(plain.status).toBe(1);
+    expect(plain.stderr).toContain('README.md:5: known limitation "0.0.1 まで"');
+  });
+
+  it('skips the comparison when the manifest version is invalid instead of guessing', () => {
+    expect(readmeErrors('0.3', '- a（0.1.0 まで）')).toEqual([]);
   });
 });
 
