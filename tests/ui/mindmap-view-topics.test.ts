@@ -2104,3 +2104,85 @@ describe('MindmapView keeps a carried free tree on the pointer when the viewport
     expect(Math.abs(shown.y - (start.y + 30 - 100))).toBeLessThanOrEqual(viewport().scale);
   });
 });
+
+describe('MindmapView keeps a dropped free tree where it was released until the saved note is drawn (LEV-197)', () => {
+  // `commit` re-reads the note after its write, but the modify watcher of that very write can land while the read is
+  // under way (`scheduleRefresh` moves the epoch on), and the read then gave up. The drop's end let go of the drag's
+  // overrides at once, so every frame until the watcher's re-read drew (its 45 ms debounce and its read) laid out the
+  // note from before the drop: the released tree jumped back to where it was pressed, then to where it was dropped.
+  // The matrix is the tree dropped (a topic, the body) × whether the layout was switched mid-drag (LEV-182).
+  const SOURCE = `---\nmappy: true\nmappy-topics:\n  資料: { mindmap: [40, 200], balanced: [40, 200] }\n  補足: { mindmap: [40, 360], balanced: [40, 360] }\n---\n${THREE_SECTIONS}`;
+  type Point = { x: number; y: number };
+  type Watched = { released: Map<string, Point>; frames: Map<string, Point>[] };
+  const shiftOf = (view: MindmapView) =>
+    (view as unknown as { shiftTopic(id: string, delta: Point | null): void }).shiftTopic.bind(view);
+  const select = (view: MindmapView, mode: LayoutMode): void => {
+    (view as unknown as { selectMode(mode: LayoutMode): void }).selectMode(mode);
+  };
+  /** Where every root (the body's and each topic's) is on screen, by title. */
+  const roots = (mounted: Mounted): Map<string, Point> => {
+    const { root, topics } = projectMap(documentOf(mounted.view));
+    return new Map([root, ...topics].map(node => [node.title, screenOf(mounted, node.id)]));
+  };
+  /**
+   * Drops `title` (the body when it is 本体) after a pointer travel of `drop`, with the save's own re-read superseded
+   * by the watcher, and samples every root on each frame from the release until the watcher's re-read has drawn.
+   */
+  const dropAndWatch = async (mounted: Mounted, title: string, switched: boolean): Promise<Watched> => {
+    const { view, store } = mounted;
+    const { root, topics } = projectMap(documentOf(view));
+    const id = title === root.title ? root.id : topics.find(topic => topic.title === title)?.id;
+    if (!id) throw new Error(`Missing ${title}`);
+    const shift = shiftOf(view);
+    shift(id, { x: 40, y: 30 });
+    await frame();
+    if (switched) { select(view, 'balanced'); await frame(); }
+    const drop = { x: 160, y: 120 };
+    shift(id, drop);
+    await frame();
+    const released = roots(mounted);
+    const read = store.read.bind(store);
+    const reads = vi.spyOn(store, 'read').mockImplementationOnce(async file => {
+      setTimeout(() => { (view as unknown as { scheduleRefresh(): void }).scheduleRefresh(); }, 0);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return read(file);
+    });
+    await placeOf(view)(id, drop);
+    reads.mockRestore();
+    const state = view as unknown as { refreshTimer: number | undefined; refreshing: Promise<void> | undefined };
+    const frames: Map<string, Point>[] = [];
+    for (let round = 0; round < 200; round += 1) {
+      await frame();
+      frames.push(roots(mounted));
+      if (state.refreshTimer === undefined && state.refreshing === undefined) break;
+    }
+    await frame();
+    frames.push(roots(mounted));
+    return { released, frames };
+  };
+  const expectKept = ({ released, frames }: Watched): void => {
+    expect(frames.length).toBeGreaterThan(1);
+    for (const [index, shown] of frames.entries()) {
+      for (const [title, at] of released) {
+        const now = shown.get(title) ?? { x: Infinity, y: Infinity };
+        // The save rounds to whole world units: a pixel of slack at scale ≤ 1.
+        expect({ index, title, x: Math.abs(now.x - at.x) <= 1, y: Math.abs(now.y - at.y) <= 1 })
+          .toEqual({ index, title, x: true, y: true });
+      }
+    }
+  };
+
+  for (const switched of [false, true]) {
+    const how = switched ? 'after a layout switch mid-drag' : 'in the layout it was pressed in';
+    it(`a topic dropped ${how} stays where it was released on every frame until the saved note is drawn`, async () => {
+      const mounted = await mount(SOURCE, 'mindmap');
+      expectKept(await dropAndWatch(mounted, '資料', switched));
+      expect(readTopicPositions(mounted.source()).get('資料')?.[switched ? 'balanced' : 'mindmap']).not.toEqual([40, 200]);
+    });
+
+    it(`the body dropped ${how} keeps its topics where they were shown on every frame until the saved note is drawn`, async () => {
+      const mounted = await mount(SOURCE, 'mindmap');
+      expectKept(await dropAndWatch(mounted, '本体', switched));
+    });
+  }
+});

@@ -40,6 +40,7 @@
     "harness:e2e:timeline-stage-gap": "node scripts/e2e/timeline-stage-gap.mjs",
     "harness:e2e:timeline-large": "node scripts/e2e/timeline-large.mjs",
     "harness:e2e:drag-viewport": "node scripts/e2e/drag-viewport.mjs",
+    "harness:e2e:drop-flicker": "node scripts/e2e/drop-flicker.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",

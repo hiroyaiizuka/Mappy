@@ -39,6 +39,7 @@ export const CASES = [
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },
   { name: 'timeline-large', file: 'timeline-large.mjs', description: 'E45 長文・画像・深い枝が混在する大規模タイムライン', shot: true },
   { name: 'drag-viewport', file: 'drag-viewport.mjs', description: 'E49 フリーツリーのドラッグ中のホイール・ズーム／全体表示と保存位置', shot: false },
+  { name: 'drop-flicker', file: 'drop-flicker.mjs', description: 'E53 フリーツリーを離した直後、保存後の原文が描かれるまでのフレーム', shot: false },
 ];
 
 const args = process.argv.slice(2);
