@@ -7,8 +7,8 @@
  * ノードに残ることも見る。最後に、選択先が画面の外にあるとき削除で表示の中へ入ることを見る。
  *
  * 選択は `src/core/commands.ts` の `selectionAfterDelete` が決め（見出し形式・リスト形式の両方の `delete` が使う）、
- * view の `reveal` が折りたたみを開いて選択・表示する。修正前のビルド（常に親）で走らせた結果は docs/harness.md の
- * 「E2E ケース一覧」の行に書く。
+ * view の `reveal` が折りたたみを開いて選択・表示する。修正前のビルド（常に親）では 76 行中 56 行と画面外が FAIL する
+ * （2026-09-26。同じ選択になる 20 行は一人っ子など規則の「親」側。docs/harness.md の E41 の行）。
  *
  * Usage: npm run harness:e2e:delete-selection -- [--reload] [--json <out.json>] [--keep]
  */
