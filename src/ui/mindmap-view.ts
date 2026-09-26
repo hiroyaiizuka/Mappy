@@ -1,5 +1,5 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
-import { parseMarkdown, type MindDocument, type MindNode } from "../core/markdown";
+import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
 import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
@@ -93,6 +93,9 @@ interface Created {
   readonly previous: string | null;
   /** The provisional name the node was written with: a draft still holding it is untouched. */
   readonly name: string;
+  /** The folds before the addition (revealing the new node opens its parent) and the viewport (revealing it can pan). */
+  readonly collapsed: ReadonlySet<string>;
+  readonly viewport: Viewport;
 }
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
@@ -198,8 +201,12 @@ export class MindmapView extends FileView {
    * with nothing selected adds the map as a free topic (§5 M12).
    */
   private deselected = false;
-  /** Image attachments under way (`attachImage`): written onto the selected node once the file is stored. */
-  private attaching = 0;
+  /**
+   * Writes of this view's own still being prepared (a file to store first, as `attachImage` does): each will write
+   * onto the note as the map shows it now, so nothing may take that note back meanwhile (`retract`, LEV-203). A
+   * write that awaits anything before `commit` counts itself here through `preparing`.
+   */
+  private prepared = 0;
   private collapsed = new Set<string>();
   private mode: LayoutMode = "mindmap";
   private theme: MapTheme = "follow";
@@ -1519,12 +1526,31 @@ export class MindmapView extends FileView {
     // A node added without its text (Tab, Enter, the menu) is written under its provisional name and named in place;
     // one added with its text (a called map) is only selected.
     const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
-    const previous = this.selectedId;
-    const plan = planEdit(document, provisional ? { ...command, title: NEW_NODE_TITLE } : command);
+    const before = this.shownState();
+    let name = NEW_NODE_TITLE;
+    let plan = planEdit(document, provisional ? { ...command, title: name } : command);
+    // A node that lands as a free topic (Enter on a topic's root, Tab on the note's own root) is named as the empty
+    // canvas names one: the same kind of node under the same provisional name, whichever way it was made.
+    if (provisional && this.addsTopic(document, plan)) {
+      name = NEW_TOPIC_TITLE;
+      plan = planEdit(document, { ...command, title: name });
+    }
     const write = await this.commit(document.source, plan.edits, file, provisional);
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(plan.selectionOffset);
-    if (selected && provisional) this.editTitle({ write, previous, name: NEW_NODE_TITLE });
+    if (selected && provisional) this.editTitle({ write, ...before, name });
+  }
+
+  /** Whether the node `plan` adds is a free topic of the note it leaves. */
+  private addsTopic(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): boolean {
+    const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title);
+    const added = nodeAt(after, plan.selectionOffset);
+    return added !== undefined && projectMap(after).topics.some(topic => topic.id === added.id);
+  }
+
+  /** What an addition changes on screen besides the note: the selection, the folds it opens, the viewport it pans. */
+  private shownState(): Pick<Created, "previous" | "collapsed" | "viewport"> {
+    return { previous: this.selectedId, collapsed: new Set(this.collapsed), viewport: { ...this.viewport.value } };
   }
 
   /**
@@ -1601,14 +1627,14 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!document || !file || this.saving) return;
     const position = point ? this.topicPoint(point) : null;
-    const previous = this.selectedId;
+    const before = this.shownState();
     const plan = planEdit(document, { type: "add-topic", title: NEW_TOPIC_TITLE });
     const write = await this.commit(document.source, plan.edits, file, true);
     if (this.file !== file || this.closed) return;
     const created = this.document ? nodeAt(this.document, plan.selectionOffset) : undefined;
     // The first heading of a note becomes its body root and has no position.
     if (created && position && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
-    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, previous, name: NEW_TOPIC_TITLE });
+    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, ...before, name: NEW_TOPIC_TITLE });
   }
 
   /** The tree under a root on the map: the body's own subtree, or a topic's. */
@@ -1863,19 +1889,37 @@ export class MindmapView extends FileView {
    * the re-read carries every id over (folds, the selection), same-titled nodes included; with nothing selected
    * before, nothing is selected after. The caller asks only while the note is as the addition left it and
    * nothing else is being written; the store still refuses (the node stays, a Notice says why) if a change
-   * lands in between. A topic keeps the point it was pressed at until the section is really gone.
+   * lands in between: then the node stays as after any Escape, with no error. A topic keeps the point it was
+   * pressed at until the section is really gone. The folds the addition opened and the viewport it panned come
+   * back too.
    */
   private async retract(file: TFile, created: Created, nodeId: string): Promise<void> {
-    if (file !== this.file || this.closed || this.saving) return;
-    await this.writeOwn(created.write.after, file, async target => {
-      const write = await this.store.retract(target, created.write);
-      if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
-      // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
-      if (!created.previous) this.deselect();
-      return { ...write, carried: [] };
-    });
+    if (file !== this.file || this.closed || this.saving) { this.draw(); return; }
+    try {
+      await this.writeOwn(created.write.after, file, async target => {
+        const write = await this.store.retract(target, created.write);
+        if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
+        // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
+        if (!created.previous) this.deselect();
+        // The folds the addition opened close again (the ids are carried over the re-read).
+        this.collapsed = new Set(created.collapsed);
+        return { ...write, carried: [] };
+      });
+    } catch (error) {
+      // The note changed in a way the view had not read yet (an edit from outside within the refresh's debounce):
+      // the node stays, and Escape is what it is on any node — the draft given up — rather than an error.
+      if (!(error instanceof Error) || error.message !== conflictMessage) throw error;
+      if (this.file === file && !this.closed) this.draw();
+      return;
+    }
     if (this.file !== file || this.closed || !this.document) return;
     if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
+    // The viewport as it was, which showed the node selected then, once the layout of the closed folds is on screen
+    // (that frame keeps what is on screen in place, and would pan it again): no reveal is left for later either.
+    this.revealId = null;
+    if (this.layoutFrame !== undefined) await this.nextFrame();
+    if (this.file !== file || this.closed) return;
+    this.viewport.set(created.viewport);
   }
 
   /** `created`: the draft names a node just added (its provisional name selected); Escape then takes the node back. */
@@ -1939,7 +1983,7 @@ export class MindmapView extends FileView {
         // it — the node goes too. Once the user has typed, or something else has been written or is on its way (an
         // image pasted onto it, the draft's own save that an Escape pressed during it cannot stop, a change from
         // outside), Escape only closes the draft, as on any node.
-        if (cancelled && created && text === created.name && !this.saving && this.attaching === 0
+        if (cancelled && created && text === created.name && !this.saving && this.prepared === 0
           && this.document?.source === created.write.after) {
           this.run(() => this.retract(file, created, node.id));
           return;
@@ -2084,10 +2128,14 @@ export class MindmapView extends FileView {
     this.assertEditable(node.id);
     if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
     if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
-    // Counted from here until its write lands or fails: an Escape on a new node's draft meanwhile must not take the
-    // node away from under the image about to be written onto it (LEV-203).
-    this.attaching += 1;
-    try { await this.attachTo(image, node, document, file); } finally { this.attaching -= 1; }
+    // An Escape on a new node's draft meanwhile must not take the node away from under the image (LEV-203).
+    await this.preparing(() => this.attachTo(image, node, document, file));
+  }
+
+  /** Run a write of this view's own that prepares something before it commits, counted in `prepared` until it ends. */
+  private async preparing<T>(write: () => Promise<T>): Promise<T> {
+    this.prepared += 1;
+    try { return await write(); } finally { this.prepared -= 1; }
   }
 
   private async attachTo(image: File, node: MindNode, document: MindDocument, file: TFile): Promise<void> {

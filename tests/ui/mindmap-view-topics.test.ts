@@ -411,6 +411,35 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(store.canRedo(file)).toBe(false);
   });
 
+  it('Escape after typing keeps 「トピック」 where it was pressed; a later drag stores that position (review 3: the path the old Escape test covered)', async () => {
+    const source = fixtureSource();
+    const { view, canvas, layout, transform, source: current, settle, dblclick, key, pointer, editor, nodes } = await mount(source);
+    const origin = layout().origin;
+    const viewport = view.getState().viewport as { x: number; y: number; scale: number };
+    const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
+    dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No inline editor');
+    input.value = '打ちかけ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    key(input, 'Escape');
+    await settle();
+    expect(current()).toBe(`${source}\n## トピック\n`);
+    const kept = projectMap(documentOf(view)).topics.at(-1);
+    if (!kept) throw new Error('No topic');
+    expect(transform(kept.id)).toEqual(pressed);
+    const element = nodes().get(kept.id);
+    if (!element) throw new Error('No element');
+    pointer('pointerdown', element, 400, 400);
+    pointer('pointermove', canvas, 410, 400);
+    pointer('pointermove', canvas, 450, 430);
+    pointer('pointerup', canvas, 450, 430);
+    await settle();
+    expect(readTopicPositions(current()).get('トピック')).toEqual({ mindmap: { x: Math.round(pressed.x - origin.x + 50), y: Math.round(pressed.y - origin.y + 30) } });
+    expect(transform(kept.id)).toEqual({ x: pressed.x + 50, y: pressed.y + 30 });
+  });
+
   it('Enter on the untouched draft keeps 「トピック」 where it was pressed, as one step with its position', async () => {
     const source = fixtureSource();
     const { view, canvas, layout, transform, source: current, settle, dblclick, key, editor, undo } = await mount(source);

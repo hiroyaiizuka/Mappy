@@ -1202,8 +1202,6 @@ export async function captureNewNode(recorder, page) {
     const node = input ? input.closest('.mappy-node') : pane.querySelector('.mappy-node.is-selected');
     return node ? (${MEASURE_NODE_BOX})(node, input) : null;
   })()`);
-  const same = sameBox;
-  const show = showBox;
   const waitEditing = async (wanted = true) => {
     for (let wait = 0; wait < 20 && (await editing()) !== wanted; wait += 1) await new Promise(resolveWait => { setTimeout(resolveWait, 100); });
     expect((await editing()) === wanted, wanted ? 'the inline editor did not open' : 'the inline editor did not close');
@@ -1271,9 +1269,9 @@ export async function captureNewNode(recorder, page) {
             await page.settle();
             await waitEditing(false);
             const closed = await box();
-            expect(same(draft, confirmed) && same(confirmed, again) && same(again, closed),
-              `${label}: draft ${show(draft)}, confirmed ${show(confirmed)}, again ${show(again)}, after Escape ${show(closed)}`);
-            results.push(`${label} ${show(draft)}`);
+            expect(sameBox(draft, confirmed) && sameBox(confirmed, again) && sameBox(again, closed),
+              `${label}: draft ${showBox(draft)}, confirmed ${showBox(confirmed)}, again ${showBox(again)}, after Escape ${showBox(closed)}`);
+            results.push(`${label} ${showBox(draft)}`);
           }
         }
         await reset(mode);
@@ -1304,11 +1302,11 @@ export async function captureNewNode(recorder, page) {
         await page.settle();
         await waitEditing(false);
         const closed = await box();
-        expect(same(draft, confirmed) && same(confirmed, again) && same(again, closed),
-          `draft ${show(draft)}, confirmed ${show(confirmed)}, again ${show(again)}, after Escape ${show(closed)}`);
+        expect(sameBox(draft, confirmed) && sameBox(confirmed, again) && sameBox(again, closed),
+          `draft ${showBox(draft)}, confirmed ${showBox(confirmed)}, again ${showBox(again)}, after Escape ${showBox(closed)}`);
         expect((await page.harness('h.source()')).includes('  - ふりかえる\n  - サブトピック\n'), 'the new child is not written under its provisional name');
         await reset(mode);
-        return `サブトピック ${show(draft)}`;
+        return `サブトピック ${showBox(draft)}`;
       });
   }
 

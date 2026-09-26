@@ -73,7 +73,12 @@ export class DocumentStore {
       const { edits: requestedEdits, carried } = this.carry(session, expectedSource, requested, before);
       // Validate the caller's ranges before merging adjacent edits for inversion.
       const after = applyEdits(before, requestedEdits);
-      if (after === before) return { before, after, edits: requestedEdits, carried };
+      // Nothing written is still a step past the last one: its dropped Redo steps are not `retract`'s any more.
+      if (after === before) {
+        const last = session.past[session.past.length - 1];
+        if (last) delete last.dropped;
+        return { before, after, edits: requestedEdits, carried };
+      }
       const forward = mergeAdjacentEdits(requestedEdits);
       const inverse = invertEdits(before, forward);
       await this.writeSafely(file, session, before, after, forward);

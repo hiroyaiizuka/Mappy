@@ -161,6 +161,8 @@ export class NodeRenderer extends Component {
       if (node.children.length > 0) entry.element.setAttribute("aria-expanded", String(!collapsed.has(node.id)));
       else entry.element.removeAttribute("aria-expanded");
       const attachments = attachmentMarkdown(source && !source.root ? nodeBody(source.document, source.node) : nodeBody(document, node));
+      // A node showing images or links under its title: with an empty title, it is those, not the empty node's box (LEV-203).
+      entry.element.toggleClass("has-attachments", attachments !== "");
       const key = `${path}\0${node.title}\0${attachments}${source?.root ? "\0called-root" : ""}`;
       if (entry.key === key) continue;
       entry.key = key;

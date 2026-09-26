@@ -254,6 +254,16 @@ describe('DocumentStore', () => {
     expect(store.canRedo(file)).toBe(false);
   });
 
+  it('lets the dropped Redo steps go once a write that changes nothing has come after (review 3)', async () => {
+    const { store, file } = harness('a');
+    await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    await store.undo(file);
+    const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'c' }], { retractable: true });
+    await store.apply(file, 'ac', [{ from: 1, to: 2, text: 'c' }]);
+    await store.retract(file, added);
+    expect(store.canRedo(file)).toBe(false);
+  });
+
   it('retracts through an open editor', async () => {
     const editor = makeEditor('a');
     const { store, file, leaves } = harness('a');

@@ -234,6 +234,43 @@ describe('a node added on the map opens under its provisional name, selected (LE
     expect(mounted.source()).toBe(`${written}- 外から\n`);
   });
 
+  it('Escape puts back the fold the addition opened and the viewport it panned (review 3)', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('温泉旅行'), ' ');
+    await mounted.settle();
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(true);
+    // Selecting can itself bring the node into view: the viewport the addition starts from is the one after it.
+    const selected = mounted.select('温泉旅行');
+    const viewport = mounted.view.getState().viewport;
+    mounted.key(selected, 'Tab');
+    await mounted.settle();
+    // Revealing the new child opens its parent.
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(false);
+    // A pan by the reveal, or by the user while the draft is open: the viewport before the addition comes back.
+    (mounted.view as unknown as { viewport: { set(value: object): void } }).viewport.set({ x: 11, y: 22, scale: 1 });
+    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Escape');
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST);
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(true);
+    expect(selectedNames(mounted)).toEqual(['温泉旅行']);
+    expect(mounted.view.getState().viewport).toEqual(viewport);
+  });
+
+  it('a node that lands as a free topic (Enter on a topic\'s root) is 「トピック」, as the empty canvas names one (review 3)', async () => {
+    const source = `${LIST}\n## 買うもの\n\n- 野菜\n`;
+    const mounted = await mount(source);
+    mounted.key(mounted.select('買うもの'), 'Enter');
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${source}\n## ${NEW_TOPIC_TITLE}\n`);
+    mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+    await mounted.settle();
+    expect(mounted.source()).toBe(source);
+    // A child of that topic's root is not a topic: 「サブトピック」.
+    mounted.key(mounted.select('買うもの'), 'Tab');
+    await mounted.settle();
+    provisionalDraft(mounted, NEW_NODE_TITLE);
+  });
+
   it('Escape after typing over the provisional name gives up the typing only: the node stays as 「サブトピック」 (review 2)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
@@ -289,7 +326,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
     expect(selectedNames(mounted)).toEqual([]);
   });
 
-  it('a topic whose taking back the store refuses keeps the point it was pressed at (review 1)', async () => {
+  it('a topic whose taking back the store refuses stays, as after any Escape: no error, and the point it was pressed at kept (reviews 1 and 3)', async () => {
     const mounted = await mount(LIST);
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
@@ -298,7 +335,9 @@ describe('a node added on the map opens under its provisional name, selected (LE
     mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(`${LIST}\n## ${NEW_TOPIC_TITLE}\n`);
-    expect(document.querySelector('.notice')?.textContent ?? '').toContain('Markdown が変更されています');
+    // A change from outside inside the refresh's debounce is not the user's error to be told about on Escape.
+    expect(document.querySelector('.notice')).toBeNull();
+    expect(mounted.editor()).toBeNull();
     // Named later, the topic is stored where it was pressed.
     mounted.key(mounted.select(NEW_TOPIC_TITLE), 'F2');
     const input = mounted.editor();

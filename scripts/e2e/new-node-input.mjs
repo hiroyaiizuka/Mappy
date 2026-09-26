@@ -62,8 +62,6 @@ const box = () => evaluate(`${VIEW}
   const draft = input();
   const node = draft ? draft.closest('.mappy-node') : el.querySelector('.mappy-node.is-selected');
   return node ? (${MEASURE_NODE_BOX})(node, draft) : null;`);
-const same = sameBox;
-const show = showBox;
 
 async function waitEditing(wanted = true, timeout = 3000) {
   const started = Date.now();
@@ -142,9 +140,9 @@ try {
           await cdp.realKey('Escape');
           await waitEditing(false);
           const closed = await box();
-          check(same(draft, confirmed) && same(confirmed, again) && same(again, closed),
-            `${label}: draft ${show(draft)}, confirmed ${show(confirmed)}, again ${show(again)}, after Escape ${show(closed)}`);
-          results.push({ label, draft: show(draft), confirmed: show(confirmed), again: show(again), closed: show(closed) });
+          check(sameBox(draft, confirmed) && sameBox(confirmed, again) && sameBox(again, closed),
+            `${label}: draft ${showBox(draft)}, confirmed ${showBox(confirmed)}, again ${showBox(again)}, after Escape ${showBox(closed)}`);
+          results.push({ label, draft: showBox(draft), confirmed: showBox(confirmed), again: showBox(again), closed: showBox(closed) });
         }
       }
       return results;
@@ -194,15 +192,15 @@ try {
             await cdp.realKey('z', 12);
             await wait(800);
             check(await source() === SOURCE, `${label}: ⌘⇧Z after Escape changed the note`);
-            results.push({ label, draft: show(draft) });
+            results.push({ label, draft: showBox(draft) });
           } else {
             await cdp.realKey('Enter');
             await waitEditing(false);
             const confirmed = await box();
-            check(same(draft, confirmed), `${label}: draft ${show(draft)}, confirmed ${show(confirmed)}`);
+            check(sameBox(draft, confirmed), `${label}: draft ${showBox(draft)}, confirmed ${showBox(confirmed)}`);
             const kept = await source();
             check(kept.includes(way.name === 'トピック' ? '\n## トピック\n' : '  - サブトピック\n'), `${label}: the provisional name was not kept: ${JSON.stringify(kept)}`);
-            results.push({ label, draft: show(draft), confirmed: show(confirmed) });
+            results.push({ label, draft: showBox(draft), confirmed: showBox(confirmed) });
           }
         }
       }

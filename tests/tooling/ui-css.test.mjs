@@ -40,7 +40,9 @@ describe("map editing CSS", () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
     // The same floor on both sides of the editor, so opening or closing it on an empty node changes nothing.
     // A node showing attachments under its empty title (an image pasted onto an untitled node) keeps its old box (review 2).
-    const bare = ':not\\(:has\\(> \\.mappy-node-content > \\.mappy-node-attachments:not\\(:empty\\)\\)\\)';
+    // A class from NodeRenderer, not `:has()` (review 3: an engine without it would drop the whole rule).
+    const bare = ':not\\(\\.has-attachments\\)';
+    expect(css).not.toMatch(/:has\(/u);
     expect(css).toMatch(new RegExp(`\\.mappy-view \\.mappy-node\\.is-empty:not\\(\\.is-editing\\)${bare},\\n\\.mappy-view \\.mappy-node\\.is-editing\\.is-draft-empty${bare} \\{ min-width: 96px; \\}`, 'u'));
     // An empty label takes a line (a zero-width space), as the draft's one row does.
     expect(css).toMatch(new RegExp(`\\.mappy-node\\.is-empty${bare} > \\.mappy-node-content > \\.mappy-node-label::before \\{ content: "\\\\200b"; \\}`, 'u'));
