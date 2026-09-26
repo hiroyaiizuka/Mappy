@@ -97,13 +97,14 @@ async function waitLayoutKey(page, wanted, ms = 3000) {
   }
 }
 
-/** The note's text stays `original` for `ms`: a write that should not happen is given the time to land (`waitLayoutKey`). */
-async function expectSourceKept(page, original, ms = 500) {
+/** The note's text stays `original` for `ms`: a write that should not happen gets the time `waitLayoutKey` gives one that should. */
+async function expectSourceKept(page, original, ms = 3000) {
   const started = Date.now();
-  do {
+  for (;;) {
     expect((await page.harness('h.source()')) === original, 'the source changed');
+    if (Date.now() - started >= ms) return;
     await new Promise(resolve => setTimeout(resolve, 50));
-  } while (Date.now() - started < ms);
+  }
 }
 
 /** `mode` opens the fixture in that layout without writing `mappy-layout`; omitted, the note (or the view's current mode) decides. */
@@ -114,10 +115,14 @@ async function loadFixture(page, id, mode) {
 }
 
 /**
- * `loadFixture` on the fixture's text as it ships. The page's vault keeps every edit, and a layout button writes the
- * text (LEV-196), so a group that starts here does not inherit a `mappy-layout` a failed case of an earlier group left.
+ * `loadFixture` on the fixture's text as it ships, in `mode` (the regular map when omitted). The page's vault keeps
+ * every edit, and a layout button writes the text (LEV-196), so a group that starts here inherits neither a
+ * `mappy-layout` nor a layout a failed case of an earlier group left: the view does not re-read the key when the same
+ * note is opened again. The text is put back while another fixture is shown (as `putOriginal` does): written under
+ * an open view, the note would be re-read 45 ms later and redrawn, taking the focus from what the next case opens.
  */
-async function loadFreshFixture(page, id, mode) {
+async function loadFreshFixture(page, id, mode = 'mindmap') {
+  await loadFixture(page, id === 'heading-document' ? OPERATION_FIXTURE : 'heading-document', 'mindmap');
   await page.harness(`h.restoreFixture(${JSON.stringify(id)})`);
   return loadFixture(page, id, mode);
 }
@@ -1156,8 +1161,7 @@ async function captureHierarchyRows(recorder, page) {
     const remaining = await page.evaluate(`document.querySelectorAll('.mappy-node.is-hierarchy').length`);
     expect(remaining === 0, `${remaining} nodes still in the hierarchy`);
     expect(original !== undefined, 'heading-document was not loaded');
-    const left = await layoutKey(page);
-    expect(left === undefined, `layout key still present: mappy-layout: ${left}`);
+    // The text as it ships holds no key, so an unchanged text is also one without `mappy-layout`.
     await expectSourceKept(page, original);
   });
 }

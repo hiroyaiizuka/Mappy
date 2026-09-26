@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { transclusionsAsLinks } from '../../src/core/attachments';
 import {
-  embedOnlyTitle, embedTopicLayouts, embedTrees, findSection, initialFolds, isBlockReference, normalizeHeading, readMapFromSource, visibleNodes,
+  embedOnlyTitle, embedTopicLayouts, embedTrees, findSection, frontmatterReader, initialFolds, isBlockReference, normalizeHeading, readMapFromSource, visibleNodes,
 } from '../../src/core/embed';
 import { parseMarkdown } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
@@ -12,6 +12,19 @@ const HEADINGS = [
 ].join('\n');
 
 const LIST = ['---', 'mappy: true', '---', '## 本体', '- 一', '  - 一の子', '- 二', '', '## 参考資料', '- 資料', '', '## 用語', ''].join('\n');
+
+describe('frontmatterReader', () => {
+  it('reads a key of a closed frontmatter at the top, undefined when absent', () => {
+    const read = frontmatterReader('---\nmappy: true\nmappy-layout: "timeline"\n---\n## 本体\n');
+    expect(read?.('mappy-layout')).toBe('timeline');
+    expect(read?.('mappy-topics')).toBeUndefined();
+  });
+
+  it('has no reader for a note without a closed frontmatter at the top (the browser page reads through it, LEV-212)', () => {
+    expect(frontmatterReader('---\nmappy: true\n## 本体\n\nmappy-layout: timeline\n')).toBeNull();
+    expect(frontmatterReader('## 本体\n\n---\nmappy-layout: timeline\n---\n')).toBeNull();
+  });
+});
 
 describe('readMapFromSource', () => {
   it('claims only the YAML boolean `mappy: true` and reads the layout from the same text', () => {
