@@ -22,19 +22,6 @@ export interface HarnessActivity {
   at: number;
 }
 
-/**
- * A note's frontmatter as the product reads it: `parseYamlValue` over the lines of a closed header (`frontmatterLayout`),
- * the reader behind `readMapFromSource`. A BOM, a `...` closing line, a quoted key, `True`, a comment, a quoted comma
- * in a flow list and a nested mapping (`mappy-topics`) read as they do there. Undefined without a closed header. The
- * cache and `processFrontMatter` both read through it, so the page has one reader (LEV-214).
- */
-export function parseFrontmatter(source: string): Record<string, unknown> | undefined {
-  const header = frontmatterLayout(source);
-  if (!header?.closed) return undefined;
-  const value = parseYamlValue("", source.slice(header.bodyFrom, header.closingFrom).split("\n"));
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
-}
-
 /** A top-level key and its colon: the key part of yaml-lite's `mappingEntry`, copied because yaml-lite does not export it. */
 const TOP_LEVEL_KEY = /^(?!-(?:[ \t]|$))("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'#{}[\],][^:]*?)[ \t]*:(?:[ \t]|$)/u;
 
@@ -47,23 +34,48 @@ function keyName(token: string): string {
 
 type Header = NonNullable<ReturnType<typeof frontmatterLayout>>;
 
-/**
- * The first line at or after `from` that holds `key`, with the lines of its value (`locateFrontmatterKey` on the key as
- * it is spelled there, so a quoted key with an escape is found by the name it reads as).
- */
-function locateKey(text: string, header: Header, key: string, from = header.bodyFrom): { from: number; to: number } | null {
+/** Each top-level key line at or after `from`, in order: the name it reads as, and where its line starts. */
+function* topLevelKeys(text: string, header: Header, from = header.bodyFrom): Generator<{ key: string; spelled: string; from: number }> {
   let offset = from;
   while (offset < header.closingFrom) {
     const newline = text.indexOf("\n", offset);
     const next = newline === -1 || newline >= header.closingFrom ? header.closingFrom : newline + 1;
     const token = text.slice(offset, next).replace(/\r?\n$/u, "").match(TOP_LEVEL_KEY)?.[1];
-    if (token !== undefined && keyName(token) === key) {
-      const spelled = /^["']/u.test(token) ? token.slice(1, -1) : token;
-      return locateFrontmatterKey(text, { ...header, bodyFrom: offset }, spelled);
-    }
+    if (token !== undefined) yield { key: keyName(token), spelled: /^["']/u.test(token) ? token.slice(1, -1) : token, from: offset };
     offset = next;
   }
+}
+
+/**
+ * The first line at or after `from` that holds `key`, with the lines of its value (`locateFrontmatterKey` on the key as
+ * it is spelled there, so a quoted key with an escape is found by the name it reads as).
+ */
+function locateKey(text: string, header: Header, key: string, from = header.bodyFrom): { from: number; to: number; inline: string; nested: string[] } | null {
+  for (const line of topLevelKeys(text, header, from)) {
+    if (line.key === key) return locateFrontmatterKey(text, { ...header, bodyFrom: line.from }, line.spelled);
+  }
   return null;
+}
+
+/**
+ * A note's frontmatter as the product reads it: each top-level key from its first line, as `frontmatterReader` (the
+ * reader behind `readMapFromSource`) reads one key — a repeated key keeps its first value, and a line that is not a key
+ * is passed over, not the end of the header. A BOM, a `...` closing line, a quoted key, `True`, a comment, a quoted
+ * comma in a flow list and a nested mapping (`mappy-topics`) read as they do there. Undefined without a closed header
+ * or without a key in it. The cache and `processFrontMatter` both read through it (LEV-214).
+ */
+export function parseFrontmatter(source: string): Record<string, unknown> | undefined {
+  const header = frontmatterLayout(source);
+  if (!header?.closed) return undefined;
+  const result: Record<string, unknown> = {};
+  const seen = new Set<string>();
+  for (const { key } of topLevelKeys(source, header)) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const block = locateKey(source, header, key);
+    if (block) result[key] = parseYamlValue(block.inline, block.nested);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 /**
@@ -73,13 +85,21 @@ function locateKey(text: string, header: Header, key: string, from = header.body
 function yamlString(value: string): string {
   if (/[\u0000-\u0008\u000b-\u001f\u007f]/u.test(value)) throw new Error(`検証ページの frontmatter は制御文字を書きません: ${JSON.stringify(value)}`);
   const plain = /^[^\s"'#{}[\],\-?:&*!|>%@`][^:#\t\n]*$/u.test(value) && !/\s$/u.test(value)
-    && !/^(?:true|false|null|~|yes|no|on|off|y|n)$/iu.test(value) && !/^[-+.]?\d/u.test(value) && !/^\.(?:inf|nan)$/iu.test(value);
+    && !/^(?:true|false|null|~|yes|no|on|off|y|n)$/iu.test(value) && !/^[-+.]?\d/u.test(value) && !/^[-+]?\.(?:inf|nan)$/iu.test(value);
   return plain ? value : `"${value.replace(/[\\"]/gu, char => `\\${char}`).replace(/\t/gu, "\\t").replace(/\n/gu, "\\n")}"`;
 }
 
+/** Throws on a value, at any depth, that yaml-lite would not read back as it is: a control character, `NaN`, `Infinity`. */
+function assertWritable(value: unknown): void {
+  if (typeof value === "string") yamlString(value);
+  else if (typeof value === "number" && !Number.isFinite(value)) throw new Error(`検証ページの frontmatter は ${value} を書きません`);
+  else if (Array.isArray(value)) value.forEach(assertWritable);
+  else if (value !== null && typeof value === "object") for (const [key, item] of Object.entries(value)) { yamlString(key); assertWritable(item); }
+}
+
 function yamlScalar(value: unknown): string {
+  assertWritable(value);
   if (typeof value === "string") return yamlString(value);
-  if (typeof value === "number" && !Number.isFinite(value)) throw new Error(`検証ページの frontmatter は ${value} を書きません`);
   if (typeof value === "boolean" || typeof value === "number") return String(value);
   return JSON.stringify(value ?? null);
 }
@@ -101,7 +121,7 @@ function serializeFrontmatterEntry(key: string, value: unknown, eol: string): st
  * header that runs to the end and its own writer refuses it. How Obsidian treats these two edges is not checked.
  */
 function rewriteFrontmatter(text: string, before: Record<string, unknown>, after: Record<string, unknown>): string {
-  const bom = text.startsWith("﻿") ? "﻿" : "";
+  const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "";
   const changed = (key: string) => JSON.stringify(before[key]) !== JSON.stringify(after[key]);
   const opened = frontmatterLayout(text);
   if (opened && !opened.closed) throw new Error("frontmatter が閉じていません（製品の書き込みと同じく、検証ページも書きません）");

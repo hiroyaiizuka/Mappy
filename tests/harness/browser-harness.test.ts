@@ -256,7 +256,7 @@ describe('browser harness obsidian mock', () => {
     // Review 1 of LEV-214: the callback read the header with this page's own reader, not the product's, so a header
     // the product reads as a map could be released to no effect, and a value it misread was written back.
     it.each([
-      ['a BOM', '﻿---\nmappy: true\n---\nbody\n', '﻿body\n'],
+      ['a BOM', '\uFEFF---\nmappy: true\n---\nbody\n', '\uFEFFbody\n'],
       ['a `...` closing line', '---\nmappy: true\n...\nbody\n', 'body\n'],
       ['a quoted key', '---\n"mappy": true\ntags: x\n---\nbody\n', '---\ntags: x\n---\nbody\n'],
       ['a space before the colon', '---\nmappy : true\ntags: x\n---\nbody\n', '---\ntags: x\n---\nbody\n'],
@@ -290,14 +290,15 @@ describe('browser harness obsidian mock', () => {
     });
 
     it('quotes a string YAML would read as something else', async () => {
-      const values = ['1e3', '0x1F', '0o17', '.inf', '-.inf', '.nan', 'yes', 'Null', '12', 'plain'];
+      const values = ['1e3', '0x1F', '0o17', '.inf', '-.inf', '+.inf', '+.Inf', '.nan', 'yes', 'Null', '12', 'plain'];
       const { text } = await run('---\nmappy: true\n---\n', properties => { properties.aliases = values; });
       expect(frontmatterReader(text)?.('aliases')).toEqual(values);
       expect(text).toContain('  - plain\n');
+      expect(text).toContain('  - "+.inf"\n');
     });
 
     it('keeps a BOM in front of a new header and the header\'s own line endings', async () => {
-      expect((await run('﻿## Root\n', properties => { properties.mappy = true; })).text).toBe('﻿---\nmappy: true\n---\n## Root\n');
+      expect((await run('\uFEFF## Root\n', properties => { properties.mappy = true; })).text).toBe('\uFEFF---\nmappy: true\n---\n## Root\n');
       const mixed = await run('---\nmappy: true\n---\nbody\r\n', properties => { properties['mappy-layout'] = 'timeline'; });
       expect(mixed.text).toBe('---\nmappy: true\nmappy-layout: timeline\n---\nbody\r\n');
     });
@@ -341,8 +342,35 @@ describe('browser harness obsidian mock', () => {
       expect(app.activity).toEqual([]);
     });
 
+    // Review 3 of LEV-214: the cache read the whole header at once (a repeat wins, an unreadable line ends it), while the
+    // product reads one key at a time from its first line (`frontmatterReader`).
+    it.each([
+      ['a key written twice', '---\nmappy: false\nmappy: true\n---\nbody\n', 'timeline' as const],
+      ['a line that is not a key', '---\nfoo\nmappy: true\n---\nbody\n', null],
+      ['a list item at the top', '---\ntags: x\n- y\nmappy: true\n---\nbody\n', null],
+    ])('reads %s as the product does, and the write lands', async (_shape, source, layout) => {
+      const app = new HarnessApp();
+      const file = app.put('Fixtures/fm.md', source);
+      expect(readMapLayout(app.asApp<App>(), file as unknown as TFile)).toBe(readMapFromSource(source));
+      await writeMapLayout(app.asApp<App>(), file as unknown as TFile, layout);
+      expect(readMapFromSource(app.content(file))).toBe(layout);
+      expect(readMapLayout(app.asApp<App>(), file as unknown as TFile)).toBe(layout);
+    });
+
+    it('reads a list cut by a comment line as the product does, before and after a write', async () => {
+      const source = '---\ntags:\n  - a\n# c\n  - b\nmappy: true\n---\n';
+      expect(parseFrontmatter(source)?.tags).toEqual(frontmatterReader(source)?.('tags'));
+      const { text } = await run(source, properties => { properties.tags = ['z']; });
+      expect(parseFrontmatter(text)?.tags).toEqual(frontmatterReader(text)?.('tags'));
+    });
+
+    it('has no cache frontmatter for a header without a key', () => {
+      expect(parseFrontmatter('---\n---\nbody\n')).toBeUndefined();
+      expect(parseFrontmatter('---\n# only a comment\n---\nbody\n')).toBeUndefined();
+    });
+
     it('refuses a value the product\'s reader cannot read back', async () => {
-      for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 'a\rb', '\u0001']) {
+      for (const value of [Number.NaN, Number.POSITIVE_INFINITY, 'a\rb', '\u0001', { k: 'x\ry' }, [['\u0001']], { n: Number.NaN }]) {
         const app = new HarnessApp();
         const file = app.put('Fixtures/fm.md', '---\nmappy: true\n---\n');
         await expect(app.fileManager.processFrontMatter(file, properties => { properties.n = value; })).rejects.toThrow();
