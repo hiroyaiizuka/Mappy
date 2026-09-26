@@ -15,7 +15,8 @@
  *      本体（文字の外）・題名、F2 で開いた入力欄、埋め込みのすべてのノード × 本体・題名。どれも 2 s（Obsidian の
  *      吹き出しの遅延 1 s の 2 倍）待っても `.tooltip` が出ず、待ち終えた時点でもポインターがその対象の上にある
  *      （途中でノードが動いて空の canvas に乗っていたら、出ないことは何も示さない）。離れたら残らない。
- *      出ないことを見る行の前後には、出るはずのボタンに乗せる対照を置く（遅延に間に合わなかっただけの PASS を除く）。
+ *      出ないことを見る行（3 と入力欄も）の前後には、出るはずのボタンに乗せる対照を置く（遅延に間に合わなかっただけの
+ *      PASS を除く）。描かれたノードの題名が期待の一覧どおりか先に確かめる（形が黙って抜けないように）。
  *   3. 本人の報告: ノードを実クリックで選び、ポインターをいったん外してからそのノードに乗せて 2 s 待ち、そのまま
  *      Enter／Tab。乗せた時点でも、下に足したノードの入力欄が開いてさらに 2 s 待った時点でも吹き出しが出ず、その時点で
  *      ポインターがまだそのノードの上にある。吹き出しが新しいノードの箱に重なったかは記録に残す（`.tooltip` は
@@ -28,7 +29,8 @@
  *      （空なら「空のノード」）、呼び出したノードの説明が「呼び出し元: <パス>」。VoiceOver が実際に読むかは人の手で見る
  *      （このケースは確かめない）。
  *
- * 修正を戻しても通る行: 1 の前提（Obsidian の性質を見る）、4 のボタンと 2 の対照（残すものが残ることを見る）。
+ * 修正を戻しても通る行: 1 の前提のうち Obsidian の性質を見る 2 つ（対照の要素に出る・`--no-tooltip` で消える）と、4 のボタン
+ * と各グループの対照（残すものが残ることを見る）。1 の canvas の算出値は LEV-199 の CSS を見るので、CSS を外すと落ちる。
  *
  * Usage: npm run harness:e2e:node-tooltip -- [--reload] [--json <out.json>] [--shot <file.png>] [--keep]
  *   --shot  the Enter／Tab frames go to <file>-Enter.png and <file>-Tab.png
@@ -36,6 +38,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, viewScript, writeNote, makeOpenStep, makePluginStep, makePress, makeSelect, refuseOpenLeaves } from './dom-helpers.mjs';
+import { noteName } from './excalidraw-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -50,10 +53,14 @@ const SOURCE = [
   '  - 下のノード',
   '- ',
   '- 呼び出し',
-  `  - ![[${CALLED.replace(/^Fixtures\//u, '').replace(/\.md$/u, '')}]]`,
+  `  - ![[${noteName(CALLED)}]]`,
   '',
 ].join('\n');
-const HOST_SOURCE = ['# 埋め込みの吹き出し', '', `![[${NOTE.replace(/^Fixtures\//u, '').replace(/\.md$/u, '')}]]`, ''].join('\n');
+/** The nodes each view draws (labels in document order): the shapes the hover matrix promises to cover. */
+const MAP_LABELS = ['吹き出しの確認', '自分のノード', '下のノード', '空のノード', '呼び出し', '呼ばれたマップ', '呼ばれた子'];
+/** The embed shows the root and its children only (the rest folded), the called map not at all. */
+const EMBED_LABELS = ['吹き出しの確認', '自分のノード', '空のノード', '呼び出し'];
+const HOST_SOURCE = ['# 埋め込みの吹き出し', '', `![[${noteName(NOTE)}]]`, ''].join('\n');
 /**
  * How long a hover rests before the tooltips are read. Obsidian (app.js 1.14.2) shows one 1000 ms after the pointer
  * arrives (at once only if another was shown in the last 100 ms); at 1.2 s a hover right after a fit, with the map busy
@@ -85,6 +92,16 @@ const texts = shown => JSON.stringify(shown.map(tip => tip.text));
 
 const move = (x, y) => cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
 
+/** Polls `read` every 100 ms until `done(value)` or `timeout` ms; returns the last value read. */
+async function until(read, done, timeout) {
+  const started = Date.now();
+  for (;;) {
+    const current = await read();
+    if (done(current) || Date.now() - started > timeout) return current;
+    await wait(100);
+  }
+}
+
 /**
  * The pointer off anything named (the window's top-left corner, the title bar); the tooltips still on screen after
  * up to 3 s, which a hover's own row reports (so a lingering one is blamed on the row that showed it).
@@ -95,12 +112,7 @@ async function leave() {
   // the first hover was dropped for that — the premise's control reading no tooltip at all.
   await move(4, 2);
   await move(2, 2);
-  const started = Date.now();
-  for (;;) {
-    const left = await tooltips();
-    if (left.length === 0 || Date.now() - started > 3000) return left;
-    await wait(100);
-  }
+  return until(tooltips, left => left.length === 0, 3000);
 }
 
 /**
@@ -146,14 +158,13 @@ async function control(label, locate, view = VIEW) {
   let late = null;
   if (!found) {
     const started = Date.now();
-    while (Date.now() - started < 3000) {
-      if ((await tooltips()).some(tip => tip.text === name)) { late = DWELL + Date.now() - started; break; }
-      await wait(100);
-    }
+    const seen = await until(tooltips, now => now.some(tip => tip.text === name), 3000);
+    if (seen.some(tip => tip.text === name)) late = DWELL + Date.now() - started;
   }
   const lingers = await leave();
   check(name && shown.onTarget && found,
     `${label}: control ${JSON.stringify(name)} showed ${texts(shown.tooltips)} within ${DWELL} ms (on target: ${shown.onTarget}, ${late === null ? 'none in 3 s more' : `shown at ${late} ms`}); the rows beside it prove nothing`);
+  check(lingers.length === 0, `${label}: tooltip ${texts(lingers)} stays after the pointer left`);
   return { label, name, ...shown, late, lingers };
 }
 const MAP_CONTROL = `const node = el.querySelector('.mappy-zoom .mappy-button');`;
@@ -191,12 +202,8 @@ async function hoverAll(view, prefix) {
 
 const editing = () => evaluate(`${VIEW} return !!input();`);
 async function waitEditing(wanted = true, timeout = 3000) {
-  const started = Date.now();
-  while (Date.now() - started < timeout) {
-    if (await editing() === wanted) { await wait(300); return; }
-    await wait(100);
-  }
-  throw new Error(wanted ? 'the inline editor did not open' : 'the inline editor did not close');
+  if (await until(editing, open => open === wanted, timeout) !== wanted) throw new Error(wanted ? 'the inline editor did not open' : 'the inline editor did not close');
+  await wait(300);
 }
 
 /** The note back to SOURCE, the whole map in the pane, no draft open. */
@@ -211,7 +218,6 @@ async function restore() {
     fit.click();
     await new Promise(resolve => setTimeout(resolve, 600));
     return true;`);
-  return true;
 }
 
 /** Every node's name and description as Chromium's accessibility tree computes them (what a screen reader is given). */
@@ -222,7 +228,7 @@ async function axFacts(view) {
   for (let index = 0; index < count; index += 1) {
     const handle = await cdp.send('Runtime.evaluate', { expression: `(() => { ${view} return nodes()[${index}]; })()` });
     const attributes = await evaluate(`${view} const node = nodes()[${index}];
-      return { label: label(node), ariaLabel: node.getAttribute('aria-label'), title: node.closest('[title]')?.getAttribute('title') ?? null, text: node.querySelector('.mappy-node-content')?.textContent.trim() ?? '' };`);
+      return { label: label(node), ariaLabel: node.getAttribute('aria-label'), title: node.getAttribute('title'), text: node.querySelector('.mappy-node-content')?.textContent.trim() ?? '' };`);
     const tree = await cdp.send('Accessibility.getPartialAXTree', { objectId: handle.result.objectId, fetchRelatives: false });
     await cdp.send('Runtime.releaseObject', { objectId: handle.result.objectId });
     const ax = tree.nodes[0];
@@ -232,10 +238,11 @@ async function axFacts(view) {
 }
 
 /**
- * Close what this run opened and delete the notes it wrote (`made`), the premise's probe too. Run from `finally`
+ * Close what this run opened and delete the notes it wrote (`made`), the premise's probe too; nothing at all when it
+ * wrote nothing (a stop at `refuseOpenLeaves`: the handles and probe may be another run's). Run from `finally`
  * (unless `--keep`), so a case stopped midway does not leave the map open: the next run's `open` would refuse it.
  */
-const clean = () => evaluate(`
+const clean = () => made.size === 0 ? [] : evaluate(`
   document.querySelectorAll('[data-mappy-e2e-tooltip-probe]').forEach(probe => probe.remove());
   for (const path of ${JSON.stringify([HOST, NOTE, CALLED].filter(path => made.has(path)))}) {
     app.workspace.getLeavesOfType('markdown').concat(app.workspace.getLeavesOfType('mappy-map'))
@@ -292,6 +299,8 @@ try {
 
   // 2. Hovering every node of the map (root, parent, child, empty, calling item, called nodes) × body, title.
   await step('hover-nodes', async () => {
+    const labels = await evaluate(`${VIEW} return nodes().map(label);`);
+    check(JSON.stringify(labels) === JSON.stringify(MAP_LABELS), `the map drew ${JSON.stringify(labels)}, not ${JSON.stringify(MAP_LABELS)}: a shape of the matrix is missing`);
     const calledCount = await evaluate(`${VIEW} ${CALLED_NODES} return calledNodes().length;`);
     check(calledCount >= 2, `the called map drew ${calledCount} nodes with a description (its root and child expected)`);
     const first = await control('control-before', MAP_CONTROL);
@@ -306,11 +315,13 @@ try {
     await select('自分のノード');
     await cdp.realKey('F2');
     await waitEditing();
+    const first = await control('input-control-before', MAP_CONTROL);
     const shown = await hover(`const node = input();`);
     absent('input', shown);
+    const last = await control('input-control-after', MAP_CONTROL);
     await cdp.realKey('Escape');
     await waitEditing(false);
-    return shown;
+    return { controls: [first, last], ...shown };
   });
 
   // 3. The report: the pointer resting on a node, Enter／Tab adds one below it, its input opens under the pointer's node.
@@ -319,6 +330,8 @@ try {
     for (const key of ['Enter', 'Tab']) {
       await restore();
       await select('自分のノード');
+      // The control after the click: Obsidian must be drawing tooltips now, or the no-tooltip reads below mean nothing.
+      const first = await control(`${key}-control-before`, MAP_CONTROL);
       // The hand then rests on the node it chose: the click's tooltip is gone (pointerup), this hover is what shows one.
       const before = await hover(nodeTarget('own', 'title'), { stay: true });
       await cdp.realKey(key);
@@ -337,10 +350,13 @@ try {
       check(shown.length === 0, `${key}: tooltip ${texts(shown)} with the pointer on the node after the new one opened${covering.length ? ', covering the new node' : ''}`);
       const shot = value('--shot');
       if (shot) await cdp.screenshot(`${shot.replace(/\.png$/u, '')}-${key}.png`);
+      const lingers = await leave();
+      check(lingers.length === 0, `${key}: tooltip ${texts(lingers)} stays after the pointer left`);
+      // And after: a tooltip Obsidian was slow to draw would have shown by now on the control.
+      const last = await control(`${key}-control-after`, MAP_CONTROL);
       await cdp.realKey('Escape');
       await waitEditing(false);
-      await leave();
-      results.push({ key, before: before.tooltips, tooltips: shown, covering: covering.length, draft: after });
+      results.push({ key, controls: [first, last], before: before.tooltips, tooltips: shown, covering: covering.length, draft: after });
     }
     return results;
   });
@@ -384,8 +400,8 @@ try {
       for (let i = 0; i < 40 && !leaf.view.contentEl.querySelector('.mappy-embed .mappy-node'); i += 1) await new Promise(resolve => setTimeout(resolve, 150));
       await new Promise(resolve => setTimeout(resolve, 600));
       return true;`);
-    const count = await evaluate(`${EMBED_VIEW} return nodes().length;`);
-    check(count >= 3, `the embed drew ${count} nodes`);
+    const labels = await evaluate(`${EMBED_VIEW} return nodes().map(label);`);
+    check(JSON.stringify(labels) === JSON.stringify(EMBED_LABELS), `the embed drew ${JSON.stringify(labels)}, not ${JSON.stringify(EMBED_LABELS)}`);
     const first = await control('embed-control-before', EMBED_CONTROL, EMBED_VIEW);
     const rows = await hoverAll(EMBED_VIEW, 'embed ');
     const last = await control('embed-control-after', EMBED_CONTROL, EMBED_VIEW);

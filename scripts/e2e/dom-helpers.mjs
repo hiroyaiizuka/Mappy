@@ -126,6 +126,8 @@ export function makeFocusCanvas(cdp, evaluate) {
  * and the point looked at again; anything else stops the step with what was in the way, so a press cannot pass for a
  * reason that is not the build's (a press meant for the empty canvas landing on a node, say). With `click: false` it
  * only aims and returns the point (E57 moves the pointer there itself); `view` is the `viewScript` `locate` runs after.
+ * `hover` is one `mouseMoved` before the click: enough for the map's CSS `:hover`, not for Obsidian's tooltip, which
+ * drops a pointerover until it has counted two mouse pointermoves in the window (E57 moves twice, and away twice).
  */
 export function makePress(cdp, evaluate) {
   return async (locate, { avoid, hover = false, click = true, view = VIEW } = {}) => {
