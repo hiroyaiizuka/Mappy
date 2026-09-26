@@ -14,6 +14,12 @@ export function findNode(doc: MindDocument, id: string | null): MindNode | undef
   return id === 'root' ? doc.root : doc.nodes.find(candidate => candidate.id === id);
 }
 
+/** The node beside `node` in `siblings` in source order: `step` -1 is the one above, 1 the one below. */
+export function siblingOf(siblings: readonly MindNode[], node: MindNode, step: -1 | 1): MindNode | undefined {
+  const index = siblings.findIndex(candidate => candidate.id === node.id);
+  return index === -1 ? undefined : siblings[index + step];
+}
+
 /**
  * The node whose title starts at `offset`: what a plan's `selectionOffset` points at, and how a node
  * written by one edit set is found in the parse of the text that edit set produced. The body root has no

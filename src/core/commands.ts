@@ -1,6 +1,6 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
 import { planListEdit } from './list-commands';
-import { endsWithBlankLine, findNode, getNode, nodeAt, paragraphGap } from './text-edits';
+import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
 import { storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 
@@ -54,12 +54,58 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   return result;
 }
 
-function checkedPlan(doc: MindDocument, edits: TextEdit[], selectionOffset: number | null, count: number): EditPlan {
-  const source = applyEdits(doc.source, edits);
-  if (parseMarkdown(source, doc.root.title, undefined, doc.format).nodes.length !== count) {
-    throw new Error('見出し構造を安全に変更できません。Markdown の構文を確認してください。');
+/** The sibling just above `node` in `list`, else the one just below. */
+function besideIn(list: readonly MindNode[], node: MindNode): MindNode | undefined {
+  return siblingOf(list, node, -1) ?? siblingOf(list, node, 1);
+}
+
+/**
+ * The node selected once `node` is deleted (LEV-204): the sibling just above, else the one just below, else
+ * the parent, in source order whatever the layout draws (XMind, MarkMind). On the map the free topics are
+ * siblings of each other and the body root stands for their parent; the virtual root is never selected, so
+ * under it the nearest node left at the top level is, which keeps the focus in the map.
+ */
+function deletionTarget(doc: MindDocument, node: MindNode): MindNode | undefined {
+  const parent = getNode(doc, node.parentId ?? 'root');
+  if (parent.kind !== 'root') return besideIn(parent.children, node) ?? parent;
+  const { root: body, topics } = projectMap(doc);
+  const topic = topics.some((candidate) => candidate.id === node.id);
+  const kin = topic ? topics : parent.children.filter((child) => (child.kind === 'list') === (node.kind === 'list'));
+  return besideIn(kin, node) ?? (topic && body.kind !== 'root' ? body : undefined) ?? besideIn(parent.children, node);
+}
+
+/**
+ * Where `deletionTarget` starts in the text the removal `edits` leave, without parsing it again: the target stands
+ * wholly before the removed range (the sibling above, the parent: the removal only reaches back over blank lines
+ * after its line) or after it (the sibling below), so `offsetAfter` moves its start. Each format then finds the
+ * node that starts there in the parse it makes to check the edit anyway, and selects nothing if none does.
+ */
+export function selectionAfterDelete(doc: MindDocument, node: MindNode, edits: readonly TextEdit[]): number | null {
+  const target = deletionTarget(doc, node);
+  return (target && offsetAfter(edits, target.from)) ?? null;
+}
+
+/**
+ * Remove a heading branch. Every node left must keep its title: removing a section can join the paragraph above
+ * it with a Setext underline below (`text` + `C\n---` is the heading `text C`), which keeps the node count and
+ * so passed the count check alone. Then the break stays, as a blank line, as the list format does for an item.
+ */
+function deleteHeadingBranch(doc: MindDocument, node: MindNode): EditPlan {
+  const gone = new Set(branchNodes(doc, node).map((descendant) => descendant.id));
+  const titles = doc.nodes.filter((candidate) => !gone.has(candidate.id)).map((candidate) => candidate.title);
+  const attempt = (edits: TextEdit[]): EditPlan => {
+    const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
+    if (parsed.nodes.length !== titles.length || parsed.nodes.some((candidate, index) => candidate.title !== titles[index])) {
+      throw new Error('見出し構造を安全に変更できません。Markdown の構文を確認してください。');
+    }
+    const from = selectionAfterDelete(doc, node, edits);
+    return { edits, selectionOffset: parsed.nodes.find((candidate) => candidate.from === from)?.titleFrom ?? null };
+  };
+  try {
+    return attempt([{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }]);
+  } catch {
+    return attempt([{ from: node.from, to: node.to, text: doc.eol }]);
   }
-  return { edits, selectionOffset };
 }
 
 interface MoveTarget { parent: MindNode; siblings: MindNode[]; unchanged: boolean }
@@ -406,8 +452,7 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true);
-    case 'delete': return checkedPlan(doc, [{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }],
-      getNode(doc, node.parentId ?? 'root').titleFrom, doc.nodes.length - branchNodes(doc, node).length);
+    case 'delete': return deleteHeadingBranch(doc, node);
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);
     case 'reparent': return moveHeadingSection(doc, node, command.parentId,
