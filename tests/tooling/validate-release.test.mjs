@@ -150,6 +150,52 @@ describe('release metadata validation', () => {
   });
 });
 
+describe('README version-limited known limitations', () => {
+  function readmeErrors(manifestVersion, readme) {
+    changeJson('manifest.json', (manifest) => { manifest.version = manifestVersion; });
+    writeFileSync(join(root, 'README.md'), readme);
+    return validateRelease(root).filter((error) => error.startsWith('README.md'));
+  }
+
+  it('rejects an item limited to a version older than the manifest (LEV-209: 0.3.5 left in the 0.3.6 README)', () => {
+    const readme = [
+      '# Mappy',
+      '',
+      '## 既知の制限',
+      '- **切り替えと同時の保存（0.3.5 まで）**: 拒否されることがあります。',
+      '',
+    ].join('\n');
+    expect(readmeErrors('0.3.6', readme)).toEqual([
+      'README.md:4: known limitation "（0.3.5 まで）" is older than manifest.json.version 0.3.6; remove or rewrite it before releasing.',
+    ]);
+  });
+
+  it('accepts items limited to the current or a later version', () => {
+    const readme = '- **a（0.3.6 まで）**: x\n- **b（0.4.0 まで）**: y\n';
+    expect(readmeErrors('0.3.6', readme)).toEqual([]);
+  });
+
+  it('compares versions numerically, not as strings', () => {
+    expect(readmeErrors('0.10.0', '- a（0.9.0 まで）\n')).toHaveLength(1);
+    expect(readmeErrors('0.9.0', '- a（0.10.0 まで）\n')).toEqual([]);
+    expect(readmeErrors('1.0.0', '- a（0.99.99 まで）\n')).toHaveLength(1);
+  });
+
+  it('reports every stale item with its line, including half-width parentheses and spacing variants', () => {
+    const readme = '- a (0.3.4 まで)\n- b（0.3.5まで）\n- c（ 0.3.6 まで ）\n- d（0.2.0 まで）と（0.3.0 まで）\n';
+    expect(readmeErrors('0.3.6', readme)).toEqual([
+      'README.md:1: known limitation "(0.3.4 まで)" is older than manifest.json.version 0.3.6; remove or rewrite it before releasing.',
+      'README.md:2: known limitation "（0.3.5まで）" is older than manifest.json.version 0.3.6; remove or rewrite it before releasing.',
+      'README.md:4: known limitation "（0.2.0 まで）" is older than manifest.json.version 0.3.6; remove or rewrite it before releasing.',
+      'README.md:4: known limitation "（0.3.0 まで）" is older than manifest.json.version 0.3.6; remove or rewrite it before releasing.',
+    ]);
+  });
+
+  it('skips the comparison when the manifest version is invalid instead of guessing', () => {
+    expect(readmeErrors('0.3', '- a（0.1.0 まで）\n')).toEqual([]);
+  });
+});
+
 describe('distribution artifact validation', () => {
   it('accepts nonempty artifacts matching their root files', () => {
     addArtifacts();

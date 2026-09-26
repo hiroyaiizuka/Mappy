@@ -4,10 +4,21 @@ import { pathToFileURL } from 'node:url';
 
 const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const pluginId = /^[a-z]+(?:-[a-z]+)*$/u;
+// A known limitation limited to a release, e.g. 「（0.3.5 まで）」 (harness.md「リリース手順」1).
+const versionLimitedItem = /[（(]\s*((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\s*まで\s*[）)]/gu;
 const manifestKeys = new Set([
   'id', 'name', 'version', 'minAppVersion', 'description', 'author',
   'isDesktopOnly', 'authorUrl', 'fundingUrl',
 ]);
+
+function compareVersions(left, right) {
+  const a = left.split('.').map(Number);
+  const b = right.split('.').map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -81,7 +92,7 @@ export function validateRelease(rootDir, { artifacts = false } = {}) {
   const versions = readJson('versions.json');
   const lockfile = readJson('package-lock.json');
   readRequired('LICENSE');
-  readRequired('README.md');
+  const readme = readRequired('README.md');
 
   if (manifest) {
     // Official schema: https://docs.obsidian.md/Reference/Manifest
@@ -119,6 +130,19 @@ export function validateRelease(rootDir, { artifacts = false } = {}) {
     if (typeof manifest.isDesktopOnly !== 'boolean') {
       errors.push('manifest.json.isDesktopOnly: expected a boolean.');
     }
+  }
+
+  if (readme && manifest && typeof manifest.version === 'string' && releaseVersion.test(manifest.version)) {
+    readme.toString('utf8').split('\n').forEach((line, index) => {
+      for (const match of line.matchAll(versionLimitedItem)) {
+        if (compareVersions(match[1], manifest.version) < 0) {
+          errors.push(
+            `README.md:${index + 1}: known limitation "${match[0]}" is older than manifest.json.version ${manifest.version}; `
+            + 'remove or rewrite it before releasing.',
+          );
+        }
+      }
+    });
   }
 
   if (packageJson) {
