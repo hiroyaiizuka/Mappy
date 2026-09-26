@@ -19,6 +19,7 @@ import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import { LAYOUT_LABELS, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
+import { TIMELINE_STAGE_CLEARANCE } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
 import { isMapTheme, readVisibleLayouts, type MapTheme } from "../../src/obsidian/settings";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
@@ -648,6 +649,8 @@ const api = {
   },
   /** Live subscriptions on the in-memory vault and workspace: every map on the page holds some, and releases them when it goes. */
   listeners: () => ({ vault: app.vaultEvents.count(), workspace: app.workspaceEvents.count() }),
+  /** The layout's distance from a forest to the next stem on its side (LEV-205), so the capture measures against the built value. */
+  timelineStageClearance: TIMELINE_STAGE_CLEARANCE,
   button: (label: string) => plainRect(pane.querySelector<HTMLElement>(`.mappy-button[aria-label="${label}"]`)),
   /**
    * The Excalidraw scene the command「現在のマップを Excalidraw の図面に挿入」would build from the

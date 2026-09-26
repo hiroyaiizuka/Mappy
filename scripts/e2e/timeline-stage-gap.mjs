@@ -8,8 +8,9 @@
  * - Opening the note as a timeline does not write it.
  *
  * Usage: npm run harness:e2e:timeline-stage-gap -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>]
- *   --clearance  the distance the installed build is expected to keep (default: the shipped value), for a build made
- *                with another value to compare screenshots
+ *   --clearance  the distance the installed build is expected to keep (default: TIMELINE_STAGE_CLEARANCE as this
+ *                checkout's src/layout/layout.ts has it, the value `harness:prepare` builds), for a build made with another
+ *                value to compare screenshots
  */
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -20,10 +21,13 @@ import { VIEW, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
-/** `src/layout/layout.ts`'s TIMELINE_STAGE_CLEARANCE, written out so a build that drops back to the old 24 px fails here. */
-const CLEARANCE = Number(value('--clearance') ?? 72);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+/** The value this checkout builds; the unit tests pin it to the range the ticket asked for (LEV-205). */
+const shipped = (await readFile(resolve(root, 'src', 'layout', 'layout.ts'), 'utf8')).match(/export const TIMELINE_STAGE_CLEARANCE = (\d+);/u)?.[1];
+if (!shipped && value('--clearance') === undefined) throw new Error('TIMELINE_STAGE_CLEARANCE is not in src/layout/layout.ts; pass --clearance');
+const CLEARANCE = Number(value('--clearance') ?? shipped);
 const NOTE = 'Fixtures/E2E-timeline-stage-gap.md';
-const SOURCE = await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
+const SOURCE = await readFile(resolve(root, 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
 const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ', '環境'];
 const STAGE = 'Section4: 記録する';
 
@@ -47,9 +51,9 @@ try {
   opened = required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE, layout: 'timeline' })));
 
   await step('gap', async () => {
-    // Fit and the image's load re-lay the map out; wait for it to settle.
-    await wait(1500);
-    const measured = await evaluate(`${VIEW}
+    // Fit and the image's load re-lay the map out: measure until the image has loaded and two readings
+    // 400 ms apart agree, so the gap is read off the settled map rather than a frame of the way there.
+    const read = () => evaluate(`${VIEW}
       if (!el.querySelector('.mappy-node.is-timeline')) throw new Error('the map is not drawn as a timeline');
       const find = title => { const node = nth(title, 0); if (!node) throw new Error('No node ' + title); return node; };
       const stage = find(${JSON.stringify(STAGE)});
@@ -60,7 +64,17 @@ try {
         return [node.getBoundingClientRect().right, toggle && !toggle.hidden ? toggle.getBoundingClientRect().right : -Infinity];
       }));
       const rect = stage.getBoundingClientRect();
-      return { scale, gap: (rect.left + rect.width / 2 - right) / scale };`);
+      const images = Array.from(el.querySelectorAll('.mappy-node img'));
+      return { scale, gap: (rect.left + rect.width / 2 - right) / scale, loaded: images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0) };`);
+    let measured = await read();
+    let settled = false;
+    for (let attempt = 0; attempt < 25 && !settled; attempt += 1) {
+      await wait(400);
+      const next = await read();
+      settled = next.loaded && measured.loaded && Math.abs(next.gap - measured.gap) < 0.1 && Math.abs(next.scale - measured.scale) < 1e-4;
+      measured = next;
+    }
+    check(settled, `the map did not settle within 10 s (image loaded: ${measured.loaded})`);
     // Node rects are integers scaled by the zoom: a pixel of rounding is allowed.
     check(Math.abs(measured.gap - CLEARANCE) <= 1.5, `Section4's stem stands ${measured.gap.toFixed(1)} px from Section2's forest, not ${CLEARANCE}`);
     const shot = value('--shot');

@@ -1038,13 +1038,13 @@ async function captureHierarchyRows(recorder, page) {
   });
 }
 
-/** `layout.ts`'s TIMELINE_STAGE_CLEARANCE: from the right edge of a forest to the next stem on its side (LEV-205). */
-const TIMELINE_STAGE_CLEARANCE = 72;
 /** timeline-stages: Section2's lower forest, whose last leaves (ビジランス効果, ポモドーロ) the next lower stem (Section4) stands beside. */
 const TIMELINE_STAGES_FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ', '環境'];
 
 async function captureTimelineStageGap(recorder, page) {
-  await recorder.run('timeline-stage-gap', 'timeline-stages をタイムラインで開く', `下側の Section2 の森の右端（ノードと開閉ボタン）から Section4 の縦線まで ${TIMELINE_STAGE_CLEARANCE} px（layout px）。Excalidraw に挿入する scene でも同じ距離。原文不変`, async () => {
+  // The built layout's value; the unit tests pin it to the range the ticket asked for.
+  const TIMELINE_STAGE_CLEARANCE = await page.harness('h.timelineStageClearance');
+  await recorder.run('timeline-stage-gap', 'timeline-stages をタイムラインで開く', `下側の Section2 の森の右端（ノードと開閉ボタン）から Section4 の縦線まで TIMELINE_STAGE_CLEARANCE（${TIMELINE_STAGE_CLEARANCE} px、layout px）。Excalidraw に挿入する scene でも同じ距離。原文不変`, async () => {
     await loadFixture(page, 'timeline-stages', 'timeline');
     const original = await page.harness('h.source()');
     const { scale } = await page.harness('h.viewport()');

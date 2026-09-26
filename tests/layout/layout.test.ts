@@ -447,13 +447,14 @@ describe("free topics", () => {
 
   it("keeps same-side timeline forests apart when a topic is placed left of the body", () => {
     const topic = { tree: node("t", node("s1", node("s1c")), node("s2", node("s2c")), node("s3", node("s3c"))), position: { x: -3000, y: 0 } };
-    const result = layoutTree(body, bodySizes, new Set(), "timeline", [topic]);
+    // s1c is wide enough that the same-side clearance, not the axis gap, places s3.
+    const result = layoutTree(body, new Map([...bodySizes, ["s1c", { width: 400, height: 44 }]]), new Set(), "timeline", [topic]);
     const positions = byId(result);
     const first = positions.get("s1c");
     const third = positions.get("s3");
     expect(first && third).toBeTruthy();
     if (!first || !third) return;
-    expect(third.x + third.width / 2).toBeGreaterThanOrEqual(first.x + first.width + TIMELINE_STAGE_CLEARANCE - 1);
+    expect(third.x + third.width / 2 - (first.x + first.width)).toBe(TIMELINE_STAGE_CLEARANCE);
     expect(positions.get("s2")?.x).toBeLessThan(0);
   });
 
