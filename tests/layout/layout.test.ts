@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutTree, type LayoutNode, type LayoutResult, type NodeSize } from "../../src/layout/layout";
+import { TIMELINE_STAGE_CLEARANCE, foldControlSize, layoutTree, type LayoutNode, type LayoutResult, type NodeSize } from "../../src/layout/layout";
 
 function node(id: string, ...children: LayoutNode[]): LayoutNode {
   return { id, children };
@@ -447,13 +447,14 @@ describe("free topics", () => {
 
   it("keeps same-side timeline forests apart when a topic is placed left of the body", () => {
     const topic = { tree: node("t", node("s1", node("s1c")), node("s2", node("s2c")), node("s3", node("s3c"))), position: { x: -3000, y: 0 } };
-    const result = layoutTree(body, bodySizes, new Set(), "timeline", [topic]);
+    // s1c is wide enough that the same-side clearance, not the axis gap, places s3.
+    const result = layoutTree(body, new Map([...bodySizes, ["s1c", { width: 400, height: 44 }]]), new Set(), "timeline", [topic]);
     const positions = byId(result);
     const first = positions.get("s1c");
     const third = positions.get("s3");
     expect(first && third).toBeTruthy();
     if (!first || !third) return;
-    expect(third.x + third.width / 2 - 20).toBeGreaterThanOrEqual(first.x + first.width + 44 - 1);
+    expect(third.x + third.width / 2 - (first.x + first.width)).toBe(TIMELINE_STAGE_CLEARANCE);
     expect(positions.get("s2")?.x).toBeLessThan(0);
   });
 
@@ -483,4 +484,95 @@ describe("free topics", () => {
     expect(result.folds.some(fold => fold.id === "t1")).toBe(true);
     expect(() => layoutTree(body, bodySizes, new Set(), "mindmap", [{ tree: node("a"), position: null }])).toThrow(/duplicate/iu);
   });
+});
+
+describe("timeline stage clearance", () => {
+  /** Every id in `tree` below its root. */
+  function descendantIds(tree: LayoutNode): string[] {
+    return tree.children.flatMap(child => [child.id, ...descendantIds(child)]);
+  }
+
+  function descendantCount(tree: LayoutNode): number {
+    return tree.children.reduce((count, child) => count + 1 + descendantCount(child), 0);
+  }
+
+  function find(tree: LayoutNode, id: string): LayoutNode | undefined {
+    if (tree.id === id) return tree;
+    for (const child of tree.children) {
+      const found = find(child, id);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  /** The right edge of everything a stage's forest draws: its nodes and their fold controls (a collapsed one shows its count). */
+  function forestRight(result: LayoutResult, tree: LayoutNode, stage: LayoutNode, collapsed: ReadonlySet<string>): number {
+    const ids = new Set(descendantIds(stage));
+    let right = -Infinity;
+    for (const item of result.nodes) if (ids.has(item.id)) right = Math.max(right, item.x + item.width);
+    for (const fold of result.folds) {
+      if (!ids.has(fold.id)) continue;
+      const source = find(tree, fold.id);
+      const count = source && collapsed.has(fold.id) ? descendantCount(source) : 0;
+      right = Math.max(right, fold.x + foldControlSize(count).width / 2);
+    }
+    return right;
+  }
+
+  const hidden = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => node(`${prefix}-${index}`));
+  const deep = (prefix: string, depth: number): LayoutNode => depth === 0 ? node(prefix) : node(`${prefix}-${depth}`, deep(prefix, depth - 1));
+
+  // The shapes a user builds a stage's forest from: mixed widths, a collapsed branch whose count badge
+  // is the rightmost thing drawn, an image node, and a deep chain.
+  const forests: Record<string, { children: LayoutNode[]; sizes: [string, NodeSize][]; collapsed: string[] }> = {
+    "mixed widths": {
+      children: [node("w1"), node("w2", node("w21")), node("w3")],
+      sizes: [["w1", { width: 120, height: 30 }], ["w2", { width: 420, height: 30 }], ["w21", { width: 90, height: 30 }], ["w3", { width: 260, height: 60 }]],
+      collapsed: [],
+    },
+    "collapsed branch": {
+      children: [node("c1"), node("closed", ...hidden("h", 1000))],
+      sizes: [["c1", { width: 140, height: 30 }], ["closed", { width: 400, height: 30 }]],
+      collapsed: ["closed"],
+    },
+    "image node": {
+      children: [node("img"), node("i2")],
+      sizes: [["img", { width: 360, height: 240 }], ["i2", { width: 110, height: 30 }]],
+      collapsed: [],
+    },
+    "deep branch": {
+      children: [deep("d", 6)],
+      sizes: [],
+      collapsed: [],
+    },
+  };
+
+  // The cases below compare the layout with the constant, so they follow whatever value it holds; this pins the
+  // value itself to the 64–80 px the ticket asks for (about three times the 24 px it replaces, LEV-205), and is
+  // what fails if the constant is set back to 24.
+  it("keeps the clearance within the range the stage gap was chosen from", () => {
+    expect(TIMELINE_STAGE_CLEARANCE).toBeGreaterThanOrEqual(64);
+    expect(TIMELINE_STAGE_CLEARANCE).toBeLessThanOrEqual(80);
+  });
+
+  for (const [name, forest] of Object.entries(forests)) {
+    it.each(["upper", "lower"] as const)(`keeps the next %s stem clear of a ${name} forest`, side => {
+      const previous = node("previous", ...forest.children);
+      const next = node("next", node("next-child"));
+      // Stages alternate upper, lower, upper, …: the forest and the next stage on the same side are two apart,
+      // and every forest here is wide enough that the next stem stands exactly the clearance past it.
+      const stages = side === "upper"
+        ? [previous, node("between", node("between-child")), next]
+        : [node("first", node("first-child")), previous, node("between", node("between-child")), next];
+      const tree = node("root", ...stages);
+      const collapsed = new Set(forest.collapsed);
+      const result = layoutTree(tree, new Map(forest.sizes), collapsed, "timeline");
+      expectDisjoint(result);
+      const stage = result.nodes.find(item => item.id === "next");
+      expect(stage).toBeDefined();
+      if (!stage) return;
+      const stemX = stage.x + stage.width / 2;
+      expect(stemX - forestRight(result, tree, previous, collapsed)).toBe(TIMELINE_STAGE_CLEARANCE);
+    });
+  }
 });

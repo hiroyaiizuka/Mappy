@@ -60,9 +60,14 @@ const VERTICAL_GAP = 14;
 export const MAP_ROOT_GAP = 80;
 export const MAP_BRANCH_GAP = 56;
 const MAP_VERTICAL_GAP = 22;
-const TIMELINE_GAP = 44;
 /** How far right of a stage's centre its forest starts; exported so the snap zones can score by the landing column. */
 export const TIMELINE_STEM_GAP = 20;
+/**
+ * How far a stage's stem stands clear of the right edge of the previous forest on its side (its
+ * nodes and fold controls). Every consumer of `layoutTree` (view, embed, export, Excalidraw) reads
+ * the timeline from here.
+ */
+export const TIMELINE_STAGE_CLEARANCE = 72;
 const TIMELINE_AXIS_GAP = 34;
 const TIMELINE_FOLD_OFFSET = 12;
 const TOPIC_GAP = 48;
@@ -324,10 +329,12 @@ function placeTimeline(
       childTop += child.subtreeHeight + VERTICAL_GAP;
     }
     // Opposite sides can reuse horizontal space. Only forests on the same side
-    // reserve an exclusive span, including clearance for the next vertical stem.
+    // reserve an exclusive span: the next stem stands the clearance past it, and
+    // its forest one stem gap further.
     if (stage.children.length > 0) {
-      if (upper) upperNextX = forestRight + TIMELINE_GAP;
-      else lowerNextX = forestRight + TIMELINE_GAP;
+      const nextColumn = forestRight + TIMELINE_STAGE_CLEARANCE + TIMELINE_STEM_GAP;
+      if (upper) upperNextX = nextColumn;
+      else lowerNextX = nextColumn;
     }
     previousAxisRight = position.x + position.width;
     nextAxisX = previousAxisRight + HORIZONTAL_GAP;
