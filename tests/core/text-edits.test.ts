@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseMarkdown } from '../../src/core/markdown';
-import { endsWithBlankLine, findNode, getNode, lineGap, nodeAt, offsetAfter, paragraphGap } from '../../src/core/text-edits';
+import { applyEdits } from '../../src/core/commands';
+import { endsWithBlankLine, findNode, getNode, lineGap, nodeAt, offsetAfter, paragraphGap, rebaseEdits } from '../../src/core/text-edits';
 
 const DOC = parseMarkdown('# 講座\n\n本文。\n\n## はじめに\n\n- 学ぶこと\n', '講座');
 
@@ -82,5 +83,29 @@ describe('the rules the edit planners share', () => {
     expect(paragraphGap('一', '\r\n')).toBe('\r\n\r\n');
     expect(paragraphGap('一\r\n', '\r\n')).toBe('\r\n');
     expect(lineGap('一', '\r\n')).toBe('\r\n');
+  });
+});
+
+describe('rebaseEdits: an edit planned before one of the view\'s own frontmatter writes (LEV-196)', () => {
+  const before = '---\nmappy: true\n---\n## Map\n\n- A\n';
+  const layout = [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }];
+  const after = applyEdits(before, layout);
+
+  it('moves an edit past the text written before it: applied there, it is the edit and then the write', () => {
+    const edit = [{ from: before.indexOf('A'), to: before.indexOf('A') + 1, text: 'B' }];
+    const rebased = rebaseEdits(edit, layout);
+    expect(rebased).toEqual([{ from: after.indexOf('A'), to: after.indexOf('A') + 1, text: 'B' }]);
+    expect(applyEdits(after, rebased ?? [])).toBe(applyEdits(applyEdits(before, edit), layout));
+  });
+
+  it('keeps an insertion at the same place after the written text, and a range that ends there before it', () => {
+    expect(rebaseEdits([{ from: 16, to: 16, text: 'mappy-topics: x\n' }], layout)).toEqual([{ from: 39, to: 39, text: 'mappy-topics: x\n' }]);
+    expect(rebaseEdits([{ from: 4, to: 16, text: '' }], layout)).toEqual([{ from: 4, to: 16, text: '' }]);
+  });
+
+  it('gives up on an edit that overlaps what the write replaced, or that the write inserted into', () => {
+    const replaced = [{ from: 4, to: 16, text: 'mappy: true\nmappy-layout: timeline\n' }];
+    expect(rebaseEdits([{ from: 10, to: 12, text: 'x' }], replaced)).toBeUndefined();
+    expect(rebaseEdits([{ from: 0, to: before.length, text: '' }], layout)).toBeUndefined();
   });
 });

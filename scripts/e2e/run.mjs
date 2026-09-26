@@ -29,6 +29,7 @@ export const CASES = [
   { name: 'convert-to-list', file: 'convert-to-list.mjs', description: 'E18 旧見出し形式→リスト形式→Undo', shot: false },
   { name: 'move-parent-text', file: 'move-parent-text.mjs', description: 'E19 親本文を挟む移動', shot: false },
   { name: 'paste', file: 'paste-image.mjs', description: 'E37 画像の貼り付け', shot: true },
+  { name: 'layout-switch', file: 'layout-switch.mjs', description: 'E39 レイアウトボタンと同時の編集・折りたたみ', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
 ];

@@ -23,8 +23,18 @@ export function isLayoutMode(value: unknown): value is LayoutMode {
  */
 export const LAYOUT_LABELS: Record<LayoutMode, string> = { mindmap: "通常マップ", timeline: "タイムライン", hierarchy: "階層図", balanced: "左右バランス" };
 
+/** A frontmatter value naming a layout, tolerant of case and surrounding space; anything else is null. */
+export function parseLayout(value: unknown): LayoutMode | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : value;
+  return isLayoutMode(normalized) ? normalized : null;
+}
+
 /** A frontmatter or view-state value as a layout: unknown values, casing and padding fall back to the regular map. */
 export function layoutFromValue(value: unknown): LayoutMode {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : value;
-  return isLayoutMode(normalized) ? normalized : "mindmap";
+  return parseLayout(value) ?? "mindmap";
+}
+
+/** What `mappy-layout` holds for a layout: the regular map is the default, so only the other layouts are written down. */
+export function layoutKeyValue(layout: LayoutMode): LayoutMode | undefined {
+  return layout === "mindmap" ? undefined : layout;
 }
