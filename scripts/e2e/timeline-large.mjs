@@ -10,7 +10,8 @@
  *   stays on its side of the axis band.
  * - Same-side stages keep `TIMELINE_STAGE_CLEARANCE` (72 px, LEV-205): the next stem stands at least that far right of
  *   the previous forest on its side (exactly that far where the side, not the axis, decides where it goes).
- * - Nothing is lost: the DOM shows every node the note has, under its own title.
+ * - Nothing is lost: the DOM shows every node the note has, under its own title, and every image but the one the
+ *   fixture leaves missing has loaded (a broken image would pass the geometry checks on a map without its tall nodes).
  * - ⌥↓ on a stage moves it after the next one in the note and on the axis (both orders agree), ⌥↑ restores the note
  *   byte for byte.
  * - Folding a 16-level chain at depth 8, then depth 4, then its stage (real clicks on the fold controls, after a
@@ -19,24 +20,24 @@
  * - Measured, not judged: open (setViewState → every node drawn → settled), wheel pan and ⌘-wheel zoom frame intervals
  *   at fit, and the frame after the last DOM change for each fold and move.
  *
- * Usage: npm run harness:e2e:timeline-large -- [--counts 500,2000] [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
+ * Usage: npm run harness:e2e:timeline-large -- [--counts 500,2000] [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>]
+ *   --clearance  the same-side distance the installed build is expected to keep (default 72, LEV-205)
  *   --shot  a path ending in .png: the case writes <path>-<count>-<scene>.png beside it (fit, stage, folded)
  */
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, PARSE, makePluginStep, makeSelect, makeMoveAlt, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, PARSE, makePluginStep, makeSelect, makeAfter, makeState, refuseOpenLeaves } from './dom-helpers.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
 
 const { flag, value } = parseArgs();
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-// The installed plugin must be this checkout's build (`npm run harness:prepare`); the case cannot tell a stale one apart.
-const CLEARANCE = Number((await readFile(resolve(root, 'src', 'layout', 'layout.ts'), 'utf8'))
-  .match(/export const TIMELINE_STAGE_CLEARANCE\s*=\s*([\d_.]+)/u)?.[1]?.replaceAll('_', ''));
-if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error('TIMELINE_STAGE_CLEARANCE is not in src/layout/layout.ts');
+/**
+ * The clearance LEV-205 chose (0.3.6), fixed here rather than read from src/layout/layout.ts: read from the source, a
+ * change of the constant back to the old 24 px would move the expectation with it and pass. `--clearance <px>` is for
+ * a build made with another value on purpose; a deliberate change of the constant changes this line too.
+ */
+const CLEARANCE = Number(value('--clearance') ?? 72);
+if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${value('--clearance')}`);
 const COUNTS = (value('--counts') ?? '500,2000').split(',').map(Number);
 if (COUNTS.some(count => !Number.isInteger(count) || count < 100)) throw new Error(`--counts needs node counts of 100 or more, not ${value('--counts')}`);
 /** Node rects are integer layout sizes scaled by the zoom: what two boxes may share before they overlap. */
@@ -52,7 +53,8 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
-const moveAlt = makeMoveAlt(cdp, evaluate);
+const after = makeAfter(evaluate);
+const state = makeState(evaluate);
 
 /**
  * Script string, after VIEW and PARSE: the geometry of the map on screen in layout px (screen px over the zoom).
@@ -110,10 +112,12 @@ const GEOMETRY = `
   const sides = [];
   const last = {};
   const gaps = [];
-  for (const stage of stages) {
+  for (const [index, stage] of stages.entries()) {
     const forest = forests.get(stage.id);
     if (!forest) continue;
-    const upper = forest.b <= stage.rect.t;
+    // The layout's rule, not the drawing: stages alternate above and below the axis in the note's order, so a forest
+    // drawn on the wrong side is reported as crossing the band instead of being measured against the other side.
+    const upper = index % 2 === 0;
     const side = upper ? 'upper' : 'lower';
     const across = forest.nodes.filter(rect => upper ? rect.b > bandTop + slack : rect.t < bandBottom - slack).length;
     if (across) sides.push(stage.title + ' (' + side + '): ' + across + ' nodes cross the axis band');
@@ -161,7 +165,8 @@ const SNAPSHOT = `${VIEW}
   const all = nodes();
   for (const node of all) { const rect = node.getBoundingClientRect(); sum += rect.left * 3 + rect.top * 7 + rect.width + rect.height; }
   const images = Array.from(el.querySelectorAll('.mappy-node img'));
-  return { at: performance.now(), count: all.length, sum, images: images.length, pending: images.filter(image => !image.complete).length };`;
+  return { at: performance.now(), count: all.length, sum, images: images.length, pending: images.filter(image => !image.complete).length,
+    broken: images.filter(image => image.complete && image.naturalWidth === 0).length };`;
 
 /** Polls until images are done and two readings 400 ms apart agree; returns the page time it settled at. */
 async function settle(limit = 30000) {
@@ -170,7 +175,7 @@ async function settle(limit = 30000) {
   for (;;) {
     await wait(400);
     const now = await evaluate(SNAPSHOT);
-    if (now.pending === 0 && now.count === before.count && Math.abs(now.sum - before.sum) < 0.5) return { ...before, settledAt: before.at };
+    if (before.pending === 0 && now.pending === 0 && now.count === before.count && Math.abs(now.sum - before.sum) < 0.5) return { ...before, settledAt: before.at };
     if (Date.now() - started > limit) throw new Error(`the map did not settle within ${limit / 1000} s (${now.pending} images pending)`);
     before = now;
   }
@@ -205,9 +210,14 @@ async function recordFrames(drive) {
   await evaluate(`window.__mappyE2EFrames = []; window.__mappyE2EFramesOn = true;
     const loop = time => { if (!window.__mappyE2EFramesOn) return; window.__mappyE2EFrames.push(time); requestAnimationFrame(loop); };
     requestAnimationFrame(loop); return true;`);
-  await drive();
-  await wait(200);
-  return frameStats(await evaluate(`window.__mappyE2EFramesOn = false; const frames = window.__mappyE2EFrames; delete window.__mappyE2EFrames; return frames;`));
+  let frames;
+  try {
+    await drive();
+    await wait(200);
+  } finally {
+    frames = await evaluate(`window.__mappyE2EFramesOn = false; const frames = window.__mappyE2EFrames; delete window.__mappyE2EFrames; return frames;`);
+  }
+  return frameStats(frames);
 }
 
 /**
@@ -222,12 +232,32 @@ async function timed(action) {
     state.observer.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class'] });
     const loop = time => { if (!state.on) return; state.frames.push(time); requestAnimationFrame(loop); };
     requestAnimationFrame(loop); return true;`);
-  const result = await action(start);
-  const settled = await settle();
-  const reflect = await evaluate(`const state = window.__mappyE2EReflect; state.on = false; state.observer.disconnect(); delete window.__mappyE2EReflect;
+  // Stopped whatever happens: a recorder left running would share every later frame the case measures.
+  const stop = () => evaluate(`const state = window.__mappyE2EReflect; if (!state) return null;
+    state.on = false; state.observer.disconnect(); delete window.__mappyE2EReflect;
     const frame = state.last === null ? null : state.frames.find(time => time >= state.last);
     return { lastChangeMs: state.last === null ? null : Math.round(state.last - state.mark), frameAfterMs: frame === undefined || frame === null ? null : Math.round(frame - state.mark) };`);
-  return { result, reflect, settled };
+  try {
+    const result = await action(start);
+    const settled = await settle();
+    return { result, reflect: await stop(), settled };
+  } finally {
+    await stop();
+  }
+}
+
+/**
+ * ⌥↑／⌥↓ on the selected node, timed from just before the key: `makeMoveAlt`'s own read of every label and the note
+ * would otherwise land inside the time. Only sent with no draft open.
+ */
+async function move(key) {
+  const before = await state();
+  if (before.editing) throw new Error(`${key} sent while a draft was open`);
+  return timed(async start => {
+    await start();
+    await cdp.realKey(key, 1);
+    return after(before.source);
+  });
 }
 
 /** The canvas's centre and the given node's centre, in window px. */
@@ -256,6 +286,9 @@ async function actualSize() {
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
   await click(button);
   await wait(400);
+  const label = await evaluate(`${VIEW} return el.querySelectorAll('.mappy-zoom button')[1]?.textContent.trim() ?? null;`);
+  if (label !== '100%') throw new Error(`the zoom label reads ${label} after the click, not 100%`);
+  return { label };
 }
 
 /** Pans with the wheel (the map's own pan) until the node sits at the canvas's centre. */
@@ -341,7 +374,9 @@ async function runCount(count) {
         return { started, setViewStateMs: Math.round(stated - started), drawnMs: drawn === null ? null : Math.round(drawn - started) };`);
       if (opened.drawnMs === null) throw new Error(`the map did not draw ${count} nodes within 45 s`);
       const settled = await settle(60000);
-      return { ...opened, settledMs: Math.round(settled.settledAt - opened.started), images: settled.images, started: undefined };
+      // The fixture leaves exactly one image missing (`存在しない画像.png`), which Obsidian may draw as a broken image or not at all.
+      if (settled.broken > 1 || settled.images - settled.broken === 0) throw new Error(`${settled.broken} of ${settled.images} images did not load: is Fixtures/sample-image.svg in the vault?`);
+      return { ...opened, settledMs: Math.round(settled.settledAt - opened.started), images: settled.images, broken: settled.broken, started: undefined };
     }));
 
     await step(name('settled'), async () => {
@@ -368,7 +403,7 @@ async function runCount(count) {
       return { idle, pan, zoom };
     });
 
-    await actualSize();
+    required(record, name('actual size'), await step(name('actual size'), actualSize));
 
     await step(name('reorder'), async () => {
       const original = await source();
@@ -376,7 +411,7 @@ async function runCount(count) {
       const moved = stages[3];
       await bring(moved);
       await select(moved);
-      const down = await timed(async start => { await start(); return moveAlt('ArrowDown'); });
+      const down = await move('ArrowDown');
       const after = stageTitles(down.result.source);
       const expected = [...stages];
       [expected[3], expected[4]] = [expected[4], expected[3]];
@@ -384,7 +419,7 @@ async function runCount(count) {
       const state = await readGeometry();
       check(JSON.stringify(state.axisOrder) === JSON.stringify(after), `after ⌥↓ the axis reads ${state.axisOrder.slice(2, 6).join(' / ')}, the note ${after.slice(2, 6).join(' / ')}`);
       judge(name('after ⌥↓'), state);
-      const up = await timed(async start => { await start(); return moveAlt('ArrowUp'); });
+      const up = await move('ArrowUp');
       check(up.result.source === original, '⌥↑ did not restore the note byte for byte');
       const back = await readGeometry();
       judge(name('after ⌥↑'), back);
@@ -442,7 +477,11 @@ async function runCount(count) {
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
   for (const count of COUNTS) {
-    try { await runCount(count); } catch (error) { if (!(error instanceof StopCase)) record.failures.push(`${count}: ${error}`); }
+    try { await runCount(count); } catch (error) {
+      if (!(error instanceof StopCase)) record.failures.push(`${count}: ${error}`);
+      // `required` says the remaining steps were not run; the next count's do run, so the stop is kept per count.
+      else { (record.stoppedCounts ??= []).push(`${record.stopped} (of ${count} nodes; the next count still ran)`); delete record.stopped; }
+    }
   }
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(String(error));
