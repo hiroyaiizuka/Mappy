@@ -25,7 +25,7 @@ import { Notice } from '../../harness/browser/obsidian';
 import { LAYOUT_LABELS, type LayoutMode } from '../../src/core/layout-mode';
 import { readTopicPositions } from '../../src/core/topics';
 import { projectMap, type MindDocument } from '../../src/core/markdown';
-import { conflictMessage } from '../../src/obsidian/document-store';
+import { conflictMessage, type DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { accessibleName } from './accessible-name';
 
@@ -363,5 +363,32 @@ describe('the fold and the selection through a layout button (LEV-150, the layou
     expect([...view.collapsed]).toEqual([after]);
     expect(view.selectedId).toBe(after);
     expect(Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'), accessibleName).sort()).toEqual(shown);
+  });
+});
+
+describe('two views on one note share the store (AGENTS.md: 複数ビュー)', () => {
+  it('an edit in one view carried over the other view\'s button keeps that view\'s fold and selection', async () => {
+    // The store carries B's edit over A's write, which only A recorded; B records it from what the store tells it,
+    // so its re-read replays from the text it shows to its edit's and the second 同名 keeps its id.
+    const first = await mount();
+    const store = (first.view as unknown as { store: DocumentStore }).store;
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
+    opened.push(second);
+    const element = selectNode(second, '同名', 1);
+    const id = element.dataset.nodeId ?? '';
+    element.querySelector<HTMLElement>('.mappy-node-toggle')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    await second.settle();
+    const view = second.view as unknown as { collapsed: Set<string>; selectedId: string | null };
+    expect([...view.collapsed]).toEqual([id]);
+    clickLayout(first, 'timeline');
+    await nextTask();
+    second.view.containerEl.querySelector<HTMLElement>('.mappy-canvas')?.focus();
+    selectNode(second, '子1');
+    second.key(second.canvas, 'Delete');
+    await settled(second, source => asks('timeline')(source) && !source.includes('子1'));
+    expect(refusals()).toEqual([]);
+    const after = documentOf(second).nodes.filter(node => node.title === '同名')[1]?.id;
+    expect(after).toBe(id);
+    expect([...view.collapsed]).toEqual([id]);
   });
 });

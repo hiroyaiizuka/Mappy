@@ -36,15 +36,17 @@ export interface MountOptions {
   prepare?: (view: MindmapView) => void;
   /** The plugin's items of the 操作 menu (§5 M3), as src/main.ts passes them to the constructor. */
   menuActions?: readonly MapMenuAction[];
+  /** The store of another view mounted on the same app: the plugin gives every view one store (src/main.ts). The note is then left as it is. */
+  store?: DocumentStore;
 }
 
 /** `layout: null` leaves the layout out of the view state, so the note's `mappy-layout` decides. */
 export async function mountMapView(
   path: string, source: string, layout: LayoutMode | null = 'mindmap', app = new HarnessApp(), options: MountOptions = {},
 ): Promise<MountedMapView> {
-  app.put(path, source);
+  if (!options.store) app.put(path, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
-  const store = new DocumentStore(app.asApp<App>());
+  const store = options.store ?? new DocumentStore(app.asApp<App>());
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, options.menuActions ?? []);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);

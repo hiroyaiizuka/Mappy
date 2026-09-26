@@ -78,21 +78,26 @@ const clickLayout = async index => {
 };
 
 /**
- * Waits until the map has re-read what is on disk, then a little more for a late Notice or write, and reads it all.
- * A map that never catches up fails the row: every check after it would read a map from before.
+ * Waits until the note holds what the row's action must leave in it (`reached`) and the map has re-read it, then a
+ * little more for a late Notice or write, and reads it all. The map is current right after the click too, before
+ * any write has run, so waiting for that alone would read the map from before. A row whose note never gets there
+ * fails here: every check after it would read a map from before.
  */
-const settle = async () => {
+const settle = async reached => {
   const started = Date.now();
   for (;;) {
-    const current = await evaluate(`${VIEW} const text = await source(); return view.document?.source === text;`);
-    if (current) break;
-    if (Date.now() - started > 3000) throw new Error('the map did not re-read the note within 3 s');
+    const current = await evaluate(`${VIEW} const text = await source(); return { text, mapCurrent: view.document?.source === text };`);
+    if (reached(current.text) && current.mapCurrent) break;
+    if (Date.now() - started > 3000) throw new Error(`the note did not reach what the row expects, or the map did not re-read it, within 3 s:\n${current.text}`);
     await wait(100);
   }
   await wait(600);
   return evaluate(`${VIEW}
     return { messages: messages(), editing: !!input(), labels: nodes().map(label), source: await source() };`);
 };
+
+/** The note asks for `mode`. */
+const asks = mode => text => text.includes(`mappy-layout: ${mode}\n`);
 
 const expectLayout = (result, mode, row) => {
   const line = `mappy-layout: ${mode}`;
@@ -117,7 +122,7 @@ try {
       await cdp.insertText(title);
       await wait(200);
       await clickLayout(2);
-      const result = await settle();
+      const result = await settle(text => asks('hierarchy')(text) && text.includes(title));
       check(result.messages.length === 0, `draft-${shape.name}: the save showed ${JSON.stringify(result.messages)}`);
       check(!result.editing, `draft-${shape.name}: the draft is still open`);
       check(result.labels.includes(title), `draft-${shape.name}: the map does not show ${title}`);
@@ -140,8 +145,9 @@ try {
           await cdp.insertText(`${shape.name}F2`);
           await cdp.realKey('Enter');
         }
-        const result = await settle();
-        const written = result.source !== opened.source.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n');
+        const layoutOnly = opened.source.replace('mappy: true\n', 'mappy: true\nmappy-layout: timeline\n');
+        const result = await settle(text => asks('timeline')(text) && text !== layoutOnly);
+        const written = result.source !== layoutOnly;
         check(result.messages.length === 0, `key-${key}-${shape.name}: showed ${JSON.stringify(result.messages)}`);
         check(written, `key-${key}-${shape.name}: ${key} changed nothing but the layout`);
         expectLayout(result, 'timeline', `key-${key}-${shape.name}`);
@@ -159,9 +165,7 @@ try {
       await clickLayout(1);
       await evaluate(`${VIEW} el.querySelector('.mappy-canvas').focus({ preventScroll: true }); return true;`);
       await paste(`layout-${SHAPES.indexOf(shape)}.png`);
-      const started = Date.now();
-      while (!(await evaluate(`${VIEW} return (await source()).includes('layout-${SHAPES.indexOf(shape)}.png');`)) && Date.now() - started < 3000) await wait(100);
-      const result = await settle();
+      const result = await settle(text => asks('timeline')(text) && text.includes(`layout-${SHAPES.indexOf(shape)}.png`));
       check(result.messages.length === 0, `paste-${shape.name}: showed ${JSON.stringify(result.messages)}`);
       check(result.source.includes(`layout-${SHAPES.indexOf(shape)}.png`), `paste-${shape.name}: the image is not linked in the note`);
       expectLayout(result, 'timeline', `paste-${shape.name}`);
@@ -195,7 +199,7 @@ try {
       const before = await read();
       if (!before.collapsed.includes(before.id) || before.selected !== before.id) throw new Error(`the click and the toggle did not select and fold ${shape.name}: ${JSON.stringify(before)}`);
       await clickLayout(3);
-      const result = await settle();
+      const result = await settle(asks('balanced'));
       const after = await read();
       check(result.messages.length === 0, `fold-${shape.name}: showed ${JSON.stringify(result.messages)}`);
       check(after.id !== null, `fold-${shape.name}: the node is gone from the map's parse (${JSON.stringify(after)})`);

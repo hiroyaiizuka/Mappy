@@ -266,6 +266,7 @@ describe('DocumentStore', () => {
         before: '---\nmappy: true\nmappy-layout: timeline\n---\n# A\n',
         after: '---\nmappy: true\nmappy-layout: timeline\n---\n# B\n',
         edits: [{ from: 45, to: 46, text: 'B' }],
+        carried: [{ before: '---\nmappy: true\n---\n# A\n', after: '---\nmappy: true\nmappy-layout: timeline\n---\n# A\n', edits: layout }],
       });
       expect(disk.get(file.path)).toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# B\n');
       // Spent: an edit planned before it again is planned before this edit too, and is refused.

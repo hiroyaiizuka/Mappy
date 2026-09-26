@@ -27,6 +27,7 @@ describe('planMapLayout (a layout button, LEV-196)', () => {
     expect(planMapLayout('---\ntags: [a]\n---\n# Note\n', 'timeline')).toEqual([]);
     expect(planMapLayout('---\nmappy: "true"\nmappy-layout: timeline\n---\n# Note\n', 'mindmap')).toEqual([]);
     expect(planMapLayout('# Note\n', 'hierarchy')).toEqual([]);
+    expect(planMapLayout('---\nmappy: true\nexcalidraw-plugin: parsed\n---\n# Drawing\n', 'timeline')).toEqual([]);
     expect(planMapLayout('---\nmappy: true\n# an unfinished header\n', 'hierarchy')).toEqual([]);
   });
 

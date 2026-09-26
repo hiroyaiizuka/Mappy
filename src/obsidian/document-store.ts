@@ -21,6 +21,9 @@ interface HistoryEntry {
 /** A write `applyLatest` made: the text before and after it, and its edits. */
 export interface LatestWrite { before: string; after: string; edits: TextEdit[] }
 
+/** What `applyOver` wrote, and the `applyLatest` writes it carried the edit over to get there (in order; none when it did not). */
+export interface CarriedWrite extends LatestWrite { carried: readonly LatestWrite[] }
+
 interface DocumentSession {
   source: string | null;
   revision: number;
@@ -60,15 +63,15 @@ export class DocumentStore {
    * `apply`, telling what it wrote: the text it found, the text it left, and the edits between — the caller's,
    * or the caller's carried over `applyLatest` writes that landed after `expectedSource` (`carry`, LEV-196).
    */
-  applyOver(file: TFile, expectedSource: string, edits: TextEdit[]): Promise<LatestWrite> {
+  applyOver(file: TFile, expectedSource: string, edits: TextEdit[]): Promise<CarriedWrite> {
     const requested = edits.map((edit) => ({ ...edit }));
     return this.enqueue(file, async (session) => {
       const before = await this.readCurrent(file);
       this.observe(session, before);
-      const requestedEdits = this.carry(session, expectedSource, requested, before);
+      const { edits: requestedEdits, carried } = this.carry(session, expectedSource, requested, before);
       // Validate the caller's ranges before merging adjacent edits for inversion.
       const after = applyEdits(before, requestedEdits);
-      if (after === before) return { before, after, edits: requestedEdits };
+      if (after === before) return { before, after, edits: requestedEdits, carried };
       const forward = mergeAdjacentEdits(requestedEdits);
       const inverse = invertEdits(before, forward);
       await this.writeSafely(file, session, before, after, forward);
@@ -76,7 +79,7 @@ export class DocumentStore {
       if (session.past.length > historyLimit) session.past.shift();
       session.future = [];
       session.latest = [];
-      return { before, after, edits: requestedEdits };
+      return { before, after, edits: requestedEdits, carried };
     });
   }
 
@@ -125,17 +128,19 @@ export class DocumentStore {
    * edit after them (`rebaseEdits`). Anything else — an edit that touches their lines, a text they do not lead
    * to (someone else's change, E05) — is the refusal it always was.
    */
-  private carry(session: DocumentSession, expectedSource: string, edits: TextEdit[], current: string): TextEdit[] {
-    if (expectedSource === current) return edits;
+  private carry(session: DocumentSession, expectedSource: string, edits: TextEdit[], current: string): { edits: TextEdit[]; carried: LatestWrite[] } {
+    if (expectedSource === current) return { edits, carried: [] };
     let at = expectedSource;
-    let carried = edits;
+    let rebasedEdits = edits;
+    const carried: LatestWrite[] = [];
     for (const write of session.latest) {
       if (write.before !== at) continue;
-      const rebased = rebaseEdits(carried, write.edits);
+      const rebased = rebaseEdits(rebasedEdits, write.edits);
       if (!rebased) break;
-      carried = rebased;
+      rebasedEdits = rebased;
+      carried.push(write);
       at = write.after;
-      if (at === current) return carried;
+      if (at === current) return { edits: rebasedEdits, carried };
     }
     throw new Error(conflictMessage);
   }
