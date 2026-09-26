@@ -2722,11 +2722,7 @@ async function tooltipFacts(page, scope) {
 
 /** docs/harness.md E34 on this page: a note that embeds maps, in the reading-view path and the live-preview path. */
 async function captureEmbeds(recorder, page) {
-  // Earlier cases wrote `mappy: true` into heading-document's in-memory frontmatter (the page never rewrites the text);
-  // re-putting the notes as they are re-reads the frontmatter from the text, so the host sees the fixtures as shipped.
-  for (const path of ['Fixtures/heading-document.md', ...EMBED_NOTES]) {
-    await page.harness(`h.putNote(${JSON.stringify(path)}, h.noteSource(${JSON.stringify(path)}))`);
-  }
+  // The page's cache is read from the text on every write (LEV-214), so the host sees each note as its text holds it.
   const sources = await noteSources(page);
   let timing = null;
 
