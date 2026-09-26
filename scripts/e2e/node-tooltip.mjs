@@ -12,10 +12,11 @@
  *      効いていることの対照）、同じ要素に `--no-tooltip: true` を付けると出ない（Obsidian がこの印を見ていること）。
  *      マップの canvas・埋め込みの canvas の計算値が `true`、開閉ボタンが `true` でない。
  *   2. 乗せる: 自分のノード・空のノード・呼び出したノード × 本体（文字の外）・題名、F2 で開いた入力欄、埋め込みのノード
- *      × 本体・題名。どれも 1.2 s 待っても `.tooltip` が出ない。
- *   3. 本人の報告: ノードを実クリックで選び、ポインターをいったん外してからそのノードに乗せて 1.2 s 待ち（吹き出しが
- *      出るならこの時点で出ている）、そのまま Enter／Tab。下に足したノードの入力欄が開いてからさらに 1.2 s 待って、吹き出しが
- *      出ず、入力欄の中心の最上位が入力欄であること。クリックの直後に押すだけでは再現しない: Obsidian は `pointerup` で
+ *      × 本体・題名。どれも 2 s（Obsidian の吹き出しの遅延 1 s の 2 倍）待っても `.tooltip` が出ない。
+ *   3. 本人の報告: ノードを実クリックで選び、ポインターをいったん外してからそのノードに乗せて 2 s 待ち、そのまま
+ *      Enter／Tab。乗せた時点でも、下に足したノードの入力欄が開いてさらに 2 s 待った時点でも吹き出しが出ず、どの
+ *      吹き出しも新しいノードの箱に重ならないこと（`.tooltip` は `pointer-events: none` なので、`elementFromPoint` では
+ *      覆われたかを判定できない。箱の交差で見る）。クリックの直後に押すだけでは再現しない: Obsidian は `pointerup` で
  *      吹き出しを消し、同じ要素の中の移動では `pointerover` が起きないので、修正前のビルドでも吹き出しは出ない。
  *   4. 吹き出しを残すもの: 開閉ボタン・左下（レイアウト）・右下（ズーム）・右上（操作）のボタン、埋め込みの開閉ボタンと
  *      「マップで開く」。それぞれ自分の `aria-label` の吹き出しが出る。
@@ -23,16 +24,15 @@
  *      （空なら「空のノード」）、呼び出したノードの説明が「呼び出し元: <パス>」。VoiceOver が実際に読むかは人の手で見る
  *      （このケースは確かめない）。
  *
+ * 修正を戻しても通る行: 1 の前提（Obsidian の性質を見る）と 4 のボタン（残すものが残ることを見る）。
+ *
  * Usage: npm run harness:e2e:node-tooltip -- [--reload] [--json <out.json>] [--shot <dir>] [--keep]
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW as MAP_VIEW, makeOpenStep, makePluginStep, makeSelect, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, viewScript, makeOpenStep, makePluginStep, makePress, makeSelect, refuseOpenLeaves } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
-/** dom-helpers' VIEW with `el` rebindable: the embed step points it at the embed's frame (`scope`), so nodes() and label() read the embed. */
-const VIEW = MAP_VIEW.replace('const el = ', 'let el = ');
-if (VIEW === MAP_VIEW) throw new Error('dom-helpers VIEW no longer declares `const el`');
 
 const NOTE = 'Fixtures/E2E-node-tooltip.md';
 const CALLED = 'Fixtures/E2E-node-tooltip-called.md';
@@ -49,8 +49,18 @@ const SOURCE = [
   '',
 ].join('\n');
 const HOST_SOURCE = ['# 埋め込みの吹き出し', '', `![[${NOTE.replace(/^Fixtures\//u, '').replace(/\.md$/u, '')}]]`, ''].join('\n');
-/** Obsidian shows a tooltip some hundred ms after the pointer arrives; the ticket asks for a second or more. */
-const DWELL = 1200;
+/**
+ * How long a hover rests before the tooltips are read. Obsidian (app.js 1.14.2) shows one 1000 ms after the pointer
+ * arrives (at once only if another was shown in the last 100 ms); at 1.2 s a hover right after a fit, with the map busy
+ * drawing, now and then read nothing — a pass for the absence checks. Twice the delay.
+ */
+const DWELL = 2000;
+/** The embed's frame in the Markdown note the embed step opens (`window.__mappyE2EHost`), as the root VIEW reads nodes under. */
+const EMBED_VIEW = viewScript(`(() => {
+  const frame = window.__mappyE2EHost?.view.contentEl.querySelector('.mappy-embed');
+  if (!frame) throw new Error('no embedded map');
+  return frame;
+})()`);
 
 const record = createRecord(VAULT, NOTE);
 const cdp = await connect();
@@ -58,11 +68,13 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
+const press = makePress(cdp, evaluate);
 
 /** Script: the tooltips Obsidian has on screen now (its `.tooltip` element, attached and drawn), with text and box. */
 const TOOLTIPS = `Array.from(document.querySelectorAll('.tooltip')).filter(tip => tip.isConnected && tip.getBoundingClientRect().width > 0)
   .map(tip => { const r = tip.getBoundingClientRect(); return { text: tip.textContent.trim(), left: r.left, top: r.top, right: r.right, bottom: r.bottom }; })`;
 const tooltips = () => evaluate(`return ${TOOLTIPS};`);
+const texts = shown => JSON.stringify(shown.map(tip => tip.text));
 
 const move = (x, y) => cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
 
@@ -82,36 +94,37 @@ async function away() {
 }
 
 /**
- * Hover where `locate` (script, after VIEW; `el` may be reassigned by `scope`) says: it defines `target`, and may define
- * `at` ({ x, y }; the centre of `target` otherwise). The topmost element there must be `target` or inside it (not inside
- * `avoid`), or the step fails with what was in the way — a hover landing elsewhere would pass for a reason not the
- * build's. Then `DWELL` ms, and what Obsidian shows.
+ * Hover where `locate` (script, after `view`) says: it defines `node`, the element to hover, and may define `at`
+ * ({ x, y }; the centre of `node` otherwise). `makePress` aims without clicking: the topmost element there must be
+ * `node` or inside it (not inside `avoid`), a Notice in the way is dismissed, anything else stops the step. Then
+ * `DWELL` ms, and what Obsidian shows.
  */
-async function hover(locate, { avoid, scope = '' } = {}) {
+async function hover(locate, { avoid, view = VIEW } = {}) {
   await away();
-  let aim;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    aim = await evaluate(`${VIEW} ${scope} let at; ${locate}
-      if (!target) throw new Error('nothing to hover: ' + ${JSON.stringify(locate)});
-      const rect = target.getBoundingClientRect();
-      const x = at?.x ?? rect.left + rect.width / 2; const y = at?.y ?? rect.top + rect.height / 2;
-      const top = document.elementFromPoint(x, y);
-      const hit = !!top && target.contains(top) && ${avoid ? `!top.closest(${JSON.stringify(avoid)})` : 'true'};
-      return { x, y, hit, top: top ? String(top.className?.baseVal ?? top.className ?? '') || top.tagName : null };`);
-    if (aim.hit) break;
-    await wait(400);
-  }
-  if (!aim.hit) throw new Error(`cannot hover at (${Math.round(aim.x)},${Math.round(aim.y)}): ${aim.top} is there`);
+  const point = await press(locate, { avoid, view, click: false });
   // Two moves, as a hand arrives: Obsidian counts `pointermove`s of a mouse and ignores hovers before the second
   // (app.js 1.14.2 takes fewer for a touch), so a single jump would show nothing whatever the build does.
-  await move(aim.x - 1, aim.y);
-  await move(aim.x, aim.y);
+  await move(point.x - 1, point.y);
+  await move(point.x, point.y);
   await wait(DWELL);
-  return { at: `${Math.round(aim.x)},${Math.round(aim.y)}`, element: aim.top, tooltips: await tooltips() };
+  return { at: `${Math.round(point.x)},${Math.round(point.y)}`, tooltips: await tooltips() };
 }
 
 /** Script, after VIEW: the called map's nodes — described since LEV-199, titled on hover before it (so a reverted build finds them too). */
 const CALLED_NODES = `const calledNodes = () => nodes().filter(node => node.hasAttribute('aria-describedby') || node.hasAttribute('title'));`;
+
+/**
+ * Script for `hover`: the node to hover and where. `pick` is 'own' (「自分のノード」), 'empty' (the untitled one),
+ * 'called' (the `index`-th node of the called map) or 'index' (the `index`-th node under the root, for the embed), and
+ * `part` is 'body' (inside the node, left of its text) or 'title' (the centre of its text).
+ */
+const nodeTarget = (pick, part, index = 0) => `${CALLED_NODES}
+  const picked = ${{ own: `nth('自分のノード', 0)`, empty: `nth('空のノード', 0)`, called: `calledNodes()[${index}]`, index: `nodes()[${index}]` }[pick]};
+  if (!picked) throw new Error('no ${pick} node #${index}');
+  const content = picked.querySelector('.mappy-node-content');
+  const node = ${part === 'title' ? `content.textContent.trim() ? content : picked` : 'picked'};
+  ${part === 'body' ? `{ const box = picked.getBoundingClientRect(); const text = content.getBoundingClientRect();
+    at = { x: box.left + Math.max(2, (text.left - box.left) / 2), y: box.top + box.height / 2 }; }` : ''}`;
 
 const editing = () => evaluate(`${VIEW} return !!input();`);
 async function waitEditing(wanted = true, timeout = 3000) {
@@ -133,29 +146,17 @@ async function restore() {
     el.querySelector('.mappy-button[aria-label="全体表示"]')?.click();
     await new Promise(resolve => setTimeout(resolve, 600));
     return true;`);
+  return true;
 }
 
-/**
- * Script, after VIEW: the node to hover and where. `pick` is 'own' (「自分のノード」), 'empty' (the untitled one),
- * 'called' (the `index`-th node with a description: the called map's nodes), and `part` is 'body' (inside the node,
- * left of its text) or 'title' (the centre of its text).
- */
-const nodeTarget = (pick, part, index = 0) => `${CALLED_NODES}
-  const picked = ${pick === 'own' ? `nth('自分のノード', 0)` : pick === 'empty' ? `nth('空のノード', 0)` : `calledNodes()[${index}]`};
-  if (!picked) throw new Error('no ${pick} node #${index}');
-  const content = picked.querySelector('.mappy-node-content');
-  const target = ${part === 'title' ? `content.textContent.trim() ? content : picked` : 'picked'};
-  ${part === 'body' ? `{ const box = picked.getBoundingClientRect(); const text = content.getBoundingClientRect();
-    at = { x: box.left + Math.max(2, (text.left - box.left) / 2), y: box.top + box.height / 2 }; }` : ''}`;
-
 /** Every node's name and description as Chromium's accessibility tree computes them (what a screen reader is given). */
-async function axFacts(scope) {
+async function axFacts(view) {
   await cdp.send('Accessibility.enable', {});
-  const count = await evaluate(`${VIEW} ${scope} return nodes().length;`);
+  const count = await evaluate(`${view} return nodes().length;`);
   const facts = [];
   for (let index = 0; index < count; index += 1) {
-    const handle = await cdp.send('Runtime.evaluate', { expression: `(() => { ${VIEW} ${scope} return nodes()[${index}]; })()` });
-    const attributes = await evaluate(`${VIEW} ${scope} const node = nodes()[${index}];
+    const handle = await cdp.send('Runtime.evaluate', { expression: `(() => { ${view} return nodes()[${index}]; })()` });
+    const attributes = await evaluate(`${view} const node = nodes()[${index}];
       return { label: label(node), ariaLabel: node.getAttribute('aria-label'), title: node.closest('[title]')?.getAttribute('title') ?? null, text: node.querySelector('.mappy-node-content')?.textContent.trim() ?? '' };`);
     const tree = await cdp.send('Accessibility.getPartialAXTree', { objectId: handle.result.objectId, fetchRelatives: false });
     await cdp.send('Runtime.releaseObject', { objectId: handle.result.objectId });
@@ -165,23 +166,28 @@ async function axFacts(scope) {
   return facts;
 }
 
-/** Close what this run opened and delete its notes (`--keep` leaves them). */
+/**
+ * Close what this run opened and delete its notes, the premise's probe too. Run from `finally` (unless `--keep`), so a
+ * case stopped midway does not leave the map open: the next run's `open` would refuse it.
+ */
 const clean = () => evaluate(`
+  document.querySelectorAll('[data-mappy-e2e-tooltip-probe]').forEach(probe => probe.remove());
   for (const path of ${JSON.stringify([HOST, NOTE, CALLED])}) {
     app.workspace.getLeavesOfType('markdown').concat(app.workspace.getLeavesOfType('mappy-map'))
       .filter(item => item.view.file?.path === path).forEach(item => item.detach());
     const file = app.vault.getAbstractFileByPath(path);
     if (file) await app.vault.delete(file, true);
   }
-  document.querySelector('[data-mappy-e2e-tooltip-probe]')?.remove();
   delete window.__mappyE2E;
   delete window.__mappyE2EBefore;
   delete window.__mappyE2EHost;
   return true;`);
 
+const PROBE = `document.querySelector('[data-mappy-e2e-tooltip-probe]')`;
+
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
-  record.chromium = await evaluate(`return navigator.userAgent.match(/Chrome\\/[\\d.]+/u)?.[0] ?? null;`);
+  record.chromium = await evaluate(`return navigator.userAgent.match(/Chrome\\/[\\d.]+/u)?.[0] ?? null;`).catch(() => null);
   record.obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version') ?? null;`).catch(() => null);
   required(record, 'called', await step('called', () => evaluate(`${refuseOpenLeaves([CALLED, HOST])}
     const existing = app.vault.getAbstractFileByPath(${JSON.stringify(CALLED)});
@@ -190,19 +196,23 @@ try {
     await new Promise(resolve => setTimeout(resolve, 400));
     return true;`)));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
-  await restore();
+  required(record, 'fit', await step('fit', restore));
 
   // 1. The premise: Obsidian draws an aria-label as a tooltip on hover, and not where `--no-tooltip` is `true`.
   required(record, 'premise', await step('premise', async () => {
-    await evaluate(`const probe = document.body.createDiv({ attr: { 'aria-label': 'E2E 吹き出しの対照', 'data-mappy-e2e-tooltip-probe': '' } });
-      // Not fixed: Obsidian draws a tooltip only for an element that isShown() (one with an offsetParent).
-      Object.assign(probe.style, { position: 'absolute', left: '40%', top: '45%', width: '120px', height: '40px', zIndex: 100000, background: 'var(--background-secondary)' });
-      return true;`);
-    const locate = `const target = document.querySelector('[data-mappy-e2e-tooltip-probe]');`;
-    const plain = await hover(locate);
-    await evaluate(`document.querySelector('[data-mappy-e2e-tooltip-probe]').style.setProperty('--no-tooltip', 'true'); return true;`);
-    const marked = await hover(locate);
-    await evaluate(`document.querySelector('[data-mappy-e2e-tooltip-probe]').remove(); return true;`);
+    let plain; let marked;
+    try {
+      await evaluate(`const probe = document.body.createDiv({ attr: { 'aria-label': 'E2E 吹き出しの対照', 'data-mappy-e2e-tooltip-probe': '' } });
+        // Not fixed: Obsidian draws a tooltip only for an element that isShown() (one with an offsetParent).
+        Object.assign(probe.style, { position: 'absolute', left: '40%', top: '45%', width: '120px', height: '40px', zIndex: 100000, background: 'var(--background-secondary)' });
+        return true;`);
+      const locate = `const node = ${PROBE};`;
+      plain = await hover(locate);
+      await evaluate(`${PROBE}.style.setProperty('--no-tooltip', 'true'); return true;`);
+      marked = await hover(locate);
+    } finally {
+      await evaluate(`${PROBE}?.remove(); return true;`).catch(() => {});
+    }
     const css = await evaluate(`${VIEW}
       const value = element => element ? getComputedStyle(element).getPropertyValue('--no-tooltip').trim() : null;
       return { canvas: value(el.querySelector('.mappy-canvas')), toggle: value(el.querySelector('.mappy-node-toggle')), button: value(el.querySelector('.mappy-button')) };`);
@@ -225,7 +235,7 @@ try {
       for (const part of ['body', 'title']) {
         const label = `${pick}${pick === 'called' ? `#${index}` : ''}/${part}`;
         const shown = await hover(nodeTarget(pick, part, index), { avoid: '.mappy-node-toggle' });
-        check(shown.tooltips.length === 0, `${label}: tooltip ${JSON.stringify(shown.tooltips.map(tip => tip.text))} over the node`);
+        check(shown.tooltips.length === 0, `${label}: tooltip ${texts(shown.tooltips)} over the node`);
         results.push({ label, ...shown });
       }
     }
@@ -238,14 +248,14 @@ try {
     await select('自分のノード');
     await cdp.realKey('F2');
     await waitEditing();
-    const shown = await hover(`const target = input();`);
-    check(shown.tooltips.length === 0, `input: tooltip ${JSON.stringify(shown.tooltips.map(tip => tip.text))} over the inline input`);
+    const shown = await hover(`const node = input();`);
+    check(shown.tooltips.length === 0, `input: tooltip ${texts(shown.tooltips)} over the inline input`);
     await cdp.realKey('Escape');
     await waitEditing(false);
     return shown;
   });
 
-  // 3. The report: the pointer left on a node, Enter／Tab adds one below, its input opens under the pointer's node.
+  // 3. The report: the pointer resting on a node, Enter／Tab adds one below it, its input opens under the pointer's node.
   await step('add-under-pointer', async () => {
     const results = [];
     for (const key of ['Enter', 'Tab']) {
@@ -256,20 +266,20 @@ try {
       await cdp.realKey(key);
       await waitEditing();
       await wait(DWELL);
-      // Covering is judged on the new node's box (the textarea sits inside it, below its border the tooltip reaches first).
-      const aim = await evaluate(`${VIEW} const draft = input().getBoundingClientRect(); const box = input().closest('.mappy-node').getBoundingClientRect();
-        return { input: { x: draft.left + draft.width / 2, y: draft.top + draft.height / 2, left: box.left, top: box.top, right: box.right, bottom: box.bottom } };`);
+      // Covering is judged on the new node's box: the tooltip takes no pointer events, so no hit test sees it.
+      const box = await evaluate(`${VIEW} const draft = input(); const rect = draft.closest('.mappy-node').getBoundingClientRect();
+        return { value: draft.value, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };`);
       const shown = await tooltips();
-      const onTop = await evaluate(`${VIEW} const draft = input(); const top = document.elementFromPoint(${aim.input.x}, ${aim.input.y});
-        return { editing: !!draft, value: draft?.value ?? null, topIsInput: !!draft && draft.contains(top), top: top ? String(top.className ?? top.tagName) : null };`);
       const shot = value('--shot');
       if (shot) await cdp.screenshot(`${shot}/node-tooltip-${key}.png`);
-      const covering = shown.filter(tip => tip.left < aim.input.right && tip.right > aim.input.left && tip.top < aim.input.bottom && tip.bottom > aim.input.top);
-      check(shown.length === 0, `${key}: tooltip ${JSON.stringify(shown.map(tip => tip.text))} with the pointer on the node (before the key: ${JSON.stringify(before.tooltips.map(tip => tip.text))})${covering.length ? ', covering the new node' : ''}`);
-      check(onTop.editing && onTop.topIsInput, `${key}: the new input is not on top at its centre: ${JSON.stringify(onTop)}`);
+      const covers = tip => tip.left < box.right && tip.right > box.left && tip.top < box.bottom && tip.bottom > box.top;
+      const covering = [...before.tooltips, ...shown].filter(covers);
+      check(before.tooltips.length === 0, `${key}: tooltip ${texts(before.tooltips)} with the pointer on the node before the key`);
+      check(shown.length === 0, `${key}: tooltip ${texts(shown)} with the pointer on the node after the new one opened`);
+      check(covering.length === 0, `${key}: tooltip ${texts(covering)} covers the new node`);
       await cdp.realKey('Escape');
       await waitEditing(false);
-      results.push({ key, before: before.tooltips, tooltips: shown, covering: covering.length, input: onTop });
+      results.push({ key, before: before.tooltips, tooltips: shown, covering: covering.length, draft: box });
     }
     return results;
   });
@@ -279,15 +289,15 @@ try {
     await restore();
     const results = [];
     const controls = [
-      ['toggle', `const target = nth('自分のノード', 0).querySelector('.mappy-node-toggle');`],
-      ['bottom-left', `const target = el.querySelector('.mappy-modes .mappy-button');`],
-      ['bottom-right', `const target = el.querySelector('.mappy-zoom .mappy-button');`],
-      ['top-right', `const target = el.querySelector('.mappy-actions .mappy-button');`],
+      ['toggle', `const node = nth('自分のノード', 0).querySelector('.mappy-node-toggle');`],
+      ['bottom-left', `const node = el.querySelector('.mappy-modes .mappy-button');`],
+      ['bottom-right', `const node = el.querySelector('.mappy-zoom .mappy-button');`],
+      ['top-right', `const node = el.querySelector('.mappy-actions .mappy-button');`],
     ];
     for (const [id, locate] of controls) {
-      const name = await evaluate(`${VIEW} ${locate} return target?.getAttribute('aria-label') ?? null;`);
+      const name = await evaluate(`${VIEW} ${locate} return node?.getAttribute('aria-label') ?? null;`);
       const shown = await hover(locate);
-      check(name && shown.tooltips.some(tip => tip.text === name), `${id}: ${JSON.stringify(name)} expected, tooltips ${JSON.stringify(shown.tooltips.map(tip => tip.text))}`);
+      check(name && shown.tooltips.some(tip => tip.text === name), `${id}: ${JSON.stringify(name)} expected, tooltips ${texts(shown.tooltips)}`);
       results.push({ id, name, ...shown });
     }
     return results;
@@ -296,21 +306,20 @@ try {
   // 5. What a screen reader is given (the attributes and Chromium's computed name and description).
   await step('accessible-names', async () => {
     await restore();
-    const facts = await axFacts('');
+    const facts = await axFacts(VIEW);
     const calledPath = `呼び出し元: ${CALLED}`;
     for (const fact of facts) {
-      const called = fact.description !== null && fact.description !== '';
       const wanted = fact.text || '空のノード';
       check(fact.ariaLabel === null && fact.title === null, `${wanted}: aria-label ${JSON.stringify(fact.ariaLabel)}, title ${JSON.stringify(fact.title)} (a tooltip's source)`);
       check(fact.role === 'treeitem' && fact.name === wanted, `${wanted}: accessible ${fact.role} named ${JSON.stringify(fact.name)}`);
-      if (called) check(fact.description === calledPath, `${wanted}: described as ${JSON.stringify(fact.description)}`);
+      if (fact.description) check(fact.description === calledPath, `${wanted}: described as ${JSON.stringify(fact.description)}`);
     }
     check(facts.some(fact => fact.name === '空のノード'), 'no node is named 空のノード');
     check(facts.filter(fact => fact.description === calledPath).length >= 2, `the called nodes are not described as ${calledPath}`);
     return facts;
   });
 
-  // 2 and 4 in an embed: a Markdown note (reading view) that embeds the map.
+  // 2, 4 and 5 in an embed: a Markdown note (reading view) that embeds the map.
   await step('embed', async () => {
     await evaluate(`${refuseOpenLeaves([HOST])}
       const existing = app.vault.getAbstractFileByPath(${JSON.stringify(HOST)});
@@ -322,46 +331,43 @@ try {
       for (let i = 0; i < 40 && !leaf.view.contentEl.querySelector('.mappy-embed .mappy-node'); i += 1) await new Promise(resolve => setTimeout(resolve, 150));
       await new Promise(resolve => setTimeout(resolve, 600));
       return true;`);
-    // The embed stands in for the view: `el` is its frame, so VIEW's nodes() and label() read the embed's nodes.
-    const scope = `el = window.__mappyE2EHost.view.contentEl.querySelector('.mappy-embed'); if (!el) throw new Error('no embedded map');`;
-    const count = await evaluate(`${VIEW} ${scope} return nodes().length;`);
+    const count = await evaluate(`${EMBED_VIEW} return nodes().length;`);
     check(count >= 3, `the embed drew ${count} nodes`);
     const results = [];
     for (let index = 0; index < count; index += 1) {
       for (const part of ['body', 'title']) {
-        const locate = `const picked = nodes()[${index}]; const content = picked.querySelector('.mappy-node-content');
-          const target = ${part === 'title' ? `content.textContent.trim() ? content : picked` : 'picked'};
-          ${part === 'body' ? `{ const box = picked.getBoundingClientRect(); const text = content.getBoundingClientRect();
-            at = { x: box.left + Math.max(2, (text.left - box.left) / 2), y: box.top + box.height / 2 }; }` : ''}`;
-        const shown = await hover(locate, { scope, avoid: '.mappy-node-toggle' });
-        check(shown.tooltips.length === 0, `embed node #${index}/${part}: tooltip ${JSON.stringify(shown.tooltips.map(tip => tip.text))}`);
+        const shown = await hover(nodeTarget('index', part, index), { view: EMBED_VIEW, avoid: '.mappy-node-toggle' });
+        check(shown.tooltips.length === 0, `embed node #${index}/${part}: tooltip ${texts(shown.tooltips)}`);
         results.push({ label: `embed#${index}/${part}`, ...shown });
       }
     }
     for (const [id, locate] of [
-      ['embed-toggle', `const target = el.querySelector('.mappy-node-toggle:not([hidden])');`],
-      ['embed-open', `const target = el.querySelector('.mappy-embed-open');`],
+      ['embed-toggle', `const node = el.querySelector('.mappy-node-toggle:not([hidden])');`],
+      ['embed-open', `const node = el.querySelector('.mappy-embed-open');`],
     ]) {
-      const name = await evaluate(`${VIEW} ${scope} ${locate} return target?.getAttribute('aria-label') ?? null;`);
-      const shown = await hover(locate, { scope });
-      check(name && shown.tooltips.some(tip => tip.text === name), `${id}: ${JSON.stringify(name)} expected, tooltips ${JSON.stringify(shown.tooltips.map(tip => tip.text))}`);
+      const name = await evaluate(`${EMBED_VIEW} ${locate} return node?.getAttribute('aria-label') ?? null;`);
+      const shown = await hover(locate, { view: EMBED_VIEW });
+      check(name && shown.tooltips.some(tip => tip.text === name), `${id}: ${JSON.stringify(name)} expected, tooltips ${texts(shown.tooltips)}`);
       results.push({ label: id, name, ...shown });
     }
-    const css = await evaluate(`${VIEW} ${scope} return getComputedStyle(el.querySelector('.mappy-canvas')).getPropertyValue('--no-tooltip').trim();`);
+    const css = await evaluate(`${EMBED_VIEW} return getComputedStyle(el.querySelector('.mappy-canvas')).getPropertyValue('--no-tooltip').trim();`);
     check(css === 'true', `premise: the embed canvas's --no-tooltip is ${JSON.stringify(css)}`);
-    const facts = await axFacts(scope);
+    const facts = await axFacts(EMBED_VIEW);
     for (const fact of facts) {
       check(fact.ariaLabel === null && fact.title === null && fact.name === (fact.text || '空のノード'), `embed ${JSON.stringify(fact.text)}: ${JSON.stringify(fact)}`);
     }
     await away();
     return { hovers: results, css, names: facts };
   });
-
-  if (!flag('--keep')) await step('clean', clean);
 } catch (error) {
-  if (!(error instanceof StopCase)) throw error;
+  if (!(error instanceof StopCase)) {
+    // An error outside a step still ends as a FAIL with a record, not an unhandled rejection with none.
+    record.failures.push(`uncaught: ${error}`);
+    record.stopped = String(error);
+  }
 } finally {
   await move(2, 2).catch(() => {});
+  if (!flag('--keep')) await step('clean', clean);
   cdp.close();
 }
 

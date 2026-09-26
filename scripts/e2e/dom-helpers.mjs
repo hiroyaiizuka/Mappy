@@ -7,8 +7,11 @@
  */
 import { installedVersion, wait } from './cdp.mjs';
 
-/** Read out of the view under test: its nodes, its inline editor, every message on screen, and its source. */
-export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; const el = view.contentEl;
+/**
+ * Read out of the view under test: its nodes, its inline editor, every message on screen, and its source. `root` (script)
+ * is the element the nodes are read under: the view's own by default, an embed's frame for a case that hovers one (E57).
+ */
+export const viewScript = (root = 'view.contentEl') => `const leaf = window.__mappyE2E; const view = leaf.view; const el = ${root};
   const nodes = () => Array.from(el.querySelectorAll('.mappy-node'));
   // A node's name is the hidden element its aria-labelledby points to (LEV-199); builds through 0.3.4 put it in aria-label.
   const label = node => {
@@ -30,6 +33,7 @@ export const VIEW = `const leaf = window.__mappyE2E; const view = leaf.view; con
     ...Array.from(document.querySelectorAll('.notice:not([data-mappy-e2e-seen])'), item => item.textContent.trim()),
   ].filter(Boolean);
   const source = () => app.vault.read(view.file);`;
+export const VIEW = viewScript();
 
 /**
  * Script string, after `node` is a map node: where a real click on it would go. `hit` is whether the topmost
@@ -120,13 +124,14 @@ export function makeFocusCanvas(cdp, evaluate) {
  * `at` ({ x, y } in the window's CSS pixels; the centre of `node` otherwise). As `makeAim` does for nodes, the topmost
  * element at that point must be `node` or inside it, and not inside `avoid` (a selector): a Notice there is dismissed
  * and the point looked at again; anything else stops the step with what was in the way, so a press cannot pass for a
- * reason that is not the build's (a press meant for the empty canvas landing on a node, say).
+ * reason that is not the build's (a press meant for the empty canvas landing on a node, say). With `click: false` it
+ * only aims and returns the point (E57 moves the pointer there itself); `view` is the `viewScript` `locate` runs after.
  */
 export function makePress(cdp, evaluate) {
-  return async (locate, { avoid, hover = false } = {}) => {
+  return async (locate, { avoid, hover = false, click = true, view = VIEW } = {}) => {
     let box;
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      box = await evaluate(`${VIEW} let at; ${locate}
+      box = await evaluate(`${view} let at; ${locate}
         if (!node) throw new Error('nothing to press: ' + ${JSON.stringify(locate)});
         ${aim({ at: 'at', avoid })}
         return { x, y, hit, cover };`);
@@ -134,11 +139,13 @@ export function makePress(cdp, evaluate) {
       await wait(400);
     }
     if (!box.hit) throw new Error(`cannot press at (${Math.round(box.x)},${Math.round(box.y)}): ${box.cover} is there`);
+    if (!click) return { x: box.x, y: box.y };
     if (hover) { await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y }); await wait(150); }
     for (const type of ['mousePressed', 'mouseReleased']) {
       await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
     }
     await wait(250);
+    return { x: box.x, y: box.y };
   };
 }
 
