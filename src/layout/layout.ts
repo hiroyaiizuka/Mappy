@@ -352,15 +352,16 @@ function placeTimeline(
     if (!stage) continue;
     const upper = index % 2 === 0;
     const childOffset = stage.width / 2 + TIMELINE_STEM_GAP;
-    const forestHeight = childForestHeight(stage);
+    const reach = childForestHeight(stage);
     // Opposite sides can reuse horizontal space. On the same side the stem stands the stage clearance
     // past the previous forest where that forest comes within this stage's height (its stem and its
     // forest both run from the axis to the far edge of its forest), and the envelope clearance past
     // the rest; its forest starts one stem gap further.
     const previous = upper ? upperForest : lowerForest;
     const bandEdge = upper ? upperBandEdge : lowerBandEdge;
-    const stemX = previous ? stemClearOf(previous, forestHeight, bandEdge, upper, nodes, foldBounds) : -Infinity;
-    const stageX = stage.children.length > 0 ? Math.max(nextAxisX, stemX + TIMELINE_STEM_GAP - childOffset) : nextAxisX;
+    const stageX = stage.children.length > 0 && previous
+      ? Math.max(nextAxisX, stemClearOf(previous, reach, bandEdge, upper, nodes, foldBounds) + TIMELINE_STEM_GAP - childOffset)
+      : nextAxisX;
     const position = { id: stage.id, x: stageX, y: axisY - stage.height / 2, width: stage.width, height: stage.height };
     nodes.push(position);
     addFold(stage, position, folds, foldBounds, upper ? "upper" : "lower");
@@ -371,7 +372,7 @@ function placeTimeline(
     edges.push(connect(rootPosition, position, `M ${previousAxisRight} ${axisY} H ${position.x}`));
 
     const startY = upper ? position.y : position.y + position.height;
-    let childTop = upper ? bandEdge - forestHeight : bandEdge;
+    let childTop = upper ? bandEdge - reach : bandEdge;
     let forestRight = -Infinity;
     for (const child of stage.children) {
       const childX = stageX + childOffset;
@@ -385,7 +386,7 @@ function placeTimeline(
     }
     if (stage.children.length > 0) {
       const forest: PlacedForest = {
-        height: forestHeight,
+        height: reach,
         right: forestRight,
         nodes: [firstNode, nodes.length],
         folds: [firstFold, foldBounds.length],

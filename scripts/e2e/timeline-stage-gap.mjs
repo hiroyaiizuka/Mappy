@@ -3,8 +3,10 @@
  * on that side (LEV-205). The note is tests/fixtures/timeline-stages.md: Section2's forest hangs below the axis
  * and ends in 「ビジランス効果」「ポモドーロ」, and Section4, the next stage below, raises its stem beside it.
  *
- * - The distance from the forest's right edge (its nodes and their fold controls) to Section4's stem, in layout
- *   px (screen px over the map's zoom), is `TIMELINE_STAGE_CLEARANCE` in `src/layout/layout.ts`.
+ * - The distance from the right edge of the part of the forest within the height Section4's forest reaches (its
+ *   first two rows: nodes and their fold controls) to Section4's stem, in layout px (screen px over the map's zoom),
+ *   is `TIMELINE_STAGE_CLEARANCE` in `src/layout/layout.ts`. 環境, the third row, is beyond that height and owed only
+ *   the envelope clearance (LEV-210), so it is not measured.
  * - Opening the note as a timeline does not write it.
  *
  * Usage: npm run harness:e2e:timeline-stage-gap -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>]
@@ -32,7 +34,7 @@ const CLEARANCE = Number(given ?? shipped);
 if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${JSON.stringify(given ?? shipped)}`);
 const NOTE = 'Fixtures/E2E-timeline-stage-gap.md';
 const SOURCE = await readFile(resolve(root, 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
-const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ', '環境'];
+const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ'];
 const STAGE = 'Section4: 記録する';
 
 const record = createRecord(VAULT, NOTE);

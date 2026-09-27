@@ -22,7 +22,8 @@
  *   at fit, and the frame after the last DOM change for each fold and move.
  *
  * Usage: npm run harness:e2e:timeline-large -- [--counts 500,2000] [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>]
- *   --clearance  the same-side distance the installed build is expected to keep (default 72, LEV-205)
+ *   --clearance  the same-side distance the installed build is expected to keep from the forest within the next stage's height (default 72, LEV-205)
+ *   --envelope   the same-side distance it is expected to keep from the whole forest (default 24, LEV-210)
  *   --shot  a path ending in .png: the case writes <path>-<count>-<scene>.png beside it (fit, stage, folded)
  */
 import { connect, VAULT, wait } from './cdp.mjs';
@@ -39,8 +40,9 @@ const { flag, value } = parseArgs();
  * a build made with another value on purpose; a deliberate change of the constant changes this line too.
  */
 const CLEARANCE = Number(value('--clearance') ?? 72);
-/** The clearance from the parts of the previous forest beyond the next stage's height (LEV-210), fixed for the same reason. */
-const ENVELOPE = 24;
+/** The clearance from the whole previous forest (LEV-210), fixed for the same reason; `--envelope <px>` as `--clearance`. */
+const ENVELOPE = Number(value('--envelope') ?? 24);
+if (!Number.isFinite(ENVELOPE) || ENVELOPE <= 0) throw new Error(`--envelope needs a positive number of px, not ${value('--envelope')}`);
 if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${value('--clearance')}`);
 const COUNTS = (value('--counts') ?? '500,2000').split(',').map(Number);
 if (COUNTS.some(count => !Number.isInteger(count) || count < 100)) throw new Error(`--counts needs node counts of 100 or more, not ${value('--counts')}`);
@@ -52,6 +54,7 @@ const shotBase = value('--shot')?.replace(/\.png$/u, '');
 
 const record = createRecord(VAULT, COUNTS.map(count => `Fixtures/E2E-timeline-large-${count}.md`).join(', '));
 record.clearance = CLEARANCE;
+record.envelope = ENVELOPE;
 const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
@@ -136,9 +139,13 @@ const GEOMETRY = `
     if (last[side]) {
       // The previous forest's nodes and controls within the height this stage's forest reaches from the band (LEV-210).
       const previous = last[side].forest;
-      const near = previous.nodes.filter(rect => upper ? rect.b > forest.t + slack : rect.t < forest.b - slack);
-      const nearRight = Math.max(...near.map(rect => rect.r));
-      gaps.push({ from: last[side].title, to: stage.title, side, gap: stem - nearRight, envelope: stem - previous.r });
+      // Compared exactly, as the layout does (near edge nearer the band than the forest's far edge): both sides of the
+      // comparison are the same layout numbers scaled by the zoom, and a slack would let an item crossing in by less
+      // than it be owed only the envelope clearance.
+      const near = previous.nodes.filter(rect => upper ? rect.b > forest.t : rect.t < forest.b);
+      // Every forest has an item at the band's edge, so near is never empty; null rather than Infinity if it were.
+      const gap = near.length ? stem - Math.max(...near.map(rect => rect.r)) : null;
+      gaps.push({ from: last[side].title, to: stage.title, side, gap, envelope: stem - previous.r });
     }
     last[side] = { title: stage.title, forest };
   }
@@ -154,12 +161,11 @@ const GEOMETRY = `
     overlaps: overlaps.length, overlapExamples: overlaps.slice(0, 10),
     forestOverlaps: forestOverlaps.length, forestOverlapExamples: forestOverlaps.slice(0, 10),
     acrossBand: sides.slice(0, 10),
-    gaps: gaps.length, minGap: gaps.length ? Math.min(...gaps.map(item => item.gap)) : null,
+    gaps: gaps.length, minGap: gaps.some(item => item.gap !== null) ? Math.min(...gaps.filter(item => item.gap !== null).map(item => item.gap)) : null,
     minEnvelope: gaps.length ? Math.min(...gaps.map(item => item.envelope)) : null,
-    boundGaps: gaps.filter(item => Math.abs(Math.min(item.gap - ${CLEARANCE}, item.envelope - ${ENVELOPE})) <= ${ROUNDING}).length,
-    envelopeBound: gaps.filter(item => Math.abs(item.envelope - ${ENVELOPE}) <= ${ROUNDING} && item.gap > ${CLEARANCE} + ${ROUNDING}).length,
-    shortGaps: gaps.filter(item => item.gap < ${CLEARANCE} - ${ROUNDING} || item.envelope < ${ENVELOPE} - ${ROUNDING})
-      .map(item => item.from + ' → ' + item.to + ' ' + item.gap.toFixed(1) + ' / ' + item.envelope.toFixed(1)),
+    boundGaps: gaps.filter(item => Math.abs(Math.min((item.gap ?? Infinity) - ${CLEARANCE}, item.envelope - ${ENVELOPE})) <= ${ROUNDING}).length,
+    shortGaps: gaps.filter(item => item.gap === null || item.gap < ${CLEARANCE} - ${ROUNDING} || item.envelope < ${ENVELOPE} - ${ROUNDING})
+      .map(item => item.from + ' → ' + item.to + ' ' + (item.gap === null ? 'nothing within the height' : item.gap.toFixed(1)) + ' / ' + item.envelope.toFixed(1)),
     stageOrder: stages.map(stage => stage.title),
     axisOrder: [...stages].sort((a, b) => (a.rect.l + a.rect.r) - (b.rect.l + b.rect.r)).map(stage => stage.title),
   };`;
