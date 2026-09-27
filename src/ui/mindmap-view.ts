@@ -984,14 +984,22 @@ export class MindmapView extends FileView {
    * `write` recorded where the view's record leads to its start: the end of the record, or the text the view shows
    * when a re-read has spent it. A write already there — the store's `onWrite` told it before the caller got its
    * answer (`recordWrite`) — is the last one and is not added again; nor is one a re-read has spent in between (its
-   * start is behind the text the view shows). Not matched against earlier writes, as `recordCarried` does: ⌘Z, ⌘⇧Z,
-   * ⌘Z before one re-read write the same texts twice.
+   * start is behind the text the view shows). Not matched against earlier writes to be added, as `recordCarried` does:
+   * ⌘Z, ⌘⇧Z, ⌘Z before one re-read write the same texts twice. A write made on the text the view shows while the
+   * record ends elsewhere starts the record again: the store wrote it on that text, so the note was put back there
+   * (Undo in the Markdown pane, a sync) and the writes recorded were taken back (LEV-218). One already in the record
+   * is not that: it was told before the caller got its answer, and others were recorded after it. Nor a write that
+   * changed nothing (told to no one): it takes nothing back, and carries no id anywhere.
    */
   private recordOwn(write: LatestWrite): void {
+    if (write.before === write.after) return;
     const last = this.ownWrites[this.ownWrites.length - 1];
     if (last?.before === write.before && last.after === write.after) return;
-    if (write.before !== (last?.after ?? this.document?.source)) return;
-    this.ownWrites.push({ before: write.before, after: write.after, edits: write.edits });
+    const recorded = { before: write.before, after: write.after, edits: write.edits };
+    if (write.before === (last?.after ?? this.document?.source)) { this.ownWrites.push(recorded); return; }
+    if (write.before !== this.document?.source) return;
+    if (this.ownWrites.some(own => own.before === write.before && own.after === write.after)) return;
+    this.ownWrites = [recorded];
   }
 
   /**
@@ -1139,14 +1147,22 @@ export class MindmapView extends FileView {
       this.drawEdges([]);
       return;
     }
+    // The writes recorded before the read begins, which it will find if nobody else takes them back.
+    const recorded = new Set(this.ownWrites);
     const source = await this.store.read(file);
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
-    const changed = source !== this.document?.source || this.document.root.title !== file.basename;
+    const onScreen = source === this.document?.source;
+    const changed = !onScreen || this.document?.root.title !== file.basename;
     // The view's own writes answer for this read while they lead from the text this view last parsed to
-    // exactly the text found; their edits then carry the ids across (LEV-146). Anything else means someone
-    // else has written, and the writes are of no use to any later read either.
+    // exactly the text found; their edits then carry the ids across (LEV-146). Another text means someone
+    // else has written, and the writes are of no use to any later read either. The text on screen found again
+    // keeps the writes recorded while this read was under way that lead on from it: the next read's to replay
+    // (LEV-218). Not those recorded before it began: the read would have found them, so someone put the note
+    // back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where the
+    // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
     const replayed = this.replayOwnWrites(source, file.basename);
-    if (!replayed) this.ownWrites = [];
+    if (!replayed) this.ownWrites = onScreen ? leadingFrom(this.ownWrites.filter(write => !recorded.has(write)), source) : [];
+    const replaying = this.ownWrites;
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
@@ -1155,8 +1171,9 @@ export class MindmapView extends FileView {
     if (this.closed || epoch !== this.epoch || file !== this.file) return;
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
-    // kept for the next one.
-    this.ownWrites = this.ownWrites.slice(replayed?.used ?? 0);
+    // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
+    // read replayed is not in it.
+    if (this.ownWrites === replaying) this.ownWrites = replaying.slice(replayed?.used ?? 0);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
@@ -2310,4 +2327,16 @@ export class MindmapView extends FileView {
       throw error;
     }
   }
+}
+
+/** The writes of `writes`, in order, that lead on one from the other from `source`: the first that does not ends them. */
+function leadingFrom<T extends { before: string; after: string }>(writes: readonly T[], source: string): T[] {
+  const chain: T[] = [];
+  let at = source;
+  for (const write of writes) {
+    if (write.before !== at) break;
+    chain.push(write);
+    at = write.after;
+  }
+  return chain;
 }
