@@ -481,19 +481,12 @@ export class MindmapView extends FileView {
   /**
    * The note shown leaves this view (`FileView.loadFile`: another note takes its place, the state names none, the
    * view closes). A draft under way when a navigation replaces the note in this leaf (a link, the explorer,
-   * back／forward — LEV-74) is saved first, as a Markdown tab keeps its buffer; the save needs the note it was
-   * opened on, which `file` still is here, and skips the re-read and redraw of that note (`unloading`), since
-   * everything it gave the view goes right after. A refused save (the note moved on, E05) cannot keep the draft
-   * here. A note that is gone (deleted: FileView then takes the leaf back in its history or to the empty view)
-   * has nothing to save to; a closing view has dropped its draft already (`onClose`).
+   * back／forward — LEV-74) is saved first (`saveDraft`), as a Markdown tab keeps its buffer. A note that is gone
+   * (deleted: FileView then takes the leaf back in its history or to the empty view) has nothing to save to; a
+   * closing view has saved its draft already (`onClose`).
    */
   async onUnloadFile(file: TFile): Promise<void> {
-    if (this.inlineEditor && this.app.vault.getFileByPath(file.path) === file) {
-      this.unloading = true;
-      try { await this.inlineEditor.flush(); }
-      catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
-      finally { this.unloading = false; }
-    }
+    await this.saveDraft(file);
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
@@ -501,7 +494,27 @@ export class MindmapView extends FileView {
     await super.onUnloadFile(file);
   }
 
-  /** A draft is dropped without a save: the note is leaving, gone or the view is closing. */
+  /**
+   * The title draft is saved because the view is leaving `file` (a navigation, `onUnloadFile`) or closing (`onClose`,
+   * LEV-215): what was typed and neither confirmed nor given up goes to the note, as a Markdown tab keeps it. It is
+   * saved as it is — mid composition too, and one held with a reason on its error line (only its own Enter saves
+   * it while the view stays, LEV-202; leaving, the draft cannot stay) — and the save needs the note it was opened on,
+   * which `file` still is here. The re-read and redraw of that note are skipped (`unloading`): everything it gave the
+   * view goes right after. A refused save (the node changed outside the map, E05) cannot keep the draft, so a Notice
+   * says it was not saved. A note that is gone has nothing to save to.
+   */
+  private async saveDraft(file: TFile | null): Promise<void> {
+    if (!this.inlineEditor || !file || this.app.vault.getFileByPath(file.path) !== file) return;
+    this.unloading = true;
+    try { await this.inlineEditor.flush(); }
+    catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
+    finally { this.unloading = false; }
+  }
+
+  /**
+   * The drafts go without a save: the note is gone, or `saveDraft` has saved the title draft already (the note left,
+   * the view closing). The 本文・リンクを編集 modal saves only by its 保存 button; it goes as its Escape does.
+   */
   private dropDraft(): void {
     this.inlineEditor?.dispose();
     this.inlineEditor = undefined;
@@ -751,8 +764,14 @@ export class MindmapView extends FileView {
     return this.refresh();
   }
 
-  /** The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, with no save). */
-  onClose(): Promise<void> {
+  /**
+   * The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, which has
+   * nothing left to save). The title draft is saved first (`saveDraft`, LEV-215), while the view still takes its own
+   * write (`closed` refuses one). Obsidian takes the view's element out before this (1.14.2: `leaf.detach`), which
+   * blurs a focused draft, and that blur's save may be under way already: `flush` waits for it.
+   */
+  async onClose(): Promise<void> {
+    await this.saveDraft(this.file);
     this.closed = true;
     this.dropDraft();
     this.closePopover(false);

@@ -491,8 +491,8 @@ describe('InlineEditor DOM interactions', () => {
   });
 
   it('still saves on the blur of a draft taken out of the document while its window is in the background', async () => {
-    // Closing a tab or a popout window removes the focused draft, which Chromium blurs (LEV-215 decides whether that
-    // save should happen; LEV-216 must not change it).
+    // Closing a tab or a popout window removes the focused draft, which Chromium blurs. The view saves a closing draft
+    // itself too (LEV-215, mindmap-view-close-draft.test.ts); this pins that the blur's own save is still the draft's.
     const { options, input } = fixture('元の名前');
     input.value = '閉じるときの下書き';
     const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);

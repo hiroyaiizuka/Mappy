@@ -48,6 +48,7 @@ export const CASES = [
   { name: 'window-blur-draft', file: 'window-blur-draft.mjs', description: 'E56 下書きの途中でウィンドウのフォーカスが外れて戻ったあとの Enter・押下', shot: false },
   { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
   { name: 'reread-own-writes', file: 'reread-own-writes.mjs', description: 'E58 変わらない原文の再読込の最中に記録された書き込み（このマップのボタン・⌥↑・⌘Z、別のマップのボタン・移動・⌘Z）× Markdown エディタの有無 × ウォッチャーが遅れて届く場合で、空題名・同名の折りたたみが保たれること', shot: false },
+  { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
 ];
 
 const args = process.argv.slice(2);

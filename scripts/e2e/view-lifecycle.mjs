@@ -13,7 +13,7 @@
  * The 50 cycles are not all the same open-and-close: a view closed with a draft open, with the gear's popover open
  * (it holds listeners on the document and the window), after a zoom, and as one of two views of the same note are
  * where a close has something to take down beyond the plain case. None of them changes the note (the draft is the
- * node's own title; what a different draft does on close is LEV-215's, and E50 step 7 records it).
+ * node's own title: closing saves a draft, LEV-215, which E59 and E50 step 7 check).
  *
  * Then the plugin is disabled and enabled 5 times with the map open (the leaf keeps its place and gets the map back;
  * commands, the stylesheet, the `setViewState` routing and the handlers are there once, not once per load), and the
@@ -112,9 +112,9 @@ const act = async (index, kind) => {
     await select('子ノード');
     await cdp.realKey('F2');
     await wait(200);
-    // The draft keeps the node's own title: closing the tab saves a draft through the textarea's blur (the element
-    // leaves the DOM before `onClose` drops it — LEV-215), so a different text would be written and the next cycle
-    // would open another note. What this cycle checks is that a view closed mid-edit is taken down, not the save.
+    // The draft keeps the node's own title: closing the tab saves a draft (LEV-215), so a different text would be
+    // written and the next cycle would open another note. What this cycle checks is that a view closed mid-edit is
+    // taken down, not the save (E59 checks that).
     await cdp.insertText('子ノード');
     did = await evaluate(`${VIEW} return input()?.value === '子ノード';`);
   } else if (kind === 'popover') {

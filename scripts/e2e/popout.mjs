@@ -14,8 +14,8 @@
  * 5. theme: switching Obsidian to the dark theme reaches the popout (its body and the map's canvas are dark).
  * 6. move-to-popout: a map open in the main window moved to a new window (`moveLeafToPopout`, what the tab menu's
  *    「新規ウィンドウに移動」 calls) keeps working there: select + F2 rename by real keys in the new window.
- * 7. close-with-draft: closing a popout window with a draft open leaves the note either as it was or with exactly the
- *    draft saved (which of the two is LEV-215's to settle; the record says which happened), and the window goes.
+ * 7. close-with-draft: closing a popout window with a draft open saves exactly the draft (LEV-215: a closing view
+ *    saves its draft, as a Markdown tab keeps what was typed), and the window goes.
  * 8. cycles: a popout with a map opened and its window closed 10 times.
  * Then: the handler counts on the app's event hubs equal the ones before step 1, every view that lived in a popout
  * can be collected after a full GC, no popout window is left, and no page error happened in any window.
@@ -287,7 +287,7 @@ try {
     await drafting.select('移動するノード');
     await drafting.cdp.realKey('F2');
     await wait(250);
-    await drafting.cdp.insertText('保存されない下書き');
+    await drafting.cdp.insertText('閉じて保存される下書き');
     const editing = await drafting.evaluate(`${VIEW} return !!input();`);
     drafting.cdp.close();
     const closed = await closePopout(mark);
@@ -295,10 +295,9 @@ try {
     const after = await read();
     check(editing, '7-close-with-draft: the draft did not open');
     check(closed, '7-close-with-draft: the window did not close');
-    // Whether closing saves the draft or drops it is not settled (the view's onClose says dropped; a closing tab saves it
-    // through the textarea's blur — LEV-215). Either is accepted here and recorded; anything else is a broken write.
-    const saved = before.replace('- 移動するノード\n', '- 保存されない下書き\n');
-    check(after === before || after === saved, `7-close-with-draft: closing the window left neither the note nor the draft saved: ${JSON.stringify(after)}`);
+    // Closing saves the draft (LEV-215). Through 0.3.8 only the textarea's blur did, and this step accepted either.
+    const saved = before.replace('- 移動するノード\n', '- 閉じて保存される下書き\n');
+    check(after === saved, `7-close-with-draft: closing the window did not save the draft: ${JSON.stringify(after)}`);
     return { editing, closed, outcome: after === before ? 'dropped' : after === saved ? 'saved' : 'other' };
   });
 
