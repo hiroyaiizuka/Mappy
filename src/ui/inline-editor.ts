@@ -163,7 +163,8 @@ export class InlineEditor {
    * the answer is false: the reason is already on screen where the user is typing.
    */
   async confirm(): Promise<boolean> {
-    if (this.pending) await this.pending;
+    // As in `flush`: a save waited for can chain another (a blur's commit after a save in place), which is waited for too.
+    while (this.pending) await this.pending.catch(() => undefined);
     if (this.disposed) return true;
     await this.commit("none");
     return this.disposed;

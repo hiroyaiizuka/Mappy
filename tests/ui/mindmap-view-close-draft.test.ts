@@ -209,6 +209,45 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
     expect(Notice.log).toEqual([]);
   });
 
+  // Review 3: the watcher's own event for the same change, arriving while the save's re-read reads, took its epoch too.
+  it('applies over an unread change on a navigation when the watcher reports it during the re-read', async () => {
+    const { mounted } = await draft('知らせの届く前の下書き');
+    const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+    const silent = vi.spyOn(mounted.app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    mounted.app.put(PATH, other);
+    silent.mockRestore();
+    const store = (mounted.view as unknown as { store: { read: (...args: unknown[]) => Promise<string> } }).store;
+    const read = store.read.bind(store);
+    let reported = false;
+    vi.spyOn(store, 'read').mockImplementation(async (...args: unknown[]) => {
+      if (!reported) { reported = true; mounted.app.vaultEvents.trigger('modify', mounted.file); }
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return read(...args);
+    });
+    await mounted.view.onUnloadFile(mounted.file);
+    expect(mounted.source()).toBe(renamed('知らせの届く前の下書き', other));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 3: the delete watcher's deferred unload ran on a view still saving on close (`closed` comes after the save).
+  it('lets a note deleted while the view closes go without a save or a second unload', async () => {
+    const { mounted, input } = await draft('消えるノートの下書き');
+    const unload = vi.spyOn(mounted.view, 'onUnloadFile');
+    const store = (mounted.view as unknown as { store: { applyOver: (...args: unknown[]) => Promise<unknown> } }).store;
+    const applyOver = store.applyOver.bind(store);
+    vi.spyOn(store, 'applyOver').mockImplementation(async (...args: unknown[]) => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return applyOver(...args);
+    });
+    const closing = closeView(mounted, input, false);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    mounted.app.remove(PATH);
+    await closing;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    // FileView's own delete handling and its teardown unload the note (2); the map's deferred unload made it 3.
+    expect(unload).toHaveBeenCalledTimes(2);
+  });
+
   // Review 2 (passes on the commit before it too, where the second save saw the first's write under way and the draft
   // gone after it): a close right after a navigation began its save must not save twice or clear `unloading` under it.
   it('saves once when the view closes while a navigation is saving the draft', async () => {

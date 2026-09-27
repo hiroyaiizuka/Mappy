@@ -442,6 +442,27 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, '閉じる前に打ち足した下書き');
   });
 
+  // LEV-215 review 3: `confirm` (another edit asked for over the draft, LEV-140) had the same wait as `flush`, and
+  // answered "refused" while the chained commit was about to close the draft.
+  it('confirms after the commit a blur chained after a save in place', async () => {
+    const { options, input, editor } = fixture('元の名前');
+    const inPlace = pendingSave();
+    const chained = pendingSave();
+    options.save.mockReturnValueOnce(inPlace.promise).mockReturnValueOnce(chained.promise);
+    input.value = '離れた下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    windowFocus.mockReturnValue(true);
+    input.dispatchEvent(new FocusEvent('blur'));
+    const confirmed = editor.confirm();
+    inPlace.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    chained.resolve();
+    await expect(confirmed).resolves.toBe(true);
+    expect(options.save).toHaveBeenCalledTimes(2);
+  });
+
   it('does not write again on leaving the window when the note already has the text', async () => {
     // A round trip to another app with nothing typed (or a provisional name left as it is, which Escape can still take
     // back: a write of the same text would drop what the store keeps for that, review 3).
