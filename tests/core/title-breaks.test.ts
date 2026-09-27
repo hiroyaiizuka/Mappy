@@ -165,43 +165,9 @@ describe('line breaks inside a node (LEV-202)', () => {
     expect(renamed(source, title, draft, 'headings')).toBe(expected);
   });
 
-  // 本人の決定（2026-09-26）: 複数行の Setext 見出しも改行を残したまま編集できる。修正前は「複数行の Setext 見出しの
-  // 中では改行できません」で拒否した。Obsidian はこの形を見出しとして読まない（段落と、`---` なら水平線）ので、原文の
-  // 行のままでは閲覧モードとマップの見え方がずれる。見出しを 1 行にして改行を `<br>` で書けば、Obsidian も改行入りの
-  // 見出しとして描き、読み直すと同じ改行に戻る（artifacts/lev-202-node-line-break/record.md）。
-  it.each([
-    ['one line changed', '温泉\n旅行\n===\n', '温泉\n旅行記', '温泉<br>旅行記\n===\n'],
-    ['an indented line', '温泉\n  旅行\n===\n', '温泉\n旅行記', '温泉<br>旅行記\n===\n'],
-    ['a line added', '温泉\n旅行\n===\n', '温泉\n一泊\n旅行', '温泉<br>一泊<br>旅行\n===\n'],
-    ['CRLF', '温泉\r\n旅行\r\n===\r\n', '温泉\n一泊\n旅行', '温泉<br>一泊<br>旅行\r\n===\r\n'],
-    ['a line removed', '温泉\n一泊\n旅行\n---\n', '温泉\n旅行', '温泉<br>旅行\n---\n'],
-    ['a `<br>` beside its lines (the tag kept)', '温泉<BR/>旅行\nです\n===\n', '温泉\n旅行\nでした', '温泉<BR/>旅行<br>でした\n===\n'],
-    ['an empty line', '温泉\n旅行\n===\n', '温泉\n\n旅行', '温泉<br><br>旅行\n===\n'],
-    ['a line a list would start', '温泉\n旅行\n===\n', '温泉\n- 旅行', '温泉<br>- 旅行\n===\n'],
-  ])('writes a multi-line Setext heading with %s as one line', (_case, source, draft, expected) => {
-    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
-    const node = doc.nodes[0];
-    if (!node) throw new Error('Missing fixture heading');
-    const written = applyEdits(source, planEdit(doc, { type: 'rename', nodeId: node.id, title: draft }).edits);
-    expect(written).toBe(expected);
-    const reread = parseMarkdown(written, 'Note', undefined, 'headings');
-    expect(reread.nodes).toHaveLength(1);
-    expect(reread.nodes[0]?.kind).toBe('setext');
-    expect(displayTitle(reread.nodes[0]?.title ?? '')).toBe(draft);
-  });
-
-  it('opens a multi-line Setext heading as its lines, whatever their indent', () => {
-    expect(displayTitle('温泉\n  旅行 <br> です')).toBe('温泉\n旅行\nです');
-    // Without a break it becomes one line, as before LEV-202 (this row held then too: it pins the plain rename).
-    expect(renamed('温泉\n旅行\n===\n', '温泉\n旅行', '温泉旅行', 'headings')).toBe('温泉旅行\n===\n');
-  });
-
-  it('leaves a multi-line Setext heading as written when its draft is confirmed untouched', () => {
-    const source = '温泉\n旅行\n===\n';
-    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
-    const node = find(doc, '温泉\n旅行');
-    expect(applyEdits(source, planEdit(doc, { type: 'rename', nodeId: node.id, title: displayTitle(node.title) }).edits)).toBe(source);
-  });
+  // LEV-202 wrote a multi-line Setext heading (its text over two lines) as one line with `<br>` when edited. Since
+  // LEV-208 that shape is no node (a paragraph, as Obsidian reads it), so there is nothing to edit and the cases went;
+  // what the map does with it is in tests/core/multiline-setext.test.ts.
 
   it('tells same-titled broken nodes apart only by their text, as any other title', () => {
     const doc = parseMarkdown('## 計画\n\n- 温泉<br>旅行\n- 温泉<br/>旅行\n', 'Note', undefined, 'list');

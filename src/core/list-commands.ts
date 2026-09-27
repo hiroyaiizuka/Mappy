@@ -248,7 +248,15 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
       const count = doc.nodes.length - branchSize(node);
       const remove = (edits: TextEdit[]): EditPlan =>
         validate(doc, edits, count, selectionAfterDelete(doc, node, edits));
-      if (node.kind !== 'list') return remove([{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }]);
+      if (node.kind !== 'list') {
+        try {
+          return remove([{ from: sectionRemovalFrom(doc, node), to: node.to, text: '' }]);
+        } catch {
+          // The paragraph above would join the Setext heading below (`intro` + `C\n---` is a paragraph and a rule since
+          // LEV-208, C gone): keep the break, as a blank line, as the headings format does (`deleteHeadingBranch`).
+          return remove([{ from: node.from, to: node.to, text: doc.eol }]);
+        }
+      }
       try {
         // An item leaves with its line break, as it does when moved.
         return remove([{ ...removalRange(doc, node), text: '' }]);

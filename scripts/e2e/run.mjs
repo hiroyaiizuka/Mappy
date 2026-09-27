@@ -34,6 +34,7 @@ export const CASES = [
   { name: 'undo-ids', file: 'undo-ids.mjs', description: 'E47 Undo/Redo の前後の同名・空題名ノードの折りたたみと選択', shot: false },
   { name: 'embed-own-writes', file: 'embed-own-writes.mjs', description: 'E55 マップのタブの編集・切替・Undo/Redo の前後で埋め込みの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
+  { name: 'multiline-setext', file: 'multiline-setext.mjs', description: 'E60 複数行の Setext 見出しは段落（マップの見出しが metadataCache と一致、閲覧モード、周りの編集）', shot: false },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
@@ -49,6 +50,7 @@ export const CASES = [
   { name: 'window-blur-draft', file: 'window-blur-draft.mjs', description: 'E56 下書きの途中でウィンドウのフォーカスが外れて戻ったあとの Enter・押下', shot: false },
   { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
   { name: 'reread-own-writes', file: 'reread-own-writes.mjs', description: 'E58 変わらない原文の再読込の最中に記録された書き込み（このマップのボタン・⌥↑・⌘Z、別のマップのボタン・移動・⌘Z）× Markdown エディタの有無 × ウォッチャーが遅れて届く場合で、空題名・同名の折りたたみが保たれること', shot: false },
+  { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
 ];
 
 const args = process.argv.slice(2);

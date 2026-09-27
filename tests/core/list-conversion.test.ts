@@ -47,8 +47,9 @@ describe("explicit heading to list conversion", () => {
     expect(convert(source)).toBe("## Root\n\n- Child\n  本文");
   });
 
-  it("rejects multiline Setext headings with a specific reason", () => {
-    expect(() => convert("Root\n====\n\nfirst\nsecond\n----\n")).toThrow(/複数行.*Setext/u);
+  // Before LEV-208 this was refused as a multi-line Setext heading; it is Root's body now, as Obsidian reads it.
+  it("carries a multi-line Setext paragraph over as body text", () => {
+    expect(convert("Root\n====\n\nfirst\nsecond\n----\n")).toBe("## Root\n\nfirst\nsecond\n----\n");
   });
 
   it.each([

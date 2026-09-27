@@ -287,6 +287,12 @@ export class MindmapView extends FileView {
   private epoch = 0;
   private ready = false;
   private closed = false;
+  /** Set as `onClose` starts, while it still saves the draft (`closed` comes after): no refresh, recall or layout is scheduled. */
+  private closing = false;
+  /** Settles when the write under way (`saving`) ends, for a draft saved on leaving, which must not be refused for it. */
+  private writeSettled: Promise<void> = Promise.resolve();
+  /** The draft's save on leaving under way (`saveDraft`): a close that follows a navigation waits for it instead of saving twice. */
+  private leaving: Promise<void> | undefined;
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
   private unloading = false;
   private needsFit = true;
@@ -481,19 +487,12 @@ export class MindmapView extends FileView {
   /**
    * The note shown leaves this view (`FileView.loadFile`: another note takes its place, the state names none, the
    * view closes). A draft under way when a navigation replaces the note in this leaf (a link, the explorer,
-   * back／forward — LEV-74) is saved first, as a Markdown tab keeps its buffer; the save needs the note it was
-   * opened on, which `file` still is here, and skips the re-read and redraw of that note (`unloading`), since
-   * everything it gave the view goes right after. A refused save (the note moved on, E05) cannot keep the draft
-   * here. A note that is gone (deleted: FileView then takes the leaf back in its history or to the empty view)
-   * has nothing to save to; a closing view has dropped its draft already (`onClose`).
+   * back／forward — LEV-74) is saved first (`saveDraft`), as a Markdown tab keeps its buffer. A note that is gone
+   * (deleted: FileView then takes the leaf back in its history or to the empty view) has nothing to save to; a
+   * closing view has saved its draft already (`onClose`).
    */
   async onUnloadFile(file: TFile): Promise<void> {
-    if (this.inlineEditor && this.app.vault.getFileByPath(file.path) === file) {
-      this.unloading = true;
-      try { await this.inlineEditor.flush(); }
-      catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
-      finally { this.unloading = false; }
-    }
+    await this.saveDraft(file);
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
@@ -501,7 +500,60 @@ export class MindmapView extends FileView {
     await super.onUnloadFile(file);
   }
 
-  /** A draft is dropped without a save: the note is leaving, gone or the view is closing. */
+  /**
+   * The title draft is saved because the view is leaving `file` (a navigation, `onUnloadFile`) or closing (`onClose`,
+   * LEV-215): what was typed and neither confirmed nor given up goes to the note, as a Markdown tab keeps it. It is
+   * saved as it is — mid composition too, and one held with a reason on its error line (only its own Enter saves
+   * it while the view stays, LEV-202; leaving, the draft cannot stay) — and the save needs the note it was opened on,
+   * which `file` still is here. The re-read and redraw of that note are skipped (`unloading`): everything it gave the
+   * view goes right after. A refused save (the node changed outside the map, E05) cannot keep the draft, so a Notice
+   * says it was not saved. A note that is gone has nothing to save to.
+   */
+  private async saveDraft(file: TFile | null): Promise<void> {
+    if (this.leaving) { await this.leaving; return; }
+    const task = this.saveDraftOnce(file).finally(() => { if (this.leaving === task) this.leaving = undefined; });
+    this.leaving = task;
+    await task;
+  }
+
+  private async saveDraftOnce(file: TFile | null): Promise<void> {
+    const editor = this.inlineEditor;
+    if (!editor || !file || this.app.vault.getFileByPath(file.path) !== file) return;
+    // Another write of this view's under way (an image pasted onto the node, LEV-142) would refuse the save
+    // (`writeOwn`): it goes first, and draws what it wrote before `unloading` stops its re-read, so the draft is planned on it.
+    while (this.saving) await this.writeSettled;
+    if (this.inlineEditor !== editor || this.file !== file || this.app.vault.getFileByPath(file.path) !== file) return;
+    this.unloading = true;
+    try {
+      try { await editor.flush(); }
+      catch (error) {
+        // A change the map had not read yet (E05): read the note, as the refusal of an Enter does, and apply the draft to
+        // it, as the Enter after that would. A node that cannot be told apart after the change (same titles) is refused again.
+        if (!(error instanceof Error) || error.message !== conflictMessage) throw error;
+        await this.readNow();
+        await editor.flush();
+      }
+    } catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
+    finally { this.unloading = false; }
+  }
+
+  /**
+   * Read the note now and draw it: the refusal's own re-read, or a watcher's for the same change (a navigation schedules
+   * them; `closing` does not), would take the read's epoch and leave it unpublished, so each is read in its place until
+   * none is left.
+   */
+  private async readNow(): Promise<void> {
+    do {
+      if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+      await this.refresh();
+    } while (this.refreshTimer !== undefined);
+  }
+
+  /**
+   * The drafts go without a save: the note is gone, or `saveDraft` has saved the title draft already (the note left,
+   * the view closing). The 本文・リンクを編集 modal saves only by its 保存 button; it goes as its Escape does.
+   */
   private dropDraft(): void {
     this.inlineEditor?.dispose();
     this.inlineEditor = undefined;
@@ -586,7 +638,7 @@ export class MindmapView extends FileView {
   }
 
   onOpen(): Promise<void> {
-    this.closed = false;
+    this.closed = false; this.closing = false;
     this.syncNavigation();
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.syncNavigation(); }));
     this.contentEl.empty();
@@ -726,7 +778,8 @@ export class MindmapView extends FileView {
       if (!note || file !== note) return;
       this.dropDraft();
       this.contentEl.win.setTimeout(() => {
-        if (this.closed || this.file !== note) return;
+        // A closing view unloads the note itself (FileView's teardown), once its save on close is done.
+        if (this.closed || this.closing || this.file !== note) return;
         this.run(async () => {
           await this.onUnloadFile(note);
           if (this.file !== note) return;
@@ -751,16 +804,33 @@ export class MindmapView extends FileView {
     return this.refresh();
   }
 
-  /** The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, with no save). */
-  onClose(): Promise<void> {
+  /**
+   * The view's own teardown, then FileView's: it empties the content and unloads the note (`onUnloadFile`, which has
+   * nothing left to save). The title draft is saved first (`saveDraft`, LEV-215), while the view still takes its own
+   * write (`closed` refuses one). Obsidian takes the view's element out before this (1.14.2: `leaf.detach`), which
+   * blurs a focused draft, and that blur's save may be under way already: `flush` waits for it. The popover and the
+   * timers go first (`closing` keeps new ones from being scheduled): nothing scheduled reads or draws into the view while
+   * the save runs; what the save itself needs does (a write under way finishing, the re-read of a refused save). The save stays here rather than in `onUnloadFile` alone: it must run before `closed` is set, and `closed`
+   * must be set before FileView's teardown unloads the note.
+   */
+  async onClose(): Promise<void> {
+    this.closing = true;
+    this.closePopover(false);
+    this.stopTimers();
+    // A read already under way is not the closing view's to publish (the save's own re-read takes a newer epoch).
+    this.epoch += 1;
+    await this.saveDraft(this.file);
     this.closed = true;
     this.dropDraft();
-    this.closePopover(false);
     this.epoch += 1;
+    return super.onClose();
+  }
+
+  private stopTimers(): void {
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
     if (this.recallTimer !== undefined) this.contentEl.win.clearTimeout(this.recallTimer);
     if (this.layoutFrame !== undefined) this.contentEl.win.cancelAnimationFrame(this.layoutFrame);
-    return super.onClose();
+    this.refreshTimer = undefined; this.recallTimer = undefined; this.layoutFrame = undefined;
   }
 
   onResize(): void {
@@ -1116,6 +1186,7 @@ export class MindmapView extends FileView {
   }
 
   private scheduleRefresh(): void {
+    if (this.closing) return;
     // Invalidate pending reads immediately, before the debounced refresh begins.
     this.epoch += 1;
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
@@ -1271,6 +1342,7 @@ export class MindmapView extends FileView {
   }
 
   private scheduleRecall(): void {
+    if (this.closing) return;
     if (this.recallTimer !== undefined) this.contentEl.win.clearTimeout(this.recallTimer);
     this.recallTimer = this.contentEl.win.setTimeout(() => { this.recallTimer = undefined; this.run(() => this.refreshCalls()); }, 45);
   }
@@ -1442,7 +1514,7 @@ export class MindmapView extends FileView {
    * asking for the same frame as a pointer move still counts.
    */
   private requestLayout(carried: boolean): void {
-    if (!this.ready || this.closed) return;
+    if (!this.ready || this.closed || this.closing) return;
     if (!carried) this.snapIndexStale = true;
     if (this.layoutFrame !== undefined) return;
     this.layoutFrame = this.contentEl.win.requestAnimationFrame(() => {
@@ -2005,6 +2077,8 @@ export class MindmapView extends FileView {
     const drafts = this.currentDrafts();
     const planned = this.document;
     this.saving = true;
+    let done = (): void => undefined;
+    this.writeSettled = new Promise(resolve => { done = resolve; });
     try {
       let write: CarriedWrite;
       // A layout button pressed after the edit was planned (LEV-196) is carried over by the store.
@@ -2026,7 +2100,7 @@ export class MindmapView extends FileView {
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh(shown);
       return write;
-    } finally { this.saving = false; }
+    } finally { this.saving = false; done(); }
   }
 
   /**
