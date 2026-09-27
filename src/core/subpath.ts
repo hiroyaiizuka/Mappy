@@ -1,4 +1,5 @@
 import { parser } from '@lezer/markdown';
+import { isMultilineSetext, parseableSource } from './markdown';
 
 /** Blocks the parser reads as literal text: nothing inside them is a heading or carries a block id. */
 const LITERAL = new Set(['FencedCode', 'CodeBlock', 'HTMLBlock', 'Comment', 'CommentBlock']);
@@ -31,7 +32,10 @@ export function locateSubpath(source: string, subpath: string): number | null {
   if (segments.length === 1 && first.startsWith('[^')) return null;
   const literals: { from: number; to: number }[] = [];
   const headings: { level: number; text: string; from: number }[] = [];
-  parser.parse(source).iterate({
+  // The map's reading of the note (`parseableSource`) decides what is a heading, so a link finds the headings the map
+  // shows; their text is the note's own, comments included, as the node titles and Obsidian's headings are.
+  const readable = parseableSource(source);
+  parser.parse(readable).iterate({
     enter(node) {
       if (LITERAL.has(node.name)) { literals.push({ from: node.from, to: node.to }); return false; }
       const match = node.name.match(/^(ATX|Setext)Heading([1-6])$/u);
@@ -42,6 +46,8 @@ export function locateSubpath(source: string, subpath: string): number | null {
       const text = match[1] === 'ATX'
         ? source.slice(mark.to, marks[1]?.from ?? node.to)
         : source.slice(node.from, lineStart(source, mark.from));
+      // Not a heading to Obsidian, so no link reaches it (LEV-208).
+      if (match[1] === 'Setext' && isMultilineSetext(text)) return false;
       headings.push({ level: Number(match[2]), text, from: lineStart(source, node.from) });
       return false;
     },

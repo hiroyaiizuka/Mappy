@@ -1,7 +1,7 @@
 /**
  * E40 (docs/harness.md): a line break inside a node (LEV-202). 本人の操作（F2 で開いて Shift+Enter で改行し、Enter で
  * 確定する）を対象の形ごとに回す: リストのノートの項目・本文のルート（H2）・トピック・Tab で作ったノード（仮の名前を上書き）と、見出しの
- * ノートの ATX 見出し・1 行の Setext 見出し・複数行の Setext 見出し（1 行にして <br>）、拒否される形（\ の直後）。続けて、そのまま
+ * ノートの ATX 見出し・1 行の Setext 見出し、拒否される形（\ の直後）。続けて、そのまま
  * 確定しても原文が変わらないこと、⌘Z／⌘⇧Z、複数行の文の挿入（貼り付けと同じ input）、拒否された下書きがダブルクリックで
  * 消えないこと、Markdown 側（外部の書き込み）で書いた `<br>` がマップに改行で現れること、Obsidian 自身の描画
  * （閲覧モード）が `<br>` を改行にし、インラインコードの中は文字のままにすることを見る。
@@ -238,9 +238,10 @@ try {
   if (value('--shot')) await step('shot', async () => ({ path: await cdp.screenshot(value('--shot')) }));
   if (!flag('--keep')) await step('clean', clean);
 
-  // A note in the older heading format: an ATX heading, a one-line Setext heading (written with `<br>` as ATX is), a
-  // multi-line one (written as one line with `<br>`), and the refusal of a break right after a backslash (the tag would be
-  // text there), whose draft stays with its reason.
+  // A note in the older heading format: an ATX heading, a one-line Setext heading (written with `<br>` as ATX is), and
+  // the refusal of a break right after a backslash (the tag would be text there), whose draft stays with its reason.
+  // The fixture's `複数\n行\n---` was a multi-line Setext heading LEV-202 wrote as one line; since LEV-208 it is a
+  // paragraph and a rule in 設定's body, as Obsidian reads it, and E60 (multiline-setext.mjs) looks at it.
   required(record, 'open-headings', await step('open-headings', makeOpenStep(evaluate, { note: HEADINGS_NOTE, source: HEADINGS })));
   await step('break-atx', async () => {
     const result = await breakAndConfirm('温泉旅行', '温泉', '旅行');
@@ -255,16 +256,6 @@ try {
     check(result.messages.length === 0 && !result.editing, `Setext: ${JSON.stringify(result.messages)}`);
     const want = before.replace('\n設定\n---\n', '\n設<br>定\n---\n');
     check(result.source === want, `Setext: unexpected source:\nexpected: ${JSON.stringify(want)}\nactual:   ${JSON.stringify(result.source)}`);
-    return result;
-  });
-  // A multi-line Setext heading is written as one line with `<br>` (本人の決定 2026-09-26; before, the edit was
-  // refused): Obsidian does not read the two-line form as a heading, and reads this one as the heading the map shows.
-  await step('break-setext-multi-line', async () => {
-    const before = await source();
-    const result = await breakAndConfirm('複数 行', '複数', '行の見出し');
-    check(result.messages.length === 0 && !result.editing, `multi-line Setext: ${JSON.stringify(result.messages)}`);
-    const want = before.replace('\n複数\n行\n---\n', '\n複数<br>行の見出し\n---\n');
-    check(result.source === want, `multi-line Setext: unexpected source:\nexpected: ${JSON.stringify(want)}\nactual:   ${JSON.stringify(result.source)}`);
     return result;
   });
   await step('refused-after-backslash', async () => {
