@@ -225,7 +225,8 @@ export class InlineEditor {
    * its error, which is then saved here or refused to the caller. A disposed editor has nothing to do.
    */
   async flush(): Promise<void> {
-    if (this.pending) await this.pending;
+    // A save waited for can start another (a blur's commit chained after a save in place, LEV-216): wait for each.
+    while (this.pending) await this.pending.catch(() => undefined);
     if (this.busy || this.disposed) return;
     this.busy = true;
     this.input.readOnly = true;

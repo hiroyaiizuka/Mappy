@@ -290,7 +290,9 @@ export class MindmapView extends FileView {
   /** Set as `onClose` starts, while it still saves the draft (`closed` comes after): no refresh, recall or layout is scheduled. */
   private closing = false;
   /** Settles when the write under way (`saving`) ends, for a draft saved on leaving, which must not be refused for it. */
-  private written: Promise<void> = Promise.resolve();
+  private writeSettled: Promise<void> = Promise.resolve();
+  /** The draft's save on leaving under way (`saveDraft`): a close that follows a navigation waits for it instead of saving twice. */
+  private leaving: Promise<void> | undefined;
   /** True while `onUnloadFile` saves a draft: the note is being left, so its re-read and redraw after that save are skipped. */
   private unloading = false;
   private needsFit = true;
@@ -508,25 +510,36 @@ export class MindmapView extends FileView {
    * says it was not saved. A note that is gone has nothing to save to.
    */
   private async saveDraft(file: TFile | null): Promise<void> {
+    if (this.leaving) { await this.leaving; return; }
+    const task = this.saveDraftOnce(file).finally(() => { if (this.leaving === task) this.leaving = undefined; });
+    this.leaving = task;
+    await task;
+  }
+
+  private async saveDraftOnce(file: TFile | null): Promise<void> {
     const editor = this.inlineEditor;
     if (!editor || !file || this.app.vault.getFileByPath(file.path) !== file) return;
     // Another write of this view's under way (an image pasted onto the node, LEV-142) would refuse the save
     // (`writeOwn`): it goes first, and draws what it wrote before `unloading` stops its re-read, so the draft is planned on it.
-    while (this.saving) await this.written;
+    while (this.saving) await this.writeSettled;
     if (this.inlineEditor !== editor || this.file !== file) return;
     this.unloading = true;
     try {
       try { await editor.flush(); }
       catch (error) {
-        // A change the map had not read yet (E05; its watcher's re-read is not scheduled on a closing view): read the
-        // note, as the refusal of an Enter does, and apply the draft to it, as the Enter after that would.
+        // A change the map had not read yet (E05): read the note, as the refusal of an Enter does, and apply the draft to
+        // it, as the Enter after that would. The re-read the refusal scheduled (none on a closing view) would take this
+        // one's epoch, so it goes; a node that cannot be told apart after the change (same titles) is refused again.
         if (!(error instanceof Error) || error.message !== conflictMessage) throw error;
+        if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
+        this.refreshTimer = undefined;
         await this.refresh();
         await editor.flush();
       }
     } catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
     finally { this.unloading = false; }
   }
+
 
 
   /**
@@ -787,8 +800,8 @@ export class MindmapView extends FileView {
    * nothing left to save). The title draft is saved first (`saveDraft`, LEV-215), while the view still takes its own
    * write (`closed` refuses one). Obsidian takes the view's element out before this (1.14.2: `leaf.detach`), which
    * blurs a focused draft, and that blur's save may be under way already: `flush` waits for it. The popover and the
-   * timers go first (`closing` keeps new ones from being scheduled), so nothing reads or draws into the view while the
-   * save runs. The save stays here rather than in `onUnloadFile` alone: it must run before `closed` is set, and `closed`
+   * timers go first (`closing` keeps new ones from being scheduled): nothing scheduled reads or draws into the view while
+   * the save runs; what the save itself needs does (a write under way finishing, the re-read of a refused save). The save stays here rather than in `onUnloadFile` alone: it must run before `closed` is set, and `closed`
    * must be set before FileView's teardown unloads the note.
    */
   async onClose(): Promise<void> {
@@ -799,7 +812,6 @@ export class MindmapView extends FileView {
     this.closed = true;
     this.dropDraft();
     this.epoch += 1;
-    this.stopTimers();
     return super.onClose();
   }
 
@@ -2055,7 +2067,7 @@ export class MindmapView extends FileView {
     const planned = this.document;
     this.saving = true;
     let done = (): void => undefined;
-    this.written = new Promise(resolve => { done = resolve; });
+    this.writeSettled = new Promise(resolve => { done = resolve; });
     try {
       let write: CarriedWrite;
       // A layout button pressed after the edit was planned (LEV-196) is carried over by the store.

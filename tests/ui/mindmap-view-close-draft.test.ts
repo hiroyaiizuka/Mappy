@@ -144,8 +144,9 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
   });
 
   // Review 1: `onClose` awaits the save before it sets `closed`, and the refresh a watcher had scheduled then read and
-  // drew the note into the view being closed. The timers stop as the close starts.
-  it('reads nothing more while the closing view saves its draft', async () => {
+  // drew the note into the view being closed. The timers stop as the close starts (the save's own re-read of a refused
+  // save still reads: the rows above).
+  it('runs no re-read a watcher scheduled while the closing view saves its draft', async () => {
     const { mounted, input } = await draft('読み直さずに閉じた下書き');
     const store = (mounted.view as unknown as { store: { applyOver: (...args: unknown[]) => Promise<unknown>; read: (...args: unknown[]) => Promise<string> } }).store;
     const applyOver = store.applyOver.bind(store);
@@ -160,6 +161,70 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
     await new Promise(resolve => setTimeout(resolve, 150));
     expect(mounted.source()).toBe(renamed('読み直さずに閉じた下書き'));
     expect(read).not.toHaveBeenCalled();
+  });
+
+  // Review 2: the re-read on close must not hand the draft to another node of the same title (AGENTS.md: 同名見出し).
+  it('does not rename another node of the same title after a change it had not read', async () => {
+    const twins = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '  - 子ノード', '- 別のノード', ''].join('\n');
+    const mounted = await mountMapView(PATH, twins);
+    opened.push(mounted);
+    const second = Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'))
+      .filter(item => item.textContent?.includes('子ノード'))[1];
+    if (!second) throw new Error('no second 子ノード');
+    second.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    mounted.key(second, 'F2');
+    await mounted.settle();
+    const input = mounted.editor();
+    if (!input) throw new Error('F2 did not open the draft');
+    input.value = '二つ目の下書き';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // A line inserted above the twins outside the map, not heard yet.
+    const other = twins.replace('- 親\n', '- 親\n  - 外で足した\n');
+    const silent = vi.spyOn(mounted.app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    mounted.app.put(PATH, other);
+    silent.mockRestore();
+    await closeView(mounted, input, true);
+    // An external change carries ids only where titles are unique (draftTarget): the twin is not guessed, nothing is
+    // written, and the Notice says so. Passes on the commit before too: it pins that the retry keeps that refusal.
+    expect(mounted.source()).toBe(other);
+    expect(Notice.log).toEqual(['編集中の内容を保存できませんでした。編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。']);
+  });
+
+  // Review 2: on a navigation (not a close, so the refusal's own re-read is scheduled), that re-read's timer fired while
+  // the save's re-read was reading and took its epoch, so the retry was planned on the old note and refused again.
+  it('applies over an unread change on a navigation even when the read is slower than the re-read debounce', async () => {
+    const { mounted } = await draft('移動の前の下書き');
+    const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+    const silent = vi.spyOn(mounted.app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    mounted.app.put(PATH, other);
+    silent.mockRestore();
+    const store = (mounted.view as unknown as { store: { read: (...args: unknown[]) => Promise<string> } }).store;
+    const read = store.read.bind(store);
+    vi.spyOn(store, 'read').mockImplementation(async (...args: unknown[]) => {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return read(...args);
+    });
+    await mounted.view.onUnloadFile(mounted.file);
+    expect(mounted.source()).toBe(renamed('移動の前の下書き', other));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 2 (passes on the commit before it too, where the second save saw the first's write under way and the draft
+  // gone after it): a close right after a navigation began its save must not save twice or clear `unloading` under it.
+  it('saves once when the view closes while a navigation is saving the draft', async () => {
+    const { mounted, input } = await draft('移動の最中に閉じた下書き');
+    const store = (mounted.view as unknown as { store: { applyOver: (...args: unknown[]) => Promise<unknown> } }).store;
+    const applyOver = store.applyOver.bind(store);
+    const writes = vi.spyOn(store, 'applyOver').mockImplementation(async (...args: unknown[]) => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return applyOver(...args);
+    });
+    const leaving = mounted.view.onUnloadFile(mounted.file);
+    await closeView(mounted, input, false);
+    await leaving;
+    expect(mounted.source()).toBe(renamed('移動の最中に閉じた下書き'));
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(Notice.log).toEqual([]);
   });
 
   it('leaves a node changed outside the map as it is, and says the draft was not saved', async () => {

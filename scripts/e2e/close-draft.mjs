@@ -10,6 +10,8 @@
  *    draft showed as it closed (the case checks that a composition really was under way first).
  * 3. held-refreshed: F2 → text → another line changed outside the map just before the Enter, which is refused and
  *    held with the line saying the same Enter now applies it → the tab closed: the draft is applied over the change.
+ * 3b. unread: F2 → text → another line changed outside the map and the tab closed at once, before the map reads it: the
+ *    save on close is refused, re-reads the note and applies the draft over the change (review 1).
  * 4. held-own-node: F2 → text → the node itself changed outside the map → the Enter is refused and held → the tab
  *    closed: the note keeps the outside change, and a Notice says the draft was not saved (not a silent loss).
  * 5. new-node: Tab adds a child under its provisional name → the tab closed: the node stays as added (only Escape
@@ -20,7 +22,7 @@
  * The popout window closed with a plain draft is E50's step 7 (judged "saved" since LEV-215).
  *
  * Rows 1, 5 and 6 pass on 0.3.8 too (the draft's blur saved rows 1 and 6; row 5 writes nothing): they pin that the save
- * on close keeps those, not that it was needed. Rows 2, 3, 4 and 7 fail there (lost without a word).
+ * on close keeps those, not that it was needed. Rows 2, 3, 3b, 4 and 7 fail there (lost without a word).
  *
  * With `--exits`, two ends that do not go through the view's `onClose` follow, recorded and not judged (what they do
  * is Obsidian's, and the PR lists them), except that a page error after the reload or a quit that did not happen
@@ -186,6 +188,29 @@ try {
     check(closed.source === renamed('再読込のあとの下書き', other), `3-held-refreshed: closing did not apply the held draft over the change: ${JSON.stringify(closed.source)}`);
     check(closed.notices.length === 0, `3-held-refreshed: a Notice showed: ${JSON.stringify(closed.notices)}`);
     return { held, ...closed };
+  });
+
+  await step('3b-unread', async () => {
+    await reset();
+    await open();
+    await openDraft('読む前に閉じた下書き');
+    const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+    // Written behind the map's back and the tab closed at once, before any watcher: the save on close is planned on the
+    // note the map last read, refused, and applied after the save's own re-read (review 1 of LEV-215).
+    const active = await evaluate(`${LEAF} return app.workspace.activeLeaf === leaf;`);
+    if (!active) throw new Error('the map is not the active leaf; workspace:close would close another tab');
+    const seen = await evaluate(`${VIEW} const shown = view.document?.source;
+      await app.vault.adapter.write(${JSON.stringify(NOTE)}, ${JSON.stringify(other)});
+      const unread = view.document?.source === shown;
+      window.__mappyE2E = null; app.commands.executeCommandById('workspace:close'); return { unread };`);
+    if (!seen.unread) throw new Error('the map read the change before the close (the step would prove nothing)');
+    await wait(1500);
+    const closed = await evaluate(`${LEAF} return { gone: !leaf, source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
+      notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()) };`);
+    check(closed.gone, '3b-unread: the tab did not close');
+    check(closed.source === renamed('読む前に閉じた下書き', other), `3b-unread: closing did not apply the draft over the unread change: ${JSON.stringify(closed.source)}`);
+    check(closed.notices.length === 0, `3b-unread: a Notice showed: ${JSON.stringify(closed.notices)}`);
+    return closed;
   });
 
   await step('4-held-own-node', async () => {
