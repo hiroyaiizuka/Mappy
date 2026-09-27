@@ -45,6 +45,43 @@ describe('source-preserving Markdown projection', () => {
     expect(source.slice(child?.from, child?.headingTo)).toBe(`${indent}+ Child`);
   });
 
+  // LEV-195 (decision 2026-09-27): a list whose indentation mixes tabs and spaces is read the way the editor's
+  // live preview reads it (CommonMark: a tab stops at the next multiple of 4 columns), not the way Obsidian's
+  // reading view and metadata cache do. The three lines are what Obsidian's own Tab／Shift+Tab (`useTab`,
+  // `tabSize: 4`) wrote on 階層9の兄弟 in LEV-17's `deep-branches` step 8. `depth` (階層9の兄弟) and `afterDepth`
+  // (the next line, 階層8の兄弟) are the list levels the live preview drew for those lines (the record's `editor`
+  // column, from `HyperMD-list-line-N`; Obsidian 1.14.2, 2026-09-25, full-run-6); the parents follow from the
+  // levels and line order. The same record's metadata cache gave 階層9の兄弟 the parent 階層8, 階層4 and 階層3
+  // row by row, and in the second and third rows did not count 階層8の兄弟 as a list item.
+  it.each([
+    ['\t                ', 10, '階層9', 8, '階層7'],
+    ['\t\t\t\t', 9, '階層8', 8, '階層7'],
+    ['\t\t\t', 7, '階層6', 8, '階層9の兄弟'],
+  ])('reads mixed tab and space indentation %j as the live preview does', (indent, depth, parent, afterDepth, afterParent) => {
+    const levels = Array.from({ length: 9 }, (_, index) => `${'  '.repeat(index)}- 階層${index + 1}`);
+    const source = ['## 深い枝の確認', '', ...levels, `${indent}- 階層9の兄弟`, '              - 階層8の兄弟', '- 別の枝', '  - 移動先', ''].join('\n');
+    const doc = parseMarkdown(source, 'File');
+    const node = (title: string) => doc.nodes.find(item => item.title === title);
+    const listDepth = (title: string) => (node(title)?.level ?? 0) - 2;
+    const parentTitle = (title: string) => doc.nodes.find(item => item.id === node(title)?.parentId)?.title;
+    expect(doc.nodes.map(item => item.title)).toEqual(['深い枝の確認', ...levels.map(line => line.trim().slice(2)), '階層9の兄弟', '階層8の兄弟', '別の枝', '移動先']);
+    levels.forEach((_, index) => expect(listDepth(`階層${index + 1}`)).toBe(index + 1));
+    expect([listDepth('階層9の兄弟'), parentTitle('階層9の兄弟')]).toEqual([depth, parent]);
+    expect([listDepth('階層8の兄弟'), parentTitle('階層8の兄弟')]).toEqual([afterDepth, afterParent]);
+    expect([listDepth('別の枝'), listDepth('移動先')]).toEqual([1, 2]);
+  });
+
+  // The rows above all start with their tabs, where a tab stop and "a tab is 4 columns" agree. Spaces before a
+  // tab tell them apart: `  \t` reaches column 4 (the next stop), not 6, so C is P's sibling, not its child,
+  // and its text starts at column 6. Mappy writes spaces before a tab itself when it moves a tab-indented
+  // branch under a space-indented parent (LEV-225; README's known limitations).
+  it('stops a tab after spaces at the next multiple of 4 columns', () => {
+    const doc = parseMarkdown('## R\n- A\n  - B\n    - P\n  \t- C\n', 'File');
+    const c = doc.nodes.find(node => node.title === 'C');
+    expect(doc.nodes.find(node => node.id === c?.parentId)?.title).toBe('B');
+    expect(c?.list).toEqual({ indent: '  \t', marker: '-', contentIndent: ' '.repeat(6) });
+  });
+
   it('supports list depth beyond H6 and reflects indentation changes with stable unique IDs', () => {
     const source = '## Root\n' + Array.from({ length: 12 }, (_, index) => `${'  '.repeat(index)}- Node ${index}`).join('\n');
     const first = parseMarkdown(source, 'File');

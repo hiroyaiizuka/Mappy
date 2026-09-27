@@ -8,6 +8,7 @@
 - [フィードバックを反映した表示・入力仕様](interaction-revision.md)
 - [チケット運用とワーカーの手順](linear-workflow.md)
 - [H2 とリストの形式の受入条件](list-format-revision.md)
+- [コミュニティ公開審査の要件と英語化の方式](community-submission.md)
 - [リリースの作り方と注意点](harness.md#リリース手順)（正本。リポジトリ本体には `main.js` を含めず、Release の添付ファイルとしてだけ配る）
 
 Node.js は `.nvmrc` のバージョンを使用します。

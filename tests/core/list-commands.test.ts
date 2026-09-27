@@ -455,3 +455,46 @@ describe('positioned moves for drag and drop (list format)', () => {
     expect(resolveDrop(doc, p.id, find(doc, 'Q').id, 'after')).toEqual({ type: 'move', nodeId: p.id, parentId: root.id, index: 1 });
   });
 });
+
+// LEV-195: README's known limitations tell users to indent every list in a note with spaces only, because then
+// no map operation writes a tab into an item's indentation. The limit of that promise is the note: a branch
+// indented with tabs brings its tabs along when it is moved into a space-indented list, and a tab-indented list
+// can get spaces from the map (both LEV-225). One step of each structure command (add a child or sibling, move
+// up or down, delete, detach, reparent, move to a position) on every node of a note whose lists are all
+// space-indented; adding a topic, renaming and body edits are not covered (tabs typed into a body are the
+// user's text). A refusal (a plain `Error` with the message the map shows) is skipped; anything else throws.
+describe('notes indented with spaces only stay free of tabs', () => {
+  const source = '## R\n- A\n  - A1\n    - A1a\n      body\n  - A2\n- B\n    - B1\n    - B2\n- C\n\n## S\n- D\n  - D1\n';
+
+  function commands(doc: MindDocument): EditCommand[] {
+    return doc.nodes.flatMap((node): EditCommand[] => [
+      ...(['add-child', 'add-sibling', 'move-up', 'move-down', 'delete', 'detach'] as const).map(type => ({ type, nodeId: node.id })),
+      ...doc.nodes.flatMap((parent): EditCommand[] => [
+        { type: 'reparent', nodeId: node.id, parentId: parent.id },
+        ...[0, 1, 2].map((index): EditCommand => ({ type: 'move', nodeId: node.id, parentId: parent.id, index })),
+      ]),
+    ]);
+  }
+
+  it('writes no tab at the start of any line', () => {
+    const doc = parse(source);
+    const counts = { applied: 0, unchanged: 0, refused: 0 };
+    for (const command of commands(doc)) {
+      let edits;
+      try {
+        edits = planEdit(doc, command).edits;
+      } catch (error) {
+        if (!(error instanceof Error) || error.constructor !== Error) throw error;
+        counts.refused++;
+        continue;
+      }
+      if (edits.length === 0) { counts.unchanged++; continue; }
+      counts.applied++;
+      const result = applyEdits(source, edits);
+      const tabbed = result.split('\n').filter(line => /^[ \t]*\t/u.test(line));
+      expect(tabbed, `${JSON.stringify(command)} → ${JSON.stringify(result)}`).toEqual([]);
+    }
+    // A floor, not an exact count, so that allowing or refusing some other move does not fail a test about tabs.
+    expect(counts.applied).toBeGreaterThan(300);
+  });
+});
