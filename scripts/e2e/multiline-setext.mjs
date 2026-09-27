@@ -4,7 +4,8 @@
  * in the one line included, stay headings. The matrix is the person's operation × the shape:
  *
  *   shapes     multi-line `===` / `---`, a one-line Setext, a `<br>` in the one line, in the headings format (under a
- *              section) and in the list format (between items of a section, inside a list item)
+ *              section) and in the list format (between items of a section, inside a list item); `%%…%%` comments
+ *              within a line and over several lines next to a Setext heading
  *   operations open the map without editing (the note is not rewritten), then F2 → Shift+Enter → Enter on the node
  *              that holds the paragraph, on the node after it and on the one-line Setext heading (LEV-202's `<br>`)
  *
@@ -33,6 +34,18 @@ const HEADINGS = [
 
 const LIST_NOTE = 'Fixtures/E2E-multiline-setext-list.md';
 const PREVIEW_NOTE = 'Fixtures/E2E-multiline-setext-preview.md';
+// `%%…%%` next to a Setext heading (code review of LEV-208, round 2): a comment within one line is text of its line to
+// Obsidian (`%%memo%%` above makes `Title` two lines; `%%c%% Title` is a heading), one over several lines is blank.
+const COMMENTS_NOTE = 'Fixtures/E2E-multiline-setext-comments.md';
+const COMMENTS = [
+  '---', 'mappy: true', '---',
+  '# 前', '',
+  '%%memo%%', '一つ目', '===', '',
+  '%%c%% 二つ目', '---', '',
+  '%%', '# 隠れた', '%%', '三つ目', '---', '',
+  '四つ目', '%%c%%', '===', '',
+  '## 後', '',
+].join('\n');
 const LIST = [
   '---', 'mappy: true', '---',
   '## 区画', '',
@@ -211,6 +224,14 @@ try {
     return { ...result, agrees: await agrees('edit-list-item', [[2, '区画']], ['区画', '項目', '次の 項目', '最後']) };
   });
   if (!flag('--keep')) await step('clean-list', clean);
+
+  required(record, 'open-comments', await step('open-comments', makeOpenStep(evaluate, { note: COMMENTS_NOTE, source: COMMENTS })));
+  await step('comments-unedited', async () => {
+    const read = await agrees('comments-unedited', [[1, '前'], [2, '%%c%% 二つ目'], [2, '三つ目'], [2, '後']], ['前', '二つ目', '三つ目', '後']);
+    check(await source() === COMMENTS, 'opening the map changed the note');
+    return read;
+  });
+  if (!flag('--keep')) await step('clean-comments', clean);
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {

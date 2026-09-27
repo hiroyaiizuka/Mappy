@@ -98,17 +98,29 @@ describe('a multi-line Setext heading is a paragraph, as Obsidian reads it (LEV-
     expect(findSection(doc, '一行')?.title).toBe('一行');
   });
 
-  // Code review of LEV-208 (round 1): the map reads the note with `%%…%%` blanked out and the link resolution read it
-  // raw, so a comment line above a one-line Setext heading made it two lines to one and one line to the other.
+  // Code review of LEV-208 (rounds 1–2): whether a line holding a `%%…%%` comment is a line of the paragraph decides
+  // whether a Setext heading below it is one line or two. Obsidian 1.14.2 (artifacts/lev-208-multiline-setext/
+  // obsidian-comments*.json, metadataCache `headings`): a comment within one line is text of the paragraph (the line is
+  // neither blank nor indented by it); a comment over several lines is a blank line. The map blanked both, so it showed
+  // `Title` below a `%%memo%%` line (two lines to Obsidian, no heading) and lost `%%c%% Title` (a heading to Obsidian).
   it.each([
-    ['a comment line above', '# 前\n\n%%memo%%\nTitle\n===\n'],
-    // Held before the fix too (the frontmatter's closing `---` ends the paragraph either way): pins the other mask.
-    ['a frontmatter right above', '---\nk: v\n---\nTitle\n===\n'],
-  ])('the map and a link read the same heading with %s', (_case, source) => {
+    ['a comment line above', '# 前\n\n%%memo%%\nTitle\n===\n', [[1, '前']]],
+    ['a comment leading the line', '# 前\n\n%%c%% Title\n===\n', [[1, '前'], [1, '%%c%% Title']]],
+    ['a comment inside an ATX heading', '# Intro\n\n# A %%x%% B\n', [[1, 'Intro'], [1, 'A %%x%% B']]],
+    ['a comment ending the Setext line', '# Intro\n\nTitle %%c%%\n===\n', [[1, 'Intro'], [1, 'Title %%c%%']]],
+    ['a comment block hiding headings', '# 前\n\n%%\n# Hidden\nSetext\n=====\n%%\n# Visible\n', [[1, '前'], [1, 'Visible']]],
+    ['only a comment over `===`', '# 前\n\n%%c%%\n===\n', [[1, '前'], [1, '%%c%%']]],
+    ['only a comment over `---`', '# 前\n\n%%c%%\n---\n', [[1, '前'], [2, '%%c%%']]],
+    ['a comment block after a paragraph', '# 前\n\ntext\n%%\nhidden\n%%\nTitle\n===\n', [[1, '前'], [1, 'Title']]],
+    ['a comment block right above', '# 前\n\n%%\nhidden\n%%\nTitle\n===\n', [[1, '前'], [1, 'Title']]],
+    ['a comment line between the text and `===`', '# 前\n\nTitle\n%%c%%\n===\n', [[1, '前']]],
+    ['an indented comment line (code)', '# 前\n\n    %%c%%\n# H\n', [[1, '前'], [1, 'H']]],
+  ])('reads the headings Obsidian lists with %s, and a link finds each', (_case, source, expected) => {
     const doc = parseMarkdown(source, 'Note', undefined, 'headings');
-    const title = doc.nodes.find((node) => node.title === 'Title');
-    expect(title).toBeDefined();
-    expect(locateSubpath(source, '#Title')).toBe(title?.from);
+    expect(doc.nodes.map((node) => [node.level, node.title])).toEqual(expected);
+    for (const node of doc.nodes) {
+      expect(locateSubpath(source, `#${node.title.replace(/%%/gu, ' ')}`)).toBe(node.from);
+    }
   });
 
   // Code review of LEV-208 (round 2): the round-1 fix read the heading's text with the comments blanked too, so the

@@ -33,6 +33,16 @@ function whitespaceMask(text: string): string {
   return text.replace(/[^\r\n]/gu, (value) => ' '.repeat(value.length));
 }
 
+/**
+ * A `%%…%%` comment as Obsidian 1.14.2 lays out blocks around it (artifacts/lev-208-multiline-setext/
+ * obsidian-comments*.json): over several lines it is blank lines, hiding what it holds; within one line it is text
+ * of that line, so the line is neither blank nor indented by it (`%%memo%%` above `Title` makes a two-line paragraph,
+ * `%%c%% Title` over `===` is a heading). Offsets and line breaks are kept.
+ */
+function commentMask(text: string): string {
+  return /[\r\n]/u.test(text) ? whitespaceMask(text) : text.replace(/[^\r\n]/gu, (value) => 'x'.repeat(value.length));
+}
+
 function literalRanges(source: string): { from: number; to: number }[] {
   const ranges: { from: number; to: number }[] = [];
   const literalNodes = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'HTMLBlock', 'HTMLTag', 'Comment', 'CommentBlock', 'Escape']);
@@ -64,7 +74,7 @@ function maskComments(source: string): string {
     }
     const closing = source.indexOf('%%', opening + 2);
     const to = closing === -1 ? source.length : closing + 2;
-    parts.push(source.slice(copiedTo, opening), whitespaceMask(source.slice(opening, to)));
+    parts.push(source.slice(copiedTo, opening), commentMask(source.slice(opening, to)));
     copiedTo = to;
     searchFrom = to;
     // A literal block starting inside the comment may have swallowed later
@@ -113,9 +123,9 @@ function frontmatterEnd(source: string): number {
 }
 
 /**
- * The text the map's parse reads: the frontmatter and Obsidian's `%%…%%` comments blanked out, offsets and line
- * breaks kept. Whatever decides what is a heading reads this, so the map and a link's `#heading` agree on which
- * headings there are (a comment line above a Setext heading is a blank line to both, not a second line of its text).
+ * The text the map's parse reads: the frontmatter blanked out and Obsidian's `%%…%%` comments masked as its block
+ * layout reads them (`commentMask`), offsets and line breaks kept. Whatever decides what is a heading reads this, so the map and a link's `#heading` agree on which
+ * headings there are (a one-line comment above a Setext heading is a second line of its text to both).
  * A heading's text is still read from the note itself, comments included, as its node's title is.
  */
 export function parseableSource(source: string, yamlEnd = frontmatterEnd(source)): string {
