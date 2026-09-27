@@ -32,8 +32,8 @@ export function locateSubpath(source: string, subpath: string): number | null {
   if (segments.length === 1 && first.startsWith('[^')) return null;
   const literals: { from: number; to: number }[] = [];
   const headings: { level: number; text: string; from: number }[] = [];
-  // The map's reading of the note (`parseableSource`): what is a heading there is one here, and its text has the
-  // comments blanked (the normalisation collapses the spaces they leave).
+  // The map's reading of the note (`parseableSource`) decides what is a heading, so a link finds the headings the map
+  // shows; their text is the note's own, comments included, as the node titles and Obsidian's headings are.
   const readable = parseableSource(source);
   parser.parse(readable).iterate({
     enter(node) {
@@ -44,11 +44,11 @@ export function locateSubpath(source: string, subpath: string): number | null {
       const mark = marks[0];
       if (!mark) return false;
       const text = match[1] === 'ATX'
-        ? readable.slice(mark.to, marks[1]?.from ?? node.to)
-        : readable.slice(node.from, lineStart(readable, mark.from));
+        ? source.slice(mark.to, marks[1]?.from ?? node.to)
+        : source.slice(node.from, lineStart(source, mark.from));
       // Not a heading to Obsidian, so no link reaches it (LEV-208).
       if (match[1] === 'Setext' && isMultilineSetext(text)) return false;
-      headings.push({ level: Number(match[2]), text, from: lineStart(readable, node.from) });
+      headings.push({ level: Number(match[2]), text, from: lineStart(source, node.from) });
       return false;
     },
   });

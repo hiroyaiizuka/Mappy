@@ -110,6 +110,17 @@ describe('a multi-line Setext heading is a paragraph, as Obsidian reads it (LEV-
     expect(title).toBeDefined();
     expect(locateSubpath(source, '#Title')).toBe(title?.from);
   });
+
+  // Code review of LEV-208 (round 2): the round-1 fix read the heading's text with the comments blanked too, so the
+  // link Obsidian makes for `A %%x%% B` (`#A x B`) found nothing while the map showed the node.
+  it.each([
+    ['an ATX heading', '# Intro\n\n# A %%x%% B\n', '#A x B', '# A %%x%% B'],
+    ['a one-line Setext heading', '# Intro\n\nTitle %%c%%\n===\n', '#Title c', 'Title %%c%%'],
+  ])('a link to %s with a comment in it is found by the text Obsidian links it with', (_case, source, link, line) => {
+    expect(locateSubpath(source, link)).toBe(source.indexOf(line));
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    expect(findSection(doc, link.slice(1))?.from).toBe(source.indexOf(line));
+  });
 });
 
 // The rename, add-child and delete rows held before LEV-208 too (the paragraph was a node then, and none of these edits

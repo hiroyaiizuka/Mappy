@@ -107,8 +107,7 @@ const reading = text => evaluate(`
         item => item.tagName.toLowerCase() + ':' + item.innerText.trim().replace(/\\n/gu, '⏎'));
       if (blocks.length > 0) break;
     }
-    const cache = (app.metadataCache.getCache(path)?.headings ?? []).map(item => [item.level, item.heading]);
-    return { blocks, cache };
+    return { blocks };
   } finally {
     preview.detach();
     const copy = app.vault.getAbstractFileByPath(path);

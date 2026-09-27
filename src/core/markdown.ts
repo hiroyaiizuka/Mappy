@@ -114,11 +114,11 @@ function frontmatterEnd(source: string): number {
 
 /**
  * The text the map's parse reads: the frontmatter and Obsidian's `%%…%%` comments blanked out, offsets and line
- * breaks kept. Whatever decides what is a heading reads this, so the map and a link's `#heading` agree (a comment line
- * above a Setext heading is a blank line to both, not a second line of its text).
+ * breaks kept. Whatever decides what is a heading reads this, so the map and a link's `#heading` agree on which
+ * headings there are (a comment line above a Setext heading is a blank line to both, not a second line of its text).
+ * A heading's text is still read from the note itself, comments included, as its node's title is.
  */
-export function parseableSource(source: string): string {
-  const yamlEnd = frontmatterEnd(source);
+export function parseableSource(source: string, yamlEnd = frontmatterEnd(source)): string {
   return maskComments(whitespaceMask(source.slice(0, yamlEnd)) + source.slice(yamlEnd));
 }
 
@@ -420,7 +420,7 @@ export function parseMarkdown(
   edits?: readonly TextEdit[],
 ): MindDocument {
   const yamlEnd = frontmatterEnd(source);
-  const tree = parser.parse(parseableSource(source));
+  const tree = parser.parse(parseableSource(source, yamlEnd));
   const headings: MindNode[] = [];
   for (let block = tree.topNode.firstChild; block; block = block.nextSibling) {
     const heading = headingNode(source, block);
