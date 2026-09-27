@@ -112,6 +112,16 @@ function frontmatterEnd(source: string): number {
   return frontmatterLayout(source)?.end ?? 0;
 }
 
+/**
+ * The text the map's parse reads: the frontmatter and Obsidian's `%%…%%` comments blanked out, offsets and line
+ * breaks kept. Whatever decides what is a heading reads this, so the map and a link's `#heading` agree (a comment line
+ * above a Setext heading is a blank line to both, not a second line of its text).
+ */
+export function parseableSource(source: string): string {
+  const yamlEnd = frontmatterEnd(source);
+  return maskComments(whitespaceMask(source.slice(0, yamlEnd)) + source.slice(yamlEnd));
+}
+
 function trimRange(source: string, from: number, to: number): [number, number] {
   while (from < to && /\s/u.test(source.charAt(from))) from++;
   while (to > from && /\s/u.test(source.charAt(to - 1))) to--;
@@ -410,8 +420,7 @@ export function parseMarkdown(
   edits?: readonly TextEdit[],
 ): MindDocument {
   const yamlEnd = frontmatterEnd(source);
-  const masked = maskComments(whitespaceMask(source.slice(0, yamlEnd)) + source.slice(yamlEnd));
-  const tree = parser.parse(masked);
+  const tree = parser.parse(parseableSource(source));
   const headings: MindNode[] = [];
   for (let block = tree.topNode.firstChild; block; block = block.nextSibling) {
     const heading = headingNode(source, block);

@@ -95,22 +95,27 @@ const reading = text => evaluate(`
   if (existing) await app.vault.modify(existing, body); else await app.vault.create(path, body);
   // A split, not a background tab: a tab that is not shown defers its rendering and has no blocks to read.
   const preview = app.workspace.getLeaf('split');
-  await preview.setViewState({ type: 'markdown', state: { file: path, mode: 'preview' } });
-  let blocks = [];
-  for (let tries = 0; tries < 30; tries += 1) {
-    await new Promise(resolve => setTimeout(resolve, 200));
-    if (preview.view.getViewType() !== 'markdown') throw new Error('the preview leaf is a ' + preview.view.getViewType());
-    const root = preview.view.containerEl.querySelector('.markdown-preview-view');
-    blocks = Array.from(root?.querySelectorAll('.markdown-preview-sizer > div > :is(h1, h2, h3, h4, h5, h6, p, hr, ul)') ?? [],
-      item => item.tagName.toLowerCase() + ':' + item.innerText.trim().replace(/\\n/gu, '⏎'));
-    if (blocks.length > 0) break;
-  }
-  const cache = (app.metadataCache.getCache(path)?.headings ?? []).map(item => [item.level, item.heading]);
-  preview.detach();
-  await app.vault.delete(app.vault.getAbstractFileByPath(path));
-  if (window.__mappyE2E) app.workspace.setActiveLeaf(window.__mappyE2E, { focus: true });
-  await new Promise(resolve => setTimeout(resolve, 500));
-  return { blocks, cache };`);
+  // Leave neither the leaf nor the copy behind whatever happens: the next run refuses a leaf still on the copy.
+  try {
+    await preview.setViewState({ type: 'markdown', state: { file: path, mode: 'preview' } });
+    let blocks = [];
+    for (let tries = 0; tries < 30; tries += 1) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      if (preview.view.getViewType() !== 'markdown') throw new Error('the preview leaf is a ' + preview.view.getViewType());
+      const root = preview.view.containerEl.querySelector('.markdown-preview-view');
+      blocks = Array.from(root?.querySelectorAll('.markdown-preview-sizer > div > :is(h1, h2, h3, h4, h5, h6, p, hr, ul)') ?? [],
+        item => item.tagName.toLowerCase() + ':' + item.innerText.trim().replace(/\\n/gu, '⏎'));
+      if (blocks.length > 0) break;
+    }
+    const cache = (app.metadataCache.getCache(path)?.headings ?? []).map(item => [item.level, item.heading]);
+    return { blocks, cache };
+  } finally {
+    preview.detach();
+    const copy = app.vault.getAbstractFileByPath(path);
+    if (copy) await app.vault.delete(copy);
+    if (window.__mappyE2E) app.workspace.setActiveLeaf(window.__mappyE2E, { focus: true });
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }`);
 
 /** F2 on `title`, type `first`, Shift+Enter (a real key that types), `second`, Enter; what the map shows after. */
 async function breakAndConfirm(title, first, second) {

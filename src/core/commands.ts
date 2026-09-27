@@ -88,8 +88,9 @@ export function selectionAfterDelete(doc: MindDocument, node: MindNode, edits: r
 
 /**
  * Remove a heading branch. Every node left must keep its title: removing a section can join the paragraph above
- * it with a Setext underline below (`text` + `C\n---` is the heading `text C`), which keeps the node count and
- * so passed the count check alone. Then the break stays, as a blank line, as the list format does for an item.
+ * it with a Setext heading below (`text` + `C\n---`), which then reads as another block — a paragraph and a rule
+ * since LEV-208, a heading `text C` before — so the check compares titles, not only the count. Then the break stays,
+ * as a blank line, as the list format does for an item.
  */
 function deleteHeadingBranch(doc: MindDocument, node: MindNode): EditPlan {
   const gone = new Set(branchNodes(doc, node).map((descendant) => descendant.id));

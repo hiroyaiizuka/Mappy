@@ -97,6 +97,19 @@ describe('a multi-line Setext heading is a paragraph, as Obsidian reads it (LEV-
     expect(findSection(doc, '複数 行の見出し')).toBeNull();
     expect(findSection(doc, '一行')?.title).toBe('一行');
   });
+
+  // Code review of LEV-208 (round 1): the map reads the note with `%%…%%` blanked out and the link resolution read it
+  // raw, so a comment line above a one-line Setext heading made it two lines to one and one line to the other.
+  it.each([
+    ['a comment line above', '# 前\n\n%%memo%%\nTitle\n===\n'],
+    // Held before the fix too (the frontmatter's closing `---` ends the paragraph either way): pins the other mask.
+    ['a frontmatter right above', '---\nk: v\n---\nTitle\n===\n'],
+  ])('the map and a link read the same heading with %s', (_case, source) => {
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    const title = doc.nodes.find((node) => node.title === 'Title');
+    expect(title).toBeDefined();
+    expect(locateSubpath(source, '#Title')).toBe(title?.from);
+  });
 });
 
 // The rename, add-child and delete rows held before LEV-208 too (the paragraph was a node then, and none of these edits
