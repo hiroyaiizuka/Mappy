@@ -35,8 +35,9 @@ describe('partial Markdown edits', () => {
     expect(execute(doc, { type: 'rename', nodeId: node.id, title: '名前' }).nodes[0]?.title).toBe('名前');
   });
 
-  it('renames a multiline Setext title without changing the underline or body', () => {
-    const source = 'Old\r\nmultiline\r\n======\r\nbody';
+  // Before LEV-208 this was a two-line title (`Old\r\nmultiline`); that is a paragraph now (tests/core/multiline-setext.test.ts).
+  it('renames a Setext title without changing the underline or body', () => {
+    const source = 'Old\r\n======\r\nbody';
     const doc = parseMarkdown(source, 'Note');
     const node = doc.nodes[0];
     if (!node) throw new Error('Missing fixture heading');

@@ -88,8 +88,9 @@ export function selectionAfterDelete(doc: MindDocument, node: MindNode, edits: r
 
 /**
  * Remove a heading branch. Every node left must keep its title: removing a section can join the paragraph above
- * it with a Setext underline below (`text` + `C\n---` is the heading `text C`), which keeps the node count and
- * so passed the count check alone. Then the break stays, as a blank line, as the list format does for an item.
+ * it with a Setext heading below (`text` + `C\n---`), which then reads as another block — a paragraph and a rule
+ * since LEV-208, a heading `text C` before — so the check compares titles, not only the count. Then the break stays,
+ * as a blank line, as the list format does for an item.
  */
 function deleteHeadingBranch(doc: MindDocument, node: MindNode): EditPlan {
   const gone = new Set(branchNodes(doc, node).map((descendant) => descendant.id));
@@ -172,7 +173,6 @@ function shiftedBranch(doc: MindDocument, node: MindNode, level: number): string
     if (nextLevel < 1 || nextLevel > 6) throw new Error('見出しは子孫を含めて 6 階層までです。');
     if (delta === 0) continue;
     if (descendant.kind === 'setext') {
-      if (/[\r\n]/u.test(descendant.title)) throw new Error('複数行の Setext 見出しは Markdown 側で移動してください。');
       edits.push({ from: descendant.from - node.from, to: descendant.headingTo - node.from,
         text: `${'#'.repeat(nextLevel)} ${descendant.title}` });
     } else {
@@ -245,10 +245,8 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
   }
   const before = (node.kind === 'atx' || node.kind === 'list') && !/[ \t]/u.test(doc.source.charAt(node.titleFrom - 1)) ? ' ' : '';
   const after = node.kind === 'atx' && node.titleFrom === node.titleTo && doc.source.charAt(node.titleTo) === '#' ? ' ' : '';
-  // A multi-line Setext heading (its text over two or more lines) is written as one line, its breaks as `<br>` like
-  // every other title's (LEV-202, 本人の決定 2026-09-26): Obsidian does not read those lines as a heading at all (a
-  // paragraph, then a rule for `---`; artifacts/lev-202-node-line-break/record.md), and the one line it does, with
-  // the same breaks the map shows. Only the heading's own text changes; an untouched draft changes nothing.
+  // A break is a `<br>` in the one line of the title, a Setext heading's included (LEV-202): its text over two
+  // lines would be a paragraph to Obsidian, and to the parse below, which refuses the edit (LEV-208).
   const title = storedTitle(draft, node.title);
   const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
   const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);

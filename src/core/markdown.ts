@@ -33,6 +33,16 @@ function whitespaceMask(text: string): string {
   return text.replace(/[^\r\n]/gu, (value) => ' '.repeat(value.length));
 }
 
+/**
+ * A `%%…%%` comment as Obsidian 1.14.2 lays out blocks around it (artifacts/lev-208-multiline-setext/
+ * obsidian-comments*.json): over several lines it is blank lines, hiding what it holds; within one line it is text
+ * of that line, so the line is neither blank nor indented by it (`%%memo%%` above `Title` makes a two-line paragraph,
+ * `%%c%% Title` over `===` is a heading). Offsets and line breaks are kept.
+ */
+function commentMask(text: string): string {
+  return /[\r\n]/u.test(text) ? whitespaceMask(text) : text.replace(/[^\r\n]/gu, (value) => 'x'.repeat(value.length));
+}
+
 function literalRanges(source: string): { from: number; to: number }[] {
   const ranges: { from: number; to: number }[] = [];
   const literalNodes = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'HTMLBlock', 'HTMLTag', 'Comment', 'CommentBlock', 'Escape']);
@@ -64,7 +74,7 @@ function maskComments(source: string): string {
     }
     const closing = source.indexOf('%%', opening + 2);
     const to = closing === -1 ? source.length : closing + 2;
-    parts.push(source.slice(copiedTo, opening), whitespaceMask(source.slice(opening, to)));
+    parts.push(source.slice(copiedTo, opening), commentMask(source.slice(opening, to)));
     copiedTo = to;
     searchFrom = to;
     // A literal block starting inside the comment may have swallowed later
@@ -110,6 +120,16 @@ export function frontmatterLayout(source: string): FrontmatterLayout | null {
 
 function frontmatterEnd(source: string): number {
   return frontmatterLayout(source)?.end ?? 0;
+}
+
+/**
+ * The text the map's parse reads: the frontmatter blanked out and Obsidian's `%%…%%` comments masked as its block
+ * layout reads them (`commentMask`), offsets and line breaks kept. Whatever decides what is a heading reads this, so the map and a link's `#heading` agree on which
+ * headings there are (a one-line comment above a Setext heading is a second line of its text to both).
+ * A heading's text is still read from the note itself, comments included, as its node's title is.
+ */
+export function parseableSource(source: string, yamlEnd = frontmatterEnd(source)): string {
+  return maskComments(whitespaceMask(source.slice(0, yamlEnd)) + source.slice(yamlEnd));
 }
 
 function trimRange(source: string, from: number, to: number): [number, number] {
@@ -240,6 +260,16 @@ function assignIds(
 
 type SyntaxNode = ReturnType<typeof parser.parse>['topNode'];
 
+/**
+ * Whether the text of a Setext heading as CommonMark reads it spans lines. Obsidian 1.14.2 reads a heading only
+ * when the text is one line (a `<br>` in it included): over two or more, the reading view shows a paragraph (the
+ * `===` as its text, or a rule after it for `---`) and the metadata cache lists no heading
+ * (artifacts/lev-208-multiline-setext/record.md).
+ */
+export function isMultilineSetext(text: string): boolean {
+  return /[\r\n]/u.test(text.trim());
+}
+
 function afterLine(source: string, end: number): number {
   let offset = end;
   if (source.charAt(offset) === '\r') offset++;
@@ -260,6 +290,9 @@ function headingNode(source: string, heading: SyntaxNode): MindNode | undefined 
   const rawTitleFrom = kind === 'atx' ? firstMark.to : heading.from;
   const rawTitleTo = kind === 'atx' ? (closingMark?.from ?? headingTo) : source.lastIndexOf('\n', firstMark.from - 1);
   const [titleFrom, titleTo] = trimRange(source, rawTitleFrom, Math.max(rawTitleFrom, rawTitleTo));
+  // A Setext heading whose text spans lines is a paragraph to Obsidian (then a rule for `---`; the metadata cache
+  // has no heading), so it is one here too and stays in the body above (LEV-208, 本人の決定 2026-09-27).
+  if (kind === 'setext' && isMultilineSetext(source.slice(titleFrom, titleTo))) return undefined;
   return {
     id: `node-${nextId++}`, title: source.slice(titleFrom, titleTo), level: Number(match[2]),
     from, headingTo, titleFrom, titleTo, bodyFrom: afterLine(source, headingTo), bodyTo: source.length, to: source.length,
@@ -397,8 +430,7 @@ export function parseMarkdown(
   edits?: readonly TextEdit[],
 ): MindDocument {
   const yamlEnd = frontmatterEnd(source);
-  const masked = maskComments(whitespaceMask(source.slice(0, yamlEnd)) + source.slice(yamlEnd));
-  const tree = parser.parse(masked);
+  const tree = parser.parse(parseableSource(source, yamlEnd));
   const headings: MindNode[] = [];
   for (let block = tree.topNode.firstChild; block; block = block.nextSibling) {
     const heading = headingNode(source, block);

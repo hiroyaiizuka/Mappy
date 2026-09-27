@@ -1,0 +1,194 @@
+import { describe, expect, it } from 'vitest';
+import { nodeBody } from '../../src/core/body';
+import { applyEdits, planEdit } from '../../src/core/commands';
+import { findSection } from '../../src/core/embed';
+import { planListConversion } from '../../src/core/list-conversion';
+import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
+import { locateSubpath } from '../../src/core/subpath';
+
+// LEV-208（本人の決定 2026-09-27）: Obsidian は複数行の Setext 見出し（2 行以上の段落の直後に === / ---）を見出しとして
+// 読まない。閲覧モードでは段落（`===` はその段落の文字、`---` は続けて水平線）で、metadataCache の headings にも出ない。
+// 1 行の Setext（`<br>` を含む 1 行も）は見出し（Obsidian 1.14.2。artifacts/lev-202-node-line-break/record.md「2 回目」、
+// artifacts/lev-208-multiline-setext/record.md）。Mappy も同じに読み、その行は段落として上のノードの本文に入る。
+// 修正前はどの行も「複数行の見出しのノード」ができて落ちた（artifacts/lev-208-multiline-setext/before-fix.log）。
+
+function outline(doc: MindDocument): string[] {
+  const lines: string[] = [];
+  const walk = (node: MindNode, depth: number): void => {
+    for (const child of node.children) {
+      lines.push(`${'  '.repeat(depth)}${child.kind}:${child.level}:${child.title}`);
+      walk(child, depth + 1);
+    }
+  };
+  walk(doc.root, 0);
+  return lines;
+}
+
+function find(doc: MindDocument, title: string): MindNode {
+  const node = doc.nodes.find((candidate) => candidate.title === title);
+  if (!node) throw new Error(`Missing fixture node: ${title}`);
+  return node;
+}
+
+describe('a multi-line Setext heading is a paragraph, as Obsidian reads it (LEV-208)', () => {
+  it.each([
+    ['===', '# 前\n\n複数\n行の見出し\n===\n\n## 後\n', ['atx:1:前', '  atx:2:後']],
+    ['---', '# 前\n\n複数\n行の見出し\n---\n\n## 後\n', ['atx:1:前', '  atx:2:後']],
+    ['three lines', '# 前\n\n一\n二\n三\n===\n', ['atx:1:前']],
+    ['an indented line', '# 前\n\n複数\n   行の見出し\n---\n', ['atx:1:前']],
+    ['a hard break (two spaces)', '# 前\n\n複数  \n行の見出し\n===\n', ['atx:1:前']],
+    ['a `<br>` and a line', '# 前\n\n設<br>定\nです\n---\n', ['atx:1:前']],
+    ['CRLF', '# 前\r\n\r\n複数\r\n行の見出し\r\n===\r\n\r\n## 後\r\n', ['atx:1:前', '  atx:2:後']],
+    ['before any heading', '複数\n行の見出し\n===\n\n# 後\n', ['atx:1:後']],
+  ])('headings format, %s: no node, the lines stay in the body above', (_case, source, expected) => {
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    expect(outline(doc)).toEqual(expected);
+    // The paragraph and its underline are the body of the node above (the root before any heading).
+    const holder = doc.nodes.find((node) => node.title === '前') ?? doc.root;
+    const underline = source.search(/^(?:===|---)\r?$/mu);
+    expect(holder.bodyFrom <= underline && underline < holder.bodyTo).toBe(true);
+    expect(nodeBody(doc, holder)).toMatch(/(?:===|---)/u);
+  });
+
+  it('keeps a node that follows under the section the paragraph sits in, not under a heading made of it', () => {
+    // 修正前は `複数 行`（H1）ができて `後`（H2）がその子になり、`前` の子ではなかった。
+    const doc = parseMarkdown('# 前\n本文\n\n複数\n行\n===\n\n## 後\n', 'Note', undefined, 'headings');
+    expect(find(doc, '後').parentId).toBe(find(doc, '前').id);
+    expect(doc.source.slice(find(doc, '前').bodyFrom, find(doc, '前').bodyTo)).toBe('本文\n\n複数\n行\n===\n\n');
+  });
+
+  it.each([
+    ['===', '一行\n===\n', 'setext:1:一行'],
+    ['---', '一行\n---\n', 'setext:2:一行'],
+    ['a `<br>` in the one line', '設<br>定\n---\n', 'setext:2:設<br>定'],
+    ['after a blank line below a paragraph', '段落\nです\n\n一行\n===\n', 'setext:1:一行'],
+  ])('keeps a one-line Setext heading a heading: %s (held before LEV-208 too; pins the one-line side)', (_case, source, expected) => {
+    expect(outline(parseMarkdown(source, 'Note', undefined, 'headings'))).toEqual([expected]);
+  });
+
+  it('list format: a multi-line `---` is no H2 section, the lines stay in the section above', () => {
+    const doc = parseMarkdown('## 区画\n- 項目\n\n複数\n行\n---\n\n- 次\n', 'Note');
+    expect(doc.format).toBe('list');
+    expect(outline(doc)).toEqual(['atx:2:区画', '  list:3:項目', '  list:3:次']);
+  });
+
+  it('a note whose only other heading is a multi-line `===` stays in the list format', () => {
+    // 修正前は `複数 行`（H1）があるので見出し形式になった。
+    const doc = parseMarkdown('## 区画\n- 項目\n\n複数\n行\n===\n', 'Note');
+    expect(doc.format).toBe('list');
+    expect(outline(doc)).toEqual(['atx:2:区画', '  list:3:項目']);
+  });
+
+  it('inside a list item the lines were never a node and still are not (held before LEV-208 too)', () => {
+    const doc = parseMarkdown('## 区画\n- 項目\n  複数\n  行\n  ---\n- 次\n', 'Note');
+    expect(outline(doc)).toEqual(['atx:2:区画', '  list:3:項目', '  list:3:次']);
+  });
+
+  it('a free topic is not made of one: the lines after the body are the body\'s', () => {
+    const doc = parseMarkdown('---\nmappy: true\n---\n## 本体\n- a\n\n別の\n二行\n---\n', 'Note');
+    expect(projectMap(doc).topics).toEqual([]);
+  });
+
+  it('a link to its text finds nothing, as Obsidian\'s metadataCache has no such heading', () => {
+    const source = '# 前\n\n複数\n行の見出し\n===\n\n一行\n---\n';
+    expect(locateSubpath(source, '#複数 行の見出し')).toBeNull();
+    expect(locateSubpath(source, '#一行')).toBe(source.indexOf('一行'));
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    expect(findSection(doc, '複数 行の見出し')).toBeNull();
+    expect(findSection(doc, '一行')?.title).toBe('一行');
+  });
+
+  // Code review of LEV-208 (rounds 1–2): whether a line holding a `%%…%%` comment is a line of the paragraph decides
+  // whether a Setext heading below it is one line or two. Obsidian 1.14.2 (artifacts/lev-208-multiline-setext/
+  // obsidian-comments*.json, metadataCache `headings`): a comment within one line is text of the paragraph (the line is
+  // neither blank nor indented by it); a comment over several lines is a blank line. The map blanked both, so it showed
+  // `Title` below a `%%memo%%` line (two lines to Obsidian, no heading) and lost `%%c%% Title` (a heading to Obsidian).
+  // With origin/main's src rows 1–2 and 6–9 fail and rows 3–5, 10 and 11 pass (review3-comment-rows-on-main.log): those
+  // (a comment inside a heading, a block hiding headings, a block above, a comment line before `===`, an indented
+  // comment) pin the rest of Obsidian's reading, so the new mask cannot break them. They are not regression rows.
+  it.each([
+    ['a comment line above', '# 前\n\n%%memo%%\nTitle\n===\n', [[1, '前']]],
+    ['a comment leading the line', '# 前\n\n%%c%% Title\n===\n', [[1, '前'], [1, '%%c%% Title']]],
+    ['a comment inside an ATX heading', '# Intro\n\n# A %%x%% B\n', [[1, 'Intro'], [1, 'A %%x%% B']]],
+    ['a comment ending the Setext line', '# Intro\n\nTitle %%c%%\n===\n', [[1, 'Intro'], [1, 'Title %%c%%']]],
+    ['a comment block hiding headings', '# 前\n\n%%\n# Hidden\nSetext\n=====\n%%\n# Visible\n', [[1, '前'], [1, 'Visible']]],
+    ['only a comment over `===`', '# 前\n\n%%c%%\n===\n', [[1, '前'], [1, '%%c%%']]],
+    ['only a comment over `---`', '# 前\n\n%%c%%\n---\n', [[1, '前'], [2, '%%c%%']]],
+    ['a comment block after a paragraph', '# 前\n\ntext\n%%\nhidden\n%%\nTitle\n===\n', [[1, '前'], [1, 'Title']]],
+    ['a comment block right above', '# 前\n\n%%\nhidden\n%%\nTitle\n===\n', [[1, '前'], [1, 'Title']]],
+    ['a comment line between the text and `===`', '# 前\n\nTitle\n%%c%%\n===\n', [[1, '前']]],
+    ['an indented comment line (code)', '# 前\n\n    %%c%%\n# H\n', [[1, '前'], [1, 'H']]],
+    // Round 3 (obsidian-comments-3.json): a comment after the underline makes it text, not an underline or a rule. These
+    // two fail with origin/main's src (both were headings there).
+    ['a comment after the `===`', '# 前\n\nTitle\n=== %%note%%\n', [[1, '前']]],
+    ['a comment after the `---`', '# 前\n\npara\n--- %%c%%\n', [[1, '前']]],
+  ])('reads the headings Obsidian lists with %s, and a link finds each', (_case, source, expected) => {
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    expect(doc.nodes.map((node) => [node.level, node.title])).toEqual(expected);
+    for (const node of doc.nodes) {
+      expect(locateSubpath(source, `#${node.title.replace(/%%/gu, ' ')}`)).toBe(node.from);
+    }
+  });
+
+  // Code review of LEV-208 (round 2): the round-1 fix read the heading's text with the comments blanked too, so the
+  // link Obsidian makes for `A %%x%% B` (`#A x B`) found nothing while the map showed the node.
+  it.each([
+    ['an ATX heading', '# Intro\n\n# A %%x%% B\n', '#A x B', '# A %%x%% B'],
+    ['a one-line Setext heading', '# Intro\n\nTitle %%c%%\n===\n', '#Title c', 'Title %%c%%'],
+  ])('a link to %s with a comment in it is found by the text Obsidian links it with', (_case, source, link, line) => {
+    expect(locateSubpath(source, link)).toBe(source.indexOf(line));
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    expect(findSection(doc, link.slice(1))?.from).toBe(source.indexOf(line));
+  });
+});
+
+// The rename, add-child and delete rows held before LEV-208 too (the paragraph was a node then, and none of these edits
+// reached into it): they pin how an edit next to the paragraph writes now that it is body, not a regression. The
+// conversion row failed before (the multi-line heading was refused).
+describe('editing around a multi-line Setext paragraph (LEV-208 × LEV-202)', () => {
+  const source = '# 前\n本文\n\n複数\n行\n---\n\n## 後\n';
+
+  it('renaming the node that holds it rewrites only that title', () => {
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    const written = applyEdits(source, planEdit(doc, { type: 'rename', nodeId: find(doc, '前').id, title: '温泉\n旅行' }).edits);
+    expect(written).toBe('# 温泉<br>旅行\n本文\n\n複数\n行\n---\n\n## 後\n');
+  });
+
+  it('renaming the node after it does not reach into it', () => {
+    const doc = parseMarkdown(source, 'Note', undefined, 'headings');
+    const written = applyEdits(source, planEdit(doc, { type: 'rename', nodeId: find(doc, '後').id, title: '次' }).edits);
+    expect(written).toBe('# 前\n本文\n\n複数\n行\n---\n\n## 次\n');
+  });
+
+  it('adding a child writes a new heading after the paragraph and its rule, which stay as they were', () => {
+    const doc = parseMarkdown('# 前\n\n複数\n行\n---\n', 'Note', undefined, 'headings');
+    const written = applyEdits(doc.source, planEdit(doc, { type: 'add-child', nodeId: find(doc, '前').id, title: '子' }).edits);
+    expect(written).toBe('# 前\n\n複数\n行\n---\n\n## 子\n');
+  });
+
+  it('a delete that would join a paragraph onto a one-line Setext heading keeps a blank line, so the heading survives', () => {
+    // 修正前は `para` と `B\n---` がつながって見出し `para B` になり、題名の照合で弾かれて空行を足していた。修正後は
+    // つながった形が段落＋水平線になり B が消えるので、件数の照合で弾かれて同じく空行を足す（結果は同じ）。
+    const doc = parseMarkdown('# T\npara\n## A\nB\n---\n', 'Note', undefined, 'headings');
+    const written = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: find(doc, 'A').id }).edits);
+    expect(outline(parseMarkdown(written, 'Note', undefined, 'headings'))).toEqual(['atx:1:T', '  setext:2:B']);
+  });
+
+  // Code review of LEV-208 (round 3): in the list format the removal of an H2 section had no blank-line fallback. The
+  // join `intro` + `C\n---` renamed C to `intro C` before; now it is a paragraph and a rule, C drops out, and the
+  // delete was refused outright.
+  it('list format: deleting a section that would join a paragraph onto a one-line Setext H2 keeps a blank line', () => {
+    const doc = parseMarkdown('## A\nintro\n## B\nC\n---\n', 'Note', undefined, 'list');
+    const written = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: find(doc, 'B').id }).edits);
+    expect(written).toBe('## A\nintro\n\nC\n---\n');
+    expect(outline(parseMarkdown(written, 'Note', undefined, 'list'))).toEqual(['atx:2:A', 'setext:2:C']);
+  });
+
+  it('converting to the list format carries the paragraph over as the section\'s body text', () => {
+    const doc = parseMarkdown('# 前\n\n複数\n行\n===\n\n## 後\n', 'Note', undefined, 'headings');
+    const converted = applyEdits(doc.source, planListConversion(doc));
+    const reread = parseMarkdown(converted, 'Note');
+    expect(outline(reread)).toEqual(['atx:2:前', '  list:3:後']);
+    expect(converted).toContain('複数');
+  });
+});

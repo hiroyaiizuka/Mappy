@@ -130,7 +130,7 @@ function assertPosition(position: TopicPosition): void {
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('トピックの位置が不正です。');
 }
 
-/** A key is one line of YAML: a multi-line Setext heading cannot be written (`yamlKey` escapes no line breaks). */
+/** A key is one line of YAML (`yamlKey` escapes no line breaks). No heading spans lines since LEV-208; a key handed in still might. */
 function assertKeyLine(key: string): void {
   if (/[\r\n]/u.test(key)) throw new Error('トピックの見出しは 1 行にしてください。');
 }
