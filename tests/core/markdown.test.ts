@@ -73,8 +73,8 @@ describe('source-preserving Markdown projection', () => {
 
   // The rows above all start with their tabs, where a tab stop and "a tab is 4 columns" agree. Spaces before a
   // tab tell them apart: `  \t` reaches column 4 (the next stop), not 6, so C is P's sibling, not its child,
-  // and its text starts at column 6. Mappy writes such a line itself when it moves a tab-indented branch under
-  // a space-indented parent (LEV-225).
+  // and its text starts at column 6. Mappy writes spaces before a tab itself when it moves a tab-indented
+  // branch under a space-indented parent (LEV-225; README's known limitations).
   it('stops a tab after spaces at the next multiple of 4 columns', () => {
     const doc = parseMarkdown('## R\n- A\n  - B\n    - P\n  \t- C\n', 'File');
     const c = doc.nodes.find(node => node.title === 'C');

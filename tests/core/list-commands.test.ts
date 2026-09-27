@@ -456,10 +456,13 @@ describe('positioned moves for drag and drop (list format)', () => {
   });
 });
 
-// LEV-195: README's known limitations tell users to indent a list with spaces only, because a map operation on
-// such a list never writes a tab into an item's indentation (in a tab-indented list it can write spaces; not
-// changed here, LEV-225). Every structure command on every node of a space-indented list, one step each.
-describe('space-indented lists stay free of tabs', () => {
+// LEV-195: README's known limitations tell users to indent every list in a note with spaces only, because then
+// no map operation writes a tab into an item's indentation. The limit of that promise is the note: a branch
+// indented with tabs brings its tabs along when it is moved into a space-indented list, and a tab-indented list
+// can get spaces from the map (both LEV-225). Every structure command on every node of a note whose lists are
+// all space-indented, one step each; a refusal (a plain `Error` with the message the map shows) is counted,
+// anything else fails the test.
+describe('notes indented with spaces only stay free of tabs', () => {
   const source = '## R\n- A\n  - A1\n    - A1a\n      body\n  - A2\n- B\n    - B1\n    - B2\n- C\n\n## S\n- D\n  - D1\n';
 
   function commands(doc: MindDocument): EditCommand[] {
@@ -474,16 +477,22 @@ describe('space-indented lists stay free of tabs', () => {
 
   it('writes no tab at the start of any line', () => {
     const doc = parse(source);
-    let applied = 0;
+    const counts = { applied: 0, unchanged: 0, refused: 0 };
     for (const command of commands(doc)) {
       let edits;
-      try { edits = planEdit(doc, command).edits; } catch { continue; }
-      if (edits.length === 0) continue;
-      applied++;
+      try {
+        edits = planEdit(doc, command).edits;
+      } catch (error) {
+        if (!(error instanceof Error) || error.constructor !== Error) throw error;
+        counts.refused++;
+        continue;
+      }
+      if (edits.length === 0) { counts.unchanged++; continue; }
+      counts.applied++;
       const result = applyEdits(source, edits);
       const tabbed = result.split('\n').filter(line => /^[ \t]*\t/u.test(line));
       expect(tabbed, `${JSON.stringify(command)} → ${JSON.stringify(result)}`).toEqual([]);
     }
-    expect(applied).toBeGreaterThan(100);
+    expect(counts).toEqual({ applied: 347, unchanged: 30, refused: 271 });
   });
 });
