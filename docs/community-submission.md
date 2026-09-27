@@ -3,7 +3,7 @@
 LEV-136（2026-09-27）。本人の決定: **コミュニティプラグインの公開審査に出す方向で進め、英語化を次の大きな柱にする。AI 機能（M9、LEV-28）は当面保留。** 本書はその前提で、審査要件と Mappy の現状の対応表（§1）と、英語化の方式の比較と推奨（§2）を記す。決定そのものは `product-plan.md` §5 M5 と §7 が正本で、本書は根拠と作業の分け方を持つ。
 
 - 参照した公式文書（2026-09-27 に取得）: [Submit your plugin](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)、[Submission requirements for plugins](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)、[Plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)、[Developer policies](https://docs.obsidian.md/community-directory/developer-policies)。公式 ESLint プラグイン `eslint-plugin-obsidianmd` 0.4.2 の規則（`node_modules` で確認）
-- 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。本書はそれを 0.3.8 の木（`main` の `0e8c4d1`）で grep し直し、変わった点を足したもの。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
+- 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。項目の分け方の正本は `docs/harness.md`「審査要件のチェック項目」で、本書の表はそれを 0.3.8 の木（`main` の `0e8c4d1`）で照合し直し、2026-09-27 の公式文書で変わった点（提出の手順など）を足した**この時点の結果**である。番号は本書の中だけのもの。提出の直前の再確認（LEV-228）は harness.md の項目で行い、本書との食い違いはそこで片付ける。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
 - 公式文書の**どれにも UI・README の言語の要件は無い**（4 文書とも、言語・英語・ローカライズへの言及なし）。英語化は審査の必須条件ではなく、一覧の読者（英語）に届けるための判断である
 
 ## 1. 審査要件と現状
@@ -16,7 +16,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | --- | --- | --- | --- | --- |
 | 1 | リポジトリのルートに `README.md`・`LICENSE`・`manifest.json`（Submit） | 3 つとも在る。LICENSE は MIT | PASS | — |
 | 2 | README は目的と使い方を説明する（Submit） | 日本語で、目的・保存形式・導入・操作・対応環境・制限・復旧・ネットワーク・ライセンスを持つ（218 行） | PASS（要件は言語を問わない）／英語版は §2 の判断による | LEV-227 |
-| 3 | `manifest.version` と同じ `x.y.z` タグの GitHub Release に `main.js`・`manifest.json`・`styles.css` を添付（Submit） | `release.yml` が検査して添付（LEV-68）。ただし **0.x のタグは必ず pre-release になる**（`release.yml` の `0.*) prerelease="--prerelease"`） | 要対応（審査に出す版を通常の Release にする: `release.yml` を変えるか 1.0.0 にするかを本人が決める） | LEV-228 |
+| 3 | `manifest.version` と同じ `x.y.z` タグの GitHub Release に `main.js`・`manifest.json`・`styles.css` を添付（Submit） | `release.yml` が検査して添付（LEV-68）。ただし **0.x のタグは必ず pre-release になる**（`release.yml` の `0.*) prerelease="--prerelease"`） | PASS（Submit の文面は満たす）／未確認: 公式文書は pre-release の可否に触れていない。pre-release のままで一覧が版を拾えるかを提出準備で確かめ、拾えないときだけ `release.yml` か 1.0.0 を本人が決める | LEV-228 |
 | 4 | 提出は community.obsidian.md で Obsidian アカウントに GitHub を連携して行い、自動レビューの指摘には版を上げた Release で応える（Submit） | 未提出。LEV-24 の時点の記録には無かった手順 | 未実施 | LEV-228 |
 | 5 | `id` は公開済みの全プラグインで一意、`obsidian` を含まない（Submit・Requirements） | `mappy`。`scripts/validate-release.mjs` が形を検査。一覧との衝突は本人が 2026-09-19 に確認 | PASS（提出の直前にもう一度確かめる） | LEV-228 |
 
@@ -47,7 +47,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | --- | --- | --- | --- | --- |
 | 17 | `innerHTML`／`outerHTML`／`insertAdjacentHTML` を使わない（Guidelines） | 0 件 | PASS | — |
 | 18 | グローバル `app`・`workspace.activeLeaf` を使わない（Guidelines） | `activeLeaf` 0 件。`app` は引数と `this.app` だけ | PASS | — |
-| 19 | ログは既定でエラーだけ（Guidelines） | `console.*` は `document-store.ts` の `console.error`（書き込みの購読者が投げた例外）1 件だけ | PASS | — |
+| 19 | ログは既定でエラーだけ（Guidelines） | `console.*` は `document-store.ts` の `console.error`（書き込みの購読者が投げた例外）1 件だけ | PASS（ガイドライン）／**harness.md「審査要件のチェック項目」の「`console.*` が `src/` と `main.js` にない」には反する**。どちらに合わせるか（1 件を消すか、項目をガイドラインに合わせて「エラー以外」にするか）を提出準備で決める | LEV-228 |
 | 20 | unload で登録を解除し、`onunload` で leaf を閉じない（Guidelines） | `register*` と `this.register` で解除。`detachLeavesOfType` なし。テストあり（LEV-24 の #31〜35） | PASS（テスト）／未実施（実機の無効化・再有効化・ペインの閉開） | LEV-25 |
 | 21 | 開いたノートは Editor、背景の変更は `Vault.process`、frontmatter は `processFrontMatter`（Guidelines） | 開いた文書は Editor、閉じた文書は `Vault.process` 内で原文を照合（AGENTS.md の規約）。明示の変換・解除（`mappy`・`mappy-layout` の書き込みと削除）は `processFrontMatter`（`obsidian/frontmatter.ts`）。マップの編集に伴う `mappy-layout`・`mappy-topics` の更新は、マップ自身の編集と同じ書き込みの列に載せるため**原文範囲の差分**で書く（LEV-196。列の外で書くと、その間に計画した編集が他者の変更として拒否された） | 判断（後者はガイドラインからの意図的な逸脱。審査で問われたときの英語の説明を用意する） | LEV-228 |
 | 22 | `WorkspaceLeaf.prototype.setViewState` の差し替え（ガイドラインに記述なし） | Excalidraw・Kanban と同じ方式。解除で元に戻り、後から包まれていても素通し（テストあり） | PASS（テスト）／審査で説明を求められうる | LEV-228 |
@@ -84,7 +84,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 - UI 文言: `src/` の 24 ファイルに日本語の文字列リテラル約 200 個。多いのは `ui/mindmap-view.ts`（54）、`main.ts`（36）、`core/commands.ts`（18）、`obsidian/settings-tab.ts`・`obsidian/excalidraw-bridge.ts`（14 ずつ）。core・export の例外文（約 40）も `Notice` を通って利用者に見える
 - **Markdown に書き込まれる既定の文字列**が 3 つある: 新しいノードの `サブトピック`、新しいトピックの `トピック`、新規ファイルの `無題のマインドマップ`。これは UI ではなく本文になる
 - 保存値は言語に依存しない: 設定は `follow`・`light`・`dark`、レイアウトは `mindmap` などの id を保存し、日本語はラベルにしか使っていない（`THEME_LABELS`・`LAYOUT_LABELS`）。言語を切り替えても既存の設定とノートは読める
-- バンドル: 本番の `main.js` は 239,762 B。esbuild の既定（`charset: ascii`）で非 ASCII の文字はすべて `\uXXXX`（1 字 6 B）に書かれる。その数は 1,302（約 7.8 KB。ほぼ日本語の UI 文言で、正規表現の文字範囲なども含む）
+- バンドル: 本番の `main.js` は 239,762 B。esbuild の既定（`charset: ascii`）で非 ASCII の文字はすべて `\uXXXX`（1 字 6 B）に書かれる。その数は 3,454、うち日本語（U+3000 以降）が 3,430 で約 20.6 KB（バンドルの約 8.6%）
 - Obsidian API 1.8.7（`minAppVersion` と同じ）に `getLanguage()`（アプリの言語の ISO コード、既定 `en`）がある。公式 lint には `prefer-get-language`（`localStorage.getItem('language')` を使わせない）（recommended に入っている）と、英語のロケールファイル（`**/en.ts`・`**/en/*.ts` など）の文字列に sentence case を強いる `ui/sentence-case-locale-module` がある。**後者は `configs.recommendedWithLocalesEn` にだけ入っていて、Mappy の `eslint.config.mjs` が使う `configs.recommended` には入っていない**。(b) で英語の表を検査させるには、設定を `recommendedWithLocalesEn` に切り替えるか、`src/i18n/en.ts` に当たる block を足す
 - テストの結合: `tests/` と `scripts/e2e/` に日本語の文言を照合する箇所が多い（代表的な 5 語だけで 18 ファイル）。e2e はテスト用 Obsidian の画面の文言を読むので、その Obsidian の言語が結果を左右する
 
@@ -95,10 +95,10 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 本人の日常使用 | 英語になる（毎日の操作が遅くなる、と本人） | 日本語のまま（Obsidian を日本語で使っている限り） | 日本語のまま |
 | 公開の読者 | 英語 | 英語（日本語以外の言語はすべて英語に落ちる） | 日本語が読めない読者には使えない |
 | 審査 | 要件は無いが、英語の一覧に日本語 UI という指摘を受けにくい | 同左。lint の設定を足せば `sentence-case-locale-module` が英語の表を検査する | 要件違反ではないが、sentence case などの文言規則が事実上検査されない。差し戻し・低評価の恐れ（推測。根拠となる公式の記述は無い） |
-| バンドル増分 | 約 −4 KB（日本語 7.8 KB → 英語 約 3〜4 KB の見積もり。英語は 1 字 1 B で、日本語 1 字に英語 2〜3 字） | 約 +4〜5 KB（英語の表 約 3〜4 KB ＋ キーと参照 約 1 KB の見積もり。現在の約 2%） | 0 |
+| バンドル増分 | 約 −11〜13 KB（日本語 20.6 KB → 英語 約 7〜10 KB の見積もり。英語は 1 字 1 B で、日本語 1 字に英語 2〜3 字） | 約 +9〜12 KB（英語の表 約 7〜10 KB ＋ キーと参照 約 2 KB の見積もり。現在の約 4〜5%） | 0 |
 | ランタイム依存 | なし | なし（自前の数十行。i18next などは入れない） | なし |
 | 保守 | 文言は 1 か所に 1 つ。追加の手間なし | 文言を足すたびに 2 言語を書く。**キーの欠けは型で止める**（`ja` を `Record<keyof typeof en, string>` の型にする）。訳の質は機械では見ない | なし |
-| テスト | 日本語を照合するテスト・e2e を英語に書き換える（大量） | 既存のテストは日本語のまま通る（テスト環境の言語を `ja` にする）。英語の表・切り替え・キーの一致を足す。e2e は起動する Obsidian の言語を `ja` に固定するか、照合を文言に依らない形（id・属性）へ移す | 変更なし |
+| テスト | 日本語を照合するテスト・e2e を英語に書き換える（大量） | 既存のテストの日本語の期待値はそのまま使える（テスト環境の言語を `ja` にする）が、文言の定数を関数にする分、それを import する 15 ファイルの参照は直す。英語の表・切り替え・キーの一致を足す。e2e は起動する Obsidian の言語を `ja` に固定するか、照合を文言に依らない形（id・属性）へ移す | 変更なし |
 | Markdown に書く既定文字列（`サブトピック` など） | 英語になる | UI と同じ言語に従う（日本語の Obsidian では従来どおり） | 日本語のまま |
 | 戻しやすさ | 日本語 UI に戻すには (b) と同じ作業が要る | (a) には英語の表だけ残せば済む | — |
 
@@ -107,18 +107,10 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 (b) を推奨する（オーケストレーターの推奨と同じ）。理由:
 
 1. **本人の日常使用を変えずに公開を英語にできる唯一の案**。(a) は本人の操作を遅くし、(c) は一覧の読者に届かない
-2. コストが小さい: 増分は約 2%、ランタイム依存なし、`getLanguage()` は `minAppVersion` 1.8.7 の型にあるので最小版を上げない。公式 lint に英語の表を検査する規則がある（有効にする設定を 1 つ足す。§2.1）
-3. 既存のテストを書き換えずに済む（テスト環境を `ja` に置く）。(a) を選ぶとテストの照合を大量に英語へ書き換える
+2. コストが小さい: 増分は約 4〜5%（+9〜12 KB の見積もり）、ランタイム依存なし、`getLanguage()` は `minAppVersion` 1.8.7 の型にあるので最小版を上げない。公式 lint に英語の表を検査する規則がある（有効にする設定を 1 つ足す。§2.1）
+3. 既存のテストの日本語の期待値をそのまま使える（テスト環境を `ja` に置く）。ただし読み込み時の文言の定数を関数にする分、それを import する `tests/`・`scripts/` の 15 ファイルの参照は書き換える（architecture.md §9e）。(a) は言語を切り替えないので参照の書き換えは要らないが、日本語の期待値をすべて英語へ書き換える
 
-実装の形（子チケットの前提。本人が (b) を確定したときに使う）:
-
-- `src/i18n/`（Obsidian に依存しない。core から使えるように）に `en.ts`（正本。lint の対象パターンに合う名前）と `ja.ts`（型 `Record<keyof typeof en, string>` で、キーの欠け・余りを型検査で止める。`typeof en` そのものにすると、`en` を `as const` にしたとき値が英語の文字列リテラル型に固定されて日本語を代入できない）と、言語を選んで文言を返す小さな関数を置く。言語は `main.ts` の `onload` で `getLanguage()` を 1 回読んで渡す（Obsidian は言語を変えるとアプリを再読込するので、実行中の切り替えは扱わない）。`ja` なら日本語、それ以外は英語
-- core・export の例外文も同じ表から引く（core を Obsidian に依存させない規約のため、`getLanguage()` は core から呼ばない）
-- Markdown に書く既定文字列（`サブトピック`・`トピック`・`無題のマインドマップ`）も UI と同じ言語に従う
-- **文言は使う時点で引く。** 今はモジュールの読み込み時に決まる定数が多い（`document-store.ts` の `conflictMessage`、`mindmap-view.ts` の `NEW_NODE_TITLE` などのメッセージ、`LAYOUT_LABELS`、`THEME_LABELS`、`svg-capture.ts` の `PNG_UNAVAILABLE`）。これを `export const x = t(...)` と書き写すと、`onload` より前に既定の言語（英語）で固定され、日本語の Obsidian でも英語になる。定数は関数か getter にする
-- **文言を比べて挙動を決めない。** `conflictMessage` は `mindmap-view.ts` で例外の `message` との文字列一致で分岐している（競合の再読込と再試行）。投げる側と比べる側で言語の解決がずれると、エラーを出さずに再試行が壊れる。専用のエラークラスかコードで判定する形に変えてから文言を移す
-- lint: `eslint.config.mjs` で `ui/sentence-case-locale-module` を `src/i18n/en.ts` に効かせる（§2.1。今の設定では効かない）
-- テスト: 表のキーの一致、`en` の文言の lint、言語の選択（`ja`・`en`・その他 → 英語）。既存の DOM テストは `ja` のまま。e2e を回す Obsidian の言語をどう固定するかは、文言の置き換えのチケットで確かめる（今のテスト用プロファイルが何語かは未確認）
+実装の形（(b) が確定したときの設計の決まり）は **`docs/architecture.md` §9e** に置いた: `src/i18n/` の置き場と層、`ja` の型、読み込み時に決まる文言の定数を使う時点の参照に変えること（該当する定数の一覧）、`conflictMessage` の文字列比較をやめること、Markdown に書く既定の文字列、lint の設定、テスト。
 
 (b) を選ばない場合: (a) なら同じ子チケットの「表」を `en` だけにし、テストの照合を英語へ直す作業が増える。(c) なら子チケットは README の英語版と提出準備だけになる。
 
@@ -128,4 +120,4 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 - **UI 文言の抽出と置き換え**（LEV-226。(b) を前提）: `src/i18n/` の新設、約 200 の文字列の移し替え、`getLanguage()` による選択、読み込み時の定数を使う時点の参照に変えること、`conflictMessage` の文字列比較をやめること、lint の設定（`sentence-case-locale-module`）、テスト（キーの一致・言語の選択・英語の lint）、e2e の言語の固定。量が多いので、層（core／obsidian／ui）で PR を分けてよい
 - **README の英語版**（LEV-227。方式に依らない）: 英語を主にする README と日本語の README の置き方、ネットワーク利用・ライセンス・同梱物の開示、先頭の画像、既知の制限の書き直し。`scripts/validate-release.mjs` は `README.md` の `## 既知の制限` を探して無ければ失敗する（LEV-209）ので、`README.md` を英語にするなら検査も同じ PR で直す
-- **審査要件のチェックと提出準備**（LEV-228。方式に依らない）: 本書 §1 の全行を提出直前の木で再確認する。とくに要対応の #3（0.x は必ず pre-release になる）、判断の #21（frontmatter の書き方の逸脱の説明）、未実施の #4（提出）・#5（id の一意性）、審査で説明を求められうる #22（prototype の差し替え）。#2・#14・#16 は LEV-226・LEV-227 が片付け、ここでは結果を確かめるだけ。community.obsidian.md への提出と自動レビューへの対応も持つ。英語化の 2 本と LEV-25 の後に着手する
+- **審査要件のチェックと提出準備**（LEV-228。方式に依らない）: 本書 §1 の全行を提出直前の木で再確認する。とくに判断の #21（frontmatter の書き方の逸脱の説明）、未実施の #4（提出）、PASS だが提出の直前に確かめ直す #5（id の一意性）、未確認の #3（pre-release のままで一覧が版を拾えるか）、harness.md と食い違う #19（`console.error`）、審査で説明を求められうる #22（prototype の差し替え）。#2・#14・#16 は LEV-226・LEV-227 が片付け、ここでは結果を確かめるだけ。community.obsidian.md への提出と自動レビューへの対応も持つ。英語化の 2 本と LEV-25 の後に着手する

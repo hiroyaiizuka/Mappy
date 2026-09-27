@@ -277,7 +277,7 @@ dry-run: `gh workflow run release.yml --ref <branch>`（workflow_dispatch）と�
 
 ### 審査要件のチェック項目
 
-公式の[提出要件](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)・[プラグインガイドライン](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)・[開発者ポリシー](https://docs.obsidian.md/community-directory/developer-policies)を次の項目に分け、結果は日時・ビルドのハッシュ・根拠（バリデータ、grep、テスト名）つきで `artifacts/lev-24-readme/record.md` に残す（初回は 2026-09-19、47 項目）。提出前に同じ項目で再確認し、公式文書が変わっていれば項目を足す。lint の通過も、この表の PASS も、審査の通過を保証しない。
+公式の[提出要件](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)・[プラグインガイドライン](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)・[開発者ポリシー](https://docs.obsidian.md/community-directory/developer-policies)を次の項目に分け、結果は日時・ビルドのハッシュ・根拠（バリデータ、grep、テスト名）つきで `artifacts/lev-24-readme/record.md` に残す（初回は 2026-09-19、47 項目）。提出前に同じ項目で再確認し、公式文書が変わっていれば項目を足す。2026-09-27 に 0.3.8 の木で照合し直した結果と英語化の方式の比較は `docs/community-submission.md`（LEV-136。番号はその文書の中だけのもの。`console.*` の項目はガイドライン〔エラーは可〕より厳しく、`document-store.ts` の `console.error` 1 件と食い違っている。LEV-228 で片付ける）。lint の通過も、この表の PASS も、審査の通過を保証しない。
 
 | 区分 | 項目 | 主な根拠 |
 | --- | --- | --- |

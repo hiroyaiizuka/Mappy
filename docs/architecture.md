@@ -324,6 +324,18 @@ Excalidraw 挿入と並ぶ、外へ持ち出す経路（§5 M13）。図面 API 
 - 実機（E35 の入力側、LEV-71）で確かめた前提: 同じノートを Markdown で開いた分割表示では `DocumentStore` が editor の `transaction`（origin `mappy`）で書き、ディスクは Obsidian の保存に任せる。`fileToLinktext` は最短で同名ノートが 2 つあると完全パス、相対は呼び出し元のフォルダからのパスを返す。
 - リスト形式の `insertion` は、改行で終わる文書の末尾に足すとき末尾の改行を保つように直した。子のない最終区画への Tab に加え、最後の H2 の Enter（兄弟）と仮想ルートへの Tab（どちらも末尾に `## ` を作る）も `## \n` で終わるようになる。
 
+## 9e. UI の文言（英語化。方式 (b) の本人確認待ち、LEV-136・LEV-226）
+
+2026-09-27 に英語化を決め、方式は (b) 文言テーブル＋ `getLanguage()` を推奨している（比較は `community-submission.md` §2、決定は product-plan §5 M5）。以下は (b) が確定したときの設計の決まりで、LEV-226 の前提になる。
+
+- **置き場と層**: `src/i18n/` に `en.ts`（正本）・`ja.ts`・言語を選んで文言を返す関数を置く。Obsidian に依存させず、core・export からも使える。`getLanguage()`（Obsidian API 1.8.7）は `main.ts` の `onload` で 1 回だけ読んで渡し、core からは呼ばない。`ja` なら日本語、それ以外は英語。Obsidian は言語を変えるとアプリを再読込するので、実行中の切り替えは扱わない
+- **型**: `ja` は `Record<keyof typeof en, string>` にして、キーの欠け・余りを型検査で止める（`typeof en` そのものにすると、`en` を `as const` にしたとき値が英語の文字列リテラル型になり日本語を代入できない）
+- **文言は使う時点で引く**: モジュールの読み込み時に値が決まる定数を `export const x = t(...)` と書き写すと、`onload` より前に既定の言語（英語）で固まる。2026-09-27 の grep で該当するのは `conflictMessage`（`obsidian/document-store.ts`）、`NOTE_CHANGED_MESSAGE`・`EXPORT_RENDER_STALLED_MESSAGE`・`NODE_GONE_MESSAGE`・`NEW_NODE_TITLE`・`NEW_TOPIC_TITLE`・`CALLED_READ_ONLY_MESSAGE`（`ui/mindmap-view.ts`）、`REFRESHED_MESSAGE`・`SAVE_FAILED_MESSAGE`（`ui/inline-editor.ts`）、`LAYOUT_LABELS`（`core/layout-mode.ts`）、`THEME_LABELS`（`obsidian/settings-tab.ts`）、`UNTITLED`（`obsidian/map-files.ts`）、`DEFAULT_DROP_STALLED_MESSAGE`（`obsidian/excalidraw-bridge.ts`）、`PNG_UNAVAILABLE`（`export/svg-capture.ts`）。**これらから読み込み時に値を写す定数も同じ扱い**（`ui/mindmap-view.ts` の `LAYOUT_BUTTONS` は `LAYOUT_LABELS` の値を `label` に写している）。関数か getter にする。移す前に grep をやり直す
+- **文言を比べて挙動を決めない**: `conflictMessage` は投げる側（`document-store.ts` の 10 か所）と比べる側が文字列の一致で結ばれている。比べる側は `ui/mindmap-view.ts` の `error.message` との比較 2 か所（競合の再読込と再試行）と、`InlineEditor.refreshed`（`ui/inline-editor.ts`）・`EditModal.refreshed`（`ui/edit-modal.ts`）の「表示中の文言が `conflictMessage` なら `REFRESHED_MESSAGE` に差し替える」比較。どちらかの側で文言の解決がずれると、エラーを出さずに再試行や差し替えが止まる。専用のエラークラス（またはコード）と、表示中のエラーの種類を持つ状態で判定する形に変えてから文言を移す
+- **Markdown に書く既定の文字列**（`NEW_NODE_TITLE`・`NEW_TOPIC_TITLE`・`UNTITLED`）も UI と同じ言語に従う。本文になるので、言語を変えても既存のノートは変わらない
+- **lint**: `eslint-plugin-obsidianmd` 0.4.2 の `ui/sentence-case-locale-module` は `configs.recommendedWithLocalesEn` にだけ入っていて、`eslint.config.mjs` が使う `configs.recommended` には入っていない。`src/i18n/en.ts` に効くよう設定を足す（`--max-warnings 0` なので warn でも落ちる）
+- **テスト**: 表のキーの一致、言語の選択（`ja`・`en`・その他 → 英語）、英語の lint。既存のテストの日本語の期待値はテスト環境を `ja` に置けばそのまま使えるが、上の定数を関数にする分、それを import している `tests/` と `scripts/` の 15 ファイルの参照は書き換える。e2e を回すテスト用 Obsidian の言語の固定方法は LEV-226 で決める（今のテスト用プロファイルが何語かは未確認）
+
 ## 10. 最初に検証する順序
 
 1. 原文範囲付きの parse と、変更しない部分のバイト保全。
