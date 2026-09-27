@@ -414,6 +414,55 @@ describe('InlineEditor DOM interactions', () => {
     expect(host.querySelector('textarea')).toBeNull();
   });
 
+  // LEV-215 review 2: a window closed while its save in place ran blurs the draft, whose commit waits for that save and
+  // then starts its own. `flush` (the save on close) waited only for the first and returned while the second ran, so the
+  // view closed and disposed the editor under it.
+  it('flushes after every save it waits for, including the commit a blur chained after a save in place', async () => {
+    const { options, input, editor } = fixture('元の名前');
+    const inPlace = pendingSave();
+    const chained = pendingSave();
+    options.save.mockReturnValueOnce(inPlace.promise).mockReturnValueOnce(chained.promise);
+    input.value = '離れた下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    windowFocus.mockReturnValue(true);
+    input.value = '閉じる前に打ち足した下書き';
+    input.remove();
+    input.dispatchEvent(new FocusEvent('blur'));
+    let flushed = false;
+    const flush = editor.flush().then(() => { flushed = true; });
+    inPlace.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(options.save).toHaveBeenLastCalledWith('閉じる前に打ち足した下書き');
+    expect(flushed).toBe(false);
+    chained.resolve();
+    await flush;
+    expect(options.save).toHaveBeenCalledTimes(2);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, '閉じる前に打ち足した下書き');
+  });
+
+  // LEV-215 review 3: `confirm` (another edit asked for over the draft, LEV-140) had the same wait as `flush`, and
+  // answered "refused" while the chained commit was about to close the draft.
+  it('confirms after the commit a blur chained after a save in place', async () => {
+    const { options, input, editor } = fixture('元の名前');
+    const inPlace = pendingSave();
+    const chained = pendingSave();
+    options.save.mockReturnValueOnce(inPlace.promise).mockReturnValueOnce(chained.promise);
+    input.value = '離れた下書き';
+    const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    onTestFinished(() => { windowFocus.mockRestore(); });
+    input.dispatchEvent(new FocusEvent('blur'));
+    windowFocus.mockReturnValue(true);
+    input.dispatchEvent(new FocusEvent('blur'));
+    const confirmed = editor.confirm();
+    inPlace.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    chained.resolve();
+    await expect(confirmed).resolves.toBe(true);
+    expect(options.save).toHaveBeenCalledTimes(2);
+  });
+
   it('does not write again on leaving the window when the note already has the text', async () => {
     // A round trip to another app with nothing typed (or a provisional name left as it is, which Escape can still take
     // back: a write of the same text would drop what the store keeps for that, review 3).
@@ -491,8 +540,8 @@ describe('InlineEditor DOM interactions', () => {
   });
 
   it('still saves on the blur of a draft taken out of the document while its window is in the background', async () => {
-    // Closing a tab or a popout window removes the focused draft, which Chromium blurs (LEV-215 decides whether that
-    // save should happen; LEV-216 must not change it).
+    // Closing a tab or a popout window removes the focused draft, which Chromium blurs. The view saves a closing draft
+    // itself too (LEV-215, mindmap-view-close-draft.test.ts); this pins that the blur's own save is still the draft's.
     const { options, input } = fixture('元の名前');
     input.value = '閉じるときの下書き';
     const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
