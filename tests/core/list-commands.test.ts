@@ -455,3 +455,35 @@ describe('positioned moves for drag and drop (list format)', () => {
     expect(resolveDrop(doc, p.id, find(doc, 'Q').id, 'after')).toEqual({ type: 'move', nodeId: p.id, parentId: root.id, index: 1 });
   });
 });
+
+// LEV-195: README's known limitations tell users to indent a list with spaces only, because a map operation on
+// such a list never writes a tab into an item's indentation (in a tab-indented list it can write spaces; not
+// changed here, LEV-225). Every structure command on every node of a space-indented list, one step each.
+describe('space-indented lists stay free of tabs', () => {
+  const source = '## R\n- A\n  - A1\n    - A1a\n      body\n  - A2\n- B\n    - B1\n    - B2\n- C\n\n## S\n- D\n  - D1\n';
+
+  function commands(doc: MindDocument): EditCommand[] {
+    return doc.nodes.flatMap((node): EditCommand[] => [
+      ...(['add-child', 'add-sibling', 'move-up', 'move-down', 'delete', 'detach'] as const).map(type => ({ type, nodeId: node.id })),
+      ...doc.nodes.flatMap((parent): EditCommand[] => [
+        { type: 'reparent', nodeId: node.id, parentId: parent.id },
+        ...[0, 1, 2].map((index): EditCommand => ({ type: 'move', nodeId: node.id, parentId: parent.id, index })),
+      ]),
+    ]);
+  }
+
+  it('writes no tab at the start of any line', () => {
+    const doc = parse(source);
+    let applied = 0;
+    for (const command of commands(doc)) {
+      let edits;
+      try { edits = planEdit(doc, command).edits; } catch { continue; }
+      if (edits.length === 0) continue;
+      applied++;
+      const result = applyEdits(source, edits);
+      const tabbed = result.split('\n').filter(line => /^[ \t]*\t/u.test(line));
+      expect(tabbed, `${JSON.stringify(command)} → ${JSON.stringify(result)}`).toEqual([]);
+    }
+    expect(applied).toBeGreaterThan(100);
+  });
+});
