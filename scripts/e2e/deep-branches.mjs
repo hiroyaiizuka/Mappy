@@ -263,7 +263,8 @@ try {
   // next multiple of 4), so the oracle is not a guess but the editor the keys were typed into: its
   // live-preview list level (`HyperMD-list-line-N`, CodeMirror's CommonMark parse) must be every list line's
   // depth on the map. Obsidian's reading view and metadata cache parse mixed indentation their own way and
-  // disagree with both (LEV-195): recorded below as `reading`, not checked.
+  // disagree with both (LEV-195): recorded below as `reading`, not checked. The map keeps the live preview's
+  // reading by decision (2026-09-27, README's known limitations); tests/core/markdown.test.ts pins the same lines.
   required(record, 'open-editor', await step('open-editor', () => evaluate(`${VIEW}
     await view.showSource(true);
     await new Promise(resolve => setTimeout(resolve, 1000));
