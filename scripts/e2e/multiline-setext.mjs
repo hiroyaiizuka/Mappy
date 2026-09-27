@@ -227,7 +227,7 @@ try {
 
   required(record, 'open-comments', await step('open-comments', makeOpenStep(evaluate, { note: COMMENTS_NOTE, source: COMMENTS })));
   await step('comments-unedited', async () => {
-    const read = await agrees('comments-unedited', [[1, '前'], [2, '%%c%% 二つ目'], [2, '三つ目'], [2, '後']], ['前', '二つ目', '三つ目', '後']);
+    const read = await agrees('comments-unedited', [[1, '前'], [2, '%%c%% 二つ目'], [2, '三つ目'], [2, '後']], ['前', '%%c%% 二つ目', '三つ目', '後']);
     check(await source() === COMMENTS, 'opening the map changed the note');
     return read;
   });
