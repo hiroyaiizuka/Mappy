@@ -18,7 +18,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, layoutConstant } from './case-runner.mjs';
 import { VIEW, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
@@ -26,15 +26,15 @@ const { flag, value } = parseArgs();
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 /** The value this checkout builds; the unit tests pin it to the range the ticket asked for (LEV-205). */
 // The installed plugin must be this checkout's build (`npm run harness:prepare`); the case cannot tell a stale one apart.
-const shipped = (await readFile(resolve(root, 'src', 'layout', 'layout.ts'), 'utf8'))
-  .match(/export const TIMELINE_STAGE_CLEARANCE\s*=\s*([\d_.]+)/u)?.[1]?.replaceAll('_', '');
 const given = value('--clearance');
-if (given === undefined && !shipped) throw new Error('TIMELINE_STAGE_CLEARANCE is not in src/layout/layout.ts; pass --clearance <px>');
-const CLEARANCE = Number(given ?? shipped);
-if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${JSON.stringify(given ?? shipped)}`);
+const CLEARANCE = given === undefined ? await layoutConstant('TIMELINE_STAGE_CLEARANCE') : Number(given);
+if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${JSON.stringify(given)}`);
+const ENVELOPE = await layoutConstant('TIMELINE_ENVELOPE_CLEARANCE');
 const NOTE = 'Fixtures/E2E-timeline-stage-gap.md';
 const SOURCE = await readFile(resolve(root, 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
 const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ'];
+/** The rest of Section2's forest, beyond Section4's height: owed the envelope clearance (LEV-210). */
+const BEYOND = ['環境'];
 const STAGE = 'Section4: 記録する';
 
 const record = createRecord(VAULT, NOTE);
@@ -72,14 +72,17 @@ try {
       const find = title => { const node = nth(title, 0); if (!node) throw new Error('No node ' + title); return node; };
       const stage = find(${JSON.stringify(STAGE)});
       const scale = stage.getBoundingClientRect().width / stage.offsetWidth;
-      const right = Math.max(...${JSON.stringify(FOREST)}.flatMap(title => {
+      const rightOf = titles => Math.max(...titles.flatMap(title => {
         const node = find(title);
         const toggle = node.querySelector(':scope > .mappy-node-toggle');
         return [node.getBoundingClientRect().right, toggle && !toggle.hidden ? toggle.getBoundingClientRect().right : -Infinity];
       }));
+      const right = rightOf(${JSON.stringify(FOREST)});
+      const whole = Math.max(right, rightOf(${JSON.stringify(BEYOND)}));
       const rect = stage.getBoundingClientRect();
+      const stem = rect.left + rect.width / 2;
       const images = Array.from(el.querySelectorAll('.mappy-node img'));
-      return { scale, gap: (rect.left + rect.width / 2 - right) / scale, loaded: images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0) };`);
+      return { scale, gap: (stem - right) / scale, envelope: (stem - whole) / scale, loaded: images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0) };`);
     let measured = await read();
     let settled = false;
     for (let attempt = 0; attempt < 25 && !settled; attempt += 1) {
@@ -91,6 +94,7 @@ try {
     check(settled, `the map did not settle within 10 s (image loaded: ${measured.loaded})`);
     // Node rects are integers scaled by the zoom: a pixel of rounding is allowed.
     check(Math.abs(measured.gap - CLEARANCE) <= 1.5, `Section4's stem stands ${measured.gap.toFixed(1)} px from Section2's forest, not ${CLEARANCE}`);
+    check(measured.envelope >= ENVELOPE - 1.5, `Section4's stem stands ${measured.envelope.toFixed(1)} px from the whole of Section2's forest, under ${ENVELOPE}`);
     const shot = value('--shot');
     if (shot) measured.shot = await cdp.screenshot(shot);
     return measured;

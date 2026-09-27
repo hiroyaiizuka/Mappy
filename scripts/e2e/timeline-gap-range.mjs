@@ -18,22 +18,17 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, layoutConstant } from './case-runner.mjs';
 import { VIEW, makePluginStep, makeOpenStep } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // The installed plugin must be this checkout's build (`npm run harness:prepare`); the case cannot tell a stale one apart.
-const layoutSource = await readFile(resolve(root, 'src', 'layout', 'layout.ts'), 'utf8');
-const constant = name => {
-  const found = layoutSource.match(new RegExp(`export const ${name}\\s*=\\s*([\\d_.]+)`, 'u'))?.[1]?.replaceAll('_', '');
-  const number = Number(found);
-  if (!found || !Number.isFinite(number) || number <= 0) throw new Error(`${name} is not a positive number in src/layout/layout.ts`);
-  return number;
-};
-const STAGE_CLEARANCE = constant('TIMELINE_STAGE_CLEARANCE');
-const ENVELOPE_CLEARANCE = constant('TIMELINE_ENVELOPE_CLEARANCE');
+// The values follow the source: the unit tests pin them, and the far-branch check (nearer than the stage clearance)
+// is what fails on the envelope rule whatever the values are.
+const STAGE_CLEARANCE = await layoutConstant('TIMELINE_STAGE_CLEARANCE');
+const ENVELOPE_CLEARANCE = await layoutConstant('TIMELINE_ENVELOPE_CLEARANCE');
 const NOTE = 'Fixtures/E2E-timeline-gap-range.md';
 const SOURCE = await readFile(resolve(root, 'tests', 'fixtures', 'timeline-gap-range.md'), 'utf8');
 const SIDES = [

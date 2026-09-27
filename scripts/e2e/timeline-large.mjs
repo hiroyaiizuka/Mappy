@@ -139,10 +139,11 @@ const GEOMETRY = `
     if (last[side]) {
       // The previous forest's nodes and controls within the height this stage's forest reaches from the band (LEV-210).
       const previous = last[side].forest;
-      // Compared exactly, as the layout does (near edge nearer the band than the forest's far edge): both sides of the
-      // comparison are the same layout numbers scaled by the zoom, and a slack would let an item crossing in by less
-      // than it be owed only the envelope clearance.
-      const near = previous.nodes.filter(rect => upper ? rect.b > forest.t : rect.t < forest.b);
+      // An item whose near edge crosses the forest's far edge by more than the rounding of the rects (node sizes are whole
+      // layout px, read here in layout px) is within the height and owed the stage clearance. One within the rounding of that
+      // edge cannot be placed either side from the DOM, so it is held only to the envelope clearance.
+      const inside = ${ROUNDING};
+      const near = previous.nodes.filter(rect => upper ? rect.b > forest.t + inside : rect.t < forest.b - inside);
       // Every forest has an item at the band's edge, so near is never empty; null rather than Infinity if it were.
       const gap = near.length ? stem - Math.max(...near.map(rect => rect.r)) : null;
       gaps.push({ from: last[side].title, to: stage.title, side, gap, envelope: stem - previous.r });
