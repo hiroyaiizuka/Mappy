@@ -459,9 +459,10 @@ describe('positioned moves for drag and drop (list format)', () => {
 // LEV-195: README's known limitations tell users to indent every list in a note with spaces only, because then
 // no map operation writes a tab into an item's indentation. The limit of that promise is the note: a branch
 // indented with tabs brings its tabs along when it is moved into a space-indented list, and a tab-indented list
-// can get spaces from the map (both LEV-225). Every structure command on every node of a note whose lists are
-// all space-indented, one step each; a refusal (a plain `Error` with the message the map shows) is counted,
-// anything else fails the test.
+// can get spaces from the map (both LEV-225). One step of each structure command (add a child or sibling, move
+// up or down, delete, detach, reparent, move to a position) on every node of a note whose lists are all
+// space-indented; adding a topic, renaming and body edits are not covered (tabs typed into a body are the
+// user's text). A refusal (a plain `Error` with the message the map shows) is skipped; anything else throws.
 describe('notes indented with spaces only stay free of tabs', () => {
   const source = '## R\n- A\n  - A1\n    - A1a\n      body\n  - A2\n- B\n    - B1\n    - B2\n- C\n\n## S\n- D\n  - D1\n';
 
@@ -493,6 +494,7 @@ describe('notes indented with spaces only stay free of tabs', () => {
       const tabbed = result.split('\n').filter(line => /^[ \t]*\t/u.test(line));
       expect(tabbed, `${JSON.stringify(command)} → ${JSON.stringify(result)}`).toEqual([]);
     }
-    expect(counts).toEqual({ applied: 347, unchanged: 30, refused: 271 });
+    // A floor, not an exact count, so that allowing or refusing some other move does not fail a test about tabs.
+    expect(counts.applied).toBeGreaterThan(300);
   });
 });
