@@ -15,10 +15,10 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 子 |
 | --- | --- | --- | --- | --- |
 | 1 | リポジトリのルートに `README.md`・`LICENSE`・`manifest.json`（Submit） | 3 つとも在る。LICENSE は MIT | PASS | — |
-| 2 | README は目的と使い方を説明する（Submit） | 日本語で、目的・保存形式・導入・操作・対応環境・制限・復旧・ネットワーク・ライセンスを持つ（218 行） | 要対応（英語版が無い） | README の英語化 |
-| 3 | `manifest.version` と同じ `x.y.z` タグの GitHub Release に `main.js`・`manifest.json`・`styles.css` を添付（Submit） | `release.yml` が検査して添付（LEV-68）。0.x は pre-release | PASS（審査用の版は pre-release にしない点を提出準備で確かめる） | 提出準備 |
-| 4 | 提出は community.obsidian.md で Obsidian アカウントに GitHub を連携して行い、自動レビューの指摘には版を上げた Release で応える（Submit） | 未提出。LEV-24 の時点の記録には無かった手順 | 未実施 | 提出準備 |
-| 5 | `id` は公開済みの全プラグインで一意、`obsidian` を含まない（Submit・Requirements） | `mappy`。`scripts/validate-release.mjs` が形を検査。一覧との衝突は本人が 2026-09-19 に確認 | PASS（提出の直前にもう一度確かめる） | 提出準備 |
+| 2 | README は目的と使い方を説明する（Submit） | 日本語で、目的・保存形式・導入・操作・対応環境・制限・復旧・ネットワーク・ライセンスを持つ（218 行） | 要対応（英語版が無い） | LEV-227 |
+| 3 | `manifest.version` と同じ `x.y.z` タグの GitHub Release に `main.js`・`manifest.json`・`styles.css` を添付（Submit） | `release.yml` が検査して添付（LEV-68）。0.x は pre-release | PASS（審査用の版は pre-release にしない点を提出準備で確かめる） | LEV-228 |
+| 4 | 提出は community.obsidian.md で Obsidian アカウントに GitHub を連携して行い、自動レビューの指摘には版を上げた Release で応える（Submit） | 未提出。LEV-24 の時点の記録には無かった手順 | 未実施 | LEV-228 |
+| 5 | `id` は公開済みの全プラグインで一意、`obsidian` を含まない（Submit・Requirements） | `mappy`。`scripts/validate-release.mjs` が形を検査。一覧との衝突は本人が 2026-09-19 に確認 | PASS（提出の直前にもう一度確かめる） | LEV-228 |
 
 ### 1.2 manifest
 
@@ -37,9 +37,9 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 11 | コマンド ID にプラグイン ID を前置しない（Requirements） | 10 コマンド（`create-mindmap` … `call-map`、`convert-to-list`）。前置なし | PASS | — |
 | 12 | コマンド名にプラグイン名を入れない、既定ホットキーを置かない（Guidelines） | 名前は日本語で `Mappy` を含まない。`hotkeys` の指定 0 件 | PASS | — |
 | 13 | 条件付きは `checkCallback`、無条件は `callback`（Guidelines） | LEV-24 から形は同じ | PASS | — |
-| 14 | UI 文言は sentence case（Guidelines） | 日本語なので lint の `ui/sentence-case` は実質何も検査していない。**英語にした時点で初めて効く** | 要対応（英語化の中で lint を通す） | 文言の置き換え |
+| 14 | UI 文言は sentence case（Guidelines） | 日本語なので lint の `ui/sentence-case` は実質何も検査していない。**英語にした時点で初めて効く** | 要対応（英語化の中で lint を通す） | LEV-226 |
 | 15 | 設定の見出しは区画が複数のときだけ、見出しに「settings」を入れない、`setHeading()` を使う（Guidelines） | 見出しなしの 4 項目（テーマ・既定レイアウト・作成先フォルダ・左下のレイアウト） | PASS | — |
-| 16 | UI の言語（要件なし） | UI 文言は 24 ファイルに約 200 個、すべて日本語。コマンド名 10・右クリックメニュー・ボタンの `aria-label`・通知・設定の名前と説明・core の例外文（`Notice` に出る）を含む | 判断 → §2 | 文言の抽出・置き換え |
+| 16 | UI の言語（要件なし） | UI 文言は 24 ファイルに約 200 個、すべて日本語。コマンド名 10・右クリックメニュー・ボタンの `aria-label`・通知・設定の名前と説明・core の例外文（`Notice` に出る）を含む | 判断 → §2 | LEV-226 |
 
 ### 1.4 セキュリティ・リソース・ワークスペース・Vault
 
@@ -49,8 +49,8 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 18 | グローバル `app`・`workspace.activeLeaf` を使わない（Guidelines） | `activeLeaf` 0 件。`app` は引数と `this.app` だけ | PASS | — |
 | 19 | ログは既定でエラーだけ（Guidelines） | `console.*` は `document-store.ts` の `console.error`（書き込みの購読者が投げた例外）1 件だけ | PASS | — |
 | 20 | unload で登録を解除し、`onunload` で leaf を閉じない（Guidelines） | `register*` と `this.register` で解除。`detachLeavesOfType` なし。テストあり（LEV-24 の #31〜35） | PASS（テスト）／未実施（実機の無効化・再有効化・ペインの閉開） | LEV-25 |
-| 21 | 開いたノートは Editor、背景の変更は `Vault.process`、frontmatter は `processFrontMatter`（Guidelines） | 開いた文書は Editor、閉じた文書は `Vault.process` 内で原文を照合（AGENTS.md の規約）。明示の変換・解除（`mappy`・`mappy-layout` の書き込みと削除）は `processFrontMatter`（`obsidian/frontmatter.ts`）。マップの編集に伴う `mappy-layout`・`mappy-topics` の更新は、マップ自身の編集と同じ書き込みの列に載せるため**原文範囲の差分**で書く（LEV-196。列の外で書くと、その間に計画した編集が他者の変更として拒否された） | PASS／後者は設計上の意図的な使い分けで、審査で問われたら理由を示す | 提出準備 |
-| 22 | `WorkspaceLeaf.prototype.setViewState` の差し替え（ガイドラインに記述なし） | Excalidraw・Kanban と同じ方式。解除で元に戻り、後から包まれていても素通し（テストあり） | PASS（テスト）／審査で説明を求められうる | 提出準備 |
+| 21 | 開いたノートは Editor、背景の変更は `Vault.process`、frontmatter は `processFrontMatter`（Guidelines） | 開いた文書は Editor、閉じた文書は `Vault.process` 内で原文を照合（AGENTS.md の規約）。明示の変換・解除（`mappy`・`mappy-layout` の書き込みと削除）は `processFrontMatter`（`obsidian/frontmatter.ts`）。マップの編集に伴う `mappy-layout`・`mappy-topics` の更新は、マップ自身の編集と同じ書き込みの列に載せるため**原文範囲の差分**で書く（LEV-196。列の外で書くと、その間に計画した編集が他者の変更として拒否された） | PASS／後者は設計上の意図的な使い分けで、審査で問われたら理由を示す | LEV-228 |
+| 22 | `WorkspaceLeaf.prototype.setViewState` の差し替え（ガイドラインに記述なし） | Excalidraw・Kanban と同じ方式。解除で元に戻り、後から包まれていても素通し（テストあり） | PASS（テスト）／審査で説明を求められうる | LEV-228 |
 | 23 | 正規表現の後読みを使わない（モバイル。Guidelines） | 0 件 | PASS | — |
 
 ### 1.5 スタイル
@@ -65,17 +65,17 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 子 |
 | --- | --- | --- | --- | --- |
 | 26 | 難読化・動的広告・クライアント側テレメトリ・自己更新をしない（Policies） | どれも無い。本番は esbuild の標準 minify（難読化ではない） | PASS | — |
-| 27 | ネットワーク利用は使う先と理由を明示する（Policies） | 自前の通信は SVG／PNG 書き出しでノートが参照する外部画像を `requestUrl` で取る 1 経路だけ（`image-export.ts`）。表示はノートの外部画像を Obsidian と同じく読む。README「ネットワーク利用」に日本語で開示 | PASS（英語の README にも同じ開示が要る） | README の英語化 |
+| 27 | ネットワーク利用は使う先と理由を明示する（Policies） | 自前の通信は SVG／PNG 書き出しでノートが参照する外部画像を `requestUrl` で取る 1 経路だけ（`image-export.ts`）。表示はノートの外部画像を Obsidian と同じく読む。README「ネットワーク利用」に日本語で開示 | PASS（英語の README にも同じ開示が要る） | LEV-227 |
 | 28 | 支払い・アカウント・Vault 外のファイル（Policies） | どれも無い。**M9（有料の AI 機能）を入れる時点でこの行が変わる**（保留中） | PASS | — |
-| 29 | LICENSE と同梱物の表示（Policies） | MIT。同梱の `@lezer/markdown`（MIT）を README に表示 | PASS（英語の README にも残す） | README の英語化 |
+| 29 | LICENSE と同梱物の表示（Policies） | MIT。同梱の `@lezer/markdown`（MIT）を README に表示 | PASS（英語の README にも残す） | LEV-227 |
 
 ### 1.7 公開の前に済ませたい品質（要件ではない）
 
 | # | 項目 | 現状 | 子 |
 | --- | --- | --- | --- |
 | 30 | 宣言した対応環境での実機確認 | macOS の Obsidian 1.14.2 だけ。Windows・Linux・モバイル・1.8.7 は未確認 | LEV-25 |
-| 31 | 一覧に載せる画像（README の先頭のスクリーンショットか GIF） | README に画像なし | README の英語化 |
-| 32 | ベータ表記と既知の制限 | README の「既知の制限」は日本語 IME などを挙げる。英語圏の読者向けに書き直す | README の英語化 |
+| 31 | 一覧に載せる画像（README の先頭のスクリーンショットか GIF） | README に画像なし | LEV-227 |
+| 32 | ベータ表記と既知の制限 | README の「既知の制限」は日本語 IME などを挙げる。英語圏の読者向けに書き直す | LEV-227 |
 
 ## 2. 英語化の方式
 
@@ -123,6 +123,6 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 方式に依らない形で切り、(b) に依るものはそう明記する。
 
-- **UI 文言の抽出と置き換え**（(b) を前提）: `src/i18n/` の新設、約 200 の文字列の移し替え、`getLanguage()` による選択、テスト（キーの一致・言語の選択・英語の lint）、e2e の言語の固定。量が多いので、層（core／obsidian／ui）で PR を分けてよい
-- **README の英語版**（方式に依らない）: 英語を主にする README と日本語の README の置き方、ネットワーク利用・ライセンス・同梱物の開示、先頭の画像、既知の制限の書き直し
-- **審査要件のチェックと提出準備**（方式に依らない）: 本書 §1 の「要対応」「判断」を提出の直前に再確認し（#3・#4・#5・#21・#22）、community.obsidian.md への提出と自動レビューへの対応。英語化の 2 本と LEV-25 の後に着手する
+- **UI 文言の抽出と置き換え**（LEV-226。(b) を前提）: `src/i18n/` の新設、約 200 の文字列の移し替え、`getLanguage()` による選択、テスト（キーの一致・言語の選択・英語の lint）、e2e の言語の固定。量が多いので、層（core／obsidian／ui）で PR を分けてよい
+- **README の英語版**（LEV-227。方式に依らない）: 英語を主にする README と日本語の README の置き方、ネットワーク利用・ライセンス・同梱物の開示、先頭の画像、既知の制限の書き直し。`scripts/validate-release.mjs` は `README.md` の `## 既知の制限` を探して無ければ失敗する（LEV-209）ので、`README.md` を英語にするなら検査も同じ PR で直す
+- **審査要件のチェックと提出準備**（LEV-228。方式に依らない）: 本書 §1 の「要対応」「判断」を提出の直前に再確認し（#3・#4・#5・#21・#22）、community.obsidian.md への提出と自動レビューへの対応。英語化の 2 本と LEV-25 の後に着手する
