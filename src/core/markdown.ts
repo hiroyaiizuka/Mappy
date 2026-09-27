@@ -240,6 +240,16 @@ function assignIds(
 
 type SyntaxNode = ReturnType<typeof parser.parse>['topNode'];
 
+/**
+ * Whether the text of a Setext heading as CommonMark reads it spans lines. Obsidian 1.14.2 reads a heading only
+ * when the text is one line (a `<br>` in it included): over two or more, the reading view shows a paragraph (the
+ * `===` as its text, or a rule after it for `---`) and the metadata cache lists no heading
+ * (artifacts/lev-208-multiline-setext/record.md).
+ */
+export function isMultilineSetext(text: string): boolean {
+  return /[\r\n]/u.test(text.trim());
+}
+
 function afterLine(source: string, end: number): number {
   let offset = end;
   if (source.charAt(offset) === '\r') offset++;
@@ -260,6 +270,9 @@ function headingNode(source: string, heading: SyntaxNode): MindNode | undefined 
   const rawTitleFrom = kind === 'atx' ? firstMark.to : heading.from;
   const rawTitleTo = kind === 'atx' ? (closingMark?.from ?? headingTo) : source.lastIndexOf('\n', firstMark.from - 1);
   const [titleFrom, titleTo] = trimRange(source, rawTitleFrom, Math.max(rawTitleFrom, rawTitleTo));
+  // A Setext heading whose text spans lines is a paragraph to Obsidian (then a rule for `---`; the metadata cache
+  // has no heading), so it is one here too and stays in the body above (LEV-208, 本人の決定 2026-09-27).
+  if (kind === 'setext' && isMultilineSetext(source.slice(titleFrom, titleTo))) return undefined;
   return {
     id: `node-${nextId++}`, title: source.slice(titleFrom, titleTo), level: Number(match[2]),
     from, headingTo, titleFrom, titleTo, bodyFrom: afterLine(source, headingTo), bodyTo: source.length, to: source.length,

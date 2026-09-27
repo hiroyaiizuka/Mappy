@@ -55,27 +55,9 @@ export function breakRanges(title: string): { from: number; to: number }[] {
   return ranges;
 }
 
-/**
- * Every break of `title` as written: its `<br>` tags (`breakRanges`) and, in a multi-line Setext heading (the only
- * title that spans lines), its own line breaks with the spaces around them (the next line's indent included).
- */
-function titleBreaks(title: string): { from: number; to: number }[] {
-  const tags = breakRanges(title);
-  if (!/[\r\n]/u.test(title)) return tags;
-  const lines = Array.from(title.matchAll(/[ \t]*\r?\n[ \t]*/gu), (match) => ({ from: match.index, to: match.index + match[0].length }));
-  // A tag at the end of a line has taken the spaces before the line break already.
-  const merged = [...tags, ...lines].sort((left, right) => left.from - right.from);
-  const ranges: { from: number; to: number }[] = [];
-  for (const range of merged) {
-    const previous = ranges[ranges.length - 1];
-    ranges.push(previous && range.from < previous.to ? { from: previous.to, to: Math.max(previous.to, range.to) } : range);
-  }
-  return ranges;
-}
-
-/** A title as the node shows it and the inline editor edits it: each `<br>` (and each line of a Setext heading) is a line break. */
+/** A title as the node shows it and the inline editor edits it: each `<br>` is a line break. */
 export function displayTitle(title: string): string {
-  return displayed(title, titleBreaks(title));
+  return displayed(title, breakRanges(title));
 }
 
 function displayed(title: string, ranges: readonly { from: number; to: number }[]): string {
@@ -106,18 +88,17 @@ function draftLines(draft: string, keep = { lead: false, trail: false }): string
  *
  * A draft that reads as the title already does is the title itself, so confirming an untouched draft
  * rewrites nothing. Otherwise each break is written again: while the draft has as many breaks as the title,
- * each keeps the break it came from as the note wrote it (`<BR/>`, `<br />`, the spaces around, a Setext
- * heading's own line and its indent), so changing one line rewrites only that line (AGENTS.md: 無関係な内容を
- * 再シリアライズしない); with a break added or removed, the breaks cannot be told apart and every one is written
- * as `<br>`. A multi-line Setext heading's own lines become `<br>` too, so it is written as one line (rename in
- * `commands.ts` says why).
+ * each keeps the break it came from as the note wrote it (`<BR/>`, `<br />`, the spaces around), so changing
+ * one line rewrites only that line (AGENTS.md: 無関係な内容を再シリアライズしない); with a break added or removed,
+ * the breaks cannot be told apart and every one is written as `<br>`. No title spans lines of the note: a
+ * Setext heading whose text does is no node (LEV-208, `isMultilineSetext`).
  *
  * A `<br>` where a tag would not be read as one — right after a backslash, inside inline code, a link's
  * target, a wiki link or math — would be saved as the text `<br>`, and is refused instead (the draft stays
  * with its reason).
  */
 export function storedTitle(draft: string, current: string): string {
-  const ranges = titleBreaks(current);
+  const ranges = breakRanges(current);
   const shown = displayed(current, ranges);
   const keep = { lead: /^[ \t]*\n/u.test(shown), trail: /\n[ \t]*$/u.test(shown) };
   const lines = draftLines(draft, keep);
@@ -127,7 +108,7 @@ export function storedTitle(draft: string, current: string): string {
   const inserted: { from: number; to: number }[] = [];
   lines.slice(1).forEach((line, index) => {
     const own = kept[index];
-    const separator = own !== undefined && !/[\r\n]/u.test(own) ? own : '<br>';
+    const separator = own ?? '<br>';
     inserted.push({ from: stored.length, to: stored.length + separator.length });
     stored += separator + line;
   });

@@ -32,11 +32,6 @@ function validateConversion(doc: MindDocument, edits: TextEdit[], expected: Expe
 export function planListConversion(doc: MindDocument): TextEdit[] {
   if (doc.format === "list") return [];
   if (doc.nodes.length === 0) throw new Error("変換する見出しがありません。");
-  for (const node of doc.nodes) {
-    if (node.kind === "setext" && /[\r\n]/u.test(node.title)) {
-      throw new Error("複数行の Setext 見出しは、Markdown 側で 1 行の見出しへ直してから変換してください。");
-    }
-  }
   const singleRoot = doc.root.children.length === 1 ? doc.root.children[0] : undefined;
   const edits: TextEdit[] = [];
   const expected: ExpectedNode[] = singleRoot ? [] : [{ title: doc.root.title, parent: -1 }];

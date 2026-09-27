@@ -247,13 +247,12 @@ describe('source-preserving Markdown projection', () => {
     expect(peer.bodyFrom).toBe(source.length);
   });
 
-  it('keeps multiline Setext title ranges and original underline intact', () => {
+  // Before LEV-208 this was a heading titled `First line\r\nsecond line`; Obsidian reads a paragraph (tests/core/multiline-setext.test.ts).
+  it('reads a multi-line Setext heading as the body it is to Obsidian, the underline included', () => {
     const source = 'First line\r\nsecond line  \r\n  ======\r\nbody';
-    const node = parseMarkdown(source, 'Note').nodes[0];
-    if (!node) throw new Error('Missing fixture heading');
-    expect(node.kind).toBe('setext');
-    expect(node.title).toBe('First line\r\nsecond line');
-    expect(source.slice(node.bodyFrom, node.bodyTo)).toBe('body');
+    const doc = parseMarkdown(source, 'Note');
+    expect(doc.nodes).toEqual([]);
+    expect(source.slice(doc.root.bodyFrom, doc.root.bodyTo)).toBe(source);
   });
 
   it('keeps unfinished frontmatter opaque and accepts a BOM without shifting UTF-16 offsets', () => {

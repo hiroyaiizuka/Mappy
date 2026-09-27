@@ -242,12 +242,10 @@ describe('planTopicPositions', () => {
     const withTopic = parse(`---\n${TOPICS_KEY}:\n  A: { mindmap: [1, 1] }\nmappy: true\n---\n## Root\n\n## A\n`);
     expect(() => moveTopic(withTopic, 'A', 'Mindmap', { x: 1, y: 1 })).toThrow('レイアウト');
     expect(() => moveTopic(withTopic, 'A', 'mindmap', { x: Number.POSITIVE_INFINITY, y: 1 })).toThrow('位置');
-    // A multi-line Setext heading has no one-line key: the move (and a body drag that includes it) is refused, the YAML never broken.
+    // A key handed in over two lines is refused, the YAML never broken. No topic has one since LEV-208: the multi-line
+    // Setext heading that used to be one is a paragraph in the body now (tests/core/multiline-setext.test.ts).
     const setext = parse('---\nmappy: true\n---\nBody\n====\n\nFoo\nBar\n===\n');
-    const multiline = projectMap(setext).topics[0];
-    if (!multiline) throw new Error('Missing Setext topic');
-    expect(multiline.title).toBe('Foo\nBar');
-    expect(() => planTopicMoves(setext, 'mindmap', new Map([[multiline.id, { x: 1, y: 1 }]]))).toThrow('1 行');
+    expect(projectMap(setext).topics).toEqual([]);
     expect(() => planTopicRekey(setext, new Map(), new Set(), { key: 'Foo\nBar', layout: 'mindmap', x: 1, y: 1 })).toThrow('1 行');
     expect(() => planTopicRekey(parse(`---\n${TOPICS_KEY}:\n  X: { mindmap: [1, 1] }\n---\n## Root\n`), new Map([['X', 'Foo\nBar']]), new Set())).toThrow('1 行');
   });
