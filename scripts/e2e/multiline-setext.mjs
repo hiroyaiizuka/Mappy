@@ -72,9 +72,12 @@ const draft = () => evaluate(`${VIEW} return input()?.value ?? null;`);
  */
 const headings = () => evaluate(`${VIEW}
   const text = await source();
-  const map = view.document.nodes.filter(node => node.kind !== 'list').map(node => [node.level, node.title]);
+  const mapHeadings = () => view.document.nodes.filter(node => node.kind !== 'list').map(node => [node.level, node.title]);
+  let map = mapHeadings();
   let cache = null;
   for (let tries = 0; tries < 30; tries += 1) {
+    // Both sides are read again each time: the view may not have re-read the note yet either.
+    map = mapHeadings();
     const read = app.metadataCache.getFileCache(view.file);
     const listed = (read?.headings ?? []).map(item => [item.level, item.heading]);
     cache = listed;

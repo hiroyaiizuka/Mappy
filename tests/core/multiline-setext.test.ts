@@ -103,6 +103,9 @@ describe('a multi-line Setext heading is a paragraph, as Obsidian reads it (LEV-
   // obsidian-comments*.json, metadataCache `headings`): a comment within one line is text of the paragraph (the line is
   // neither blank nor indented by it); a comment over several lines is a blank line. The map blanked both, so it showed
   // `Title` below a `%%memo%%` line (two lines to Obsidian, no heading) and lost `%%c%% Title` (a heading to Obsidian).
+  // With origin/main's src rows 1–2 and 6–9 fail and rows 3–5, 10 and 11 pass (review3-comment-rows-on-main.log): those
+  // (a comment inside a heading, a block hiding headings, a block above, a comment line before `===`, an indented
+  // comment) pin the rest of Obsidian's reading, so the new mask cannot break them. They are not regression rows.
   it.each([
     ['a comment line above', '# 前\n\n%%memo%%\nTitle\n===\n', [[1, '前']]],
     ['a comment leading the line', '# 前\n\n%%c%% Title\n===\n', [[1, '前'], [1, '%%c%% Title']]],
@@ -115,6 +118,10 @@ describe('a multi-line Setext heading is a paragraph, as Obsidian reads it (LEV-
     ['a comment block right above', '# 前\n\n%%\nhidden\n%%\nTitle\n===\n', [[1, '前'], [1, 'Title']]],
     ['a comment line between the text and `===`', '# 前\n\nTitle\n%%c%%\n===\n', [[1, '前']]],
     ['an indented comment line (code)', '# 前\n\n    %%c%%\n# H\n', [[1, '前'], [1, 'H']]],
+    // Round 3 (obsidian-comments-3.json): a comment after the underline makes it text, not an underline or a rule. These
+    // two fail with origin/main's src (both were headings there).
+    ['a comment after the `===`', '# 前\n\nTitle\n=== %%note%%\n', [[1, '前']]],
+    ['a comment after the `---`', '# 前\n\npara\n--- %%c%%\n', [[1, '前']]],
   ])('reads the headings Obsidian lists with %s, and a link finds each', (_case, source, expected) => {
     const doc = parseMarkdown(source, 'Note', undefined, 'headings');
     expect(doc.nodes.map((node) => [node.level, node.title])).toEqual(expected);
@@ -165,6 +172,16 @@ describe('editing around a multi-line Setext paragraph (LEV-208 × LEV-202)', ()
     const doc = parseMarkdown('# T\npara\n## A\nB\n---\n', 'Note', undefined, 'headings');
     const written = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: find(doc, 'A').id }).edits);
     expect(outline(parseMarkdown(written, 'Note', undefined, 'headings'))).toEqual(['atx:1:T', '  setext:2:B']);
+  });
+
+  // Code review of LEV-208 (round 3): in the list format the removal of an H2 section had no blank-line fallback. The
+  // join `intro` + `C\n---` renamed C to `intro C` before; now it is a paragraph and a rule, C drops out, and the
+  // delete was refused outright.
+  it('list format: deleting a section that would join a paragraph onto a one-line Setext H2 keeps a blank line', () => {
+    const doc = parseMarkdown('## A\nintro\n## B\nC\n---\n', 'Note', undefined, 'list');
+    const written = applyEdits(doc.source, planEdit(doc, { type: 'delete', nodeId: find(doc, 'B').id }).edits);
+    expect(written).toBe('## A\nintro\n\nC\n---\n');
+    expect(outline(parseMarkdown(written, 'Note', undefined, 'list'))).toEqual(['atx:2:A', 'setext:2:C']);
   });
 
   it('converting to the list format carries the paragraph over as the section\'s body text', () => {
