@@ -38,6 +38,7 @@ export const CASES = [
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },
+  { name: 'timeline-gap-range', file: 'timeline-gap-range.mjs', description: 'E61 タイムラインの同じ側の間隔を次のステージの高さの範囲で測る', shot: true },
   { name: 'timeline-large', file: 'timeline-large.mjs', description: 'E45 長文・画像・深い枝が混在する大規模タイムライン', shot: true },
   { name: 'theme', file: 'theme.mjs', description: 'E48 明色・暗色テーマ × テーマ設定（従う／明色／暗色）のコントラストと色', shot: true },
   { name: 'drag-viewport', file: 'drag-viewport.mjs', description: 'E49 フリーツリーのドラッグ中のホイール・ズーム／全体表示と保存位置', shot: false },

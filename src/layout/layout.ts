@@ -63,11 +63,14 @@ const MAP_VERTICAL_GAP = 22;
 /** How far right of a stage's centre its forest starts; exported so the snap zones can score by the landing column. */
 export const TIMELINE_STEM_GAP = 20;
 /**
- * How far a stage's stem stands clear of the right edge of the previous forest on its side (its
- * nodes and fold controls). Every consumer of `layoutTree` (view, embed, export, Excalidraw) reads
- * the timeline from here.
+ * How far a stage's stem stands clear of the previous forest on its side (its nodes and fold
+ * controls), measured only against the part of that forest within the height the stage reaches:
+ * its stem and its own forest (LEV-210). Every consumer of `layoutTree` (view, embed, export,
+ * Excalidraw) reads the timeline from here.
  */
 export const TIMELINE_STAGE_CLEARANCE = 72;
+/** How far the stem stands clear of the previous forest's whole right edge, the parts beyond that height included. */
+export const TIMELINE_ENVELOPE_CLEARANCE = 24;
 const TIMELINE_AXIS_GAP = 34;
 const TIMELINE_FOLD_OFFSET = 12;
 const TOPIC_GAP = 48;
@@ -285,6 +288,46 @@ export function axisBand(root: NodeSize, stages: readonly NodeSize[]): number {
   return stages.reduce((height, stage) => Math.max(height, stage.height / 2), root.height / 2);
 }
 
+/** A stage's forest: its height and right edge, and the ranges of `nodes` and `foldBounds` that `placeTimeline` pushed for it. */
+interface PlacedForest {
+  height: number;
+  right: number;
+  nodes: [start: number, end: number];
+  folds: [start: number, end: number];
+}
+
+/**
+ * The leftmost stem that stands clear of `forest`, placed on one side of the axis whose band ends at
+ * `bandEdge`: the stage clearance past everything whose near edge (the edge facing the axis) comes
+ * nearer the band than `height`, and the envelope clearance past the whole forest. A forest no
+ * taller than `height` lies within it entirely, which is the common case and needs no scan.
+ */
+function stemClearOf(
+  forest: PlacedForest, height: number, bandEdge: number, upper: boolean,
+  nodes: readonly LayoutBounds[], foldBounds: readonly LayoutBounds[],
+): number {
+  if (forest.height <= height) return forest.right + TIMELINE_STAGE_CLEARANCE;
+  const near = Math.max(
+    nearRight(nodes, forest.nodes, height, bandEdge, upper),
+    nearRight(foldBounds, forest.folds, height, bandEdge, upper),
+  );
+  return Math.max(near + TIMELINE_STAGE_CLEARANCE, forest.right + TIMELINE_ENVELOPE_CLEARANCE);
+}
+
+/** The right edge of the items in `range` whose near edge comes nearer the band than `height`, or -Infinity. */
+function nearRight(
+  items: readonly LayoutBounds[], [start, end]: [number, number], height: number, bandEdge: number, upper: boolean,
+): number {
+  let right = -Infinity;
+  for (let index = start; index < end; index += 1) {
+    const item = items[index];
+    if (!item) continue;
+    const depth = upper ? bandEdge - (item.y + item.height) : item.y - bandEdge;
+    if (depth < height) right = Math.max(right, item.x + item.width);
+  }
+  return right;
+}
+
 /** Root's top-left at (x, y); the axis runs through the root's vertical center. */
 function placeTimeline(
   root: MeasuredNode, x: number, y: number,
@@ -296,27 +339,39 @@ function placeTimeline(
   addFold(root, rootPosition, folds, foldBounds);
   let nextAxisX = x + root.width + HORIZONTAL_GAP;
   let previousAxisRight = x + root.width;
-  let upperNextX = -Infinity;
-  let lowerNextX = -Infinity;
+  // The last forest placed on each side. An earlier forest on the same side never needs to be
+  // consulted: every forest has an item touching the band's edge, which lies within any next stage's
+  // height, and it stands at least the envelope clearance past every earlier forest.
+  let upperForest: PlacedForest | undefined;
+  let lowerForest: PlacedForest | undefined;
   const axisHalfHeight = axisBand(root, root.children);
+  const upperBandEdge = axisY - axisHalfHeight - TIMELINE_AXIS_GAP;
+  const lowerBandEdge = axisY + axisHalfHeight + TIMELINE_AXIS_GAP;
   for (let index = 0; index < root.children.length; index += 1) {
     const stage = root.children[index];
     if (!stage) continue;
     const upper = index % 2 === 0;
     const childOffset = stage.width / 2 + TIMELINE_STEM_GAP;
-    const sideNextX = upper ? upperNextX : lowerNextX;
-    const stageX = stage.children.length > 0 ? Math.max(nextAxisX, sideNextX - childOffset) : nextAxisX;
+    const forestHeight = childForestHeight(stage);
+    // Opposite sides can reuse horizontal space. On the same side the stem stands the stage clearance
+    // past the previous forest where that forest comes within this stage's height (its stem and its
+    // forest both run from the axis to the far edge of its forest), and the envelope clearance past
+    // the rest; its forest starts one stem gap further.
+    const previous = upper ? upperForest : lowerForest;
+    const bandEdge = upper ? upperBandEdge : lowerBandEdge;
+    const stemX = previous ? stemClearOf(previous, forestHeight, bandEdge, upper, nodes, foldBounds) : -Infinity;
+    const stageX = stage.children.length > 0 ? Math.max(nextAxisX, stemX + TIMELINE_STEM_GAP - childOffset) : nextAxisX;
     const position = { id: stage.id, x: stageX, y: axisY - stage.height / 2, width: stage.width, height: stage.height };
     nodes.push(position);
     addFold(stage, position, folds, foldBounds, upper ? "upper" : "lower");
+    const firstNode = nodes.length;
+    const firstFold = foldBounds.length;
     // The tree relationship remains root → stage, but each visible axis segment
     // is drawn only once and leaves the topic's text rectangle unobstructed.
     edges.push(connect(rootPosition, position, `M ${previousAxisRight} ${axisY} H ${position.x}`));
 
     const startY = upper ? position.y : position.y + position.height;
-    let childTop = upper
-      ? axisY - axisHalfHeight - TIMELINE_AXIS_GAP - childForestHeight(stage)
-      : axisY + axisHalfHeight + TIMELINE_AXIS_GAP;
+    let childTop = upper ? bandEdge - forestHeight : bandEdge;
     let forestRight = -Infinity;
     for (const child of stage.children) {
       const childX = stageX + childOffset;
@@ -328,13 +383,15 @@ function placeTimeline(
       forestRight = Math.max(forestRight, childX + child.subtreeWidth);
       childTop += child.subtreeHeight + VERTICAL_GAP;
     }
-    // Opposite sides can reuse horizontal space. Only forests on the same side
-    // reserve an exclusive span: the next stem stands the clearance past it, and
-    // its forest one stem gap further.
     if (stage.children.length > 0) {
-      const nextColumn = forestRight + TIMELINE_STAGE_CLEARANCE + TIMELINE_STEM_GAP;
-      if (upper) upperNextX = nextColumn;
-      else lowerNextX = nextColumn;
+      const forest: PlacedForest = {
+        height: forestHeight,
+        right: forestRight,
+        nodes: [firstNode, nodes.length],
+        folds: [firstFold, foldBounds.length],
+      };
+      if (upper) upperForest = forest;
+      else lowerForest = forest;
     }
     previousAxisRight = position.x + position.width;
     nextAxisX = previousAxisRight + HORIZONTAL_GAP;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TIMELINE_STAGE_CLEARANCE, foldControlSize, layoutTree, type LayoutNode, type LayoutResult, type NodeSize } from "../../src/layout/layout";
+import { TIMELINE_ENVELOPE_CLEARANCE, TIMELINE_STAGE_CLEARANCE, foldControlSize, layoutTree, type LayoutNode, type LayoutResult, type NodeSize } from "../../src/layout/layout";
 
 function node(id: string, ...children: LayoutNode[]): LayoutNode {
   return { id, children };
@@ -507,7 +507,12 @@ describe("timeline stage clearance", () => {
 
   /** The right edge of everything a stage's forest draws: its nodes and their fold controls (a collapsed one shows its count). */
   function forestRight(result: LayoutResult, tree: LayoutNode, stage: LayoutNode, collapsed: ReadonlySet<string>): number {
-    const ids = new Set(descendantIds(stage));
+    return rightOf(result, tree, descendantIds(stage), collapsed);
+  }
+
+  /** The right edge of the given nodes and their fold controls. */
+  function rightOf(result: LayoutResult, tree: LayoutNode, list: readonly string[], collapsed: ReadonlySet<string> = new Set()): number {
+    const ids = new Set(list);
     let right = -Infinity;
     for (const item of result.nodes) if (ids.has(item.id)) right = Math.max(right, item.x + item.width);
     for (const fold of result.folds) {
@@ -558,7 +563,9 @@ describe("timeline stage clearance", () => {
   for (const [name, forest] of Object.entries(forests)) {
     it.each(["upper", "lower"] as const)(`keeps the next %s stem clear of a ${name} forest`, side => {
       const previous = node("previous", ...forest.children);
-      const next = node("next", node("next-child"));
+      // The next forest is taller than every previous forest here, so the whole previous forest lies within the
+      // height the next stage reaches and the clearance is taken from its full right edge (LEV-210).
+      const next = node("next", ...hidden("next-child", 12));
       // Stages alternate upper, lower, upper, …: the forest and the next stage on the same side are two apart,
       // and every forest here is wide enough that the next stem stands exactly the clearance past it.
       const stages = side === "upper"
@@ -575,4 +582,77 @@ describe("timeline stage clearance", () => {
       expect(stemX - forestRight(result, tree, previous, collapsed)).toBe(TIMELINE_STAGE_CLEARANCE);
     });
   }
+});
+
+// LEV-210: the clearance is taken only from the part of the previous forest on the same side that lies within the
+// height the next stage reaches (its stem and its forest, measured from the edge of the axis band). The rest of
+// the previous forest keeps the envelope clearance it had before LEV-205.
+describe("timeline stage clearance by height", () => {
+  const sameSide = (side: "upper" | "lower", previous: LayoutNode, next: LayoutNode): LayoutNode => node("root",
+    ...side === "upper"
+      ? [previous, node("between", node("between-child")), next]
+      : [node("first", node("first-child")), previous, node("between", node("between-child")), next]);
+
+  /** Children listed from the axis outwards: on the upper side the forest runs bottom-up, so the order is reversed. */
+  const outwards = (side: "upper" | "lower", children: LayoutNode[]): LayoutNode[] => side === "upper" ? [...children].reverse() : children;
+
+  function stemX(result: LayoutResult, id: string): number {
+    const stage = result.nodes.find(item => item.id === id);
+    if (!stage) throw new Error(`No stage ${id}`);
+    return stage.x + stage.width / 2;
+  }
+
+  function rightOf(result: LayoutResult, id: string): number {
+    const item = result.nodes.find(candidate => candidate.id === id);
+    if (!item) throw new Error(`No node ${id}`);
+    return item.x + item.width;
+  }
+
+  it.each(["upper", "lower"] as const)("ignores a %s branch beyond the height the next stage reaches", side => {
+    // "near" is beside the next stage's only child; "far" hangs one row further out, 30 px wider. Both are wide
+    // enough that the previous forest, not the stages' spacing on the axis, places the next stage.
+    const previous = node("previous", ...outwards(side, [node("near"), node("far")]));
+    const tree = sameSide(side, previous, node("next", node("next-child")));
+    const sizes = new Map<string, NodeSize>([["near", { width: 400, height: 44 }], ["far", { width: 430, height: 44 }]]);
+    const result = layoutTree(tree, sizes, new Set(), "timeline");
+    expectDisjoint(result);
+    const stem = stemX(result, "next");
+    expect(stem - rightOf(result, "near")).toBe(TIMELINE_STAGE_CLEARANCE);
+    expect(stem - rightOf(result, "far")).toBe(TIMELINE_STAGE_CLEARANCE - 30);
+  });
+
+  it.each(["upper", "lower"] as const)("keeps the envelope clearance from a %s branch beyond that height", side => {
+    const previous = node("previous", ...outwards(side, [node("near"), node("far")]));
+    const tree = sameSide(side, previous, node("next", node("next-child")));
+    const sizes = new Map<string, NodeSize>([["near", { width: 400, height: 44 }], ["far", { width: 700, height: 44 }]]);
+    const result = layoutTree(tree, sizes, new Set(), "timeline");
+    expectDisjoint(result);
+    expect(stemX(result, "next") - rightOf(result, "far")).toBe(TIMELINE_ENVELOPE_CLEARANCE);
+  });
+
+  it.each(["upper", "lower"] as const)("measures the height the next %s forest reaches, not only its stem", side => {
+    // The stem ends at the centre of "nc", halfway down its three-row subtree; "far" is beside the third row.
+    // This passes on the envelope rule too: it pins the range to the whole next forest, and fails if the range
+    // is cut down to the stem alone (the ticket's first point).
+    const previous = node("previous", ...outwards(side, [node("p1"), node("p2"), node("far")]));
+    const next = node("next", node("nc", ...outwards(side, [node("g1"), node("g2"), node("g3")])));
+    const tree = sameSide(side, previous, next);
+    const sizes = new Map<string, NodeSize>([["p1", { width: 400, height: 44 }], ["p2", { width: 400, height: 44 }], ["far", { width: 430, height: 44 }]]);
+    const result = layoutTree(tree, sizes, new Set(), "timeline");
+    expectDisjoint(result);
+    expect(stemX(result, "next") - rightOf(result, "far")).toBe(TIMELINE_STAGE_CLEARANCE);
+  });
+
+  it("keeps the reported deep leaves the clearance from the next stem", () => {
+    // tests/fixtures/timeline-stages.md: Section2 and Section4 below the axis (LEV-205's report).
+    const section2 = node("s2",
+      node("focus", node("attention", node("vigilance")), node("breaks", node("pomodoro"))),
+      node("environment"));
+    const section4 = node("s4", node("journal"), node("time-log"));
+    const tree = node("root", node("s1", node("s1-child")), section2, node("s3", node("s3-child")), section4);
+    const result = layoutTree(tree, new Map(), new Set(), "timeline");
+    expectDisjoint(result);
+    const leaves = Math.max(rightOf(result, "vigilance"), rightOf(result, "pomodoro"));
+    expect(stemX(result, "s4") - leaves).toBe(TIMELINE_STAGE_CLEARANCE);
+  });
 });
