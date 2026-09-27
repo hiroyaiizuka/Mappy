@@ -15,10 +15,16 @@
  * 5. new-node: Tab adds a child under its provisional name → the tab closed: the node stays as added (only Escape
  *    takes it back, LEV-203), nothing more written.
  * 6. plugin: F2 → text → Mappy disabled (its views go) and enabled again: the note has the text.
- * The popout window closed with a draft open is E50's step 7 (judged "saved" since LEV-215).
+ * 7. popout-held: row 4 in a popout window, closed with its close button: the Notice shows in the main window (the
+ *    popout's document goes with the window, and a Notice there would be the silent loss again).
+ * The popout window closed with a plain draft is E50's step 7 (judged "saved" since LEV-215).
+ *
+ * Rows 1, 5 and 6 pass on 0.3.8 too (the draft's blur saved rows 1 and 6; row 5 writes nothing): they pin that the save
+ * on close keeps those, not that it was needed. Rows 2, 3, 4 and 7 fail there (lost without a word).
  *
  * With `--exits`, two ends that do not go through the view's `onClose` follow, recorded and not judged (what they do
- * is Obsidian's, and the PR lists them): 7. reload: F2 → text → `app:reload`; 8. quit: F2 → text → Obsidian quit
+ * is Obsidian's, and the PR lists them), except that a page error after the reload or a quit that did not happen
+ * fails: 8. reload: F2 → text → `app:reload`; 9. quit: F2 → text → Obsidian quit
  * (`app.quit()`), the note read from the disk afterwards. The quit ends the Obsidian the case drives, so it comes last,
  * and it leaves the note (and the map's tab, which the next launch restores: close it before the next run).
  *
@@ -230,6 +236,54 @@ try {
     return { views, source };
   });
 
+  await step('7-popout-held', async () => {
+    await reset();
+    // The map in a popout window, marked for `connect({ popout })`; the draft is driven there by that window's keys.
+    await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove();
+      const leaf = app.workspace.openPopoutLeaf({ size: { width: 900, height: 700 } });
+      const win = leaf.getContainer().win;
+      if (win === window) { leaf.detach(); throw new Error('openPopoutLeaf gave a leaf in the main window'); }
+      win.document.body.dataset.mappyE2ePopout = 'close-draft';
+      await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: true });
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      win.__mappyE2E = leaf;
+      window.__mappyE2EPopout = win;
+      return true;`);
+    const popout = await connect({ popout: 'close-draft' });
+    const inPopout = expression => popout.evaluate(`(async () => { ${expression} })()`);
+    let held; let closed;
+    try {
+      await makeSelect(popout, inPopout)('子ノード');
+      await popout.realKey('F2');
+      for (let started = Date.now(); !(await inPopout(`${VIEW} return !!input();`)); await wait(100)) {
+        if (Date.now() - started > 3000) throw new Error('F2 did not open the draft in the popout');
+      }
+      await inPopout(`${VIEW} input().select(); return true;`);
+      await popout.insertText('別ウィンドウで外と競合した下書き');
+      await wait(300);
+      const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');
+      await evaluate(`await app.vault.modify(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)}), ${JSON.stringify(external)});
+        await new Promise(resolve => setTimeout(resolve, 600)); return true;`);
+      await inPopout(`${VIEW} input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true;`);
+      await wait(600);
+      held = await inPopout(`${VIEW} return { editing: !!input(), error: el.querySelector('.mappy-inline-error')?.textContent ?? '' };`);
+      if (!held.editing || !held.error) throw new Error(`the Enter was not refused with the draft held (the step would prove nothing): ${JSON.stringify(held)}`);
+    } finally {
+      popout.close();
+      closed = await evaluate(`const win = window.__mappyE2EPopout; window.__mappyE2EPopout = null;
+        if (!win || win === window) return false; win.__mappyE2E = null; win.close();
+        for (let started = Date.now(); Date.now() - started < 5000 && !win.closed; await new Promise(resolve => setTimeout(resolve, 50)));
+        return win.closed;`);
+    }
+    await wait(1500);
+    const after = await evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
+      notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()) };`);
+    check(closed, '7-popout-held: the window did not close');
+    check(after.source === SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n'), `7-popout-held: closing wrote over the outside change: ${JSON.stringify(after.source)}`);
+    check(after.notices.some(item => item.includes(NOT_SAVED)), `7-popout-held: no Notice in the main window said the draft was not saved: ${JSON.stringify(after.notices)}`);
+    return { held, closed, ...after };
+  });
+
   await step('after', async () => {
     const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
     check(errors.length === 0, `page errors: ${JSON.stringify(errors).slice(0, 1500)}`);
@@ -238,28 +292,34 @@ try {
 
   if (flag('--exits')) {
     // Recorded, not judged: neither end goes through the view's onClose.
-    await step('7-reload', async () => {
+    await step('8-reload', async () => {
       await reset();
       await open();
       await openDraft('再読込の前の下書き');
       await evaluate(`window.__mappyE2E = null; setTimeout(() => app.commands.executeCommandById('app:reload'), 0); return true;`);
       await wait(2000);
       await reconnect();
+      // The reloaded page has no error collector: installed again, what the restored map throws is still recorded.
+      await evaluate(`${ERRORS} return true;`);
       await wait(1500);
       const source = await read();
       await detachAll();
-      return { outcome: source === renamed('再読込の前の下書き') ? 'saved' : source === SOURCE ? 'dropped' : 'other', source };
+      const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
+      check(errors.length === 0, `8-reload: page errors after the reload: ${JSON.stringify(errors).slice(0, 1500)}`);
+      return { outcome: source === renamed('再読込の前の下書き') ? 'saved' : source === SOURCE ? 'dropped' : 'other', source, errors };
     });
-    await step('8-quit', async () => {
+    await step('9-quit', async () => {
       await reset();
       await open();
       await openDraft('終了の前の下書き');
       await evaluate(`window.__mappyE2E = null; setTimeout(() => require('electron').remote.app.quit(), 0); return true;`);
       cdp.close();
-      for (let started = Date.now(); Date.now() - started < 20000; await wait(500)) {
-        const up = await connect().then(connection => { connection.close(); return true; }).catch(() => false);
-        if (!up) break;
+      let up = true;
+      for (let started = Date.now(); up && Date.now() - started < 20000; await wait(500)) {
+        up = await connect().then(connection => { connection.close(); return true; }).catch(() => false);
       }
+      // A quit that did not happen (refused, or thrown in the page) must not be recorded as what quitting does.
+      if (up) { cdp = await connect(); evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`); throw new Error('Obsidian was still running 20 s after app.quit()'); }
       await wait(1000);
       const source = await readFile(join(VAULT, NOTE), 'utf8');
       return { outcome: source === renamed('終了の前の下書き') ? 'saved' : source === SOURCE ? 'dropped' : 'other', source };
@@ -268,7 +328,8 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
-  const quit = Boolean(record.steps['8-quit']);
+  // Only a quit that happened leaves nothing to tidy (or to reach): a failed one left Obsidian running.
+  const quit = Boolean(record.steps['9-quit']) && !record.steps['9-quit'].error;
   if (!quit) {
     try { await detachAll(); } catch (error) { record.failures.push(`close maps: ${error}`); }
     if (record.steps.setup && !record.steps.setup.error && !flag('--keep')) {

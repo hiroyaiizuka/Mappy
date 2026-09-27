@@ -10,7 +10,9 @@
  *
  * The rows are the close × the draft's shape: plain (with and without the blur), mid composition, held after the note
  * was re-read (the same Enter would now apply it), held by a change to its own node (it cannot apply: the note is
- * left alone and a Notice says the draft was not saved), and a node just added under its provisional name.
+ * left alone and a Notice says the draft was not saved), and a node just added under its provisional name. Review 1
+ * added the close right after a change the map had not read yet, the close during another write of the map's, and
+ * the close with a watcher's re-read scheduled (nothing is read or drawn into the closing view).
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
@@ -104,6 +106,60 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
     await closeView(mounted, input, true);
     expect(mounted.source()).toBe(renamed('再読込のあとの下書き', other));
     expect(Notice.log).toEqual([]);
+  });
+
+  // Review 1: the save on close was planned on the note the map had last read, and a refusal for a change it had not
+  // read yet lost the draft, although its Enter would have applied after the re-read (row above).
+  it.each([true, false])('applies over another line changed outside the map that it has not read yet (blur %s)', async (blur) => {
+    const { mounted, input } = await draft('読む前に閉じた下書き');
+    const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+    const silent = vi.spyOn(mounted.app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    mounted.app.put(PATH, other);
+    silent.mockRestore();
+    await closeView(mounted, input, blur);
+    expect(mounted.source()).toBe(renamed('読む前に閉じた下書き', other));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 1: another write of the view's under way (here an image pasted onto the node being edited, LEV-142) refused
+  // the save on close (「保存処理が終わってから…」) instead of letting it go first.
+  it('waits for another write of the map under way, then saves', async () => {
+    const { mounted, input } = await draft('貼り付けの最中に閉じた下書き');
+    const store = (mounted.view as unknown as { store: { applyOver: (...args: unknown[]) => Promise<unknown> } }).store;
+    const applyOver = store.applyOver.bind(store);
+    vi.spyOn(store, 'applyOver').mockImplementationOnce(async (...args: unknown[]) => {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return applyOver(...args);
+    });
+    const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+    input.dispatchEvent(paste);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await closeView(mounted, input, true);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(mounted.source()).toContain('  - 貼り付けの最中に閉じた下書き');
+    expect(mounted.source()).toContain('![[');
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 1: `onClose` awaits the save before it sets `closed`, and the refresh a watcher had scheduled then read and
+  // drew the note into the view being closed. The timers stop as the close starts.
+  it('reads nothing more while the closing view saves its draft', async () => {
+    const { mounted, input } = await draft('読み直さずに閉じた下書き');
+    const store = (mounted.view as unknown as { store: { applyOver: (...args: unknown[]) => Promise<unknown>; read: (...args: unknown[]) => Promise<string> } }).store;
+    const applyOver = store.applyOver.bind(store);
+    vi.spyOn(store, 'applyOver').mockImplementation(async (...args: unknown[]) => {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return applyOver(...args);
+    });
+    // A watcher's event for the note: the map schedules its re-read on the 45 ms debounce.
+    mounted.app.vaultEvents.trigger('modify', mounted.file);
+    const read = vi.spyOn(store, 'read');
+    await closeView(mounted, input, false);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(mounted.source()).toBe(renamed('読み直さずに閉じた下書き'));
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('leaves a node changed outside the map as it is, and says the draft was not saved', async () => {
