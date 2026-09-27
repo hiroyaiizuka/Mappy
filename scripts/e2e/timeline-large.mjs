@@ -8,8 +8,9 @@
  * - Nothing overlaps: no two nodes, and no fold control over another node or control (layout px, 0.5 px slack).
  *   Every stage's forest box (its descendants and their controls) is apart from every other stage's, and each forest
  *   stays on its side of the axis band.
- * - Same-side stages keep `TIMELINE_STAGE_CLEARANCE` (72 px, LEV-205): the next stem stands at least that far right of
- *   the previous forest on its side (exactly that far where the side, not the axis, decides where it goes).
+ * - Same-side stages keep `TIMELINE_STAGE_CLEARANCE` (72 px, LEV-205) from the part of the previous forest on their side
+ *   within the height the next stage's forest reaches, and `TIMELINE_ENVELOPE_CLEARANCE` (24 px) from the whole of it
+ *   (LEV-210), and some stem sits at one of the two (where the side, not the axis, decides where it goes).
  * - Nothing is lost: the DOM shows every node the note has, under its own title, and every image but the one the
  *   fixture leaves missing has loaded (a broken image would pass the geometry checks on a map without its tall nodes).
  * - ⌥↓ on a stage moves it after the next one in the note and on the axis (both orders agree), ⌥↑ restores the note
@@ -38,6 +39,8 @@ const { flag, value } = parseArgs();
  * a build made with another value on purpose; a deliberate change of the constant changes this line too.
  */
 const CLEARANCE = Number(value('--clearance') ?? 72);
+/** The clearance from the parts of the previous forest beyond the next stage's height (LEV-210), fixed for the same reason. */
+const ENVELOPE = 24;
 if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${value('--clearance')}`);
 const COUNTS = (value('--counts') ?? '500,2000').split(',').map(Number);
 if (COUNTS.some(count => !Number.isInteger(count) || count < 100)) throw new Error(`--counts needs node counts of 100 or more, not ${value('--counts')}`);
@@ -130,7 +133,13 @@ const GEOMETRY = `
     const across = forest.nodes.filter(rect => upper ? rect.b > bandTop + slack : rect.t < bandBottom - slack).length;
     if (across) sides.push(stage.title + ' (' + side + '): ' + across + ' nodes cross the axis band');
     const stem = (stage.rect.l + stage.rect.r) / 2;
-    if (last[side]) gaps.push({ from: last[side].title, to: stage.title, side, gap: stem - last[side].forest.r });
+    if (last[side]) {
+      // The previous forest's nodes and controls within the height this stage's forest reaches from the band (LEV-210).
+      const previous = last[side].forest;
+      const near = previous.nodes.filter(rect => upper ? rect.b > forest.t + slack : rect.t < forest.b - slack);
+      const nearRight = Math.max(...near.map(rect => rect.r));
+      gaps.push({ from: last[side].title, to: stage.title, side, gap: stem - nearRight, envelope: stem - previous.r });
+    }
     last[side] = { title: stage.title, forest };
   }
   const forestList = [...forests.entries()];
@@ -146,8 +155,11 @@ const GEOMETRY = `
     forestOverlaps: forestOverlaps.length, forestOverlapExamples: forestOverlaps.slice(0, 10),
     acrossBand: sides.slice(0, 10),
     gaps: gaps.length, minGap: gaps.length ? Math.min(...gaps.map(item => item.gap)) : null,
-    boundGaps: gaps.filter(item => Math.abs(item.gap - ${CLEARANCE}) <= ${ROUNDING}).length,
-    shortGaps: gaps.filter(item => item.gap < ${CLEARANCE} - ${ROUNDING}).map(item => item.from + ' → ' + item.to + ' ' + item.gap.toFixed(1)),
+    minEnvelope: gaps.length ? Math.min(...gaps.map(item => item.envelope)) : null,
+    boundGaps: gaps.filter(item => Math.abs(Math.min(item.gap - ${CLEARANCE}, item.envelope - ${ENVELOPE})) <= ${ROUNDING}).length,
+    envelopeBound: gaps.filter(item => Math.abs(item.envelope - ${ENVELOPE}) <= ${ROUNDING} && item.gap > ${CLEARANCE} + ${ROUNDING}).length,
+    shortGaps: gaps.filter(item => item.gap < ${CLEARANCE} - ${ROUNDING} || item.envelope < ${ENVELOPE} - ${ROUNDING})
+      .map(item => item.from + ' → ' + item.to + ' ' + item.gap.toFixed(1) + ' / ' + item.envelope.toFixed(1)),
     stageOrder: stages.map(stage => stage.title),
     axisOrder: [...stages].sort((a, b) => (a.rect.l + a.rect.r) - (b.rect.l + b.rect.r)).map(stage => stage.title),
   };`;
@@ -203,7 +215,7 @@ function judge(what, state, { closed = 0 } = {}) {
   check(state.overlaps === 0, `${what}: ${state.overlaps} overlaps (${state.overlapExamples.join('; ')})`);
   check(state.forestOverlaps === 0, `${what}: ${state.forestOverlaps} stage forests overlap (${state.forestOverlapExamples.join('; ')})`);
   check(state.acrossBand.length === 0, `${what}: forests cross the axis band (${state.acrossBand.join('; ')})`);
-  check(state.shortGaps.length === 0, `${what}: same-side stems closer than ${CLEARANCE} px (${state.shortGaps.join('; ')})`);
+  check(state.shortGaps.length === 0, `${what}: same-side stems closer than ${CLEARANCE} px to the forest within their height or ${ENVELOPE} px to the whole forest (${state.shortGaps.join('; ')})`);
   check(content.missingCount === 0 && content.renamedCount === 0 && content.duplicates === 0 && content.empty === 0 && content.drawn === content.expected,
     `${what}: drawn ${content.drawn} of ${content.expected} (missing ${content.missingCount}, renamed ${content.renamedCount}, duplicated ${content.duplicates}, without size ${content.empty})`);
   check(content.closed === closed, `${what}: ${content.closed} closed branches, expected ${closed}`);
