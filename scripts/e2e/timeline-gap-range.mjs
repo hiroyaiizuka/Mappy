@@ -80,9 +80,13 @@ try {
         const stem = rect.left + rect.width / 2;
         return { side: entry.side, near: (stem - right(entry.near)) / scale, far: (stem - right(entry.far)) / scale };
       }) };`);
-    let measured = await read();
+    // The map may not be drawn as a timeline yet right after opening (or --reload): wait for it within the same budget.
+    const attempt = async () => { try { return await read(); } catch { return null; } };
+    let measured = null;
+    for (let tries = 0; tries < 25 && !measured; tries += 1) { measured = await attempt(); if (!measured) await wait(400); }
+    if (!measured) measured = await read();
     let settled = false;
-    for (let attempt = 0; attempt < 25 && !settled; attempt += 1) {
+    for (let tries = 0; tries < 25 && !settled; tries += 1) {
       await wait(400);
       const next = await read();
       settled = Math.abs(next.scale - measured.scale) < 1e-4

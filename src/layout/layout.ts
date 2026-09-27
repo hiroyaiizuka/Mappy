@@ -299,17 +299,20 @@ interface PlacedForest {
 /**
  * The leftmost stem that stands clear of `forest`, placed on one side of the axis whose band ends at
  * `bandEdge`: the stage clearance past everything whose near edge (the edge facing the axis) comes
- * nearer the band than `height`, and the envelope clearance past the whole forest. A forest no
- * taller than `height` lies within it entirely, which is the common case and needs no scan.
+ * nearer the band than `height` and one sibling gap more, and the envelope clearance past the whole
+ * forest. The sibling gap keeps an item that ends where the next forest ends (or just past it) from
+ * sitting beside it with no vertical space and only the envelope clearance. A forest that lies within
+ * that reach entirely is the common case and needs no scan.
  */
 function stemClearOf(
   forest: PlacedForest, height: number, bandEdge: number, upper: boolean,
   nodes: readonly LayoutBounds[], foldBounds: readonly LayoutBounds[],
 ): number {
-  if (forest.height <= height) return forest.right + TIMELINE_STAGE_CLEARANCE;
+  const reach = height + VERTICAL_GAP;
+  if (forest.height <= reach) return forest.right + TIMELINE_STAGE_CLEARANCE;
   const near = Math.max(
-    nearRight(nodes, forest.nodes, height, bandEdge, upper),
-    nearRight(foldBounds, forest.folds, height, bandEdge, upper),
+    nearRight(nodes, forest.nodes, reach, bandEdge, upper),
+    nearRight(foldBounds, forest.folds, reach, bandEdge, upper),
   );
   return Math.max(near + TIMELINE_STAGE_CLEARANCE, forest.right + TIMELINE_ENVELOPE_CLEARANCE);
 }

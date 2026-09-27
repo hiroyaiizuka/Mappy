@@ -9,10 +9,11 @@
  *   the envelope clearance (LEV-210), so it is not measured.
  * - Opening the note as a timeline does not write it.
  *
- * Usage: npm run harness:e2e:timeline-stage-gap -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>]
+ * Usage: npm run harness:e2e:timeline-stage-gap -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep] [--clearance <px>] [--envelope <px>]
  *   --clearance  the distance the installed build is expected to keep (default: TIMELINE_STAGE_CLEARANCE as this
  *                checkout's src/layout/layout.ts has it, the value `harness:prepare` builds), for a build made with another
  *                value to compare screenshots
+ *   --envelope   the same for the distance from the whole forest (default: TIMELINE_ENVELOPE_CLEARANCE, LEV-210)
  */
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -29,7 +30,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const given = value('--clearance');
 const CLEARANCE = given === undefined ? await layoutConstant('TIMELINE_STAGE_CLEARANCE') : Number(given);
 if (!Number.isFinite(CLEARANCE) || CLEARANCE <= 0) throw new Error(`--clearance needs a positive number of px, not ${JSON.stringify(given)}`);
-const ENVELOPE = await layoutConstant('TIMELINE_ENVELOPE_CLEARANCE');
+const givenEnvelope = value('--envelope');
+const ENVELOPE = givenEnvelope === undefined ? await layoutConstant('TIMELINE_ENVELOPE_CLEARANCE') : Number(givenEnvelope);
+if (!Number.isFinite(ENVELOPE) || ENVELOPE <= 0) throw new Error(`--envelope needs a positive number of px, not ${JSON.stringify(givenEnvelope)}`);
 const NOTE = 'Fixtures/E2E-timeline-stage-gap.md';
 const SOURCE = await readFile(resolve(root, 'tests', 'fixtures', 'timeline-stages.md'), 'utf8');
 const FOREST = ['集中が続く時間', '注意は時間とともに落ちる', 'ビジランス効果', '区切って休む', 'ポモドーロ'];

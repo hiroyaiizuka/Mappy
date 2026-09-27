@@ -631,10 +631,13 @@ describe("timeline stage clearance by height", () => {
     // The stem ends at the centre of "nc", halfway down its three-row subtree; "far" is beside the third row.
     // This passes on the envelope rule too: it pins the range to the whole next forest, and fails if the range
     // is cut down to the stem alone (the ticket's first point).
-    const previous = node("previous", ...outwards(side, [node("p1"), node("p2"), node("far")]));
+    // A fourth row, beyond the next forest, makes the previous forest the taller one, so its items are scanned.
+    const previous = node("previous", ...outwards(side, [node("p1"), node("p2"), node("far"), node("p4")]));
     const next = node("next", node("nc", ...outwards(side, [node("g1"), node("g2"), node("g3")])));
     const tree = sameSide(side, previous, next);
-    const sizes = new Map<string, NodeSize>([["p1", { width: 400, height: 44 }], ["p2", { width: 400, height: 44 }], ["far", { width: 430, height: 44 }]]);
+    const sizes = new Map<string, NodeSize>([
+      ["p1", { width: 400, height: 44 }], ["p2", { width: 400, height: 44 }], ["far", { width: 430, height: 44 }], ["p4", { width: 100, height: 44 }],
+    ]);
     const result = layoutTree(tree, sizes, new Set(), "timeline");
     expectDisjoint(result);
     expect(stemX(result, "next") - rightOf(result, tree, ["far"])).toBe(TIMELINE_STAGE_CLEARANCE);
@@ -644,7 +647,7 @@ describe("timeline stage clearance by height", () => {
     // The previous forest is taller than the next one, so its items are scanned one by one: the collapsed branch beside
     // the next stage's child ends in its count badge, the rightmost thing within that height. The badge is also the
     // rightmost thing in the whole forest, so this passes on the envelope rule too: it pins that the scan counts fold
-    // controls (dropping them from the scan fails it with 32 px, artifacts/lev-210/fold-scan-mutation-vitest.txt).
+    // controls (dropping them from the scan fails it: 32 px instead of 72).
     const previous = node("previous", ...outwards(side, [node("closed", ...hidden("h", 1000)), node("far")]));
     const tree = sameSide(side, previous, node("next", node("next-child")));
     const sizes = new Map<string, NodeSize>([["closed", { width: 400, height: 44 }], ["far", { width: 380, height: 44 }]]);
@@ -653,6 +656,32 @@ describe("timeline stage clearance by height", () => {
     const badge = rightOf(result, tree, ["closed"], new Set(["closed"]));
     expect(badge).toBeGreaterThan(result.nodes.find(item => item.id === "closed")!.x + 400);
     expect(stemX(result, "next") - badge).toBe(TIMELINE_STAGE_CLEARANCE);
+  });
+
+  it.each(["upper", "lower"] as const)("keeps the clearance from a %s row that starts where the next forest ends", side => {
+    // The next stage's child wraps to 58 px, the height of the previous forest's first row and its sibling gap: the
+    // second row starts exactly where the next forest ends. It is owed the stage clearance, not the envelope's, or the
+    // two would sit side by side with no vertical space.
+    const previous = node("previous", ...outwards(side, [node("near"), node("edge"), node("far")]));
+    const tree = sameSide(side, previous, node("next", node("next-child")));
+    const sizes = new Map<string, NodeSize>([
+      ["near", { width: 300, height: 44 }], ["edge", { width: 420, height: 44 }], ["far", { width: 100, height: 44 }], ["next-child", { width: 160, height: 58 }],
+    ]);
+    const result = layoutTree(tree, sizes, new Set(), "timeline");
+    expectDisjoint(result);
+    expect(stemX(result, "next") - rightOf(result, tree, ["edge"])).toBe(TIMELINE_STAGE_CLEARANCE);
+  });
+
+  it("measures a stage against the last forest on its side, which stands clear of the ones before it", () => {
+    // Upper stages 0, 2 and 4: forest 0 is tall with a wide branch far out, forest 2 is one narrow row, forest 4 as tall
+    // as forest 0. Stage 4 is measured against forest 2 only; forest 0's branch must still be clear of it.
+    const first = node("s0", node("s0-near"), node("s0-mid"), node("s0-far"));
+    const tree = node("root", first, node("s1", node("s1-child")), node("s2", node("s2-child")), node("s3", node("s3-child")),
+      node("s4", node("s4-a"), node("s4-b"), node("s4-c")));
+    const sizes = new Map<string, NodeSize>([["s0-far", { width: 600, height: 44 }], ["s2-child", { width: 1, height: 44 }]]);
+    const result = layoutTree(tree, sizes, new Set(), "timeline");
+    expectDisjoint(result);
+    expect(stemX(result, "s4") - rightOf(result, tree, descendantIds(first))).toBeGreaterThanOrEqual(TIMELINE_STAGE_CLEARANCE);
   });
 
   // Passes on the envelope rule too (the deep leaves are the rightmost things drawn): it pins that the report LEV-205
