@@ -1624,14 +1624,20 @@ export class MindmapView extends FileView {
     });
   }
 
-  /** The connectors, as the embed draws them (`EdgeLayer`), with the drop preview's own marked and drawn last. */
+  /**
+   * The connectors, as the embed draws them (`EdgeLayer`), with the drop preview's own marked and drawn last: the thick
+   * connector must sit above the thin ones it overlaps along the shared trunk. Moved after the update, so a connector
+   * the update adds (a fold opened under the preview) does not land above it (LEV-248; before, it stayed under the new
+   * ones until the connectors were drawn again).
+   */
   private drawEdges(edges: LayoutResult["edges"]): void {
-    this.edges.update(edges, (edge, path) => {
-      const preview = edge.to === PLACEHOLDER_ID;
-      path.toggleClass("is-preview", preview);
-      // The thick connector must sit above the thin ones it overlaps along the shared trunk.
-      if (preview && path !== this.svg.lastElementChild) this.svg.append(path);
-    });
+    this.edges.update(edges);
+    const preview = edges.find(edge => edge.to === PLACEHOLDER_ID);
+    // Only the preview's connector ends on the placeholder, and it goes with the preview (its id does): nothing to unmark.
+    const path = preview ? this.edges.path(preview.id) : undefined;
+    if (!path) return;
+    path.addClass("is-preview");
+    if (path !== this.svg.lastElementChild) this.svg.append(path);
   }
 
   /** Show or clear the slot a pending drop would fill; the layout makes room for it on the next frame. */

@@ -277,7 +277,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 
 **実機確認（2026-09-21、LEV-91。ライブプレビュー）:** 専用 test-vault の Obsidian 1.14.2、PR #55 のブランチのビルド（`artifacts/lev-91-live-preview-e2e/record.md`）。1 回目の版（未接続の区画を 30 フレームまで見直す）では、3 つ埋め込んだ一時ノートは 5 回とも全部マップになったが、`embed-host` の画面の下の 2 つ（`embed-hierarchy`・`#同じ名前`）は容器が document に付くのがスクロールで画面に入る 2,521 ms 後で上限に届かず、5 回とも通常の埋め込みのまま残った（画面内の埋め込みは 90〜140 ms）。document の `MutationObserver` で接続を待つ 2 回目の版（この変更は `13719f8`。record の「ビルド」欄は `main.js` のハッシュ（先頭 `768989b0…`））では `embed-host` を 5 回開き直して毎回 5 つともマップ、一時ノートも 5 回とも 3 つマップ、開いて 8 秒放置してからスクロールしても画面の下の 3 つがマップになり、閉じたあとリスナーは基準値（editor-change 2／modify 11）に戻る。未実施はモバイルと、E34 と同じ 3 項目（PDF 書き出し・印刷、同名見出しの大文字小文字）。
 
-**描画の複製の整理（LEV-66 の子 LEV-248。挙動は変えない）:** マップのタブの `visible()` を core の `visibleNodes` に、`drawEdges()` を埋め込み・書き出しと同じ `EdgeLayer` に委ねた。ドロップのプレビューの線の `is-preview` と、それを最後に描く（太い線を細い線の上に出す）処理はタブ側に残し、`EdgeLayer.update` の `each` で行う。トピックの保存位置の読み取り（`topicKeys` の鍵、無ければ見出し）は core の `storedTopicPosition` にして、タブの `topicLayouts()` と埋め込みの `embedTopicLayouts` が共有する（ドラッグ中の位置・保存前の `pendingTopic`・ドラッグ中の保持はタブ側のまま）。既存の挙動として、プレビューが出ている間に折りたたみを開くなどで新しい線が増えると、その回はプレビューの線が新しい線の下に残り、次に線を描き直したときに最後へ戻る（main でも同じ。`tests/ui/mindmap-view-topics.test.ts` はこの形を固定している）。
+**描画の複製の整理（LEV-66 の子 LEV-248）:** マップのタブの表示するノードの列・線・トピックの保存位置の読み取りを、埋め込みと同じ core の関数と `EdgeLayer` に寄せた（どこに寄せたかは architecture.md §2 の `edge-layer.ts` の行と §3 の `mappy-topics` の段落）。見える挙動の差は 1 つで、ドロップのプレビューが出ている間に折りたたみを開くなどで線が増えると、それまではその回だけプレビューの太い線が新しい細い線の下に残った。今は同じ回で上に出る（レビューの指摘で直した。`tests/ui/mindmap-view-topics.test.ts` が main で落ちる）。
 
 ### M11: 左右バランス配置
 

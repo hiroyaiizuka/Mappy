@@ -275,8 +275,9 @@ describe('MindmapView with free topics', () => {
   });
 
   it('draws the previewed slot\'s connector thick and above the others, and none once the preview goes', async () => {
-    // Pin (LEV-248), not a regression test: it holds before and after the connectors moved to `EdgeLayer`. The view
-    // keeps what the embed has no use for — the `is-preview` class and the preview's connector drawn last.
+    // LEV-248. The view keeps what the embed has no use for — the `is-preview` class and the preview's connector drawn
+    // last. Before LEV-248 a connector added in the same frame as the preview's (a fold opened under it) was drawn above
+    // it until the connectors were drawn again: the first check after the fold fails on that code, the rest hold on both.
     const source = fixtureSource();
     const { view } = await mount(source);
     const doc = documentOf(view);
@@ -291,20 +292,22 @@ describe('MindmapView with free topics', () => {
     const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
     const fold = (view as unknown as { fold(id: string): void }).fold.bind(view);
     const previewDrop = (view as unknown as { previewDrop(command: MoveCommand | null): void }).previewDrop.bind(view);
-    // A topic folded, the preview drawn, the topic opened again: its connectors are new paths, added after the
-    // preview's (which stays, as it was, under them until the connectors are drawn again: before LEV-248 too). The next
-    // draw of the connectors — the slot moved within the same parent, the preview's connector the same path — puts the
-    // preview's last again.
+    // A topic folded, the preview drawn, the topic opened again: its connectors are new paths, added in the frame that
+    // draws the preview's, which stays last. So it does after the slot moves within the same parent (the same path).
     fold(folded.id);
     await frame();
     previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 0 });
     await frame();
+    const preview = paths().filter(path => path.classList.contains('is-preview'));
+    expect(preview).toHaveLength(1);
+    const closed = paths().length;
     fold(folded.id);
     await frame();
+    expect({ added: paths().length > closed, last: svg.lastElementChild === preview[0] }).toEqual({ added: true, last: true });
     previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 1 });
     await frame();
     const previews = paths().filter(path => path.classList.contains('is-preview'));
-    expect(previews).toHaveLength(1);
+    expect(previews).toEqual(preview);
     expect(svg.lastElementChild).toBe(previews[0]);
     previewDrop(null);
     await new Promise(resolve => requestAnimationFrame(resolve));

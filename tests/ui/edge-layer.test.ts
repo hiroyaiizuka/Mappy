@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /**
- * The connectors the embed, the export and (since LEV-248) the map view draw. `each` is the map view's: it marks the drop
- * preview's connector and draws it last, as `drawEdges` did with its own copy of this loop.
+ * The connectors the embed, the export and (since LEV-248) the map view draw. `path` is the map view's: it marks the
+ * drop preview's connector and draws it last.
  */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../browser-harness/dom';
 import type { LayoutEdge } from '../../src/layout/layout';
 import { EdgeLayer } from '../../src/ui/edge-layer';
@@ -13,7 +13,7 @@ beforeAll(() => { installObsidianDom(); });
 const edge = (from: string, to: string, path = `M0 0L${to.length} 1`): LayoutEdge => ({ id: `${from}->${to}`, from, to, path });
 
 describe('EdgeLayer', () => {
-  it('keeps a path per edge id across updates, sets only a changed d, and removes the edges gone', () => {
+  it('keeps a path per edge id across updates and removes the edges gone', () => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const layer = new EdgeLayer(svg);
     layer.update([edge('a', 'b'), edge('a', 'c')]);
@@ -24,11 +24,25 @@ describe('EdgeLayer', () => {
     expect(first?.getAttribute('d')).toBe('M1 1L2 2');
   });
 
-  it('calls each with every edge and its path, in order, once the path has its d', () => {
+  it('touches only a changed d', () => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const layer = new EdgeLayer(svg);
-    const seen: string[] = [];
-    layer.update([edge('a', 'b'), edge('a', 'c')], (item, path) => { seen.push(`${item.id} ${path.getAttribute('d')}`); });
-    expect(seen).toEqual(['a->b M0 0L1 1', 'a->c M0 0L1 1']);
+    layer.update([edge('a', 'b'), edge('a', 'c')]);
+    const unchanged = layer.path('a->b');
+    const changed = layer.path('a->c');
+    if (!unchanged || !changed) throw new Error('No paths');
+    const kept = vi.spyOn(unchanged, 'setAttribute');
+    const moved = vi.spyOn(changed, 'setAttribute');
+    layer.update([edge('a', 'b'), edge('a', 'c', 'M5 5L6 6')]);
+    expect({ kept: kept.mock.calls.length, moved: moved.mock.calls }).toEqual({ kept: 0, moved: [['d', 'M5 5L6 6']] });
+  });
+
+  it('gives the path of an edge drawn by the last update, and none for an edge gone', () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const layer = new EdgeLayer(svg);
+    layer.update([edge('a', 'b')]);
+    expect(layer.path('a->b')).toBe(svg.firstElementChild);
+    layer.update([]);
+    expect(layer.path('a->b')).toBeUndefined();
   });
 });
