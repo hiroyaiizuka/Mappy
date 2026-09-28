@@ -8,12 +8,13 @@ import { findFixture } from '../../harness/browser/fixtures';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView } from '../../src/ui/mindmap-view';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(async () => { await closeOpenViews(); document.body.replaceChildren(); });
 
 const PATH = 'Fixtures/uneven-branches.md';
 

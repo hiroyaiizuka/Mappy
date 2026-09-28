@@ -28,6 +28,7 @@ npm run harness:prepare   # 初回専用。既知の fixture を初期化する
 npm run harness:preflight # ビルド成果物と検証 Vault の一致を確認
 npm run harness:browser   # Obsidian なしで map view を動かす検証ページ（http://127.0.0.1:8765/）
 npm run harness:browser:capture # headless Chrome で fixture と主要操作を撮影し artifacts/ に記録
+npm run harness:view-teardown # view を作る全テストファイルが片付けを外すと落ちることを確かめる（docs/harness.md）
 ```
 
 `dist/mappy/` に `main.js`、`manifest.json`、`styles.css` を生成します。`dist/build-info.json` は検証用のハッシュ記録です。`check` は公開や既存 Vault へのインストールを行いません。ブラウザ検証ページ（`dist/harness/`）は製品の core / layout / interaction / ui をそのまま読み込み、`obsidian` モジュールだけをモックに置き換えます。保存・リンク解決・テーマ・IME はこのページの対象外で、[検証手順](harness.md)の ③ 実機で確認します。

@@ -21,13 +21,13 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -43,7 +43,6 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
   app.put(PATH, source);
   const store = new DocumentStore(app.asApp<App>());
   const mounted = await mountMapView(PATH, source, layout, app, { store });
-  opened.push(mounted);
   return { ...mounted, store };
 }
 

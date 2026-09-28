@@ -8,18 +8,18 @@ import { readMapLayout } from '../../src/obsidian/frontmatter';
 import { ViewRouter } from '../../src/obsidian/view-routing';
 import { VIEW_TYPE } from '../../src/ui/mindmap-view';
 import { accessibleName, nodeNamed } from './accessible-name';
-import { mountMapView, type MountedMapView } from './map-view-mount';
+import { mountMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-const opened: MountedMapView[] = [];
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
   Notice.log.length = 0;
   for (const cleanup of cleanups.splice(0)) cleanup();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -189,7 +189,6 @@ function routerFor(app: HarnessApp): ViewRouter {
 
 async function mount(source = SOURCE) {
   const mounted = await mountMapView(PATH, source);
-  opened.push(mounted);
   mounted.app.put(OTHER, source.replace('講座の構成', '別のノート'));
   const markdown = new MarkdownBeside(new WorkspaceLeaf(mounted.app.asApp<App>()), OTHER);
   document.body.append(markdown.containerEl);
@@ -513,7 +512,6 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
   it('follows a link\'s subpath handed as ephemeral state: the node holding the heading or block is selected and focused', async () => {
     const withBlock = SOURCE.replace('- はじめに\n', '- はじめに ^intro\n');
     const mounted = await mountMapView(PATH, withBlock);
-    opened.push(mounted);
     const { view, settle, node, select } = mounted;
     select('記録する');
     view.setEphemeralState({ subpath: '#講座の構成' });
@@ -541,7 +539,6 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect(view.getEphemeralState()).toEqual({ selection: { from: SOURCE.indexOf('- 記録する'), title: '記録する' } });
     // Restored into a fresh view of the same note, whose ids differ: the node at that place with that text.
     const again = await mountMapView(PATH, SOURCE);
-    opened.push(again);
     again.select('学ぶこと');
     again.view.setEphemeralState(state);
     await again.settle();
@@ -585,7 +582,6 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     const sidebar = await mountMapView(PATH, SOURCE, 'mindmap', app, {
       prepare: view => { (view.leaf as unknown as WorkspaceLeaf).root = app.workspace.rightSplit; },
     });
-    opened.push(sidebar);
     expect(sidebar.view.navigation).toBe(false);
     (sidebar.view.leaf as unknown as WorkspaceLeaf).root = null;
     app.workspaceEvents.trigger('layout-change');

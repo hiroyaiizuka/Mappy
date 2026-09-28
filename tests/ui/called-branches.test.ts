@@ -13,6 +13,7 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { t } from '../../src/i18n';
 import { MindmapView } from '../../src/ui/mindmap-view';
+import { closeOpenViews, closeView } from '../mocks/open-views';
 import { accessibleDescription, accessibleName } from './accessible-name';
 
 /**
@@ -53,9 +54,8 @@ const NOTES: Record<string, string> = {
   'Plain.md': '## Plain\n- a\n', 'image.png': '',
 };
 
-const views: MindmapView[] = [];
 afterEach(async () => {
-  for (const view of views.splice(0)) { await view.onClose(); view.unload(); }
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -104,7 +104,6 @@ async function mount(notes: Record<string, string> = NOTES, hostPath = HOST_PATH
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, router);
-  views.push(view);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   view.load();
@@ -602,9 +601,7 @@ describe('updates and release', () => {
     const { app, view } = await mount();
     const listeners = (): number => app.vaultEvents.count() + app.workspaceEvents.count();
     expect(listeners()).toBeGreaterThan(0);
-    await view.onClose();
-    view.unload();
-    views.splice(views.indexOf(view), 1);
+    await closeView(view);
     expect(listeners()).toBe(0);
     app.put('Map.md', MAP.replace('- 葉', '- 後で'));
     await new Promise(resolve => setTimeout(resolve, 60));

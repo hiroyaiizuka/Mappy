@@ -7,6 +7,7 @@
  */
 import type { App, EventRef, KeymapContext, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState, ViewStateResult } from "obsidian";
 import { TFile } from "../../tests/mocks/obsidian-file";
+import { enterView, leaveView } from "../../tests/mocks/open-views";
 
 export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
 
@@ -255,12 +256,15 @@ export abstract class View extends Component {
     this.app = leaf.app;
     this.containerEl = document.createElement("div");
     this.containerEl.className = "workspace-leaf-content";
+    // Open until `close` has run to the end, for a test's teardown to find (tests/mocks/open-views.ts, LEV-239).
+    enterView(this);
   }
   /** `View.close` (1.14.2): the container leaves the DOM, the component unloads, then `onClose`. */
   async close(): Promise<void> {
     this.containerEl.detach();
     this.unload();
     await this.onClose();
+    leaveView(this);
   }
   onOpen(): Promise<void> { return Promise.resolve(); }
   onClose(): Promise<void> { return Promise.resolve(); }

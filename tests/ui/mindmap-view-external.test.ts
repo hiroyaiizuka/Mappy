@@ -9,16 +9,15 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { t } from '../../src/i18n';
 import { MindmapView } from '../../src/ui/mindmap-view';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-/** Views opened by `mount`, closed after each test so their refresh timers and vault listeners do not outlive it. */
-const opened: MindmapView[] = [];
 afterEach(async () => {
-  for (const view of opened.splice(0)) { await view.onClose(); view.unload(); }
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -76,7 +75,6 @@ async function mount(source: string): Promise<Mounted> {
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
-  opened.push(view);
   view.load();
   await view.onOpen();
   await view.setState({ file: PATH, layout: 'mindmap' }, { history: false } satisfies ViewStateResult);
