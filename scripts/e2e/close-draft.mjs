@@ -59,7 +59,7 @@ const SOURCE = [
 const renamed = (title, from = SOURCE) => from.replace('  - 子ノード\n', `  - ${title}\n`);
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 const NOT_SAVED = '編集中の内容を保存できませんでした';
-const EXIT_NOT_SAVED = '再読込・終了のときに編集していた';
+const EXIT_NOT_SAVED = '再読込・終了のときに';
 /** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`: empty once the plugin has applied what the page before kept. */
 const EXIT_KEY = 'mappy-exit-drafts';
 

@@ -8,10 +8,6 @@ describe('rebaseExitEdits', () => {
   const rename = [{ from: before.indexOf('子ノード'), to: before.indexOf('子ノード') + 4, text: '新しい名前' }];
   const renamed = applyEdits(before, rename);
 
-  it('keeps the edits on the same note', () => {
-    expect(rebaseExitEdits(before, before, rename)).toEqual(rename);
-  });
-
   it('moves the edits over a change after them', () => {
     const current = before.replace('- 別のノード\n', '- 別のノード\n- 足した\n');
     expect(applyEdits(current, rebaseExitEdits(before, current, rename)!)).toBe(current.replace('子ノード', '新しい名前'));
@@ -40,11 +36,21 @@ describe('rebaseExitEdits', () => {
     const two = [...rename, { from: 0, to: 0, text: '---\nmappy: true\n---\n' }];
     const current = before.replace('- 別のノード\n', '- 別のノード\n- 足した\n');
     expect(rebaseExitEdits(before, current, two)).toBeNull();
-    expect(rebaseExitEdits(before, before, two)).toEqual(two);
   });
 
-  it('refuses a draft without its time', () => {
-    expect(readExitDrafts([{ path: 'a.md', title: 't', refused: 'x' }])).toEqual([]);
+  // Review 3: in repeated text the change's place is ambiguous, and the one diff picked could hand the draft to
+  // another node of the same title (AGENTS.md: 同名見出し).
+  it('refuses a change whose place in repeated text could reach the edit', () => {
+    const twins = '- A\n- A\n';
+    const first = [{ from: 2, to: 3, text: 'B' }];
+    // Either line may be the one gone: the draft of the first A must not land on what is left.
+    expect(rebaseExitEdits(twins, '- A\n', first)).toBeNull();
+    // A same-titled node added above: the draft stays with its own A, not the new one.
+    const nested = '- A\n  - x\n';
+    expect(rebaseExitEdits(nested, '- A\n  - y\n- A\n  - x\n', [{ from: 2, to: 3, text: 'B' }])).toBeNull();
+    // Unambiguous text around it still moves.
+    const current = '- 前\n' + twins;
+    expect(applyEdits(current, rebaseExitEdits(twins, current, [{ from: 6, to: 7, text: 'B' }])!)).toBe('- 前\n- A\n- B\n');
   });
 });
 
@@ -55,6 +61,10 @@ describe('readExitDrafts', () => {
     const withoutSource = { path: kept.path, title: kept.title, at: kept.at, before: kept.before, after: kept.after, edits };
     expect(readExitDrafts([kept, { ...kept, source: 3 }])).toEqual([kept, withoutSource]);
     expect(readExitDrafts([{ ...kept, edits: [] }, { ...kept, edits: [{ from: 2, to: 1, text: '' }] }, null, 'x'])).toEqual([]);
+  });
+
+  it('refuses a draft without its time', () => {
+    expect(readExitDrafts([{ path: 'a.md', title: 't', refused: 'x' }])).toEqual([]);
   });
 
   it('tells texts apart by length and hash', () => {

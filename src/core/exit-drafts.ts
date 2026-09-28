@@ -24,18 +24,34 @@ export const EXIT_SOURCE_LIMIT = 256 * 1024;
 export const EXIT_DRAFT_TTL = 24 * 60 * 60 * 1000;
 
 /**
- * `edits`, planned on `before`, moved onto `current`, or null. Only a plan of one edit moves — a plain title rename —
- * and only over a change clear of it (not touching it either: `diffEdit`, then `rebaseEdits`), so what it replaces is
- * still there with the same text around it. A plan of more edits (a topic's frontmatter keys and position, which
- * depend on the other topics in the note) applies only to the note it was planned on, as nothing is planned again
- * here (review 2). Nothing is guessed either when the change reaches the edit (E05).
+ * `edits`, planned on `before`, moved onto a different `current`, or null. Only a plan of one edit moves — a plain
+ * title rename — and only over a change clear of it (not touching it either: `diffEdit`, then `rebaseEdits`), so what
+ * it replaces is still there with the same text around it. A plan of more edits (a topic's frontmatter keys and
+ * position, which depend on the other topics in the note) applies only to the note it was planned on, as nothing is
+ * planned again here (review 2). Where the change sits is ambiguous in repeated text (「- A\n- A\n」 losing a line
+ * could have lost either): it is placed both as far forward and as far back as it goes, and the edit moves only when
+ * both leave it clear on the same side, so a same-titled node never takes another's draft (review 3, AGENTS.md: 同名
+ * 見出し). Nothing is guessed either when the change reaches the edit (E05).
  */
 export function rebaseExitEdits(before: string, current: string, edits: readonly TextEdit[]): TextEdit[] | null {
-  if (before === current) return edits.map(edit => ({ ...edit }));
   if (edits.length !== 1) return null;
-  const change = diffEdit(before, current);
-  if (edits.some(edit => change.from <= edit.to && edit.from <= change.to)) return null;
-  return rebaseEdits(edits, [change]) ?? null;
+  const late = diffEdit(before, current);
+  const early = diffFromEnd(before, current);
+  const side = (change: TextEdit, edit: TextEdit): number => change.to < edit.from ? -1 : change.from > edit.to ? 1 : 0;
+  for (const edit of edits) {
+    const at = side(late, edit);
+    if (at === 0 || side(early, edit) !== at) return null;
+  }
+  return rebaseEdits(edits, [late]) ?? null;
+}
+
+/** `diffEdit` with the common end taken first: the same change placed as early in the text as it goes. */
+function diffFromEnd(from: string, to: string): TextEdit {
+  let end = 0;
+  while (end < from.length && end < to.length && from[from.length - 1 - end] === to[to.length - 1 - end]) end += 1;
+  let start = 0;
+  while (start < from.length - end && start < to.length - end && from[start] === to[start]) start += 1;
+  return { from: start, to: from.length - end, text: to.slice(start, to.length - end) };
 }
 
 /**

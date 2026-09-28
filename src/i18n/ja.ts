@@ -148,7 +148,7 @@ export const ja: Messages = {
   viewTitle: (name: string) => `${name} · マップ`,
   viewTitleEmpty: "マインドマップ",
   draftNotSaved: (reason: string) => `編集中の内容を保存できませんでした。${reason}`,
-  exitDraftNotSaved: (title: string, reason: string) => `再読込・終了のときに編集していた「${title}」を保存できませんでした。${reason}`,
+  exitDraftNotSaved: (title: string, note: string, reason: string) => `再読込・終了のときに ${note} で編集していた「${title}」を保存できませんでした。${reason}`,
   exitNoteChanged: "その間にノートが変わりました。",
   exitNoteGone: "ノートが見つかりません。",
   exitDraftExpired: "1 日より前の入力なので、書き込みませんでした。",

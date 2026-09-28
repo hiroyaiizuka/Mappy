@@ -33,12 +33,10 @@ export function installExitDrafts(owner: Component, app: App, store: DocumentSto
     // Added to any kept by an earlier page that this one went before applying (the layout was not ready yet).
     let waiting: ExitDraft[] = [];
     try { waiting = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { /* Unreadable: nothing waiting. */ }
-    const kept = [...waiting, ...drafts];
-    // A full localStorage takes the drafts without the note texts (they then apply only to the note unchanged), or
-    // none: they go, as they did before LEV-230.
-    try { app.saveLocalStorage(EXIT_DRAFTS_KEY, kept); }
-    catch {
-      try { app.saveLocalStorage(EXIT_DRAFTS_KEY, withoutSources(kept)); } catch { /* Nothing fits. */ }
+    // A full localStorage takes the drafts without the note texts (they then apply only to the note unchanged), then
+    // this page's alone, the newest input; else they go, as they did before LEV-230.
+    for (const kept of [[...waiting, ...drafts], withoutSources([...waiting, ...drafts]), withoutSources(drafts)]) {
+      try { app.saveLocalStorage(EXIT_DRAFTS_KEY, kept); return; } catch { /* Try a smaller one. */ }
     }
   });
   // A page that was not unloaded after all (a WebView that sends `pagehide` and keeps the page) applies them at once.
@@ -57,14 +55,21 @@ async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => b
   if (applying) return;
   applying = true;
   try {
-    const drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY));
-    if (drafts.length === 0) app.saveLocalStorage(EXIT_DRAFTS_KEY, null);
+    // Storage refused (access, quota): what is there stays for a later load.
+    const keep = (rest: readonly ExitDraft[]): void => {
+      try { app.saveLocalStorage(EXIT_DRAFTS_KEY, rest.length > 0 ? rest : null); } catch { /* Left as it is. */ }
+    };
+    let drafts: ExitDraft[] = [];
+    try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { return; }
+    if (drafts.length === 0) keep([]);
     for (let index = 0; index < drafts.length && !unloaded(); index += 1) {
       const draft = drafts[index]!;
       try { await applyExitDraft(app, store, draft); }
-      catch (error) { new Notice(t().exitDraftNotSaved(draft.title, error instanceof Error ? error.message : "")); }
-      const rest = drafts.slice(index + 1);
-      app.saveLocalStorage(EXIT_DRAFTS_KEY, rest.length > 0 ? rest : null);
+      catch (error) {
+        // Until dismissed: it holds the only copy of what was typed, and shows while the workspace is still loading.
+        new Notice(t().exitDraftNotSaved(draft.title, draft.path, error instanceof Error ? error.message : ""), 0);
+      }
+      keep(drafts.slice(index + 1));
     }
   } finally { applying = false; }
 }
@@ -79,8 +84,7 @@ async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft):
   if (Date.now() - draft.at > EXIT_DRAFT_TTL) throw new Error(t().exitDraftExpired);
   // The note the draft was planned on, or one changed elsewhere since (a change the map had not read, another kept
   // draft of the same note applied first) whose change stays clear of a plain rename.
-  const planned = draft.source !== undefined && textFingerprint(draft.source) === draft.before ? draft.source : null;
-  const edits = found === draft.before ? draft.edits : planned === null ? null : rebaseExitEdits(planned, current, draft.edits);
+  const edits = found === draft.before ? draft.edits : draft.source === undefined ? null : rebaseExitEdits(draft.source, current, draft.edits);
   if (!edits) throw new Error(t().exitNoteChanged);
   // Refused by the store if the note moved on since the read above.
   await store.applyOver(file, current, edits);

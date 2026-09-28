@@ -150,7 +150,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent).toBe(t().draftChanged);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(external);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('外で変わったノードの下書き', t().draftChanged)]);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('外で変わったノードの下書き', PATH, t().draftChanged)]);
   });
 
   // Review 1: the kept edit was checked against the exact note it was planned on, so any change elsewhere in the
@@ -172,7 +172,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.put(PATH, changed);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(changed);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('間に変わったノードの下書き', t().exitNoteChanged)]);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('間に変わったノードの下書き', PATH, t().exitNoteChanged)]);
   });
 
   // Review 1: a change the map had not read yet (within the re-read's debounce) made the kept edit's note stale.
@@ -226,7 +226,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, earlier);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('二度目の再読込の下書き'));
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('前のページの下書き', 'x')]);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('前のページの下書き', 'Fixtures/other.md', 'x')]);
   });
 
   // Review 2: a draft kept for long (Mappy disabled for weeks, the note worked on elsewhere) was written unasked.
@@ -237,7 +237,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ ...kept, at: Date.now() - 2 * 24 * 60 * 60 * 1000 }]);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(SOURCE);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('古い下書き', t().exitDraftExpired)]);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('古い下書き', PATH, t().exitDraftExpired)]);
   });
 
   // Review 2: a full localStorage dropped every draft, though they fit without the note texts.
@@ -288,6 +288,26 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
   });
 
+  // Review 3: pagehide closed the 本文・リンクを編集 modal too, and on a page kept after all (the pageshow path) the
+  // body typed there was gone without a word. Only the title draft is taken.
+  it('leaves the body modal open at pagehide', async () => {
+    const mounted = await mountMapView(PATH, SOURCE);
+    opened.push(mounted);
+    install(mounted.app, (mounted.view as unknown as { store: DocumentStore }).store, () => [mounted.view]);
+    mounted.node('子ノード').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+    const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
+      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === t().editBody);
+    if (!item) throw new Error('no 本文・リンクを編集 in the menu');
+    item.click();
+    await mounted.settle();
+    const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
+    if (!input) throw new Error('The body modal did not open');
+    input.value = '残る本文';
+    window.dispatchEvent(new Event('pagehide'));
+    expect(document.contains(input)).toBe(true);
+    expect(input.value).toBe('残る本文');
+  });
+
   it('applies nothing once Mappy is unloaded, and leaves the rest for the next load', async () => {
     const app = new HarnessApp();
     app.put(PATH, SOURCE);
@@ -315,7 +335,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     const app = new HarnessApp();
     install(app, new DocumentStore(app.asApp<App>()), () => []);
     for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('消えたノートの下書き', t().exitNoteGone)]);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('消えたノートの下書き', PATH, t().exitNoteGone)]);
   });
 
   it('does nothing when the note already has the draft (a save that landed after all)', async () => {

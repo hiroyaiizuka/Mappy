@@ -823,7 +823,7 @@ export class MindmapView extends FileView {
    * closing; Obsidian 1.14.2 sends `pagehide` then, and no `onClose`): the title draft as the edit its save would make,
    * planned now on the note the map shows, for the plugin's next load to apply (src/ui/exit-drafts.ts). Nothing is
    * written here: a write started as the page goes is cut off, and can be cut after the file was emptied
-   * (artifacts/lev-230). The drafts go with it, so no save starts after this either — on a quit the window's blur
+   * (artifacts/lev-230). The title draft goes with it, so no save starts after this either — on a quit the window's blur
    * comes after `unload` and would start the draft's blur save (LEV-216), a write the same cut can empty the note in.
    * A draft that cannot be planned (its node changed outside the map, E05) is kept with the reason, to be reported
    * then; one that would not change the note is not kept.
@@ -831,7 +831,10 @@ export class MindmapView extends FileView {
   takeExitDraft(): ExitDraft | null {
     if (this.closed) return null;
     const kept = this.exitDraft();
-    this.dropDraft();
+    // The title draft only: the 本文・リンクを編集 modal starts no save of its own, and stays for a page kept after all.
+    this.inlineEditor?.dispose();
+    this.inlineEditor = undefined;
+    this.inlineDraft = undefined;
     return kept;
   }
 
