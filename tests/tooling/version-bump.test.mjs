@@ -133,6 +133,15 @@ describe('bumpVersion', () => {
     expect(bumpVersion(root, '0.0.1')).toEqual({ version: '0.0.1', minAppVersion: '1.8.7' });
   });
 
+  it('reports a stale item in one README together with the other README missing, as validate does', () => {
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## Known limitations\n\n- a (up to 0.0.1)\n');
+    rmSync(join(root, 'README.ja.md'));
+    expect(() => bumpVersion(root, '0.1.0')).toThrow(
+      'README.md:5: known limitation "up to 0.0.1" is limited to a release older than 0.1.0. '
+      + 'If its fix ships in 0.1.0, remove the item; if not, update the version in the item.\nREADME.ja.md: file is missing.',
+    );
+  });
+
   it('refuses without either README, or without its known-limitations section, instead of skipping the check', () => {
     writeFileSync(join(root, 'README.md'), '# Mappy\n');
     expect(() => bumpVersion(root, '0.1.0')).toThrow('README.md: missing the "## Known limitations" section');

@@ -394,6 +394,26 @@ describe('README.md version-limited known limitations (「(up to x.y.z)」)', ()
     ]);
   });
 
+  // Review 2 of LEV-227: a product named before "up to" was compared as Mappy's, a capitalized word
+  // after it ("Beta") hid a Mappy version, and "until" / "through" were not read.
+  it('skips a listed product named before or after the keyword, and compares everything else as Mappy\'s', () => {
+    const limitations = [
+      '- Drag and drop fails on Obsidian up to 1.8.9.',
+      '- PNG export fails on iOS up to 17.4.',
+      '- Undo loses history (up to Beta 0.3.1)',
+      '- Figma import fails up to Figma 0.3.2.',
+      '- a (until 0.3.3)',
+      '- b (through 0.3.4)',
+      '- Notes saved by Mappy 0.3.2 and earlier are rewritten.',
+    ].join('\n');
+    expect(readmeErrors('2.0.0', limitations)).toEqual([
+      stale(7, 'up to Beta 0.3.1', '2.0.0'),
+      stale(8, 'up to Figma 0.3.2', '2.0.0'),
+      stale(9, 'until 0.3.3', '2.0.0'),
+      stale(10, 'through 0.3.4', '2.0.0'),
+    ]);
+  });
+
   it('does not require README.ja.md when packaging, which skips the known-limitations check', () => {
     rmSync(join(root, 'README.ja.md'));
     expect(validateRelease(root, { knownLimitations: false })).toEqual([]);
@@ -415,8 +435,8 @@ describe('README.md version-limited known limitations (「(up to x.y.z)」)', ()
 
   it('reports a version limit that is not a full x.y.z instead of silently passing it', () => {
     expect(readmeErrors('0.3.6', '- a (up to 0.3)\n- b (up to 0.3.5-beta.1)')).toEqual([
-      'README.md:5: known limitation "up to 0.3" must name a release as x.y.z to be checked, like "(up to 0.3.5)".',
-      'README.md:6: known limitation "up to 0.3.5-beta.1" must name a release as x.y.z to be checked, like "(up to 0.3.5)".',
+      'README.md:5: known limitation "up to 0.3" must name a release as x.y.z to be checked, like "(up to 0.3.5)" (or, for another product\'s version, name it: see otherProducts in scripts/validate-release.mjs).',
+      'README.md:6: known limitation "up to 0.3.5-beta.1" must name a release as x.y.z to be checked, like "(up to 0.3.5)" (or, for another product\'s version, name it: see otherProducts in scripts/validate-release.mjs).',
     ]);
   });
 

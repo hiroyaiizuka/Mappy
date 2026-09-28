@@ -12,40 +12,46 @@ const fenceOpen = /^([ \t]*)(`{3,}|~{3,})(.*)$/u;
 // A version written right after a Latin product name (「Obsidian 1.4.0 まで」) belongs to that
 // product, so it is not compared with Mappy's.
 const otherProductBefore = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+-]*)[ \t]+$/u;
-// Words that may stand between "up to" and a Mappy version without naming another product.
-const notAProduct = /^(?:mappy|version|ver|v|release)$/iu;
+// Products whose versions an English known limitation may name next to "up to" ("on Obsidian up
+// to 1.8.9", "up to iOS 17.4.0"). English can't tell a product from any other capitalized word,
+// so the names are listed: a version next to an unlisted name is compared as Mappy's, and a
+// stale-looking one stops the release with a message that points here, rather than passing.
+const otherProducts = new Set([
+  'obsidian', 'ios', 'ipados', 'android', 'macos', 'windows', 'linux', 'excalidraw', 'brat',
+  'electron', 'chrome', 'chromium', 'safari', 'firefox', 'node', 'node.js',
+]);
+const latinWords = (text) => text.match(/[A-Za-z][A-Za-z0-9.+-]*/gu) ?? [];
 
 /**
  * Each README's known-limitations section, where an item may be limited to a release
  * (harness.md「リリース手順」1). README.md is English (LEV-227) and README.ja.md its Japanese
  * version; both are checked, since an item removed from one and left in the other would still warn
- * that release's users in one language only. The heading text is load-bearing; each README marks
- * it with a comment. Anything dotted is captured as `version`, so that 「0.3 まで」 or
- * "(up to 0.3.5-beta.1)" is reported instead of silently passing. `otherProduct(match, before)`
- * tells whether the version belongs to another product (`before` is the line up to the match), so
- * that version is not compared with Mappy's.
+ * that release's users in one language only. The section is the one under `## <heading>`; the
+ * heading text is load-bearing and each README marks it with a comment. Anything dotted is
+ * captured as `version`, so that 「0.3 まで」 or "(up to 0.3.5-beta.1)" is reported instead of
+ * silently passing. `otherProduct(match, before)` tells whether the version belongs to another
+ * product (`before` is the line up to the match), so that version is not compared with Mappy's.
  */
 export const knownLimitationReadmes = [
   {
     file: 'README.md',
-    heading: /^ {0,3}##[ \t]+Known limitations/iu,
-    headingText: '## Known limitations',
-    // "up to x.y.z", allowing up to three words between "to" and the version ("up to version",
-    // "up to the", "up to Mappy's", "up to and including"), a v / ver. prefix, soft wraps and a
-    // full stop after the version.
-    limit: /(?<![A-Za-z])up\s+to\s+(?<words>(?:[A-Za-z][A-Za-z0-9'’.+-]*\s+){0,3}?)(?:v|ver\.?)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?!\d|\.\d)/giu,
-    // The word right before the version names another product when it is capitalized and not
-    // Mappy's own ("up to Obsidian 1.4.0"); a lower-case word ("up to the 0.3.5 release") does not.
-    otherProduct: (match) => {
-      const word = match.groups.words.trim().split(/\s+/u).at(-1)?.replace(/(?:['’]s|\.)$/u, '') ?? '';
-      return /^[A-Z]/u.test(word) && !notAProduct.test(word);
-    },
-    example: '"(up to 0.3.5)"',
+    heading: 'Known limitations',
+    headingFlags: 'iu',
+    // "up to x.y.z" (or "until" / "through"), allowing up to three words between the keyword and
+    // the version ("up to version", "up to the", "up to Mappy's", "up to and including"), a v / ver.
+    // prefix, soft wraps and a full stop after the version. "0.3.2 and earlier" is not a limit: like
+    // 「以前」 in Japanese, it is kept for notes that last.
+    limit: /(?<![A-Za-z])(?:up\s+to|until|through)\s+(?<words>(?:[A-Za-z][A-Za-z0-9'’.+-]*\s+){0,3}?)(?:v|ver\.?)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?!\d|\.\d)/giu,
+    // A listed product right before the keyword ("on Obsidian up to 1.8.9") or among the words
+    // after it ("up to Obsidian 1.4.0").
+    otherProduct: (match, before) => [latinWords(before).at(-1) ?? '', ...latinWords(match.groups.words)]
+      .some((word) => otherProducts.has(word.replace(/\.+$/u, '').toLowerCase())),
+    example: '"(up to 0.3.5)" (or, for another product\'s version, name it: see otherProducts in scripts/validate-release.mjs)',
   },
   {
     file: 'README.ja.md',
-    heading: /^ {0,3}##[ \t]+既知の制限/u,
-    headingText: '## 既知の制限',
+    heading: '既知の制限',
+    headingFlags: 'u',
     // 「x.y.z まで」, allowing a v / Ver. prefix and a soft wrap before まで.
     limit: /(?<![\d.])(?:v|ver\.?[ \t]*)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?![\d.])\s*まで/giu,
     otherProduct: (match, before) => {
@@ -111,9 +117,10 @@ function blankCommentsAndCode(text) {
 export function staleKnownLimitations(readme, readmeText, targetVersion) {
   const { file } = readme;
   const lines = blankCommentsAndCode(readmeText.normalize('NFKC').replace(/\r\n?/gu, '\n'));
-  const start = lines.findIndex((line) => readme.heading.test(line));
+  const heading = new RegExp(`^ {0,3}##[ \\t]+${readme.heading.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, readme.headingFlags);
+  const start = lines.findIndex((line) => heading.test(line));
   if (start < 0) {
-    return [`${file}: missing the "${readme.headingText}" section, so version-limited known limitations cannot be checked.`];
+    return [`${file}: missing the "## ${readme.heading}" section, so version-limited known limitations cannot be checked.`];
   }
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {

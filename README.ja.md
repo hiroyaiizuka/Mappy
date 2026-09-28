@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語
 
-![明色のテーマの Obsidian で開いたノート。左に Markdown、右に同じノートの Mappy のマップ](docs/images/mappy-map.png)
+![明色のテーマの Obsidian で開いたノート。左に Markdown、右に同じノートの Mappy のマップ](https://raw.githubusercontent.com/hiroyaiizuka/Mappy/main/docs/images/mappy-map.png)
 
 Obsidian のノートを、そのままマインドマップとしても読み書きするプラグインです。H2 見出しと箇条書きで書いた普通のノートを、マップ・タイムライン・階層図・左右バランスの 4 つのレイアウトで表示し、ノードの追加・編集・移動をそのノートの Markdown に書き戻します。専用のファイル形式はなく、Mappy を外しても見出しと箇条書きのノートのままです。
 

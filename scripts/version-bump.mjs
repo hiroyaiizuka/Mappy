@@ -34,12 +34,13 @@ export function bumpVersion(rootDir, version) {
   const versionsPath = join(root, 'versions.json');
   const manifest = readJsonObject(manifestPath, 'manifest.json');
   const versions = readJsonObject(versionsPath, 'versions.json');
+  // Every README is read before refusing, so one run reports what `npm run validate` would.
   const stale = knownLimitationReadmes.flatMap((readme) => {
     let text;
     try {
       text = readFileSync(join(root, readme.file), 'utf8');
     } catch (error) {
-      throw new Error(`${readme.file}: ${error.code === 'ENOENT' ? 'file is missing' : 'cannot read file'}.`);
+      return [`${readme.file}: ${error.code === 'ENOENT' ? 'file is missing' : 'cannot read file'}.`];
     }
     return staleKnownLimitations(readme, text, version);
   });

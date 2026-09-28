@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-![A note open in Obsidian's light theme: its Markdown on the left and the same note as a Mappy map on the right](docs/images/mappy-map.png)
+![A note open in Obsidian's light theme: its Markdown on the left and the same note as a Mappy map on the right](https://raw.githubusercontent.com/hiroyaiizuka/Mappy/main/docs/images/mappy-map.png)
 
 Mappy lets you read and edit an Obsidian note as a mind map, without turning it into anything else. A plain note written with H2 headings and bullet lists is shown in one of four layouts (mind map, timeline, hierarchy, balanced), and adding, editing and moving nodes writes back to that note's Markdown. There is no special file format: without Mappy, the note is still headings and bullet lists.
 
