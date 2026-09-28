@@ -209,7 +209,7 @@ export const en = {
   // Nodes (src/ui/node-renderer.ts).
   emptyNode: "Empty node",
   insertedFrom: (path: string) => `Inserted from: ${path}`,
-  expandHidden: (count: number) => `Expand ${count} hidden nodes`,
+  expandHidden: (count: number) => (count === 1 ? "Expand 1 hidden node" : `Expand ${count} hidden nodes`),
 
   // Maps drawn off screen and embeds (src/ui/offscreen-map.ts, src/ui/map-embed.ts, src/ui/link-suggest.ts).
   notAMap: (name: string) => `${name} isn't a map.`,

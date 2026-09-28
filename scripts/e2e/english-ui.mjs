@@ -18,7 +18,8 @@
  *   --shot  writes <out>-en.png (the map with the gear popover open) and <out>-ja.png
  *   --keep  leave the note in the vault
  */
-import { connect, LANGUAGE, VAULT, wait } from './cdp.mjs';
+import { LANGUAGE, VAULT, connect, wait } from './cdp.mjs';
+import { JAPANESE } from './japanese.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeClickIn, makeDeleteNote } from './dom-helpers.mjs';
 
@@ -26,7 +27,6 @@ const { flag, value } = parseArgs();
 
 const NOTE = 'Fixtures/E2E-english-ui.md';
 const SOURCE = ['---', 'mappy: true', '---', '## Trip', '', '- Packing', '  - Clothes', '- Booking', ''].join('\n');
-const JAPANESE = /[\u3000-\u9fff\uff00-\uffef]/u;
 const COMMANDS = {
   'mappy:create-mindmap': 'Create new mind map',
   'mappy:convert-note-to-mindmap': 'Turn this note into a mind map',
@@ -51,20 +51,33 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 
-/** The app in `language`, as Settings → General → Language leaves it: the stored key, then the app reloaded. */
-const switchTo = async language => {
-  await evaluate(`localStorage.setItem('language', ${JSON.stringify(language)});
-    window.__mappyE2E = null; setTimeout(() => app.commands.executeCommandById('app:reload'), 50); return true;`);
+/** The stored `language` key as this run found it (unset on a new profile: the OS's language), put back at the end. */
+const storedAtStart = await cdp.evaluate("localStorage.getItem('language')");
+
+/**
+ * The app in `language`, as Settings → General → Language leaves it: the stored key (`null` removes it), then the app
+ * reloaded. Only a connection the window answered on in that language, with Mappy loaded, replaces `cdp`; the others
+ * are closed. When the window never comes back that way, `cdp` is the closed old one and the error says why.
+ */
+const switchTo = async (language, expected = language) => {
+  const key = language === null ? "localStorage.removeItem('language')" : `localStorage.setItem('language', ${JSON.stringify(language)})`;
+  await evaluate(`${key}; setTimeout(() => app.commands.executeCommandById('app:reload'), 50); return true;`);
+  cdp.close();
   await wait(3000);
   let refused = null;
   for (const started = Date.now(); Date.now() - started < 30000; await wait(1000)) {
+    let next = null;
     try {
-      cdp = await connect({ language });
-      if (await cdp.evaluate('!!(app.workspace.layoutReady && app.plugins.plugins.mappy)')) return { language, loaded: await cdp.evaluate('window.moment.locale()') };
-      cdp.close();
+      next = await connect({ language: expected });
+      if (await next.evaluate('!!(app.workspace.layoutReady && app.plugins.plugins.mappy)')) {
+        cdp = next;
+        return { language: expected, loaded: await cdp.evaluate('window.moment.locale()') };
+      }
+      refused = new Error('Mappy is not loaded yet');
     } catch (error) { refused = error; }
+    next?.close();
   }
-  throw refused ?? new Error(`the window did not come back in ${language} with Mappy loaded within 30 s`);
+  throw refused ?? new Error(`the window did not come back in ${expected} with Mappy loaded within 30 s`);
 };
 
 /** What the map view and the app show now: the texts this case compares, each list in screen order. */
@@ -169,7 +182,7 @@ try {
   });
   check(refused === 'This name would change the heading syntax. Edit it in Markdown.', `refusal line: ${JSON.stringify(refused)}`);
 
-  required(record, 'to-ja', await step('to-ja', () => switchTo('ja')));
+  required(record, 'to-ja', await step('to-ja', () => switchTo(storedAtStart, 'ja')));
   // The reload restores the map's tab; the note is opened afresh as the English run opened it.
   await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); await new Promise(resolve => setTimeout(resolve, 300)); return true;');
   required(record, 'open-ja', await step('open-ja', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
@@ -189,9 +202,12 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`unexpected: ${error}`);
 } finally {
-  // Whatever happened, the test Obsidian goes back to Japanese: every other case refuses a window in another language.
-  const language = await cdp.evaluate('window.moment?.locale?.() ?? null').catch(() => null);
-  if (language !== 'ja') await step('restore-ja', () => switchTo('ja'));
+  // Whatever happened, the test Obsidian goes back to Japanese, with the stored key as it was: every other case refuses a
+  // window in another language. A connection closed by a failed switch is opened again in whatever language it is in.
+  const alive = await cdp.evaluate('1').then(() => true, () => false);
+  if (!alive) cdp = await connect({ language: null }).catch(() => cdp);
+  const now = await cdp.evaluate("[window.moment?.locale?.() ?? null, localStorage.getItem('language')]").catch(() => [null, null]);
+  if (now[0] !== 'ja' || now[1] !== storedAtStart) await step('restore', () => switchTo(storedAtStart, 'ja'));
   await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); return true;').catch(() => null);
   if (!flag('--keep')) await step('clean', clean);
   exitCode = await finish(record, value('--json'));

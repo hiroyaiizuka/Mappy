@@ -171,7 +171,7 @@ const POPOVER_MARGIN = 16;
  * registration and the router decides (§8), as for any other leaf: a map note opens as a map, a note that is no
  * longer one as Markdown, and a leaf switched to Markdown on purpose stays there (E22), with nothing new recorded.
  * Not an `EditableFileView`: 1.14.2 makes the view header's title editable there and renames the note to whatever
- * it shows, which the ` · マップ` suffix would end up in.
+ * it shows, which the ` · マップ`／` · map` suffix (`viewTitle`, src/i18n) would end up in.
  */
 export class MindmapView extends FileView {
   /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
