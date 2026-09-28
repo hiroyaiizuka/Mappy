@@ -18,22 +18,22 @@ export function newMindmapSource(title: string, layout: LayoutMode = 'mindmap'):
 }
 
 /**
- * The file or folder at `path`, a segment whose name differs only in case matching when no exact one does. It walks
- * down from the root through each folder's own children instead of listing the vault (LEV-253: the community scan
- * flags every listing). `metadataCache.getFirstLinkpathDest` is no substitute: it resolves notes by link, not folders.
+ * The file or folder whose path equals `path` ignoring case, the exact one first. It walks down from the root through
+ * each folder's own children instead of listing the vault (LEV-253: the community scan flags every listing), trying
+ * at each level the child of that exact name before the ones differing in case, and going back up when a branch ends
+ * (a vault synced from a case-sensitive system can hold `Maps/` and `MAPS/2026` side by side). An exact path is found
+ * first, so this is `getAbstractFileByPath` when that finds anything. `metadataCache.getFirstLinkpathDest` is no
+ * substitute: it resolves notes by link, not folders.
  */
-function findIgnoringCase(app: App, path: string): TAbstractFile | null {
-  const exact = app.vault.getAbstractFileByPath(path);
-  if (exact) return exact;
-  let folder = app.vault.getRoot();
-  const segments = path.split('/');
-  for (const [index, segment] of segments.entries()) {
-    const lower = segment.toLowerCase();
-    const child = folder.children.find(candidate => candidate.name === segment)
-      ?? folder.children.find(candidate => candidate.name.toLowerCase() === lower);
-    if (!child || index === segments.length - 1) return child ?? null;
-    if (!(child instanceof TFolder)) return null;
-    folder = child;
+function findIgnoringCase(folder: TFolder, segments: string[]): TAbstractFile | null {
+  const [segment = '', ...rest] = segments;
+  const lower = segment.toLowerCase();
+  const matches = folder.children.filter(child => child.name.toLowerCase() === lower)
+    .sort((left, right) => Number(right.name === segment) - Number(left.name === segment));
+  for (const child of matches) {
+    if (rest.length === 0) return child;
+    const found = child instanceof TFolder ? findIgnoringCase(child, rest) : null;
+    if (found) return found;
   }
   return null;
 }
@@ -65,7 +65,7 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
   if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'folderDotName');
   // The file system is usually case-insensitive: `maps` must reuse an existing `Maps` rather than fail to create it,
   // and a file called `Maps` blocks `maps` just as it blocks `Maps`.
-  const existing = findIgnoringCase(app, path);
+  const existing = findIgnoringCase(app.vault.getRoot(), path.split('/'));
   if (existing instanceof TFolder) return existing;
   if (existing) throw badFolder(path, 'folderIsFile');
   const created: TFolder | null = await app.vault.createFolder(path);

@@ -131,6 +131,18 @@ describe('resolveNewMapFolder', () => {
     expect(listing).not.toHaveBeenCalled();
   });
 
+  it('goes back up when the first folder matching in case has no such child (review 1: a vault synced from a case-sensitive system)', async () => {
+    const { app, createFolder, listing } = vault({ folders: ['Maps', 'MAPS/2026', 'maps/x', 'notes/y'], files: ['Notes'] });
+    expect((await resolveNewMapFolder(app, 'maps/2026', '', 'x.md')).path).toBe('MAPS/2026');
+    // Nor does the exact name, or a file of that name, hide the folder beside it that has the rest.
+    expect((await resolveNewMapFolder(app, 'Maps/x', '', 'x.md')).path).toBe('maps/x');
+    expect((await resolveNewMapFolder(app, 'Notes/y', '', 'x.md')).path).toBe('notes/y');
+    // The exact path still wins when there is one.
+    expect((await resolveNewMapFolder(app, 'Maps', '', 'x.md')).path).toBe('Maps');
+    expect(createFolder).not.toHaveBeenCalled();
+    expect(listing).not.toHaveBeenCalled();
+  });
+
   it('refuses ".", ".." and dot-folders, which normalizePath keeps and the vault cannot index', async () => {
     const { app, createFolder } = vault();
     for (const setting of ['./Maps', '../Maps', 'Maps/../Other', 'Maps/./2026', '.maps', 'Maps/.hidden', '..']) {

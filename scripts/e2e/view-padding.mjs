@@ -63,6 +63,8 @@ const MEASURE = `const measure = content => {
     padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
     selector: content.matches('.workspace-leaf-content .view-content.mappy-view'),
     size: [round(at.width), round(at.height)],
+    // Inside the border (the embed's frame is 1px, a view's container has none): where \`inset: 0\` puts the canvas.
+    inner: [content.clientLeft, content.clientTop, content.clientWidth, content.clientHeight],
     canvas: box(content.querySelector('.mappy-canvas')),
     modes: box(content.querySelector(':scope > .mappy-modes')),
     actions: box(content.querySelector(':scope > .mappy-actions')),
@@ -80,9 +82,8 @@ const measureView = leaf => `const leaf = ${leaf}; ${MEASURE}
 /** The checks every state shares; `view` is false for the embed, which sits in a note, not a leaf of its own. */
 const checkState = (name, state, view) => {
   check(state.padding.every(side => side === '0px'), `${name}: padding ${state.padding.join(' ')}`);
-  const [width, height] = state.size;
-  const fills = state.canvas && [0, 0, width, height].every((edge, index) => Math.abs(state.canvas[index] - edge) <= TOLERANCE);
-  check(fills, `${name}: the canvas ${JSON.stringify(state.canvas)} does not fill the container ${width}×${height}`);
+  const fills = state.canvas && state.inner.every((edge, index) => Math.abs(state.canvas[index] - edge) <= TOLERANCE);
+  check(fills, `${name}: the canvas ${JSON.stringify(state.canvas)} does not fill the container inside its border ${JSON.stringify(state.inner)}`);
   if (!view) return;
   check(state.selector, `${name}: the container does not match .workspace-leaf-content .view-content.mappy-view`);
   // Below the header, edge to edge: the leaf's own padding is none in app.css, so any gap is the view-content's.
@@ -97,6 +98,7 @@ const shoot = async (cdp, name) => {
 };
 
 let popoutMark = null;
+let popout = null;
 
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(main, evaluate, flag)));
@@ -132,12 +134,17 @@ try {
     }
     return true;
   }));
-  const popout = await connect({ popout: popoutMark });
+  popout = await connect({ popout: popoutMark });
   const popoutEvaluate = expression => popout.evaluate(`(async () => { ${expression} })()`);
 
   const states = {};
   for (const scheme of SCHEMES) {
-    await step(`theme-${scheme}`, () => appTheme(scheme, [evaluate, popoutEvaluate]));
+    // Measured under the theme asked for, or not at all: a switch that did not happen must not be recorded as dark.
+    required(record, `theme-${scheme}`, await step(`theme-${scheme}`, async () => {
+      const windows = await appTheme(scheme, [evaluate, popoutEvaluate]);
+      if (windows.some(theme => theme !== scheme)) throw new Error(`asked for ${scheme}, the windows show ${windows.join(', ')}`);
+      return windows;
+    }));
     await wait(400);
     for (const [name, script, view] of [
       ['main', measureView('window.__mappyE2E'), true],
@@ -153,7 +160,6 @@ try {
       await shoot(name === 'popout' ? popout : main, id);
     }
   }
-  popout.close();
 
   const compare = value('--compare');
   if (compare) {
@@ -163,7 +169,7 @@ try {
       for (const [id, state] of Object.entries(states)) {
         const old = before[id];
         if (!old || 'error' in old) { differences.push(`${id}: not in ${compare}`); continue; }
-        for (const key of ['size', 'canvas', 'modes', 'actions', 'zoom', 'inLeaf']) {
+        for (const key of ['size', 'inner', 'canvas', 'modes', 'actions', 'zoom', 'inLeaf']) {
           const now = state[key] ?? []; const then = old[key] ?? [];
           if (now.length !== then.length || now.some((number, index) => Math.abs(number - then[index]) > TOLERANCE)) {
             differences.push(`${id}.${key}: ${JSON.stringify(then)} → ${JSON.stringify(now)}`);
@@ -184,6 +190,7 @@ try {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
   const tidy = async (name, run) => { try { await run(); } catch (error) { record.failures.push(`${name}: ${error}`); } };
+  if (popout) await tidy('close popout connection', () => popout.close());
   if (record.steps.setup && !record.steps.setup.error) {
     await tidy('restore theme', () => evaluate(`app.changeTheme(${JSON.stringify(record.steps.setup.appTheme)}); return true;`));
   }

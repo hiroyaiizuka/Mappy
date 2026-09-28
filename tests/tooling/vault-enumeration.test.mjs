@@ -8,7 +8,9 @@ import { describe, expect, it } from "vitest";
  * Anything else resolves a path directly (`getAbstractFileByPath`, a folder's own `children`). A new call fails this
  * test until it is added below with its reason, and README's privacy section says what it reads.
  */
-const LISTING = /\b(getFiles|getMarkdownFiles|getAllLoadedFiles|getAllFolders)\s*\(/gu;
+// Named, not only called: a reference passed on (`.bind`, a variable) lists the vault as well (review 1). The other ways to
+// reach every path go in too: walking the tree from the root, and the metadata cache's tables keyed by every file.
+const LISTING = /\b(getFiles|getMarkdownFiles|getAllLoadedFiles|getAllFolders|recurseChildren|resolvedLinks|unresolvedLinks|getCachedFiles|fileMap)\b/gu;
 const ALLOWED = {
   // [[ suggestions in the inline editor: every file and alias is a candidate, as in Obsidian's own suggester.
   "src/ui/link-suggest.ts": ["getFiles"],

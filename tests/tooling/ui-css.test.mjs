@@ -24,7 +24,9 @@ describe("the map view's container (LEV-253)", () => {
     // app.css 1.14.2: the base padding, and the mobile drawer's top padding. Obsidian's own views take it off the same
     // way, e.g. `.workspace-leaf-content[data-type='markdown'] .view-content { padding: 0 }`.
     const obsidian = [".workspace-leaf-content .view-content", ".workspace-drawer-active-tab-content .view-content"];
-    const rule = css.match(/(?<selectors>[^{}]*\.view-content\.mappy-view[^{}]*)\{(?<body>[^}]*)\}/u);
+    // Comments out first: one quotes app.css's rule, braces and all, and its words would count as type selectors (review 1).
+    const bare = css.replace(/\/\*[\s\S]*?\*\//gu, "");
+    const rule = bare.match(/(?<selectors>[^{}]*\.view-content\.mappy-view[^{}]*)\{(?<body>[^}]*)\}/u);
     expect(rule?.groups?.body).toMatch(/(^|[\s;])padding:\s*0;/u);
     const ours = rule.groups.selectors.split(",").map(selector => selector.trim()).filter(selector => selector.includes(".view-content.mappy-view"));
     expect(ours.length).toBeGreaterThan(0);
