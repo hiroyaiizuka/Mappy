@@ -37,4 +37,4 @@ npm run harness:view-teardown # view を作る全テストファイルが片付�
 
 任意で `npm run hooks:install` を実行すると、このリポジトリの pre-commit に同じ品質ゲートを設定できます。CI の定義は `.github/workflows/check.yml` にあります。
 
-plugin ID `mappy` と名前 `Mappy` は 2026-09-19 時点のコミュニティ一覧と衝突していません。最低対応バージョン `1.8.7` と `isDesktopOnly: false` は現在の宣言で、対応環境の実機確認は[README の対応環境](../README.ja.md#対応環境)のとおりです。
+plugin ID `mappy` と名前 `Mappy` は 2026-09-19 時点のコミュニティ一覧と衝突していません。最低対応バージョン `1.8.7` と `isDesktopOnly: true`（0.4.1 から。モバイルは未確認のためデスクトップ専用。LEV-249）は現在の宣言で、対応環境の実機確認は[README の対応環境](../README.ja.md#対応環境)のとおりです。

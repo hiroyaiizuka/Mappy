@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
 // The workflow is not linted by ESLint, so this test is what keeps its shape honest:
-// tag-only releases, dry-runs that never get a write token, and the three BRAT assets.
+// tag-only releases, dry-runs that never get a write token, the three BRAT assets, a plain (not
+// pre-release) Release for every version, and a build provenance attestation of the same three files.
 const workflowPath = fileURLToPath(new URL('../../.github/workflows/release.yml', import.meta.url));
 const workflow = parse(readFileSync(workflowPath, 'utf8'));
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../manifest.json', import.meta.url)), 'utf8'));
@@ -38,7 +39,9 @@ describe('release workflow', () => {
   it('gives the build job a read-only token and only the tag-push release job a write token', () => {
     expect(workflow.permissions).toEqual({ contents: 'read' });
     expect(build.permissions).toBeUndefined();
-    expect(release.permissions).toEqual({ contents: 'write' });
+    // id-token and attestations are what actions/attest needs (the official "Release your plugin with
+    // GitHub Actions" workflow, recommended for the community directory). Only the tag-push job has them.
+    expect(release.permissions).toEqual({ contents: 'write', 'id-token': 'write', attestations: 'write' });
     expect(release.needs).toBe('build');
     expect(release.if).toContain("github.event_name == 'push'");
     expect(release.if).toContain("github.ref_type == 'tag'");
@@ -69,9 +72,26 @@ describe('release workflow', () => {
     expect(create.env).toEqual({ GH_TOKEN: '${{ github.token }}', GH_REPO: '${{ github.repository }}' });
     expect(create.run).toContain('gh release create "$GITHUB_REF_NAME"');
     expect(create.run).toContain('--verify-tag');
-    expect(create.run).toContain('--prerelease');
+    // 0.x too is a plain Release (LEV-249): none of the 8,143 directory entries points its manifest version
+    // at a pre-release, and BRAT reads plain Releases too. Beta is shown by the 0.x version and the README.
+    expect(create.run).not.toContain('--prerelease');
+    expect(create.run).not.toContain('prerelease');
+    // BRAT can't see a draft (it isn't in the API response for users without push access).
     expect(create.run).not.toContain('--draft');
     for (const file of distributables) expect(create.run).toContain(file);
+  });
+
+  it('attests the three downloaded files before the release is created, with the official action', () => {
+    const attestIndex = release.steps.findIndex((step) => step.uses?.startsWith('actions/attest@'));
+    const downloadIndex = release.steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@'));
+    const createIndex = release.steps.findIndex((step) => typeof step.run === 'string' && step.run.includes('gh release create'));
+    expect(attestIndex).toBeGreaterThan(downloadIndex);
+    expect(attestIndex).toBeLessThan(createIndex);
+    const attest = release.steps[attestIndex];
+    expect(attest.uses).toBe('actions/attest@v4');
+    expect(attest.with['subject-path'].trim().split('\n').map((line) => line.trim())).toEqual(distributables);
+    // The build job never attests: it also runs for pull requests and workflow_dispatch dry-runs.
+    expect(build.steps.some((step) => step.uses?.startsWith('actions/attest'))).toBe(false);
   });
 
   it('never expands workflow context inside a shell script', () => {

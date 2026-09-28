@@ -1,6 +1,6 @@
 # manifest.version と同じタグ（例: 0.1.0。v は付けない）を push すると、check を通した
-# 配布物 3 ファイル（main.js / manifest.json / styles.css）を GitHub Release に添付する。
-# BRAT はその Release の添付ファイルを読む（docs/harness.md「リリース手順」）。
+# 配布物 3 ファイル（main.js / manifest.json / styles.css）の attestation を作り、GitHub Release に添付する。
+# BRAT とコミュニティプラグイン一覧はその Release の添付ファイルを読む（docs/harness.md「リリース手順」）。
 #
 # workflow_dispatch と、この workflow やリリース用スクリプトを変える PR では dry-run になる:
 # 同じ手順で配布物を作って workflow artifact に上げ、Release は作らない。
@@ -61,21 +61,29 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      # actions/attest が Sigstore の署名と attestation の保存に使う（公式の Release your plugin with GitHub Actions）。
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: mappy-${{ needs.build.outputs.version }}
           path: dist/mappy
+      # 添付する 3 ファイルの build provenance。一覧への提出で推奨される（docs/community-submission.md #35）。
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/mappy/main.js
+            dist/mappy/manifest.json
+            dist/mappy/styles.css
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          # 0.x はベータなので pre-release。BRAT は pre-release も拾い、draft は拾えない。
-          case "$GITHUB_REF_NAME" in
-            0.*) prerelease="--prerelease" ;;
-            *) prerelease="" ;;
-          esac
-          gh release create "$GITHUB_REF_NAME" $prerelease \
+          # 0.x も通常の Release（LEV-249。一覧の掲載版が pre-release の例は無い）。ベータであることは
+          # 版番号と README で示す。draft は BRAT から見えないので使わない。
+          gh release create "$GITHUB_REF_NAME" \
             --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
             dist/mappy/main.js dist/mappy/manifest.json dist/mappy/styles.css
