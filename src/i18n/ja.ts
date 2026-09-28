@@ -134,6 +134,7 @@ export const ja: Messages = {
   cancel: "キャンセル",
   save: "保存",
 
+  mainTopicTitle: "メイントピック",
   newNodeTitle: "サブトピック",
   newTopicTitle: "トピック",
   noteChanged: "対象のノートが変わりました。元のノートを開いて再実行してください。",
