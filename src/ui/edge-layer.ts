@@ -24,6 +24,11 @@ export class EdgeLayer {
     }
   }
 
+  /** The path drawn for the edge `id` by the last `update`: the map view marks the drop preview's (LEV-248). */
+  path(id: string): SVGPathElement | undefined {
+    return this.paths.get(id);
+  }
+
   clear(): void {
     for (const path of this.paths.values()) path.remove();
     this.paths.clear();

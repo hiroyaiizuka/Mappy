@@ -5,7 +5,7 @@ import { parseMarkdown, projectMap, type MindDocument, type MindNode } from '../
 import { nodeAt } from '../../src/core/text-edits';
 import {
   TOPICS_KEY, planTopicMoves, planTopicPositions, planTopicRekey, readTopicPositions,
-  serializeTopicPositions, topicKeys, topicPositionsFromValue, type TopicPositionMap,
+  serializeTopicPositions, storedTopicPosition, topicKeys, topicPositionsFromValue, type TopicPositionMap,
 } from '../../src/core/topics';
 
 const fixture = readFileSync(new URL('../fixtures/free-topics.md', import.meta.url), 'utf8');
@@ -105,6 +105,21 @@ describe('topicKeys', () => {
     expect([...topicKeys(parseMarkdown('- item\n\n## A\n\n## A\n', 'A (2)')).values()]).toEqual(['A', 'A (2)']);
     // A document that starts with list items keeps every H2 as a topic, the first of a heading with the plain key.
     expect([...topicKeys(parse(listNote)).values()]).toEqual(['Body', 'Topic one', 'Topic two']);
+  });
+});
+
+describe('storedTopicPosition', () => {
+  it('reads each topic by its key for the layout asked, and a topic without a key by its heading', () => {
+    const doc = parse('## Body\n\n## A\n\n## A\n');
+    const [first, second] = projectMap(doc).topics;
+    if (!first || !second) throw new Error('Missing topics');
+    const positions: TopicPositionMap = new Map([['A', { mindmap: { x: 1, y: 2 } }], ['A (2)', { mindmap: { x: 3, y: 4 }, timeline: { x: 5, y: 6 } }]]);
+    const keys = topicKeys(doc);
+    expect(storedTopicPosition(positions, keys, first, 'mindmap')).toEqual({ x: 1, y: 2 });
+    expect(storedTopicPosition(positions, keys, second, 'mindmap')).toEqual({ x: 3, y: 4 });
+    expect(storedTopicPosition(positions, keys, second, 'timeline')).toEqual({ x: 5, y: 6 });
+    expect(storedTopicPosition(positions, keys, first, 'timeline')).toBeUndefined();
+    expect(storedTopicPosition(positions, new Map(), second, 'mindmap')).toEqual({ x: 1, y: 2 });
   });
 });
 
