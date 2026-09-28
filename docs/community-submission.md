@@ -35,11 +35,11 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 担当 |
 | --- | --- | --- | --- | --- |
 | 11 | コマンド ID にプラグイン ID を前置しない（Requirements） | 10 コマンド（`create-mindmap` … `call-map`、`convert-to-list`）。前置なし | PASS | — |
-| 12 | コマンド名にプラグイン名を入れない、既定ホットキーを置かない（Guidelines） | 名前は日本語で `Mappy` を含まない。`hotkeys` の指定 0 件 | PASS | — |
+| 12 | コマンド名にプラグイン名を入れない、既定ホットキーを置かない（Guidelines） | 名前は `src/i18n` の表から引き、英語（`Create new mind map` など）・日本語のどちらも `Mappy` を含まない（2026-09-28、LEV-226 のあとの木で確認）。`hotkeys` の指定 0 件 | PASS | — |
 | 13 | 条件付きは `checkCallback`、無条件は `callback`（Guidelines） | LEV-24 から形は同じ | PASS | — |
-| 14 | UI 文言は sentence case（Guidelines） | 日本語なので lint の `ui/sentence-case` は実質何も検査していない。**英語にした時点で初めて効く** | 要対応（英語化の中で lint を通す） | LEV-226 |
+| 14 | UI 文言は sentence case（Guidelines） | 0.3.8 の時点では日本語なので実質何も検査していなかった。LEV-233 で `eslint.config.mjs` に `src/i18n/en.ts` を対象とする `ui/sentence-case-locale-module` の block を足し、`npm run lint` が英語の表を検査する（`tests/tooling/i18n-lint.test.mjs`）。値を差し込む関数の中の文字列は規則が読まない | PASS（lint。関数の文言は読まない） | LEV-226 |
 | 15 | 設定の見出しは区画が複数のときだけ、見出しに「settings」を入れない、`setHeading()` を使う（Guidelines） | 見出しなしの 4 項目（テーマ・既定レイアウト・作成先フォルダ・左下のレイアウト） | PASS | — |
-| 16 | UI の言語（要件なし） | UI 文言は 24 ファイルに約 200 個、すべて日本語。コマンド名 10・右クリックメニュー・ボタンの `aria-label`・通知・設定の名前と説明・core の例外文（`Notice` に出る）を含む | 判断 → §2 | LEV-226 |
+| 16 | UI の言語（要件なし） | 0.3.8 の時点では UI 文言が 24 ファイルに約 200 個、すべて日本語だった。§2 の (b) を 2026-09-28 に本人が確定し、LEV-226（LEV-233・LEV-234・LEV-235、#118・#120・#121）で `src/i18n` の表へ移した: Obsidian の言語が `ja` なら日本語、それ以外は英語。`src/` の日本語の文字列は `src/i18n/ja.ts` だけ。英語の Obsidian での表示は実機 E63（macOS、Obsidian 1.14.2）で確認。0.4.0 で初めて出る | 判断済み（(b)） | LEV-226 |
 
 ### 1.4 セキュリティ・リソース・ワークスペース・Vault
 
@@ -118,6 +118,6 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 方式に依らない形で切り、(b) に依るものはそう明記する。
 
-- **UI 文言の抽出と置き換え**（LEV-226。(b) を前提）: `src/i18n/` の新設、約 200 の文字列の移し替え、`getLanguage()` による選択、読み込み時の定数を使う時点の参照に変えること、`conflictMessage` の文字列比較をやめること、lint の設定（`sentence-case-locale-module`）、テスト（キーの一致・言語の選択・英語の lint）、e2e とブラウザ検証ページ（`harness/browser/`）の言語の固定、`src/main.ts` の原文を照合する `tests/tooling/popover-wording.test.mjs` の書き換え。量が多いので、層（core／obsidian／ui）で PR を分けてよい
-- **README の英語版**（LEV-227。方式に依らない）: 英語を主にする README と日本語の README の置き方、ネットワーク利用・ライセンス・同梱物の開示、先頭の画像、既知の制限の書き直し。`scripts/validate-release.mjs` は `README.md` の `## 既知の制限` を探して無ければ失敗する（LEV-209）ので、`README.md` を英語にするなら検査も同じ PR で直す。見出しだけでなく項目の型（`versionLimit` は「x.y.z まで」だけを拾う。`scripts/version-bump.mjs` も同じ関数を使う）も英語の書き方に合わせないと、見出しが見つかって項目が 0 件のまま黙って通る。README の歯車の行を照合する `tests/tooling/popover-wording.test.mjs` も直す
+- **UI 文言の抽出と置き換え**（LEV-226。(b) を前提。**完了**: #118・#120・#121、0.4.0 に入る）: `src/i18n/` の新設、約 200 の文字列の移し替え、`getLanguage()` による選択、読み込み時の定数を使う時点の参照に変えること、`conflictMessage` の文字列比較をやめること、lint の設定（`sentence-case-locale-module`）、テスト（キーの一致・言語の選択・英語の lint）、e2e とブラウザ検証ページ（`harness/browser/`）の言語の固定、`src/main.ts` の原文を照合する `tests/tooling/popover-wording.test.mjs` の書き換え。量が多いので、層（core／obsidian／ui）で PR を分けてよい
+- **README の英語版**（LEV-227。方式に依らない。**完了**: #122、0.4.0 に入る）: 英語を主にする README と日本語の README の置き方、ネットワーク利用・ライセンス・同梱物の開示、先頭の画像、既知の制限の書き直し。`scripts/validate-release.mjs` は `README.md` の `## 既知の制限` を探して無ければ失敗する（LEV-209）ので、`README.md` を英語にするなら検査も同じ PR で直す。見出しだけでなく項目の型（`versionLimit` は「x.y.z まで」だけを拾う。`scripts/version-bump.mjs` も同じ関数を使う）も英語の書き方に合わせないと、見出しが見つかって項目が 0 件のまま黙って通る。README の歯車の行を照合する `tests/tooling/popover-wording.test.mjs` も直す
 - **審査要件のチェックと提出準備**（LEV-228。方式に依らない）: `docs/harness.md`「審査要件のチェック項目」の全項目と本書 §1 の全行を提出直前の木で再確認する。とくに判断の #21（frontmatter の書き方の逸脱の説明）、未実施の #4（提出）、PASS だが提出の直前に確かめ直す #5（id の一意性）、未確認の #3（pre-release のままで一覧が版を拾えるか）、harness.md と食い違う #19（`console.error`）、審査で説明を求められうる #22（prototype の差し替え）。#2・#14・#16 は LEV-226・LEV-227 が片付け、ここでは結果を確かめるだけ。community.obsidian.md への提出と自動レビューへの対応も持つ。英語化の 2 本と LEV-25 の後に着手する
