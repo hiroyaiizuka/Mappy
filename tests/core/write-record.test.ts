@@ -1,5 +1,6 @@
 /**
- * The record a map embed keeps of the store's writes (LEV-217). The embed's own rows are in
+ * The record of the store's writes that a map embed (LEV-217), the maps an item calls (LEV-221) and the map tab (LEV-247)
+ * keep. The embed's own rows are in
  * tests/ui/map-embed-own-writes.test.ts; these pin the cases a re-read there reaches only through timing: a read that
  * comes before a write the record holds, an external change after a write, writes that come back to the text on
  * screen (code review 1 of LEV-217).
@@ -178,6 +179,114 @@ describe('WriteRecord', () => {
     record.record(there, A);
     const read = record.take(there.after, shown, 'n', record.mark());
     expect({ size: record.size, second: second(read) }).toEqual({ size: 0, second: second(shown) });
+  });
+
+  // LEV-247: the view's record is this one. What only the view needs was its own (`recordOwn`, `recordCarried`, `reread`,
+  // `showOwnWrite`, `parseOwn`) and is pinned from the view too (tests/ui/mindmap-view-reread-own-writes.test.ts,
+  // mindmap-view-undo-ids.test.ts); these pin it where it now lives: the store's answer heard after its word (`confirm`),
+  // the writes an edit was carried over (`carry`), a replay that spends nothing and parses a write once per base
+  // (`replay`), and the version a read tells a replaced record by.
+  it('record: leaves out a write that changed nothing, which takes nothing back', () => {
+    // Fails on the record before LEV-247, which took it for a put-back and started again from it.
+    const record = new WriteRecord();
+    const write = rename(A, '子1', 'ずっと長い題名');
+    record.record(write, A);
+    record.record({ before: A, after: A, edits: [] }, A);
+    expect(record.recorded).toEqual([write]);
+  });
+
+  it('record: starts again with a write on the text on screen even when the record holds the same write', () => {
+    // The store tells each write once: the same write again was made again, after the note was put back.
+    const record = new WriteRecord();
+    const write = rename(A, '子1', 'ずっと長い題名');
+    record.record(write, A);
+    record.record(rename(write.after, '親', '改名'), A);
+    const again = { ...write, edits: write.edits.map(edit => ({ ...edit })) };
+    record.record(again, A);
+    expect(record.recorded).toEqual([again]);
+    expect(record.recorded[0]).toBe(again);
+  });
+
+  it('confirm: the store\'s answer to a write its word told already is not recorded again', () => {
+    const record = new WriteRecord();
+    const write = rename(A, '子1', 'ずっと長い題名');
+    const other = rename(write.after, '親', '改名');
+    record.record(write, A);
+    record.confirm({ ...write }, A);
+    expect(record.recorded).toEqual([write]);
+    // Nor when others were recorded after it and it starts on the text on screen.
+    record.record(other, A);
+    record.confirm({ ...write }, A);
+    expect(record.recorded).toEqual([write, other]);
+    // Nor once a read has spent it (its start is behind the text on screen).
+    record.clear();
+    record.confirm(other, other.after);
+    expect(record.size).toBe(0);
+  });
+
+  it('confirm: a write the store\'s word did not record, and a write of the same texts with other edits, are recorded', () => {
+    const record = new WriteRecord();
+    const write = rename(A, '子1', 'ずっと長い題名');
+    // The answer carries the writes the edit was carried over too (`CarriedWrite.carried`): only the write is kept.
+    record.confirm({ ...write, carried: [write] } as RecordedWrite, A);
+    expect(record.recorded).toEqual([write]);
+    const twin = rename(A, '- \n  - 空の子\n', '');
+    const other = { ...twin, edits: [{ from: twin.edits[0]!.from + 1, to: twin.edits[0]!.to + 1, text: '' }] };
+    record.record(twin, A);
+    record.confirm(other, A);
+    expect(record.recorded).toEqual([other]);
+  });
+
+  it('carry: records the writes an edit was carried over where the record leads, and parses the plan through them', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const layout = rename(A, 'mappy: true', 'mappy: true\nmappy-layout: timeline');
+    const stray = rename(A.replace('子1', '外'), '外', '別');
+    const base = record.carry([stray, layout], A, shown, 'n');
+    expect(record.recorded).toEqual([layout]);
+    expect(base?.source).toBe(layout.after);
+    expect(second(base!)).toBe(second(shown));
+    // Held already: found, not added again, and parsed alike (the same document for the same plan).
+    expect(record.carry([layout], A, shown, 'n')).toBe(base);
+    expect(record.size).toBe(1);
+  });
+
+  it('replay: parses to the last write that wrote the text and spends nothing; the same parse for the same base', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    const back: RecordedWrite = { before: there.after, after: A, edits: [{ from: there.edits[0]!.from, to: there.edits[0]!.from + 'ずっと長い題名'.length, text: '子1' }] };
+    const added = rename(A, '  - 子1\n', '  - 子1\n  - 新しい子\n');
+    record.record(there, A);
+    record.record(back, A);
+    record.record(added, A);
+    const replayed = record.replay(added.after, shown, 'n');
+    expect({ used: replayed?.used, size: record.size }).toEqual({ used: 3, size: 3 });
+    // A node the write added keeps the id it got in the first parse: the write shown at once and a draft's base agree.
+    expect(titled(record.replay(added.after, shown, 'n')!.document, '新しい子')).toBe(titled(replayed!.document, '新しい子'));
+    expect(record.replay('another text', shown, 'n')).toBeUndefined();
+  });
+
+  it('keep, drop, clear and a restart change the version; a write added on the end does not', () => {
+    const record = new WriteRecord();
+    const write = rename(A, '子1', 'ずっと長い題名');
+    const on = rename(write.after, '親', '改名');
+    const versions = [record.version];
+    record.record(write, A);
+    record.record(on, A);
+    versions.push(record.version);
+    record.drop(1);
+    versions.push(record.version);
+    expect(record.recorded).toEqual([on]);
+    // [on] ends elsewhere than A: a write on A starts it again.
+    record.record(rename(A, '親', '別'), A);
+    versions.push(record.version);
+    record.keep(A, record.mark(), 0);
+    versions.push(record.version);
+    record.clear();
+    versions.push(record.version);
+    expect(versions[1]).toBe(versions[0]);
+    expect(new Set(versions.slice(1)).size).toBe(versions.length - 1);
   });
 
   it('leaves out a write that does not start where the record leads, so it does not block the ones that do', () => {

@@ -124,6 +124,25 @@ async function mount(source: string): Promise<Mounted> {
   };
 }
 
+/**
+ * The view's refresh debounce (`scheduleRefresh`) run out at once (LEV-251), as on a machine at a load average of 150,
+ * where it elapsed before the test's next timers. Only the timer that method starts is rushed, told apart by the call it
+ * is started in rather than by its delay: the called maps' re-read of the same delay is left alone. Returns the restore.
+ */
+function rushRefresh(view: MindmapView): () => void {
+  const set = window.setTimeout.bind(window);
+  let debouncing = false;
+  type Debounced = { scheduleRefresh: () => void };
+  const original = (MindmapView.prototype as unknown as Debounced).scheduleRefresh;
+  const schedule = vi.spyOn(view as unknown as Debounced, 'scheduleRefresh').mockImplementation(function (this: Debounced) {
+    debouncing = true;
+    try { original.call(this); } finally { debouncing = false; }
+  });
+  const timer = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number =>
+    set(handler, debouncing ? 0 : delay, ...args)) as unknown as typeof window.setTimeout);
+  return () => { schedule.mockRestore(); timer.mockRestore(); };
+}
+
 function menuItem(title: string): HTMLElement {
   const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
     .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
@@ -242,28 +261,38 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(input.value).toBe('新しい本文');
   });
 
-  it('applies a body draft kept through an external change once the map has refreshed', async () => {
-    const { source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
-    const target = element(node('学ぶこと').id);
-    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-    menuItem('本文・リンクを編集').click();
-    await settle();
-    const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
-    if (!input) throw new Error('The body modal did not open');
-    input.value = '新しい本文';
-    external(EXTERNAL);
-    key(input, 'Enter', { metaKey: true });
-    await settle();
-    expect(source()).toBe(EXTERNAL);
-    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT);
-    expect(document.contains(input)).toBe(true);
+  // The second row is LEV-251's loaded machine: the debounce runs out at once, before any timer the test starts after
+  // it. Waiting out `settle` (three timers and a frame) after the refused save let the re-read turn the line to
+  // REFRESHED first there; one zero-delay timer started with Enter does not, as the refusal and its new debounce come in
+  // microtasks after it (the rows above wait the same way).
+  it.each([
+    { timing: 'at its own delay', loaded: false },
+    { timing: 'run out at once, as on a loaded machine', loaded: true },
+  ])('applies a body draft kept through an external change once the map has refreshed (debounce $timing)', async ({ loaded }) => {
+    const { view, source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
+    const restore = loaded ? rushRefresh(view) : () => undefined;
+    try {
+      const target = element(node('学ぶこと').id);
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+      menuItem('本文・リンクを編集').click();
+      await settle();
+      const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
+      if (!input) throw new Error('The body modal did not open');
+      input.value = '新しい本文';
+      external(EXTERNAL);
+      key(input, 'Enter', { metaKey: true });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(source()).toBe(EXTERNAL);
+      expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT);
+      expect(document.contains(input)).toBe(true);
 
-    await refreshed();
-    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
-    key(input, 'Enter', { metaKey: true });
-    await refreshed();
-    expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n'));
-    expect(document.contains(input)).toBe(false);
+      await refreshed();
+      expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
+      key(input, 'Enter', { metaKey: true });
+      await refreshed();
+      expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n'));
+      expect(document.contains(input)).toBe(false);
+    } finally { restore(); }
   });
 
   it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
