@@ -12,7 +12,8 @@ import { describe, expect, it } from "vitest";
  * code left in scan range is the plugin itself: `src/` and `styles.css`. Anything else that is not the plugin (the
  * browser harness, the vitest config) goes under an excluded name (LEV-243).
  *
- * The list is copied from the FAQ, not fetched: when the FAQ changes, this copy and #33 are redone by hand. The FAQ
+ * The FAQ's list names `*.cjs, *.mjs, *.cts, *.mts`, which is what keeps `vitest.config.mts` out. The list is copied
+ * from the FAQ, not fetched: when the FAQ changes, this copy and #33 are redone by hand. The FAQ
  * does not say whether a directory name counts below the top level, so this reads it the narrow way: a directory
  * name excludes only as the first segment (`tests/...`), a file name or pattern only the file itself. `src/i18n/`
  * is then scanned, which is fine: it is the plugin.
@@ -38,16 +39,26 @@ const excluded = path => {
 };
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-// A source archive (a Release's zip, "Download ZIP") has no git: nothing to list, and it is not what gets submitted.
-const checkout = existsSync(join(root, ".git"));
+/**
+ * -z: no quoting of non-ASCII names (core.quotePath), which would put a `"` in front of the first segment.
+ * core.excludesFile off: only the repository's own ignores decide, not the developer's global one.
+ * A source archive (a Release's zip, "Download ZIP") or a machine without git has nothing to list, and is not what
+ * gets submitted: the file is skipped there rather than failed.
+ */
+function listFiles() {
+  if (!existsSync(join(root, ".git"))) return null;
+  try {
+    return execFileSync("git", ["-c", `core.excludesFile=${devNull}`, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
+      .split("\0").filter(Boolean);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+const listed = listFiles();
 
-describe.skipIf(!checkout)("code the directory's scanner reads", () => {
-  // -z: no quoting of non-ASCII names (core.quotePath), which would put a `"` in front of the first segment.
-  // core.excludesFile off: only the repository's own ignores decide, not the developer's global one.
-  const files = checkout
-    ? execFileSync("git", ["-c", `core.excludesFile=${devNull}`, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
-      .split("\0").filter(Boolean)
-    : [];
+describe.skipIf(listed === null)("code the directory's scanner reads", () => {
+  const files = listed ?? [];
   // A tracked file deleted but not yet staged is still in the index; the tree is what gets scanned.
   const scanned = files.filter(path => CODE.test(path) && !excluded(path) && existsSync(join(root, path)));
 
