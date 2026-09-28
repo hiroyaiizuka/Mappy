@@ -17,6 +17,7 @@ vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await closeOpenViews();
   document.body.replaceChildren();
 });
@@ -120,6 +121,39 @@ async function mount(source: string): Promise<Mounted> {
       input.value = text;
       input.dispatchEvent(new InputEvent('input', { bubbles: true }));
       return input;
+    },
+  };
+}
+
+/**
+ * The view's 45 ms refresh debounce under the test's control (LEV-251). `loaded`: it fires at once, as on a machine at a
+ * load average of 150, where it elapses before the test's next zero-delay timer. `hold` keeps each refresh started from
+ * then on until `release` runs them: what a draft shows before the map re-reads is then read in a known order, whatever
+ * the load. `release` tells how many ran (none: the view re-read in between, and the row did not build its state).
+ * Spies, so `afterEach` puts the window's own functions back should a row fail first.
+ */
+function refreshDebounce(loaded: boolean): { hold: () => void; release: () => number } {
+  const set = window.setTimeout.bind(window);
+  const clear = window.clearTimeout.bind(window);
+  const held = new Map<number, () => void>();
+  let holding = false;
+  let next = -1;
+  vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+    if (delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
+    if (!holding) return set(handler, loaded ? 0 : delay, ...args);
+    const id = next--;
+    held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
+    return id;
+  }) as unknown as typeof window.setTimeout);
+  vi.spyOn(window, 'clearTimeout').mockImplementation(id => { if (typeof id !== 'number' || !held.delete(id)) clear(id); });
+  return {
+    hold: () => { holding = true; },
+    release: () => {
+      holding = false;
+      const runs = Array.from(held.values());
+      held.clear();
+      for (const run of runs) run();
+      return runs.length;
     },
   };
 }
@@ -242,7 +276,8 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(input.value).toBe('新しい本文');
   });
 
-  it('applies a body draft kept through an external change once the map has refreshed', async () => {
+  it.each(['on time', 'under load'])('applies a body draft kept through an external change once the map has refreshed (%s)', async (timing) => {
+    const debounce = refreshDebounce(timing === 'under load');
     const { source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
     const target = element(node('学ぶこと').id);
     target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
@@ -251,6 +286,8 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
     if (!input) throw new Error('The body modal did not open');
     input.value = '新しい本文';
+    // Before the map re-reads: held, since a loaded machine lets the debounce run out within `settle` (LEV-251).
+    debounce.hold();
     external(EXTERNAL);
     key(input, 'Enter', { metaKey: true });
     await settle();
@@ -258,6 +295,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT);
     expect(document.contains(input)).toBe(true);
 
+    expect(debounce.release()).toBe(1);
     await refreshed();
     expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
     key(input, 'Enter', { metaKey: true });
