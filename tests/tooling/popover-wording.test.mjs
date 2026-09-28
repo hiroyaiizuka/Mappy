@@ -4,9 +4,10 @@ import { en } from "../../src/i18n/en.ts";
 import { ja } from "../../src/i18n/ja.ts";
 
 /**
- * The 操作 popover's two plugin items (§5 M3) are written in four places that no test loads together: the
- * plugin (src/main.ts) and the browser harness's stand-in, which both name them by their keys in src/i18n since LEV-235, the README and product-plan's M3 paragraph. The jsdom test renders its
- * own copy, so this pins the wording itself — LEV-84 changed one line and found five copies.
+ * The 操作 popover's two plugin items (§5 M3) are written in five places that no test loads together: the
+ * plugin (src/main.ts) and the browser harness's stand-in, which both name them by their keys in src/i18n since LEV-235,
+ * the English README.md and the Japanese README.ja.md (LEV-227), and product-plan's M3 paragraph. The jsdom test
+ * renders its own copy, so this pins the wording itself — LEV-84 changed one line and found five copies.
  */
 const KEYS = [["cmdCallMap", "popCallDesc"], ["popExport", "popExportDesc"]];
 const ITEMS = KEYS.map(([title, description]) => [ja[title], ja[description]]);

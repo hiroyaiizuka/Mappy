@@ -30,7 +30,7 @@ const latinWords = (text) => text.match(/[A-Za-z][A-Za-z0-9.+-]*/gu) ?? [];
  * heading text is load-bearing and each README marks it with a comment. Anything dotted is
  * captured as `version`, so that 「0.3 まで」 or "(up to 0.3.5-beta.1)" is reported instead of
  * silently passing. `otherProduct(match, before)` tells whether the version belongs to another
- * product (`before` is the line up to the match), so that version is not compared with Mappy's.
+ * product (`before` is the section text before the match), so that version is not compared with Mappy's.
  */
 export const knownLimitationReadmes = [
   {
@@ -42,11 +42,16 @@ export const knownLimitationReadmes = [
     // prefix, soft wraps and a full stop after the version. "0.3.2 and earlier" is not a limit: like
     // 「以前」 in Japanese, it is kept for notes that last.
     limit: /(?<![A-Za-z])(?:up\s+to|until|through)\s+(?<words>(?:[A-Za-z][A-Za-z0-9'’.+-]*\s+){0,3}?)(?:v|ver\.?)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?!\d|\.\d)/giu,
-    // A listed product right before the keyword ("on Obsidian up to 1.8.9") or among the words
-    // after it ("up to Obsidian 1.4.0").
-    otherProduct: (match, before) => [latinWords(before).at(-1) ?? '', ...latinWords(match.groups.words)]
+    // A listed product right before the keyword, with only white space (a soft wrap included)
+    // between them ("on Obsidian up to 1.8.9"), or among the words after it ("up to Obsidian 1.4.0").
+    otherProduct: (match, before) => [before.match(/([A-Za-z][A-Za-z0-9.+-]*)\s+$/u)?.[1] ?? '', ...latinWords(match.groups.words)]
       .some((word) => otherProducts.has(word.replace(/\.+$/u, '').toLowerCase())),
+    // A number that is not x.y.z followed by a unit or a word ("up to 2.5 MB", "until 1.5 seconds")
+    // is a quantity, not a release. A malformed release ("up to 0.3") is still reported.
+    quantity: /^[ \t]*[A-Za-z%]/u,
     example: '"(up to 0.3.5)" (or, for another product\'s version, name it: see otherProducts in scripts/validate-release.mjs)',
+    // README.md is required in every mode, since the community directory shows it.
+    requiredForPackaging: true,
   },
   {
     file: 'README.ja.md',
@@ -136,9 +141,10 @@ export function staleKnownLimitations(readme, readmeText, targetVersion) {
 
   const errors = [];
   for (const match of section.matchAll(readme.limit)) {
-    const lineStart = section.lastIndexOf('\n', match.index) + 1;
-    if (readme.otherProduct(match, section.slice(lineStart, match.index))) continue;
+    if (readme.otherProduct(match, section.slice(0, match.index))) continue;
     const { version } = match.groups;
+    const after = section.slice(match.index + match[0].length);
+    if (!releaseVersion.test(version) && readme.quantity?.test(after)) continue;
     const line = start + 2 + (section.slice(0, match.index).match(/\n/gu)?.length ?? 0);
     const item = match[0].replace(/\s+/gu, ' ');
     if (!releaseVersion.test(version)) {
@@ -230,10 +236,9 @@ export function validateRelease(rootDir, { artifacts = false, knownLimitations =
   const versions = readJson('versions.json');
   const lockfile = readJson('package-lock.json');
   readRequired('LICENSE');
-  // README.md is required in every mode (the community directory shows it); README.ja.md is read
-  // only for the known-limitations check, so packaging doesn't stop on it.
+  // README.ja.md is read only for the known-limitations check, so packaging doesn't stop on it.
   const readmes = knownLimitationReadmes
-    .filter((readme) => knownLimitations || readme.file === 'README.md')
+    .filter((readme) => knownLimitations || readme.requiredForPackaging)
     .map((readme) => [readme, readRequired(readme.file)]);
 
   let manifestVersionOk = false;

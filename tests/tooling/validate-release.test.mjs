@@ -414,6 +414,24 @@ describe('README.md version-limited known limitations (「(up to x.y.z)」)', ()
     ]);
   });
 
+  // Review 3 of LEV-227: a product earlier on the line hid a Mappy version, a product at the end of the
+  // previous line was missed, and a quantity ("up to 2.5 MB") was reported as a malformed release.
+  it('takes the product only right before the keyword (across a wrap), and reads a quantity as a quantity', () => {
+    const limitations = [
+      '- **PNG export fails on iOS (up to 0.3.5)**: x',
+      '- **Drag and drop on Windows** (up to 0.3.4)',
+      '- Drag fails on Obsidian',
+      '  up to 1.8.9',
+      '- Images up to 2.5 MB are embedded, and export waits until 1.5 seconds pass.',
+      '- a (up to 0.3)',
+    ].join('\n');
+    expect(readmeErrors('1.0.0', limitations)).toEqual([
+      stale(5, 'up to 0.3.5', '1.0.0'),
+      stale(6, 'up to 0.3.4', '1.0.0'),
+      'README.md:10: known limitation "up to 0.3" must name a release as x.y.z to be checked, like "(up to 0.3.5)" (or, for another product\'s version, name it: see otherProducts in scripts/validate-release.mjs).',
+    ]);
+  });
+
   it('does not require README.ja.md when packaging, which skips the known-limitations check', () => {
     rmSync(join(root, 'README.ja.md'));
     expect(validateRelease(root, { knownLimitations: false })).toEqual([]);
