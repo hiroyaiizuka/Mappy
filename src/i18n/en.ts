@@ -169,6 +169,10 @@ export const en = {
   viewTitle: (name: string) => `${name} · map`,
   viewTitleEmpty: "Mind map",
   draftNotSaved: (reason: string) => `Couldn't save the text being edited. ${reason}`,
+  // A draft left open when the window reloaded or Obsidian quit, applied when Mappy loads again (src/ui/exit-drafts.ts).
+  exitDraftNotSaved: (title: string, reason: string) => `Couldn't save "${title}", which was being edited when Obsidian reloaded or quit. ${reason}`,
+  exitNoteChanged: "The note changed in the meantime.",
+  exitNoteGone: "The note is no longer in the vault.",
   layoutsLabel: "Layouts",
   actions: "Actions",
   mapLabel: "Mind map. Enter adds a sibling, Tab adds a child, F2 edits.",

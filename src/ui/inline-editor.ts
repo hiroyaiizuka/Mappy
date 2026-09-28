@@ -250,6 +250,14 @@ export class InlineEditor {
     return !this.disposed && Boolean(this.error.textContent);
   }
 
+  /**
+   * The text a save would take now (what the draft shows, mid composition too), or undefined once the editor is gone:
+   * the page going without a save (a window reload, LEV-230) keeps it for the plugin's next load.
+   */
+  text(): string | undefined {
+    return this.disposed ? undefined : this.input.value;
+  }
+
   /** Bring the keyboard back to a held draft another edit was asked for over. */
   focus(): void {
     if (!this.disposed) this.input.focus({ preventScroll: true });

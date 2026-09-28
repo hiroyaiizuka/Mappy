@@ -197,6 +197,8 @@ export class HarnessApp {
     leftSplit: { side: "left" },
     rightSplit: { side: "right" },
     getLeavesOfType: (): { view: unknown }[] => [],
+    /** The page's layout is ready as soon as it exists: the callback runs at once, as Obsidian's does once ready. */
+    onLayoutReady: (callback: () => unknown): void => { callback(); },
     requestSaveLayout: (): void => { this.record("layout-saved", "requestSaveLayout（ページ内で記録のみ）"); },
     openLinkText: (link: string, sourcePath: string, newLeaf: unknown): Promise<void> => {
       this.record("link", `${link}（${sourcePath} から${newLeaf ? "、新しいペイン" : ""}）`);
@@ -303,6 +305,20 @@ export class HarnessApp {
   }
 
   content(file: TFile): string { return this.entry(file).content; }
+
+  /**
+   * Obsidian's per-vault `localStorage` (`App.loadLocalStorage`), kept in the page's own under a prefix, so a second
+   * `HarnessApp` on the same page reads what the first saved, as the window does after a reload (LEV-230).
+   */
+  loadLocalStorage(key: string): unknown {
+    const value = window.localStorage.getItem(`mappy-harness-${key}`);
+    return value === null ? null : JSON.parse(value) as unknown;
+  }
+
+  saveLocalStorage(key: string, data: unknown): void {
+    if (data === null || data === undefined) window.localStorage.removeItem(`mappy-harness-${key}`);
+    else window.localStorage.setItem(`mappy-harness-${key}`, JSON.stringify(data));
+  }
 
   /** The product code only sees the `App` type; this page owns the runtime shape. */
   asApp<T>(): T { return this as unknown as T; }

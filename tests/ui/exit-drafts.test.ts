@@ -1,0 +1,259 @@
+// @vitest-environment jsdom
+/**
+ * LEV-230: a title draft open (F2, neither Enter nor Escape) when the window reloads (`app:reload`) or Obsidian quits.
+ * Neither goes through the view's `onClose` (LEV-215). Obsidian 1.14.2 on a reload sends the page `beforeunload`,
+ * `pagehide` and `unload` and nothing else: no `quit`, no blur. Through 0.3.9 the draft was lost without a word. A quit
+ * saved it only by accident: the window's blur after `unload` started the draft's blur save, whose write happened to
+ * land (artifacts/lev-230).
+ *
+ * The rows are the way out × the draft's shape. A reload cannot write the note (a write started at `pagehide` empties
+ * the file: artifacts/lev-230), so the draft is planned as its edit at `pagehide` and kept in the vault's
+ * `localStorage`, and the reloaded plugin applies it through the store, checked against the note it was planned on.
+ * A quit hands Obsidian the save (`workspace.on('quit')`'s tasks), which it waits for before the window closes.
+ */
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { App } from 'obsidian';
+import { installObsidianDom } from '../../harness/browser/dom';
+import { HarnessApp } from '../../harness/browser/app';
+import { Component, Notice } from '../../harness/browser/obsidian';
+import { DocumentStore } from '../../src/obsidian/document-store';
+import { t } from '../../src/i18n';
+import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
+import type { MindmapView } from '../../src/ui/mindmap-view';
+import { mountMapView, type MountedMapView } from './map-view-mount';
+
+vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+beforeAll(() => { installObsidianDom(); });
+
+const PATH = 'Fixtures/exit-draft.md';
+const SOURCE = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '- 別のノード', ''].join('\n');
+const renamed = (title: string, from = SOURCE): string => from.replace('  - 子ノード\n', `  - ${title}\n`);
+
+const owners: Component[] = [];
+const opened: MountedMapView[] = [];
+afterEach(async () => {
+  vi.restoreAllMocks();
+  Notice.log.length = 0;
+  for (const owner of owners.splice(0)) owner.unload();
+  for (const mounted of opened.splice(0)) await mounted.close();
+  window.localStorage.clear();
+  document.body.replaceChildren();
+});
+
+/** The plugin's part (src/main.ts): the handlers on the page, for the views open on it. */
+function install(app: HarnessApp, store: DocumentStore, views: () => readonly MindmapView[]): Component {
+  const owner = new Component();
+  owner.load();
+  owners.push(owner);
+  installExitDrafts(owner as never, app.asApp<App>(), store, views);
+  return owner;
+}
+
+/** A map with F2 on 「子ノード」 and `title` typed, and the plugin's handlers installed for it. */
+async function draft(title: string, source = SOURCE): Promise<{ mounted: MountedMapView; input: HTMLTextAreaElement; owner: Component }> {
+  const mounted = await mountMapView(PATH, source);
+  opened.push(mounted);
+  const store = (mounted.view as unknown as { store: DocumentStore }).store;
+  const owner = install(mounted.app, store, () => [mounted.view]);
+  mounted.key(mounted.select('子ノード'), 'F2');
+  await mounted.settle();
+  const input = mounted.editor();
+  if (!input) throw new Error('F2 did not open the draft');
+  input.value = title;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return { mounted, input, owner };
+}
+
+/**
+ * The page goes as `app:reload` takes it: `pagehide` and nothing more reaches the page (no close, no blur), and the
+ * view is gone with it. What the vault holds then is what the reloaded page starts from; the plugin loads again on
+ * it and its layout is ready. Resolves to the reloaded vault.
+ */
+async function reload(mounted: MountedMapView, owner: Component): Promise<HarnessApp> {
+  window.dispatchEvent(new Event('pagehide'));
+  const left = mounted.source();
+  owner.unload();
+  opened.splice(opened.indexOf(mounted), 1);
+  mounted.view.containerEl.remove();
+  const app = new HarnessApp();
+  app.put(PATH, left);
+  install(app, new DocumentStore(app.asApp<App>()), () => []);
+  for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+  return app;
+}
+
+const noteOf = (app: HarnessApp): string => app.content(app.asApp<App>().vault.getFileByPath(PATH)!);
+
+/** Obsidian's `Tasks` (`workspace.on('quit')`): what a handler adds, awaited before the window closes. */
+class Tasks {
+  readonly promises: Promise<unknown>[] = [];
+  add(callback: () => Promise<unknown>): void { this.promises.push(callback()); }
+  addPromise(promise: Promise<unknown>): void { this.promises.push(promise); }
+  isEmpty(): boolean { return this.promises.length === 0; }
+  promise(): Promise<unknown> { return Promise.all(this.promises); }
+}
+
+describe('a title draft open when the window reloads (LEV-230)', () => {
+  it('is in the note after the reload', async () => {
+    const { mounted, owner } = await draft('再読込の前の下書き');
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('再読込の前の下書き'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('writes nothing at pagehide itself (a write started there can empty the note)', async () => {
+    const { mounted } = await draft('書かずに預ける下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    await mounted.settle();
+    expect(mounted.source()).toBe(SOURCE);
+    expect(mounted.editor()).not.toBeNull();
+  });
+
+  it('is saved as the draft showed it mid IME composition', async () => {
+    const { mounted, input, owner } = await draft('子ノード');
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    input.value = 'へんかんちゅう';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('へんかんちゅう'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('keeps line breaks typed in the draft as the save writes them', async () => {
+    const { mounted, owner } = await draft('一行目\n二行目');
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('一行目<br>二行目'));
+  });
+
+  it('applies a draft held after the note was re-read, as its Enter would', async () => {
+    const { mounted, input, owner } = await draft('再読込のあとの下書き');
+    const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+    const silent = vi.spyOn(mounted.app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    mounted.app.put(PATH, other);
+    silent.mockRestore();
+    mounted.key(input, 'Enter');
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await mounted.settle();
+    expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent ?? '').toContain('もう一度確定すると');
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('再読込のあとの下書き', other));
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('leaves the note and says which draft was not saved when its node changed outside the map', async () => {
+    const { mounted, input, owner } = await draft('外で変わったノードの下書き');
+    const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');
+    mounted.app.put(PATH, external);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await mounted.settle();
+    mounted.key(input, 'Enter');
+    await mounted.settle();
+    expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent).toBe(t().draftChanged);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(external);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('外で変わったノードの下書き', t().draftChanged)]);
+  });
+
+  it('leaves the note and says so when the note changed while the window reloaded', async () => {
+    const { mounted, owner } = await draft('間に変わったノートの下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    const changed = SOURCE.replace('- 別のノード\n', '- 再読込の間に足した\n');
+    mounted.app.put(PATH, changed);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(changed);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('間に変わったノートの下書き', t().exitNoteChanged)]);
+  });
+
+  it('says so when the note is gone after the reload', async () => {
+    const { mounted, owner } = await draft('消えたノートの下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    owner.unload();
+    opened.splice(opened.indexOf(mounted), 1);
+    mounted.view.containerEl.remove();
+    const app = new HarnessApp();
+    install(app, new DocumentStore(app.asApp<App>()), () => []);
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('消えたノートの下書き', t().exitNoteGone)]);
+  });
+
+  it('does nothing when the note already has the draft (a save that landed after all)', async () => {
+    const { mounted, owner } = await draft('間に合った下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    mounted.app.put(PATH, renamed('間に合った下書き'));
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('間に合った下書き'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('keeps nothing for a draft that would not change the note, and nothing without a draft', async () => {
+    const { mounted, owner } = await draft('子ノード');
+    window.dispatchEvent(new Event('pagehide'));
+    expect(mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(SOURCE);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('applies the kept draft once: the next reload does not apply or report it again', async () => {
+    const { mounted, owner } = await draft('一度だけの下書き');
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('一度だけの下書き'));
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+    app.put(PATH, SOURCE);
+    install(app, new DocumentStore(app.asApp<App>()), () => []);
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(noteOf(app)).toBe(SOURCE);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('ignores what it cannot read as kept drafts', async () => {
+    const app = new HarnessApp();
+    app.put(PATH, SOURCE);
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: 1 }, 'x', { path: PATH, title: 'a', before: 'b', after: 'c', edits: [{ from: 'x' }] }]);
+    install(app, new DocumentStore(app.asApp<App>()), () => []);
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(noteOf(app)).toBe(SOURCE);
+    expect(Notice.log).toEqual([]);
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+  });
+});
+
+describe('a title draft open when Obsidian quits (LEV-230)', () => {
+  it('is saved by a task Obsidian waits for before the window closes, and not kept for a reload too', async () => {
+    const { mounted } = await draft('終了の前の下書き');
+    const tasks = new Tasks();
+    mounted.app.workspaceEvents.trigger('quit', tasks);
+    expect(tasks.isEmpty()).toBe(false);
+    await tasks.promise();
+    expect(mounted.source()).toBe(renamed('終了の前の下書き'));
+    window.dispatchEvent(new Event('pagehide'));
+    expect(mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('adds no task without a draft (Obsidian would show 「Saving...」 for nothing)', async () => {
+    const mounted = await mountMapView(PATH, SOURCE);
+    opened.push(mounted);
+    install(mounted.app, (mounted.view as unknown as { store: DocumentStore }).store, () => [mounted.view]);
+    const tasks = new Tasks();
+    mounted.app.workspaceEvents.trigger('quit', tasks);
+    expect(tasks.isEmpty()).toBe(true);
+  });
+
+  it('keeps a draft the quit could not save for the next launch, which says it was not saved', async () => {
+    const { mounted, input, owner } = await draft('終了で保存できない下書き');
+    const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');
+    mounted.app.put(PATH, external);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await mounted.settle();
+    mounted.key(input, 'Enter');
+    await mounted.settle();
+    const tasks = new Tasks();
+    mounted.app.workspaceEvents.trigger('quit', tasks);
+    await tasks.promise();
+    Notice.log.length = 0;
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(external);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('終了で保存できない下書き', t().draftChanged)]);
+  });
+});

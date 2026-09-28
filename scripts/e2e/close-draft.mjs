@@ -24,11 +24,15 @@
  * Rows 1, 5 and 6 pass on 0.3.8 too (the draft's blur saved rows 1 and 6; row 5 writes nothing): they pin that the save
  * on close keeps those, not that it was needed. Rows 2, 3, 3b, 4 and 7 fail there (lost without a word).
  *
- * With `--exits`, two ends that do not go through the view's `onClose` follow, recorded and not judged (what they do
- * is Obsidian's, and the PR lists them), except that a page error after the reload or a quit that did not happen
- * fails: 8. reload: F2 → text → `app:reload`; 9. quit: F2 → text → Obsidian quit
- * (`app.quit()`), the note read from the disk afterwards. The quit ends the Obsidian the case drives, so it comes last,
- * and it leaves the note (and the map's tab, which the next launch restores: close it before the next run).
+ * With `--exits`, the two ends that do not go through the view's `onClose` follow (LEV-230, judged since then):
+ * 8. reload: F2 → text → `app:reload`: after the reload the note has the text, with no Notice (kept at `pagehide`
+ *    and applied as Mappy loads again). 8b. reload-held-own-node: row 4's held draft → `app:reload`: the note keeps
+ *    the outside change and a Notice after the reload names the draft. 9. quit: row 3's held draft (its blur does not
+ *    save it) → Obsidian quit (`app.quit()`): the note, read from the disk afterwards, has the draft over the change
+ *    (saved in the quit's task). On 0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit
+ *    passes there too (the window's blur after `unload` saves it), so row 9 uses a held one. The quit ends the
+ *    Obsidian the case drives, so it comes last, and it leaves the note (and the map's tab, which the next launch
+ *    restores: close it before the next run).
  *
  * Usage: npm run harness:e2e:close-draft -- [--reload] [--json <out.json>] [--keep] [--exits]
  */
@@ -50,6 +54,7 @@ const SOURCE = [
 const renamed = (title, from = SOURCE) => from.replace('  - 子ノード\n', `  - ${title}\n`);
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 const NOT_SAVED = '編集中の内容を保存できませんでした';
+const EXIT_NOT_SAVED = '再読込・終了のときに編集していた';
 
 const record = createRecord(VAULT, NOTE);
 let cdp = await connect();
@@ -321,27 +326,65 @@ try {
   });
 
   if (flag('--exits')) {
-    // Recorded, not judged: neither end goes through the view's onClose.
-    await step('8-reload', async () => {
-      await reset();
-      await open();
-      await openDraft('再読込の前の下書き');
+    // Neither end goes through the view's onClose (LEV-230): the reload keeps the draft for the plugin's next load, the
+    // quit saves it in the task Obsidian waits for.
+    /** `app:reload`, then the reloaded window with the error collector installed again and time for the kept drafts. */
+    const reloadWindow = async () => {
       await evaluate(`window.__mappyE2E = null; setTimeout(() => app.commands.executeCommandById('app:reload'), 0); return true;`);
       await wait(2000);
       await reconnect();
       // The reloaded page has no error collector: installed again, what the restored map throws is still recorded.
       await evaluate(`${ERRORS} return true;`);
       await wait(1500);
-      const source = await read();
+      return evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
+        notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
+        errors: [...(window.__mappyE2EErrors ?? [])] };`);
+    };
+    await step('8-reload', async () => {
+      await reset();
+      await open();
+      await openDraft('再読込の前の下書き');
+      const after = await reloadWindow();
       await detachAll();
-      const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
-      check(errors.length === 0, `8-reload: page errors after the reload: ${JSON.stringify(errors).slice(0, 1500)}`);
-      return { outcome: source === renamed('再読込の前の下書き') ? 'saved' : source === SOURCE ? 'dropped' : 'other', source, errors };
+      check(after.errors.length === 0, `8-reload: page errors after the reload: ${JSON.stringify(after.errors).slice(0, 1500)}`);
+      check(after.source === renamed('再読込の前の下書き'), `8-reload: the reload lost the draft: ${JSON.stringify(after.source)}`);
+      check(after.notices.length === 0, `8-reload: a Notice showed: ${JSON.stringify(after.notices)}`);
+      return { outcome: after.source === renamed('再読込の前の下書き') ? 'saved' : after.source === SOURCE ? 'dropped' : 'other', ...after };
     });
+    await step('8b-reload-held-own-node', async () => {
+      await reset();
+      await open();
+      await openDraft('再読込で保存できない下書き');
+      const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');
+      await evaluate(`await app.vault.modify(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)}), ${JSON.stringify(external)});
+        await new Promise(resolve => setTimeout(resolve, 600)); return true;`);
+      await evaluate(`${VIEW} input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true;`);
+      await wait(600);
+      const held = await draftState();
+      if (!held.editing || !held.error) throw new Error(`the Enter was not refused with the draft held (the step would prove nothing): ${JSON.stringify(held)}`);
+      const after = await reloadWindow();
+      await detachAll();
+      check(after.errors.length === 0, `8b-reload-held-own-node: page errors after the reload: ${JSON.stringify(after.errors).slice(0, 1500)}`);
+      check(after.source === external, `8b-reload-held-own-node: the reload wrote over the outside change: ${JSON.stringify(after.source)}`);
+      check(after.notices.some(item => item.includes(EXIT_NOT_SAVED) && item.includes('再読込で保存できない下書き')),
+        `8b-reload-held-own-node: no Notice after the reload named the draft that was not saved: ${JSON.stringify(after.notices)}`);
+      return { held, ...after };
+    });
+    // A held draft: its blur does not save it (LEV-202), so what saves it is the quit's own task. A plain draft passes on
+    // 0.3.9 too, saved by the window's blur after `unload` (artifacts/lev-230), and would not tell the two apart.
     await step('9-quit', async () => {
       await reset();
       await open();
       await openDraft('終了の前の下書き');
+      const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+      await evaluate(`${VIEW} await app.vault.adapter.write(${JSON.stringify(NOTE)}, ${JSON.stringify(other)});
+        input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true;`);
+      let held;
+      for (let started = Date.now(); Date.now() - started < 4000; await wait(200)) {
+        held = await draftState();
+        if (held.error === REFRESHED) break;
+      }
+      if (!held?.editing || held.error !== REFRESHED) throw new Error(`the draft was not held for the re-read note (the step would prove nothing): ${JSON.stringify(held)}`);
       await evaluate(`window.__mappyE2E = null; setTimeout(() => require('electron').remote.app.quit(), 0); return true;`);
       cdp.close();
       let up = true;
@@ -352,7 +395,8 @@ try {
       if (up) { cdp = await connect(); evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`); throw new Error('Obsidian was still running 20 s after app.quit()'); }
       await wait(1000);
       const source = await readFile(join(VAULT, NOTE), 'utf8');
-      return { outcome: source === renamed('終了の前の下書き') ? 'saved' : source === SOURCE ? 'dropped' : 'other', source };
+      check(source === renamed('終了の前の下書き', other), `9-quit: quitting did not save the held draft over the change: ${JSON.stringify(source)}`);
+      return { held, outcome: source === renamed('終了の前の下書き', other) ? 'saved' : source === other ? 'dropped' : 'other', source };
     });
   }
 } catch (error) {
