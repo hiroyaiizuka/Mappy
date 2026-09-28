@@ -1,221 +1,226 @@
 # Mappy
 
-Obsidian のノートを、そのままマインドマップとしても読み書きするプラグインです。H2 見出しと箇条書きで書いた普通のノートを、マップ・タイムライン・階層図・左右バランスの 4 つのレイアウトで表示し、ノードの追加・編集・移動をそのノートの Markdown に書き戻します。専用のファイル形式はなく、Mappy を外しても見出しと箇条書きのノートのままです。
+English | [日本語](README.ja.md)
 
-**0.x はベータ版です。** macOS デスクトップの Obsidian でだけ確認しており、日本語 IME の実入力、Windows・Linux、モバイルの確認は終わっていません（[対応環境](#対応環境)、[既知の制限](#既知の制限)）。日常の Vault に入れる場合は、git や Obsidian Sync などのバックアップがあることを確かめてから使ってください。
+![A note open in Obsidian's light theme: its Markdown on the left and the same note as a Mappy map on the right](https://raw.githubusercontent.com/hiroyaiizuka/Mappy/main/docs/images/mappy-map.png)
 
-## できること
+Mappy lets you read and edit an Obsidian note as a mind map, without turning it into anything else. A plain note written with H2 headings and bullet lists is shown in one of four layouts (mind map, timeline, hierarchy, balanced), and adding, editing and moving nodes writes back to that note's Markdown. There is no special file format: without Mappy, the note is still headings and bullet lists.
 
-- 1 つのノートを Markdown とマップで切り替える。左にマップ、右に標準エディタを並べ、どちらで編集しても他方へすぐ反映する
-- Enter／Tab で兄弟・子を追加してその場で入力、ドラッグで並べ替えと親変更（移動先を事前に表示）、枝の折りたたみ、Undo／Redo
-- ノードに内部リンク・外部リンク・画像を表示し、`[[`／`![[` でノートや添付ファイルの候補を出す
-- 4 つのレイアウト（通常マップ／タイムライン／階層図／左右バランス）をノートごとに保存する
-- 空白をダブルクリックして 2 つ目以降のマップ（フリートピック）を置き、あとで本体の枝にする
-- 別のノートに `![[マップノート]]` と書くと、読み取り専用のマップとして埋め込む
-- [Excalidraw](https://github.com/zsviczian/obsidian-excalidraw-plugin) の図面に挿入する。SVG／PNG に書き出す
-- 他のエディタや外部ツール（Cursor、Claude Code など）がファイルを書き換えた場合も、Obsidian が変更を検出した時点でマップを更新する
+**0.x is a beta.** It has been checked only with Obsidian on macOS desktop. Real typing with a Japanese IME, Windows, Linux and mobile have not been checked yet (see [Compatibility](#compatibility) and [Known limitations](#known-limitations)). Before using it in your everyday vault, make sure you have a backup such as git or Obsidian Sync.
 
-## 保存形式
+## What it does
 
-**Markdown が唯一の正本です。** Mappy 独自のファイルやデータベースはなく、マップの内容はすべてノート本文と frontmatter にあります。
+- Switch one note between Markdown and a map. Put the map on the left and the standard editor on the right, and an edit in either shows up in the other at once
+- Add a sibling or child with Enter/Tab and type in place, drag to reorder or change the parent (the destination is shown beforehand), fold branches, undo and redo
+- Show internal links, external links and images in nodes, and suggest notes and attachments after `[[` / `![[`
+- Keep one of four layouts (mind map, timeline, hierarchy, balanced) per note
+- Double-click empty space to place a second or later map (a free topic), and make it a branch of the main map later
+- Write `![[Map note]]` in another note to embed the map read-only
+- Insert a map into an [Excalidraw](https://github.com/zsviczian/obsidian-excalidraw-plugin) drawing, or export it as SVG/PNG
+- When another editor or an external tool (Cursor, Claude Code and so on) rewrites the file, the map updates as soon as Obsidian notices the change
 
-ルートは H2、その下は箇条書きのインデントで階層を作ります。項目の最初の行がノードのテキストで、別のタイトル欄はありません。
+## Storage format
+
+**The Markdown is the single source of truth.** Mappy has no files or database of its own: everything in a map is in the note's body and frontmatter.
+
+The root is an H2 heading, and list indentation below it makes the hierarchy. The first line of an item is the node's text; there is no separate title field.
 
 ```markdown
 ---
 mappy: true
 ---
-## 旅行の計画
-- 準備
-  - 持ち物
-- 行き先
-  - 京都
-    - [[京都メモ]]
-  - ![[地図.png]]
+## Trip plan
+- Preparation
+  - Packing list
+- Destinations
+  - Kyoto
+    - [[Kyoto notes]]
+  - ![[map.png]]
 ```
 
-frontmatter に書くキーは 3 つです。Mappy が扱うのは `mappy: true` を持つノートだけで、それ以外のノートには何もしません。
+Mappy writes three frontmatter keys. It only handles notes with `mappy: true` and leaves every other note alone.
 
-| キー | 値 | 意味 |
+| Key | Value | Meaning |
 | --- | --- | --- |
-| `mappy` | `true`（YAML の真偽値） | このノートをマップとして開く。「このノートをマインドマップ化」が書き、「解除」が消す |
-| `mappy-layout` | `timeline`／`hierarchy`／`balanced` | 表示レイアウト。通常マップでは書かない（省略が通常マップ） |
-| `mappy-topics` | `見出しの文: { mindmap: [x, y], timeline: [x, y] }` | フリートピックの位置。見出しの文をキーに、レイアウト別に保存する。同じ見出しのトピックが複数あるときは、2 つ目以降のキーが `見出しの文 (2)`、`見出しの文 (3)`… になる（原文の順。その文字列が別の見出しと重なるときは使われていない最小の番号） |
+| `mappy` | `true` (a YAML boolean) | Open this note as a map. "Turn this note into a mind map" writes it and "Turn off mind map for this note" removes it |
+| `mappy-layout` | `timeline` / `hierarchy` / `balanced` | The layout. Not written for the mind map layout (leaving it out means mind map) |
+| `mappy-topics` | `heading text: { mindmap: [x, y], timeline: [x, y] }` | Free topic positions, keyed by the heading text and saved per layout. When several topics share a heading, the second and later ones are keyed `heading text (2)`, `heading text (3)`… (in source order; when that string is another heading's text, the smallest unused number) |
 
-- Mappy がノートを書き換えるのは明示的な操作のときだけです（マインドマップ化・解除、レイアウトの切り替え、ノードの追加・編集・移動・削除、フリートピックの移動）。開く・見る・マップと Markdown の表裏切り替え・設定の変更では書き換えません。
-- 編集は変更した行の範囲だけを差し替えます。他の行、frontmatter の他のキー、空行、改行コードはそのまま残ります。
-- 文書直下の見出しが H2 だけ、または見出しがない場合がこのリスト形式です。H1・H3 など他の見出しを含むノートは、従来の見出し階層（H2→H3→H4…）としてそのまま表示し、自動では変換しません。右クリックの「リスト形式に変更」で明示的に変換でき、Undo で戻せます。
-- 見出しは Obsidian と同じに読みます。文の次の行に `===`／`---` を置く書き方（Setext 見出し）は、文が 1 行のとき（`<br>` を含む 1 行も）だけ見出しです。2 行以上の文の下に `===`／`---` を置いたものは、Obsidian の閲覧モード・アウトラインと同じく見出しではなく本文の段落として読みます（`---` のときは段落と水平線）。0.3.8 以前の Mappy はこの形も見出しのノードとして表示していたので、そういうノートでは、そのノードがマップから消えて上のノードの本文に入り、その下にあったノードの親が変わることがあります。この形の `===` が H2 以外のただ一つの見出しだったノートは、リスト形式として開くようになり、それまで本文だった箇条書きがノードとして現れます。ノートの原文は変わりません。ノードとして残したい場合は、Markdown 側で見出しの文を 1 行にする（改行は `<br>`）か、`## 見出し` の形に書き直してください。`%%…%%` のコメントも Obsidian と同じく、1 行の中にあればその行の文の一部、行をまたげば空行として読みます（`%%メモ%%` だけの行のすぐ下の `見出し` と `===` は 2 行の文なので見出しになりません。間に空行を入れると見出しです）。
-- 番号付きリストとタスクリストはノードにしませんが、原文はそのまま保持します。ノードに表示するのはテキストと、本文にあるリンク・画像です。本文の文章（子リストより前の続きの行）はマップに表示せず、右クリックの「本文・リンクを編集」で扱います。
+- Mappy rewrites a note only on an explicit action: turning it into a map or back, switching the layout, adding, editing, moving or deleting nodes, and moving free topics. Opening, viewing, flipping between the map and Markdown, and changing settings don't rewrite it.
+- An edit replaces only the lines it changes. Other lines, other frontmatter keys, blank lines and line endings stay as they were.
+- This list format applies when the note's top-level headings are all H2, or there are none. A note with H1, H3 or other headings is shown as a heading hierarchy (H2→H3→H4…) as it is, and is not converted automatically. "Change to list format" in the context menu converts it explicitly, and undo reverts it.
+- Headings are read as Obsidian reads them. A line of text followed by `===` / `---` (a setext heading) is a heading only when the text is a single line (including a single line with `<br>`). `===` / `---` under text of two or more lines is read as body paragraphs, not a heading, as Obsidian's reading view and outline do (with `---`, a paragraph and a horizontal rule). Mappy 0.3.8 and earlier showed this form as a heading node too, so in such notes that node leaves the map and becomes body text of the node above, and the nodes below it may get a new parent. A note whose only heading besides H2 was this form of `===` now opens as the list format, and the list items that used to be body text appear as nodes. The note's text doesn't change. To keep the node, make the heading text a single line in Markdown (use `<br>` for line breaks), or rewrite it as `## Heading`. `%%…%%` comments are also read as Obsidian reads them: inside one line they are part of that line's text, and across lines they count as a blank line (a `Heading` and `===` right below a line holding only `%%note%%` are two lines of text, so they are not a heading; with a blank line between them, they are).
+- Numbered lists and task lists don't become nodes, but their text is kept as it is. A node shows its text and the links and images in its body. Body text (continuation lines before any child list) is not shown in the map; use "Edit body and links" in the context menu for it.
 
-## 導入（BRAT）
+## Installation (BRAT)
 
-ベータ版（0.x）は、このリポジトリの GitHub Release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。コミュニティプラグイン一覧には公開していません。
+The beta (0.x) is installed from this repository's GitHub Releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat). It is not in the community plugins directory yet.
 
-1. Obsidian のコミュニティプラグインから BRAT を入れて有効にする
-2. コマンド「BRAT: Add a beta plugin for testing」（設定タブでは Add beta plugin）で、リポジトリに `hiroyaiizuka/Mappy` を入れて Add plugin。BRAT が最新の Release（pre-release を含む）の 3 ファイルを `.obsidian/plugins/mappy/` に置く
-3. コミュニティプラグインの一覧で Mappy を有効にする。以後は BRAT の「Check for updates」で新しい版を取り込む。版を固定したい場合は BRAT の「frozen version」でタグを指定する
+1. Install and enable BRAT from Obsidian's community plugins
+2. Run the command "BRAT: Add a beta plugin for testing" (Add beta plugin in the settings tab), enter `hiroyaiizuka/Mappy` as the repository, and choose Add plugin. BRAT puts the three files of the latest release (pre-releases included) in `.obsidian/plugins/mappy/`
+3. Enable Mappy in the community plugins list. From then on, BRAT's "Check for updates" brings in new versions. To stay on one version, give its tag with BRAT's "frozen version"
 
-手動で入れる場合は、[Releases](https://github.com/hiroyaiizuka/Mappy/releases) の各版に添付された `main.js`・`manifest.json`・`styles.css` の 3 ファイルを Vault の `.obsidian/plugins/mappy/` に置きます（リポジトリのソースコードをそのまま置いても動きません）。
+To install by hand, put the three files `main.js`, `manifest.json` and `styles.css` attached to a version on [Releases](https://github.com/hiroyaiizuka/Mappy/releases) in your vault's `.obsidian/plugins/mappy/` (the repository's source code does not work as it is).
 
-## 基本操作
+## Basic usage
 
-### 開く・切り替える
+### Opening and switching
 
-コマンドパレット、左のリボンアイコン、ファイルの右クリックから使います。既定のホットキーは登録しないので、必要なら Obsidian の設定で割り当ててください。
+Use the command palette, the ribbon icon on the left, or a file's context menu. No default hotkeys are registered; assign them in Obsidian's settings if you need them.
 
-| コマンド | 動作 |
+| Command | What it does |
 | --- | --- |
-| 新しいマインドマップを作成 | 設定の作成先フォルダに `mappy: true` と H2 ルートを持つノートを作って開く |
-| このノートをマインドマップ化 | 開いている通常ノートの frontmatter に `mappy: true` を書いてマップで開く（ファイルの右クリックにもある） |
-| マインドマップを開く | `mappy: true` のノートをマップで開く（リボンアイコンと同じ） |
-| マインドマップと Markdown を並べる | 左にマップ、右に標準エディタ |
-| マップと Markdown を切り替え | 同じペインで表裏を往復する。Markdown 側は選択していたノードの行へ移動する |
-| このノートのマインドマップ化を解除 | `mappy`・`mappy-layout`・`mappy-topics` を消し、本文を保ったまま Markdown に戻す |
-| 現在のマップをリスト形式に変更 | 従来の見出し階層のノートを H2＋リストに変換する（Undo 可） |
-| マップを検索して呼び出す | `mappy: true` の別のノートを検索し、選択ノードの子の末尾に `![[別マップ]]` の項目として追加する。何も選択していなければ（空白をクリックして選択を外した状態）、文末に `## ![[別マップ]]` のフリートピックとして本体のそばに置く。マップがアクティブなときだけ |
-| 現在のマップを Excalidraw の図面に挿入 | [Excalidraw に載せる](#excalidraw-に載せる) |
-| 現在のマップを SVG／PNG に書き出し | [SVG／PNG に書き出す](#svgpng-に書き出す) |
+| Create new mind map | Creates a note with `mappy: true` and an H2 root in the folder from the settings, and opens it |
+| Turn this note into a mind map | Writes `mappy: true` into the open note's frontmatter and opens it as a map (also in the file's context menu) |
+| Open mind map | Opens a `mappy: true` note as a map (same as the ribbon icon) |
+| Open mind map beside Markdown | Map on the left, standard editor on the right |
+| Switch between map and Markdown | Flips the same pane between the two. The Markdown side scrolls to the selected node's line |
+| Turn off mind map for this note | Removes `mappy`, `mappy-layout` and `mappy-topics` and goes back to Markdown, keeping the body |
+| Change current map to list format | Converts a heading-hierarchy note to an H2 root and a list (undo reverts it) |
+| Search and insert a map | Searches for another `mappy: true` note and adds it as an `![[Other map]]` item at the end of the selected node's children. With nothing selected (after clicking empty space to clear the selection), places it near the main map as a `## ![[Other map]]` free topic at the end of the note. Only while a map is active |
+| Insert current map into Excalidraw drawing | See [Adding to Excalidraw](#adding-to-excalidraw) |
+| Export current map as SVG or PNG | See [Exporting to SVG or PNG](#exporting-to-svg-or-png) |
 
-`mappy: true` のノートはリンクやファイル一覧から開いてもマップになります。「マップと Markdown を切り替え」で Markdown にしたペインは、同じノートを開き直しても Markdown のままです。マップのタブは Markdown のタブと同じ扱いです: マップの中のリンクやファイル一覧で選んだノートはそのタブで開き（Cmd/Ctrl+クリックで新しいタブ、タブをピン留めすれば置き換わらない）、戻る／進むでマップに戻れます。`[[#見出し]]` や `[[ノート#^ブロック]]` はその位置のノードが選ばれ、テキストを編集中に別のノートへ移るときは入力中の内容を保存してから移ります。ノードで Escape を押しても隣のタブへフォーカスは移りません。マップがアクティブな間、Obsidian の「ファイル名を編集」「パスをコピー」「ファイルを削除」などファイルに対するコマンドはマップでは対象がなく、隣のノートには作用しません。
+A `mappy: true` note opened from a link or the file explorer also opens as a map. A pane switched to Markdown with "Switch between map and Markdown" stays Markdown when the same note is opened again. A map tab behaves like a Markdown tab: a note chosen from a link in the map or from the file explorer opens in that tab (Cmd/Ctrl+click for a new tab; pin the tab to keep it), and back/forward return to the map. `[[#Heading]]` and `[[Note#^block]]` select the node at that position, and when you move to another note while editing a node's text, what you typed is saved first. Escape on a node doesn't move focus to the neighboring tab. While a map is active, Obsidian's file commands such as "Rename file", "Copy file path" and "Delete current file" have no target in the map and don't act on the note next to it.
 
-### マップ上の操作
+### On the map
 
-キャンバスは全面で、レイアウトの切り替えは左下、歯車（3 項目のポップオーバー）は右上、ズームは右下の浮かせたボタンにあります。
+The canvas fills the view, with floating buttons: the layouts in the bottom-left corner, the gear (a popover of three items) in the top-right corner, and zoom in the bottom-right corner.
 
-| 操作 | 方法 |
+| Action | How |
 | --- | --- |
-| 歯車 | 右上の歯車を押すと、その下に「Markdown に切り替え（同じタブで本文を開く）」「マップを検索して呼び出す（他のマップを挿入する）」「書き出す（SVG／PNG に保存）」の 3 項目だけのポップオーバーが開く。↑↓で移動、Enter で実行、Escape・外側のクリック・もう一度の押下で閉じる。ノードの操作は下の表のキーと右クリック、そのほかはコマンドパレットから |
-| 選択の移動 | ↑／↓で表示順、←で親、→で最初の子。空白をクリックすると選択が外れ（背景のドラッグでは外れない）、矢印キーで本体ルートから選び直す。未選択でも元に戻す／やり直すは効く |
-| 兄弟／子を追加 | ノード選択中に Enter／Tab。「サブトピック」が選択された状態で入力欄が開き、そのまま打てば置き換わる（打たずに Enter で「サブトピック」のまま確定、打たずにすぐ Escape で追加を取り消し。打ってからの Escape は入力だけを取り消す）。空白のダブルクリック・右クリックのトピック（トピックのルートで Enter して作るトピックも）は「トピック」で同じ。仮の名前はノートにそのまま書かれ、Obsidian の言語が日本語以外なら英語（`Subtopic`・`Topic`） |
-| テキスト編集 | ダブルクリックまたは F2。Enter で確定、Shift+Enter でノードの中で改行（Markdown には `温泉<br>旅行` のように 1 行で保存）、Escape で取り消し。入力欄は文字に合わせて横に広がり、確定後のノードと同じ幅で折り返す（リンクや強調などの記法、URL、連続する空白を含む行は、確定後と折り返す位置がずれることがある） |
-| 子を続けて追加 | テキスト編集中に Tab で確定して子を追加 |
-| リンク・添付候補 | テキスト編集中に `[[` または `![[`。候補がある間の Enter／Tab は候補選択を優先 |
-| 前後へ移動 | Alt（Option）+↑／↓、または右クリック |
-| 並べ替え・親変更 | ノードをドラッグ。移動先を仮ノードと線で事前表示し、Escape で戻す |
-| 削除 | Delete／Backspace（枝ごと）。削除後は 1 つ上の兄弟、なければ 1 つ下の兄弟、なければ親が選ばれる（原文の順。左右バランスでも同じ）。フリートピックの題を消すと上下のトピック、なければ本体のルートが選ばれる。H2 のない本体の項目とトピックは別の並びとして扱い、同じ並びに何も残らなければ最も近いノードが選ばれる。Undo で戻せる |
-| 折りたたみ | Space、または枝の分岐点に現れる丸い −。閉じると非表示の子孫数を表示 |
-| 本文・リンク編集／画像追加 | ノードの右クリックメニュー |
-| 元に戻す／やり直す | Cmd/Ctrl+Z／Cmd/Ctrl+Shift+Z、または右クリック |
-| 表示の移動・拡大縮小 | 背景ドラッグ・スクロール／ピンチ・修飾キー付きスクロール・右下のボタン |
-| 別のマップを呼び出す | ノードのテキストを `![[マップノート]]` だけにする（「マップを検索して呼び出す」でも同じ。`![[ノート#見出し]]` はその見出しの下だけ。フリートピックの見出し `## ![[マップノート]]` でも同じで、そのトピックが呼び出したマップになる）。そのノードが呼び出したマップのルートになり、呼び出したマップの枝が現在のマップの枝と同じ見た目・同じレイアウトで右に並ぶ（開いた直後はルートの子まで）。呼び出した部分は読み取り専用（控えめな文字色。`![[…]]` のノードには前に link の印が付く）で、選択・折りたたみと、元のマップを開くこと（ダブルクリック、または右クリックの「元のマップを開く」）だけができる。`![[…]]` のノード自体は通常どおり編集・移動・削除でき、削除すると呼び出した枝ごと消える。自分自身と呼び出したマップの中の呼び出しはリンクのまま |
+| Gear | The gear in the top-right corner opens a popover below it with just three items: **Switch to Markdown** (Open the note in this tab), **Search and insert a map** (Insert another map) and **Export** (Save as SVG or PNG). ↑↓ move, Enter runs, and Escape, a click outside or pressing the gear again closes it. Node actions are on the keys below and in the context menu; everything else is in the command palette |
+| Moving the selection | ↑/↓ in display order, ← to the parent, → to the first child. Clicking empty space clears the selection (dragging the background doesn't), and the arrow keys start again from the main root. Undo and redo work with nothing selected |
+| Adding a sibling/child | Enter/Tab with a node selected. An input opens with "Subtopic" selected; typing replaces it (Enter without typing keeps "Subtopic", Escape right away cancels the addition, and Escape after typing cancels only the typing). A topic from double-clicking empty space or from the context menu (and a topic made with Enter on a topic's root) works the same way with "Topic". The provisional name is written into the note as it is, in Japanese (`サブトピック`, `トピック`) when Obsidian's language is Japanese |
+| Editing text | Double-click or F2. Enter confirms, Shift+Enter breaks the line inside the node (saved on one line in Markdown, like `Hot<br>springs`), Escape cancels. The input widens with the text and wraps at the same width as the confirmed node (a line with link or emphasis syntax, a URL or runs of spaces may wrap at a different place than after confirming) |
+| Adding children in a row | Tab while editing text confirms and adds a child |
+| Link and attachment suggestions | `[[` or `![[` while editing text. While suggestions are shown, Enter/Tab picks a suggestion first |
+| Moving up/down | Alt (Option)+↑/↓, or the context menu |
+| Reordering and changing the parent | Drag the node. A placeholder node and line show the destination beforehand; Escape puts it back |
+| Deleting | Delete/Backspace (with its branch). Afterwards the sibling above is selected, or else the sibling below, or else the parent (in source order, also in the balanced layout). Clearing a free topic's title selects the topic above or below, or else the main root. The items of a main map without an H2 and the topics are treated as separate sequences; when nothing is left in the same sequence, the nearest node is selected. Undo brings it back |
+| Folding | Space, or the round − that appears at a branch's fork. A folded branch shows how many descendants are hidden |
+| Editing body and links / adding an image | The node's context menu |
+| Undo/redo | Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z, or the context menu |
+| Panning and zooming | Drag the background, scroll or pinch, scroll with a modifier key, or the buttons in the bottom-right corner |
+| Inserting another map | Make a node's text just `![[Map note]]` (the same as "Search and insert a map"; `![[Note#Heading]]` inserts only what is under that heading; a free topic heading `## ![[Map note]]` works too, and that topic becomes the inserted map). The node becomes the inserted map's root, and the inserted map's branches line up to the right, looking the same as the current map's and in the same layout (down to the root's children when first opened). The inserted part is read-only (in a muted text color; an `![[…]]` node has a link mark in front): you can select and fold it, and open the original map (double-click, or "Open original map" in the context menu). The `![[…]]` node itself can be edited, moved and deleted as usual, and deleting it removes the inserted branches with it. Insertions of the map itself, and insertions inside an inserted map, stay links |
 
-ノードの中の入力欄（ダブルクリック・F2・Enter／Tab で開くもの）で入力している途中で他のアプリや別のウィンドウへ移っても、入力欄は開いたまま残り、その時点の入力をノートに保存します（保存を拒否されたときは入力欄にエラーが出て、ノートには書かれません。日本語入力の変換中に離れた場合の扱いと、実際のアプリの切り替えでの動作は確認していません。右クリックの「本文・リンクを編集」の画面は、離れても保存しません）。戻って Enter で閉じ、戻ってから打ち足した分もそのとき保存されます。戻ってからの Escape は離れたあとに打った分だけを取り消し、離れた時点で保存した分は Cmd/Ctrl+Z で戻せます。
+If you switch to another app or window while typing in a node's input (the one opened by double-click, F2 or Enter/Tab), the input stays open and what you had typed so far is saved to the note (if the save is refused, the input shows an error and nothing is written to the note. What happens when you leave in the middle of IME composition, and how it behaves when actually switching apps, have not been checked. The "Edit body and links" dialog does not save when you leave). Come back and press Enter to close it; anything you typed after coming back is saved then. Escape after coming back cancels only what you typed after leaving, and what was saved when you left can be undone with Cmd/Ctrl+Z.
 
-入力欄を開いたまま（Enter も Escape も押さずに）マップのタブや別ウィンドウを閉じたとき、Mappy を無効にしたときも、入力中の内容はノートに保存されます。Markdown のタブが打った文字を失わないのと同じで、別のノートへ移ったとき（リンク・ファイル一覧・戻る／進む）と同じ扱いです。日本語入力で変換を確定していない文字も、入力欄に見えていたとおりに保存します（実際の日本語入力で閉じる操作はまだ確認していません）。入力欄にエラーが出ていても、閉じるときにもう一度保存を試み、保存できなければ「編集中の内容を保存できませんでした。」と理由を知らせます（編集中のノード自体が Markdown 側で変わっていた場合など。そのときノートは Markdown 側の内容のままです）。残したくない入力は Escape で取り消してから閉じてください。アプリの終了と再読込で入力中の内容がどうなるかは、[既知の制限](#既知の制限)に書いています。
+If you close the map tab or another window, or disable Mappy, with the input still open (without pressing Enter or Escape), what you are typing is saved to the note too. It is the same as a Markdown tab not losing typed text, and the same as moving to another note (a link, the file explorer, back/forward). Text still being composed with an IME is saved as it appeared in the input (closing in the middle of real IME typing has not been checked yet). Even if the input shows an error, closing tries to save once more, and if it can't, tells you why with "Couldn't save the text being edited." (for example, when the node being edited itself changed on the Markdown side; the note then keeps the Markdown side's content). To discard what you typed, press Escape before closing. What happens to your typing when you quit or reload the app is covered in [Known limitations](#known-limitations).
 
-ノードの本体にマウスを乗せても、題名や呼び出し元のパスの吹き出しは出ません（入力中の欄やすぐ下のノードを覆わないため）。枝の開閉ボタンと画面の端のボタンには、従来どおり説明の吹き出しが出ます。呼び出し元のパスは、書き出した SVG ではノードの吹き出しとして残ります。マップがアクティブな間、F2 はマップの編集キーで、Obsidian の既定ホットキー「ファイル名を編集」は動きません。ノード内の入力欄は Mappy 専用で、Obsidian の標準エディタではありません。候補にはノートの名前・パス・別名に加え、PNG・SVG・PDF など Vault 内の添付ファイルも出ます。
+Hovering over a node's body shows no tooltip with its title or its source path (so as not to cover the input or the node right below). The fold buttons and the buttons at the edges of the view show tooltips as before. The source path stays in exported SVG as the node's tooltip. While a map is active, F2 is the map's edit key, and Obsidian's default hotkey for "Rename file" doesn't run. The input in a node is Mappy's own, not Obsidian's standard editor. Besides note names, paths and aliases, the suggestions include attachments in the vault such as PNG, SVG and PDF.
 
-### レイアウト
+### Layouts
 
-左下で選びます。切り替えは `mappy-layout` の書き込みだけで、本文は変わりません。
+Choose one in the bottom-left corner. Switching only writes `mappy-layout`; the body doesn't change.
 
-- **通常マップ**: 右へ広がり、余白のある直角線で接続する。`mappy-layout` は書かない
-- **タイムライン**（`timeline`）: 横軸に第一階層を並べ、下位の枝を上下交互に伸ばす。同じ側に続く第一階層の項目は、次の項目に枝があるとき、前の項目の枝のうち次の項目の枝が並ぶ高さにかかるものからは広く離し、それより軸から遠くにある枝からは詰めて置く
-- **階層図**（`hierarchy`）: ルートを上に置き、同じ親の子を同じ段に揃えて下へ広げる（組織図・イシューツリー向け）
-- **左右バランス**（`balanced`）: ルートを中央に置き、第一階層を Markdown の順に右・左・右・左と自動で振り分ける。左右を手で選ぶ操作はない
+- **Mind map**: grows to the right, connected by right-angled lines with some space. `mappy-layout` is not written
+- **Timeline** (`timeline`): puts the first level along a horizontal axis and grows the branches below it alternately up and down. When consecutive first-level items are on the same side and the next item has branches, the next item is placed well apart from those of the previous item's branches that reach the height where its own branches go, and closer to branches farther from the axis
+- **Hierarchy** (`hierarchy`): puts the root at the top and grows downwards, lining up children of the same parent on one row (for org charts and issue trees)
+- **Balanced** (`balanced`): puts the root in the middle and splits the first level right, left, right, left in Markdown order. There is no way to choose the side by hand
 
-フリートピックの位置はレイアウトごとに保存され、切り替えても保たれます（名前を付ける前のトピックも、置いた場所に留まります）。ドラッグ中の切り替えについては[既知の制限](#既知の制限)を見てください。
+Free topic positions are saved per layout and kept when you switch (a topic without a name yet also stays where you put it). For switching while dragging, see [Known limitations](#known-limitations).
 
-### フリートピック
+### Free topics
 
-文書の最初の見出し区画が本体で、2 つ目以降の最上位区画（`## `）はフリートピックとして本体のそばに置きます。
+The note's first heading section is the main map, and each later top-level section (`## `) is a free topic placed near it.
 
-| 操作 | 方法 |
+| Action | How |
 | --- | --- |
-| 追加 | 空白をダブルクリック、または空白の右クリック「トピックを追加」。押した位置に `## トピック` の区画を作り、「トピック」が選択された入力欄でその場で入力（打たずにすぐ Escape で取り消し）。何も選択せずに「マップを検索して呼び出す」を実行すると `## ![[別マップ]]` のトピックが本体のそばに置かれる（中身のないノートでは、どちらもその区画が本体になる） |
-| 移動 | トピックのルートをドラッグ。位置は `mappy-topics` に保存する。同じ見出しのトピック（同じマップを 2 回呼び出したときなど）も別々に動く |
-| 本体の枝にする | トピックを本体のノードの隣まで運んで離す。区画がその子のリストになる |
-| 枝を切り離す | 本体の枝をノードのない空白へドラッグして離す。文末に新しい `## ` の区画になる |
-| 本体を移動 | 本体のルートをドラッグ。トピックは画面上の位置を保つ |
-| 削除 | Delete、または右クリック「トピックを削除」 |
+| Adding | Double-click empty space, or "Add topic" in the empty space's context menu. A `## Topic` section is created where you clicked, with "Topic" selected in an input to type over (Escape right away cancels). Running "Search and insert a map" with nothing selected places a `## ![[Other map]]` topic near the main map (in a note with no content, either way that section becomes the main map) |
+| Moving | Drag the topic's root. The position is saved in `mappy-topics`. Topics with the same heading (such as the same map inserted twice) move separately |
+| Making it a branch of the main map | Carry the topic next to a node of the main map and drop it. The section becomes a list under that node |
+| Detaching a branch | Drag a branch of the main map to empty space with no nodes and drop it. It becomes a new `## ` section at the end of the note |
+| Moving the main map | Drag the main root. Topics keep their place on screen |
+| Deleting | Delete, or "Delete topic" in the context menu |
 
-どれも Undo で戻せます。見出しのないノートは、ファイル名の表示用ルートでまとめます。
+All of these can be undone. A note with no headings gets a root showing the file name that holds everything together.
 
-### 設定
+### Settings
 
-Obsidian の設定 → Mappy に 4 項目があります。既定値のままなら設定がなかったときと同じ動作で、設定を変えてもノートは書き換えません。
+Obsidian's Settings → Mappy has four items. Left at their defaults, Mappy behaves as it did before they existed, and changing them doesn't rewrite any note.
 
-- **テーマ**: Obsidian に従う（既定）／明色／暗色。マップの画面だけに適用します
-- **新規マップの既定レイアウト**: 「新しいマインドマップを作成」と「このノートをマインドマップ化」が `mappy-layout` に書く値。既存ノートの表示は変わりません
-- **新規マップの作成先フォルダ**: Vault からの相対パス。空欄なら Obsidian の「新規ノートの作成場所」、`/` で最上位
-- **左下に表示するレイアウト**: マップの左下に並ぶレイアウトのボタンを選びます（既定は 4 つすべて）。通常マップは外せません。開いているノートの `mappy-layout` が非表示のレイアウトなら、そのノートではそのボタンも出ます。表示の設定であって機能の無効化ではなく、`mappy-layout` の保存・復元、コマンド、埋め込み、Excalidraw への挿入は変わりません
+- **Theme**: Follow Obsidian (default) / Light / Dark. Applies only to the map view
+- **Default layout for new maps**: the value "Create new mind map" and "Turn this note into a mind map" write to `mappy-layout`. Notes that already exist keep their layout
+- **Folder for new maps**: a path relative to the vault. Empty follows Obsidian's "Default location for new notes", and `/` is the vault root
+- **Layouts in the bottom-left corner**: chooses the layout buttons shown in the map's bottom-left corner (all four by default). The mind map can't be hidden. When an open note's `mappy-layout` is a hidden layout, that note still shows its button. This is a display setting, not a way to turn features off: saving and restoring `mappy-layout`, the commands, embeds and inserting into Excalidraw don't change
 
-### 別のノートに埋め込む
+### Embedding in another note
 
-`![[マップノート]]` または `![[マップノート#見出し]]` を書くと、閲覧モード・ライブプレビュー・ホバープレビューで読み取り専用のマップになります。レイアウトは元ノートの `mappy-layout`、枠の高さは固定で、中で枝の開閉だけができます。埋め込みで開いた（閉じた）枝は、元ノートをマップで編集したり、レイアウトを切り替えたり、元に戻したりしても、そのまま保たれます。元ノートを Markdown 側や外部ツールで書き換えた場合（その直後に続けてマップで操作した場合を含む）は、同じ名前のノードや題名が空のノードの枝の開閉が元に戻ることがあります。右上の「マップで開く」で元ノートをマップで開きます。`mappy: true` のないノートやブロック参照（`#^id`）は Obsidian の通常の埋め込みのままです。
+Writing `![[Map note]]` or `![[Map note#Heading]]` shows a read-only map in reading view, Live Preview and hover previews. The layout is the original note's `mappy-layout`, the frame has a fixed height, and inside it you can only fold and unfold branches. Branches you unfold (or fold) in an embed stay that way when you edit the original note as a map, switch its layout or undo. When the original note is rewritten on the Markdown side or by an external tool (including when you keep working on the map right after), folding may reset on branches of nodes that share a name or have an empty title. "Open in map" in the top-right corner opens the original note as a map. A note without `mappy: true`, and a block reference (`#^id`), stay Obsidian's usual embeds.
 
-### Excalidraw に載せる
+### Adding to Excalidraw
 
-Excalidraw プラグインが有効なとき、次の 3 通りで使えます。
+With the Excalidraw plugin enabled, there are three ways.
 
-| 方法 | 結果 |
+| Method | Result |
 | --- | --- |
-| `mappy: true` の `.md` を **Option（Alt）を押しながら**キャンバスへドロップ | マップを Excalidraw のネイティブ要素（矩形・テキスト・線・画像）として挿入。1 グループにまとまり、ルートは元ノートへのリンクを持つ |
-| コマンド「現在のマップを Excalidraw の図面に挿入」 | 直前にアクティブだった図面へ、現在のレイアウトと折りたたみのまま挿入 |
-| Excalidraw の「Insert interactive frame」（Ctrl／Win: Shift+Ctrl を押してドロップ） | `mappy: true` のノートが、生きた Mappy のビューとして枠内に表示・編集できる |
+| Drop a `mappy: true` `.md` onto the canvas **while holding Option (Alt)** | Inserts the map as native Excalidraw elements (rectangles, text, lines, images), in one group, with the root linking to the original note |
+| The command "Insert current map into Excalidraw drawing" | Inserts into the drawing that was last active, with the current layout and folding |
+| Excalidraw's "Insert interactive frame" (drop while holding Ctrl; Shift+Ctrl on Windows) | Shows the `mappy: true` note inside the frame as a live Mappy view you can edit |
 
-ネイティブ要素として挿入したマップは元ノートと同期しないスナップショットです。修飾キーなしのドロップや Excalidraw の挿入ダイアログは既定のまま使えます。
+A map inserted as native elements is a snapshot that doesn't sync with the original note. Dropping without a modifier key and Excalidraw's insert dialogs work as they normally do.
 
-### SVG／PNG に書き出す
+### Exporting to SVG or PNG
 
-マップを開いた状態でコマンド「現在のマップを SVG／PNG に書き出し」を実行し、形式を選びます。いま表示しているレイアウト・折りたたみ・テーマの色で、Obsidian の添付ファイルの保存先に `<ノート名>.svg`／`.png` として保存します（同名があれば番号が付きます）。元のノートは書き換えません。
+With a map open, run "Export current map as SVG or PNG" and choose a format. The map is saved as `<note name>.svg` / `.png` in Obsidian's attachment folder, with the layout, folding and theme colors you are looking at (a number is added if the name is taken). The original note isn't rewritten.
 
-- SVG はノードを HTML のまま収める形式（`foreignObject`）です。ブラウザや Obsidian では表示できますが、Inkscape・Illustrator など一部の SVG 編集ソフトやプレビューでは中身が表示されないことがあります。Vault の画像は SVG ファイルの中に埋め込みます（別ファイルを参照しません）。読めない画像はノードを保ったまま代替テキストにします
-- PNG は同じ SVG をこの端末で 2 倍の解像度に描画します。大きなマップは端末のキャンバス上限に収まるよう縮小します
-- **フォントは埋め込みません。** 文字の幅と折り返しは開く環境のフォントで決まり、ノードの枠は書き出した時点の大きさのままです
-- この SVG を画像として描き直せない環境（iOS など）では PNG を選べず、SVG だけ書き出せます
+- The SVG holds the nodes as HTML (`foreignObject`). Browsers and Obsidian show it, but some SVG editors and previews, such as Inkscape and Illustrator, may not show its content. Images from the vault are embedded in the SVG file (it doesn't refer to separate files). An image that can't be read becomes alternative text, keeping the node
+- The PNG draws the same SVG on your device at twice the resolution. A large map is scaled down to fit the device's canvas limit
+- **Fonts are not embedded.** Text widths and wrapping depend on the fonts where the file is opened, while node boxes keep the size they had when exported
+- Where this SVG can't be redrawn as an image (such as iOS), PNG isn't offered and only SVG can be exported
 
-## 対応環境
+## Compatibility
 
-| 環境 | 状態 |
+| Environment | Status |
 | --- | --- |
-| macOS デスクトップ、Obsidian 1.14 | 確認済み（主要操作を自動操作と目視で確認） |
-| Windows・Linux デスクトップ | 未確認 |
-| iOS・Android | 未確認。モバイルにも入れられますが（デスクトップ専用の機能を使わない作りのため）、動作は確認していません |
-| Obsidian 1.8.7〜1.13 | 1.8.7 以降に入れられますが、この範囲での動作確認はしていません |
+| macOS desktop, Obsidian 1.14 | Checked (main actions, by automation and by eye) |
+| Windows and Linux desktop | Not checked |
+| iOS and Android | Not checked. It can be installed on mobile (it doesn't use desktop-only features), but it hasn't been tried |
+| Obsidian 1.8.7 to 1.13 | Can be installed on 1.8.7 and later, but not checked in this range |
+| Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices) |
 
-## 既知の制限
+## Known limitations
 
-<!-- この見出し（「## 既知の制限」で始まる）は、版を限った項目「（x.y.z まで）」をリリース時に検査する目印です（scripts/validate-release.mjs、LEV-209）。変えるときはスクリプトも直してください。 -->
+<!-- This heading (starting with "## Known limitations") marks where a release check looks for items limited to a version with "(up to x.y.z)" (scripts/validate-release.mjs, LEV-209, LEV-227). README.ja.md's 「## 既知の制限」 with 「（x.y.z まで）」 is checked the same way. When adding or removing an item, change both READMEs; when changing the heading, change the script too. -->
 
-- **日本語 IME の実入力の確認は終わっていません。** 変換中の入力を壊さないように作っています。0.3.7 で macOS の日本語 IME を手で試して問題が無かったという報告はありますが、証跡（録画・前後の Markdown）は無く、確認済みとは言えません。それより後の版と、Windows・Linux・モバイルの IME では試していません。変換確定でノードが増える・文字が欠けるなどが起きたら、[Markdown 側](#困ったとき復旧)で直せます。
-- **Undo の履歴は Markdown エディタと別です。** マップの履歴はノートごとに持ち、Markdown 側や外部からの変更を検出したときに破棄します（そのとき、それより前の操作は Cmd/Ctrl+Z で戻せず（押しても何も起きません）、取り消した操作をやり直すこともできません）。左下のレイアウトの切り替えでは破棄せず、切り替えより前の操作も戻せます（戻した結果も切り替えたあとのレイアウトのままです）。フリートピックの位置はレイアウトごとに保存されるので、別のレイアウトで動かしたトピックの移動を戻しても、いまのレイアウトの表示は変わりません（Cmd/Ctrl+Z が効いていないように見えますが、1 段戻っています）。ある操作のあとにレイアウトを 256 回を超えて切り替えると、元に戻す（やり直す）履歴がまとめて消えることがあります。Markdown 側の Cmd/Ctrl+Z はエディタの履歴で動きます。
-- **呼び出したマップの開閉**: マップの中で呼び出したマップ（`![[マップノート]]` のノードの右に並ぶ枝）で、同じ名前のノードや題名が空のノード（画像だけのノードなど）の枝を開いたり閉じたりしたあと、呼び出された側のノートが書き換わると（別のタブのマップでの編集・レイアウトの切り替え・元に戻す、Markdown 側や外部ツールでの編集のどれでも）、その枝の開閉がマップを開いた直後と同じ状態に戻り、そのノードの選択も外れることがあります。
-- **外部変更のあとの折りたたみ**: Markdown 側や外部ツールでノートを書き換えると、マップの同じ名前のノードや題名が空のノード（画像だけのノードなど）の折りたたみと選択が外れることがあります（どのノードか推測しないため）。
-- **外部変更との競合**: 入力中に Markdown 側や外部ツールがそのノートを書き換えると、古い内容で上書きしないよう保存を拒否して入力を残します。マップが更新されたあとにもう一度 Enter で確定できます。同じ名前のノードが複数ある、編集中のノード自体が外部で変わった、などの場合は推測せず拒否します。
-- **入力中にアプリを終了する・再読込する**: タブやウィンドウを閉じたときと違い、ノードの入力欄を開いたまま Obsidian を終了したとき・ウィンドウを再読込したときに入力中の内容が保存されるかは、Mappy からは保証できません（マップを閉じる処理を通らないため）。macOS の Obsidian 1.14.2 で 2 回ずつ試したところ、終了では保存され、ウィンドウの再読込（コマンド `app:reload`）では保存されずに消えました（知らせは出ません）。残したい入力は Enter で確定してから終了してください。
-- **ノードにできないもの**: 番号付きリスト、タスクリスト。見出し形式では H6 が上限です（H2＋リスト形式に階層の上限はありません）。
-- **リンク補完**: Obsidian 標準の補完ではなく、ノート名・別名・添付ファイルの候補だけです。PDF のプレビューや注釈は含みません。
-- **埋め込みとスナップショット**: `![[マップノート]]` の埋め込みは読み取り専用、Excalidraw に挿入したネイティブ要素は元ノートと同期しません。
-- **大きなノート**: 2,000 ノードまで表示・編集できることを確認していますが、深い一列の枝ではパン・ズームのフレームレートが落ちます。
-- **複数ウィンドウ・同じノートの複数ペイン**: 動作は確認済みですが、両方で同時に入力すると上記の競合の扱いになります。
-- **ドラッグ中の切り替えと表示の変更**: トピックや本体を運んでいる最中に（タッチで別の指を使うなどして）左下でレイアウトを切り替えた場合は、全体表示への調整を離すまで待ちますが、この操作と、そのあと離したときの保存は、タッチ画面の端末ではまだ確認していません。別の指でズーム・全体表示のボタンを押す操作も、タッチ画面の端末ではまだ確認していません。
-- **タブと空白が混ざった字下げ**: 1 つのリストの字下げにタブと空白が混ざっていると、Obsidian 自身が同じノートを 2 通りに読みます。マップはライブプレビュー（編集中の Markdown の表示）と同じ階層に描きますが、閲覧モードや、Obsidian が読み取ったリストの構造を使う機能では、その項目が別の段に出たり、次の項目が前の項目の文の続きになって消えたように見えたりします。マップの読み方はライブプレビューに合わせたままで、閲覧モードには合わせません。空白で字下げしたリストで Markdown エディタの Tab／Shift+Tab を押すと（Obsidian の既定ではタブが入ります）この形になります。避けるには、1 つのリストの字下げをタブか空白のどちらかに揃えてください（揃っていれば、マップでノードを追加・移動しても項目の字下げはそのリストの書き方で書かれ、別の書き方の枝を移したときも移した先に合わせて書き直されます。字下げの無いリストではノートのほかのリストに合わせ（ノートにタブと空白の両方があれば空白）、すでに混ざっているリストでは空白で書きます。本文に貼り付けたタブと、コードブロックの中身はそのまま書かれます）。すでに混ざっている行は、Markdown 側で行頭の字下げを打ち直して揃えます。
-- `mappy-topics` は入れ子の値なので、Obsidian の Properties パネルからは編集する想定ではありません。Mappy がトピックを動かしたときにだけ書き換えます。
+- **Input methods (IME) have not been fully checked.** Mappy is built not to break text that is still being composed. With 0.3.7 there is a report that a Japanese IME on macOS was tried by hand without problems, but there is no evidence (a recording, the Markdown before and after), so it can't be called checked. Later versions, IMEs on Windows, Linux and mobile, and IMEs for languages other than Japanese, such as Chinese and Korean, have not been tried. If confirming a conversion adds a node or drops characters, you can fix it [on the Markdown side](#troubleshooting).
+- **Undo history is separate from the Markdown editor's.** The map keeps a history per note and discards it when it detects a change on the Markdown side or from outside (after that, earlier actions can't be undone with Cmd/Ctrl+Z (pressing it does nothing), and undone actions can't be redone). Switching the layout in the bottom-left corner doesn't discard it, and actions before the switch can still be undone (the result stays in the layout you switched to). Free topic positions are saved per layout, so undoing a move of a topic made in another layout doesn't change what the current layout shows (Cmd/Ctrl+Z looks like it did nothing, but it went back one step). Switching the layout more than 256 times after an action may clear the undo (and redo) history all at once. Cmd/Ctrl+Z on the Markdown side works on the editor's own history.
+- **Folding in inserted maps**: in a map inserted into the current map (the branches to the right of an `![[Map note]]` node), after you unfold or fold the branch of a node that shares a name or has an empty title (such as a node with only an image), when the inserted note is rewritten (by editing, switching the layout or undoing in a map in another tab, or by editing on the Markdown side or with an external tool), that branch's folding may go back to how it was when the map was opened, and the node's selection may be cleared.
+- **Folding after an external change**: when the note is rewritten on the Markdown side or by an external tool, folding and selection may be cleared on nodes that share a name or have an empty title (such as a node with only an image), because Mappy doesn't guess which node is which.
+- **Conflicts with external changes**: if the Markdown side or an external tool rewrites the note while you are typing, Mappy refuses to save rather than overwrite with old content, and keeps your typing. After the map updates, press Enter again to confirm. When several nodes share a name, or the node being edited itself changed outside, and so on, Mappy refuses rather than guess.
+- **Quitting or reloading while typing**: unlike closing a tab or window, whether your typing is saved when you quit Obsidian or reload the window with a node's input open can't be guaranteed by Mappy (it doesn't go through closing the map). Trying each twice with Obsidian 1.14.2 on macOS, quitting saved it, and reloading the window (the command `app:reload`) lost it without a notice. Press Enter to confirm what you want to keep before quitting.
+- **What can't be a node**: numbered lists and task lists. In the heading format, H6 is the deepest level (the H2-and-list format has no depth limit).
+- **Link suggestions**: not Obsidian's standard suggestions, only note names, aliases and attachments. No PDF previews or annotations.
+- **Embeds and snapshots**: an `![[Map note]]` embed is read-only, and native elements inserted into Excalidraw don't sync with the original note.
+- **Large notes**: showing and editing 2,000 nodes has been checked, but panning and zooming slow down on a deep branch that is one long chain.
+- **Several windows, or several panes on the same note**: this works, but typing in two of them at once is handled as the conflict above.
+- **Switching and changing the view while dragging**: when you switch the layout in the bottom-left corner while carrying a topic or the main map (for example with another finger on a touch screen), fitting the whole map waits until you let go, but this, and saving when you then let go, haven't been checked on touch-screen devices yet. Pressing the zoom or fit buttons with another finger hasn't been checked on touch-screen devices either.
+- **Indentation that mixes tabs and spaces**: when the indentation of one list mixes tabs and spaces, Obsidian itself reads the same note in two ways. The map draws the same levels as Live Preview (the view of the Markdown being edited), but in reading view, and in features that use the list structure Obsidian read, such an item may appear at another level, or the next item may join the previous item's text and seem to disappear. The map keeps reading as Live Preview does, not as reading view does. Pressing Tab/Shift+Tab in the Markdown editor in a list indented with spaces (Obsidian inserts tabs by default) produces this. To avoid it, indent each list with either tabs or spaces, not both (then adding and moving nodes in the map writes items with that list's indentation, and a branch moved from a list indented the other way is rewritten to match where it goes. In a list without indentation Mappy follows the note's other lists (spaces if the note has both tabs and spaces), and in a list that already mixes them it writes spaces. Tabs pasted into body text, and the contents of code blocks, are written as they are). To fix lines that already mix them, retype the leading indentation on the Markdown side.
+- `mappy-topics` is a nested value, so it isn't meant to be edited from Obsidian's Properties panel. Mappy rewrites it only when it moves topics.
 
-## 困ったとき（復旧）
+## Troubleshooting
 
-Mappy はノートに独自の形式を持ち込まないので、復旧は Markdown 側で完結します。
+Mappy doesn't bring its own format into your notes, so recovery happens entirely on the Markdown side.
 
-| 状況 | 対処 |
+| Situation | What to do |
 | --- | --- |
-| マップの表示や操作がおかしい | 「マップと Markdown を切り替え」で Markdown を開き、本文を確認・修正する。Markdown が正本で、マップはその表示にすぎない |
-| Mappy を止めたい | 設定 → コミュニティプラグインで Mappy を無効化する。ノートは通常の見出しと箇条書きとして開き、frontmatter の `mappy` などのキーは残るが無害 |
-| 特定のノートだけ普通のノートに戻したい | 「このノートのマインドマップ化を解除」を実行する。frontmatter から `mappy`・`mappy-layout`・`mappy-topics` を消し、本文はそのまま。Mappy を無効化した状態なら、Properties か Markdown で同じキーを手で消せばよい |
-| 保存が「Markdown が変更されています」などで拒否される | マップが最新の内容に更新されたあと、もう一度 Enter で確定する（ドロップや画像の追加なら、その操作をもう一度する）。それでも拒否される場合は入力欄の内容を控え、Markdown 側に書く |
-| 操作を取り消したい | マップ上で Cmd/Ctrl+Z。外部変更などで履歴が消えた場合は、そのノートを Markdown エディタでも開いていれば、エディタで Cmd/Ctrl+Z を繰り返すと戻せることがある（最初にそのあとの変更（外部の変更やレイアウトの切り替え）が戻り、エディタを開く前のマップの操作は戻らない）。ほかはコアプラグインの「ファイルリカバリー」やバックアップから戻す |
-| 完全に取り除きたい | プラグインを削除する。Vault に残るのはノートの frontmatter のキーと、プラグイン設定の `.obsidian/plugins/mappy/data.json` だけ |
+| The map looks or behaves wrong | Open the Markdown with "Switch between map and Markdown", and check or fix the text there. The Markdown is the source of truth; the map only shows it |
+| You want to stop using Mappy | Disable Mappy in Settings → Community plugins. Notes open as ordinary headings and bullet lists; frontmatter keys such as `mappy` stay but do no harm |
+| You want just one note back as an ordinary note | Run "Turn off mind map for this note". It removes `mappy`, `mappy-layout` and `mappy-topics` from the frontmatter and leaves the body as it is. With Mappy disabled, remove the same keys by hand in Properties or in Markdown |
+| Saving is refused with "The note changed in Markdown. Update the map and edit again." or a similar message | After the map updates to the latest content, press Enter again to confirm (for a drop or an added image, do it again). If it is still refused, copy what is in the input and write it on the Markdown side |
+| You want to undo something | Cmd/Ctrl+Z on the map. If the history was cleared, for example by an external change, and the note is also open in a Markdown editor, pressing Cmd/Ctrl+Z repeatedly in the editor may bring it back (later changes, from outside or from switching the layout, are undone first, and map actions from before the editor was opened are not). Otherwise, restore from the core plugin "File recovery" or from a backup |
+| You want to remove it completely | Uninstall the plugin. All it leaves in the vault are the frontmatter keys in your notes and the plugin settings in `.obsidian/plugins/mappy/data.json` |
 
-## ネットワーク利用
+## Network use
 
-Mappy に自前のサーバーはなく、テレメトリ・更新確認・ノート内容の送信は行いません。アカウントや課金もありません。外部と通信するのは、ノート自体が外部 URL の画像を参照している場合だけです。
+Mappy has no server of its own, and sends no telemetry, update checks or note content. There are no accounts or payments. It reaches outside only when a note itself refers to an image at an external URL.
 
-- ノードに `![](https://…)` の画像があると、Obsidian の閲覧モードと同じ描画処理で表示のために読み込みます
-- SVG／PNG 書き出しでは、その外部 URL の画像を 15 秒以内に取得できたものだけ埋め込みます（画像以外は取得しません）
+- When a node has an image `![](https://…)`, it is loaded for display by the same rendering as Obsidian's reading view
+- SVG/PNG export embeds only the images at such external URLs that can be fetched within 15 seconds (nothing but images is fetched)
 
-## ライセンス
+## License
 
-[MIT License](LICENSE)（Copyright (c) 2026 Hiroya Iizuka）です。
+[MIT License](LICENSE) (Copyright (c) 2026 Hiroya Iizuka).
 
-同梱する第三者のコードは Markdown パーサーの [@lezer/markdown](https://github.com/lezer-parser/markdown)（MIT License, Copyright (C) 2020 by Marijn Haverbeke and others）です。他のプラグイン（MarkMind、Light Mindmap）は機能の参考にしており、コードは含みません。
+The only bundled third-party code is the Markdown parser [@lezer/markdown](https://github.com/lezer-parser/markdown) (MIT License, Copyright (C) 2020 by Marijn Haverbeke and others). Other plugins (MarkMind, Light Mindmap) served as references for features; none of their code is included.

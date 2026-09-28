@@ -4,21 +4,68 @@ import { pathToFileURL } from 'node:url';
 
 export const releaseVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const pluginId = /^[a-z]+(?:-[a-z]+)*$/u;
-// README's known-limitations section, where an item may be limited to a release with
-// 「（x.y.z まで）」 (harness.md「リリース手順」1). The heading text is load-bearing; README
-// marks it with a comment.
-const knownLimitationsHeading = /^ {0,3}##[ \t]+既知の制限/u;
 const atxSectionEnd = /^ {0,3}#{1,2}(?:[ \t]|$)/u;
 const setextUnderline = /^ {0,3}(?:=+|-+)[ \t]*$/u;
 const listItem = /^[ \t]*(?:[-+*]|\d+[.)])(?:[ \t]|$)/u;
 const blockquotePrefix = /^[ \t]*(?:>[ \t]?)+/u;
 const fenceOpen = /^([ \t]*)(`{3,}|~{3,})(.*)$/u;
-// 「x.y.z まで」, allowing a v / Ver. prefix and a soft wrap before まで. Anything dotted is
-// captured so that 「0.3 まで」 or 「0.3.5-beta.1 まで」 is reported instead of silently passing.
-const versionLimit = /(?<![\d.])(?:v|ver\.?[ \t]*)?(\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?![\d.])\s*まで/giu;
 // A version written right after a Latin product name (「Obsidian 1.4.0 まで」) belongs to that
 // product, so it is not compared with Mappy's.
 const otherProductBefore = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+-]*)[ \t]+$/u;
+// Products whose versions an English known limitation may name next to "up to" ("on Obsidian up
+// to 1.8.9", "up to iOS 17.4.0"). English can't tell a product from any other capitalized word,
+// so the names are listed: a version next to an unlisted name is compared as Mappy's, and a
+// stale-looking one stops the release with a message that points here, rather than passing.
+const otherProducts = new Set([
+  'obsidian', 'ios', 'ipados', 'android', 'macos', 'windows', 'linux', 'excalidraw', 'brat',
+  'electron', 'chrome', 'chromium', 'safari', 'firefox', 'node', 'node.js',
+]);
+const latinWords = (text) => text.match(/[A-Za-z][A-Za-z0-9.+-]*/gu) ?? [];
+
+/**
+ * Each README's known-limitations section, where an item may be limited to a release
+ * (harness.md「リリース手順」1). README.md is English (LEV-227) and README.ja.md its Japanese
+ * version; both are checked, since an item removed from one and left in the other would still warn
+ * that release's users in one language only. The section is the one under `## <heading>`; the
+ * heading text is load-bearing and each README marks it with a comment. Anything dotted is
+ * captured as `version`, so that 「0.3 まで」 or "(up to 0.3.5-beta.1)" is reported instead of
+ * silently passing. `otherProduct(match, before)` tells whether the version belongs to another
+ * product (`before` is the section text before the match), so that version is not compared with Mappy's.
+ */
+export const knownLimitationReadmes = [
+  {
+    file: 'README.md',
+    heading: 'Known limitations',
+    headingFlags: 'iu',
+    // "up to x.y.z" (or "until" / "through"), allowing up to three words between the keyword and
+    // the version ("up to version", "up to the", "up to Mappy's", "up to and including"), a v / ver.
+    // prefix, soft wraps and a full stop after the version. "0.3.2 and earlier" is not a limit: like
+    // 「以前」 in Japanese, it is kept for notes that last.
+    limit: /(?<![A-Za-z])(?:up\s+to|until|through)\s+(?<words>(?:[A-Za-z][A-Za-z0-9'’.+-]*\s+){0,3}?)(?:v|ver\.?)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?!\d|\.\d)/giu,
+    // A listed product right before the keyword, with only white space (a soft wrap included)
+    // between them ("on Obsidian up to 1.8.9"), or among the words after it ("up to Obsidian 1.4.0").
+    otherProduct: (match, before) => [before.match(/([A-Za-z][A-Za-z0-9.+-]*)\s+$/u)?.[1] ?? '', ...latinWords(match.groups.words)]
+      .some((word) => otherProducts.has(word.replace(/\.+$/u, '').toLowerCase())),
+    // A number that is not x.y.z followed by a unit or a word ("up to 2.5 MB", "until 1.5 seconds")
+    // is a quantity, not a release. A malformed release ("up to 0.3") is still reported.
+    quantity: /^[ \t]*[A-Za-z%]/u,
+    example: '"(up to 0.3.5)" (or, for another product\'s version, name it: see otherProducts in scripts/validate-release.mjs)',
+    // README.md is required in every mode, since the community directory shows it.
+    requiredForPackaging: true,
+  },
+  {
+    file: 'README.ja.md',
+    heading: '既知の制限',
+    headingFlags: 'u',
+    // 「x.y.z まで」, allowing a v / Ver. prefix and a soft wrap before まで.
+    limit: /(?<![\d.])(?:v|ver\.?[ \t]*)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?![\d.])\s*まで/giu,
+    otherProduct: (match, before) => {
+      const word = before.match(otherProductBefore)?.[1];
+      return word !== undefined && word.toLowerCase() !== 'mappy';
+    },
+    example: '「（0.3.5 まで）」',
+  },
+];
 const manifestKeys = new Set([
   'id', 'name', 'version', 'minAppVersion', 'description', 'author',
   'isDesktopOnly', 'authorUrl', 'fundingUrl',
@@ -66,16 +113,19 @@ function blankCommentsAndCode(text) {
 }
 
 /**
- * Report README known limitations limited to a Mappy release older than `targetVersion`, and
- * version limits that are not a full x.y.z (they could never be compared). Only the section
- * under `## 既知の制限` is read, outside HTML comments and fenced code, after NFKC (so
- * full-width digits count). A README without the section is reported rather than passing.
+ * Report known limitations in `readme` (one of `knownLimitationReadmes`) limited to a Mappy release
+ * older than `targetVersion`, and version limits that are not a full x.y.z (they could never be
+ * compared). Only the section under the README's heading is read, outside HTML comments and fenced
+ * code, after NFKC (so full-width digits count). A README without the section is reported rather
+ * than passing.
  */
-export function staleKnownLimitations(readmeText, targetVersion) {
+export function staleKnownLimitations(readme, readmeText, targetVersion) {
+  const { file } = readme;
   const lines = blankCommentsAndCode(readmeText.normalize('NFKC').replace(/\r\n?/gu, '\n'));
-  const start = lines.findIndex((line) => knownLimitationsHeading.test(line));
+  const heading = new RegExp(`^ {0,3}##[ \\t]+${readme.heading.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, readme.headingFlags);
+  const start = lines.findIndex((line) => heading.test(line));
   if (start < 0) {
-    return ['README.md: missing the "## 既知の制限" section, so version-limited known limitations cannot be checked.'];
+    return [`${file}: missing the "## ${readme.heading}" section, so version-limited known limitations cannot be checked.`];
   }
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
@@ -86,20 +136,22 @@ export function staleKnownLimitations(readmeText, targetVersion) {
       break;
     }
   }
-  const section = lines.slice(start + 1, end).join('\n');
+  // Without blockquote markers, so an item wrapped inside a quote reads as one run of text.
+  const section = lines.slice(start + 1, end).map((line) => line.replace(blockquotePrefix, '')).join('\n');
 
   const errors = [];
-  for (const match of section.matchAll(versionLimit)) {
-    const lineStart = section.lastIndexOf('\n', match.index) + 1;
-    const product = section.slice(lineStart, match.index).match(otherProductBefore);
-    if (product && product[1].toLowerCase() !== 'mappy') continue;
+  for (const match of section.matchAll(readme.limit)) {
+    if (readme.otherProduct(match, section.slice(0, match.index))) continue;
+    const { version } = match.groups;
+    const after = section.slice(match.index + match[0].length);
+    if (!releaseVersion.test(version) && readme.quantity?.test(after)) continue;
     const line = start + 2 + (section.slice(0, match.index).match(/\n/gu)?.length ?? 0);
     const item = match[0].replace(/\s+/gu, ' ');
-    if (!releaseVersion.test(match[1])) {
-      errors.push(`README.md:${line}: known limitation "${item}" must name a release as x.y.z to be checked, like 「（0.3.5 まで）」.`);
-    } else if (compareVersions(match[1], targetVersion) < 0) {
+    if (!releaseVersion.test(version)) {
+      errors.push(`${file}:${line}: known limitation "${item}" must name a release as x.y.z to be checked, like ${readme.example}.`);
+    } else if (compareVersions(version, targetVersion) < 0) {
       errors.push(
-        `README.md:${line}: known limitation "${item}" is limited to a release older than ${targetVersion}. `
+        `${file}:${line}: known limitation "${item}" is limited to a release older than ${targetVersion}. `
         + `If its fix ships in ${targetVersion}, remove the item; if not, update the version in the item.`,
       );
     }
@@ -184,7 +236,10 @@ export function validateRelease(rootDir, { artifacts = false, knownLimitations =
   const versions = readJson('versions.json');
   const lockfile = readJson('package-lock.json');
   readRequired('LICENSE');
-  const readme = readRequired('README.md');
+  // README.ja.md is read only for the known-limitations check, so packaging doesn't stop on it.
+  const readmes = knownLimitationReadmes
+    .filter((readme) => knownLimitations || readme.requiredForPackaging)
+    .map((readme) => [readme, readRequired(readme.file)]);
 
   let manifestVersionOk = false;
   if (manifest) {
@@ -225,8 +280,10 @@ export function validateRelease(rootDir, { artifacts = false, knownLimitations =
     }
   }
 
-  if (knownLimitations && readme && manifestVersionOk) {
-    errors.push(...staleKnownLimitations(readme.toString('utf8'), manifest.version));
+  if (knownLimitations && manifestVersionOk) {
+    for (const [readme, content] of readmes) {
+      if (content) errors.push(...staleKnownLimitations(readme, content.toString('utf8'), manifest.version));
+    }
   }
 
   if (packageJson) {

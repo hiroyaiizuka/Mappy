@@ -4,9 +4,10 @@ import { en } from "../../src/i18n/en.ts";
 import { ja } from "../../src/i18n/ja.ts";
 
 /**
- * The 操作 popover's two plugin items (§5 M3) are written in four places that no test loads together: the
- * plugin (src/main.ts) and the browser harness's stand-in, which both name them by their keys in src/i18n since LEV-235, the README and product-plan's M3 paragraph. The jsdom test renders its
- * own copy, so this pins the wording itself — LEV-84 changed one line and found five copies.
+ * The 操作 popover's two plugin items (§5 M3) are written in five places that no test loads together: the
+ * plugin (src/main.ts) and the browser harness's stand-in, which both name them by their keys in src/i18n since LEV-235,
+ * the English README.md and the Japanese README.ja.md (LEV-227), and product-plan's M3 paragraph. The jsdom test
+ * renders its own copy, so this pins the wording itself — LEV-84 changed one line and found five copies.
  */
 const KEYS = [["cmdCallMap", "popCallDesc"], ["popExport", "popExportDesc"]];
 const ITEMS = KEYS.map(([title, description]) => [ja[title], ja[description]]);
@@ -22,8 +23,17 @@ describe("the 操作 popover wording (§5 M3)", () => {
     for (const [title, description] of KEYS) expect(source).toContain(`{ title: t().${title}, description: t().${description},`);
   });
 
-  it("README's gear row and product-plan's M3 paragraph name the same lines", async () => {
+  // LEV-227: README.md is English and README.ja.md Japanese; the English row quotes src/i18n/en.ts.
+  it("the English README's gear row names the same items as the English table", async () => {
     const readme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
+    const row = readme.split("\n").find(line => line.startsWith("| Gear |")) ?? "";
+    for (const [title, description] of [["toMarkdown", "toMarkdownDesc"], ...KEYS]) {
+      expect(row).toContain(`**${en[title]}** (${en[description]})`);
+    }
+  });
+
+  it("the Japanese README's gear row and product-plan's M3 paragraph name the same lines", async () => {
+    const readme = await readFile(new URL("../../README.ja.md", import.meta.url), "utf8");
     const row = readme.split("\n").find(line => line.startsWith("| 歯車 |")) ?? "";
     const plan = await readFile(new URL("../../docs/product-plan.md", import.meta.url), "utf8");
     const paragraph = plan.split("\n").find(line => line.startsWith("**現在の実装（操作ポップオーバー")) ?? "";
