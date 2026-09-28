@@ -20,6 +20,7 @@ describe('release workflow', () => {
   const triggers = workflow.on;
   const build = workflow.jobs.build;
   const release = workflow.jobs.release;
+  const attestJob = workflow.jobs.attest;
 
   it('runs on plain x.y.z tags only, matching manifest.version without a "v" prefix', () => {
     expect(triggers.push).toEqual({ tags: ['[0-9]+.[0-9]+.[0-9]+'] });
@@ -36,12 +37,15 @@ describe('release workflow', () => {
     ]));
   });
 
-  it('gives the build job a read-only token and only the tag-push release job a write token', () => {
+  it('gives the build job a read-only token and write tokens only to the tag-push jobs', () => {
     expect(workflow.permissions).toEqual({ contents: 'read' });
     expect(build.permissions).toBeUndefined();
-    // id-token and attestations are what actions/attest needs (the official "Release your plugin with
-    // GitHub Actions" workflow, recommended for the community directory). Only the tag-push job has them.
-    expect(release.permissions).toEqual({ contents: 'write', 'id-token': 'write', attestations: 'write' });
+    expect(release.permissions).toEqual({ contents: 'write' });
+    // What actions/attest's README asks for. Only the tag-push attest job has them, and it can't write Releases.
+    expect(attestJob.permissions).toEqual({
+      contents: 'read', 'id-token': 'write', attestations: 'write', 'artifact-metadata': 'write',
+    });
+    expect(attestJob.if).toBe(release.if);
     expect(release.needs).toBe('build');
     expect(release.if).toContain("github.event_name == 'push'");
     expect(release.if).toContain("github.ref_type == 'tag'");
@@ -74,24 +78,27 @@ describe('release workflow', () => {
     expect(create.run).toContain('--verify-tag');
     // 0.x too is a plain Release (LEV-249): none of the 8,143 directory entries points its manifest version
     // at a pre-release, and BRAT reads plain Releases too. Beta is shown by the 0.x version and the README.
-    expect(create.run).not.toContain('--prerelease');
     expect(create.run).not.toContain('prerelease');
     // BRAT can't see a draft (it isn't in the API response for users without push access).
     expect(create.run).not.toContain('--draft');
     for (const file of distributables) expect(create.run).toContain(file);
   });
 
-  it('attests the three downloaded files before the release is created, with the official action', () => {
-    const attestIndex = release.steps.findIndex((step) => step.uses?.startsWith('actions/attest@'));
-    const downloadIndex = release.steps.findIndex((step) => step.uses?.startsWith('actions/download-artifact@'));
-    const createIndex = release.steps.findIndex((step) => typeof step.run === 'string' && step.run.includes('gh release create'));
-    expect(attestIndex).toBeGreaterThan(downloadIndex);
-    expect(attestIndex).toBeLessThan(createIndex);
-    const attest = release.steps[attestIndex];
-    expect(attest.uses).toBe('actions/attest@v4');
+  it('attests the three released files in a job after the release, with actions/attest pinned to a commit', () => {
+    // After the release and in its own job (LEV-249 review): a failed attestation must not stop distribution,
+    // and `gh run rerun --failed` re-runs only this job (re-running the release job would fail on the existing
+    // Release, and a pushed tag is never reused).
+    expect(attestJob.needs).toEqual(['build', 'release']);
+    const download = attestJob.steps.find((step) => step.uses?.startsWith('actions/download-artifact@'));
+    expect(download.with).toEqual({ name: 'mappy-${{ needs.build.outputs.version }}', path: `dist/${manifest.id}` });
+    const attestIndex = attestJob.steps.findIndex((step) => step.uses?.startsWith('actions/attest@'));
+    expect(attestIndex).toBeGreaterThan(attestJob.steps.indexOf(download));
+    const attest = attestJob.steps[attestIndex];
+    // The job holds id-token, so the action is a full commit SHA, not a moving tag (v4.2.2 at the time).
+    expect(attest.uses).toMatch(/^actions\/attest@[0-9a-f]{40}$/u);
     expect(attest.with['subject-path'].trim().split('\n').map((line) => line.trim())).toEqual(distributables);
-    // The build job never attests: it also runs for pull requests and workflow_dispatch dry-runs.
-    expect(build.steps.some((step) => step.uses?.startsWith('actions/attest'))).toBe(false);
+    // No other job attests: build also runs for pull requests and workflow_dispatch dry-runs.
+    for (const job of [build, release]) expect(job.steps.some((step) => step.uses?.startsWith('actions/attest'))).toBe(false);
   });
 
   it('never expands workflow context inside a shell script', () => {

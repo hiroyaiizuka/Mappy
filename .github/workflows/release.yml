@@ -61,22 +61,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
-      # actions/attest が Sigstore の署名と attestation の保存に使う（公式の Release your plugin with GitHub Actions）。
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: mappy-${{ needs.build.outputs.version }}
           path: dist/mappy
-      # 添付する 3 ファイルの build provenance。一覧への提出で推奨される（docs/community-submission.md #35）。
-      - name: Generate artifact attestation
-        uses: actions/attest@v4
-        with:
-          subject-path: |
-            dist/mappy/main.js
-            dist/mappy/manifest.json
-            dist/mappy/styles.css
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -87,3 +76,33 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
             dist/mappy/main.js dist/mappy/manifest.json dist/mappy/styles.css
+
+  attest:
+    # 添付した 3 ファイルと同じ artifact の build provenance。一覧への提出で推奨される（公式の
+    # Release your plugin with GitHub Actions、docs/community-submission.md #35）。Release の後の別 job にして、
+    # attestation が失敗しても Release（配布）は止めず、失敗した job だけを再実行できるようにする。
+    # タグの push でしか動かないので、dry-run では確かめられない（docs/harness.md「リリース手順」4）。
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # actions/attest の README の権限: Sigstore の署名に id-token、保存に attestations と artifact-metadata。
+      # contents: read は README の例（リポジトリの情報を読む）に合わせる。
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mappy-${{ needs.build.outputs.version }}
+          path: dist/mappy
+      # id-token を持つ手順なので、動くタグではなく commit で固定する。
+      - name: Generate artifact attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/mappy/main.js
+            dist/mappy/manifest.json
+            dist/mappy/styles.css
