@@ -1277,8 +1277,13 @@ export class MindmapView extends FileView {
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
-    // read replayed is not in it.
-    if (this.ownWrites === replaying) this.ownWrites = replaying.slice(replayed?.used ?? 0);
+    // read replayed is not in it. Past the write a read reached, the writes left get the rule of a read of the text
+    // on screen (LEV-237): one recorded before the read began was there for it to find, so someone put the note back
+    // over it; kept, it would stand in the record, and the same text written again by another edit would be taken
+    // for it (`recordOwn`) and its re-read carry the ids by the stale write's edits.
+    if (this.ownWrites === replaying) this.ownWrites = replayed
+      ? leadingFrom(replaying.slice(replayed.used).filter(write => !recorded.has(write)), source)
+      : replaying.slice(0);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).

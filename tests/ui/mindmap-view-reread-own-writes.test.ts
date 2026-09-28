@@ -27,6 +27,9 @@
  * second breaks it — `modify` reaches the maps late — so only the fix holds there. The third is a write someone else
  * took back (code reviews 1 and 2 of the fix): how far the fix may go. The last two pin what the fix itself must not
  * break (code review 3): a no-op write recorded late, a record started again while a read waits for the called maps.
+ * The last (LEV-237) is a read that reaches part of the record, with the writes past it taken back; its 5 rows fail
+ * on the code before LEV-237 and keeping none of the writes past the one reached fails its white-box row
+ * (`artifacts/lev-237-view-reread-takeback/`). The counts below are of the 27 rows before it.
  *
  * Against each version (`artifacts/lev-218-reread-own-writes/run-jsdom-variants.sh`, `jsdom-*.log`): the fix passes
  * all 27, and all 27 with the epoch check taken out too. The code before it fails 11 (the 8 of the second describe,
@@ -556,6 +559,129 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     app.put(PATH, a);
     await internals.refresh();
     expect(restarted).toBe(true);
+    expect(view.ownWrites).toEqual([w]);
+  });
+});
+
+describe('a re-read that reaches part of the record, with the writes past it taken back (LEV-237)', () => {
+  // The read finds the text a write of the record wrote (it replays up to it), and the writes past it were recorded
+  // before the read began: the read would have found them, so someone put the note back (Undo in the Markdown pane, a
+  // sync). Before the fix the read kept them all (`replaying.slice(used)`); now the writes past the one reached get the
+  // rule of a read of the text on screen (LEV-218): kept only if recorded while the read was under way and leading on
+  // from the text it found. The embed's `WriteRecord` got the same rule in LEV-224 (`take`／`spend` with `keepFrom`).
+  //
+  // The view parses an external change from the text it shows, not from the end of the record, so the ticket's shape
+  // (the next external change matched by titles from the taken-back write's text) leaves the view's ids alone. What a
+  // stale write does to the view is stand in the record: the same text written again by another edit is taken for it
+  // (`recordOwn` does not add a write already in the record: the store's word and the caller's answer tell the same
+  // write twice), and the re-read carries the ids by the stale write's edits. Twins make that the user's loss: the
+  // second deleted and put back, then the first deleted, and the stale edits give the survivor the first one's id — the
+  // fold on the second goes. The twin rows and the drop of the white-box row fail before the fix; its last step (a
+  // write recorded while the read reads) passes either way and pins what the fix must not drop.
+  const TWIN_SHAPES = [
+    { shape: '空題名', label: EMPTY_LABEL, twin: '- \n  - 同じ子\n' },
+    { shape: '同名', label: '同名', twin: '- 同名\n  - 同じ子\n' },
+  ] as const;
+  const twinSource = (twin: string): string => ['---', 'mappy: true', '---', '## 本体', '', '- 親', '  - 子1', ''].join('\n') + twin + twin;
+
+  /** The view's 45 ms re-reads held until `release`: the writes and the put-back all land before the view reads any. */
+  function holdDebounces(): { release: () => void } {
+    const set = window.setTimeout.bind(window);
+    const clear = window.clearTimeout.bind(window);
+    let next = -1;
+    const held = new Map<number, () => void>();
+    window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+      if (delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
+      const id = next--;
+      held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
+      return id;
+    }) as unknown as typeof window.setTimeout;
+    window.clearTimeout = (id => { if (typeof id === 'number' && held.delete(id)) return; clear(id); });
+    return {
+      release: () => {
+        window.setTimeout = set;
+        window.clearTimeout = clear;
+        for (const run of Array.from(held.values())) set(run, 45);
+        held.clear();
+      },
+    };
+  }
+
+  /** The twin block at `index` (0: the first) removed by the store from whatever the note holds. */
+  const deleteTwin = (mounted: MountedMapView, twin: string, index: 0 | 1): Promise<unknown> =>
+    storeOf(mounted).applyLatest(mounted.file, source => {
+      const first = source.indexOf(twin);
+      const from = index === 0 ? first : source.indexOf(twin, first + twin.length);
+      return [{ from, to: from + twin.length, text: '' }];
+    });
+
+  for (const { shape, label, twin } of TWIN_SHAPES) for (const by of ['the store', 'Delete in this map'] as const) {
+    it(`the first ${shape} twin deleted (${by}) after the second one's deletion was put back keeps the fold of the second`, async () => {
+      const source = twinSource(twin);
+      const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
+      opened.push(mounted);
+      await settled(mounted);
+      const view = state(mounted);
+      const id = foldAndSelect(mounted, label, 1);
+      const held = holdDebounces();
+      let reached = '';
+      try {
+        // A: 子1 renamed; B: the second twin deleted; B alone put back. The re-read finds A's text and spends A.
+        const child = source.indexOf('  - 子1\n') + 4;
+        reached = (await storeOf(mounted).applyLatest(mounted.file, () => [{ from: child, to: child + 2, text: '改名1' }])).after;
+        await deleteTwin(mounted, twin, 1);
+        expect(view.ownWrites).toHaveLength(2);
+        mounted.app.put(PATH, reached);
+      } finally {
+        held.release();
+      }
+      await settled(mounted);
+      expect(view.document?.source).toBe(reached);
+      expect({ collapsed: [...view.collapsed], at: nodeNamed(mounted, label, 1).dataset.nodeId }).toEqual({ collapsed: [id], at: id });
+      // B's text written again by another edit: the first twin goes, and the second (folded) stays.
+      if (by === 'the store') await deleteTwin(mounted, twin, 0);
+      else {
+        click(nodeNamed(mounted, label, 0));
+        mounted.key(mounted.canvas, 'Delete');
+        await vi.waitFor(() => { expect(mounted.source()).not.toBe(reached); }, { timeout: 1000, interval: 2 });
+      }
+      await settled(mounted);
+      expect(mounted.source()).toBe(reached.replace(twin, ''));
+      expectFolded(mounted, label, 0, id);
+    });
+  }
+
+  it('the writes past the one a read reaches go when recorded before it began, and stay when recorded while it reads', async () => {
+    // White-box: the record is [A: S→T, B: T→U] when the read begins, and the read finds T: A is spent and B dropped.
+    // Then [A2: T→V] and a read that finds V, while which W (V→X) is recorded: W leads on from V and stays.
+    const mounted = await mount();
+    const view = state(mounted);
+    const internals = mounted.view as unknown as {
+      recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void; refresh(): Promise<void>;
+    };
+    const t = SOURCE.replace('  - 子2\n', '  - 子二\n');
+    const u = t.replace('- 親\n', '- 改名\n');
+    const v = t.replace('  - 子1\n', '  - 子一\n');
+    const x = v.replace('- 親\n', '- 親2\n');
+    internals.recordWrite(mounted.file, { before: SOURCE, after: t, edits: [] });
+    internals.recordWrite(mounted.file, { before: t, after: u, edits: [] });
+    expect(view.ownWrites).toHaveLength(2);
+    mounted.app.put(PATH, t);
+    await internals.refresh();
+    expect(view.document?.source).toBe(t);
+    expect(view.ownWrites).toEqual([]);
+    const w = { before: v, after: x, edits: [] };
+    internals.recordWrite(mounted.file, { before: t, after: v, edits: [] });
+    mounted.app.put(PATH, v);
+    const store = storeOf(mounted);
+    const read = store.read.bind(store);
+    vi.spyOn(store, 'read').mockImplementation(async file => {
+      const text = await read(file);
+      internals.recordWrite(mounted.file, w);
+      return text;
+    });
+    await internals.refresh();
+    expect(view.document?.source).toBe(v);
     expect(view.ownWrites).toEqual([w]);
   });
 });
