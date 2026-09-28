@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
-import { WorkspaceLeaf } from '../../harness/browser/obsidian';
+import { Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import { planEdit, type MoveCommand } from '../../src/core/commands';
 import { projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
@@ -19,23 +19,33 @@ import { MindmapView } from '../../src/ui/mindmap-view';
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-/** Every view `mount` opened, closed after its test as Obsidian closes a tab: timers stopped, later reads refused (LEV-236). */
+/** Every view `mount` opened, closed after its test as Obsidian closes a tab: timers stopped, later reads dropped (LEV-236). */
 const opened: MindmapView[] = [];
-afterEach(async () => {
-  for (const view of opened.splice(0)) { await view.onClose(); view.unload(); }
-  document.body.replaceChildren();
-});
+/** The harness's `View.close` (1.14.2's order: the container leaves the DOM, the view unloads, then `onClose`); the typings lack it. */
+const closeView = (view: MindmapView): Promise<void> => (view as unknown as { close(): Promise<void> }).close();
 /**
- * The file's end as jsdom's teardown meets it (LEV-236): the globals go, and whatever a test left scheduled or under way
- * runs later against no `document`. The view's timers are Node's here (`contentEl.win.setTimeout`), so closing the jsdom
- * window does not stop them, and a `run()` that rejects then builds its `Notice` on no document: an unhandled rejection
- * that fails the run with every test passed. The window here outlasts the longest timer the view keeps (the 45 ms re-read).
+ * jsdom's teardown as whatever a test left behind meets it (LEV-236): the globals go, and work still scheduled or under way
+ * runs against no `document`. The view's timers are Node's here (`contentEl.win.setTimeout`), so closing the jsdom window
+ * does not stop them, and a `run()` that rejects then builds its `Notice` on no document: an unhandled rejection that fails
+ * the run with every test passed. Only the file's last test meets the real teardown, and only now and then; so after every
+ * test, once its views are closed, the document is taken away for longer than the longest timer the view keeps (the 45 ms
+ * re-read). It sees only what reaches the global `document` in that time: a longer debounce, or work that stays on
+ * `contentEl.doc`, passes.
  */
-afterAll(async () => {
+async function withoutDocument(ms: number): Promise<void> {
   const globals = globalThis as { document?: Document };
   const kept = document;
   delete globals.document;
-  try { await new Promise(resolve => setTimeout(resolve, 200)); } finally { globals.document = kept; }
+  try { await new Promise(resolve => setTimeout(resolve, ms)); } finally { globals.document = kept; }
+}
+afterEach(async () => {
+  // Every view is closed even when one close fails; the first failure is still the test's to report.
+  try {
+    const closes = await Promise.allSettled(opened.splice(0).map(closeView));
+    const failed = closes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  } finally { document.body.replaceChildren(); }
+  await withoutDocument(60);
 });
 
 const PATH = 'Fixtures/free-topics.md';
@@ -2356,5 +2366,49 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     expect(mounted.source()).toBe(SOURCE);
     // The note shown is the one from before the drop, which is again what the note says.
     expect(placed(mounted, dragged.id)).toEqual(pressed);
+  });
+});
+
+describe('MindmapView after its tab closes (LEV-236)', () => {
+  /** Close the view in the test: the afterEach has nothing more to close for it. */
+  const close = async (view: MindmapView): Promise<void> => { opened.splice(opened.indexOf(view), 1); await closeView(view); };
+  const past = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+  it('a re-read under way when the tab closes and failing after it shows no notice for the closed map', async () => {
+    const { view, store, settle } = await mount(THREE_SECTIONS);
+    let fail: (error: Error) => void = () => undefined;
+    vi.spyOn(store, 'read').mockImplementation(() => new Promise<string>((_, reject) => { fail = reject; }));
+    (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
+    await past(60);
+    await close(view);
+    const before = Notice.log.length;
+    fail(new Error('read failed'));
+    await settle();
+    expect(Notice.log.slice(before)).toEqual([]);
+  });
+
+  it('a read of the called maps under way when the tab closes and failing after it shows no notice either', async () => {
+    const { view, settle } = await mount(THREE_SECTIONS);
+    let fail: (error: Error) => void = () => undefined;
+    const reader = (view as unknown as { reader: { read(...args: unknown[]): Promise<unknown> } }).reader;
+    vi.spyOn(reader, 'read').mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    (view as unknown as { scheduleRecall(): void }).scheduleRecall();
+    await past(60);
+    await close(view);
+    const before = Notice.log.length;
+    fail(new Error('calls failed'));
+    await settle();
+    expect(Notice.log.slice(before)).toEqual([]);
+  });
+
+  it('a re-read failing while the tab is open still says so', async () => {
+    const { view, store, settle } = await mount(THREE_SECTIONS);
+    const before = Notice.log.length;
+    const reads = vi.spyOn(store, 'read').mockRejectedValue(new Error('read failed'));
+    (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
+    await past(60);
+    await settle();
+    reads.mockRestore();
+    expect(Notice.log.slice(before)).toEqual(['read failed']);
   });
 });

@@ -1189,7 +1189,8 @@ export class MindmapView extends FileView {
    * `own`: the re-read right after a write of this view's own that `showOwnWrite` has already drawn (`reread`).
    */
   private refresh(own = false): Promise<void> {
-    const task = this.reread(own).finally(() => {
+    // A read that fails after the tab closed would have drawn nothing: no notice for a map that is gone (LEV-236).
+    const task = this.reread(own).catch((error: unknown) => { if (!this.closed) throw error; }).finally(() => {
       if (this.refreshing !== task) return;
       this.refreshing = undefined;
       // A fit held for this read runs now even when the read failed and drew nothing, not on some later unrelated frame.
@@ -1347,7 +1348,9 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!document || !file || this.closed || !this.ready) return;
     const epoch = this.epoch;
-    const targets = await this.reader.read(document, file.path);
+    let targets: CallTargets;
+    // As a refresh's read (`refresh`): failing once the tab closed, it has nothing to tell.
+    try { targets = await this.reader.read(document, file.path); } catch (error) { if (this.closed) return; throw error; }
     if (this.closed || epoch !== this.epoch || this.document !== document || file !== this.file) return;
     if (sameTargets(this.targets, targets)) return;
     this.adopt(targets);
