@@ -276,10 +276,16 @@ describe('a write taken back by someone else before the embed re-read it (LEV-22
     const [embed] = (opened.embeds as unknown as { live: Set<Embed> }).live;
     if (!embed) throw new Error('No embed');
     const held = holdDebounces();
-    await store.applyLatest(opened.map.file, () => [{ from, to: from + title.length - 3, text: '改名' }]);
-    expect(embed.writes.size).toBe(1);
-    opened.map.app.put(PATH, SOURCE);
-    expect(embed.drawnSource).toBe(SOURCE);
+    try {
+      await store.applyLatest(opened.map.file, () => [{ from, to: from + title.length - 3, text: '改名' }]);
+      expect(embed.writes.size).toBe(1);
+      opened.map.app.put(PATH, SOURCE);
+      expect(embed.drawnSource).toBe(SOURCE);
+    } catch (error) {
+      // Released here, or every later test's 45 ms timers would stay held and time out.
+      held.release();
+      throw error;
+    }
     return { release: held.release, embed };
   }
 
