@@ -1,6 +1,7 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../core/markdown";
-import { applyEdits, planEdit, resolveDrop, type EditCommand, type MoveCommand, type TextEdit } from "../core/commands";
+import { applyEdits, planEdit, resolveDrop, type EditCommand, type EditPlan, type MoveCommand, type TextEdit } from "../core/commands";
+import { EXIT_SOURCE_LIMIT, textFingerprint, type ExitDraft } from "../core/exit-drafts";
 import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
@@ -815,6 +816,42 @@ export class MindmapView extends FileView {
     this.dropDraft();
     this.epoch += 1;
     return super.onClose();
+  }
+
+  /**
+   * The page is going without closing this view (LEV-230: a window reload, Obsidian quitting or its main window
+   * closing; Obsidian 1.14.2 sends `pagehide` then, and no `onClose`): the title draft as the edit its save would make,
+   * planned now on the note the map shows, for the plugin's next load to apply (src/ui/exit-drafts.ts). Nothing is
+   * written here: a write started as the page goes is cut off, and can be cut after the file was emptied
+   * (artifacts/lev-230). The title draft goes with it, so no save starts after this either — on a quit the window's blur
+   * comes after `unload` and would start the draft's blur save (LEV-216), a write the same cut can empty the note in.
+   * A draft that cannot be planned (its node changed outside the map, E05) is kept with the reason, to be reported
+   * then; one that would not change the note is not kept.
+   */
+  takeExitDraft(): ExitDraft | null {
+    if (this.closed) return null;
+    const kept = this.exitDraft();
+    // The title draft only: the 本文・リンクを編集 modal starts no save of its own, and stays for a page kept after all.
+    this.inlineEditor?.dispose();
+    this.inlineEditor = undefined;
+    this.inlineDraft = undefined;
+    return kept;
+  }
+
+  private exitDraft(): ExitDraft | null {
+    const draft = this.inlineDraft;
+    const file = this.file;
+    const title = this.inlineEditor?.text();
+    if (!draft || !file || title === undefined) return null;
+    try {
+      const { current, plan } = this.planTitle(file, draft, title);
+      const after = applyEdits(current.source, plan.edits);
+      if (after === current.source) return null;
+      const source = current.source.length <= EXIT_SOURCE_LIMIT ? { source: current.source } : {};
+      return { path: file.path, title, at: Date.now(), before: textFingerprint(current.source), after: textFingerprint(after), edits: plan.edits, ...source };
+    } catch (error) {
+      return { path: file.path, title, at: Date.now(), refused: error instanceof Error ? error.message : "" };
+    }
   }
 
   private stopTimers(): void {
@@ -2190,14 +2227,7 @@ export class MindmapView extends FileView {
       initial: displayTitle(node.title),
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
-        // A topic added on the map is placed where it was pressed by the same edit set that names it.
-        const pending = this.pendingTopic?.id === node.id ? this.pendingTopic : null;
-        // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
-        const { document: current, node: target } = this.draftTarget(file, draft);
-        const plan = planEdit(current, {
-          type: "rename", nodeId: target.id, title: text,
-          ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
-        });
+        const { current, plan, pending } = this.planTitle(file, draft, text);
         await this.commit(current.source, plan.edits, file);
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
@@ -2228,6 +2258,21 @@ export class MindmapView extends FileView {
       resize: () => { this.scheduleLayout(); },
       restore: () => { this.renderer.editing(node.id, false); },
     });
+  }
+
+  /**
+   * The rename a title draft's save makes, planned on the note as the map shows it now. A topic added on the map is
+   * placed where it was pressed by the same edit set that names it (`pending`).
+   */
+  private planTitle(file: TFile, draft: DraftBase, text: string): { current: MindDocument; plan: EditPlan; pending: MindmapView["pendingTopic"] } {
+    const pending = this.pendingTopic?.id === draft.nodeId ? this.pendingTopic : null;
+    // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
+    const { document: current, node: target } = this.draftTarget(file, draft);
+    const plan = planEdit(current, {
+      type: "rename", nodeId: target.id, title: text,
+      ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
+    });
+    return { current, plan, pending };
   }
 
   private editBody(): void {

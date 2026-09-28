@@ -14,6 +14,7 @@ import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
 import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
+import { installExitDrafts } from "./ui/exit-drafts";
 import { MapEmbeds } from "./ui/map-embed";
 import { MindmapView, VIEW_TYPE, type MapMenuAction } from "./ui/mindmap-view";
 import { paintMap } from "./ui/offscreen-map";
@@ -63,6 +64,9 @@ export default class MappyPlugin extends Plugin {
       view.setVisibleLayouts(this.settings.visibleLayouts);
       return view;
     });
+    // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230).
+    installExitDrafts(this, this.app, store, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
+      .map(leaf => leaf.view).filter((view): view is MindmapView => view instanceof MindmapView));
     // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is
     // unregistered first and the release below puts the plain embeds back without a new map taking over.
     const embeds = new MapEmbeds(this.app, store);
