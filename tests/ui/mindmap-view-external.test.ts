@@ -17,7 +17,6 @@ vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(async () => {
-  vi.restoreAllMocks();
   await closeOpenViews();
   document.body.replaceChildren();
 });
@@ -126,35 +125,54 @@ async function mount(source: string): Promise<Mounted> {
 }
 
 /**
- * The view's 45 ms refresh debounce under the test's control (LEV-251). `loaded`: it fires at once, as on a machine at a
- * load average of 150, where it elapses before the test's next zero-delay timer. `hold` keeps each refresh started from
- * then on until `release` runs them: what a draft shows before the map re-reads is then read in a known order, whatever
- * the load. `release` tells how many ran (none: the view re-read in between, and the row did not build its state).
- * Spies, so `afterEach` puts the window's own functions back should a row fail first.
+ * The view's refresh debounce (`scheduleRefresh`) under the test's control (LEV-251). Only the timer that method starts
+ * is caught, told apart by the call it is started in rather than by its delay: another timer of the same delay (the
+ * called maps' re-read) is left alone, and a new delay does not slip past. `loaded`: the debounce runs out at once, as on
+ * a machine at a load average of 150, where it elapsed before the test's next zero-delay timer. `hold` keeps each refresh
+ * debounced from then on until `release` starts them again as timers of their own, as the debounce runs them, and tells
+ * how many there were (none: the view re-read in between, and the row did not build its state). What a draft shows
+ * before the map re-reads is then read in a known order, whatever the load. A held timer keeps its id after `release`
+ * (the view holds it as `refreshTimer`), so clearing that id clears the timer it was started as. `restore` puts the
+ * window and the view back.
  */
-function refreshDebounce(loaded: boolean): { hold: () => void; release: () => number } {
+function refreshDebounce(view: MindmapView, loaded: boolean): { hold: () => void; release: () => number; restore: () => void } {
   const set = window.setTimeout.bind(window);
   const clear = window.clearTimeout.bind(window);
   const held = new Map<number, () => void>();
+  const started = new Map<number, number>();
+  let debouncing = false;
   let holding = false;
   let next = -1;
-  vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
-    if (delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
+  type Debounced = { scheduleRefresh: () => void };
+  const original = (MindmapView.prototype as unknown as Debounced).scheduleRefresh;
+  const schedule = vi.spyOn(view as unknown as Debounced, 'scheduleRefresh').mockImplementation(function (this: Debounced) {
+    debouncing = true;
+    try { original.call(this); } finally { debouncing = false; }
+  });
+  const setSpy = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+    if (!debouncing || typeof handler !== 'function') return set(handler, delay, ...args);
     if (!holding) return set(handler, loaded ? 0 : delay, ...args);
     const id = next--;
     held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
     return id;
   }) as unknown as typeof window.setTimeout);
-  vi.spyOn(window, 'clearTimeout').mockImplementation(id => { if (typeof id !== 'number' || !held.delete(id)) clear(id); });
+  const clearSpy = vi.spyOn(window, 'clearTimeout').mockImplementation(id => {
+    if (typeof id === 'number' && held.delete(id)) return;
+    const real = typeof id === 'number' ? started.get(id) : undefined;
+    if (real === undefined) { clear(id); return; }
+    started.delete(id as number);
+    clear(real);
+  });
   return {
     hold: () => { holding = true; },
     release: () => {
       holding = false;
-      const runs = Array.from(held.values());
+      const runs = Array.from(held);
       held.clear();
-      for (const run of runs) run();
+      for (const [id, run] of runs) started.set(id, set(() => { started.delete(id); run(); }, 0));
       return runs.length;
     },
+    restore: () => { schedule.mockRestore(); setSpy.mockRestore(); clearSpy.mockRestore(); },
   };
 }
 
@@ -276,9 +294,20 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(input.value).toBe('新しい本文');
   });
 
-  it.each(['on time', 'under load'])('applies a body draft kept through an external change once the map has refreshed (%s)', async (timing) => {
-    const debounce = refreshDebounce(timing === 'under load');
-    const { source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
+  // Both rows hold the re-read between the refused save and the look at its line. The first keeps every other debounce
+  // at its own delay (the retry's re-read too); the second runs them out at once, as the loaded machine of LEV-251 did,
+  // which failed this row without the hold (the line had turned to REFRESHED within `settle`).
+  it.each(['at its own delay', 'run out at once, as on a loaded machine'])('applies a body draft kept through an external change once the map has refreshed (debounce %s)', async (timing) => {
+    const { view, source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
+    const debounce = refreshDebounce(view, timing !== 'at its own delay');
+    try { await bodyDraftAfterRefresh(debounce, { source, key, refreshed, element, node, external, settle }); }
+    finally { debounce.restore(); }
+  });
+
+  async function bodyDraftAfterRefresh(
+    debounce: { hold: () => void; release: () => number },
+    { source, key, refreshed, element, node, external, settle }: Pick<Mounted, 'source' | 'key' | 'refreshed' | 'element' | 'node' | 'external' | 'settle'>,
+  ): Promise<void> {
     const target = element(node('学ぶこと').id);
     target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
     menuItem('本文・リンクを編集').click();
@@ -302,7 +331,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     await refreshed();
     expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n'));
     expect(document.contains(input)).toBe(false);
-  });
+  }
 
   it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
     const mounted = await mount(SOURCE);
