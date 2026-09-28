@@ -58,6 +58,7 @@
     "harness:e2e:close-draft": "node scripts/e2e/close-draft.mjs",
     "harness:e2e:indent-unit": "node scripts/e2e/indent-unit.mjs",
     "harness:e2e:english-ui": "node scripts/e2e/english-ui.mjs",
+    "harness:e2e:main-topic": "node scripts/e2e/main-topic.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",
