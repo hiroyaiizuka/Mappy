@@ -193,4 +193,19 @@ describe('the provisional name follows the depth the node is added at (LEV-250)'
       expect(mounted.source()).toBe(`${EMPTY}\n## ${t().newTopicTitle}\n`);
     });
   }
+
+  // Review 3: Tab on the file-name root of a note with list items but no heading writes a section after the list, which
+  // becomes a free topic (「トピック」) while Enter on its first-level item gives 「メイントピック」 (the rows above). It was
+  // 「トピック」 before LEV-250 too: a control that the depth rule does not turn a topic into a main topic.
+  for (const layout of LAYOUTS) {
+    it(`${layout}: Tab on the file-name root of a note with no heading makes a free topic, named「トピック」`, async () => {
+      const mounted = await mount(NO_HEADING, layout);
+      mounted.key(mounted.select(ROOT_TITLE), 'Tab');
+      await mounted.settle();
+      expect(draftName(mounted)).toBe(t().newTopicTitle);
+      mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
+      await mounted.settle();
+      expect(mounted.source()).toBe(`${NO_HEADING}\n## ${t().newTopicTitle}\n`);
+    });
+  }
 });

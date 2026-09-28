@@ -178,7 +178,7 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 | Windows and Linux desktop | Not checked |
 | iOS and Android | Not checked. It can be installed on mobile (it doesn't use desktop-only features), but it hasn't been tried |
 | Obsidian 1.8.7 to 1.13 | Can be installed on 1.8.7 and later, but not checked in this range |
-| Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices, and the provisional names Mappy writes into notes: `Main topic` / `メイントピック`, `Subtopic` / `サブトピック`, `Topic` / `トピック`, and the new map's `Untitled mind map` / `無題のマインドマップ`). English was checked on macOS only for command names, buttons, the gear popover, context menus, the tab title, the settings tab, `Subtopic` and one refusal message; not every notice |
+| Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices, and the provisional names Mappy writes into notes: `Main topic` / `メイントピック`, `Subtopic` / `サブトピック`, `Topic` / `トピック`, and the new map's `Untitled mind map` / `無題のマインドマップ`). English was checked on macOS only for command names, buttons, the gear popover, context menus, the tab title, the settings tab, `Subtopic`, `Main topic` and one refusal message; not every notice |
 
 ## Known limitations
 
