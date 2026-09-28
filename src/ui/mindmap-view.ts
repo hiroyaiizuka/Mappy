@@ -12,7 +12,7 @@ import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabels, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabel, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore, conflictMessage, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
@@ -133,7 +133,7 @@ function rootOffsets(layout: LayoutResult, ids: Iterable<string>): Map<string, T
 }
 
 /**
- * One button per layout, in LAYOUT_MODES order, named as layoutLabels() names it when the view builds its
+ * One button per layout, in LAYOUT_MODES order, named as layoutLabel() names it when the view builds its
  * controls (the name follows the app's language, src/i18n); the Record keeps the list and the icons in step.
  */
 const LAYOUT_ICONS: Record<LayoutMode, string> = {
@@ -648,9 +648,8 @@ export class MindmapView extends FileView {
     this.contentEl.addClass("mappy-view");
     this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
-    const labels = layoutLabels();
     for (const mode of LAYOUT_MODES) {
-      const button = this.button(modes, labels[mode], LAYOUT_ICONS[mode], () => {
+      const button = this.button(modes, layoutLabel(mode), LAYOUT_ICONS[mode], () => {
         this.selectMode(mode);
       });
       this.modeButtons.set(mode, button);
