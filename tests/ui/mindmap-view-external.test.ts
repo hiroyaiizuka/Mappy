@@ -125,48 +125,22 @@ async function mount(source: string): Promise<Mounted> {
 }
 
 /**
- * The view's refresh debounce (`scheduleRefresh`) under the test's control (LEV-251). Only the timer that method starts
- * is caught, told apart by the call it is started in rather than by its delay: another timer of the same delay (the
- * called maps' re-read) is left alone, and a new delay does not slip past. `loaded`: the debounce runs out at once, as on
- * a machine at a load average of 150, where it elapsed before the test's next zero-delay timer. `hold` keeps the refresh
- * debounced from then on from starting; `release` debounces it again, now as a real timer, when one was held, and tells
- * how many were held (none: the view re-read in between, and the row did not build its state). What a draft shows
- * before the map re-reads is then read in a known order, whatever the load. A held timer never runs, so nothing is
- * left behind should a row fail before `release`. `restore` puts the window and the view back.
+ * The view's refresh debounce (`scheduleRefresh`) run out at once (LEV-251), as on a machine at a load average of 150,
+ * where it elapsed before the test's next timers. Only the timer that method starts is rushed, told apart by the call it
+ * is started in rather than by its delay: the called maps' re-read of the same delay is left alone. Returns the restore.
  */
-function refreshDebounce(view: MindmapView, loaded: boolean): { hold: () => void; release: () => number; restore: () => void } {
+function rushRefresh(view: MindmapView): () => void {
   const set = window.setTimeout.bind(window);
-  const clear = window.clearTimeout.bind(window);
-  const held = new Set<number>();
   let debouncing = false;
-  let holding = false;
-  let next = -1;
   type Debounced = { scheduleRefresh: () => void };
-  const debounced = view as unknown as Debounced;
   const original = (MindmapView.prototype as unknown as Debounced).scheduleRefresh;
-  const schedule = vi.spyOn(debounced, 'scheduleRefresh').mockImplementation(function (this: Debounced) {
+  const schedule = vi.spyOn(view as unknown as Debounced, 'scheduleRefresh').mockImplementation(function (this: Debounced) {
     debouncing = true;
     try { original.call(this); } finally { debouncing = false; }
   });
-  const setSpy = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
-    if (!debouncing) return set(handler, delay, ...args);
-    if (!holding) return set(handler, loaded ? 0 : delay, ...args);
-    const id = next--;
-    held.add(id);
-    return id;
-  }) as unknown as typeof window.setTimeout);
-  const clearSpy = vi.spyOn(window, 'clearTimeout').mockImplementation(id => { if (typeof id !== 'number' || !held.delete(id)) clear(id); });
-  return {
-    hold: () => { holding = true; },
-    release: () => {
-      holding = false;
-      const count = held.size;
-      // The view clears the held id itself as it debounces again.
-      if (count > 0) debounced.scheduleRefresh();
-      return count;
-    },
-    restore: () => { schedule.mockRestore(); setSpy.mockRestore(); clearSpy.mockRestore(); },
-  };
+  const timer = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number =>
+    set(handler, debouncing ? 0 : delay, ...args)) as unknown as typeof window.setTimeout);
+  return () => { schedule.mockRestore(); timer.mockRestore(); };
 }
 
 function menuItem(title: string): HTMLElement {
@@ -287,16 +261,16 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     expect(input.value).toBe('新しい本文');
   });
 
-  // Both rows hold the re-read between the refused save and the look at its line, so there they run alike. The second is
-  // the reproduction of LEV-251: with the debounce run out at once, this row without the hold failed as on the loaded
-  // machine (the line had turned to REFRESHED within `settle`); past the hold it pins the retry's re-read at no delay.
-  // The first pins the same steps with the debounce at its own delay.
+  // The second row is LEV-251's loaded machine: the debounce runs out at once, before any timer the test starts after
+  // it. Waiting out `settle` (three timers and a frame) after the refused save let the re-read turn the line to
+  // REFRESHED first there; one zero-delay timer started with Enter does not, as the refusal and its new debounce come in
+  // microtasks after it (the rows above wait the same way).
   it.each([
     { timing: 'at its own delay', loaded: false },
     { timing: 'run out at once, as on a loaded machine', loaded: true },
   ])('applies a body draft kept through an external change once the map has refreshed (debounce $timing)', async ({ loaded }) => {
     const { view, source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
-    const debounce = refreshDebounce(view, loaded);
+    const restore = loaded ? rushRefresh(view) : () => undefined;
     try {
       const target = element(node('学ぶこと').id);
       target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
@@ -305,23 +279,20 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
       if (!input) throw new Error('The body modal did not open');
       input.value = '新しい本文';
-      // Before the map re-reads: held, since a loaded machine lets the debounce run out within `settle` (LEV-251).
-      debounce.hold();
       external(EXTERNAL);
       key(input, 'Enter', { metaKey: true });
-      await settle();
+      await new Promise(resolve => setTimeout(resolve, 0));
       expect(source()).toBe(EXTERNAL);
       expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT);
       expect(document.contains(input)).toBe(true);
 
-      expect(debounce.release()).toBe(1);
       await refreshed();
       expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
       key(input, 'Enter', { metaKey: true });
       await refreshed();
       expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n'));
       expect(document.contains(input)).toBe(false);
-    } finally { debounce.restore(); }
+    } finally { restore(); }
   });
 
   it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
