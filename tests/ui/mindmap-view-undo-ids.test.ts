@@ -254,19 +254,20 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     // re-read's replay would fail and drop every write after it.
     const view = (await mount()).view;
     const internals = view as unknown as {
-      ownWrites: { before: string; after: string }[]; document: MindDocument;
-      recordWrite(file: unknown, write: LatestWrite): void; recordOwn(write: LatestWrite): void; file: unknown;
+      writes: { recorded: readonly LatestWrite[]; clear(): void; confirm(write: LatestWrite, shown: string | undefined): void };
+      document: MindDocument; recordWrite(file: unknown, write: LatestWrite): void; file: unknown;
     };
     const after = SOURCE.replace('  - 子1\n', '  - ずっと長い題名に改名\n');
     const from = SOURCE.indexOf('子1');
     const write: LatestWrite = { before: SOURCE, after, edits: [{ from, to: from + 2, text: 'ずっと長い題名に改名' }] };
     internals.recordWrite(internals.file, write);
-    expect(internals.ownWrites).toHaveLength(1);
+    expect(internals.writes.recorded).toHaveLength(1);
     // The re-read spends it.
     internals.document = parseMarkdown(after, 'undo-ids', internals.document, undefined, write.edits);
-    internals.ownWrites = [];
-    internals.recordOwn(write);
-    expect(internals.ownWrites).toEqual([]);
+    internals.writes.clear();
+    // The caller's answer (`WriteRecord.confirm`).
+    internals.writes.confirm(write, internals.document.source);
+    expect(internals.writes.recorded).toEqual([]);
   });
 
   it('a refused ⌘Z re-reads the note even when no watcher reports the change', async () => {

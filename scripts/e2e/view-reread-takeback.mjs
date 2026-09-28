@@ -2,7 +2,7 @@
  * E66 (docs/harness.md): the map view keeps the fold of the second of two twins after a re-read reached part of its
  * record and the writes past it had been taken back, on the real Obsidian (LEV-237, the view's side of LEV-224).
  *
- * The view records the store's writes (`ownWrites`) so its re-read carries the ids of a node whose title repeats or is
+ * The view records the store's writes (`ownWrites`; `WriteRecord` since LEV-247) so its re-read carries the ids of a node whose title repeats or is
  * empty. Before LEV-237, a re-read that found the text a write of the record wrote kept every write past it: when the
  * store renamed 子1 (A) and deleted the second twin (B) inside the view's debounce (45 ms) and B alone was put back
  * (Undo in the Markdown pane, a sync), the re-read spent A and B stayed in the record. The user's Delete on the first
@@ -17,7 +17,7 @@
  * writes every map of the note hears), and the Vault puts B back (`vault.modify` to A's text, not through the store, as
  * a sync does). A person cannot do that within 45 ms, so the script does; the premise — the view recorded both writes
  * and never drew B, and its re-read replayed A alone out of that record — is checked (the record's length, the answers
- * of `replayOwnWrites` watched from the page, an observer on the view). Then a real click selects the first
+ * of `WriteRecord.replay` watched from the page, an observer on the view). Then a real click selects the first
  * twin and a real Delete deletes it (the view's own write), and the twin left keeps the folded one's id and its fold.
  * 対照 fails too if the Delete or the fold check itself is broken, so a FAIL of the put-back row alone is the stale write.
  *
@@ -94,13 +94,14 @@ try {
         const file = view.file;
         let heard = null;
         const listener = app.vault.on('modify', changed => { if (changed === file && heard === null) heard = performance.now(); });
-        // What the view's replays of its record answer (\`replayOwnWrites\`, watched from the page, not changed): the
+        // What the view's replays of its record answer (\`WriteRecord.replay\`, watched from the page, not changed): the
         // re-read of the note must reach A and no further, out of a record of 2 (of 1 in 対照): the path of LEV-237.
-        const replay = view.replayOwnWrites;
+        const record = view.writes;
+        const replay = record.replay;
         const replays = [];
-        view.replayOwnWrites = function (text, ...rest) {
+        record.replay = function (text, ...rest) {
           const result = replay.call(this, text, ...rest);
-          replays.push({ recorded: this.ownWrites.length, used: result?.used ?? null, text });
+          replays.push({ recorded: this.size, used: result?.used ?? null, text });
           return result;
         };
         try {
@@ -109,7 +110,7 @@ try {
             const child = current.indexOf('  - 子1\\n') + 4;
             return [{ from: child, to: child + 2, text: ${JSON.stringify(RENAMED)} }];
           })).after;
-          let recorded = view.ownWrites.length;
+          let recorded = record.size;
           let putBack = null;
           if (${takesBack}) {
             await view.store.applyLatest(file, current => {
@@ -117,15 +118,15 @@ try {
               const from = current.indexOf(${JSON.stringify(shape.twin)}, first + ${shape.twin.length});
               return [{ from, to: from + ${shape.twin.length}, text: '' }];
             });
-            recorded = view.ownWrites.length;
+            recorded = record.size;
             await app.vault.modify(file, reached);
             putBack = heard === null ? Infinity : performance.now() - heard;
           }
           await new Promise(resolve => setTimeout(resolve, 800));
           const reachedA = replays.some(item => item.text === reached && item.used === 1 && item.recorded === recorded);
-          return { reached, recorded, putBack, drawn, reachedA, left: view.ownWrites.length, source: await app.vault.read(file), shown: view.document?.source === reached };
+          return { reached, recorded, putBack, drawn, reachedA, left: record.size, source: await app.vault.read(file), shown: view.document?.source === reached };
         } finally {
-          delete view.replayOwnWrites;
+          delete record.replay;
           app.vault.offref(listener);
           observer.disconnect();
         }`);

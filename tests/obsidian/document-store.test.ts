@@ -172,6 +172,25 @@ describe('DocumentStore', () => {
     expect((await store.undo(file)).after).toBe('a');
   });
 
+  it('tells every write before its caller gets the answer (the map view records the answer as the same write, LEV-247)', async () => {
+    // The view hears its own writes twice: the store's word (`WriteRecord.record`), then the answer (`confirm`), which
+    // skips the write it already holds. The word coming first is what makes the answer the copy; the other way round,
+    // the word would start the record again over the writes recorded in between.
+    const { store, file } = harness('---\nmappy: true\n---\na');
+    const heard: { after: string; answered: boolean }[] = [];
+    let answered = false;
+    store.onWrite((_file, write) => { heard.push({ after: write.after, answered }); });
+    const answer = async <T>(write: Promise<T>): Promise<T> => { answered = false; const result = await write; answered = true; return result; };
+    const edit = await answer(store.applyOver(file, '---\nmappy: true\n---\na', [{ from: 21, to: 21, text: 'b' }], { retractable: true }));
+    await answer(store.retract(file, edit));
+    await answer(store.applyOver(file, edit.before, [{ from: 21, to: 21, text: 'c' }]));
+    await answer(store.applyLatest(file, source => planMapLayout(source, 'timeline')));
+    await answer(store.undo(file));
+    await answer(store.redo(file));
+    expect(heard).toHaveLength(6);
+    expect(heard.filter(item => item.answered)).toEqual([]);
+  });
+
   it('retract tells the listeners the write that took the step back', async () => {
     const { store, file } = harness('a');
     const heard: unknown[] = [];
