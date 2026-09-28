@@ -230,6 +230,8 @@ export class MindmapView extends FileView {
   private plain: { file: TFile | null; mode: LayoutMode; layout: LayoutResult } | undefined;
   private placeholder!: HTMLDivElement;
   private edges!: EdgeLayer;
+  /** The drop preview's connector as last drawn (`drawEdges`), the one marked `is-preview`. */
+  private previewPath: SVGPathElement | undefined;
   private dropPreview: MoveCommand | null = null;
   /**
    * A free tree following the pointer: the dragged root, and where each affected topic started and where
@@ -1518,7 +1520,7 @@ export class MindmapView extends FileView {
 
   private visible(): MindNode[] {
     const projection = this.projection();
-    return projection ? visibleNodes({ root: projection.root, topics: projection.topics }, this.collapsed) : [];
+    return projection ? visibleNodes(projection, this.collapsed) : [];
   }
 
   private draw(): void {
@@ -1633,11 +1635,14 @@ export class MindmapView extends FileView {
   private drawEdges(edges: LayoutResult["edges"]): void {
     this.edges.update(edges);
     const preview = edges.find(edge => edge.to === PLACEHOLDER_ID);
-    // Only the preview's connector ends on the placeholder, and it goes with the preview (its id does): nothing to unmark.
     const path = preview ? this.edges.path(preview.id) : undefined;
-    if (!path) return;
-    path.addClass("is-preview");
-    if (path !== this.svg.lastElementChild) this.svg.append(path);
+    // Unmarked when it stops being the preview's, whatever `EdgeLayer` does with its paths (today it goes with the preview).
+    if (path !== this.previewPath) {
+      this.previewPath?.removeClass("is-preview");
+      path?.addClass("is-preview");
+      this.previewPath = path;
+    }
+    if (path && path !== this.svg.lastElementChild) this.svg.append(path);
   }
 
   /** Show or clear the slot a pending drop would fill; the layout makes room for it on the next frame. */

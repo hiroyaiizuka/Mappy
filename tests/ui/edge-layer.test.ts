@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * The connectors the embed, the export and (since LEV-248) the map view draw. `path` is the map view's: it marks the
- * drop preview's connector and draws it last.
+ * drop preview's connector and draws it last. Pins, not regression tests: the first two hold on `EdgeLayer` before
+ * LEV-248 too (what the map view now relies on: one path per edge id, `d` set only when it changed), the last is new.
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../browser-harness/dom';

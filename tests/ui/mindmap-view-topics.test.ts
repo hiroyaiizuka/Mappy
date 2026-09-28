@@ -279,7 +279,7 @@ describe('MindmapView with free topics', () => {
     // last. Before LEV-248 a connector added in the same frame as the preview's (a fold opened under it) was drawn above
     // it until the connectors were drawn again: the first check after the fold fails on that code, the rest hold on both.
     const source = fixtureSource();
-    const { view } = await mount(source);
+    const { view, layout } = await mount(source);
     const doc = documentOf(view);
     const { root, topics } = projectMap(doc);
     const dragged = doc.nodes.find(node => node.title === '習慣化する');
@@ -303,6 +303,11 @@ describe('MindmapView with free topics', () => {
     const closed = paths().length;
     fold(folded.id);
     await frame();
+    // The shape the row needs: the connectors the fold opened come after the preview's in the layout's order, so the
+    // update adds their paths after the preview's (the order the fixture's topics and the body give the layout).
+    const order = layout().edges.map(edge => edge.to);
+    const after = folded.children.map(child => order.indexOf(child.id));
+    expect(after.every(index => index > order.indexOf(PLACEHOLDER_ID))).toBe(true);
     expect({ added: paths().length > closed, last: svg.lastElementChild === preview[0] }).toEqual({ added: true, last: true });
     previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 1 });
     await frame();
@@ -310,7 +315,7 @@ describe('MindmapView with free topics', () => {
     expect(previews).toEqual(preview);
     expect(svg.lastElementChild).toBe(previews[0]);
     previewDrop(null);
-    await new Promise(resolve => requestAnimationFrame(resolve));
+    await frame();
     expect({ count: paths().length, previews: paths().filter(path => path.classList.contains('is-preview')).length }).toEqual({ count: drawn, previews: 0 });
   });
 
