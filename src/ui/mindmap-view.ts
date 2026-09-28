@@ -45,10 +45,6 @@ const SNAP_STICK = 16;
 export const EXPORT_RENDER_WAIT_MS = 2000;
 /** How long a topic added right after a confirmed draft waits for the labels to render before it is measured. */
 const TOPIC_RENDER_WAIT_MS = 300;
-// The text the view shows and writes is read where it is used, as t().<key> (src/i18n; architecture.md §9e): the
-// provisional names a node added on the map is written with (newNodeTitle for a child or sibling, newTopicTitle for a
-// free topic; LEV-203) are Markdown, in the app's language.
-
 /** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
@@ -1693,6 +1689,7 @@ export class MindmapView extends FileView {
     // one added with its text (a called map) is only selected.
     const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
     const before = this.shownState();
+    // The provisional name (LEV-203) is written into the note, in the app's language (src/i18n): a note keeps it when the language changes.
     let name = t().newNodeTitle;
     let plan = planEdit(document, provisional ? { ...command, title: name } : command);
     // A node that lands as a free topic (Enter on a topic's root, Tab on the note's own root) is named as the empty
@@ -1794,6 +1791,7 @@ export class MindmapView extends FileView {
     if (!document || !file || this.saving) return;
     const position = point ? this.topicPoint(point) : null;
     const before = this.shownState();
+    // As a child's provisional name: written into the note, in the app's language (src/i18n).
     const plan = planEdit(document, { type: "add-topic", title: t().newTopicTitle });
     const write = await this.commit(document.source, plan.edits, file, true);
     if (this.file !== file || this.closed) return;

@@ -105,7 +105,8 @@ try {
 
   const en = required(record, 'read-en', await step('read-en', () => evaluate(READ)));
   for (const [id, name] of Object.entries(COMMANDS)) check(en.commands[id] === `Mappy: ${name}`, `command ${id}: ${JSON.stringify(en.commands[id])}, not "Mappy: ${name}"`);
-  check(JSON.stringify(en.layouts) === JSON.stringify(LAYOUTS), `layout buttons: ${JSON.stringify(en.layouts)}`);
+  // The buttons shown follow the vault's setting (Layouts in the bottom-left corner): each one shown is named in English, in order.
+  check(en.layouts.length > 0 && JSON.stringify(en.layouts) === JSON.stringify(LAYOUTS.filter(name => en.layouts.includes(name))), `layout buttons: ${JSON.stringify(en.layouts)}`);
   check(en.zoom.includes('Zoom in') && en.zoom.includes('Zoom out') && en.zoom.includes('Fit to view'), `zoom buttons: ${JSON.stringify(en.zoom)}`);
   check(JSON.stringify(en.gear) === JSON.stringify(['Actions']), `gear: ${JSON.stringify(en.gear)}`);
   check(en.title === 'E2E-english-ui · map', `tab title: ${en.title}`);
@@ -188,7 +189,8 @@ try {
   await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); await new Promise(resolve => setTimeout(resolve, 300)); return true;');
   required(record, 'open-ja', await step('open-ja', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const ja = required(record, 'read-ja', await step('read-ja', () => evaluate(READ)));
-  check(JSON.stringify(ja.layouts) === JSON.stringify(['通常マップ', 'タイムライン', '階層図', '左右バランス']), `layout buttons back in Japanese: ${JSON.stringify(ja.layouts)}`);
+  const JA_LAYOUTS = ['通常マップ', 'タイムライン', '階層図', '左右バランス'];
+  check(ja.layouts.length > 0 && JSON.stringify(ja.layouts) === JSON.stringify(JA_LAYOUTS.filter(name => ja.layouts.includes(name))), `layout buttons back in Japanese: ${JSON.stringify(ja.layouts)}`);
   check(ja.commands['mappy:create-mindmap'] === 'Mappy: 新しいマインドマップを作成', `command back in Japanese: ${ja.commands['mappy:create-mindmap']}`);
   const addedJa = await step('add-ja', async () => {
     await makeSelect(cdp, evaluate)('Booking');
