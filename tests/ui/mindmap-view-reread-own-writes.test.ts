@@ -783,9 +783,9 @@ describe('a re-read that reaches part of the record, with the writes past it tak
 });
 
 describe('the view on the record the embed and the called maps keep (LEV-247)', () => {
-  // The view's record is `WriteRecord` (src/core/write-record.ts) since LEV-247. Of the rules the two had apart
-  // (artifacts/lev-247-view-write-record/rules.md), these rows pin the two that are the view's to choose: the store's word
-  // taken as the embed takes it (row 3), and an external change parsed from the text the view shows (row 6).
+  // The view's record is `WriteRecord` (src/core/write-record.ts) since LEV-247. Of the rules the two had apart (the
+  // table is in the PR of LEV-247), these rows pin the two that are the view's to choose: the store's word taken as the
+  // embed takes it, and an external change parsed from the text the view shows.
   interface Internals {
     recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
     refresh(): Promise<void>;
@@ -795,7 +795,7 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
   const recorded = (mounted: MountedMapView): readonly unknown[] => state(mounted).writes.recorded;
 
   it('the store telling again a write the record holds, on the text on screen, starts the record again', async () => {
-    // White-box (row 3): the record is [B: S→T, X: T→U] and the view shows S. The store tells B again: it wrote it on S,
+    // White-box: the record is [B: S→T, X: T→U] and the view shows S. The store tells B again: it wrote it on S,
     // so the note went back to S without a word (the Markdown pane's Undo) and B was made again. The store tells each
     // write once, so this is no copy of the B recorded: the record starts again from it, as the embed's does. Before
     // LEV-247 the view took it for the B it held (its rule against hearing its own writes twice) and kept [B, X].
@@ -813,7 +813,7 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
   });
 
   it('an external change the record does not lead to is matched by titles from the text the view shows', async () => {
-    // Pin (row 6), not a regression test: it passes before and after LEV-247. The record [W: S→T] (子1 renamed) and the
+    // Pin, not a regression test: it passes before and after LEV-247. The record [W: S→T] (子1 renamed) and the
     // note holds T with 子2 changed by someone else. The view parses that from S by titles, as it always has — the
     // renamed node takes a new id — where the embed parses it from T (`WriteRecord.take`), and it would keep it.
     const mounted = await mount();

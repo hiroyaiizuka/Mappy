@@ -1209,12 +1209,15 @@ export class MindmapView extends FileView {
     // (LEV-218). Not those recorded before it began: the read would have found them, so someone put the note
     // back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where the
     // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
+    // Either replaces the record (a new `version`), so another read that replayed it before does not spend it.
     const replayed = this.writes.replay(source, this.document, file.basename);
     if (!replayed) {
       if (onScreen) this.writes.keep(source, mark, 0);
       else this.writes.clear();
     }
-    const replaying = this.writes.version;
+    // The record this read replayed, to tell whether it is still the one below (the writes recorded meanwhile are added
+    // to it; a restart, `showOwnWrite` and another read replace it).
+    const replaying = replayed ? this.writes.version : undefined;
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
@@ -1229,7 +1232,7 @@ export class MindmapView extends FileView {
     // told by its `version`): what this read replayed is not in it. Past the write a read reached, the writes left get
     // the rule of a read of the text on screen (LEV-237): one recorded before the read began was there for it to find
     // (the replay goes on to the last write that wrote the text read), so someone put the note back over it. Kept, it
-    // would stand in the record where nothing can follow it.
+    // would stand in the record where nothing can follow it. A read that replayed nothing spent what it had to above.
     if (replayed && this.writes.version === replaying) this.writes.keep(source, mark, replayed.used);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by

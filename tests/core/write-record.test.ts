@@ -181,10 +181,12 @@ describe('WriteRecord', () => {
     expect({ size: record.size, second: second(read) }).toEqual({ size: 0, second: second(shown) });
   });
 
-  // LEV-247: the view's record is this one. Its rules were the view's (`recordOwn`, `recordCarried`, `reread`,
-  // `showOwnWrite`, `parseOwn`) and are pinned from the view too (tests/ui/mindmap-view-reread-own-writes.test.ts,
-  // mindmap-view-undo-ids.test.ts); these pin them where they now live. Row numbers: artifacts/lev-247-view-write-record/rules.md.
-  it('record: leaves out a write that changed nothing, which takes nothing back (row 1)', () => {
+  // LEV-247: the view's record is this one. What only the view needs was its own (`recordOwn`, `recordCarried`, `reread`,
+  // `showOwnWrite`, `parseOwn`) and is pinned from the view too (tests/ui/mindmap-view-reread-own-writes.test.ts,
+  // mindmap-view-undo-ids.test.ts); these pin it where it now lives: the store's answer heard after its word (`confirm`),
+  // the writes an edit was carried over (`carry`), a replay that spends nothing and parses a write once per base
+  // (`replay`), and the version a read tells a replaced record by.
+  it('record: leaves out a write that changed nothing, which takes nothing back', () => {
     // Fails on the record before LEV-247, which took it for a put-back and started again from it.
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
@@ -193,7 +195,7 @@ describe('WriteRecord', () => {
     expect(record.recorded).toEqual([write]);
   });
 
-  it('record: starts again with a write on the text on screen even when the record holds the same write (row 3)', () => {
+  it('record: starts again with a write on the text on screen even when the record holds the same write', () => {
     // The store tells each write once: the same write again was made again, after the note was put back.
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
@@ -205,7 +207,7 @@ describe('WriteRecord', () => {
     expect(record.recorded[0]).toBe(again);
   });
 
-  it('confirm: the store\'s answer to a write its word told already is not recorded again (row 2)', () => {
+  it('confirm: the store\'s answer to a write its word told already is not recorded again', () => {
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
     const other = rename(write.after, '親', '改名');
@@ -222,10 +224,11 @@ describe('WriteRecord', () => {
     expect(record.size).toBe(0);
   });
 
-  it('confirm: a write the store\'s word did not record, and a write of the same texts with other edits, are recorded (row 2)', () => {
+  it('confirm: a write the store\'s word did not record, and a write of the same texts with other edits, are recorded', () => {
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
-    record.confirm(write, A);
+    // The answer carries the writes the edit was carried over too (`CarriedWrite.carried`): only the write is kept.
+    record.confirm({ ...write, carried: [write] } as RecordedWrite, A);
     expect(record.recorded).toEqual([write]);
     const twin = rename(A, '- \n  - 空の子\n', '');
     const other = { ...twin, edits: [{ from: twin.edits[0]!.from + 1, to: twin.edits[0]!.to + 1, text: '' }] };
@@ -234,7 +237,7 @@ describe('WriteRecord', () => {
     expect(record.recorded).toEqual([other]);
   });
 
-  it('carry: records the writes an edit was carried over where the record leads, and parses the plan through them (row 10)', () => {
+  it('carry: records the writes an edit was carried over where the record leads, and parses the plan through them', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
     const layout = rename(A, 'mappy: true', 'mappy: true\nmappy-layout: timeline');
@@ -248,7 +251,7 @@ describe('WriteRecord', () => {
     expect(record.size).toBe(1);
   });
 
-  it('replay: parses to the last write that wrote the text and spends nothing; the same parse for the same base (rows 8, 11)', () => {
+  it('replay: parses to the last write that wrote the text and spends nothing; the same parse for the same base', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
     const there = rename(A, '子1', 'ずっと長い題名');
@@ -264,7 +267,7 @@ describe('WriteRecord', () => {
     expect(record.replay('another text', shown, 'n')).toBeUndefined();
   });
 
-  it('keep, drop, clear and a restart change the version; a write added on the end does not (row 5)', () => {
+  it('keep, drop, clear and a restart change the version; a write added on the end does not', () => {
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
     const on = rename(write.after, '親', '改名');

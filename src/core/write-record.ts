@@ -86,10 +86,12 @@ export class WriteRecord {
     if (write.before === write.after) return;
     const last = this.writes[this.writes.length - 1];
     if (last && sameWrite(last.write, write)) return;
-    if (write.before === (last?.write.after ?? shown)) { this.push(write); return; }
+    // The answer carries more than the write (`CarriedWrite.carried`): only the write is kept.
+    const kept = { before: write.before, after: write.after, edits: write.edits };
+    if (write.before === (last?.write.after ?? shown)) { this.push(kept); return; }
     if (write.before !== shown) return;
     if (this.writes.some(recorded => sameWrite(recorded.write, write))) return;
-    this.restart(write);
+    this.restart(kept);
   }
 
   /**
@@ -105,7 +107,8 @@ export class WriteRecord {
       let recorded = this.writes.find(item => sameWrite(item.write, write));
       if (!recorded) {
         if (write.before !== at) continue;
-        recorded = this.push(write);
+        // A copy: the store keeps `write` in its own list of layout writes.
+        recorded = this.push({ before: write.before, after: write.after, edits: write.edits });
         at = write.after;
       }
       if (base?.source === recorded.write.before) base = this.parseWrite(recorded, base, basename);
@@ -149,16 +152,17 @@ export class WriteRecord {
    * reached, and the record dropped. The writes are parsed only once the texts show where they lead.
    */
   take(text: string, from: MindDocument | undefined, basename: string, mark: number): MindDocument {
-    const replayed = this.replay(text, from, basename);
-    if (replayed) {
-      this.keep(text, mark, replayed.used);
-      return replayed.document;
+    const { reaches, led } = this.follow(from?.source, text);
+    if (from && reaches > 0) {
+      const document = this.parse(from, reaches, basename);
+      this.keep(text, mark, reaches);
+      return document;
     }
     if (from && text === from.source) {
       this.keep(text, mark, 0);
       return parseMarkdown(text, basename, from);
     }
-    const reached = from ? this.parse(from, this.follow(from.source, text).led, basename) : undefined;
+    const reached = from ? this.parse(from, led, basename) : undefined;
     this.clear();
     return parseMarkdown(text, basename, reached);
   }
