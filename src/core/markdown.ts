@@ -43,17 +43,23 @@ function commentMask(text: string): string {
   return /[\r\n]/u.test(text) ? whitespaceMask(text) : text.replace(/[^\r\n]/gu, (value) => 'x'.repeat(value.length));
 }
 
-function literalRanges(source: string): { from: number; to: number }[] {
+const literalNodes = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'HTMLBlock', 'HTMLTag', 'Comment', 'CommentBlock', 'Escape']);
+
+function literalRanges(source: string, names = literalNodes): { from: number; to: number }[] {
   const ranges: { from: number; to: number }[] = [];
-  const literalNodes = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'HTMLBlock', 'HTMLTag', 'Comment', 'CommentBlock', 'Escape']);
   parser.parse(source).iterate({
     enter(node) {
-      if (!literalNodes.has(node.name)) return true;
+      if (!names.has(node.name)) return true;
       ranges.push({ from: node.from, to: node.to });
       return false;
     },
   });
   return ranges;
+}
+
+/** Fenced and indented code blocks, whose lines keep their bytes when a list around them is re-indented. */
+export function codeBlockRanges(source: string): { from: number; to: number }[] {
+  return literalRanges(source, new Set(['FencedCode', 'CodeBlock']));
 }
 
 function maskComments(source: string): string {
