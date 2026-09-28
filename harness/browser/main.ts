@@ -292,9 +292,9 @@ async function closeView(): Promise<void> {
   if (!view) return;
   const closing = view;
   view = null;
-  await closing.onClose();
-  closing.unload();
-  closing.containerEl.remove();
+  // As Obsidian 1.14.2 closes a tab (`View.close`: the container leaves the DOM, the view unloads, then `onClose`), which
+  // also takes the view off the harness's list of open views (tests/mocks/open-views.ts).
+  await (closing as unknown as { close(): Promise<void> }).close();
 }
 
 /** `mode` opens the fixture in that layout (the performance runner measures every layout); omitted, the note decides. */

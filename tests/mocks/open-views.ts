@@ -29,12 +29,26 @@ export function closeView(view: object): Promise<void> {
 }
 
 /**
+ * Set by `npm run harness:view-teardown` (scripts/check-view-teardown.mjs) to take the teardown out of every file at once,
+ * so it can see each file fail without it. Read through `globalThis`: the browser page bundles this module too.
+ */
+export const SKIP_CLOSE_ENV = 'MAPPY_SKIP_VIEW_CLOSE';
+
+/**
  * Close every view still open, as Obsidian closes a tab (the harness's `View.close`, 1.14.2's order: the container
- * leaves the DOM, the view unloads, then `onClose`). Each is closed even when another's close fails; the first
- * failure is then thrown, for the test to report.
+ * leaves the DOM, the view unloads, then `onClose`), one after another in the order they were built, as the files'
+ * own loops did: views on one store then save their drafts in turn. Each is closed even when another's close fails;
+ * the first failure is then thrown, for the test to report.
  */
 export async function closeOpenViews(): Promise<void> {
-  const closes = await Promise.allSettled(Array.from(openViews, view => view.close()));
+  if ((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env[SKIP_CLOSE_ENV]) return;
+  await closeEveryView();
+}
+
+/** `closeOpenViews` without the check's switch (of `views`, all open ones by default): the setup file's own clean-up of what a file left open. */
+export async function closeEveryView(views: readonly ClosableView[] = Array.from(openViews)): Promise<void> {
+  const closes: PromiseSettledResult<void>[] = [];
+  for (const view of views) closes.push(...await Promise.allSettled([view.close()]));
   const failed = closes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failed) throw failed.reason;
 }

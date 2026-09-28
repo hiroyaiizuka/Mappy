@@ -261,10 +261,14 @@ export abstract class View extends Component {
   }
   /** `View.close` (1.14.2): the container leaves the DOM, the component unloads, then `onClose`. */
   async close(): Promise<void> {
-    this.containerEl.detach();
-    this.unload();
-    await this.onClose();
-    leaveView(this);
+    // Off the list even when the close fails: the failure is the caller's to report, not a view left open.
+    try {
+      this.containerEl.detach();
+      this.unload();
+      await this.onClose();
+    } finally {
+      leaveView(this);
+    }
   }
   onOpen(): Promise<void> { return Promise.resolve(); }
   onClose(): Promise<void> { return Promise.resolve(); }

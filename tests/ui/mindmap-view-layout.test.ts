@@ -30,8 +30,7 @@ vi.mock("obsidian", async () => {
     }
     /** `View.close` as far as this stand-in goes: no container in a document, no component to unload. */
     async close(): Promise<void> {
-      await this.onClose();
-      leaveView(this);
+      try { await this.onClose(); } finally { leaveView(this); }
     }
     getState(): Record<string, unknown> { return this.file ? { file: this.file.path } : {}; }
     setState(state: { file?: string | null }): Promise<void> {
