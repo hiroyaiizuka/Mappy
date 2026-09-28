@@ -84,6 +84,42 @@ describe('WriteRecord', () => {
     expect(record.take(on.after, shown, 'n', record.mark()).nodes.filter(node => node.title === '')[0]?.id).toBe(second(shown));
   });
 
+  // Code review 1 of LEV-224: a read that reaches part of the record spent it and kept the rest whole, so a write after
+  // the one it reached, recorded before it began and put back, stood at the end of the record all the same.
+  it('take: drops, past the write a read reached, a write recorded before the read began (put back)', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    record.record(there, A);
+    record.record(rename(there.after, '親', '改名'), A);
+    const read = record.take(there.after, shown, 'n', record.mark());
+    expect({ size: record.size, second: second(read) }).toEqual({ size: 0, second: second(shown) });
+  });
+
+  it('spend: drops, past the writes that came back to the text on screen, a write recorded before the read began', () => {
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    const back: RecordedWrite = { before: there.after, after: A, edits: [{ from: there.edits[0]!.from, to: there.edits[0]!.from + 'ずっと長い題名'.length, text: '子1' }] };
+    record.record(there, A);
+    record.record(back, A);
+    record.record(rename(A, '親', '改名'), A);
+    record.spend(A, record.mark());
+    expect(record.size).toBe(0);
+  });
+
+  it('keeps, past the write a read reached, the writes recorded while it was under way that lead on from the text', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    record.record(there, A);
+    const reading = record.mark();
+    const on = rename(there.after, '- \n', '- 命名\n');
+    record.record(on, A);
+    const read = record.take(there.after, shown, 'n', reading);
+    expect(record.size).toBe(1);
+    expect(record.take(on.after, read, 'n', record.mark()).nodes.filter(node => node.title === '')[0]?.id).toBe(second(shown));
+  });
+
   it('starts the record again with a write on the text on screen while it ends elsewhere (the note was put back)', () => {
     // A write read on the text last parsed: the store wrote on that text, so the writes recorded were taken back.
     const shown = parseMarkdown(A, 'n');

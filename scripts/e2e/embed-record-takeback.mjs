@@ -14,7 +14,9 @@
  * screen) and the row's node with real clicks. Then, in one script so it lands inside the embed's debounce: the map
  * tab's store renames 子1 (`applyLatest`, the write every map of the note hears), and the Vault puts the note back
  * (`vault.modify`, not through the store, as a sync does). A person cannot undo within 45 ms, so the put-back is done
- * by the script; the premise — the embed never drew the rename — is checked by an observer on the embed. Then F2 in
+ * by the script; the premise — the embed never drew the rename — is checked by an observer on the embed. That the embed
+ * recorded the rename is not visible from the page (the embed is not reachable from the plugin); the build with the
+ * fix taken out failing the rows is what shows it did (docs/harness.md E65). Then F2 in
  * the map tab renames the twin before the row's node (a real key, the tab's own write), and the embed's node keeps its
  * id and its fold. The write made while the embed's re-read of the put-back note reads (the second half of the fix)
  * needs a read held open, and is left to the jsdom rows (`tests/ui/map-embed-own-writes.test.ts`).
@@ -166,11 +168,14 @@ try {
         const file = view.file;
         const before = await app.vault.read(file);
         const at = before.indexOf('  - 子1\\n') + 4;
-        const started = performance.now();
+        // Timed from the write's own modify event (what starts the embed's debounce), not from before the store's write.
+        let heard = null;
+        const listener = app.vault.on('modify', changed => { if (changed === file && heard === null) heard = performance.now(); });
         await view.store.applyLatest(file, () => [{ from: at, to: at + 2, text: ${JSON.stringify(TAKEN_BACK)} }]);
         const written = await app.vault.read(file);
         await app.vault.modify(file, before);
-        const putBack = performance.now() - started;
+        const putBack = heard === null ? Infinity : performance.now() - heard;
+        app.vault.offref(listener);
         await new Promise(resolve => setTimeout(resolve, 800));
         observer.disconnect();
         delete window.__mappyE2EDrawn;

@@ -239,7 +239,11 @@ describe('a write taken back by someone else before the embed re-read it (LEV-22
   // Markdown pane, a sync), and kept, that write would stand at the end of the record, so the next write — made on the
   // text on screen, not on that write's end — could not be recorded, and its re-read would match nodes by title: with
   // the twin before it renamed, the node the reader opened would take the twin's id and close again. Before the fix
-  // every row here failed; which part of the fix each one pins is in `artifacts/lev-224-embed-record-takeback/variants.txt`.
+  // every row here failed. What each pins of the fix (each part taken out on its own): the rows of a write made while
+  // the embed re-reads fail without the record started again on the text on screen (`WriteRecord.record`); the rows of
+  // an external change fail without the writes recorded before the read dropped (`keepFrom`, the second one also
+  // without it past the write a read reached, code review 1). The first two rows fail only before the fix (either part
+  // alone holds them): they pin the reported steps.
   const TWINS = [
     { shape: '空題名 (the second)', label: EMPTY_LABEL, twin: '- \n' },
     { shape: '同名 (the second)', label: '同名', twin: '- 同名\n' },
@@ -348,6 +352,35 @@ describe('a write taken back by someone else before the embed re-read it (LEV-22
     const { release } = await takenBack(opened, store, '- 親\n');
     release();
     await settled(opened, source => source === SOURCE);
+    await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
+    await settled(opened, source => source.includes('- 外から\n'));
+    expect(seen(section, '親', 0)).toEqual(opens);
+  });
+
+  it('a write put back after one the re-read reaches is dropped all the same (code review 1)', async () => {
+    // The store renames 子1 (A) and then 親 (B) within one debounce, and B alone is put back: the re-read finds A's text
+    // and spends A. Kept whole, the rest would hold B, and the next external change would be matched from B's text,
+    // where 親 is 改名.
+    const opened = await open();
+    const { section, map } = opened;
+    const store = (map.view as unknown as { store: DocumentStore }).store;
+    click(nodeNamed(section, '親').querySelector<HTMLElement>('.mappy-node-toggle') ?? section);
+    await map.settle();
+    const opens = seen(section, '親', 0);
+    const [embed] = (opened.embeds as unknown as { live: Set<Embed> }).live;
+    const held = holdDebounces();
+    let reached = '';
+    try {
+      const child = SOURCE.indexOf('  - 子1\n') + 4;
+      reached = (await store.applyLatest(map.file, () => [{ from: child, to: child + 2, text: '改名1' }])).after;
+      const parent = reached.indexOf('- 親\n') + 2;
+      await store.applyLatest(map.file, () => [{ from: parent, to: parent + 1, text: '改名' }]);
+      expect(embed?.writes.size).toBe(2);
+      map.app.put(PATH, reached);
+    } finally {
+      held.release();
+    }
+    await settled(opened, source => source === reached);
     await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
     await settled(opened, source => source.includes('- 外から\n'));
     expect(seen(section, '親', 0)).toEqual(opens);

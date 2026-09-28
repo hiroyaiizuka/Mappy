@@ -25,7 +25,7 @@ interface Recorded {
  * where the next write, made on the text on screen, could not follow them.
  *
  * Used by a map embedded in another note (`MapEmbed`, LEV-217). `MindmapView` keeps its own record (`ownWrites`,
- * LEV-150) on the same rules, and also skips a write already at the end (it records its own writes twice). Bringing
+ * LEV-150) on the rule of the text on screen, and also skips a write already at the end (it hears its own writes twice). Bringing
  * the view here is LEV-66's.
  */
 export class WriteRecord {
@@ -35,7 +35,9 @@ export class WriteRecord {
   /**
    * `write` kept where the record leads to its start: its end, or `shown` (the text last parsed) when it is empty. A
    * write on `shown` while the record ends elsewhere starts the record again: the store wrote it on that text, so the
-   * note was put back there and the writes recorded were taken back (LEV-224).
+   * note was put back there and the writes recorded were taken back (LEV-224). Each write is to be recorded once, as
+   * the store tells it: the view, which hears its own writes twice, keeps its own record for that (`recordOwn`), and
+   * a write already in the record is not told apart here from the same texts written again after a put-back.
    */
   record(write: RecordedWrite, shown: string | undefined): void {
     const last = this.writes[this.writes.length - 1];
@@ -60,7 +62,8 @@ export class WriteRecord {
 
   /**
    * `text` parsed from `from`, by a read begun at `mark`: through the recorded writes up to the last one that wrote
-   * exactly `text` (those are spent — ⌘Z then ⌘⇧Z behind it included — the rest kept for a later read). When they do
+   * exactly `text` (those are spent — ⌘Z then ⌘⇧Z behind it included — and of the rest only those recorded while the
+   * read was under way that lead on from `text` kept for a later read: one recorded before it was put back). When they do
    * not lead there, a parse matched by titles: from `from` for its own text (the note renamed, or put back), keeping
    * the writes recorded while the read was under way that lead on from it; else from the last text the writes
    * reached, and the record dropped. The writes are parsed only once the texts show where they lead.
@@ -70,6 +73,7 @@ export class WriteRecord {
     if (from && reaches > 0) {
       const document = this.parse(from, reaches, basename);
       this.writes = this.writes.slice(reaches);
+      this.keepFrom(text, mark);
       return document;
     }
     if (from && text === from.source) {
@@ -83,13 +87,12 @@ export class WriteRecord {
 
   /**
    * For a reader that keeps what it shows, by a read begun at `mark` that found `shown`: the writes that lead from it
-   * back to it (⌘Z then ⌘⇧Z) spent; when none does, only the writes recorded while the read was under way that lead
-   * on from it kept, as `take` does.
+   * back to it (⌘Z then ⌘⇧Z) spent, and of the rest only those recorded while the read was under way that lead on
+   * from it kept, as `take` does.
    */
   spend(shown: string, mark: number): void {
-    const { reaches } = this.follow(shown, shown);
-    if (reaches > 0) this.writes = this.writes.slice(reaches);
-    else this.keepFrom(shown, mark);
+    this.writes = this.writes.slice(this.follow(shown, shown).reaches);
+    this.keepFrom(shown, mark);
   }
 
   /** The writes recorded since `mark` that lead on one from the other from `text`: the first that does not ends them. */
