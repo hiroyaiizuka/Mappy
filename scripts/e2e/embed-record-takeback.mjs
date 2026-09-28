@@ -9,14 +9,15 @@
  * was not recorded, and its re-read matched nodes by title: with the twin before it renamed, the node the reader
  * opened took the twin's id and closed again.
  *
- * Rows: 空題名 (the second untitled node) ・同名 (the second of two). The note is open as a map in one pane and
+ * Rows: 空題名 (the second untitled node) ・同名 (the second of two), each after its 対照 (no put-back; see below). The note is open as a map in one pane and
  * embedded in the reading view of another note in a split below (E55's set-up). The reader opens 親 (so 子1 is on
  * screen) and the row's node with real clicks. Then, in one script so it lands inside the embed's debounce: the map
  * tab's store renames 子1 (`applyLatest`, the write every map of the note hears), and the Vault puts the note back
  * (`vault.modify`, not through the store, as a sync does). A person cannot undo within 45 ms, so the put-back is done
  * by the script; the premise — the embed never drew the rename — is checked by an observer on the embed. That the embed
- * recorded the rename is not visible from the page (the embed is not reachable from the plugin); the build with the
- * fix taken out failing the rows is what shows it did (docs/harness.md E65). Then F2 in
+ * recorded the rename is not visible from the page (the embed is not reachable from the plugin): the 対照 row before
+ * each (the same steps without the put-back) tells a build whose embed records nothing (code review 2): it fails there
+ * as the put-back row does, and passes on a build without LEV-224, where only the put-back row fails. Then F2 in
  * the map tab renames the twin before the row's node (a real key, the tab's own write), and the embed's node keeps its
  * id and its fold. The write made while the embed's re-read of the put-back note reads (the second half of the fix)
  * needs a read held open, and is left to the jsdom rows (`tests/ui/map-embed-own-writes.test.ts`).
@@ -144,10 +145,14 @@ const embedShows = async title => {
 try {
   // Without the plugin every row would fail on something else (a restricted vault opens no map) and hide why.
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
-  for (const shape of SHAPES) {
-    await step(shape.name, async () => {
+  // Each shape twice: 対照 without the put-back first. The page cannot see whether the embed recorded the store's writes;
+  // were it not to (its `onWrite` lost), the twin's rename would be matched by titles and 対照 fails too, so a FAIL of the
+  // put-back row alone is the stale record, not a record never kept.
+  for (const shape of SHAPES) for (const takesBack of [false, true]) {
+    const row = takesBack ? shape.name : `${shape.name}-対照`;
+    await step(row, async () => {
       const opened = await reopen();
-      check(opened.source === SOURCE, `${shape.name}: the note did not open as written`);
+      check(opened.source === SOURCE, `${row}: the note did not open as written`);
       await toggle('親', 0);
       await wait(400);
       const initial = await read(shape.label, 1);
@@ -158,35 +163,38 @@ try {
         throw new Error(`the clicks did not open 親 and ${shape.name} in the embed: ${JSON.stringify({ initial, toggled })}`);
       }
 
-      // The store's rename of 子1 and the Vault's put-back, inside the embed's 45 ms debounce; an observer on the embed
-      // tells whether it ever drew the rename (were it to, the rename would be spent and the row prove nothing).
-      const takeBack = await evaluate(`${EMBED}
-        let drawn = false;
-        const observer = new MutationObserver(() => { if (embedNodes().some(node => label(node) === ${JSON.stringify(TAKEN_BACK)})) drawn = true; });
-        observer.observe(frame, { subtree: true, childList: true, characterData: true });
-        window.__mappyE2EDrawn = observer;
-        const file = view.file;
-        const before = await app.vault.read(file);
-        const at = before.indexOf('  - 子1\\n') + 4;
-        // Timed from the write's own modify event (what starts the embed's debounce), not from before the store's write.
-        let heard = null;
-        const listener = app.vault.on('modify', changed => { if (changed === file && heard === null) heard = performance.now(); });
-        await view.store.applyLatest(file, () => [{ from: at, to: at + 2, text: ${JSON.stringify(TAKEN_BACK)} }]);
-        const written = await app.vault.read(file);
-        await app.vault.modify(file, before);
-        const putBack = heard === null ? Infinity : performance.now() - heard;
-        app.vault.offref(listener);
-        await new Promise(resolve => setTimeout(resolve, 800));
-        observer.disconnect();
-        delete window.__mappyE2EDrawn;
-        return { putBack, drawn, wrote: written.includes(${JSON.stringify(TAKEN_BACK)}), source: await app.vault.read(file), labels: embedNodes().map(label) };`);
-      check(takeBack.wrote, `${shape.name}: the store did not write the rename`);
-      check(takeBack.source === SOURCE, `${shape.name}: the note was not put back`);
-      if (takeBack.drawn || takeBack.putBack >= 45) {
-        throw new Error(`the premise did not hold: the embed drew the rename before the put-back (${JSON.stringify(takeBack)})`);
+      let takeBack = null;
+      if (takesBack) {
+        // The store's rename of 子1 and the Vault's put-back, inside the embed's 45 ms debounce; an observer on the embed
+        // tells whether it ever drew the rename (were it to, the rename would be spent and the row prove nothing).
+        takeBack = await evaluate(`${EMBED}
+          let drawn = false;
+          const observer = new MutationObserver(() => { if (embedNodes().some(node => label(node) === ${JSON.stringify(TAKEN_BACK)})) drawn = true; });
+          observer.observe(frame, { subtree: true, childList: true, characterData: true });
+          window.__mappyE2EDrawn = observer;
+          const file = view.file;
+          const before = await app.vault.read(file);
+          const at = before.indexOf('  - 子1\\n') + 4;
+          // Timed from the write's own modify event (what starts the embed's debounce), not from before the store's write.
+          let heard = null;
+          const listener = app.vault.on('modify', changed => { if (changed === file && heard === null) heard = performance.now(); });
+          await view.store.applyLatest(file, () => [{ from: at, to: at + 2, text: ${JSON.stringify(TAKEN_BACK)} }]);
+          const written = await app.vault.read(file);
+          await app.vault.modify(file, before);
+          const putBack = heard === null ? Infinity : performance.now() - heard;
+          app.vault.offref(listener);
+          await new Promise(resolve => setTimeout(resolve, 800));
+          observer.disconnect();
+          delete window.__mappyE2EDrawn;
+          return { putBack, drawn, wrote: written.includes(${JSON.stringify(TAKEN_BACK)}), source: await app.vault.read(file), labels: embedNodes().map(label) };`);
+        check(takeBack.wrote, `${row}: the store did not write the rename`);
+        check(takeBack.source === SOURCE, `${row}: the note was not put back`);
+        if (takeBack.drawn || takeBack.putBack >= 45) {
+          throw new Error(`the premise did not hold: the embed drew the rename before the put-back (${JSON.stringify(takeBack)})`);
+        }
+        const back = await read(shape.label, 1);
+        check(back.id === toggled.id && back.folded === false, `${row}: the put-back itself moved the node (${JSON.stringify({ toggled, back })})`);
       }
-      const back = await read(shape.label, 1);
-      check(back.id === toggled.id && back.folded === false, `${shape.name}: the put-back itself moved the node (${JSON.stringify({ toggled, back })})`);
 
       // The twin before the row's node renamed in the map tab, with real keys. The split below left the map tab where
       // the whole pane placed it, the lower nodes out of it: 全体表示 first (a real click, by the button's name).
@@ -197,11 +205,11 @@ try {
       await embedShows(TWIN);
       const state = await read(shape.label, 0);
       const expected = SOURCE.replace(shape.label === '同名' ? '- 同名\n' : '- \n', `- ${TWIN}\n`);
-      check(renamed.messages.length === 0, `${shape.name}: showed ${JSON.stringify(renamed.messages)}`);
-      check(renamed.source === expected, `${shape.name}:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(renamed.source)}`);
-      check(state.id === toggled.id, `${shape.name}: the embed's node id changed (${toggled.id} → ${state.id})`);
-      check(state.folded === false, `${shape.name}: the branch the reader opened closed again`);
-      return { toggled, takeBack: { putBack: Math.round(takeBack.putBack), drawn: takeBack.drawn }, after: { id: state.id, folded: state.folded } };
+      check(renamed.messages.length === 0, `${row}: showed ${JSON.stringify(renamed.messages)}`);
+      check(renamed.source === expected, `${row}:\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(renamed.source)}`);
+      check(state.id === toggled.id, `${row}: the embed's node id changed (${toggled.id} → ${state.id})`);
+      check(state.folded === false, `${row}: the branch the reader opened closed again`);
+      return { toggled, takeBack: takeBack && { putBack: Math.round(takeBack.putBack), drawn: takeBack.drawn }, after: { id: state.id, folded: state.folded } };
     });
   }
 

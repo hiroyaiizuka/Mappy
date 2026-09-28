@@ -25,8 +25,10 @@ interface Recorded {
  * where the next write, made on the text on screen, could not follow them.
  *
  * Used by a map embedded in another note (`MapEmbed`, LEV-217). `MindmapView` keeps its own record (`ownWrites`,
- * LEV-150) on the rule of the text on screen, and also skips a write already at the end (it hears its own writes twice). Bringing
- * the view here is LEV-66's.
+ * LEV-150) on the same rule for a read of the text on screen, but it is a separate copy and not the same in every
+ * case: it tells the writes from before the read by identity rather than by number, keeps the rest whole when a read
+ * reaches part of the record (dropped here since code review 1 of LEV-224; the view's is LEV-237), and skips a write
+ * already at the end or one that changed nothing (it hears its own writes twice). Bringing the view here is LEV-66's.
  */
 export class WriteRecord {
   private writes: Recorded[] = [];
@@ -72,12 +74,11 @@ export class WriteRecord {
     const { reaches, led } = this.follow(from?.source, text);
     if (from && reaches > 0) {
       const document = this.parse(from, reaches, basename);
-      this.writes = this.writes.slice(reaches);
-      this.keepFrom(text, mark);
+      this.keepFrom(text, mark, reaches);
       return document;
     }
     if (from && text === from.source) {
-      this.keepFrom(text, mark);
+      this.keepFrom(text, mark, 0);
       return parseMarkdown(text, basename, from);
     }
     const reached = from ? this.parse(from, led, basename) : undefined;
@@ -91,15 +92,18 @@ export class WriteRecord {
    * from it kept, as `take` does.
    */
   spend(shown: string, mark: number): void {
-    this.writes = this.writes.slice(this.follow(shown, shown).reaches);
-    this.keepFrom(shown, mark);
+    this.keepFrom(shown, mark, this.follow(shown, shown).reaches);
   }
 
-  /** The writes recorded since `mark` that lead on one from the other from `text`: the first that does not ends them. */
-  private keepFrom(text: string, mark: number): void {
+  /**
+   * Of the writes past the first `spent`, only those recorded since `mark` that lead on one from the other from
+   * `text`: the first that does not ends them.
+   */
+  private keepFrom(text: string, mark: number, spent: number): void {
     const kept: Recorded[] = [];
     let at = text;
-    for (const recorded of this.writes) {
+    for (let index = spent; index < this.writes.length; index += 1) {
+      const recorded = this.writes[index]!;
       if (recorded.serial < mark) continue;
       if (recorded.write.before !== at) break;
       kept.push(recorded);

@@ -71,6 +71,8 @@ describe('WriteRecord', () => {
     expect(record.size).toBe(0);
   });
 
+  // Not a regression test of LEV-224 (it holds before the fix, which kept every write): it pins that the fix does not
+  // drop too much — a write recorded while the read was under way is the next read's to carry.
   it('keeps the writes recorded while a read of the text on screen was under way that lead on from it', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
@@ -107,6 +109,8 @@ describe('WriteRecord', () => {
     expect(record.size).toBe(0);
   });
 
+  // Not a regression test either (it holds before code review 1, which kept the rest whole): it pins that dropping past
+  // the write a read reached does not drop a write recorded while the read was under way.
   it('keeps, past the write a read reached, the writes recorded while it was under way that lead on from the text', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
