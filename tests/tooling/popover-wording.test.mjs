@@ -19,8 +19,20 @@ describe("the 操作 popover wording (§5 M3)", () => {
     }
   });
 
-  it("README's gear row and product-plan's M3 paragraph name the same lines", async () => {
+  // LEV-227: README.md is English and README.ja.md Japanese. The English lines are LEV-235's proposal; once
+  // src/main.ts names the items by their keys in src/i18n/en.ts, read them from there instead of repeating them.
+  it("the English README's gear row names the same items in English", async () => {
     const readme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
+    const row = readme.split("\n").find(line => line.startsWith("| Gear |")) ?? "";
+    for (const [title, description] of [
+      ["Switch to Markdown", "Open the note in this tab"],
+      ["Search and insert a map", "Insert another map"],
+      ["Export", "Save as SVG or PNG"],
+    ]) expect(row).toContain(`**${title}** (${description})`);
+  });
+
+  it("the Japanese README's gear row and product-plan's M3 paragraph name the same lines", async () => {
+    const readme = await readFile(new URL("../../README.ja.md", import.meta.url), "utf8");
     const row = readme.split("\n").find(line => line.startsWith("| 歯車 |")) ?? "";
     const plan = await readFile(new URL("../../docs/product-plan.md", import.meta.url), "utf8");
     const paragraph = plan.split("\n").find(line => line.startsWith("**現在の実装（操作ポップオーバー")) ?? "";

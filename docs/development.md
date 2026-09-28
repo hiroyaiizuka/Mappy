@@ -1,6 +1,6 @@
 # Mappy の開発
 
-利用者向けの説明は [README](../README.md) にあり、このファイルは開発者向けです（2026-09-26 に README の「開発」節から移した。LEV-201）。
+利用者向けの説明は [README](../README.md)（英語。日本語は [README.ja.md](../README.ja.md)）にあり、このファイルは開発者向けです（2026-09-26 に README の「開発」節から移した。LEV-201）。
 
 - [製品計画・段階ごとの受入条件](product-plan.md)
 - [Markdown 同期・描画の設計](architecture.md)
@@ -36,4 +36,4 @@ npm run harness:browser:capture # headless Chrome で fixture と主要操作を
 
 任意で `npm run hooks:install` を実行すると、このリポジトリの pre-commit に同じ品質ゲートを設定できます。CI の定義は `.github/workflows/check.yml` にあります。
 
-plugin ID `mappy` と名前 `Mappy` は 2026-09-19 時点のコミュニティ一覧と衝突していません。最低対応バージョン `1.8.7` と `isDesktopOnly: false` は現在の宣言で、対応環境の実機確認は[README の対応環境](../README.md#対応環境)のとおりです。
+plugin ID `mappy` と名前 `Mappy` は 2026-09-19 時点のコミュニティ一覧と衝突していません。最低対応バージョン `1.8.7` と `isDesktopOnly: false` は現在の宣言で、対応環境の実機確認は[README の対応環境](../README.ja.md#対応環境)のとおりです。
