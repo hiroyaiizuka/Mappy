@@ -39,13 +39,12 @@ async function withoutDocument(ms: number): Promise<void> {
   try { await new Promise(resolve => setTimeout(resolve, ms)); } finally { globals.document = kept; }
 }
 afterEach(async () => {
-  // Every view is closed even when one close fails; the first failure is still the test's to report.
-  try {
-    const closes = await Promise.allSettled(opened.splice(0).map(closeView));
-    const failed = closes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (failed) throw failed.reason;
-  } finally { document.body.replaceChildren(); }
+  // Every view is closed and the check runs even when one close fails; the first failure is still the test's to report.
+  const closes = await Promise.allSettled(opened.splice(0).map(closeView));
+  document.body.replaceChildren();
   await withoutDocument(60);
+  const failed = closes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
 });
 
 const PATH = 'Fixtures/free-topics.md';
@@ -2371,7 +2370,11 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
 
 describe('MindmapView after its tab closes (LEV-236)', () => {
   /** Close the view in the test: the afterEach has nothing more to close for it. */
-  const close = async (view: MindmapView): Promise<void> => { opened.splice(opened.indexOf(view), 1); await closeView(view); };
+  const close = async (view: MindmapView): Promise<void> => {
+    const at = opened.indexOf(view);
+    if (at >= 0) opened.splice(at, 1);
+    await closeView(view);
+  };
   const past = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
   it('a re-read under way when the tab closes and failing after it shows no notice for the closed map', async () => {
@@ -2401,6 +2404,41 @@ describe('MindmapView after its tab closes (LEV-236)', () => {
     expect(Notice.log.slice(before)).toEqual([]);
   });
 
+  it('a re-read overtaken by a newer one and failing after it shows no notice: the newer read answers for the note', async () => {
+    const { view, store, settle } = await mount(THREE_SECTIONS);
+    const fails: ((error: Error) => void)[] = [];
+    vi.spyOn(store, 'read').mockImplementation(() => new Promise<string>((_, reject) => { fails.push(reject); }));
+    const schedule = (view as unknown as { scheduleRefresh(): void }).scheduleRefresh.bind(view);
+    schedule();
+    await past(60);
+    schedule();
+    await past(60);
+    expect(fails).toHaveLength(2);
+    const before = Notice.log.length;
+    fails[0]?.(new Error('read failed'));
+    await settle();
+    expect(Notice.log.slice(before)).toEqual([]);
+  });
+
+  it('a read of the called maps overtaken by a re-read of the note and failing after it shows no notice', async () => {
+    const { view, settle } = await mount(THREE_SECTIONS);
+    let fail: (error: Error) => void = () => undefined;
+    const reader = (view as unknown as { reader: { read(...args: unknown[]): Promise<unknown> } }).reader;
+    const reads = vi.spyOn(reader, 'read').mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    (view as unknown as { scheduleRecall(): void }).scheduleRecall();
+    await past(60);
+    (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
+    await past(60);
+    await settle();
+    reads.mockRestore();
+    const before = Notice.log.length;
+    fail(new Error('calls failed'));
+    await settle();
+    expect(Notice.log.slice(before)).toEqual([]);
+  });
+
+  // Not a regression test: it passes with the fix reverted too. It pins the other side of it, that the silence is
+  // only for a read whose result would be dropped, not for a failure on the map still open.
   it('a re-read failing while the tab is open still says so', async () => {
     const { view, store, settle } = await mount(THREE_SECTIONS);
     const before = Notice.log.length;
