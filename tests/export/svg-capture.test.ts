@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
-import { MarkdownRenderer, Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
-import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { MarkdownRenderer, Notice, WorkspaceLeaf } from '../browser-harness/obsidian';
+import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../browser-harness/fixtures';
 import {
   canRasterize, canRasterizeForeignObject, captureScene, rasterizeSvg, type ImageResolver,
 } from '../../src/export/svg-capture';
@@ -18,7 +18,7 @@ import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from '../ui/accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view and renderer run against a real DOM.
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(async () => { await closeOpenViews(); document.body.replaceChildren(); document.body.classList.remove('theme-dark'); });

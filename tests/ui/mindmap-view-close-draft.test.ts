@@ -15,13 +15,13 @@
  * the close with a watcher's re-read scheduled (nothing is read or drawn into the closing view).
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { Notice } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { Notice } from '../browser-harness/obsidian';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {

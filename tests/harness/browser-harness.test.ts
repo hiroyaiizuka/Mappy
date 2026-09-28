@@ -4,11 +4,11 @@ import type { App, TFile } from 'obsidian';
 import { readMapLayout, writeMapLayout } from '../../src/obsidian/frontmatter';
 import { parseMarkdown, projectMap } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp, parseFrontmatter } from '../../harness/browser/app';
-import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost } from '../../harness/browser/fixtures';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp, parseFrontmatter } from '../browser-harness/app';
+import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost } from '../browser-harness/fixtures';
 import { embedOnlyTitle, frontmatterReader, readMapFromSource } from '../../src/core/embed';
-import { Component, Events, MarkdownRenderer } from '../../harness/browser/obsidian';
+import { Component, Events, MarkdownRenderer } from '../browser-harness/obsidian';
 import { performanceFixtureMatrix, performanceNodeCounts } from '../../scripts/performance-fixtures.mjs';
 
 beforeAll(() => { installObsidianDom(); });

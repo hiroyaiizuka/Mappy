@@ -18,7 +18,7 @@ describe("the 操作 popover wording (§5 M3)", () => {
     for (const [title, description] of KEYS) expect([en[title], en[description]].every(text => typeof text === "string" && text.length > 0)).toBe(true);
   });
 
-  it.each(["src/main.ts", "harness/browser/main.ts"])("%s passes the items by their keys", async file => {
+  it.each(["src/main.ts", "tests/browser-harness/main.ts"])("%s passes the items by their keys", async file => {
     const source = await readFile(new URL(`../../${file}`, import.meta.url), "utf8");
     for (const [title, description] of KEYS) expect(source).toContain(`{ title: t().${title}, description: t().${description},`);
   });

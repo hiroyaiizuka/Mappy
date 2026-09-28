@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { Scope } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { Scope } from '../browser-harness/obsidian';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { keyAt } from './keys';
 import { mountMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and inline editor run against a real DOM.
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(async () => {

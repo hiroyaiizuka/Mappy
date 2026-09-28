@@ -18,9 +18,9 @@
  * what the fix must not do — carry an edit over someone else's change, or give a note that is not a map a layout.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
-import { Notice } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { Notice } from '../browser-harness/obsidian';
 import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import { readTopicPositions } from '../../src/core/topics';
 import { projectMap, type MindDocument } from '../../src/core/markdown';
@@ -30,7 +30,7 @@ import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {

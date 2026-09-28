@@ -6,30 +6,16 @@
 // file that calls it fails, and for a view left open. It also lists a file that builds a view and never calls it.
 // No file is edited.
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BUILDS, LOADS, testFiles } from './view-teardown-files.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 // The switch `closeOpenViews` reads (tests/mocks/open-views.ts `SKIP_CLOSE_ENV`); checked below against that file.
 const SKIP_CLOSE_ENV = 'MAPPY_SKIP_VIEW_CLOSE';
-/**
- * What builds a view in a test: the shipped map view, the shared mount, or a harness view stand-in, in a file that loads
- * the view or the harness (tests/mocks/obsidian.ts has a `MarkdownView` of its own, a plain record with no lifecycle).
- * A file this misses is still caught when it runs: the setup file fails a test that leaves a view open.
- */
-const BUILDS = /new MindmapView\(|mountMapView\(|new MarkdownView\(/;
-const LOADS = /harness\/browser\/obsidian|src\/ui\/mindmap-view|\.\/map-view-mount/;
 const LEFT_OPEN = /view\(s\) left open/;
-
-function testFiles(dir) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return testFiles(path);
-    return /\.test\.ts$/.test(entry.name) ? [path] : [];
-  });
-}
 
 /**
  * One vitest run of the files, without a shell: its JSON report, one entry per file keyed by real path (vitest reports

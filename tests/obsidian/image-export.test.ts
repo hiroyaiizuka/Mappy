@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, TFile as ObsidianFile } from 'obsidian';
 import { TFile } from '../mocks/obsidian-file';
-import { installObsidianDom } from '../../harness/browser/dom';
+import { installObsidianDom } from '../browser-harness/dom';
 import type { CaptureSource } from '../../src/export/svg-capture';
 import { requestUrl } from 'obsidian';
 import {
