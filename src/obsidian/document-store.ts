@@ -2,6 +2,7 @@ import { MarkdownView, type App, type Editor, type TFile } from 'obsidian';
 import { applyEdits, type TextEdit } from '../core/commands';
 import { diffEdit, rebaseEdits } from '../core/text-edits';
 import { t } from '../i18n';
+import { ConflictError } from './conflict-error';
 
 interface DocumentStoreApp {
   workspace: {
@@ -56,17 +57,9 @@ const latestLimit = 16;
 /** `applyLatest` plans kept to carry the history's steps over (small closures); a step made before more layout switches than this goes. */
 const planLimit = 256;
 
-/**
- * A write refused because the note moved under it (another app, another tab, a change the view had not read yet).
- * The map view re-reads the note on it and a kept draft's line changes to say so; they tell it by this class, never
- * by its text, which follows the app's language (architecture.md §9e).
- */
-export class ConflictError extends Error {
-  constructor() {
-    super(t().conflict);
-    this.name = 'ConflictError';
-  }
-}
+
+/** The store's refusal when the note moved under a write; the view tells it by this class (conflict-error.ts). */
+export { ConflictError };
 
 /** One file's map operations share a queue and a bounded, source-checked history. */
 export class DocumentStore {

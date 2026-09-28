@@ -21,7 +21,7 @@ export default defineConfig(
     plugins: { obsidianmd },
     rules: {
       // Only `ignoreWords` extends the defaults; passing `brands` or `acronyms` replaces the built-in lists (Markdown, SVG...).
-      "obsidianmd/ui/sentence-case-locale-module": ["error", { ignoreWords: ["ATX", "H2", "Enter", "Tab", "F2"] }],
+      "obsidianmd/ui/sentence-case-locale-module": ["error", { ignoreWords: ["ATX", "H2"] }],
     },
   },
   {

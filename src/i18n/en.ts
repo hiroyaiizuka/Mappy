@@ -54,7 +54,7 @@ export const en = {
   tabsDisagree: "Tabs editing this note disagree about its contents. Make them match in Markdown, then try again.",
   editorOpenedWhileSaving: "A Markdown editor opened while saving. Update the map and try again.",
   // A draft's error line (src/ui/inline-editor.ts, src/ui/edit-modal.ts): `refreshed` replaces `conflict` once the map has re-read the note.
-  refreshed: "The note changed in Markdown. Press Enter again to apply this to the new content, or cancel to close.",
+  refreshed: "The note changed in Markdown. Confirm again to apply this to the new content, or cancel to close.",
   saveFailed: "Couldn't save.",
 
   // Commands whose names other text repeats (the settings, a notice, the file menu); src/main.ts registers them by these.

@@ -1,5 +1,5 @@
 import { t } from "../i18n";
-import { ConflictError } from "../obsidian/document-store";
+import { refusalLine } from "../obsidian/conflict-error";
 
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
@@ -258,8 +258,9 @@ export class InlineEditor {
 
   /** The reason a save was refused, on the error line; a conflict is remembered as one for `refreshed`. */
   private refuse(error: unknown): void {
-    this.error.setText(failure(error));
-    this.conflicted = error instanceof ConflictError;
+    const { text, conflicted } = refusalLine(error);
+    this.error.setText(text);
+    this.conflicted = conflicted;
   }
 
   /** The map re-parsed under a draft kept by a conflict, whose line would still tell the user to wait for that. */
@@ -281,9 +282,4 @@ export class InlineEditor {
     this.host.removeClass("is-draft-empty");
     this.options.restore();
   }
-}
-
-/** The reason a refused save shows on the draft's error line. */
-function failure(error: unknown): string {
-  return error instanceof Error ? error.message : t().saveFailed;
 }

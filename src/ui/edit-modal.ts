@@ -1,6 +1,6 @@
 import { Modal, Setting, type App } from "obsidian";
 import { t } from "../i18n";
-import { ConflictError } from "../obsidian/document-store";
+import { refusalLine } from "../obsidian/conflict-error";
 
 /** Keep the draft open when a concurrent edit prevents saving. */
 export class EditModal extends Modal {
@@ -33,8 +33,9 @@ export class EditModal extends Modal {
         await this.submit(input.value);
         this.close();
       } catch (reason) {
-        error.setText(reason instanceof Error ? reason.message : t().saveFailed);
-        this.conflicted = reason instanceof ConflictError;
+        const line = refusalLine(reason);
+        error.setText(line.text);
+        this.conflicted = line.conflicted;
       } finally { busy = false; }
     };
     new Setting(this.contentEl)

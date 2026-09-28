@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type EditorPosition, type EditorTransaction } from 'obsidian';
-import { DocumentStore } from '../../src/obsidian/document-store';
-import { t } from '../../src/i18n';
+import { ConflictError, DocumentStore } from '../../src/obsidian/document-store';
 import { MarkdownView } from '../mocks/obsidian';
 import { planMapLayout } from '../../src/core/layout-key';
 
@@ -344,7 +343,7 @@ describe('DocumentStore', () => {
     const own = harness('a');
     const first = await own.store.applyOver(own.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
     await own.store.apply(own.file, 'ab', [{ from: 2, to: 2, text: 'c' }]);
-    await expect(own.store.retract(own.file, first)).rejects.toThrow(t().conflict);
+    await expect(own.store.retract(own.file, first)).rejects.toBeInstanceOf(ConflictError);
     expect(own.disk.get(own.file.path)).toBe('abc');
     // The later step is still there to undo.
     expect((await own.store.undo(own.file)).after).toBe('ab');
@@ -352,14 +351,14 @@ describe('DocumentStore', () => {
     const external = harness('a');
     const added = await external.store.applyOver(external.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
     external.disk.set(external.file.path, 'ab!');
-    await expect(external.store.retract(external.file, added)).rejects.toThrow(t().conflict);
+    await expect(external.store.retract(external.file, added)).rejects.toBeInstanceOf(ConflictError);
     expect(external.disk.get(external.file.path)).toBe('ab!');
     expect(external.store.canUndo(external.file)).toBe(false);
 
     const undone = harness('a');
     const gone = await undone.store.applyOver(undone.file, 'a', [{ from: 1, to: 1, text: 'b' }]);
     await undone.store.undo(undone.file);
-    await expect(undone.store.retract(undone.file, gone)).rejects.toThrow(t().conflict);
+    await expect(undone.store.retract(undone.file, gone)).rejects.toBeInstanceOf(ConflictError);
     expect(undone.disk.get(undone.file.path)).toBe('a');
     expect(undone.store.canRedo(undone.file)).toBe(true);
   });
@@ -563,17 +562,17 @@ describe('DocumentStore', () => {
       });
       expect(disk.get(file.path)).toBe('---\nmappy: true\nmappy-layout: timeline\n---\n# B\n');
       // Spent: an edit planned before it again is planned before this edit too, and is refused.
-      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', planned)).rejects.toThrow(t().conflict);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', planned)).rejects.toBeInstanceOf(ConflictError);
     });
 
     it('refuses as before an edit that touches its lines, and one planned before someone else\'s change', async () => {
       const { store, file, disk } = harness('---\nmappy: true\n---\n# A\n');
       await store.read(file);
       await store.applyLatest(file, () => [{ from: 16, to: 16, text: 'mappy-layout: timeline\n' }]);
-      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 4, to: 20, text: '' }])).rejects.toThrow(t().conflict);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 4, to: 20, text: '' }])).rejects.toBeInstanceOf(ConflictError);
       disk.set(file.path, `${disk.get(file.path) ?? ''}- 外から\n`);
       await expect(store.applies(file, '---\nmappy: true\n---\n# A\n')).resolves.toBe(false);
-      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 22, to: 23, text: 'B' }])).rejects.toThrow(t().conflict);
+      await expect(store.apply(file, '---\nmappy: true\n---\n# A\n', [{ from: 22, to: 23, text: 'B' }])).rejects.toBeInstanceOf(ConflictError);
     });
 
     it('writes nothing and keeps the history when the plan changes nothing', async () => {

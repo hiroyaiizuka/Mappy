@@ -97,6 +97,8 @@ describe('a refusal is told by its kind, not its wording (LEV-234)', () => {
     silently(mounted, OTHER);
     setLanguage('en');
     mounted.key(input, 'Enter');
+    // One task: the refusal is made (and worded) in English, and the view's own re-read has not run yet. Waiting
+    // longer would let that re-read run in English too; the check right below fails if the timing ever changes.
     await new Promise(resolve => setTimeout(resolve, 0));
     const english = t().conflict;
     setLanguage('ja');

@@ -224,7 +224,7 @@ export default class MappyPlugin extends Plugin {
   /** The command's route (§5 M6; a command only since LEV-81): the map as shown goes into the last active drawing. */
   private insertIntoExcalidraw(snapshot: ImportRequest | null): void {
     if (!snapshot) return;
-    this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), "Excalidraw への挿入に失敗しました。");
+    this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), t().excalidrawInsertFailed);
   }
 
   /** The command's and the 操作 popover's route (§5 M13): choose the format, then the view captures what it shows. */
