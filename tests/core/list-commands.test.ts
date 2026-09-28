@@ -519,6 +519,15 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
     ['space topic joining a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  - D1\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t\t- D\n\t\t\t- D1\n'],
     ['tab sibling moved past a same-width space sibling', '## R\n- P\n\t- X\n\t\t- X1\n    - Z\n', 'move-down', 'X', undefined, '## R\n- P\n    - Z\n    - X\n      - X1\n'],
     ['space sibling moved past a same-width tab sibling', '## R\n- P\n\t- X\n    - Z\n        - Z1\n', 'move-up', 'Z', undefined, '## R\n- P\n    - Z\n        - Z1\n\t- X\n'],
+    // Review 1: items the map does not draw (tasks, ordered items) are list lines too, for the unit and for the rewrite.
+    ['space branch with a task under a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  - [ ] T\n    - T1\n', 'reparent', 'D', 'A', '## R\n- A\n\t- A1\n\t- D\n\t\t- [ ] T\n\t\t\t- T1\n\n## S\n'],
+    ['space branch with an ordered item under a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  1. O\n     - O1\n', 'reparent', 'D', 'A', '## R\n- A\n\t- A1\n\t- D\n\t\t1. O\n\t\t\t- O1\n\n## S\n'],
+    ['list indented only by a task', '## R\n- A\n\t- [ ] t\n- B\n\n## S\n- C\n  - C1\n', 'add-child', 'B', undefined, '## R\n- A\n\t- [ ] t\n- B\n\t- B1\n\n## S\n- C\n  - C1\n'],
+    // Review 1: a line whose column does not change keeps its bytes, even if another unit's.
+    ['move among siblings keeps an unshifted continuation', '## R\n- A\n- B\n      six-space continuation\n\t- B1\n', 'move-up', 'B', undefined, '## R\n- B\n      six-space continuation\n\t- B1\n- A\n'],
+    // Review 1: code keeps its bytes behind the new indentation; its empty lines stay empty; HTML blocks too.
+    ['fence with an empty line joining a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n\n```\na\n\nb\n```\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t\t- D\n\n\t  ```\n\t  a\n\n\t  b\n\t  ```\n'],
+    ['HTML block joining a tab list', '## R\n- A\n\t- A1\n\n## S\n<pre>\n      x\n</pre>\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t  <pre>\n\t        x\n\t  </pre>\n'],
   ])('%s', (_name, source, type, title, target, expected) => {
     const doc = parse(source);
     const nodeId = find(doc, title).id;
@@ -535,11 +544,21 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
     expect(result).toBe('## R\n- A\n  - A1\n  - D\n    - D1\n\n      ```\n      \tcode\n      ```\n\n## S\n');
   });
 
+  it('writes the indentation in front of a fence in the list\'s unit (review 1)', () => {
+    const source = '## R\n- A\n  - A1\n\n## S\n- D\n\t```\n\t\tx\n\t```\n';
+    const doc = parse(source);
+    const result = applyEdits(source, planEdit(doc, { type: 'reparent', nodeId: find(doc, 'D').id, parentId: find(doc, 'A').id }).edits);
+    const fences = result.split('\n').filter(line => line.trim() === '```');
+    expect(fences).toEqual(['      ```', '      ```']);
+    expect(parse(result).nodes.map(node => node.title)).toEqual(['R', 'A', 'A1', 'D', 'S']);
+  });
+
   // Every structure command on every node of notes whose topics are each indented one way: afterwards each topic's
   // list items are still indented one way (the unit of the list they are in, or of the note).
   it.each([
     ['tabs only', '## R\n- A\n\t- A1\n\t\t- A1a\n\t- A2\n- B\n- C\n\t- C1\n\n## S\n- D\n\t- D1\n'],
     ['spaces and tabs by topic', '## R\n- A\n  - A1\n    - A1a\n- B\n\n## S\n- D\n\t- D1\n\t\t- D1a\n- E\n\n## T\n- F\n- G\n'],
+    ['tasks, ordered items, fences and HTML by topic', '## R\n- A\n  - [ ] A1\n    - A1a\n  1. A2\n     - A2a\n- B\n  ```\n  \tcode\n  ```\n\n## S\n- D\n\t- [x] D1\n\t\t- D1a\n\t- D2\n\n\t  <div>\n\t    x\n\t  </div>\n- E\n\n## T\n- F\n- G\n'],
   ])('keeps each topic of a note indented with %s to one unit', (_name, source) => {
     const doc = parse(source);
     let applied = 0;
@@ -561,7 +580,7 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
       applied++;
       const result = applyEdits(source, edits);
       for (const topic of result.split(/^(?=## )/mu)) {
-        const units = new Set(topic.split('\n').map(line => /^([ \t]+)[-+*] /u.exec(line)?.[1])
+        const units = new Set(topic.split('\n').map(line => /^([ \t]+)(?:[-+*]|\d+[.)]) /u.exec(line)?.[1])
           .filter((indent): indent is string => indent !== undefined).map(indent => indent.replace(/(.)\1*/gu, '$1')));
         expect([...units].every(unit => unit.length === 1) && units.size <= 1, `${JSON.stringify(command)} → ${JSON.stringify(result)}`).toBe(true);
       }

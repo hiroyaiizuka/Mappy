@@ -57,9 +57,9 @@ function literalRanges(source: string, names = literalNodes): { from: number; to
   return ranges;
 }
 
-/** Fenced and indented code blocks, whose lines keep their bytes when a list around them is re-indented. */
-export function codeBlockRanges(source: string): { from: number; to: number }[] {
-  return literalRanges(source, new Set(['FencedCode', 'CodeBlock']));
+/** Code blocks (fenced, indented) and HTML blocks, whose lines keep their bytes when a list around them is re-indented. */
+export function verbatimBlockRanges(source: string): { from: number; to: number }[] {
+  return literalRanges(source, new Set(['FencedCode', 'CodeBlock', 'HTMLBlock', 'CommentBlock']));
 }
 
 function maskComments(source: string): string {
