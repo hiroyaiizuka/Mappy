@@ -19,15 +19,15 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { Notice } from '../../harness/browser/obsidian';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  await closeOpenViews();
   Notice.log.length = 0;
-  for (const mounted of opened.splice(0)) await mounted.close();
   document.body.replaceChildren();
 });
 
@@ -38,7 +38,6 @@ const renamed = (title: string, from = SOURCE): string => from.replace('  - 子�
 /** F2 on 「子ノード」 with `title` typed, as the E59 case does on the real Obsidian. */
 async function draft(title: string): Promise<{ mounted: MountedMapView; input: HTMLTextAreaElement }> {
   const mounted = await mountMapView(PATH, SOURCE);
-  opened.push(mounted);
   mounted.key(mounted.select('子ノード'), 'F2');
   await mounted.settle();
   const input = mounted.editor();
@@ -54,7 +53,6 @@ async function draft(title: string): Promise<{ mounted: MountedMapView; input: H
  * so it is sent here. `false` is a close that sends none (a window without the OS focus has no focused element to blur).
  */
 async function closeView(mounted: MountedMapView, input: HTMLTextAreaElement, blur: boolean): Promise<void> {
-  opened.splice(opened.indexOf(mounted), 1);
   mounted.view.containerEl.remove();
   if (blur) input.dispatchEvent(new FocusEvent('blur'));
   await mounted.close();
@@ -167,7 +165,6 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
   it('does not rename another node of the same title after a change it had not read', async () => {
     const twins = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '  - 子ノード', '- 別のノード', ''].join('\n');
     const mounted = await mountMapView(PATH, twins);
-    opened.push(mounted);
     const second = Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node'))
       .filter(item => item.textContent?.includes('子ノード'))[1];
     if (!second) throw new Error('no second 子ノード');
@@ -230,6 +227,11 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
   });
 
   // Review 3: the delete watcher's deferred unload ran on a view still saving on close (`closed` comes after the save).
+  // That was with the harness closing in the wrong order (`onClose`, then `unload`). Closed as 1.14.2 closes a tab
+  // (LEV-239: the view unloads, then `onClose` saves), FileView's delete subscription and the map's are gone before the
+  // save, so the note deleted meanwhile is unloaded once, by the teardown. This pins that count; the `closing` guard in
+  // the delete watcher is no longer reached from here (taking it out still passes, checked on LEV-239, as it does for a
+  // delete in the same tick as the close, with or without a write of the map's under way: LEV-242).
   it('lets a note deleted while the view closes go without a save or a second unload', async () => {
     const { mounted, input } = await draft('消えるノートの下書き');
     const unload = vi.spyOn(mounted.view, 'onUnloadFile');
@@ -244,8 +246,8 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
     mounted.app.remove(PATH);
     await closing;
     await new Promise(resolve => setTimeout(resolve, 100));
-    // FileView's own delete handling and its teardown unload the note (2); the map's deferred unload made it 3.
-    expect(unload).toHaveBeenCalledTimes(2);
+    // Only FileView's teardown unloads the note: the delete came after `unload` took both subscriptions away.
+    expect(unload).toHaveBeenCalledTimes(1);
   });
 
   // Review 2 (passes on the commit before it too, where the second save saw the first's write under way and the draft
@@ -285,7 +287,6 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
   // Escape does, LEV-203) nor writes anything more.
   it('keeps a node just added under its untouched provisional name', async () => {
     const mounted = await mountMapView(PATH, SOURCE);
-    opened.push(mounted);
     mounted.key(mounted.select('別のノード'), 'Tab');
     await mounted.settle();
     const added = mounted.source();

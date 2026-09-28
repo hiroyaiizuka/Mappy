@@ -14,13 +14,14 @@ import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { EXPORT_RENDER_WAIT_MS, MindmapView } from '../../src/ui/mindmap-view';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from '../ui/accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view and renderer run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); document.body.classList.remove('theme-dark'); });
+afterEach(async () => { await closeOpenViews(); document.body.replaceChildren(); document.body.classList.remove('theme-dark'); });
 
 const CANVAS = { x: 0, y: 0, left: 0, top: 0, width: 1200, height: 800, right: 1200, bottom: 800, toJSON: () => ({}) };
 

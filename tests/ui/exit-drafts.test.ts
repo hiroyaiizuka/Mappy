@@ -21,6 +21,7 @@ import { t } from '../../src/i18n';
 import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
@@ -30,12 +31,15 @@ const SOURCE = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - �
 const renamed = (title: string, from = SOURCE): string => from.replace('  - 子ノード\n', `  - ${title}\n`);
 
 const owners: Component[] = [];
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  Notice.log.length = 0;
   for (const owner of owners.splice(0)) owner.unload();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  // The views a reload left behind (no `onClose` on a reload) are closed too, after the test has read everything: their
+  // title drafts went at `pagehide` (`takeExitDraft`), so the close saves nothing and says nothing, and their timers stop
+  // (LEV-239: checked with the store's writes and `Notice.log` watched across this close in every test; the one write
+  // is the kept page's, whose draft stays open and is saved on close as LEV-215 decided, as it was before LEV-239).
+  await closeOpenViews();
+  Notice.log.length = 0;
   window.localStorage.clear();
   document.body.replaceChildren();
 });
@@ -52,7 +56,6 @@ function install(app: HarnessApp, store: DocumentStore, views: () => readonly Mi
 /** A map with F2 on 「子ノード」 and `title` typed, and the plugin's handlers installed for it. */
 async function draft(title: string, source = SOURCE): Promise<{ mounted: MountedMapView; input: HTMLTextAreaElement; owner: Component }> {
   const mounted = await mountMapView(PATH, source);
-  opened.push(mounted);
   const store = (mounted.view as unknown as { store: DocumentStore }).store;
   const owner = install(mounted.app, store, () => [mounted.view]);
   mounted.key(mounted.select('子ノード'), 'F2');
@@ -73,7 +76,6 @@ async function reload(mounted: MountedMapView, owner: Component): Promise<Harnes
   window.dispatchEvent(new Event('pagehide'));
   const left = mounted.source();
   owner.unload();
-  opened.splice(opened.indexOf(mounted), 1);
   mounted.view.containerEl.remove();
   const app = new HarnessApp();
   app.put(PATH, left);
@@ -190,10 +192,8 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
   // Review 1: two maps of one note each with a draft; the first applied made the second's note stale.
   it('applies the drafts of two maps of the same note on different nodes', async () => {
     const first = await mountMapView(PATH, SOURCE);
-    opened.push(first);
     const store = (first.view as unknown as { store: DocumentStore }).store;
     const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
-    opened.push(second);
     const owner = install(first.app, store, () => [first.view, second.view]);
     for (const [mounted, node, title] of [[first, '子ノード', '一つ目のマップの下書き'], [second, '別のノード', '二つ目のマップの下書き']] as const) {
       mounted.key(mounted.select(node), 'F2');
@@ -202,7 +202,6 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
       input.value = title;
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    opened.splice(opened.indexOf(second), 1);
     second.view.containerEl.remove();
     const app = await reload(first, owner);
     expect(noteOf(app)).toBe(renamed('一つ目のマップの下書き').replace('- 別のノード\n', '- 二つ目のマップの下書き\n'));
@@ -270,7 +269,6 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     window.dispatchEvent(new Event('pagehide'));
     const left = mounted.source();
     owner.unload();
-    opened.splice(opened.indexOf(mounted), 1);
     mounted.view.containerEl.remove();
     const app = new HarnessApp();
     app.put(PATH, left);
@@ -292,7 +290,6 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
   // body typed there was gone without a word. Only the title draft is taken.
   it('leaves the body modal open at pagehide', async () => {
     const mounted = await mountMapView(PATH, SOURCE);
-    opened.push(mounted);
     install(mounted.app, (mounted.view as unknown as { store: DocumentStore }).store, () => [mounted.view]);
     mounted.node('子ノード').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
     const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
@@ -330,7 +327,6 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     const { mounted, owner } = await draft('消えたノートの下書き');
     window.dispatchEvent(new Event('pagehide'));
     owner.unload();
-    opened.splice(opened.indexOf(mounted), 1);
     mounted.view.containerEl.remove();
     const app = new HarnessApp();
     install(app, new DocumentStore(app.asApp<App>()), () => []);

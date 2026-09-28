@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TFile } from "obsidian";
 import { MindmapView } from "../../src/ui/mindmap-view";
 import { DocumentStore } from "../../src/obsidian/document-store";
 import { readMapFromSource } from "../../src/core/embed";
 import type { ViewRouter } from "../../src/obsidian/view-routing";
+import { closeOpenViews } from "../mocks/open-views";
 
-vi.mock("obsidian", () => {
+vi.mock("obsidian", async () => {
+  const { enterView, leaveView } = await import("../mocks/open-views");
   class TFile {
     path = "";
     get name(): string { return this.path.split("/").pop() ?? ""; }
@@ -21,7 +23,15 @@ vi.mock("obsidian", () => {
     allowNoFile = false;
     navigation = true;
     file: TFile | null = null;
-    constructor(public leaf: { app: unknown }) { this.app = leaf.app as FileView["app"]; }
+    constructor(public leaf: { app: unknown }) {
+      this.app = leaf.app as FileView["app"];
+      // Open until closed, for the teardown after each test (tests/mocks/open-views.ts, LEV-239).
+      enterView(this);
+    }
+    /** `View.close` as far as this stand-in goes: no container in a document, no component to unload. */
+    async close(): Promise<void> {
+      try { await this.onClose(); } finally { leaveView(this); }
+    }
     getState(): Record<string, unknown> { return this.file ? { file: this.file.path } : {}; }
     setState(state: { file?: string | null }): Promise<void> {
       if (Object.prototype.hasOwnProperty.call(state, "file")) {
@@ -52,6 +62,8 @@ vi.mock("../../src/ui/node-drag", () => ({ NodeDrag: class {} }));
 vi.mock("../../src/ui/edit-modal", () => ({ EditModal: class {} }));
 vi.mock("../../src/ui/inline-editor", () => ({ InlineEditor: class {} }));
 vi.mock("../../src/ui/link-suggest", () => ({ LinkSuggest: class {} }));
+
+afterEach(async () => { await closeOpenViews(); });
 
 /**
  * A map note held as text, as Obsidian holds it: the button writes through the view's store (LEV-196), and the

@@ -27,6 +27,10 @@
  * second breaks it — `modify` reaches the maps late — so only the fix holds there. The third is a write someone else
  * took back (code reviews 1 and 2 of the fix): how far the fix may go. The last two pin what the fix itself must not
  * break (code review 3): a no-op write recorded late, a record started again while a read waits for the called maps.
+ * The last (LEV-237) is a read that reaches part of the record, with the writes past it taken back; its 10 rows fail
+ * on the code before LEV-237 (the 4 of code review 2 also on a replay that stops at the first write reaching the text
+ * read), and each half of that fix taken out, or every write past the one reached dropped, fails one white-box row (`artifacts/lev-237-view-reread-takeback/run-variants.sh`, `variants.txt`). The counts below are
+ * of the 27 rows before it.
  *
  * Against each version (`artifacts/lev-218-reread-own-writes/run-jsdom-variants.sh`, `jsdom-*.log`): the fix passes
  * all 27, and all 27 with the epoch check taken out too. The code before it fails 11 (the 8 of the second describe,
@@ -44,15 +48,15 @@ import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindDocument } from '../../src/core/markdown';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -89,7 +93,6 @@ const storeOf = (mounted: MountedMapView): DocumentStore => (mounted.view as unk
 
 async function mount(app = new HarnessApp(), store?: DocumentStore): Promise<MountedMapView> {
   const mounted = await mountMapView(PATH, SOURCE, 'mindmap', app, store ? { store } : {});
-  opened.push(mounted);
   return mounted;
 }
 
@@ -535,7 +538,6 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     const app = new HarnessApp();
     app.put('Fixtures/map-a.md', MAP_A);
     const mounted = await mountMapView(PATH, host, 'mindmap', app);
-    opened.push(mounted);
     await settled(mounted);
     const view = state(mounted);
     const internals = mounted.view as unknown as Internals;
@@ -558,4 +560,218 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     expect(restarted).toBe(true);
     expect(view.ownWrites).toEqual([w]);
   });
+});
+
+describe('a re-read that reaches part of the record, with the writes past it taken back (LEV-237)', () => {
+  // The read finds the text a write of the record wrote (it replays up to it), and the writes past it were recorded
+  // before the read began: the read would have found them, so someone put the note back (Undo in the Markdown pane, a
+  // sync). Before the fix the read kept them all (`replaying.slice(used)`); now the writes past the one reached get the
+  // rule of a read of the text on screen (LEV-218): kept only if recorded while the read was under way and leading on
+  // from the text it found. The embed's `WriteRecord` got the same rule in LEV-224 (`take`／`spend` with `keepFrom`).
+  //
+  // The view parses an external change from the text it shows, not from the end of the record, so the ticket's shape
+  // (the next external change matched by titles from the taken-back write's text) leaves the view's ids alone. What a
+  // stale write does to the view is stand in the record: the same text written again by another edit is taken for it
+  // (`recordOwn` does not add a write already in the record: the store's word and the caller's answer tell the same
+  // write twice), and the re-read carries the ids by the stale write's edits. Twins make that the user's loss: the
+  // second deleted and put back, then the first deleted, and the stale edits give the survivor the first one's id — the
+  // fold on the second goes. Two halves of the fix hold the twin rows, each alone (code review 1): the re-read drops
+  // the stale write, and `recordOwn` tells one write told twice from another with the same texts by its edits too
+  // (`sameWrite`), so the Delete is recorded over it. The twin rows fail only with both halves out (the code before
+  // LEV-237); the white-box rows pin each half: the re-read's drop (its last step, a write recorded while the read
+  // reads, passes either way and pins what the drop must not take), and `sameWrite`.
+  const TWIN_SHAPES = [
+    { shape: '空題名', label: EMPTY_LABEL, twin: '- \n  - 同じ子\n' },
+    { shape: '同名', label: '同名', twin: '- 同名\n  - 同じ子\n' },
+  ] as const;
+  const twinSource = (twin: string): string => ['---', 'mappy: true', '---', '## 本体', '', '- 親', '  - 子1', ''].join('\n') + twin + twin;
+
+  /**
+   * The view's 45 ms re-reads held until `release`: the writes and the put-back all land before the view reads any.
+   * Spies, so the window's own functions come back (or `afterEach`'s restore, should a row fail first). A held timer
+   * keeps its id after `release` (the view holds it as `refreshTimer`): until every held one has run or been cleared,
+   * clearing that id clears the real timer it was started as, and new 45 ms timers are no longer held.
+   */
+  function holdDebounces(): { release: () => number } {
+    const set = window.setTimeout.bind(window);
+    const clear = window.clearTimeout.bind(window);
+    let next = -1;
+    let holding = true;
+    const held = new Map<number, () => void>();
+    const started = new Map<number, number>();
+    const setSpy = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+      if (!holding || delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
+      const id = next--;
+      held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
+      return id;
+    }) as unknown as typeof window.setTimeout);
+    const restore = (): void => { if (!holding && held.size === 0 && started.size === 0) { setSpy.mockRestore(); clearSpy.mockRestore(); } };
+    const clearSpy = vi.spyOn(window, 'clearTimeout').mockImplementation(id => {
+      if (typeof id === 'number' && held.delete(id)) return;
+      const real = typeof id === 'number' ? started.get(id) : undefined;
+      if (real === undefined) { clear(id); return; }
+      started.delete(id as number);
+      clear(real);
+      restore();
+    });
+    return {
+      // How many were held: none means the view re-read in between, and the row did not build the state it tests.
+      release: () => {
+        holding = false;
+        const count = held.size;
+        for (const [id, run] of Array.from(held)) {
+          started.set(id, set(() => { started.delete(id); run(); restore(); }, 45));
+        }
+        held.clear();
+        restore();
+        return count;
+      },
+    };
+  }
+
+  /** The twin block at `index` (0: the first) removed by the store from whatever the note holds. */
+  const deleteTwin = (mounted: MountedMapView, twin: string, index: 0 | 1): Promise<unknown> =>
+    storeOf(mounted).applyLatest(mounted.file, source => {
+      const first = source.indexOf(twin);
+      const from = index === 0 ? first : source.indexOf(twin, first + twin.length);
+      return [{ from, to: from + twin.length, text: '' }];
+    });
+
+  for (const { shape, label, twin } of TWIN_SHAPES) for (const by of ['the store', 'Delete in this map'] as const) {
+    it(`the first ${shape} twin deleted (${by}) after the second one's deletion was put back keeps the fold of the second`, async () => {
+      const source = twinSource(twin);
+      const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
+      await settled(mounted);
+      const view = state(mounted);
+      const id = foldAndSelect(mounted, label, 1);
+      const held = holdDebounces();
+      let released = 0;
+      let reached = '';
+      try {
+        // A: 子1 renamed; B: the second twin deleted; B alone put back. The re-read finds A's text and spends A.
+        const child = source.indexOf('  - 子1\n') + 4;
+        reached = (await storeOf(mounted).applyLatest(mounted.file, () => [{ from: child, to: child + 2, text: '改名1' }])).after;
+        await deleteTwin(mounted, twin, 1);
+        expect(view.ownWrites).toHaveLength(2);
+        mounted.app.put(PATH, reached);
+      } finally {
+        released = held.release();
+      }
+      expect(released).toBeGreaterThan(0);
+      await settled(mounted);
+      expect(view.document?.source).toBe(reached);
+      expect({ collapsed: [...view.collapsed], at: nodeNamed(mounted, label, 1).dataset.nodeId }).toEqual({ collapsed: [id], at: id });
+      // B's text written again by another edit: the first twin goes, and the second (folded) stays.
+      if (by === 'the store') await deleteTwin(mounted, twin, 0);
+      else {
+        click(nodeNamed(mounted, label, 0));
+        mounted.key(mounted.canvas, 'Delete');
+        await vi.waitFor(() => { expect(mounted.source()).not.toBe(reached); }, { timeout: 1000, interval: 2 });
+      }
+      await settled(mounted);
+      expect(mounted.source()).toBe(reached.replace(twin, ''));
+      expectFolded(mounted, label, 0, id);
+    });
+  }
+
+  it('the writes past the one a read reaches go when recorded before it began, and stay when recorded while it reads', async () => {
+    // White-box: the record is [A: S→T, B: T→U] when the read begins, and the read finds T: A is spent and B dropped.
+    // Then [A2: T→V] and a read that finds V, while which W (V→X) is recorded: W leads on from V and stays.
+    const mounted = await mount();
+    const view = state(mounted);
+    const internals = mounted.view as unknown as {
+      recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void; refresh(): Promise<void>;
+    };
+    const t = SOURCE.replace('  - 子2\n', '  - 子二\n');
+    const u = t.replace('- 親\n', '- 改名\n');
+    const v = t.replace('  - 子1\n', '  - 子一\n');
+    const x = v.replace('- 親\n', '- 親2\n');
+    internals.recordWrite(mounted.file, { before: SOURCE, after: t, edits: [] });
+    internals.recordWrite(mounted.file, { before: t, after: u, edits: [] });
+    expect(view.ownWrites).toHaveLength(2);
+    mounted.app.put(PATH, t);
+    await internals.refresh();
+    expect(view.document?.source).toBe(t);
+    expect(view.ownWrites).toEqual([]);
+    const w = { before: v, after: x, edits: [] };
+    internals.recordWrite(mounted.file, { before: t, after: v, edits: [] });
+    mounted.app.put(PATH, v);
+    const store = storeOf(mounted);
+    const read = store.read.bind(store);
+    vi.spyOn(store, 'read').mockImplementation(async file => {
+      const text = await read(file);
+      internals.recordWrite(mounted.file, w);
+      return text;
+    });
+    await internals.refresh();
+    expect(view.document?.source).toBe(v);
+    expect(view.ownWrites).toEqual([w]);
+  });
+
+  it('a write with the same texts as one in the record but other edits is recorded over it', async () => {
+    // White-box: the record holds B (T→U: the second twin deleted), left there by whatever path, and the note shows T.
+    // C deletes the first twin: the same texts as B, other edits. Taken for B told twice, C would not be recorded,
+    // and its re-read would carry the ids by B's edits.
+    const twin = '- \n  - 同じ子\n';
+    const t = twinSource(twin);
+    const mounted = await mountMapView(PATH, t, 'mindmap', new HarnessApp());
+    await settled(mounted);
+    const view = state(mounted);
+    const internals = mounted.view as unknown as { recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void };
+    const first = t.indexOf(twin);
+    const u = t.slice(0, first) + t.slice(first + twin.length);
+    const b = { before: t, after: u, edits: [{ from: first + twin.length, to: first + 2 * twin.length, text: '' }] };
+    const c = { before: t, after: u, edits: [{ from: first, to: first + twin.length, text: '' }] };
+    internals.recordWrite(mounted.file, b);
+    expect(view.ownWrites).toEqual([b]);
+    internals.recordWrite(mounted.file, c);
+    expect(view.ownWrites).toEqual([c]);
+    // The same write told twice (the store's word, then the caller's answer, as a copy) is recorded once.
+    internals.recordWrite(mounted.file, { ...c, edits: c.edits.map(edit => ({ ...edit })) });
+    expect(view.ownWrites).toEqual([c]);
+  });
+
+  // Code review 2: the record comes back to the same text more than once before the view reads it — B deletes the
+  // second twin, Z (⌘Z) puts it back, C deletes the first — and the note holds C's text. A replay that stops at the
+  // first write reaching that text (B) carries the ids by B's edits: the twin left, the second, takes the id of the
+  // first, which is gone — its fold and selection with it. It must go on to the last (C), as `WriteRecord.follow`
+  // does; the twin left is then the one Z put back, parsed as a node of its own (a new id: what ⌘Z's insertion gives
+  // any replay, first or last, and not this ticket's). Through a re-read (B, Z, C by the store) and through this
+  // map's own write shown at once (B, Z by the store, C this map's Delete: `showOwnWrite`).
+  for (const { shape, label, twin } of TWIN_SHAPES) for (const by of ['the store', 'Delete in this map'] as const) {
+    it(`the first ${shape} twin deleted (C ${by}) after the second was deleted and put back: its fold stays with it`, async () => {
+      const source = twinSource(twin);
+      const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
+      await settled(mounted);
+      const view = state(mounted);
+      const id = foldAndSelect(mounted, label, 0);
+      const held = holdDebounces();
+      let released = 0;
+      try {
+        // B an edit of the shared history (another map's delete), Z its ⌘Z.
+        const second = source.indexOf(twin, source.indexOf(twin) + twin.length);
+        await storeOf(mounted).applyOver(mounted.file, source, [{ from: second, to: second + twin.length, text: '' }]);
+        await storeOf(mounted).undo(mounted.file);
+        expect(mounted.source()).toBe(source);
+        expect(view.document?.source).toBe(source);
+        if (by === 'the store') await deleteTwin(mounted, twin, 0);
+        else {
+          click(nodeNamed(mounted, label, 0));
+          mounted.key(mounted.canvas, 'Delete');
+          await vi.waitFor(() => { expect(view.saving).toBe(false); expect(mounted.source()).not.toBe(source); }, { timeout: 1000, interval: 2 });
+        }
+        expect(view.ownWrites).toHaveLength(by === 'the store' ? 3 : 0);
+      } finally {
+        released = held.release();
+      }
+      expect(released).toBeGreaterThan(0);
+      await settled(mounted);
+      expect(mounted.source()).toBe(source.replace(twin, ''));
+      // The first twin, folded and selected, is gone: nothing left carries its id, its fold or the selection.
+      const left = nodeNamed(mounted, label, 0).dataset.nodeId;
+      expect({ left: left === id, collapsed: [...view.collapsed].filter(folded => folded === left), selected: view.selectedId === left })
+        .toEqual({ left: false, collapsed: [], selected: false });
+      expect(Notice.log).toEqual([]);
+    });
+  }
 });

@@ -9,14 +9,14 @@ import { projectMap, type MindDocument, type MindNode } from '../../src/core/mar
 import { readTopicPositions } from '../../src/core/topics';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and store run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -58,7 +58,6 @@ async function mount(source = fixtureSource()): Promise<Mounted> {
   const app = new HarnessApp();
   const other = app.put(OTHER, OTHER_SOURCE) as unknown as TFile;
   const mounted = await mountMapView(PATH, source, 'mindmap', app);
-  opened.push(mounted);
   const history = async (shift: boolean): Promise<void> => {
     mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: shift });
     await mounted.settle();
