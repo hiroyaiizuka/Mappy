@@ -3,9 +3,9 @@ import { en } from '../../src/i18n/en';
 import { ja } from '../../src/i18n/ja';
 import { messagesFor, setLanguage, t } from '../../src/i18n';
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
+// Kana, CJK and full-width forms: the same test E63 applies to the English UI on the real Obsidian.
+import { JAPANESE } from '../../scripts/e2e/japanese.mjs';
 
-/** Kana, CJK and full-width forms: text that has no business in the English table. */
-const JAPANESE = /[　-鿿＀-￯]/u;
 
 describe('the text tables (architecture.md §9e)', () => {
   afterEach(() => { setLanguage('ja'); });

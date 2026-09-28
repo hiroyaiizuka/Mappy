@@ -14,7 +14,6 @@ import { HarnessApp } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
 import { setLanguage, t } from '../../src/i18n';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { NEW_TOPIC_TITLE } from '../../src/ui/mindmap-view';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
@@ -144,7 +143,7 @@ describe('a refusal is told by its kind, not its wording (LEV-234)', () => {
     if (!input) throw new Error('No draft on the new topic');
     mounted.key(input, 'Escape');
     await mounted.settle();
-    expect(mounted.source()).toBe(`${SOURCE}\n## ${NEW_TOPIC_TITLE}\n`);
+    expect(mounted.source()).toBe(`${SOURCE}\n## ${t().newTopicTitle}\n`);
     expect(Notice.log).toEqual([]);
     expect(mounted.editor()).toBeNull();
   });

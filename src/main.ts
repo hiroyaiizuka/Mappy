@@ -52,9 +52,9 @@ export default class MappyPlugin extends Plugin {
     // each) through the same callbacks as the commands below; the view only learns their names, lines, icons and
     // checks. The Excalidraw insertion stays a command only.
     const menuActions: MapMenuAction[] = [
-      { title: "マップを検索して呼び出す", description: "他のマップを挿入する", icon: "search",
+      { title: t().cmdCallMap, description: t().popCallDesc, icon: "search",
         check: map => map.file !== null, run: map => { this.searchAndCallMap(map); } },
-      { title: "書き出す", description: "SVG／PNG に保存", icon: "image-down",
+      { title: t().popExport, description: t().popExportDesc, icon: "image-down",
         check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },
     ];
     this.registerView(VIEW_TYPE, leaf => {
@@ -79,7 +79,7 @@ export default class MappyPlugin extends Plugin {
           const { defaultLayout: layout, newMapFolder: folder } = this.settings;
           const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
           await this.open(file, false, layout);
-        }, "マインドマップを作成できませんでした。");
+        }, t().createFailed);
       },
     });
     this.addCommand({
@@ -92,51 +92,51 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "open-mindmap", name: "マインドマップを開く",
+      id: "open-mindmap", name: t().cmdOpen,
       checkCallback: checking => {
         const file = this.activeFile();
         const layout = file ? readMapLayout(this.app, file) : null;
         if (!file || !layout) return false;
-        if (!checking) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
+        if (!checking) this.run(() => this.open(file, false, layout), t().openFailed);
         return true;
       },
     });
     this.addCommand({
-      id: "open-mindmap-split", name: "マインドマップと Markdown を並べる",
+      id: "open-mindmap-split", name: t().cmdOpenSplit,
       checkCallback: checking => {
         const file = this.activeFile();
         const layout = file ? readMapLayout(this.app, file) : null;
         if (!file || !layout) return false;
-        if (!checking) this.run(() => this.open(file, true, layout), "マップを開けませんでした。");
+        if (!checking) this.run(() => this.open(file, true, layout), t().openFailed);
         return true;
       },
     });
     this.addCommand({
-      id: "toggle-mindmap", name: "マップと Markdown を切り替え",
+      id: "toggle-mindmap", name: t().cmdToggle,
       checkCallback: checking => {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (map?.file) {
-          if (!checking) this.run(() => map.showSource(false), "Markdown を開けませんでした。");
+          if (!checking) this.run(() => map.showSource(false), t().markdownOpenFailed);
           return true;
         }
         const file = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
         const layout = file ? readMapLayout(this.app, file) : null;
         if (!file || !layout) return false;
-        if (!checking) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
+        if (!checking) this.run(() => this.open(file, false, layout), t().openFailed);
         return true;
       },
     });
     this.addCommand({
-      id: "remove-mindmap", name: "このノートのマインドマップ化を解除",
+      id: "remove-mindmap", name: t().cmdRemove,
       checkCallback: checking => {
         const file = this.activeFile();
         if (!file || readMapLayout(this.app, file) === null) return false;
-        if (!checking) this.run(() => this.disableMap(file), "マインドマップ化を解除できませんでした。");
+        if (!checking) this.run(() => this.disableMap(file), t().removeFailed);
         return true;
       },
     });
     this.addCommand({
-      id: "insert-into-excalidraw", name: "現在のマップを Excalidraw の図面に挿入",
+      id: "insert-into-excalidraw", name: t().cmdInsertExcalidraw,
       checkCallback: checking => {
         const snapshot = this.app.workspace.getActiveViewOfType(MindmapView)?.snapshot()
           ?? this.markdownSnapshot();
@@ -146,7 +146,7 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "export-map-image", name: "現在のマップを SVG／PNG に書き出し",
+      id: "export-map-image", name: t().cmdExport,
       checkCallback: checking => {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (!map?.file || !canSaveAttachments(this.app)) return false;
@@ -155,7 +155,7 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "call-map", name: "マップを検索して呼び出す",
+      id: "call-map", name: t().cmdCallMap,
       checkCallback: checking => {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (!map?.file) return false;
@@ -164,20 +164,20 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "convert-to-list", name: "現在のマップをリスト形式に変更",
+      id: "convert-to-list", name: t().cmdConvertToList,
       checkCallback: checking => {
         const map = this.app.workspace.getActiveViewOfType(MindmapView);
         if (!map?.file) return false;
-        if (!checking) this.run(() => map.convertToList(), "形式を変更できませんでした。");
+        if (!checking) this.run(() => map.convertToList(), t().formatFailed);
         return true;
       },
     });
-    this.addRibbonIcon("git-fork", "マインドマップを開く", () => {
+    this.addRibbonIcon("git-fork", t().cmdOpen, () => {
       const file = this.activeFile();
       const layout = file ? readMapLayout(this.app, file) : null;
-      if (file && layout) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
+      if (file && layout) this.run(() => this.open(file, false, layout), t().openFailed);
       else if (file && isMappyCandidate(this.app, file)) new Notice(t().convertFirst(t().cmdConvertNote));
-      else new Notice("Markdown ノートを開いてください。");
+      else new Notice(t().openMarkdownNote);
     });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       if (!(file instanceof TFile) || !isMappyCandidate(this.app, file)) return;
@@ -187,10 +187,10 @@ export default class MappyPlugin extends Plugin {
           .onClick(() => { this.enableMap(file); }));
         return;
       }
-      menu.addItem(item => item.setTitle("マインドマップを開く").setIcon("git-fork")
-        .onClick(() => { this.run(() => this.open(file, false, layout), "マップを開けませんでした。"); }));
-      menu.addItem(item => item.setTitle("マインドマップ化を解除").setIcon("file-text")
-        .onClick(() => { this.run(() => this.disableMap(file), "マインドマップ化を解除できませんでした。"); }));
+      menu.addItem(item => item.setTitle(t().cmdOpen).setIcon("git-fork")
+        .onClick(() => { this.run(() => this.open(file, false, layout), t().openFailed); }));
+      menu.addItem(item => item.setTitle(t().menuRemove).setIcon("file-text")
+        .onClick(() => { this.run(() => this.disableMap(file), t().removeFailed); }));
     }));
   }
 
@@ -217,7 +217,7 @@ export default class MappyPlugin extends Plugin {
     const file = map.file;
     if (!file) return;
     new MapSearchModal(this.app, file, target => {
-      this.run(() => map.callMap(target), "マップを呼び出せませんでした。");
+      this.run(() => map.callMap(target), t().callFailed);
     }).open();
   }
 
@@ -232,9 +232,9 @@ export default class MappyPlugin extends Plugin {
     this.run(async () => {
       const png = await canRasterizeForeignObject();
       new ExportModal(this.app, png, format => {
-        this.run(async () => { new Notice(`${(await map.exportImage(format)).path} に書き出しました。`); }, "書き出しに失敗しました。");
+        this.run(async () => { new Notice(t().exportedTo((await map.exportImage(format)).path)); }, t().exportFailed);
       }).open();
-    }, "書き出しを始められませんでした。");
+    }, t().exportStartFailed);
   }
 
   /**
@@ -267,7 +267,7 @@ export default class MappyPlugin extends Plugin {
     this.run(async () => {
       await writeMapLayout(this.app, file, layout);
       await this.open(file, false, layout);
-    }, "ノートをマインドマップ化できませんでした。");
+    }, t().convertNoteFailed);
   }
 
   private async disableMap(file: TFile): Promise<void> {

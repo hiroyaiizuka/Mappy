@@ -242,7 +242,7 @@ try {
     await cdp.realKey('Tab');
     await wait(800);
     const added = await evaluate(`${VIEW} return { editing: !!input(), value: input()?.value ?? null, source: await source() };`);
-    // The provisional name is the plugin's (NEW_NODE_TITLE); any one child added under 別のノード is the row's.
+    // The provisional name is the plugin's (t().newNodeTitle, in Japanese here); any one child added under 別のノード is the row's.
     if (!added.editing || !/- 別のノード\n {2}- [^\n]+\n$/u.test(added.source)) throw new Error(`Tab did not add a child with its draft open: ${JSON.stringify(added)}`);
     const closed = await closeTab();
     check(closed.gone, '5-new-node: the tab did not close');
