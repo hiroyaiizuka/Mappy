@@ -188,7 +188,10 @@ try {
       const back = await read(shape.label, 1);
       check(back.id === toggled.id && back.folded === false, `${shape.name}: the put-back itself moved the node (${JSON.stringify({ toggled, back })})`);
 
-      // The twin before the row's node renamed in the map tab, with real keys.
+      // The twin before the row's node renamed in the map tab, with real keys. The split below left the map tab where
+      // the whole pane placed it, the lower nodes out of it: 全体表示 first (a real click, by the button's name).
+      await clickAt(`return el.querySelector('.mappy-button[aria-label="全体表示"]');`);
+      await wait(600);
       await select(shape.label, 0);
       const renamed = await rename(TWIN);
       await embedShows(TWIN);
