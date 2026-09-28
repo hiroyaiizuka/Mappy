@@ -87,17 +87,20 @@ function inBlock(blocks: Ranges, line: SourceLine): boolean {
 
 /**
  * Where a list item line's marker and content start, in columns (`itemContentColumn`, as the map reads items); `null`
- * for another line, a thematic break (`* * *`) included. Tasks and ordered items count, though the map does not draw them.
+ * for another line, a thematic break (`* * *`) included. Tasks and ordered items count, though the map does not draw
+ * them. After a line of text (`lazy`), an ordered marker other than `1.` continues that text (CommonMark).
  */
-function itemColumns(text: string): { indent: number; content: number } | null {
+function itemColumns(line: string, lazy = false): { indent: number; content: number } | null {
+  const text = line.replace(/\r$/u, '');
   if (/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/u.test(text)) return null;
   const match = /^([ \t]*)([-+*]|\d{1,9}[.)])([ \t]*)/u.exec(text);
   if (!match) return null;
   const [whole, lead = '', marker = '', gap = ''] = match;
+  if (lazy && /^\d/u.test(marker) && !/^0*1[.)]$/u.test(marker)) return null;
   const empty = whole.length === text.length;
   if (!gap && !empty) return null;
-  const markerColumn = indentationWidth(lead + marker);
-  return { indent: indentationWidth(lead), content: itemContentColumn(markerColumn, empty ? markerColumn : indentationWidth(whole)) };
+  const markerColumn = indentColumns(lead + marker);
+  return { indent: indentColumns(lead), content: itemContentColumn(markerColumn, empty ? markerColumn : indentColumns(whole)) };
 }
 
 /** The heading section (or the root, for a list before the first heading) a node's list belongs to. */
@@ -115,16 +118,35 @@ function listRange(topic: MindNode): { from: number; to: number } | null {
   return first && last ? { from: first.from, to: last.to } : null;
 }
 
-/** The unit the indented list item lines in `ranges` use: `mixed` if both, `undefined` if none is indented. */
+/**
+ * The unit the indented list item lines in `ranges` use: `mixed` if both, `undefined` if none is indented. The items
+ * the map draws decide it; tasks and ordered items only when none of those is indented. Code and HTML blocks are
+ * parsed out only when the lines disagree.
+ */
 function unitOf(doc: MindDocument, ranges: ({ from: number; to: number } | null)[]): IndentUnit | 'mixed' | undefined {
   const text = readable(doc);
-  const leads = ranges.flatMap(range => (range ? sourceLines(text, range.from, range.to) : []))
-    .filter(line => leadingWhitespace(line.text) && itemColumns(line.text));
+  const nodes = new Set(doc.nodes.map(node => node.from));
+  const items = ranges.flatMap(range => {
+    if (!range) return [];
+    let lazy = false;
+    return sourceLines(text, range.from, range.to).filter(line => {
+      const found = leadingWhitespace(line.text) !== '' && itemColumns(line.text, lazy) !== null;
+      lazy = line.text.trim() !== '';
+      return found;
+    });
+  });
+  const decide = (blocks: Ranges): IndentUnit | 'mixed' | undefined => {
+    const kept = items.filter(line => !inBlock(blocks, line));
+    const drawn = kept.filter(line => nodes.has(line.from));
+    return unitOfLeads(drawn.length > 0 ? drawn : kept);
+  };
+  const unit = decide([]);
+  return unit === 'mixed' ? decide(verbatimBlocks(doc)) : unit;
+}
+
+function unitOfLeads(lines: SourceLine[]): IndentUnit | 'mixed' | undefined {
   let unit: IndentUnit | undefined;
-  if (leads.length === 0) return unit;
-  const blocks = verbatimBlocks(doc);
-  for (const line of leads) {
-    if (inBlock(blocks, line)) continue;
+  for (const line of lines) {
     const lead = leadingWhitespace(line.text);
     const own = /^\t+$/u.test(lead) ? 'tab' : /^ +$/u.test(lead) ? 'space' : 'mixed';
     if (own === 'mixed' || (unit && unit !== own)) return 'mixed';
@@ -157,7 +179,7 @@ function whitespace(width: number, unit: IndentUnit, item: boolean): string {
 }
 
 function itemIndent(indent: string, unit: IndentUnit): string {
-  return fits(indent, unit, true) ? indent : whitespace(indentationWidth(indent), unit, true);
+  return fits(indent, unit, true) ? indent : whitespace(indentColumns(indent), unit, true);
 }
 
 function childStyle(doc: MindDocument, parent: MindNode, omittedId?: string): { indent: string; marker: string } {
@@ -169,7 +191,7 @@ function childStyle(doc: MindDocument, parent: MindNode, omittedId?: string): { 
     if (ancestor && parent.list.indent.startsWith(ancestor.indent)) {
       const step = parent.list.indent.slice(ancestor.indent.length);
       const candidate = parent.list.indent + step;
-      if (step && indentationWidth(candidate) >= parent.list.contentIndent.length) indent = candidate;
+      if (step && indentColumns(candidate) >= parent.list.contentIndent.length) indent = candidate;
     }
   }
   return {
@@ -189,16 +211,12 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
   assertSingleLine(title);
   const heading = node.kind === 'root' || (sibling && node.kind !== 'list');
   const parent = sibling ? getNode(doc, node.parentId ?? 'root') : node;
-  const style = sibling && node.list ? { indent: itemIndent(node.list.indent, indentUnit(doc, parent)), marker: node.list.marker } : childStyle(doc, parent);
   const offset = sibling || heading ? node.to : appendOffset(node);
-  const body = `${heading ? '## ' : `${style.indent}${style.marker} `}${title}`;
+  const style = heading ? null : sibling && node.list ? { indent: itemIndent(node.list.indent, indentUnit(doc, parent)), marker: node.list.marker } : childStyle(doc, parent);
+  const body = `${style ? `${style.indent}${style.marker} ` : '## '}${title}`;
   const insert = insertion(doc.source, offset, body, doc.eol, heading || (node.kind !== 'list' && node.children.length === 0));
   return validate(doc, [{ from: offset, to: offset, text: insert.text }], doc.nodes.length + 1,
     offset + insert.prefix.length, { kind: heading ? 'atx' : 'list', level: heading ? 2 : parent.level + 1, title: title.trim() });
-}
-
-function indentationWidth(indent: string): number {
-  return indentColumns(indent);
 }
 
 interface Column { old: number; new: number }
@@ -206,13 +224,16 @@ interface Column { old: number; new: number }
 /**
  * The lines of a branch below its first line, for a first line whose content column moves from `root.old` to
  * `root.new`, with new indentation in `unit` (LEV-225). A list item sits at its parent's new content column (the
- * next tab stop in a tab list; its own offset from it too in a space list, when it was written in spaces); any other
- * line moves with the content column of the item it is in. A line of a code or HTML block (`blocks`) changes only
- * that item's indentation in front of it, so the block keeps its bytes. A line whose column does not change and, for
- * an item, whose indentation is already in `unit` keeps its bytes, unless `rewrite` (the branch's own indentation is
- * rewritten, or it moves into another list): then every line is written in `unit`. Empty lines stay empty.
+ * next tab stop in a tab list; its own offset from it too in a space list, when it was written in spaces). Any other
+ * line changes only the indentation in front of the content of the item it is in, so body text, code and HTML keep
+ * their bytes past it; a line left of that content moves with it. A line whose column does not change and, for an
+ * item, whose indentation is already in `unit` keeps its bytes, unless `rewrite` (the branch's own indentation is
+ * rewritten, or it moves into another list): then the indentation in front of every line is written in `unit`.
+ * Empty lines and the lines of a `%%…%%` comment (blank in `readableText`, as the map reads them) stay as they are.
  */
-function reindented(lines: SourceLine[], root: Column, unit: IndentUnit, blocks: Ranges, rewrite: boolean): string[] {
+function reindented(
+  lines: SourceLine[], readableText: string, root: Column, unit: IndentUnit, blocks: Ranges, rewrite: boolean,
+): string[] {
   const open: Column[] = [root];
   let blank = true;
   // A line left of an item's content ends that item, but a paragraph's next line can be lazy (CommonMark): only code, or a line after a blank one, does.
@@ -220,15 +241,15 @@ function reindented(lines: SourceLine[], root: Column, unit: IndentUnit, blocks:
   return lines.map(line => {
     const body = line.text.replace(/\r$/u, '');
     const end = line.text.slice(body.length);
+    const read = readableText.slice(line.from, line.from + body.length);
     const verbatim = inBlock(blocks, line);
-    const empty = !body.trim();
     const wasBlank = blank;
-    blank = empty;
-    if (!body || (!verbatim && empty)) return line.text;
+    blank = !read.trim();
+    if (!body || (!verbatim && !read.trim())) return line.text;
     const lead = leadingWhitespace(body);
     const rest = body.slice(lead.length);
-    const width = indentationWidth(lead);
-    const item = verbatim ? null : itemColumns(body);
+    const width = indentColumns(lead);
+    const item = verbatim ? null : itemColumns(read, !wasBlank);
     if (item) {
       close(width);
       const parent = open[open.length - 1] ?? root;
@@ -242,7 +263,7 @@ function reindented(lines: SourceLine[], root: Column, unit: IndentUnit, blocks:
     if (verbatim || wasBlank) close(width);
     const at = [...open].reverse().find(candidate => candidate.old <= width) ?? root;
     if (at.new === at.old && !rewrite) return line.text;
-    if (!verbatim || width < at.old) return whitespace(Math.max(0, width + at.new - at.old), unit, false) + rest + end;
+    if (width < at.old) return whitespace(Math.max(0, width + at.new - at.old), unit, false) + rest + end;
     const inside = dedented(body, at.old);
     return whitespace(at.new, unit, false) + ' '.repeat(inside.overshoot) + inside.rest + end;
   });
@@ -258,14 +279,17 @@ function shiftedBranch(doc: MindDocument, node: MindNode, parent: MindNode, targ
   const originalIndent = node.list?.indent ?? '';
   const topic = topicOf(doc, node);
   const rewrite = indent !== originalIndent || topicOf(doc, parent).id !== topic.id;
+  const text = readable(doc);
   const [first, ...rest] = sourceLines(doc.source, node.from, node.to);
-  if (!rewrite && rest.every(line => !itemColumns(line.text) || fits(leadingWhitespace(line.text), unit, true))) {
+  const own = (line: SourceLine) => text.slice(line.from, line.from + line.text.length);
+  if (!rewrite && rest.every(line => !itemColumns(own(line)) || fits(leadingWhitespace(line.text), unit, true))) {
     return doc.source.slice(node.from, node.to);
   }
-  const old = indentationWidth(node.list?.contentIndent ?? '');
-  const root = { old, new: indentationWidth(indent) + old - indentationWidth(originalIndent) };
-  const blocks = verbatimBlocks(doc);
-  return [indent + (first?.text ?? '').slice(originalIndent.length), ...reindented(rest, root, unit, blocks, rewrite)].join('\n');
+  const head = indent + (first?.text ?? '').slice(originalIndent.length);
+  const old = indentColumns(node.list?.contentIndent ?? '');
+  // Measured on the written line, as for the items below it: a tab after the marker spans a different width at another column.
+  const root = { old, new: itemColumns(head)?.content ?? old };
+  return [head, ...reindented(rest, text, root, unit, verbatimBlocks(doc), rewrite)].join('\n');
 }
 
 function withoutEndNewline(doc: MindDocument, text: string, to: number): string {
@@ -342,7 +366,7 @@ function sectionAsBranch(doc: MindDocument, node: MindNode, style: { indent: str
   const from = node.bodyFrom + (/^(?:[ \t]*\r?\n)+/u.exec(doc.source.slice(node.bodyFrom, node.to))?.[0].length ?? 0);
   const body = doc.source.slice(from, node.to).replace(/(?:\r?\n)+$/u, '');
   // Everything moves under the item's content column, in the list's unit (LEV-225); empty lines stay empty.
-  const lines = body ? reindented(sourceLines(doc.source, from, from + body.length), { old: 0, new: indentationWidth(lead) }, unit,
+  const lines = body ? reindented(sourceLines(doc.source, from, from + body.length), readable(doc), { old: 0, new: indentColumns(lead) }, unit,
     verbatimBlocks(doc), true).map(line => line.replace(/\r$/u, '')) : [];
   return [`${lead}${node.title}`, ...lines].join(doc.eol);
 }
@@ -372,7 +396,7 @@ function dedent(line: string, width: number): string {
  * their bytes and the nested items become the section's own list.
  */
 function branchAsSection(doc: MindDocument, node: MindNode): string {
-  const width = indentationWidth(node.list?.contentIndent ?? '');
+  const width = indentColumns(node.list?.contentIndent ?? '');
   const body = doc.source.slice(node.bodyFrom, node.to).replace(/^(?:[ \t]*\r?\n)+/u, '').replace(/(?:\r?\n)+$/u, '');
   const lines = body ? body.split(/\r?\n/u).map(line => dedent(line, width)) : [];
   return [`## ${node.title}`, ...(lines.length > 0 ? ['', ...lines] : [])].join(doc.eol);

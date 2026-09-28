@@ -536,6 +536,13 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
     // Review 2: adding in a mixed list writes spaces, as moving does.
     ['mixed list, child after existing children', '## R\n- P\n\t- X\n    - Z\n', 'add-child', 'P', undefined, '## R\n- P\n\t- X\n    - Z\n    - B1\n'],
     ['mixed list, sibling of a tab item', '## R\n- P\n\t- X\n    - Z\n', 'add-sibling', 'X', undefined, '## R\n- P\n\t- X\n    - B1\n    - Z\n'],
+    // Review 3: body text past the item's content column keeps its bytes; comments are not items; CRLF and lazy
+    // `2024.` lines are read as the map reads them; the items the map draws decide the unit before tasks do.
+    ['body tab past the content column', '## R\n- A\n- B\n  \tfoo\n', 'reparent', 'B', 'A', '## R\n- A\n  - B\n    \tfoo\n'],
+    ['list-like line in a comment, moved at the same indent', '## R\n- A\n\t- B\n\t\t%%\n\t\t  - note\n\t\t%%\n\t\tmore\n\t- C\n', 'move-down', 'B', undefined, '## R\n- A\n\t- C\n\t- B\n\t\t%%\n\t\t  - note\n\t\t%%\n\t\tmore\n'],
+    ['CRLF tab list with an indented rule', '## R\r\n- A\r\n\t- A1\r\n\r\n  * * *\r\n- B\r\n', 'add-child', 'B', undefined, '## R\r\n- A\r\n\t- A1\r\n\r\n  * * *\r\n- B\r\n\t- B1\r\n'],
+    ['tab list with a lazy line starting like an ordered item', '## R\n- A\n\t- A1\n  2024. was a year\n- B\n', 'add-child', 'B', undefined, '## R\n- A\n\t- A1\n  2024. was a year\n- B\n\t- B1\n'],
+    ['tab items with a space-indented task in the topic', '## R\n- a\n\t- b\n  - [ ] t\n      - sub\n', 'add-child', 'b', undefined, '## R\n- a\n\t- b\n\t\t- B1\n  - [ ] t\n      - sub\n'],
   ])('%s', (_name, source, type, title, target, expected) => {
     const doc = parse(source);
     const nodeId = find(doc, title).id;
@@ -555,6 +562,7 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
   // Review 2: a paragraph after a blank line ends the nested items to its right; a tab after the marker is measured where it lands.
   it.each([
     ['a topic whose nested item is ended by a paragraph', '## R\n- A\n\t- A1\n\n## S\n- a\n  - b\n\n  para\n    - c\n', 'S', 'A', ['R', 'A', 'A1', 'S', 'a', 'b', 'c'], 'c', 'a'],
+    ['a branch whose own marker is followed by a tab (review 3)', '## R\n- A\n  - A1\n\n## S\n-\tB\n       - B1\n', 'B', 'A', ['R', 'A', 'A1', 'B', 'B1', 'S'], 'B1', 'B'],
     ['a branch with a tab after an item marker', '## R\n- A\n   - A1\n\n## S\n- D\n  -\tD1\n    - x\n', 'D', 'A', ['R', 'A', 'A1', 'D', 'D1', 'x', 'S'], 'x', 'D1'],
   ])('keeps the tree when moving %s', (_name, source, title, target, titles, child, parent) => {
     const doc = parse(source);
