@@ -153,14 +153,98 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(Notice.log).toEqual([t().exitDraftNotSaved('外で変わったノードの下書き', t().draftChanged)]);
   });
 
-  it('leaves the note and says so when the note changed while the window reloaded', async () => {
+  // Review 1: the kept edit was checked against the exact note it was planned on, so any change elsewhere in the
+  // meantime dropped it.
+  it('applies over another line changed while the window reloaded', async () => {
     const { mounted, owner } = await draft('間に変わったノートの下書き');
     window.dispatchEvent(new Event('pagehide'));
     const changed = SOURCE.replace('- 別のノード\n', '- 再読込の間に足した\n');
     mounted.app.put(PATH, changed);
     const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('間に変わったノートの下書き', changed));
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('leaves the note and says so when the node itself changed while the window reloaded', async () => {
+    const { mounted, owner } = await draft('間に変わったノードの下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    const changed = SOURCE.replace('  - 子ノード\n', '  - 子ノード（外で）\n');
+    mounted.app.put(PATH, changed);
+    const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(changed);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('間に変わったノートの下書き', t().exitNoteChanged)]);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('間に変わったノードの下書き', t().exitNoteChanged)]);
+  });
+
+  // Review 1: a change the map had not read yet (within the re-read's debounce) made the kept edit's note stale.
+  it('applies over another line changed outside the map that it had not read when the page went', async () => {
+    const { mounted, owner } = await draft('読む前に再読込した下書き');
+    const other = SOURCE.replace('- 別のノード\n', '- 外で書き足した\n');
+    const silent = vi.spyOn(mounted.app.vaultEvents, 'trigger').mockImplementation(() => undefined);
+    mounted.app.put(PATH, other);
+    silent.mockRestore();
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('読む前に再読込した下書き', other));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 1: two maps of one note each with a draft; the first applied made the second's note stale.
+  it('applies the drafts of two maps of the same note on different nodes', async () => {
+    const first = await mountMapView(PATH, SOURCE);
+    opened.push(first);
+    const store = (first.view as unknown as { store: DocumentStore }).store;
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
+    opened.push(second);
+    const owner = install(first.app, store, () => [first.view, second.view]);
+    for (const [mounted, node, title] of [[first, '子ノード', '一つ目のマップの下書き'], [second, '別のノード', '二つ目のマップの下書き']] as const) {
+      mounted.key(mounted.select(node), 'F2');
+      await mounted.settle();
+      const input = mounted.editor()!;
+      input.value = title;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    opened.splice(opened.indexOf(second), 1);
+    second.view.containerEl.remove();
+    const app = await reload(first, owner);
+    expect(noteOf(app)).toBe(renamed('一つ目のマップの下書き').replace('- 別のノード\n', '- 二つ目のマップの下書き\n'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 1: a page kept for coming back to (`persisted`) is not going; its draft stays open.
+  it('keeps the draft open on a pagehide of a page that is kept', async () => {
+    const { mounted } = await draft('残るページの下書き');
+    const event = new Event('pagehide');
+    Object.defineProperty(event, 'persisted', { value: true });
+    window.dispatchEvent(event);
+    expect(mounted.editor()).not.toBeNull();
+    expect(mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+  });
+
+  // Review 1: a page that went before applying what the page before it kept overwrote that.
+  it('adds to drafts kept by an earlier page that were not applied yet', async () => {
+    const { mounted, owner } = await draft('二度目の再読込の下書き');
+    const earlier = [{ path: 'Fixtures/other.md', title: '前のページの下書き', refused: 'x' }];
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, earlier);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('二度目の再読込の下書き'));
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('前のページの下書き', 'x')]);
+  });
+
+  it('applies nothing once Mappy is unloaded, and leaves the rest for the next load', async () => {
+    const app = new HarnessApp();
+    app.put(PATH, SOURCE);
+    const kept = [{ path: 'Fixtures/other.md', title: '後の読み込みへ', refused: 'x' }];
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, kept);
+    // The layout becomes ready only after Mappy was unloaded (disabled or reloaded during startup).
+    let ready: () => unknown = () => undefined;
+    vi.spyOn(app.workspace, 'onLayoutReady').mockImplementation(callback => { ready = callback; });
+    const owner = new Component();
+    owner.load();
+    installExitDrafts(owner as never, app.asApp<App>(), new DocumentStore(app.asApp<App>()), () => []);
+    owner.unload();
+    ready();
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(Notice.log).toEqual([]);
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toEqual(kept);
   });
 
   it('says so when the note is gone after the reload', async () => {

@@ -1,7 +1,7 @@
 import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type EditPlan, type MoveCommand, type TextEdit } from "../core/commands";
-import { textFingerprint, type ExitDraft } from "../core/exit-drafts";
+import { EXIT_SOURCE_LIMIT, textFingerprint, type ExitDraft } from "../core/exit-drafts";
 import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
@@ -844,7 +844,8 @@ export class MindmapView extends FileView {
       const { current, plan } = this.planTitle(file, draft, title);
       const after = applyEdits(current.source, plan.edits);
       if (after === current.source) return null;
-      return { path: file.path, title, before: textFingerprint(current.source), after: textFingerprint(after), edits: plan.edits };
+      const source = current.source.length <= EXIT_SOURCE_LIMIT ? { source: current.source } : {};
+      return { path: file.path, title, before: textFingerprint(current.source), after: textFingerprint(after), edits: plan.edits, ...source };
     } catch (error) {
       return { path: file.path, title, refused: error instanceof Error ? error.message : "" };
     }

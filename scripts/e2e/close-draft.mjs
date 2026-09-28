@@ -25,15 +25,16 @@
  * on close keeps those, not that it was needed. Rows 2, 3, 3b, 4 and 7 fail there (lost without a word).
  *
  * With `--exits`, the two ends that do not go through the view's `onClose` follow (LEV-230, judged since then):
- * 8. reload: F2 → text → `app:reload`: after the reload the note has the text, with no Notice (kept at `pagehide`
- *    and applied as Mappy loads again). 8b. reload-held-own-node: row 4's held draft → `app:reload`: the note keeps
+ * 8. reload: F2 → text → `app:reload`: after the reload the note has the text, with no Notice saying otherwise (kept
+ *    at `pagehide` and applied as Mappy loads again). 8b. reload-held-own-node: row 4's held draft → `app:reload`: the note keeps
  *    the outside change and a Notice after the reload names the draft. 9. quit: row 3's held draft (its blur does not
  *    save it) → Obsidian quit (`app.quit()`): the process ends (not only the window: a quit that waits for a task
  *    leaves Obsidian running with no window on macOS), the note on disk is as before the quit (kept, not written as
  *    the page went), and once the case has launched Obsidian again (macOS only: `open -na`, the profile
  *    `MAPPY_E2E_PROFILE`, default `artifacts/obsidian-profile`, and the same port) the note has the draft over the
- *    change, with no Notice. On 0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit passes
- *    there too (the window's blur after `unload` saves it), so row 9 uses a held one. The quit comes last.
+ *    change, with no Notice saying otherwise, and the kept entry is used up (8 too: an apply that threw before the
+ *    page's error collector was installed again would leave it). Notices of others at launch are not counted. On
+ *    0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit passes there too (the window's blur after `unload` saves it), so row 9 uses a held one. The quit comes last.
  *
  * Usage: npm run harness:e2e:close-draft -- [--reload] [--json <out.json>] [--keep] [--exits]
  */
@@ -58,6 +59,8 @@ const renamed = (title, from = SOURCE) => from.replace('  - 子ノード\n', `  
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 const NOT_SAVED = '編集中の内容を保存できませんでした';
 const EXIT_NOT_SAVED = '再読込・終了のときに編集していた';
+/** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`: empty once the plugin has applied what the page before kept. */
+const EXIT_KEY = 'mappy-exit-drafts';
 
 /** Row 9 launches Obsidian again after its quit, with the profile the harness names (docs/harness.md 実機検証). */
 const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
@@ -335,8 +338,8 @@ try {
   });
 
   if (flag('--exits')) {
-    // Neither end goes through the view's onClose (LEV-230): the reload keeps the draft for the plugin's next load, the
-    // quit saves it in the task Obsidian waits for.
+    // Neither end goes through the view's onClose (LEV-230): both keep the draft at `pagehide`, and the plugin applies it
+    // as it loads again (after the reload, at the next launch).
     /** `app:reload`, then the reloaded window with the error collector installed again and time for the kept drafts. */
     const reloadWindow = async () => {
       await evaluate(`window.__mappyE2E = null; setTimeout(() => app.commands.executeCommandById('app:reload'), 0); return true;`);
@@ -347,7 +350,7 @@ try {
       await wait(1500);
       return evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
         notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
-        errors: [...(window.__mappyE2EErrors ?? [])] };`);
+        errors: [...(window.__mappyE2EErrors ?? [])], kept: app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) };`);
     };
     await step('8-reload', async () => {
       await reset();
@@ -357,7 +360,8 @@ try {
       await detachAll();
       check(after.errors.length === 0, `8-reload: page errors after the reload: ${JSON.stringify(after.errors).slice(0, 1500)}`);
       check(after.source === renamed('再読込の前の下書き'), `8-reload: the reload lost the draft: ${JSON.stringify(after.source)}`);
-      check(after.notices.length === 0, `8-reload: a Notice showed: ${JSON.stringify(after.notices)}`);
+      check(!after.notices.some(item => item.includes(EXIT_NOT_SAVED)), `8-reload: a Notice said the draft was not saved: ${JSON.stringify(after.notices)}`);
+      check(after.kept === null, `8-reload: the kept drafts were not used up after the reload: ${JSON.stringify(after.kept)}`);
       return { outcome: after.source === renamed('再読込の前の下書き') ? 'saved' : after.source === SOURCE ? 'dropped' : 'other', ...after };
     });
     await step('8b-reload-held-own-node', async () => {
@@ -379,7 +383,7 @@ try {
         `8b-reload-held-own-node: no Notice after the reload named the draft that was not saved: ${JSON.stringify(after.notices)}`);
       return { held, ...after };
     });
-    // A held draft: its blur does not save it (LEV-202), so what saves it is the quit's own task. A plain draft passes on
+    // A held draft: its blur does not save it (LEV-202), so only the draft kept at `pagehide` can. A plain draft passes on
     // 0.3.9 too, saved by the window's blur after `unload` (artifacts/lev-230), and would not tell the two apart.
     await step('9-quit', async () => {
       if (process.platform !== 'darwin') throw new Error('9-quit launches Obsidian again after the quit, which the case does only on macOS');
@@ -408,16 +412,18 @@ try {
       const onDisk = await readFile(join(VAULT, NOTE), 'utf8');
       // The draft is kept for the next launch, not written as the page went (nothing half-written).
       check(onDisk === other, `9-quit: the note on disk after the quit is not the note before it: ${JSON.stringify(onDisk)}`);
-      spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`]);
+      const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
+      if (launched.status !== 0) throw new Error(`open could not launch Obsidian again (${launched.status}): ${launched.stderr || launched.error}`);
       await reconnect();
+      quitDone = false;
       await evaluate(`${ERRORS} return true;`);
       await wait(2000);
       const after = await evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
         notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
-        errors: [...(window.__mappyE2EErrors ?? [])] };`);
-      quitDone = false;
+        errors: [...(window.__mappyE2EErrors ?? [])], kept: app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) };`);
       check(after.source === renamed('終了の前の下書き', other), `9-quit: the next launch did not apply the held draft over the change: ${JSON.stringify(after.source)}`);
-      check(after.notices.length === 0, `9-quit: a Notice showed after the launch: ${JSON.stringify(after.notices)}`);
+      check(!after.notices.some(item => item.includes(EXIT_NOT_SAVED)), `9-quit: a Notice after the launch said the draft was not saved: ${JSON.stringify(after.notices)}`);
+      check(after.kept === null, `9-quit: the kept drafts were not used up after the launch: ${JSON.stringify(after.kept)}`);
       check(after.errors.length === 0, `9-quit: page errors after the launch: ${JSON.stringify(after.errors).slice(0, 1500)}`);
       return { held, onDisk, outcome: after.source === renamed('終了の前の下書き', other) ? 'saved' : after.source === other ? 'dropped' : 'other', ...after };
     });
