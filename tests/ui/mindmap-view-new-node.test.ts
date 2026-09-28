@@ -12,8 +12,8 @@
  */
 import type { App } from 'obsidian';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { HarnessApp } from '../../harness/browser/app';
-import { installObsidianDom } from '../../harness/browser/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { installObsidianDom } from '../browser-harness/dom';
 import type { MindDocument } from '../../src/core/markdown';
 import type { LayoutMode } from '../../src/layout/layout';
 import { ConflictError } from '../../src/obsidian/conflict-error';
@@ -23,7 +23,7 @@ import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {

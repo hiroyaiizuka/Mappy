@@ -5,7 +5,7 @@
  *   node scripts/browser-harness.mjs --serve    build, watch and serve on 127.0.0.1
  *   node scripts/browser-harness.mjs --serve --port 8765
  *
- * The same esbuild as the plugin bundles harness/browser/main.ts; the `obsidian`
+ * The same esbuild as the plugin bundles tests/browser-harness/main.ts; the `obsidian`
  * import is aliased to the browser mock and fixture text is embedded via `?raw`.
  */
 import { context } from 'esbuild';
@@ -43,8 +43,8 @@ function commitHash() {
 async function copyStatic() {
   await mkdir(harnessOutput, { recursive: true });
   await Promise.all([
-    copyFile(join(root, 'harness', 'browser', 'index.html'), join(harnessOutput, 'index.html')),
-    copyFile(join(root, 'harness', 'browser', 'harness.css'), join(harnessOutput, 'harness.css')),
+    copyFile(join(root, 'tests', 'browser-harness', 'index.html'), join(harnessOutput, 'index.html')),
+    copyFile(join(root, 'tests', 'browser-harness', 'harness.css'), join(harnessOutput, 'harness.css')),
     copyFile(join(root, 'styles.css'), join(harnessOutput, 'styles.css')),
   ]);
 }
@@ -52,14 +52,14 @@ async function copyStatic() {
 function createContext() {
   return context({
     absWorkingDir: root,
-    entryPoints: ['harness/browser/main.ts'],
+    entryPoints: ['tests/browser-harness/main.ts'],
     outfile: 'dist/harness/main.js',
     bundle: true,
     platform: 'browser',
     format: 'iife',
     target: 'es2021',
     sourcemap: true,
-    alias: { obsidian: './harness/browser/obsidian.ts' },
+    alias: { obsidian: './tests/browser-harness/obsidian.ts' },
     plugins: [rawLoader],
     define: {
       __MAPPY_HARNESS_BUILD__: JSON.stringify({ commit: commitHash(), builtAt: new Date().toISOString() }),

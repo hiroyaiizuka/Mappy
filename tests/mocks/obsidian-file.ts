@@ -1,6 +1,6 @@
 /**
  * File members shared by the Node mock (`./obsidian.ts`) and the browser
- * harness (`harness/browser/obsidian.ts`), kept apart from the mocked module id
+ * harness (`tests/browser-harness/obsidian.ts`), kept apart from the mocked module id
  * so a test can substitute the harness module for `obsidian` without a cycle.
  */
 export class TFile {

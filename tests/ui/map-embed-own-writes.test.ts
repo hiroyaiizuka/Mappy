@@ -17,9 +17,9 @@
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, MarkdownPostProcessorContext } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
-import { Component, MarkdownRenderer } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { Component, MarkdownRenderer } from '../browser-harness/obsidian';
 import { layoutLabel } from '../../src/core/layout-mode';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { MapEmbeds } from '../../src/ui/map-embed';
@@ -27,7 +27,7 @@ import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 const PATH = 'Fixtures/undo-ids.md';

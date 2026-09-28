@@ -15,7 +15,7 @@
  * `repeat` loads in a fresh view, `repeat` Markdown-side edits, `repeat` inline
  * edits (`keystrokes` keystrokes in total, each followed by Enter), two pan and
  * zoom runs of `frames` frames, and two free-topic drags of `frames` pointer
- * moves. The stages come from harness/browser/measure.ts;
+ * moves. The stages come from tests/browser-harness/measure.ts;
  * this script only drives the page, summarises and writes samples.json,
  * summary.json and record.md. Without Chrome it writes a record marking the run
  * as not executed and exits with 2.

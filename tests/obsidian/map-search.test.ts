@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, TFile } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
 import { MapSearchModal, listMapNotes, searchText } from '../../src/obsidian/map-search';
 
 // The browser-harness stand-in for `obsidian`: FuzzySuggestModal over a real DOM, the metadata cache from the in-memory vault.
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(() => { document.body.replaceChildren(); });

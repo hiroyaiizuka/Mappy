@@ -41,9 +41,9 @@
  * of either; they pin that the user's own next key keeps the fold through the window.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
-import { Notice } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { Notice } from '../browser-harness/obsidian';
 import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindDocument } from '../../src/core/markdown';
 import type { DocumentStore } from '../../src/obsidian/document-store';
@@ -51,7 +51,7 @@ import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {

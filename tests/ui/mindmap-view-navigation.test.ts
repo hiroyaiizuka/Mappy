@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, TFile, ViewState, ViewStateResult } from 'obsidian';
-import { HarnessApp } from '../../harness/browser/app';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { EditableFileView, FileView, MarkdownView, Notice, Scope, WorkspaceLeaf, type View } from '../../harness/browser/obsidian';
+import { HarnessApp } from '../browser-harness/app';
+import { installObsidianDom } from '../browser-harness/dom';
+import { EditableFileView, FileView, MarkdownView, Notice, Scope, WorkspaceLeaf, type View } from '../browser-harness/obsidian';
 import { readMapLayout } from '../../src/obsidian/frontmatter';
 import { ViewRouter } from '../../src/obsidian/view-routing';
 import { VIEW_TYPE } from '../../src/ui/mindmap-view';
@@ -12,7 +12,7 @@ import { mountMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against a real DOM.
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 const cleanups: (() => void)[] = [];

@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Plugin } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../browser-harness/obsidian';
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, themeLabel } from '../../src/obsidian/settings-tab';
 
 // The browser-harness stand-in for `obsidian`: Setting, DropdownComponent, TextComponent, ToggleComponent and PluginSettingTab on a real DOM.
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(() => { document.body.replaceChildren(); Notice.log.length = 0; });
@@ -146,7 +146,7 @@ describe('MappySettingTab', () => {
 
   it('survives Obsidian 1.13+\'s addSettingTab → update() → render flow: four items stored, no save, no fallback to display()', () => {
     const { tab, save } = mount();
-    // The 1.8.7 types know nothing of the 1.13 members; the mock models them (harness/browser/obsidian.ts).
+    // The 1.8.7 types know nothing of the 1.13 members; the mock models them (tests/browser-harness/obsidian.ts).
     const runtime = tab as unknown as HarnessSettingTab;
     // update() is the base class's own method (app.js 1.14.2); a subclass member of that name would shadow it.
     runtime.update();

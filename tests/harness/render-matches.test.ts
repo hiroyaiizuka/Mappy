@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { renderMatches } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { renderMatches } from '../browser-harness/obsidian';
 
 // The stand-in for Obsidian's renderMatches follows the 1.14.2 implementation read from the running app
 // (artifacts/lev-71-map-search-e2e/record.md, 6b): the map search relies on these rules for the title line.

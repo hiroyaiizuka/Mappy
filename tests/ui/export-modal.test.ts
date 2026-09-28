@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
+import { installObsidianDom } from '../browser-harness/dom';
 import { ExportModal } from '../../src/ui/export-modal';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(() => { document.body.replaceChildren(); });

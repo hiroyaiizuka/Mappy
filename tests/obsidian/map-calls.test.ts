@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
-import { HarnessApp } from '../../harness/browser/app';
+import { HarnessApp } from '../browser-harness/app';
 import { parseMarkdown } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { CallReader, sameTargets } from '../../src/obsidian/map-calls';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 const MAP = '---\nmappy: true\n---\n## 講座\n- 回復する\n- 記録する\n';
 const HOST = '---\nmappy: true\n---\n## ホスト\n- ![[Map]]\n- ![[Map#回復する]]\n- ![[Host]]\n- ![[Plain]]\n- ![[Missing]]\n- ![[Map#^block]]\n- 文中の ![[Map]]\n- ![[Map]]\n';

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
-import { MarkdownView, Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { MarkdownView, Notice, WorkspaceLeaf } from '../browser-harness/obsidian';
 import { calledNodeId } from '../../src/core/calls';
 import type { MindDocument } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
@@ -21,7 +21,7 @@ import { accessibleDescription, accessibleName } from './accessible-name';
  * root and the called map's body tree is grafted under it as branches of this map, read-only. The
  * shipped view, renderer, reader and store run against the browser-harness stand-in for `obsidian`.
  */
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 

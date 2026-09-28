@@ -11,12 +11,12 @@
  * an external change while the draft is kept (another view writing the note), and IME (inline-editor.test.ts).
  */
 import { afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
+import { installObsidianDom } from '../browser-harness/dom';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {

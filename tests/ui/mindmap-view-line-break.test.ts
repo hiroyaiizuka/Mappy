@@ -11,12 +11,12 @@
  * 下書きが捨てられて元の題名で開き直されていた（editTitle の dispose）。
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { installObsidianDom } from '../../harness/browser/dom';
+import { installObsidianDom } from '../browser-harness/dom';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {

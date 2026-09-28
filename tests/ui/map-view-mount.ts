@@ -1,9 +1,9 @@
 // Boots the shipped MindmapView against the browser-harness stand-ins (jsdom), the way the view tests do.
-// A test file mocks `obsidian` with `harness/browser/obsidian` and installs the DOM helpers itself; this
+// A test file mocks `obsidian` with `tests/browser-harness/obsidian` and installs the DOM helpers itself; this
 // module only holds the steps they share. mindmap-view-external / -topics keep their own richer variants.
 import type { App, WorkspaceLeaf as ObsidianLeaf, TFile, ViewStateResult } from 'obsidian';
-import { HarnessApp } from '../../harness/browser/app';
-import { WorkspaceLeaf } from '../../harness/browser/obsidian';
+import { HarnessApp } from '../browser-harness/app';
+import { WorkspaceLeaf } from '../browser-harness/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';

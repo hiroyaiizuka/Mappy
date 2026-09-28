@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Component as ObsidianComponent, TFile } from 'obsidian';
-import { installObsidianDom } from '../../harness/browser/dom';
-import { HarnessApp } from '../../harness/browser/app';
-import { Component, MarkdownRenderer } from '../../harness/browser/obsidian';
+import { installObsidianDom } from '../browser-harness/dom';
+import { HarnessApp } from '../browser-harness/app';
+import { Component, MarkdownRenderer } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { OFFSCREEN_CLASS, OFFSCREEN_IMAGE_WAIT_MS, OFFSCREEN_RENDER_STALL_MS, OffscreenMap, paintMap } from '../../src/ui/offscreen-map';
 
@@ -13,7 +13,7 @@ import { OFFSCREEN_CLASS, OFFSCREEN_IMAGE_WAIT_MS, OFFSCREEN_RENDER_STALL_MS, Of
  * the browser-harness stand-in for `obsidian`; jsdom does no layout, so the geometry is zero and the
  * structure is what is checked.
  */
-vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
+vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });

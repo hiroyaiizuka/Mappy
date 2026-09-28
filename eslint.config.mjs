@@ -45,11 +45,11 @@ export default defineConfig(
     },
   },
   {
-    files: ["tests/**/*.ts", "harness/**/*.ts", "vitest.config.ts"],
+    files: ["tests/**/*.ts", "vitest.config.mts"],
     extends: tseslint.configs.recommendedTypeChecked,
   },
   {
-    files: ["**/*.ts"],
+    files: ["**/*.ts", "vitest.config.mts"],
     languageOptions: {
       globals: globals.browser,
       parserOptions: {
