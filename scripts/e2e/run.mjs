@@ -54,6 +54,7 @@ export const CASES = [
   { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
   { name: 'reread-own-writes', file: 'reread-own-writes.mjs', description: 'E58 変わらない原文の再読込の最中に記録された書き込み（このマップのボタン・⌥↑・⌘Z、別のマップのボタン・移動・⌘Z）× Markdown エディタの有無 × ウォッチャーが遅れて届く場合で、空題名・同名の折りたたみが保たれること', shot: false },
   { name: 'english-ui', file: 'english-ui.mjs', description: 'E63 英語の Obsidian での表示（コマンド・ボタン・ポップオーバー・右クリック・設定・拒否の行）と Markdown に書く仮の名前、日本語へ戻したあと', shot: true },
+  { name: 'main-topic', file: 'main-topic.mjs', description: 'E69 新しいノードの仮の名前が追加先の深さで決まる（ルートの直下はメイントピック、その下はサブトピック）× リスト・見出し × タイムライン・通常マップ × 日本語・英語', shot: true },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
 ];
 

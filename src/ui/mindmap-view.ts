@@ -1763,11 +1763,15 @@ export class MindmapView extends FileView {
     // The provisional name (LEV-203) is written into the note, in the app's language (src/i18n): a note keeps it when the language changes.
     let name = t().newNodeTitle;
     let plan = planEdit(document, provisional ? { ...command, title: name } : command);
-    // A node that lands as a free topic (Enter on a topic's root, Tab on the note's own root) is named as the empty
-    // canvas names one: the same kind of node under the same provisional name, whichever way it was made.
-    if (provisional && this.addsTopic(document, plan)) {
-      name = t().newTopicTitle;
-      plan = planEdit(document, { ...command, title: name });
+    // Named by where the node lands in the note the edit leaves: a node that lands as a free topic (Enter on a topic's
+    // root, Tab on the note's own root) as the empty canvas names one, one right under a root of the map (the body's,
+    // a topic's) as a main topic (LEV-250), one further down as a subtopic.
+    if (provisional) {
+      const placed = this.placement(document, plan);
+      if (placed !== "sub") {
+        name = placed === "topic" ? t().newTopicTitle : t().mainTopicTitle;
+        plan = planEdit(document, { ...command, title: name });
+      }
     }
     const write = await this.commit(document.source, plan.edits, file, provisional);
     if (this.file !== file || this.closed) return;
@@ -1775,11 +1779,17 @@ export class MindmapView extends FileView {
     if (selected && provisional) this.editTitle({ write, ...before, name });
   }
 
-  /** Whether the node `plan` adds is a free topic of the note it leaves. */
-  private addsTopic(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): boolean {
+  /**
+   * Where the node `plan` adds stands on the map of the note it leaves: a free topic, a child of a tree's root (the
+   * body root, which may be the note's own root, or a topic) or further down.
+   */
+  private placement(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): "topic" | "main" | "sub" {
     const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title);
     const added = nodeAt(after, plan.selectionOffset);
-    return added !== undefined && projectMap(after).topics.some(topic => topic.id === added.id);
+    if (!added) return "sub";
+    const { root, topics } = projectMap(after);
+    if (topics.some(topic => topic.id === added.id)) return "topic";
+    return added.parentId === root.id || topics.some(topic => topic.id === added.parentId) ? "main" : "sub";
   }
 
   /** What an addition changes on screen besides the note: the selection, the folds it opens, the viewport it pans. */

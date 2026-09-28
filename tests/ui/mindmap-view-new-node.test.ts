@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * LEV-203（本人の決定 2026-09-26）: 子・兄弟（Tab／Enter）で作るノードは「サブトピック」、空白のダブルクリック・
+ * LEV-203（本人の決定 2026-09-26）: 子・兄弟（Tab／Enter）で作るノードは「サブトピック」（ルートの直下は「メイントピック」: LEV-250）、空白のダブルクリック・
  * 右クリックで作るフリートピックは「トピック」という仮の名前で書かれ、その名前が全選択された入力欄が開く（そのまま
  * 打てば上書き）。作ってすぐの Escape は作成の取り消し（Markdown に何も残らず、Undo／Redo にも手順が残らない）。
  * 打たずに Enter・フォーカスを外した場合は仮の名前のまま確定する。既存ノードの編集中の Escape はこれまでどおり
@@ -70,13 +70,16 @@ function provisionalDraft(mounted: MountedMapView, name: string): HTMLTextAreaEl
   return input;
 }
 
-/** How each shape adds a node, and where the provisional name lands in the note. */
+/**
+ * How each shape adds a node, the provisional name it is written under and where it lands in the note. A node right under
+ * the body root is a main topic (LEV-250: mindmap-view-main-topic.test.ts has the rows by depth), one further down a subtopic.
+ */
 const SHAPES = [
-  { id: 'リストの子（Tab）', source: LIST, target: '持ち物', key: 'Tab', written: LIST.replace('- 持ち物\n', `- 持ち物\n  - ${t().newNodeTitle}\n`) },
-  { id: 'リストの兄弟（Enter）', source: LIST, target: '温泉旅行', key: 'Enter', written: LIST.replace('  - 予約\n', `  - 予約\n- ${t().newNodeTitle}\n`) },
-  { id: '本文のルートの子（Tab）', source: LIST, target: '旅の計画', key: 'Tab', written: LIST.replace('- 持ち物\n', `- 持ち物\n- ${t().newNodeTitle}\n`) },
-  { id: '見出しの子（Tab）', source: HEADINGS, target: '温泉旅行', key: 'Tab', written: HEADINGS.replace('本文\n', `本文\n\n### ${t().newNodeTitle}\n`) },
-  { id: '見出しの兄弟（Enter）', source: HEADINGS, target: '温泉旅行', key: 'Enter', written: HEADINGS.replace('本文\n', `本文\n\n## ${t().newNodeTitle}\n`) },
+  { id: 'リストの子（Tab）', source: LIST, target: '持ち物', key: 'Tab', name: t().newNodeTitle, written: LIST.replace('- 持ち物\n', `- 持ち物\n  - ${t().newNodeTitle}\n`) },
+  { id: 'リストの兄弟（Enter）', source: LIST, target: '温泉旅行', key: 'Enter', name: t().mainTopicTitle, written: LIST.replace('  - 予約\n', `  - 予約\n- ${t().mainTopicTitle}\n`) },
+  { id: '本文のルートの子（Tab）', source: LIST, target: '旅の計画', key: 'Tab', name: t().mainTopicTitle, written: LIST.replace('- 持ち物\n', `- 持ち物\n- ${t().mainTopicTitle}\n`) },
+  { id: '見出しの子（Tab）', source: HEADINGS, target: '温泉旅行', key: 'Tab', name: t().newNodeTitle, written: HEADINGS.replace('本文\n', `本文\n\n### ${t().newNodeTitle}\n`) },
+  { id: '見出しの兄弟（Enter）', source: HEADINGS, target: '温泉旅行', key: 'Enter', name: t().mainTopicTitle, written: HEADINGS.replace('本文\n', `本文\n\n## ${t().mainTopicTitle}\n`) },
 ] as const;
 
 // The provisional names are Markdown: in an English app they are written in English (LEV-226). Every other row here
@@ -101,19 +104,19 @@ describe('the provisional names in an English app', () => {
 describe('a node added on the map opens under its provisional name, selected (LEV-203)', () => {
   for (const layout of LAYOUTS) {
     for (const shape of SHAPES) {
-      it(`${layout}: ${shape.id} — written as 「${t().newNodeTitle}」, typed over, Enter`, async () => {
+      it(`${layout}: ${shape.id} — written as 「${shape.name}」, typed over, Enter`, async () => {
         const mounted = await mount(shape.source, layout);
         mounted.key(mounted.select(shape.target), shape.key);
         await mounted.settle();
         expect(mounted.source()).toBe(shape.written);
-        const input = provisionalDraft(mounted, t().newNodeTitle);
+        const input = provisionalDraft(mounted, shape.name);
         // What typing over the selection leaves (jsdom does not replace a selection on its own).
         input.value = '新しい項目';
         input.dispatchEvent(new Event('input', { bubbles: true }));
         mounted.key(input, 'Enter');
         await mounted.settle();
         expect(mounted.editor()).toBeNull();
-        expect(mounted.source()).toBe(shape.written.replace(t().newNodeTitle, '新しい項目'));
+        expect(mounted.source()).toBe(shape.written.replace(shape.name, '新しい項目'));
         expect(selectedNames(mounted)).toEqual(['新しい項目']);
       });
 
@@ -121,12 +124,12 @@ describe('a node added on the map opens under its provisional name, selected (LE
         const mounted = await mount(shape.source, layout);
         mounted.key(mounted.select(shape.target), shape.key);
         await mounted.settle();
-        const input = provisionalDraft(mounted, t().newNodeTitle);
+        const input = provisionalDraft(mounted, shape.name);
         mounted.key(input, 'Escape');
         await mounted.settle();
         expect(mounted.editor()).toBeNull();
         expect(mounted.source()).toBe(shape.source);
-        expect(nodeElements(mounted, t().newNodeTitle)).toHaveLength(0);
+        expect(nodeElements(mounted, shape.name)).toHaveLength(0);
         expect(mounted.store.canUndo(mounted.file)).toBe(false);
         expect(mounted.store.canRedo(mounted.file)).toBe(false);
         // ⌘⇧Z brings nothing back either: the addition was taken back, not undone.
@@ -307,10 +310,10 @@ describe('a node added on the map opens under its provisional name, selected (LE
     mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(source);
-    // A child of that topic's root is not a topic: 「サブトピック」.
+    // A child of that topic's root is not a topic: a main topic, right under its root (LEV-250).
     mounted.key(mounted.select('買うもの'), 'Tab');
     await mounted.settle();
-    provisionalDraft(mounted, t().newNodeTitle);
+    provisionalDraft(mounted, t().mainTopicTitle);
   });
 
   it('Escape after typing over the provisional name gives up the typing only: the node stays as 「サブトピック」 (review 2)', async () => {
