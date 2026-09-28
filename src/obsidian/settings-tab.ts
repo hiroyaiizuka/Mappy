@@ -5,10 +5,12 @@ import {
 } from './settings';
 import { t } from '../i18n';
 
+/** The text key of each theme's name; the Record type turns a new theme into a compile error until it is named. */
+const THEME_LABEL_KEYS: Record<MapTheme, `theme${Capitalize<MapTheme>}`> = { follow: 'themeFollow', light: 'themeLight', dark: 'themeDark' };
+
 /** Each theme's name in the dropdown, read when the tab is drawn (the names follow the app's language, src/i18n). */
 export function themeLabel(theme: MapTheme): string {
-  const text = t();
-  return { follow: text.themeFollow, light: text.themeLight, dark: text.themeDark }[theme];
+  return t()[THEME_LABEL_KEYS[theme]];
 }
 
 /** The plugin owns the settings object and `saveData`; the tab only reads and asks for a save. */

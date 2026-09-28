@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, TFolder, type App } from 'obsidian';
+import { setLanguage } from '../../src/i18n';
 import { createMindmapFile, newMindmapSource, resolveNewMapFolder } from '../../src/obsidian/map-files';
 
 describe('newMindmapSource', () => {
@@ -123,6 +124,18 @@ describe('createMindmapFile', () => {
       'Maps/無題のマインドマップ 2.md',
       '---\nmappy: true\n---\n\n## 無題のマインドマップ 2\n',
     );
+  });
+
+  // The name is written into the note as its title: it follows the app's language, as the UI does (LEV-226).
+  it('names a new map in English when the app is not in Japanese, and the folder refusal names the setting as the tab does', async () => {
+    setLanguage('en');
+    try {
+      const { app, create } = vault({ newFileParent: 'Maps', files: ['Maps/Untitled mind map.md'] });
+      await createMindmapFile(app, 'Notes/Current.md');
+      expect(create).toHaveBeenCalledWith('Maps/Untitled mind map 2.md', '---\nmappy: true\n---\n\n## Untitled mind map 2\n');
+      const blocked = vault({ files: ['Maps'] });
+      await expect(resolveNewMapFolder(blocked.app, 'Maps', '', 'x.md')).rejects.toThrow('"Maps" is not a folder. Check "Folder for new maps" in the settings.');
+    } finally { setLanguage('ja'); }
   });
 
   it('writes the same file as before when the settings are at their defaults', async () => {
