@@ -4,7 +4,21 @@
  * reports. `run.mjs` registers the case files that use this; each stays runnable on its own
  * (`node scripts/e2e/<file>.mjs`), which is what `npm run harness:e2e:<name>` calls.
  */
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * A positive numeric `export const <name> = <number>` of src/layout/layout.ts, the value `harness:prepare` builds. For a
+ * case that follows the source on purpose; a case that must catch the constant being changed back fixes its value instead.
+ */
+export async function layoutConstant(name) {
+  const source = await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'layout', 'layout.ts'), 'utf8');
+  const found = source.match(new RegExp(`export const ${name}\\s*=\\s*([\\d_.]+)`, 'u'))?.[1]?.replaceAll('_', '');
+  const number = Number(found);
+  if (!found || !Number.isFinite(number) || number <= 0) throw new Error(`${name} is not a positive number in src/layout/layout.ts`);
+  return number;
+}
 
 export function parseArgs(argv = process.argv) {
   const args = argv.slice(2);

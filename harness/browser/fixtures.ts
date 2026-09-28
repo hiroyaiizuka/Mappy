@@ -12,6 +12,7 @@ import embedHierarchy from "../../tests/fixtures/embed-hierarchy.md?raw";
 import embedNodes from "../../tests/fixtures/embed-nodes.md?raw";
 import embedCycle from "../../tests/fixtures/embed-cycle.md?raw";
 import timelineStages from "../../tests/fixtures/timeline-stages.md?raw";
+import timelineGapRange from "../../tests/fixtures/timeline-gap-range.md?raw";
 import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
 import { makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
 
@@ -85,6 +86,13 @@ const staticFixtures: HarnessFixture[] = [
     label: "timeline-stages（タイムライン: 同じ側に続くステージ）",
     covers: "`mappy-layout: timeline`。下側の深い森（末端「ビジランス効果」「ポモドーロ」）の右に同じ側の次のステージの縦線が立つ間隔（LEV-205）、上側の画像つき・幅の違う枝",
     source: timelineStages,
+  },
+  {
+    id: "timeline-gap-range",
+    path: `${FIXTURE_DIRECTORY}/timeline-gap-range.md`,
+    label: "timeline-gap-range（タイムライン: 次のステージより外に張り出す枝）",
+    covers: "`mappy-layout: timeline`。上下両側で、前の森の深い枝・長い文の枝が次のステージの森の高さより外に張り出す。次の縦線は高さに入る枝から 72px、外側の枝から 24px（LEV-210、E61）",
+    source: timelineGapRange,
   },
 ];
 
