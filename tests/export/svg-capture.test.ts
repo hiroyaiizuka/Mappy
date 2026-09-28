@@ -13,7 +13,7 @@ import { t } from '../../src/i18n';
 import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { EXPORT_RENDER_STALLED_MESSAGE, EXPORT_RENDER_WAIT_MS, MindmapView } from '../../src/ui/mindmap-view';
+import { EXPORT_RENDER_WAIT_MS, MindmapView } from '../../src/ui/mindmap-view';
 import { accessibleName } from '../ui/accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view and renderer run against a real DOM.
@@ -371,7 +371,7 @@ describe('SVG export of the map view (jsdom)', () => {
       expect(done).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const source = await pending;
-      expect(Notice.log).toEqual([EXPORT_RENDER_STALLED_MESSAGE]);
+      expect(Notice.log).toEqual([t().exportRenderStalled]);
       expect(source.entries.size).toBe(before + 1);
       const added = mounted.nodes().find(node => accessibleName(node) === '描画が終わらない枝');
       expect(added?.querySelector('.mappy-node-label')?.textContent).toBe('');

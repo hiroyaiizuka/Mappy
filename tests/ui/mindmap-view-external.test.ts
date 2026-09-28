@@ -7,7 +7,8 @@ import { WorkspaceLeaf } from '../../harness/browser/obsidian';
 import type { MindDocument, MindNode } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { MindmapView, NODE_GONE_MESSAGE } from '../../src/ui/mindmap-view';
+import { t } from '../../src/i18n';
+import { MindmapView } from '../../src/ui/mindmap-view';
 import { accessibleName } from './accessible-name';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
@@ -35,7 +36,7 @@ const SOURCE = [
 const EXTERNAL = SOURCE.replace('- 記録する\n', '- 記録する（外部）\n');
 const CONFLICT = 'Markdown が変更されています。マップを更新してから再編集してください。';
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
-const NODE_CHANGED = NODE_GONE_MESSAGE;
+const NODE_CHANGED = t().nodeGone;
 const TEXT_CHANGED = '編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。';
 
 function documentOf(view: MindmapView): MindDocument {

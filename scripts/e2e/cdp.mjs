@@ -56,7 +56,7 @@ const KEYS = {
  * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
  * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
  */
-export async function connect({ popout } = {}) {
+export async function connect({ popout, language: expected = LANGUAGE } = {}) {
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
@@ -101,12 +101,13 @@ export async function connect({ popout } = {}) {
     if (vault !== VAULT || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
-    const [stored, loaded] = popout === undefined ? await evaluate(APP_LANGUAGE) : [LANGUAGE, LANGUAGE];
+    // `language`: the one case that switches the app's language (E63) connects in the language it switched to.
+    const [stored, loaded] = popout === undefined ? await evaluate(APP_LANGUAGE) : [expected, expected];
     // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
-    if (stored !== LANGUAGE || (loaded ?? '').toLowerCase() !== LANGUAGE.toLowerCase()) {
+    if (stored !== expected || (loaded ?? '').toLowerCase() !== expected.toLowerCase()) {
       socket.close();
-      throw new Error(`The Obsidian for ${VAULT} is set to "${stored}" and loaded in "${loaded}", not "${LANGUAGE}" (MAPPY_E2E_LANGUAGE). `
-        + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${LANGUAGE}'), then reload the app. No action taken.`);
+      throw new Error(`The Obsidian for ${VAULT} is set to "${stored}" and loaded in "${loaded}", not "${expected}" (MAPPY_E2E_LANGUAGE). `
+        + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${expected}'), then reload the app. No action taken.`);
     }
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
     // frames and every screenshot; keep it running while the case does its steps (LEV-64, LEV-72).
