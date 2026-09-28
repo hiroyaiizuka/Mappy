@@ -93,12 +93,12 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
+    # id-token（OIDC）は job のどの手順からも使えるので、この job の action はすべて動くタグではなく commit で固定する。
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: mappy-${{ needs.build.outputs.version }}
           path: dist/mappy
-      # id-token を持つ手順なので、動くタグではなく commit で固定する。
       - name: Generate artifact attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:

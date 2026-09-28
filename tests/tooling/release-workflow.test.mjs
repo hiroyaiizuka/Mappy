@@ -94,8 +94,10 @@ describe('release workflow', () => {
     const attestIndex = attestJob.steps.findIndex((step) => step.uses?.startsWith('actions/attest@'));
     expect(attestIndex).toBeGreaterThan(attestJob.steps.indexOf(download));
     const attest = attestJob.steps[attestIndex];
-    // The job holds id-token, so the action is a full commit SHA, not a moving tag (v4.2.2 at the time).
-    expect(attest.uses).toMatch(/^actions\/attest@[0-9a-f]{40}$/u);
+    // The job holds id-token, which every step of the job can use, so every action in it is a full commit SHA,
+    // not a moving tag (attest v4.2.2 and download-artifact v4.3.0 at the time).
+    for (const step of attestJob.steps) if (step.uses) expect(step.uses).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/u);
+    expect(attest.uses).toMatch(/^actions\/attest@/u);
     expect(attest.with['subject-path'].trim().split('\n').map((line) => line.trim())).toEqual(distributables);
     // No other job attests: build also runs for pull requests and workflow_dispatch dry-runs.
     for (const job of [build, release]) expect(job.steps.some((step) => step.uses?.startsWith('actions/attest'))).toBe(false);
