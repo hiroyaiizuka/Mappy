@@ -1278,9 +1278,10 @@ export class MindmapView extends FileView {
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
-    // A note that calls nothing lets go of the called notes read before (LEV-221: their records would grow unread).
-    const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : (void this.reader.clear(), new Map());
+    const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path, () => !stale()) : new Map();
     if (stale()) return;
+    // A note that calls nothing lets go of the called notes read before (LEV-221: their records would grow unread).
+    if (!this.callsMaps(document) && this.reader.holding) void this.reader.clear(() => !stale());
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
@@ -1408,8 +1409,9 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!document || !file || this.closed || !this.ready) return;
     const epoch = this.epoch;
-    const targets = await this.reader.read(document, file.path);
-    if (this.closed || epoch !== this.epoch || this.document !== document || file !== this.file) return;
+    const current = (): boolean => !this.closed && epoch === this.epoch && this.document === document && file === this.file;
+    const targets = await this.reader.read(document, file.path, current);
+    if (!current()) return;
     if (sameTargets(this.targets, targets)) return;
     this.adopt(targets);
     this.draw();

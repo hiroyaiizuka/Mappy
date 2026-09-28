@@ -30,8 +30,8 @@ export class CallReader {
    * as long as its parse, and let go with every other parse once the host calls nothing (`clear`).
    */
   private readonly writes = new Map<string, WriteRecord>();
-  /** One subscription at a time: the view that holds the reader (`listen`). */
-  private listening = false;
+  /** The subscription writes are recorded for (`listen`); the view that holds the reader listens once for its life. */
+  private listening: object | null = null;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -39,31 +39,40 @@ export class CallReader {
 
   /**
    * Records the store's writes on the notes read here from now on, until the returned function runs (once is enough; a
-   * second call does nothing). The reader is held by one view, which listens once for its life (`MindmapView`).
+   * second call does nothing). A later `listen` takes over from an earlier one, whose stop then only ends its own
+   * subscription: one record per note, whoever listens.
    */
   listen(): () => void {
-    if (this.listening) throw new Error('CallReader: already listening');
-    this.listening = true;
+    const token = {};
+    this.listening = token;
     const stop = this.store.onWrite((file, write) => {
-      this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
+      if (this.listening === token) this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
     });
     let stopped = false;
     return () => {
       if (stopped) return;
       stopped = true;
       stop();
-      this.listening = false;
+      if (this.listening !== token) return;
+      this.listening = null;
       this.writes.clear();
     };
+  }
+
+  /** True while any note's parse or record is kept here, so `clear` has something to let go of. */
+  get holding(): boolean {
+    return this.parsed.size > 0 || this.writes.size > 0;
   }
 
   /**
    * Lets go of every note read here: the host no longer calls any (its items changed, it left the note). Without it the
    * record of a note no read comes back for would take every write on that note for as long as the host is open. Queued
-   * behind the reads, as a read that finds no call does it: a read under way would put back what was let go of.
+   * behind the reads, as a read that finds no call does it: a read under way would put back what was let go of. Nothing
+   * is let go of when `current` no longer holds by then (the host moved on, and its own reads decide).
    */
-  clear(): Promise<void> {
+  clear(current: () => boolean = () => true): Promise<void> {
     const result = this.queue.then(() => {
+      if (!current()) return;
       this.parsed.clear();
       this.writes.clear();
     });
@@ -71,13 +80,19 @@ export class CallReader {
     return result;
   }
 
-  read(document: MindDocument, hostPath: string): Promise<CallTargets> {
-    const result = this.queue.then(() => this.readNow(document, hostPath));
+  /**
+   * The maps `document`'s items call, for a host at `hostPath`. `current` tells whether the host still shows `document`:
+   * a read whose host moved on (a newer read, another note) reads nothing and lets go of nothing, when it starts and
+   * when it would let go of the notes `document` does not call — those may be the ones the host calls now.
+   */
+  read(document: MindDocument, hostPath: string, current: () => boolean = () => true): Promise<CallTargets> {
+    const result = this.queue.then(() => this.readNow(document, hostPath, current));
     this.queue = result.then(() => undefined, () => undefined);
     return result;
   }
 
-  private async readNow(document: MindDocument, hostPath: string): Promise<CallTargets> {
+  private async readNow(document: MindDocument, hostPath: string, current: () => boolean): Promise<CallTargets> {
+    if (!current()) return new Map();
     const wanted = new Map<string, { file: TFile; callers: { id: string; subpath: string }[] }>();
     for (const node of document.nodes) {
       const linktext = embedOnlyTitle(node.title);
@@ -94,7 +109,7 @@ export class CallReader {
       if (!parsed) continue;
       for (const caller of callers) targets.set(caller.id, { path, subpath: caller.subpath, document: parsed });
     }
-    for (const path of Array.from(this.parsed.keys())) if (!wanted.has(path)) this.forget(path);
+    if (current()) for (const path of Array.from(this.parsed.keys())) if (!wanted.has(path)) this.forget(path);
     return targets;
   }
 
