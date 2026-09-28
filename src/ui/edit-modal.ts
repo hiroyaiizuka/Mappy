@@ -1,5 +1,6 @@
 import { Modal, Setting, type App } from "obsidian";
 import { RefusalLine } from "./refusal-line";
+import { t } from "../i18n";
 
 /** Keep the draft open when a concurrent edit prevents saving. */
 export class EditModal extends Modal {
@@ -35,8 +36,8 @@ export class EditModal extends Modal {
       } finally { busy = false; }
     };
     new Setting(this.contentEl)
-      .addButton(button => button.setButtonText("キャンセル").onClick(() => this.close()))
-      .addButton(button => button.setButtonText("保存").setCta().onClick(() => { void save(); }));
+      .addButton(button => button.setButtonText(t().cancel).onClick(() => this.close()))
+      .addButton(button => button.setButtonText(t().save).setCta().onClick(() => { void save(); }));
     let composing = false;
     input.addEventListener("compositionstart", () => { composing = true; });
     input.addEventListener("compositionend", () => { composing = false; });

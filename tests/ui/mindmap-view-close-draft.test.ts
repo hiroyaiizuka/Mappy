@@ -17,7 +17,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { Notice } from '../../harness/browser/obsidian';
-import { NEW_NODE_TITLE } from '../../src/ui/mindmap-view';
+import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -289,7 +289,7 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
     mounted.key(mounted.select('別のノード'), 'Tab');
     await mounted.settle();
     const added = mounted.source();
-    expect(added).toContain(`  - ${NEW_NODE_TITLE}`);
+    expect(added).toContain(`  - ${t().newNodeTitle}`);
     const input = mounted.editor();
     if (!input) throw new Error('Tab did not open the new node\'s draft');
     await closeView(mounted, input, true);

@@ -32,11 +32,13 @@ export const VAULT = process.env.MAPPY_E2E_VAULT ?? resolve(root, 'test-vault');
  */
 export const LANGUAGE = process.env.MAPPY_E2E_LANGUAGE ?? 'ja';
 /**
- * The language the window runs in, as `[stored, loaded]`. `getLanguage()` reads the stored `language` key (English when
- * unset), but only when the app starts: a key changed without a reload leaves the plugin in the language it loaded in.
- * Obsidian sets moment's locale from the same setting at startup, so that is what tells the loaded one.
+ * The language the window runs in, as `[loaded, stored, ready]`. `loaded` is the one Obsidian settled on at startup,
+ * which is what `getLanguage()` gives the plugin; Obsidian sets moment's locale to it. moment says `en` until then too,
+ * so it counts only once the workspace is ready, and a stored `language` key that names another language (changed
+ * without a reload) refuses the window as well. An unset key is not English: Obsidian then takes the OS's language (a
+ * new profile on a Japanese Mac starts in Japanese, LEV-235).
  */
-export const APP_LANGUAGE = "[window.localStorage.getItem('language') || 'en', window.moment?.locale?.() ?? null]";
+export const APP_LANGUAGE = "[window.moment?.locale?.() ?? null, window.localStorage.getItem('language'), !!window.app?.workspace?.layoutReady]";
 if (!existsSync(join(VAULT, '.mappy-generated'))) {
   throw new Error(`${VAULT} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
 }
@@ -55,8 +57,11 @@ const KEYS = {
  * `about:blank` page target of its own, with the same `app`, whose `document` is the popout's. The case marks
  * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
  * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
+ *
+ * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, which switches it, passes the
+ * one it switched to, and `null` to take the window in whatever language it is (to put it back).
  */
-export async function connect({ popout } = {}) {
+export async function connect({ popout, language: expected = LANGUAGE } = {}) {
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
@@ -101,12 +106,17 @@ export async function connect({ popout } = {}) {
     if (vault !== VAULT || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
-    const [stored, loaded] = popout === undefined ? await evaluate(APP_LANGUAGE) : [LANGUAGE, LANGUAGE];
+    // `language`: the one case that switches the app's language (E63) connects in the language it switched to.
+    const [loaded, stored, ready] = popout === undefined && expected !== null ? await evaluate(APP_LANGUAGE) : [expected, null, true];
     // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
-    if (stored !== LANGUAGE || (loaded ?? '').toLowerCase() !== LANGUAGE.toLowerCase()) {
+    if (expected !== null && !ready) {
       socket.close();
-      throw new Error(`The Obsidian for ${VAULT} is set to "${stored}" and loaded in "${loaded}", not "${LANGUAGE}" (MAPPY_E2E_LANGUAGE). `
-        + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${LANGUAGE}'), then reload the app. No action taken.`);
+      throw new Error(`The Obsidian for ${VAULT} is still loading (its language is not settled yet); retry once it has opened. No action taken.`);
+    }
+    if (expected !== null && ((loaded ?? '').toLowerCase() !== expected.toLowerCase() || (stored !== null && stored !== expected))) {
+      socket.close();
+      throw new Error(`The Obsidian for ${VAULT} runs in "${loaded}" (stored "${stored}"), not "${expected}" (MAPPY_E2E_LANGUAGE). `
+        + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${expected}'), then reload the app. No action taken.`);
     }
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
     // frames and every screenshot; keep it running while the case does its steps (LEV-64, LEV-72).
@@ -145,6 +155,8 @@ export async function connect({ popout } = {}) {
         return path;
       },
       close: () => { socket.close(); },
+      /** Whether the socket is gone: a send on a closed socket is dropped, and the call would only wait out its timeout. */
+      get closed() { return socket.readyState !== WebSocket.OPEN; },
     };
   }
   throw new Error(`No Obsidian ${popout === undefined ? 'window' : `popout window marked ${popout}`} for ${VAULT} on port ${PORT}. No action taken.`);

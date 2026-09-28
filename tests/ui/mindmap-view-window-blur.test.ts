@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
-import { NEW_NODE_TITLE } from '../../src/ui/mindmap-view';
+import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -63,7 +63,7 @@ describe('a draft whose window loses the OS focus (LEV-216)', () => {
     mounted.key(input, 'Enter');
     await mounted.settle();
     expect(mounted.source()).toBe(RENAMED);
-    expect(mounted.source()).not.toContain(NEW_NODE_TITLE);
+    expect(mounted.source()).not.toContain(t().newNodeTitle);
     expect(mounted.editor()).toBeNull();
     // One step for Undo: the save on leaving; the Enter wrote nothing more.
     mounted.key(mounted.canvas, 'z', { metaKey: true });
@@ -103,7 +103,7 @@ describe('a draft whose window loses the OS focus (LEV-216)', () => {
     mounted.key(mounted.select('別のノード'), 'Tab');
     await mounted.settle();
     const added = mounted.source();
-    expect(added).toContain(`  - ${NEW_NODE_TITLE}`);
+    expect(added).toContain(`  - ${t().newNodeTitle}`);
     const input = mounted.editor();
     if (!input) throw new Error('Tab did not open the new node\'s draft');
     const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);

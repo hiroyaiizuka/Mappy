@@ -30,33 +30,21 @@ import { MapEvents, nodeOf } from "./map-events";
 import { NodeDrag, type DragDelta } from "./node-drag";
 import { InlineEditor } from "./inline-editor";
 import { LinkSuggest } from "./link-suggest";
+import { t } from "../i18n";
 
 export const VIEW_TYPE = "mappy-map";
 
 /** The slot shown now wins over a new one unless the new one is clearly closer, so a shifting layout does not flip the preview. */
 const SNAP_STICK = 16;
 
-const NOTE_CHANGED_MESSAGE = "対象のノートが変わりました。元のノートを開いて再実行してください。";
 /**
  * How long the export waits for Markdown renders still in flight without one of them finishing (§5 M13): a title
  * renders in milliseconds, so this only ends the wait when a render hangs (a post-processor, an embed that never
  * resolves); the export then goes on with what the map shows, as the map itself does, and says so.
  */
 export const EXPORT_RENDER_WAIT_MS = 2000;
-export const EXPORT_RENDER_STALLED_MESSAGE = "描画が終わらないノードがあるため、画面に見えているまま書き出します。";
 /** How long a topic added right after a confirmed draft waits for the labels to render before it is measured. */
 const TOPIC_RENDER_WAIT_MS = 300;
-/** A draft whose node is no longer in the note: the one thing the user can do is pick a node again. */
-export const NODE_GONE_MESSAGE = "編集していたノードが Markdown 側で見つかりません。マップでノードを選び直してください。";
-/**
- * The provisional names a node added on the map is written with, selected in its inline editor so that typing
- * replaces them (LEV-203, as MarkMind): a child or sibling (Tab／Enter), and a free topic (the empty canvas).
- */
-export const NEW_NODE_TITLE = "サブトピック";
-export const NEW_TOPIC_TITLE = "トピック";
-/** What every edit of a node drawn from a called map answers with (§5 M12); the node's own note is where it is edited. */
-export const CALLED_READ_ONLY_MESSAGE = "呼び出したマップは読み取り専用です。ダブルクリックで元のマップを開けます。";
-
 /** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
@@ -179,7 +167,7 @@ const POPOVER_MARGIN = 16;
  * registration and the router decides (§8), as for any other leaf: a map note opens as a map, a note that is no
  * longer one as Markdown, and a leaf switched to Markdown on purpose stays there (E22), with nothing new recorded.
  * Not an `EditableFileView`: 1.14.2 makes the view header's title editable there and renames the note to whatever
- * it shows, which the ` · マップ` suffix would end up in.
+ * it shows, which the ` · マップ`／` · map` suffix (`viewTitle`, src/i18n) would end up in.
  */
 export class MindmapView extends FileView {
   /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
@@ -387,9 +375,9 @@ export class MindmapView extends FileView {
    */
   async exportSource(): Promise<CaptureSource & { file: TFile }> {
     const file = this.file;
-    if (!file || !this.document) throw new Error("マップを開いてから書き出してください。");
-    if (this.inlineEditor) throw new Error("テキストの編集を確定してから書き出してください。");
-    if (this.topicDrag || this.dropPreview) throw new Error("ドラッグを終えてから書き出してください。");
+    if (!file || !this.document) throw new Error(t().exportNoMap);
+    if (this.inlineEditor) throw new Error(t().exportEditing);
+    if (this.topicDrag || this.dropPreview) throw new Error(t().exportDragging);
     // A change arriving while a refresh reads (it is dropped by the epoch) leaves a new debounce behind, hence the loop.
     while (this.refreshTimer !== undefined || this.refreshing) {
       if (this.refreshTimer !== undefined) {
@@ -399,11 +387,11 @@ export class MindmapView extends FileView {
       } else await this.refreshing;
     }
     // A finished render asks for its layout frame before idle() resolves, so the frame awaited next measures it.
-    if (!await this.renderer.idle(EXPORT_RENDER_WAIT_MS)) new Notice(EXPORT_RENDER_STALLED_MESSAGE);
+    if (!await this.renderer.idle(EXPORT_RENDER_WAIT_MS)) new Notice(t().exportRenderStalled);
     if (this.layoutFrame !== undefined) await this.nextFrame();
     const layout = this.layout;
-    if (this.closed || file !== this.file) throw new Error("マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。");
-    if (!layout) throw new Error("マップの配置が終わってから書き出してください。");
+    if (this.closed || file !== this.file) throw new Error(t().exportMapChanged);
+    if (!layout) throw new Error(t().exportNoLayout);
     return { file, layout, entries: new Map(this.renderer.entries), canvas: this.canvas, edges: this.svg };
   }
 
@@ -424,7 +412,7 @@ export class MindmapView extends FileView {
   }
 
   getViewType(): string { return VIEW_TYPE; }
-  getDisplayText(): string { return this.file ? `${this.file.basename} · マップ` : "マインドマップ"; }
+  getDisplayText(): string { return this.file ? t().viewTitle(this.file.basename) : t().viewTitleEmpty; }
   getIcon(): string { return "git-fork"; }
 
   /**
@@ -537,7 +525,7 @@ export class MindmapView extends FileView {
         await this.readNow();
         await editor.flush();
       }
-    } catch (error) { new Notice(`編集中の内容を保存できませんでした。${error instanceof Error ? error.message : ""}`); }
+    } catch (error) { new Notice(t().draftNotSaved(error instanceof Error ? error.message : "")); }
     finally { this.unloading = false; }
   }
 
@@ -648,7 +636,7 @@ export class MindmapView extends FileView {
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
     this.setTheme(this.theme);
-    const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
+    const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": t().layoutsLabel } });
     for (const mode of LAYOUT_MODES) {
       const button = this.button(modes, layoutLabel(mode), LAYOUT_ICONS[mode], () => {
         this.selectMode(mode);
@@ -658,28 +646,28 @@ export class MindmapView extends FileView {
     // The top-right corner holds one control (§5 M3): the gear, which opens the view's own popover of three items;
     // the node operations stay on the keys, the context menu and the command palette. The popover's outside-press
     // listener leaves a press on the gear alone, so the click here toggles it.
-    const actions = this.contentEl.createDiv({ cls: "mappy-actions mappy-floating", attr: { "aria-label": "操作" } });
-    const gear = this.button(actions, "操作", "settings", () => {
+    const actions = this.contentEl.createDiv({ cls: "mappy-actions mappy-floating", attr: { "aria-label": t().actions } });
+    const gear = this.button(actions, t().actions, "settings", () => {
       if (this.popover) this.closePopover(true);
       else this.openPopover(gear);
     });
     gear.setAttribute("aria-haspopup", "menu");
     gear.setAttribute("aria-expanded", "false");
     this.canvas = this.contentEl.createDiv({ cls: "mappy-canvas", attr: {
-      tabindex: "0", role: "tree", "aria-label": "マインドマップ。Enter で兄弟、Tab で子、F2 で編集。",
+      tabindex: "0", role: "tree", "aria-label": t().mapLabel,
     } });
-    this.emptyState = this.canvas.createDiv({ cls: "mappy-empty-state", text: "Markdown ノートを選び、コマンドパレットからマインドマップを開いてください。" });
+    this.emptyState = this.canvas.createDiv({ cls: "mappy-empty-state", text: t().emptyState });
     this.emptyState.hidden = true;
     const world = this.canvas.createDiv({ cls: "mappy-world" });
     this.svg = world.createSvg("svg", { cls: "mappy-edges", attr: { "aria-hidden": "true" } });
     const nodes = world.createDiv({ cls: "mappy-nodes" });
     this.placeholder = nodes.createDiv({ cls: "mappy-drop-placeholder", attr: { "data-drop-placeholder": "", "aria-hidden": "true" } });
     this.placeholder.hidden = true;
-    const zoom = this.contentEl.createDiv({ cls: "mappy-zoom mappy-floating", attr: { "aria-label": "ズーム" } });
-    this.button(zoom, "縮小", "minus", () => { this.viewport.zoom(1 / 1.2); });
+    const zoom = this.contentEl.createDiv({ cls: "mappy-zoom mappy-floating", attr: { "aria-label": t().zoomLabel } });
+    this.button(zoom, t().zoomOut, "minus", () => { this.viewport.zoom(1 / 1.2); });
     this.zoomLabel = this.button(zoom, "100%", undefined, () => { this.viewport.zoom(1 / this.viewport.value.scale); });
-    this.button(zoom, "拡大", "plus", () => { this.viewport.zoom(1.2); });
-    this.button(zoom, "全体表示", "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
+    this.button(zoom, t().zoomIn, "plus", () => { this.viewport.zoom(1.2); });
+    this.button(zoom, t().zoomFit, "scan", () => { if (this.layout) this.viewport.fit(this.layout.bounds); });
     this.renderer = this.addChild(new NodeRenderer(this.app, nodes, () => { this.scheduleLayout(); }));
     this.viewport = this.addChild(new MapViewport(this.canvas, world, (view, previous, carried) => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
@@ -727,7 +715,7 @@ export class MindmapView extends FileView {
         // Empty canvas: the topic goes where the menu was opened.
         const rect = this.canvas.getBoundingClientRect();
         const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-        menu.addItem(item => item.setTitle("トピックを追加").setIcon("plus").onClick(() => { this.run(() => this.addTopic(point)); }));
+        menu.addItem(item => item.setTitle(t().addTopic).setIcon("plus").onClick(() => { this.run(() => this.addTopic(point)); }));
         menu.addSeparator();
         this.historyItems(menu);
         menu.showAtMouseEvent(event);
@@ -736,10 +724,10 @@ export class MindmapView extends FileView {
       this.select(id);
       // A node drawn from a called map (§5 M12) is edited in its own note: the menu opens that note and folds, nothing more.
       if (this.calledSource(id)) {
-        menu.addItem(item => item.setTitle("元のマップを開く").setIcon("git-fork").onClick(() => { this.openCalled(id, false); }));
+        menu.addItem(item => item.setTitle(t().openOriginal).setIcon("git-fork").onClick(() => { this.openCalled(id, false); }));
         if (this.isCalled(id)) {
           const node = this.projection()?.calls.byId.get(id);
-          if (node && node.children.length > 0) menu.addItem(item => item.setTitle("折りたたみ").setIcon("chevrons-down-up").onClick(() => { this.fold(id); }));
+          if (node && node.children.length > 0) menu.addItem(item => item.setTitle(t().collapse).setIcon("chevrons-down-up").onClick(() => { this.fold(id); }));
           menu.addSeparator();
           this.historyItems(menu);
           menu.showAtMouseEvent(event);
@@ -751,15 +739,15 @@ export class MindmapView extends FileView {
       for (const entry of [entries.edit, entries.body, entries.image]) this.menuItem(menu, entry);
       menu.addSeparator();
       for (const entry of [entries.child, entries.sibling]) this.menuItem(menu, entry);
-      const remove = this.isTopic(id) ? "トピックを削除" : "枝を削除";
-      for (const [type, title] of [["move-up", "前へ移動"], ["move-down", "後ろへ移動"], ["delete", remove]] as const) {
+      const remove = this.isTopic(id) ? t().deleteTopic : t().deleteBranch;
+      for (const [type, title] of [["move-up", t().moveUp], ["move-down", t().moveDown], ["delete", remove]] as const) {
         menu.addItem(item => item.setTitle(title).onClick(() => { this.executeSelected(type); }));
       }
       menu.addSeparator();
       this.historyItems(menu);
       if (this.document.format === "headings") {
         menu.addSeparator();
-        menu.addItem(item => item.setTitle("リスト形式に変更").setIcon("list-tree")
+        menu.addItem(item => item.setTitle(t().toListFormat).setIcon("list-tree")
           .onClick(() => { this.run(() => this.convertToList()); }));
       }
       menu.showAtMouseEvent(event);
@@ -853,7 +841,7 @@ export class MindmapView extends FileView {
   }
 
   private run(action: () => Promise<void>): void {
-    void action().catch(error => { new Notice(error instanceof Error ? error.message : "操作を完了できませんでした。"); });
+    void action().catch(error => { new Notice(error instanceof Error ? error.message : t().actionFailed); });
   }
 
   /** A context-menu entry: the title, the icon and the method it runs. */
@@ -867,11 +855,11 @@ export class MindmapView extends FileView {
    */
   private nodeEntries(): Record<"edit" | "body" | "image" | "child" | "sibling", MenuEntry> {
     return {
-      edit: ["テキストを編集", "pencil", () => { this.editTitle(); }],
-      body: ["本文・リンクを編集", "text", () => { this.editBody(); }],
-      image: ["画像を追加", "image-plus", () => { this.chooseImage(); }],
-      child: ["子を追加", "plus", () => { this.executeSelected("add-child"); }],
-      sibling: ["兄弟を追加", "corner-down-right", () => { this.executeSelected("add-sibling"); }],
+      edit: [t().editText, "pencil", () => { this.editTitle(); }],
+      body: [t().editBody, "text", () => { this.editBody(); }],
+      image: [t().addImage, "image-plus", () => { this.chooseImage(); }],
+      child: [t().addChild, "plus", () => { this.executeSelected("add-child"); }],
+      sibling: [t().addSibling, "corner-down-right", () => { this.executeSelected("add-sibling"); }],
     };
   }
 
@@ -900,7 +888,7 @@ export class MindmapView extends FileView {
     if (this.popover) return;
     const doc = this.contentEl.doc;
     const win = this.contentEl.win;
-    const element = this.contentEl.createDiv({ cls: "mappy-popover", attr: { role: "menu", "aria-label": "操作" } });
+    const element = this.contentEl.createDiv({ cls: "mappy-popover", attr: { role: "menu", "aria-label": t().actions } });
     const items: HTMLButtonElement[] = [];
     const add = (title: string, description: string, icon: string, enabled: boolean, run: () => void): void => {
       const item = element.createEl("button", { cls: "mappy-popover-item", attr: { type: "button", role: "menuitem", tabindex: "-1" } });
@@ -918,7 +906,7 @@ export class MindmapView extends FileView {
       items.push(item);
     };
     const ready = this.file !== null && this.document !== undefined;
-    add("Markdown に切り替え", "同じタブで本文を開く", "file-text", ready, () => { this.run(() => this.showSource(false)); });
+    add(t().toMarkdown, t().toMarkdownDesc, "file-text", ready, () => { this.run(() => this.showSource(false)); });
     for (const action of this.menuActions) add(action.title, action.description, action.icon, action.check(this), () => { action.run(this); });
     element.addEventListener("keydown", event => {
       const focused = items.findIndex(item => item === doc.activeElement);
@@ -1010,9 +998,9 @@ export class MindmapView extends FileView {
   }
 
   private historyItems(menu: Menu): void {
-    menu.addItem(item => item.setTitle("元に戻す").setIcon("undo-2")
+    menu.addItem(item => item.setTitle(t().undo).setIcon("undo-2")
       .setDisabled(!this.file || !this.store.canUndo(this.file)).onClick(() => { this.history("undo"); }));
-    menu.addItem(item => item.setTitle("やり直す").setIcon("redo-2")
+    menu.addItem(item => item.setTitle(t().redo).setIcon("redo-2")
       .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history("redo"); }));
   }
 
@@ -1414,7 +1402,7 @@ export class MindmapView extends FileView {
 
   /** Every edit addresses the host's own nodes; a called map's node is edited in its own note. */
   private assertEditable(id: string): void {
-    if (this.isCalled(id)) throw new Error(CALLED_READ_ONLY_MESSAGE);
+    if (this.isCalled(id)) throw new Error(t().calledReadOnly);
   }
 
   private isTopic(id: string): boolean {
@@ -1701,12 +1689,13 @@ export class MindmapView extends FileView {
     // one added with its text (a called map) is only selected.
     const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
     const before = this.shownState();
-    let name = NEW_NODE_TITLE;
+    // The provisional name (LEV-203) is written into the note, in the app's language (src/i18n): a note keeps it when the language changes.
+    let name = t().newNodeTitle;
     let plan = planEdit(document, provisional ? { ...command, title: name } : command);
     // A node that lands as a free topic (Enter on a topic's root, Tab on the note's own root) is named as the empty
     // canvas names one: the same kind of node under the same provisional name, whichever way it was made.
     if (provisional && this.addsTopic(document, plan)) {
-      name = NEW_TOPIC_TITLE;
+      name = t().newTopicTitle;
       plan = planEdit(document, { ...command, title: name });
     }
     const write = await this.commit(document.source, plan.edits, file, provisional);
@@ -1742,9 +1731,9 @@ export class MindmapView extends FileView {
   async callMap(target: TFile): Promise<void> {
     const file = this.file;
     if (!file || !this.document) return;
-    if (target.path === file.path) throw new Error("このマップ自身は呼び出せません。");
+    if (target.path === file.path) throw new Error(t().callSelf);
     // Tab stays quiet while a save is in flight; a chosen map must not vanish without a word.
-    if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
+    if (this.saving) throw new Error(t().savingWait);
     const link = `![[${this.app.metadataCache.fileToLinktext(target, file.path, true)}]]`;
     const parent = this.selected();
     if (!parent || parent.kind === "root") { await this.execute({ type: "add-topic", title: link }); return; }
@@ -1802,13 +1791,14 @@ export class MindmapView extends FileView {
     if (!document || !file || this.saving) return;
     const position = point ? this.topicPoint(point) : null;
     const before = this.shownState();
-    const plan = planEdit(document, { type: "add-topic", title: NEW_TOPIC_TITLE });
+    // As a child's provisional name: written into the note, in the app's language (src/i18n).
+    const plan = planEdit(document, { type: "add-topic", title: t().newTopicTitle });
     const write = await this.commit(document.source, plan.edits, file, true);
     if (this.file !== file || this.closed) return;
     const created = this.document ? nodeAt(this.document, plan.selectionOffset) : undefined;
     // The first heading of a note becomes its body root and has no position.
     if (created && position && this.isTopic(created.id)) this.pendingTopic = { id: created.id, layout: this.mode, position };
-    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, ...before, name: NEW_TOPIC_TITLE });
+    if (this.reveal(plan.selectionOffset)) this.editTitle({ write, ...before, name: t().newTopicTitle });
   }
 
   /** The tree under a root on the map: the body's own subtree, or a topic's. */
@@ -2073,8 +2063,8 @@ export class MindmapView extends FileView {
    * the re-read carries the ids over, rebases the open drafts and reads the note again.
    */
   private async writeOwn(source: string, file: TFile | null, perform: (file: TFile) => Promise<CarriedWrite>): Promise<CarriedWrite> {
-    if (!file || file !== this.file || this.closed) throw new Error(NOTE_CHANGED_MESSAGE);
-    if (this.saving) throw new Error("保存処理が終わってから、もう一度実行してください。");
+    if (!file || file !== this.file || this.closed) throw new Error(t().noteChanged);
+    if (this.saving) throw new Error(t().savingWait);
     // Read before the write: a draft that already disagrees with the note is left alone, so an external
     // change that arrived first is still refused when the draft is saved (E05).
     const drafts = this.currentDrafts();
@@ -2171,8 +2161,8 @@ export class MindmapView extends FileView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
-    if (node.kind === "root") { new Notice("このノードはファイル名です。子ノードを追加できます。"); return; }
-    if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
+    if (node.kind === "root") { new Notice(t().rootIsFileName); return; }
+    if (this.isCalled(node.id)) { new Notice(t().calledReadOnly); return; }
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
     // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
@@ -2231,10 +2221,10 @@ export class MindmapView extends FileView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
-    if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
+    if (this.isCalled(node.id)) { new Notice(t().calledReadOnly); return; }
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.bodyDraft = draft;
-    const modal = new EditModal(this.app, nodeBody(document, node), "本文・リンクを編集", true, async text => {
+    const modal = new EditModal(this.app, nodeBody(document, node), t().editBody, true, async text => {
       const { document: current, node: target } = this.draftTarget(file, draft);
       await this.commit(current.source, [planBodyEdit(current, target.id, text)], file);
     });
@@ -2284,11 +2274,11 @@ export class MindmapView extends FileView {
    */
   private draftTarget(file: TFile, draft: DraftBase): { document: MindDocument; node: MindNode } {
     const document = this.document;
-    if (file !== this.file || !document) throw new Error(NOTE_CHANGED_MESSAGE);
+    if (file !== this.file || !document) throw new Error(t().noteChanged);
     const node = findNode(document, draft.nodeId);
-    if (!node) throw new Error(NODE_GONE_MESSAGE);
+    if (!node) throw new Error(t().nodeGone);
     if (draftFingerprint(document, node) !== draft.value) {
-      throw new Error("編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。");
+      throw new Error(t().draftChanged);
     }
     return { document, node };
   }
@@ -2297,11 +2287,11 @@ export class MindmapView extends FileView {
     const document = this.document;
     const file = this.file;
     if (!document || !file) return;
-    if (this.inlineEditor) throw new Error("テキストの編集を確定してから、形式を変更してください。");
+    if (this.inlineEditor) throw new Error(t().formatWhileEditing);
     const edits = planListConversion(document);
     if (!edits.length) return;
     await this.commit(document.source, edits, file);
-    new Notice("H2 とリストの形式に変更しました。元に戻す操作で復元できます。");
+    new Notice(t().convertedToList);
   }
 
   /** Undo／Redo: the store tells every map of the note what the step wrote (`recordWrite`). */
@@ -2360,7 +2350,7 @@ export class MindmapView extends FileView {
   private chooseImage(): void {
     const node = this.selected();
     if (!node) return;
-    if (this.isCalled(node.id)) { new Notice(CALLED_READ_ONLY_MESSAGE); return; }
+    if (this.isCalled(node.id)) { new Notice(t().calledReadOnly); return; }
     const input = this.contentEl.createEl("input", { type: "file", cls: "mappy-file-input", attr: { accept: "image/*" } });
     input.addEventListener("change", () => {
       const file = input.files?.[0]; input.remove();
@@ -2376,8 +2366,8 @@ export class MindmapView extends FileView {
     const file = this.file;
     if (!node || !document || !file) return;
     this.assertEditable(node.id);
-    if (!image.type.startsWith("image/")) throw new Error("画像ファイルを選んでください。");
-    if (image.size > 20 * 1024 * 1024) throw new Error("画像は 20 MB 以下にしてください。");
+    if (!image.type.startsWith("image/")) throw new Error(t().chooseImage);
+    if (image.size > 20 * 1024 * 1024) throw new Error(t().imageTooLarge);
     // An Escape on a new node's draft meanwhile must not take the node away from under the image (LEV-203).
     await this.preparing(() => this.attachTo(image, node, document, file));
   }
@@ -2392,7 +2382,7 @@ export class MindmapView extends FileView {
     const binary = await image.arrayBuffer();
     // The note as the map shows it, or as the view's own layout buttons have since written it (LEV-196): the store
     // carries the link over those.
-    if (!await this.store.applies(file, document.source)) throw new Error("ノートが更新されました。画像の追加をもう一度実行してください。");
+    if (!await this.store.applies(file, document.source)) throw new Error(t().imageNoteUpdated);
     const name = image.name.replace(/[\\/:*?"<>|]/gu, "-") || "image.png";
     const path = await this.app.fileManager.getAvailablePathForAttachment(name, file.path);
     const attachment = await this.app.vault.createBinary(path, binary);
@@ -2400,7 +2390,7 @@ export class MindmapView extends FileView {
     try {
       await this.commit(document.source, [planAppendBody(document, node.id, link)], file);
     } catch (error) {
-      new Notice(`画像は ${attachment.path} に保存済みです。ノートへの挿入を再試行してください。`);
+      new Notice(t().imageSavedRetry(attachment.path));
       throw error;
     }
   }
