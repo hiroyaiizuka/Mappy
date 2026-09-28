@@ -305,7 +305,7 @@ export function makeAfter(evaluate) {
 
 /**
  * A key that opens the inline editor on the selected node, then `title` and Enter to confirm it. With
- * `emptyWrite` (Enter／Tab: the new node is committed under its provisional name 「サブトピック」 as its own history
+ * `emptyWrite` (Enter／Tab: the new node is committed under its provisional name 「サブトピック」〔「メイントピック」 right under a root, LEV-250〕 as its own history
  * entry before the draft opens it selected, so the title typed replaces it — LEV-203), the text the Enter is compared
  * against is read only once that new node is on disk and the map has re-read it — read earlier, a late write of the
  * new node would pass for the title's.

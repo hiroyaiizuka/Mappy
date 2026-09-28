@@ -19,6 +19,7 @@
  *   --keep  leave the note in the vault
  */
 import { LANGUAGE, VAULT, connect, wait } from './cdp.mjs';
+import { switchLanguage } from './language.mjs';
 import { JAPANESE } from './japanese.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeClickIn, makeDeleteNote } from './dom-helpers.mjs';
@@ -54,31 +55,10 @@ const check = makeCheck(record);
 /** The stored `language` key as this run found it (unset on a new profile: the OS's language), put back at the end. */
 const storedAtStart = await cdp.evaluate("localStorage.getItem('language')");
 
-/**
- * The app in `language`, as Settings → General → Language leaves it: the stored key (`null` removes it), then the app
- * reloaded. Only a connection the window answered on in that language, with Mappy loaded, replaces `cdp`; the others
- * are closed. When the window never comes back that way, `cdp` is the closed old one and the error says why.
- */
+/** The app in `language` (language.mjs); the window's new connection replaces `cdp`. */
 const switchTo = async (language, expected = language) => {
-  const key = language === null ? "localStorage.removeItem('language')" : `localStorage.setItem('language', ${JSON.stringify(language)})`;
-  await evaluate(`${key}; setTimeout(() => app.commands.executeCommandById('app:reload'), 50); return true;`);
-  cdp.close();
-  await wait(3000);
-  let refused = null;
-  for (const started = Date.now(); Date.now() - started < 30000; await wait(1000)) {
-    let next = null;
-    try {
-      next = await connect({ language: expected });
-      // `plugins.mappy` exists before its async onload is through; the last command it registers says it is.
-      if (await next.evaluate("!!(app.workspace.layoutReady && app.plugins.plugins.mappy && app.commands.commands['mappy:convert-to-list'])")) {
-        cdp = next;
-        return { language: expected, loaded: await cdp.evaluate('window.moment.locale()') };
-      }
-      refused = new Error('Mappy is not loaded yet');
-    } catch (error) { refused = error; }
-    next?.close();
-  }
-  throw refused ?? new Error(`the window did not come back in ${expected} with Mappy loaded within 30 s`);
+  cdp = await switchLanguage(cdp, language, expected);
+  return { language: expected, loaded: await cdp.evaluate('window.moment.locale()') };
 };
 
 /** What the map view and the app show now: the texts this case compares, each list in screen order. */
