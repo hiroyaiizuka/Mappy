@@ -24,8 +24,8 @@ beforeAll(() => { installObsidianDom(); });
 afterEach(async () => {
   vi.restoreAllMocks();
   setLanguage('ja');
-  Notice.log.length = 0;
   await closeOpenViews();
+  Notice.log.length = 0;
   document.body.replaceChildren();
 });
 

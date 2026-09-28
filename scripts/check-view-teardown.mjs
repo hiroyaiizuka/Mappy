@@ -6,7 +6,7 @@
 // file that calls it fails, and for a view left open. It also lists a file that builds a view and never calls it.
 // No file is edited.
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,24 +30,31 @@ function testFiles(dir) {
   });
 }
 
-/** One vitest run of the files, without a shell: its JSON report, one entry per file. */
+/**
+ * One vitest run of the files, without a shell: its JSON report, one entry per file keyed by real path (vitest reports
+ * absolute paths, which a symlinked checkout would not match otherwise). A run that wrote no report is thrown, with
+ * what it printed.
+ */
 function vitest(files, env) {
   const dir = mkdtempSync(join(tmpdir(), 'mappy-view-teardown-'));
   const report = join(dir, 'report.json');
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const args = ['vitest', 'run', '--reporter=json', `--outputFile=${report}`, ...files.map(file => relative(root, file))];
-    execFile('npx', args, { cwd: root, env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 }, () => {
-      const results = new Map();
+    execFile('npx', args, { cwd: root, env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       try {
+        if (!existsSync(report)) throw new Error(`vitest wrote no report (${error?.message ?? 'no error'}):\n${stdout}${stderr}`);
+        const results = new Map();
         for (const result of JSON.parse(readFileSync(report, 'utf8')).testResults) {
           const failures = result.assertionResults.filter(test => test.status === 'failed');
           const messages = [result.message ?? '', ...failures.flatMap(test => test.failureMessages)].join('\n');
-          results.set(result.name, { passed: result.status === 'passed', failed: failures.length, total: result.assertionResults.length, leftOpen: LEFT_OPEN.test(messages) });
+          results.set(realpathSync(result.name), { passed: result.status === 'passed', failed: failures.length, total: result.assertionResults.length, leftOpen: LEFT_OPEN.test(messages) });
         }
+        resolve(results);
+      } catch (failure) {
+        reject(failure);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
-      resolve(results);
     });
   });
 }
@@ -59,12 +66,13 @@ const missing = files.filter(file => {
   return !teardown.includes(file) && BUILDS.test(text) && LOADS.test(text);
 });
 
+if (teardown.length === 0) throw new Error('No test file calls closeOpenViews(): nothing to check');
 const kept = await vitest(teardown, {});
 const removed = await vitest(teardown, { [SKIP_CLOSE_ENV]: '1' });
 let bad = 0;
 for (const file of teardown) {
-  const as = kept.get(file);
-  const without = removed.get(file);
+  const as = kept.get(realpathSync(file));
+  const without = removed.get(realpathSync(file));
   const good = !!as?.passed && !!without && !without.passed && without.leftOpen;
   if (!good) bad += 1;
   const tests = without ? `${without.failed} of ${without.total} tests failed` : 'no report';

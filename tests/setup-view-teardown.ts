@@ -1,6 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
 import { closeEveryView, openViews, viewCount, type ClosableView } from './mocks/open-views';
 
+// The real timer, taken as this file loads: a test that leaves fake timers installed must not hold the wait below (and
+// `document` with it) forever.
+const realSetTimeout = globalThis.setTimeout;
+
 // The check after every test that built a view, and after every file (LEV-239; LEV-236 had it in mindmap-view-topics
 // alone). It runs after the file's own hooks (vitest runs `afterEach`／`afterAll` hooks in reverse order, and this
 // file's are registered first), so the file has closed its views by then, with `closeOpenViews` where its own cleanup
@@ -21,7 +25,7 @@ async function withoutDocument(ms: number): Promise<void> {
   const kept = Object.getOwnPropertyDescriptor(globalThis, 'document');
   if (!kept) throw new Error('No global document to take away');
   delete (globalThis as { document?: Document }).document;
-  try { await new Promise(resolve => setTimeout(resolve, ms)); } finally { Object.defineProperty(globalThis, 'document', kept); }
+  try { await new Promise(resolve => realSetTimeout(resolve, ms)); } finally { Object.defineProperty(globalThis, 'document', kept); }
 }
 
 /**

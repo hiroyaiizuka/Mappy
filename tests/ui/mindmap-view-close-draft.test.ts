@@ -26,8 +26,8 @@ beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  Notice.log.length = 0;
   await closeOpenViews();
+  Notice.log.length = 0;
   document.body.replaceChildren();
 });
 
@@ -230,7 +230,8 @@ describe('a title draft open when its map view closes (LEV-215)', () => {
   // That was with the harness closing in the wrong order (`onClose`, then `unload`). Closed as 1.14.2 closes a tab
   // (LEV-239: the view unloads, then `onClose` saves), FileView's delete subscription and the map's are gone before the
   // save, so the note deleted meanwhile is unloaded once, by the teardown. This pins that count; the `closing` guard in
-  // the delete watcher is no longer reached from here (taking it out still passes, checked on LEV-239).
+  // the delete watcher is no longer reached from here (taking it out still passes, checked on LEV-239, as it does for a
+  // delete in the same tick as the close, with or without a write of the map's under way: LEV-242).
   it('lets a note deleted while the view closes go without a save or a second unload', async () => {
     const { mounted, input } = await draft('消えるノートの下書き');
     const unload = vi.spyOn(mounted.view, 'onUnloadFile');

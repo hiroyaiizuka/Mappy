@@ -17,9 +17,9 @@ vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
-  Notice.log.length = 0;
   for (const cleanup of cleanups.splice(0)) cleanup();
   await closeOpenViews();
+  Notice.log.length = 0;
   document.body.replaceChildren();
 });
 

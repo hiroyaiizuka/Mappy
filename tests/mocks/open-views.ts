@@ -48,7 +48,8 @@ export async function closeOpenViews(): Promise<void> {
 /** `closeOpenViews` without the check's switch (of `views`, all open ones by default): the setup file's own clean-up of what a file left open. */
 export async function closeEveryView(views: readonly ClosableView[] = Array.from(openViews)): Promise<void> {
   const closes: PromiseSettledResult<void>[] = [];
-  for (const view of views) closes.push(...await Promise.allSettled([view.close()]));
+  // Through `then`, so a close that throws before it returns a promise is a failure of that view, not of the loop.
+  for (const view of views) closes.push(...await Promise.allSettled([Promise.resolve().then(() => view.close())]));
   const failed = closes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failed) throw failed.reason;
 }

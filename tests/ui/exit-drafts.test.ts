@@ -33,11 +33,11 @@ const renamed = (title: string, from = SOURCE): string => from.replace('  - å­ã
 const owners: Component[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  Notice.log.length = 0;
   for (const owner of owners.splice(0)) owner.unload();
   // The views a reload left behind (no `onClose` on a reload) are closed too, after the test has read everything: their
   // title drafts went at `pagehide` (`takeExitDraft`), so the close saves nothing, and their timers stop (LEV-239).
   await closeOpenViews();
+  Notice.log.length = 0;
   window.localStorage.clear();
   document.body.replaceChildren();
 });
