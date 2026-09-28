@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
-import { WorkspaceLeaf } from '../../harness/browser/obsidian';
+import { Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import { planEdit, type MoveCommand } from '../../src/core/commands';
 import { projectMap, type MindDocument, type MindNode } from '../../src/core/markdown';
@@ -19,7 +19,36 @@ import { MindmapView } from '../../src/ui/mindmap-view';
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+/** Every view `mount` opened, closed after its test as Obsidian closes a tab: timers stopped, later reads dropped (LEV-236). */
+const opened: MindmapView[] = [];
+/** The harness's `View.close` (1.14.2's order: the container leaves the DOM, the view unloads, then `onClose`); the typings lack it. */
+const closeView = (view: MindmapView): Promise<void> => (view as unknown as { close(): Promise<void> }).close();
+/**
+ * jsdom's teardown as whatever a test left behind meets it (LEV-236): the globals go, and work still scheduled or under way
+ * runs against no `document`. The view's timers are Node's here (`contentEl.win.setTimeout`), so closing the jsdom window
+ * does not stop them, and a `run()` that rejects then builds its `Notice` on no document: an unhandled rejection that fails
+ * the run with every test passed. Only the file's last test meets the real teardown, and only now and then; so after every
+ * test, once its views are closed, the document is taken away for longer than the longest timer the view keeps (the 45 ms
+ * re-read). It sees only what reaches the global `document` in that time: a longer debounce, or work that stays on
+ * `contentEl.doc`, passes.
+ */
+async function withoutDocument(ms: number): Promise<void> {
+  // The property as the jsdom environment put it (an accessor or a value), so it goes back the same way.
+  const kept = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  if (!kept) throw new Error('No global document to take away');
+  delete (globalThis as { document?: Document }).document;
+  try { await new Promise(resolve => setTimeout(resolve, ms)); } finally { Object.defineProperty(globalThis, 'document', kept); }
+}
+afterEach(async () => {
+  // A test's stand-ins go first: a read it left never settling would hold the close up (`saveDraft` → `readNow`).
+  vi.restoreAllMocks();
+  // Every view is closed and the check runs even when one close fails; the first failure is still the test's to report.
+  const closes = await Promise.allSettled(opened.splice(0).map(closeView));
+  document.body.replaceChildren();
+  await withoutDocument(60);
+  const failed = closes.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
+});
 
 const PATH = 'Fixtures/free-topics.md';
 
@@ -72,6 +101,7 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
+  opened.push(view);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   view.load();
@@ -2338,5 +2368,68 @@ describe('MindmapView keeps a dropped free tree where it was released until the 
     expect(mounted.source()).toBe(SOURCE);
     // The note shown is the one from before the drop, which is again what the note says.
     expect(placed(mounted, dragged.id)).toEqual(pressed);
+  });
+});
+
+describe('MindmapView after its tab closes (LEV-236)', () => {
+  /** Close the view in the test: the afterEach has nothing more to close for it. */
+  const close = async (view: MindmapView): Promise<void> => {
+    const at = opened.indexOf(view);
+    if (at >= 0) opened.splice(at, 1);
+    await closeView(view);
+  };
+  const past = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+  it('a re-read under way when the tab closes and failing after it shows no notice for the closed map', async () => {
+    const { view, store, settle } = await mount(THREE_SECTIONS);
+    let fail: (error: Error) => void = () => undefined;
+    vi.spyOn(store, 'read').mockImplementation(() => new Promise<string>((_, reject) => { fail = reject; }));
+    (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
+    await past(60);
+    await close(view);
+    const before = Notice.log.length;
+    fail(new Error('read failed'));
+    await settle();
+    expect(Notice.log.slice(before)).toEqual([]);
+  });
+
+  it('a re-read overtaken by a newer one and failing after it shows no notice: the newer read answers for the note', async () => {
+    const { view, store, settle } = await mount(THREE_SECTIONS);
+    const fails: ((error: Error) => void)[] = [];
+    vi.spyOn(store, 'read').mockImplementation(() => new Promise<string>((_, reject) => { fails.push(reject); }));
+    const schedule = (view as unknown as { scheduleRefresh(): void }).scheduleRefresh.bind(view);
+    schedule();
+    await past(60);
+    schedule();
+    await past(60);
+    expect(fails).toHaveLength(2);
+    const before = Notice.log.length;
+    fails[0]?.(new Error('read failed'));
+    await settle();
+    expect(Notice.log.slice(before)).toEqual([]);
+  });
+
+  it('a re-read someone awaits keeps its error when a newer read overtakes it: only the scheduled one drops it (review 3)', async () => {
+    const { view, store } = await mount(THREE_SECTIONS);
+    const fails: ((error: Error) => void)[] = [];
+    vi.spyOn(store, 'read').mockImplementation(() => new Promise<string>((_, reject) => { fails.push(reject); }));
+    const awaited = (view as unknown as { refresh(): Promise<void> }).refresh();
+    // A watcher's change moves the epoch on at once, as `setState`'s or `readNow`'s read is still under way.
+    (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
+    fails[0]?.(new Error('read failed'));
+    await expect(awaited).rejects.toThrow('read failed');
+  });
+
+  // Not a regression test: it passes with the fix reverted too. It pins the other side of it, that the silence is
+  // only for a read whose result would be dropped, not for a failure on the map still open.
+  it('a re-read failing while the tab is open still says so', async () => {
+    const { view, store, settle } = await mount(THREE_SECTIONS);
+    const before = Notice.log.length;
+    const reads = vi.spyOn(store, 'read').mockRejectedValue(new Error('read failed'));
+    (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
+    await past(60);
+    await settle();
+    reads.mockRestore();
+    expect(Notice.log.slice(before)).toEqual(['read failed']);
   });
 });

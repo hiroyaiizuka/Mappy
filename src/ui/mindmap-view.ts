@@ -1181,15 +1181,16 @@ export class MindmapView extends FileView {
     // Invalidate pending reads immediately, before the debounced refresh begins.
     this.epoch += 1;
     if (this.refreshTimer !== undefined) this.contentEl.win.clearTimeout(this.refreshTimer);
-    this.refreshTimer = this.contentEl.win.setTimeout(() => { this.refreshTimer = undefined; this.run(() => this.refresh()); }, 45);
+    this.refreshTimer = this.contentEl.win.setTimeout(() => { this.refreshTimer = undefined; this.run(() => this.refresh(false, true)); }, 45);
   }
 
   /**
    * One refresh, tracked while it runs (the last one started wins, as with the epoch), so the export can wait for it.
    * `own`: the re-read right after a write of this view's own that `showOwnWrite` has already drawn (`reread`).
+   * `scheduled`: the debounced re-read (`scheduleRefresh`), which nobody awaits (`reread`).
    */
-  private refresh(own = false): Promise<void> {
-    const task = this.reread(own).finally(() => {
+  private refresh(own = false, scheduled = false): Promise<void> {
+    const task = this.reread(own, scheduled).finally(() => {
       if (this.refreshing !== task) return;
       this.refreshing = undefined;
       // A fit held for this read runs now even when the read failed and drew nothing, not on some later unrelated frame.
@@ -1199,7 +1200,7 @@ export class MindmapView extends FileView {
     return task;
   }
 
-  private async reread(own = false): Promise<void> {
+  private async reread(own = false, scheduled = false): Promise<void> {
     if (!this.ready || this.closed) return;
     const epoch = ++this.epoch;
     const file = this.file;
@@ -1211,8 +1212,13 @@ export class MindmapView extends FileView {
     }
     // The writes recorded before the read begins, which it will find if nobody else takes them back.
     const recorded = new Set(this.ownWrites);
-    const source = await this.store.read(file);
-    if (this.closed || epoch !== this.epoch || file !== this.file) return;
+    const stale = (): boolean => this.closed || epoch !== this.epoch || file !== this.file;
+    // A failed read whose result would have been dropped has nobody to tell (LEV-236): the scheduled one once it is stale
+    // at all, one awaited (`setState`, `readNow`, the write's and ⌘Z's re-read) only once the tab closed, as its caller
+    // still needs the error while the tab is open or closing.
+    const read = await this.failQuietly(this.store.read(file), scheduled ? stale : () => this.closed);
+    if (!read || stale()) return;
+    const source = read.value;
     const onScreen = source === this.document?.source;
     const changed = !onScreen || this.document?.root.title !== file.basename;
     // The view's own writes answer for this read while they lead from the text this view last parsed to
@@ -1230,7 +1236,7 @@ export class MindmapView extends FileView {
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
-    if (this.closed || epoch !== this.epoch || file !== this.file) return;
+    if (stale()) return;
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
@@ -1352,6 +1358,14 @@ export class MindmapView extends FileView {
     if (sameTargets(this.targets, targets)) return;
     this.adopt(targets);
     this.draw();
+  }
+
+  /** `read`'s value, or `undefined` when it fails while `quiet` holds: its error then goes with it (`reread`, LEV-236). */
+  private async failQuietly<T>(read: Promise<T>, quiet: () => boolean): Promise<{ value: T } | undefined> {
+    try { return { value: await read }; } catch (error) {
+      if (quiet()) return undefined;
+      throw error;
+    }
   }
 
   /**
