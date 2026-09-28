@@ -300,5 +300,5 @@ dry-run: `gh workflow run release.yml --ref <branch>`（workflow_dispatch）と�
 | ネットワーク | 自前のサーバー・テレメトリ・送信・アカウント・課金・広告なし。外部へ出る通信（ノートが参照する外部 URL の画像の表示と書き出し時の取得）を README に開示 | grep、README |
 | ライフサイクル | `register*` による解除、`onunload` で leaf を detach しない、prototype 差し替えの復元、view・埋め込み・Excalidraw フックの解放。実機の E09・E25・E34 | テスト名を記録、実機は verification issue |
 | 依存・配布物 | ランタイム依存とライセンス（表示義務）、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしない、release のタグと添付、minify は難読化ではない | `npm run package`、`package-lock.json` |
-| 公開審査の自動レビュー | 除外リスト（公式 FAQ）に当たらないトップレベルにプラグイン本体以外のソースがない、`npm run build` の出力が Release の添付物と同じ（Build verification）、manifest の版の Release が一覧に拾われる形（pre-release の扱い）、attestation の有無 | `docs/community-submission.md` §4、公式 lint をリポジトリ全体に当てた結果、`sha256` の照合 |
+| 公開審査の自動レビュー | 除外リスト（公式 FAQ）に当たらないトップレベルにプラグイン本体以外のソースがない（2026-09-28 の時点で当たるのは `harness/` と `vitest.config.ts`。LEV-243）、`npm run build` の出力が Release の添付物と同じ（Build verification）、manifest の版の Release が一覧に拾われる形（pre-release の扱い）、attestation の有無 | `docs/community-submission.md` §4、公式 lint をリポジトリ全体に当てた結果、`sha256` の照合 |
 | README・LICENSE | 保存形式、導入、基本操作、既知の制限、復旧方法、ネットワーク利用、対応環境、ライセンス、第三者コードの表示 | README、`LICENSE` |
