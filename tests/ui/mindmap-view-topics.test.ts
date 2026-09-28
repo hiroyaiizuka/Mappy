@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, WorkspaceLeaf as ObsidianLeaf, ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
@@ -19,7 +19,24 @@ import { MindmapView } from '../../src/ui/mindmap-view';
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-afterEach(() => { document.body.replaceChildren(); });
+/** Every view `mount` opened, closed after its test as Obsidian closes a tab: timers stopped, later reads refused (LEV-236). */
+const opened: MindmapView[] = [];
+afterEach(async () => {
+  for (const view of opened.splice(0)) { await view.onClose(); view.unload(); }
+  document.body.replaceChildren();
+});
+/**
+ * The file's end as jsdom's teardown meets it (LEV-236): the globals go, and whatever a test left scheduled or under way
+ * runs later against no `document`. The view's timers are Node's here (`contentEl.win.setTimeout`), so closing the jsdom
+ * window does not stop them, and a `run()` that rejects then builds its `Notice` on no document: an unhandled rejection
+ * that fails the run with every test passed. The window here outlasts the longest timer the view keeps (the 45 ms re-read).
+ */
+afterAll(async () => {
+  const globals = globalThis as { document?: Document };
+  const kept = document;
+  delete globals.document;
+  try { await new Promise(resolve => setTimeout(resolve, 200)); } finally { globals.document = kept; }
+});
 
 const PATH = 'Fixtures/free-topics.md';
 
@@ -72,6 +89,7 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = new DocumentStore(app.asApp<App>());
   const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter);
+  opened.push(view);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   view.load();
