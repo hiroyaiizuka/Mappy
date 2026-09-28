@@ -94,13 +94,20 @@ describe('release workflow', () => {
     const attestIndex = attestJob.steps.findIndex((step) => step.uses?.startsWith('actions/attest@'));
     expect(attestIndex).toBeGreaterThan(attestJob.steps.indexOf(download));
     const attest = attestJob.steps[attestIndex];
-    // The job holds id-token, which every step of the job can use, so every action in it is a full commit SHA,
-    // not a moving tag (attest v4.2.2 and download-artifact v4.3.0 at the time).
-    for (const step of attestJob.steps) if (step.uses) expect(step.uses).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/u);
     expect(attest.uses).toMatch(/^actions\/attest@/u);
     expect(attest.with['subject-path'].trim().split('\n').map((line) => line.trim())).toEqual(distributables);
-    // No other job attests: build also runs for pull requests and workflow_dispatch dry-runs.
-    for (const job of [build, release]) expect(job.steps.some((step) => step.uses?.startsWith('actions/attest'))).toBe(false);
+    // No other job attests: build, and any job added later, may also run for pull requests and dry-runs.
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name !== 'attest') expect(job.steps.some((step) => step.uses?.startsWith('actions/attest')), name).toBe(false);
+    }
+  });
+
+  it('pins every action to a full commit SHA', () => {
+    // The attestation vouches for bytes that build, release and attest made and carried; a retagged action in any
+    // of them could change them, and the attest job holds id-token, which every step of that job can use.
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      for (const step of job.steps) if (step.uses) expect(step.uses, name).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/u);
+    }
   });
 
   it('never expands workflow context inside a shell script', () => {

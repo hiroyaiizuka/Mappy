@@ -25,6 +25,15 @@ function consoleErrorsOnly() {
   return [severity, { ...wrapped, "no-console": { ...wrapped["no-console"], messages, options: [{ allow: ["error"] }] } }];
 }
 
+/**
+ * Node's globals that the browser doesn't have, and the `NodeJS` namespace `recommended` adds beside them, turned
+ * off (a later config's `"off"` removes an earlier global).
+ */
+function nodeOnlyGlobalsOff() {
+  return Object.fromEntries([...Object.keys(globals.node).filter(name => !(name in globals.browser)), "NodeJS"]
+    .map(name => [name, "off"]));
+}
+
 export default defineConfig(
   globalIgnores([
     "node_modules/**", "dist/**", "coverage/**", "artifacts/**", "test-vault/**",
@@ -78,8 +87,15 @@ export default defineConfig(
     languageOptions: { globals: globals.node },
   },
   {
+    // `recommended` reads manifest.json and, when `isDesktopOnly` is true, turns off no-nodejs-modules, stops
+    // regex-lookbehind reporting and adds Node's globals. Mappy is desktop only for now only because mobile hasn't
+    // been tried (LEV-249), not because it may use Node, so these stay on whatever the manifest says
+    // (tests/tooling/mobile-lint.test.mjs).
     files: ["src/**/*.ts"],
+    languageOptions: { globals: nodeOnlyGlobalsOff() },
     rules: {
+      "obsidianmd/no-nodejs-modules": "error",
+      "obsidianmd/regex-lookbehind": ["error", { isDesktopOnly: false }],
       "no-restricted-imports": ["error", {
         patterns: [{ group: ["node:*", "electron"], message: "Runtime must work on mobile." }],
       }],
