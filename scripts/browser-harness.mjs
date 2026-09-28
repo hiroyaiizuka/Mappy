@@ -16,6 +16,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const harnessOutput = join(root, 'dist', 'harness');
+/** The page's stand-in for the `obsidian` module, relative to the repository root. */
+export const harnessObsidian = 'tests/browser-harness/obsidian.ts';
 
 /** `import text from "./file.md?raw"` bundles the file's contents as a string. */
 const rawLoader = {
@@ -59,7 +61,7 @@ function createContext() {
     format: 'iife',
     target: 'es2021',
     sourcemap: true,
-    alias: { obsidian: './tests/browser-harness/obsidian.ts' },
+    alias: { obsidian: `./${harnessObsidian}` },
     plugins: [rawLoader],
     define: {
       __MAPPY_HARNESS_BUILD__: JSON.stringify({ commit: commitHash(), builtAt: new Date().toISOString() }),

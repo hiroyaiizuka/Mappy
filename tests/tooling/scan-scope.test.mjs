@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { devNull } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -14,8 +17,8 @@ import { describe, expect, it } from "vitest";
  * name excludes only as the first segment (`tests/...`), a file name or pattern only the file itself. `src/i18n/`
  * is then scanned, which is fine: it is the plugin.
  *
- * The files are the ones git tracks plus the ones it would add (untracked and not ignored), so a new file shows up
- * before `git add`. The regression test is the first one: before LEV-243 it reports the nine files of
+ * The files are the ones in the working tree that git tracks or would add (untracked and not ignored by the
+ * repository), so a new file shows up before `git add` and a deleted one drops out before it is staged. The regression test is the first one: before LEV-243 it reports the nine files of
  * `harness/browser/` and `vitest.config.ts`. Configs that the list already covers (`*.mjs`) and files that are not
  * code (Markdown, JSON, the pre-commit hook) stay where they are.
  */
@@ -34,12 +37,19 @@ const excluded = path => {
   return EXCLUDED_NAMES.has(parts[0]) || EXCLUDED_NAMES.has(name) || EXCLUDED_PATTERNS.some(pattern => pattern.test(name));
 };
 
-describe("code the directory's scanner reads", () => {
-  const root = fileURLToPath(new URL("../../", import.meta.url));
+const root = fileURLToPath(new URL("../../", import.meta.url));
+// A source archive (a Release's zip, "Download ZIP") has no git: nothing to list, and it is not what gets submitted.
+const checkout = existsSync(join(root, ".git"));
+
+describe.skipIf(!checkout)("code the directory's scanner reads", () => {
   // -z: no quoting of non-ASCII names (core.quotePath), which would put a `"` in front of the first segment.
-  const files = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
-    .split("\0").filter(Boolean);
-  const scanned = files.filter(path => CODE.test(path) && !excluded(path));
+  // core.excludesFile off: only the repository's own ignores decide, not the developer's global one.
+  const files = checkout
+    ? execFileSync("git", ["-c", `core.excludesFile=${devNull}`, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
+      .split("\0").filter(Boolean)
+    : [];
+  // A tracked file deleted but not yet staged is still in the index; the tree is what gets scanned.
+  const scanned = files.filter(path => CODE.test(path) && !excluded(path) && existsSync(join(root, path)));
 
   it("is only the plugin", () => {
     expect(scanned.filter(path => !PLUGIN.some(pattern => pattern.test(path)))).toEqual([]);

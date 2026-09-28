@@ -16,5 +16,5 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.mts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tests/**/*.mts", "*.mts"]
 }

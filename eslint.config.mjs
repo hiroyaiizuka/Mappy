@@ -45,11 +45,11 @@ export default defineConfig(
     },
   },
   {
-    files: ["tests/**/*.ts", "vitest.config.mts"],
+    files: ["tests/**/*.{ts,mts}", "*.mts"],
     extends: tseslint.configs.recommendedTypeChecked,
   },
   {
-    files: ["**/*.ts", "vitest.config.mts"],
+    files: ["**/*.ts", "tests/**/*.mts", "*.mts"],
     languageOptions: {
       globals: globals.browser,
       parserOptions: {
@@ -57,6 +57,11 @@ export default defineConfig(
         tsconfigRootDir: import.meta.dirname,
       },
     },
+  },
+  {
+    // Root `.mts` files are tool configs (vitest.config.mts): they run in Node, not in the page.
+    files: ["*.mts"],
+    languageOptions: { globals: globals.node },
   },
   {
     files: ["*.json"],
