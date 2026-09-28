@@ -456,10 +456,9 @@ describe('positioned moves for drag and drop (list format)', () => {
   });
 });
 
-// LEV-195: README's known limitations tell users to indent every list in a note with spaces only, because then
-// no map operation writes a tab into an item's indentation. The limit of that promise is the note: a branch
-// indented with tabs brings its tabs along when it is moved into a space-indented list, and a tab-indented list
-// can get spaces from the map (both LEV-225). One step of each structure command (add a child or sibling, move
+// LEV-195: README's known limitations tell users to indent their lists with spaces or with tabs, because then no
+// map operation writes a tab into a space-indented list (the tab side, and notes that use both, are LEV-225's
+// block below). One step of each structure command (add a child or sibling, move
 // up or down, delete, detach, reparent, move to a position) on every node of a note whose lists are all
 // space-indented; adding a topic, renaming and body edits are not covered (tabs typed into a body are the
 // user's text). A refusal (a plain `Error` with the message the map shows) is skipped; anything else throws.
@@ -496,5 +495,123 @@ describe('notes indented with spaces only stay free of tabs', () => {
     }
     // A floor, not an exact count, so that allowing or refusing some other move does not fail a test about tabs.
     expect(counts.applied).toBeGreaterThan(300);
+  });
+});
+
+// LEV-225 (decision 2026-09-28): the indentation Mappy writes into a list (a first child's default, a moved branch's
+// new indent) follows the unit the list is already indented with, tabs or spaces, so that no line and no list mixes
+// the two. A list with no indentation follows the rest of the note; a mixed list or note gets spaces. Rows are the
+// user's operation × the shape of the list it lands in.
+describe('new indentation follows the unit of the list (LEV-225)', () => {
+  const tabs = '## R\n- A\n\t- A1\n\t\t- A1a\n- B\n';
+
+  it.each([
+    ['tab list, first child of a first-level item', tabs, 'add-child', 'B', undefined, '## R\n- A\n\t- A1\n\t\t- A1a\n- B\n\t- B1\n'],
+    ['tab list, first child of a deep item', tabs, 'add-child', 'A1a', undefined, '## R\n- A\n\t- A1\n\t\t- A1a\n\t\t\t- B1\n- B\n'],
+    ['space list, first child of a first-level item', '## R\n- A\n  - A1\n- B\n', 'add-child', 'B', undefined, '## R\n- A\n  - A1\n- B\n  - B1\n'],
+    ['unindented list in a tab note', '## R\n- A\n- B\n\n## S\n- D\n\t- D1\n', 'add-child', 'B', undefined, '## R\n- A\n- B\n\t- B1\n\n## S\n- D\n\t- D1\n'],
+    ['unindented list in a mixed note', '## R\n- A\n\n## S\n- D\n\t- D1\n\n## T\n- E\n  - E1\n', 'add-child', 'A', undefined, '## R\n- A\n  - B1\n\n## S\n- D\n\t- D1\n\n## T\n- E\n  - E1\n'],
+    ['tab branch under the new first child of a tab list', '## R\n- A\n\t- A1\n\t\t- A1a\n- B\n\t- B1\n', 'reparent', 'A1', 'B1', '## R\n- A\n- B\n\t- B1\n\t\t- A1\n\t\t\t- A1a\n'],
+    ['tab branch from another topic under a space list', '## R\n- A\n  - A1\n\n## S\n- D\n\t- D1\n', 'reparent', 'D', 'A', '## R\n- A\n  - A1\n  - D\n    - D1\n\n## S\n'],
+    ['space branch from another topic under a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  - D1\n', 'reparent', 'D', 'A', '## R\n- A\n\t- A1\n\t- D\n\t\t- D1\n\n## S\n'],
+    ['tab branch from another topic to the first level of a space list', '## R\n- A\n  - A1\n\n## S\n- D\n\t- D1\n', 'reparent', 'D', 'R', '## R\n- A\n  - A1\n- D\n  - D1\n\n## S\n'],
+    ['tab topic joining a space list', '## R\n- A\n  - A1\n\n## S\n- D\n\t- D1\n', 'reparent', 'S', 'A', '## R\n- A\n  - A1\n  - S\n    - D\n      - D1\n'],
+    ['space topic joining a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  - D1\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t\t- D\n\t\t\t- D1\n'],
+    ['tab sibling moved past a same-width space sibling', '## R\n- P\n\t- X\n\t\t- X1\n    - Z\n', 'move-down', 'X', undefined, '## R\n- P\n    - Z\n    - X\n      - X1\n'],
+    ['space sibling moved past a same-width tab sibling', '## R\n- P\n\t- X\n    - Z\n        - Z1\n', 'move-up', 'Z', undefined, '## R\n- P\n    - Z\n        - Z1\n\t- X\n'],
+    // Review 1: items the map does not draw (tasks, ordered items) are list lines too, for the unit and for the rewrite.
+    ['space branch with a task under a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  - [ ] T\n    - T1\n', 'reparent', 'D', 'A', '## R\n- A\n\t- A1\n\t- D\n\t\t- [ ] T\n\t\t\t- T1\n\n## S\n'],
+    ['space branch with an ordered item under a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n  1. O\n     - O1\n', 'reparent', 'D', 'A', '## R\n- A\n\t- A1\n\t- D\n\t\t1. O\n\t\t\t- O1\n\n## S\n'],
+    ['list indented only by a task', '## R\n- A\n\t- [ ] t\n- B\n\n## S\n- C\n  - C1\n', 'add-child', 'B', undefined, '## R\n- A\n\t- [ ] t\n- B\n\t- B1\n\n## S\n- C\n  - C1\n'],
+    // Review 1: a line whose column does not change keeps its bytes, even if another unit's.
+    ['move among siblings keeps an unshifted continuation', '## R\n- A\n- B\n      six-space continuation\n\t- B1\n', 'move-up', 'B', undefined, '## R\n- B\n      six-space continuation\n\t- B1\n- A\n'],
+    // Review 1: code keeps its bytes behind the new indentation; its empty lines stay empty; HTML blocks too.
+    ['fence with an empty line joining a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n\n```\na\n\nb\n```\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t\t- D\n\n\t  ```\n\t  a\n\n\t  b\n\t  ```\n'],
+    ['HTML block joining a tab list', '## R\n- A\n\t- A1\n\n## S\n<pre>\n      x\n</pre>\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t  <pre>\n\t        x\n\t  </pre>\n'],
+    // Review 2: the list before the first H2 is its own list; frontmatter and comments are not lists; a rule is not an item.
+    ['tab list before the first H2', '- A\n\t- A1\n- B\n\n## S\n- D\n  - D1\n', 'add-child', 'B', undefined, '- A\n\t- A1\n- B\n\t- B1\n\n## S\n- D\n  - D1\n'],
+    ['unindented list in a tab note with a YAML list in its frontmatter', '---\ntags:\n  - x\n---\n## R\n- A\n\n## S\n- D\n\t- D1\n', 'add-child', 'A', undefined, '---\ntags:\n  - x\n---\n## R\n- A\n\t- B1\n\n## S\n- D\n\t- D1\n'],
+    ['tab list with a fence inside a comment', '## R\n- A\n\t%%\n\t```\n\t%%\n\t- A1\n- B\n\n## S\n- C\n  - C1\n', 'add-child', 'B', undefined, '## R\n- A\n\t%%\n\t```\n\t%%\n\t- A1\n- B\n\t- B1\n\n## S\n- C\n  - C1\n'],
+    ['tab list with an indented rule', '## R\n- A\n\t- A1\n\n  * * *\n- B\n', 'add-child', 'B', undefined, '## R\n- A\n\t- A1\n\n  * * *\n- B\n\t- B1\n'],
+    // Review 2: adding in a mixed list writes spaces, as moving does.
+    ['mixed list, child after existing children', '## R\n- P\n\t- X\n    - Z\n', 'add-child', 'P', undefined, '## R\n- P\n\t- X\n    - Z\n    - B1\n'],
+    ['mixed list, sibling of a tab item', '## R\n- P\n\t- X\n    - Z\n', 'add-sibling', 'X', undefined, '## R\n- P\n\t- X\n    - B1\n    - Z\n'],
+    // Review 3: body text past the item's content column keeps its bytes; comments are not items; CRLF and lazy
+    // `2024.` lines are read as the map reads them; the items the map draws decide the unit before tasks do.
+    ['body tab past the content column', '## R\n- A\n- B\n  \tfoo\n', 'reparent', 'B', 'A', '## R\n- A\n  - B\n    \tfoo\n'],
+    ['list-like line in a comment, moved at the same indent', '## R\n- A\n\t- B\n\t\t%%\n\t\t  - note\n\t\t%%\n\t\tmore\n\t- C\n', 'move-down', 'B', undefined, '## R\n- A\n\t- C\n\t- B\n\t\t%%\n\t\t  - note\n\t\t%%\n\t\tmore\n'],
+    ['CRLF tab list with an indented rule', '## R\r\n- A\r\n\t- A1\r\n\r\n  * * *\r\n- B\r\n', 'add-child', 'B', undefined, '## R\r\n- A\r\n\t- A1\r\n\r\n  * * *\r\n- B\r\n\t- B1\r\n'],
+    ['tab list with a lazy line starting like an ordered item', '## R\n- A\n\t- A1\n  2024. was a year\n- B\n', 'add-child', 'B', undefined, '## R\n- A\n\t- A1\n  2024. was a year\n- B\n\t- B1\n'],
+    ['tab items with a space-indented task in the topic', '## R\n- a\n\t- b\n  - [ ] t\n      - sub\n', 'add-child', 'b', undefined, '## R\n- a\n\t- b\n\t\t- B1\n  - [ ] t\n      - sub\n'],
+  ])('%s', (_name, source, type, title, target, expected) => {
+    const doc = parse(source);
+    const nodeId = find(doc, title).id;
+    const command = type === 'reparent' ? { type, nodeId, parentId: find(doc, target ?? '').id } as const
+      : type === 'add-child' || type === 'add-sibling' ? { type, nodeId, title: 'B1' } as const
+      : { type: type as 'move-up' | 'move-down', nodeId };
+    expect(applyEdits(source, planEdit(doc, command).edits)).toBe(expected);
+  });
+
+  it('keeps the bytes of code inside a converted branch and moves only its container indentation', () => {
+    const source = '## R\n- A\n  - A1\n\n## S\n- D\n\t- D1\n\n\t  ```\n\t  \tcode\n\t  ```\n';
+    const doc = parse(source);
+    const result = applyEdits(source, planEdit(doc, { type: 'reparent', nodeId: find(doc, 'D').id, parentId: find(doc, 'A').id }).edits);
+    expect(result).toBe('## R\n- A\n  - A1\n  - D\n    - D1\n\n      ```\n      \tcode\n      ```\n\n## S\n');
+  });
+
+  // Review 2: a paragraph after a blank line ends the nested items to its right; a tab after the marker is measured where it lands.
+  it.each([
+    ['a topic whose nested item is ended by a paragraph', '## R\n- A\n\t- A1\n\n## S\n- a\n  - b\n\n  para\n    - c\n', 'S', 'A', ['R', 'A', 'A1', 'S', 'a', 'b', 'c'], 'c', 'a'],
+    ['a branch whose own marker is followed by a tab (review 3)', '## R\n- A\n  - A1\n\n## S\n-\tB\n       - B1\n', 'B', 'A', ['R', 'A', 'A1', 'B', 'B1', 'S'], 'B1', 'B'],
+    ['a branch with a tab after an item marker', '## R\n- A\n   - A1\n\n## S\n- D\n  -\tD1\n    - x\n', 'D', 'A', ['R', 'A', 'A1', 'D', 'D1', 'x', 'S'], 'x', 'D1'],
+  ])('keeps the tree when moving %s', (_name, source, title, target, titles, child, parent) => {
+    const doc = parse(source);
+    const result = parse(applyEdits(source, planEdit(doc, { type: 'reparent', nodeId: find(doc, title).id, parentId: find(doc, target).id }).edits));
+    expect(result.nodes.map(node => node.title)).toEqual(titles);
+    expect(find(result, child).parentId).toBe(find(result, parent).id);
+  });
+
+  it('writes the indentation in front of a fence in the list\'s unit (review 1)', () => {
+    const source = '## R\n- A\n  - A1\n\n## S\n- D\n\t```\n\t\tx\n\t```\n';
+    const doc = parse(source);
+    const result = applyEdits(source, planEdit(doc, { type: 'reparent', nodeId: find(doc, 'D').id, parentId: find(doc, 'A').id }).edits);
+    const fences = result.split('\n').filter(line => line.trim() === '```');
+    expect(fences).toEqual(['      ```', '      ```']);
+    expect(parse(result).nodes.map(node => node.title)).toEqual(['R', 'A', 'A1', 'D', 'S']);
+  });
+
+  // Every structure command on every node of notes whose topics are each indented one way: afterwards each topic's
+  // list items are still indented one way (the unit of the list they are in, or of the note).
+  it.each([
+    ['tabs only', '## R\n- A\n\t- A1\n\t\t- A1a\n\t- A2\n- B\n- C\n\t- C1\n\n## S\n- D\n\t- D1\n'],
+    ['spaces and tabs by topic', '## R\n- A\n  - A1\n    - A1a\n- B\n\n## S\n- D\n\t- D1\n\t\t- D1a\n- E\n\n## T\n- F\n- G\n'],
+    ['tasks, ordered items, fences and HTML by topic', '## R\n- A\n  - [ ] A1\n    - A1a\n  1. A2\n     - A2a\n- B\n  ```\n  \tcode\n  ```\n\n## S\n- D\n\t- [x] D1\n\t\t- D1a\n\t- D2\n\n\t  <div>\n\t    x\n\t  </div>\n- E\n\n## T\n- F\n- G\n'],
+  ])('keeps each topic of a note indented with %s to one unit', (_name, source) => {
+    const doc = parse(source);
+    let applied = 0;
+    for (const command of doc.nodes.flatMap((node): EditCommand[] => [
+      ...(['add-child', 'add-sibling', 'move-up', 'move-down', 'delete', 'detach'] as const).map(type => ({ type, nodeId: node.id })),
+      ...doc.nodes.flatMap((parent): EditCommand[] => [
+        { type: 'reparent', nodeId: node.id, parentId: parent.id },
+        ...[0, 1, 2].map((index): EditCommand => ({ type: 'move', nodeId: node.id, parentId: parent.id, index })),
+      ]),
+    ])) {
+      let edits;
+      try {
+        edits = planEdit(doc, command).edits;
+      } catch (error) {
+        if (!(error instanceof Error) || error.constructor !== Error) throw error;
+        continue;
+      }
+      if (edits.length === 0) continue;
+      applied++;
+      const result = applyEdits(source, edits);
+      for (const topic of result.split(/^(?=## )/mu)) {
+        const units = new Set(topic.split('\n').map(line => /^([ \t]+)(?:[-+*]|\d+[.)]) /u.exec(line)?.[1])
+          .filter((indent): indent is string => indent !== undefined).map(indent => indent.replace(/(.)\1*/gu, '$1')));
+        expect([...units].every(unit => unit.length === 1) && units.size <= 1, `${JSON.stringify(command)} → ${JSON.stringify(result)}`).toBe(true);
+      }
+    }
+    expect(applied).toBeGreaterThan(200);
   });
 });
