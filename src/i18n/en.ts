@@ -173,6 +173,7 @@ export const en = {
   exitDraftNotSaved: (title: string, reason: string) => `Couldn't save "${title}", which was being edited when Obsidian reloaded or quit. ${reason}`,
   exitNoteChanged: "The note changed in the meantime.",
   exitNoteGone: "The note is no longer in the vault.",
+  exitDraftExpired: "It was kept for more than a day, so it wasn't written.",
   layoutsLabel: "Layouts",
   actions: "Actions",
   mapLabel: "Mind map. Enter adds a sibling, Tab adds a child, F2 edits.",

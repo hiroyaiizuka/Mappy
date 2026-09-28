@@ -1,41 +1,41 @@
 import type { TextEdit } from './commands';
+import { diffEdit, rebaseEdits } from './text-edits';
 
 /**
  * A title draft that was open when the page went (a window reload, Obsidian quitting, LEV-230), kept until the plugin
  * loads again: the edit its save would have made, planned on the note the map showed, or the reason it could not be
- * planned. The note it was planned on is kept by its fingerprint, and by its text too when that is small enough
- * (`EXIT_SOURCE_LIMIT`), so a large note does not overflow the vault's `localStorage` at the moment nothing else can
- * be done; with the text, a note changed elsewhere in the meantime still takes the edit (`rebaseExitEdits`).
+ * planned; `at` is when (epoch ms). The note it was planned on is kept by its fingerprint, and by its text too when
+ * that is small enough (`EXIT_SOURCE_LIMIT`), so a large note does not overflow the vault's `localStorage` at the
+ * moment nothing else can be done; with the text, a note changed elsewhere in the meantime can still take a plain
+ * rename (`rebaseExitEdits`).
  */
 export type ExitDraft =
-  | { path: string; title: string; before: string; after: string; edits: TextEdit[]; source?: string }
-  | { path: string; title: string; refused: string };
+  | { path: string; title: string; at: number; before: string; after: string; edits: TextEdit[]; source?: string }
+  | { path: string; title: string; at: number; refused: string };
 
 /** The longest note (UTF-16 units) whose text is kept with its draft: `localStorage` holds about 5M per origin. */
 export const EXIT_SOURCE_LIMIT = 256 * 1024;
 
 /**
- * `edits`, planned on `before`, moved onto `current`: the two texts are compared by their common start and end, and
- * the one span that differs must lie clear of every edit (not touching one either), so what the edits replace is
- * still there, unchanged, with the same text around it. Edits after that span move by its change in length. Null
- * when the change reaches an edit (the node itself or right next to it changed): nothing is guessed then (E05).
+ * How long a kept draft may wait to be written (ms). The next load normally comes within seconds (a reload) or at the
+ * next launch; one kept longer (Mappy disabled, the vault opened elsewhere meanwhile) is not written unasked into a
+ * note the person has worked on since, and is reported with its text instead.
+ */
+export const EXIT_DRAFT_TTL = 24 * 60 * 60 * 1000;
+
+/**
+ * `edits`, planned on `before`, moved onto `current`, or null. Only a plan of one edit moves — a plain title rename —
+ * and only over a change clear of it (not touching it either: `diffEdit`, then `rebaseEdits`), so what it replaces is
+ * still there with the same text around it. A plan of more edits (a topic's frontmatter keys and position, which
+ * depend on the other topics in the note) applies only to the note it was planned on, as nothing is planned again
+ * here (review 2). Nothing is guessed either when the change reaches the edit (E05).
  */
 export function rebaseExitEdits(before: string, current: string, edits: readonly TextEdit[]): TextEdit[] | null {
   if (before === current) return edits.map(edit => ({ ...edit }));
-  let start = 0;
-  const shortest = Math.min(before.length, current.length);
-  while (start < shortest && before.charCodeAt(start) === current.charCodeAt(start)) start += 1;
-  let end = 0;
-  while (end < shortest - start && before.charCodeAt(before.length - 1 - end) === current.charCodeAt(current.length - 1 - end)) end += 1;
-  const changedTo = before.length - end;
-  const shift = current.length - before.length;
-  const moved: TextEdit[] = [];
-  for (const edit of edits) {
-    if (edit.to < start) moved.push({ ...edit });
-    else if (edit.from > changedTo) moved.push({ from: edit.from + shift, to: edit.to + shift, text: edit.text });
-    else return null;
-  }
-  return moved;
+  if (edits.length !== 1) return null;
+  const change = diffEdit(before, current);
+  if (edits.some(edit => change.from <= edit.to && edit.from <= change.to)) return null;
+  return rebaseEdits(edits, [change]) ?? null;
 }
 
 /**
@@ -69,12 +69,18 @@ export function readExitDrafts(value: unknown): ExitDraft[] {
   return value.flatMap((item: unknown): ExitDraft[] => {
     if (!item || typeof item !== 'object') return [];
     const draft = item as Record<string, unknown>;
-    const { path, title } = draft;
-    if (typeof path !== 'string' || typeof title !== 'string') return [];
-    if (typeof draft.refused === 'string') return [{ path, title, refused: draft.refused }];
+    const { path, title, at } = draft;
+    if (typeof path !== 'string' || typeof title !== 'string' || typeof at !== 'number' || !Number.isFinite(at)) return [];
+    if (typeof draft.refused === 'string') return [{ path, title, at, refused: draft.refused }];
     const { before, after, edits } = draft;
     if (typeof before !== 'string' || typeof after !== 'string' || !Array.isArray(edits) || edits.length === 0 || !edits.every(isEdit)) return [];
     const kept = edits.map(edit => ({ from: edit.from, to: edit.to, text: edit.text }));
-    return [{ path, title, before, after, edits: kept, ...(typeof draft.source === 'string' ? { source: draft.source } : {}) }];
+    return [{ path, title, at, before, after, edits: kept, ...(typeof draft.source === 'string' ? { source: draft.source } : {}) }];
   });
+}
+
+/** The same drafts without the note texts they carry: what still fits when `localStorage` refuses them all. */
+export function withoutSources(drafts: readonly ExitDraft[]): ExitDraft[] {
+  return drafts.map(draft => 'refused' in draft ? draft
+    : { path: draft.path, title: draft.title, at: draft.at, before: draft.before, after: draft.after, edits: draft.edits });
 }

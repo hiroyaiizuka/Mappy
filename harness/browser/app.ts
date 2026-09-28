@@ -312,7 +312,8 @@ export class HarnessApp {
    */
   loadLocalStorage(key: string): unknown {
     const value = window.localStorage.getItem(`mappy-harness-${key}`);
-    return value === null ? null : JSON.parse(value) as unknown;
+    // Obsidian's returns null for what it cannot parse, as here.
+    try { return value === null ? null : JSON.parse(value) as unknown; } catch { return null; }
   }
 
   saveLocalStorage(key: string, data: unknown): void {

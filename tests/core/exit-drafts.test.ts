@@ -33,13 +33,26 @@ describe('rebaseExitEdits', () => {
   it('refuses an emptied note', () => {
     expect(rebaseExitEdits(before, '', rename)).toBeNull();
   });
+
+  // Review 2: a plan of more edits (a topic's frontmatter keys and position) depends on the rest of the note, and is
+  // not planned again here: it applies only to the note it was planned on.
+  it('moves only a plan of one edit', () => {
+    const two = [...rename, { from: 0, to: 0, text: '---\nmappy: true\n---\n' }];
+    const current = before.replace('- 別のノード\n', '- 別のノード\n- 足した\n');
+    expect(rebaseExitEdits(before, current, two)).toBeNull();
+    expect(rebaseExitEdits(before, before, two)).toEqual(two);
+  });
+
+  it('refuses a draft without its time', () => {
+    expect(readExitDrafts([{ path: 'a.md', title: 't', refused: 'x' }])).toEqual([]);
+  });
 });
 
 describe('readExitDrafts', () => {
   it('keeps the planned note text when it is there, and drops a malformed one', () => {
     const edits = [{ from: 0, to: 1, text: 'x' }];
-    const kept = { path: 'a.md', title: 't', before: textFingerprint('ab'), after: textFingerprint('xb'), edits, source: 'ab' };
-    const withoutSource = { path: kept.path, title: kept.title, before: kept.before, after: kept.after, edits };
+    const kept = { path: 'a.md', title: 't', at: 1, before: textFingerprint('ab'), after: textFingerprint('xb'), edits, source: 'ab' };
+    const withoutSource = { path: kept.path, title: kept.title, at: kept.at, before: kept.before, after: kept.after, edits };
     expect(readExitDrafts([kept, { ...kept, source: 3 }])).toEqual([kept, withoutSource]);
     expect(readExitDrafts([{ ...kept, edits: [] }, { ...kept, edits: [{ from: 2, to: 1, text: '' }] }, null, 'x'])).toEqual([]);
   });

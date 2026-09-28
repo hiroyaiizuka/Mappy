@@ -222,17 +222,76 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
   // Review 1: a page that went before applying what the page before it kept overwrote that.
   it('adds to drafts kept by an earlier page that were not applied yet', async () => {
     const { mounted, owner } = await draft('二度目の再読込の下書き');
-    const earlier = [{ path: 'Fixtures/other.md', title: '前のページの下書き', refused: 'x' }];
+    const earlier = [{ path: 'Fixtures/other.md', title: '前のページの下書き', at: Date.now(), refused: 'x' }];
     mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, earlier);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('二度目の再読込の下書き'));
     expect(Notice.log).toEqual([t().exitDraftNotSaved('前のページの下書き', 'x')]);
   });
 
+  // Review 2: a draft kept for long (Mappy disabled for weeks, the note worked on elsewhere) was written unasked.
+  it('does not write a draft kept for more than a day, and says so', async () => {
+    const { mounted, owner } = await draft('古い下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    const [kept] = mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY) as { at: number }[];
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ ...kept, at: Date.now() - 2 * 24 * 60 * 60 * 1000 }]);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(SOURCE);
+    expect(Notice.log).toEqual([t().exitDraftNotSaved('古い下書き', t().exitDraftExpired)]);
+  });
+
+  // Review 2: a full localStorage dropped every draft, though they fit without the note texts.
+  it('keeps the drafts without the note texts when they do not fit with them', async () => {
+    const { mounted, owner } = await draft('容量の足りない下書き');
+    const save = mounted.app.saveLocalStorage.bind(mounted.app);
+    vi.spyOn(mounted.app, 'saveLocalStorage').mockImplementation((key: string, data: unknown) => {
+      if (JSON.stringify(data ?? null).includes('"source"')) throw new DOMException('full', 'QuotaExceededError');
+      save(key, data);
+    });
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('容量の足りない下書き'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Review 2: a page that sends pagehide and is kept after all (a mobile WebView) lost the open draft until some later load.
+  it('applies the kept draft at once when the page shows again', async () => {
+    const { mounted } = await draft('戻ってきたページの下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('pageshow'));
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    await mounted.settle();
+    expect(mounted.source()).toBe(renamed('戻ってきたページの下書き'));
+    expect(mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+  });
+
+  // Review 2: the entry dropped a draft before its write, so a page that went during the write lost it.
+  it('keeps a draft in the entry until its write is done', async () => {
+    const { mounted, owner } = await draft('書き込み中も残る下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    const left = mounted.source();
+    owner.unload();
+    opened.splice(opened.indexOf(mounted), 1);
+    mounted.view.containerEl.remove();
+    const app = new HarnessApp();
+    app.put(PATH, left);
+    const store = new DocumentStore(app.asApp<App>());
+    let during: unknown = 'not written';
+    const applyOver = store.applyOver.bind(store);
+    vi.spyOn(store, 'applyOver').mockImplementation(async (...args: Parameters<DocumentStore['applyOver']>) => {
+      during = app.loadLocalStorage(EXIT_DRAFTS_KEY);
+      return applyOver(...args);
+    });
+    install(app, store, () => []);
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(Array.isArray(during) && during.length).toBe(1);
+    expect(noteOf(app)).toBe(renamed('書き込み中も残る下書き'));
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+  });
+
   it('applies nothing once Mappy is unloaded, and leaves the rest for the next load', async () => {
     const app = new HarnessApp();
     app.put(PATH, SOURCE);
-    const kept = [{ path: 'Fixtures/other.md', title: '後の読み込みへ', refused: 'x' }];
+    const kept = [{ path: 'Fixtures/other.md', title: '後の読み込みへ', at: Date.now(), refused: 'x' }];
     app.saveLocalStorage(EXIT_DRAFTS_KEY, kept);
     // The layout becomes ready only after Mappy was unloaded (disabled or reloaded during startup).
     let ready: () => unknown = () => undefined;

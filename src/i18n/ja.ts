@@ -151,6 +151,7 @@ export const ja: Messages = {
   exitDraftNotSaved: (title: string, reason: string) => `再読込・終了のときに編集していた「${title}」を保存できませんでした。${reason}`,
   exitNoteChanged: "その間にノートが変わりました。",
   exitNoteGone: "ノートが見つかりません。",
+  exitDraftExpired: "1 日より前の入力なので、書き込みませんでした。",
   layoutsLabel: "レイアウト",
   actions: "操作",
   mapLabel: "マインドマップ。Enter で兄弟、Tab で子、F2 で編集。",

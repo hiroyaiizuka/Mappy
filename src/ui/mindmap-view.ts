@@ -845,9 +845,9 @@ export class MindmapView extends FileView {
       const after = applyEdits(current.source, plan.edits);
       if (after === current.source) return null;
       const source = current.source.length <= EXIT_SOURCE_LIMIT ? { source: current.source } : {};
-      return { path: file.path, title, before: textFingerprint(current.source), after: textFingerprint(after), edits: plan.edits, ...source };
+      return { path: file.path, title, at: Date.now(), before: textFingerprint(current.source), after: textFingerprint(after), edits: plan.edits, ...source };
     } catch (error) {
-      return { path: file.path, title, refused: error instanceof Error ? error.message : "" };
+      return { path: file.path, title, at: Date.now(), refused: error instanceof Error ? error.message : "" };
     }
   }
 

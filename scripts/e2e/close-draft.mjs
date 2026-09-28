@@ -26,15 +26,16 @@
  *
  * With `--exits`, the two ends that do not go through the view's `onClose` follow (LEV-230, judged since then):
  * 8. reload: F2 → text → `app:reload`: after the reload the note has the text, with no Notice saying otherwise (kept
- *    at `pagehide` and applied as Mappy loads again). 8b. reload-held-own-node: row 4's held draft → `app:reload`: the note keeps
- *    the outside change and a Notice after the reload names the draft. 9. quit: row 3's held draft (its blur does not
- *    save it) → Obsidian quit (`app.quit()`): the process ends (not only the window: a quit that waits for a task
- *    leaves Obsidian running with no window on macOS), the note on disk is as before the quit (kept, not written as
- *    the page went), and once the case has launched Obsidian again (macOS only: `open -na`, the profile
+ *    at `pagehide` and applied as Mappy loads again). 8b. reload-held-own-node: row 4's held draft → `app:reload`: the
+ *    note keeps the outside change and a Notice after the reload names the draft. 9. quit: row 3's held draft (its
+ *    blur does not save it) → Obsidian quit (`app.quit()`): the process ends (not only the window: a quit that waits
+ *    for a task leaves Obsidian running with no window on macOS), the note on disk is as before the quit (kept, not
+ *    written as the page went), and once the case has launched Obsidian again (macOS only: `open -na`, the profile
  *    `MAPPY_E2E_PROFILE`, default `artifacts/obsidian-profile`, and the same port) the note has the draft over the
  *    change, with no Notice saying otherwise, and the kept entry is used up (8 too: an apply that threw before the
  *    page's error collector was installed again would leave it). Notices of others at launch are not counted. On
- *    0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit passes there too (the window's blur after `unload` saves it), so row 9 uses a held one. The quit comes last.
+ *    0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit passes there too (the window's
+ *    blur after `unload` saves it), so row 9 uses a held one. The quit comes last.
  *
  * Usage: npm run harness:e2e:close-draft -- [--reload] [--json <out.json>] [--keep] [--exits]
  */
@@ -414,8 +415,9 @@ try {
       check(onDisk === other, `9-quit: the note on disk after the quit is not the note before it: ${JSON.stringify(onDisk)}`);
       const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
       if (launched.status !== 0) throw new Error(`open could not launch Obsidian again (${launched.status}): ${launched.stderr || launched.error}`);
-      await reconnect();
+      // Obsidian is up again: the cleanup runs even if reaching it fails below (and records that it could not).
       quitDone = false;
+      await reconnect();
       await evaluate(`${ERRORS} return true;`);
       await wait(2000);
       const after = await evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
