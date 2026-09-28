@@ -35,6 +35,7 @@ export const CASES = [
   { name: 'embed-own-writes', file: 'embed-own-writes.mjs', description: 'E55 マップのタブの編集・切替・Undo/Redo の前後で埋め込みの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'embed-record-takeback', file: 'embed-record-takeback.mjs', description: 'E65 元に戻された書き込みのあとの埋め込みの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'view-reread-takeback', file: 'view-reread-takeback.mjs', description: 'E66 途中まで届いた再読込の先の元に戻された書き込みのあとのビューの同名・空題名ノードの折りたたみ', shot: false },
+  { name: 'call-own-writes', file: 'call-own-writes.mjs', description: 'E67 呼び出し先のマップのタブの編集・切替・Undo/Redo・元に戻しの前後で、呼び出し元の同名・空題名ノードの折りたたみ', shot: false },
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'multiline-setext', file: 'multiline-setext.mjs', description: 'E60 複数行の Setext 見出しは段落（マップの見出しが metadataCache と一致、閲覧モード、周りの編集）', shot: false },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
