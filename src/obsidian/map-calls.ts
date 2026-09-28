@@ -2,6 +2,7 @@ import type { App, TFile } from 'obsidian';
 import type { CallTarget, CallTargets } from '../core/calls';
 import { embedOnlyTitle, readMapFromSource } from '../core/embed';
 import { parseMarkdown, type MindDocument } from '../core/markdown';
+import { WriteRecord } from '../core/write-record';
 import type { DocumentStore } from './document-store';
 import { resolveEmbedTarget } from './embed-target';
 
@@ -16,13 +17,27 @@ import { resolveEmbedTarget } from './embed-target';
  * called map survive an edit of that note; a note whose text did not change keeps the
  * very same document, so the caller can tell an unchanged result by reference. A note
  * that cannot be read makes its items links.
+ *
+ * A reader that `listen`s also records the store's writes on the notes it read (an edit, a layout button, ⌘Z／⌘⇧Z in a
+ * map tab of the called note) and carries the ids over with their edits, as an embed does (`WriteRecord`, LEV-217):
+ * nothing else keeps the folds on a called node whose title repeats or is empty (LEV-221). An external change (E05) is
+ * matched by titles alone. The reader has no lifecycle of its own: whoever calls `listen` ends it (`MindmapView`).
  */
 export class CallReader {
   private readonly parsed = new Map<string, { source: string; document: MindDocument }>();
+  /** By path, the store's writes on a note since it was last parsed here; kept exactly as long as its parse. */
+  private readonly writes = new Map<string, WriteRecord>();
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly app: App, private readonly store: DocumentStore) {}
+
+  /** Records the store's writes on the notes read here from now on; the returned function stops it. */
+  listen(): () => void {
+    return this.store.onWrite((file, write) => {
+      this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
+    });
+  }
 
   read(document: MindDocument, hostPath: string): Promise<CallTargets> {
     const result = this.queue.then(() => this.readNow(document, hostPath));
@@ -47,7 +62,7 @@ export class CallReader {
       if (!parsed) continue;
       for (const caller of callers) targets.set(caller.id, { path, subpath: caller.subpath, document: parsed });
     }
-    for (const path of Array.from(this.parsed.keys())) if (!wanted.has(path)) this.parsed.delete(path);
+    for (const path of Array.from(this.parsed.keys())) if (!wanted.has(path)) this.forget(path);
     return targets;
   }
 
@@ -57,22 +72,38 @@ export class CallReader {
   }
 
   private async parse(file: TFile): Promise<MindDocument | null> {
+    const writes = this.writes.get(file.path);
+    // The writes recorded before the read begins, which it will find if nobody else takes them back (LEV-224).
+    const mark = writes?.mark() ?? 0;
     let text: string;
     try {
       text = await this.store.read(file);
     } catch {
-      this.parsed.delete(file.path);
+      this.forget(file.path);
       return null;
     }
     if (readMapFromSource(text) === null) {
-      this.parsed.delete(file.path);
+      this.forget(file.path);
       return null;
     }
     const previous = this.parsed.get(file.path);
-    if (previous && previous.source === text && previous.document.root.title === file.basename) return previous.document;
-    const parsed = parseMarkdown(text, file.basename, previous?.document);
+    if (previous && previous.source === text && previous.document.root.title === file.basename) {
+      // Writes that came back to the text parsed (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
+      writes?.spend(text, mark);
+      return previous.document;
+    }
+    const parsed = previous && writes
+      ? writes.take(text, previous.document, file.basename, mark)
+      : parseMarkdown(text, file.basename, previous?.document);
     this.parsed.set(file.path, { source: text, document: parsed });
+    if (!writes) this.writes.set(file.path, new WriteRecord());
     return parsed;
+  }
+
+  /** A note no longer read here: its parse, and the writes that would have led on from it. */
+  private forget(path: string): void {
+    this.parsed.delete(path);
+    this.writes.delete(path);
   }
 }
 

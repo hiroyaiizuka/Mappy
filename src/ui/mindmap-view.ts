@@ -760,6 +760,8 @@ export class MindmapView extends FileView {
     }));
     this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) this.scheduleRefresh(); }));
     this.register(this.store.onWrite((file, write) => { this.recordWrite(file, write); }));
+    // The called maps carry their ids through the called notes' own writes (LEV-221); the reader lives as long as the view.
+    this.register(this.reader.listen());
     // A rename of the note is `onRename` (FileView's own subscription). Its deletion is FileView's too, and comes
     // first (subscribed in `onload`): the leaf goes back in its history or to the empty view (`allowNoFile` is
     // false), which unloads the note here without a save; a kept draft outlives refreshes, but not its note, so it

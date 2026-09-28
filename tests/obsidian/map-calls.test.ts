@@ -71,6 +71,36 @@ describe('CallReader', () => {
   });
 });
 
+describe('CallReader.listen (LEV-221)', () => {
+  function writesOf(reader: CallReader): Map<string, { size: number }> {
+    return (reader as unknown as { writes: Map<string, { size: number }> }).writes;
+  }
+
+  it('records the store\'s writes on a note read here only while listening, and forgets them with the note', async () => {
+    const app = new HarnessApp();
+    app.put('Host.md', HOST);
+    const map = app.put('Map.md', MAP);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const host = parseMarkdown(HOST, 'Host');
+    await reader.read(host, 'Host.md');
+    const at = MAP.indexOf('記録する');
+    // A reader nobody listens with (an export, the Excalidraw bridge: one read each) keeps nothing.
+    await store.applyLatest(map as never, () => [{ from: at, to: at + 4, text: '記録' }]);
+    expect(writesOf(reader).get('Map.md')?.size).toBe(0);
+    await reader.read(host, 'Host.md');
+    const stop = reader.listen();
+    const text = app.content(map);
+    await store.applyLatest(map as never, () => [{ from: text.indexOf('記録'), to: text.indexOf('記録') + 2, text: '記録する' }]);
+    expect(writesOf(reader).get('Map.md')?.size).toBe(1);
+    // No longer a map: the parse goes, and the writes that would have led on from it with it.
+    app.put('Map.md', MAP.replace('mappy: true', 'mappy: "true"'));
+    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(false);
+    stop();
+  });
+});
+
 describe('sameTargets', () => {
   it('compares by item, document identity, path and heading', () => {
     const document = parseMarkdown(MAP, 'Map');
