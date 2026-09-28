@@ -53,10 +53,14 @@ export const en = {
   conflict: "The note changed in Markdown. Update the map and edit again.",
   tabsDisagree: "Tabs editing this note disagree about its contents. Make them match in Markdown, then try again.",
   editorOpenedWhileSaving: "A Markdown editor opened while saving. Update the map and try again.",
+  // A draft's error line (src/ui/inline-editor.ts, src/ui/edit-modal.ts): `refreshed` replaces `conflict` once the map has re-read the note.
+  refreshed: "The note changed in Markdown. Press Enter again to apply this to the new content, or cancel to close.",
+  saveFailed: "Couldn't save.",
 
-  // Commands whose names other text repeats (the settings); src/main.ts registers them.
+  // Commands whose names other text repeats (the settings, a notice, the file menu); src/main.ts registers them by these.
   cmdCreateMap: "Create new mind map",
   cmdConvertNote: "Turn this note into a mind map",
+  convertFirst: (command: string) => `Run "${command}" first.`,
 
   // New maps (src/obsidian/map-files.ts). `untitled` is written into the note as its title.
   untitled: "Untitled mind map",
@@ -79,10 +83,10 @@ export const en = {
   setTheme: "Theme",
   setThemeDesc: "Applies to the map view only. Embeds in notes and maps inserted into Excalidraw follow Obsidian's theme.",
   setDefaultLayout: "Default layout for new maps",
-  setDefaultLayoutDesc: (create: string, convert: string) => `The layout "${create}" and "${convert}" write to mappy-layout. Notes that already exist keep theirs.`,
+  setDefaultLayoutDesc: (create: string, convert: string) => `Written to mappy-layout by "${create}" and "${convert}". Notes that already exist keep their layout.`,
   setFolder: "Folder for new maps",
   setFolderDesc: "A path relative to the vault. Leave it empty to follow Obsidian's default location for new notes, or enter / for the vault root. A missing folder is created with the first map.",
-  setFolderPlaceholder: "Maps",
+  setFolderPlaceholder: "For example: Maps",
   setLayouts: "Layouts in the bottom-left corner",
   setLayoutsDesc: "The layout buttons in the map's bottom-left corner. The mind map can't be hidden. When an open note's mappy-layout is a hidden layout, that note still shows its button. Hiding a layout doesn't change how mappy-layout is saved and restored, the commands, embeds or inserting into Excalidraw.",
   setHiddenDefault: (layout: string) => `The default layout, ${layout}, isn't shown in the bottom-left corner. New maps still use it, and those notes show its button.`,

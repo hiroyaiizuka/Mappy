@@ -44,9 +44,12 @@ export const ja: Messages = {
   conflict: "Markdown が変更されています。マップを更新してから再編集してください。",
   tabsDisagree: "同じノートの編集内容が複数のタブで一致しません。Markdown 側の内容を揃えてから操作してください。",
   editorOpenedWhileSaving: "保存中に Markdown エディタが開かれました。マップを更新して再度お試しください。",
+  refreshed: "Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。",
+  saveFailed: "保存できませんでした。",
 
   cmdCreateMap: "新しいマインドマップを作成",
   cmdConvertNote: "このノートをマインドマップ化",
+  convertFirst: (command: string) => `先に「${command}」を実行してください。`,
 
   untitled: "無題のマインドマップ",
   folderDotName: (path: string, setting: string) => `作成先「${path}」に . で始まる名前は使えません。設定の「${setting}」を確認してください。`,

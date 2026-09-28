@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { ConflictError } from "../obsidian/document-store";
 
 export interface InlineSuggestion {
@@ -15,10 +16,6 @@ export interface InlineEditorOptions {
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
 }
 
-/** Shown in place of a conflict line once the map has re-read the note: the same Enter now applies the draft to it. */
-export const REFRESHED_MESSAGE = "Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。";
-
-const SAVE_FAILED_MESSAGE = "保存できませんでした。";
 
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
 const CARET_ALLOWANCE = 2;
@@ -269,7 +266,8 @@ export class InlineEditor {
   refreshed(): void {
     if (this.disposed || !this.conflicted) return;
     this.conflicted = false;
-    this.error.setText(REFRESHED_MESSAGE);
+    // Shown in place of the conflict line once the map has re-read the note: the same Enter now applies the draft to it.
+    this.error.setText(t().refreshed);
   }
 
   dispose(): void {
@@ -287,5 +285,5 @@ export class InlineEditor {
 
 /** The reason a refused save shows on the draft's error line. */
 function failure(error: unknown): string {
-  return error instanceof Error ? error.message : SAVE_FAILED_MESSAGE;
+  return error instanceof Error ? error.message : t().saveFailed;
 }

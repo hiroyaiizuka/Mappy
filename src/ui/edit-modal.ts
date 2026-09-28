@@ -1,6 +1,6 @@
 import { Modal, Setting, type App } from "obsidian";
+import { t } from "../i18n";
 import { ConflictError } from "../obsidian/document-store";
-import { REFRESHED_MESSAGE } from "./inline-editor";
 
 /** Keep the draft open when a concurrent edit prevents saving. */
 export class EditModal extends Modal {
@@ -33,7 +33,7 @@ export class EditModal extends Modal {
         await this.submit(input.value);
         this.close();
       } catch (reason) {
-        error.setText(reason instanceof Error ? reason.message : "保存できませんでした。");
+        error.setText(reason instanceof Error ? reason.message : t().saveFailed);
         this.conflicted = reason instanceof ConflictError;
       } finally { busy = false; }
     };
@@ -59,7 +59,7 @@ export class EditModal extends Modal {
   refreshed(): void {
     if (!this.error || !this.conflicted) return;
     this.conflicted = false;
-    this.error.setText(REFRESHED_MESSAGE);
+    this.error.setText(t().refreshed);
   }
 
   onClose(): void { this.error = undefined; this.contentEl.empty(); }

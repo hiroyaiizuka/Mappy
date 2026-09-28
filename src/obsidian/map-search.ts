@@ -41,11 +41,12 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
 
   constructor(app: App, private readonly except: TFile | null, private readonly choose: (file: TFile) => void) {
     super(app);
-    this.setPlaceholder(t().searchPlaceholder);
+    const text = t();
+    this.setPlaceholder(text.searchPlaceholder);
     this.setInstructions([
-      { command: '↑↓', purpose: t().searchNavigate },
-      { command: '↵', purpose: t().searchInsert },
-      { command: 'esc', purpose: t().searchClose },
+      { command: '↑↓', purpose: text.searchNavigate },
+      { command: '↵', purpose: text.searchInsert },
+      { command: 'esc', purpose: text.searchClose },
     ]);
   }
 
@@ -58,7 +59,8 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
 
   /** No map at all and no map matching the query are different news; the empty line says which. */
   onNoSuggestion(): void {
-    this.emptyStateText = this.getItems().length === 0 ? t().searchNoMaps : t().searchNoMatch;
+    const text = t();
+    this.emptyStateText = this.getItems().length === 0 ? text.searchNoMaps : text.searchNoMatch;
     super.onNoSuggestion();
   }
 

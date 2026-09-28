@@ -53,7 +53,10 @@ export async function fetchRemoteImage(url: string, timeoutMs = REMOTE_IMAGE_TIM
     const response = await Promise.race([requestUrl({ url, throw: false }), timeout]);
     if (response.status >= 400) throw new Error(t().imageFetchFailed(response.status));
     const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
-    if (!mime.startsWith('image/')) throw new Error(t().imageNotImage(mime || t().imageUnknownType));
+    if (!mime.startsWith('image/')) {
+      const text = t();
+      throw new Error(text.imageNotImage(mime || text.imageUnknownType));
+    }
     return { buffer: response.arrayBuffer, mime };
   } finally {
     window.clearTimeout(timer);
