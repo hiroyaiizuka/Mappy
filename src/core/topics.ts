@@ -1,4 +1,5 @@
 import type { TextEdit } from './commands';
+import type { LayoutMode } from './layout-mode';
 import { frontmatterLayout, projectMap, type MindDocument } from './markdown';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
 import { t } from '../i18n';
@@ -41,6 +42,16 @@ export function topicKeys(doc: MindDocument): Map<string, string> {
     keys.set(topic.id, key);
   }
   return keys;
+}
+
+/**
+ * The position `positions` holds for `topic` in `mode`, by its key (`keys`, from `topicKeys`; a topic missing there reads
+ * the plain heading). The one read the view and the embed both place a topic by (LEV-248).
+ */
+export function storedTopicPosition(
+  positions: TopicPositionMap, keys: ReadonlyMap<string, string>, topic: { id: string; title: string }, mode: LayoutMode,
+): TopicPosition | undefined {
+  return positions.get(keys.get(topic.id) ?? topic.title)?.[mode];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

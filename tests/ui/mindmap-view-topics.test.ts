@@ -274,6 +274,51 @@ describe('MindmapView with free topics', () => {
     expect(layout().nodes.some(node => node.id === PLACEHOLDER_ID)).toBe(false);
   });
 
+  it('draws the previewed slot\'s connector thick and above the others, and none once the preview goes', async () => {
+    // LEV-248. The view keeps what the embed has no use for — the `is-preview` class and the preview's connector drawn
+    // last. Before LEV-248 a connector added in the same frame as the preview's (a fold opened under it) was drawn above
+    // it until the connectors were drawn again: the first check after the fold fails on that code, the rest hold on both.
+    const source = fixtureSource();
+    const { view, layout } = await mount(source);
+    const doc = documentOf(view);
+    const { root, topics } = projectMap(doc);
+    const dragged = doc.nodes.find(node => node.title === '習慣化する');
+    const folded = topics.find(topic => topic.children.length > 0);
+    if (!dragged || !folded) throw new Error('Missing fixture nodes');
+    const svg = view.containerEl.querySelector('svg.mappy-edges');
+    if (!svg) throw new Error('No connectors');
+    const paths = (): SVGPathElement[] => Array.from(svg.querySelectorAll('path'));
+    const drawn = paths().length;
+    const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
+    const fold = (view as unknown as { fold(id: string): void }).fold.bind(view);
+    const previewDrop = (view as unknown as { previewDrop(command: MoveCommand | null): void }).previewDrop.bind(view);
+    // A topic folded, the preview drawn, the topic opened again: its connectors are new paths, added in the frame that
+    // draws the preview's, which stays last. So it does after the slot moves within the same parent (the same path).
+    fold(folded.id);
+    await frame();
+    previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 0 });
+    await frame();
+    const preview = paths().filter(path => path.classList.contains('is-preview'));
+    expect(preview).toHaveLength(1);
+    const closed = paths().length;
+    fold(folded.id);
+    await frame();
+    // The shape the row needs: the connectors the fold opened come after the preview's in the layout's order, so the
+    // update adds their paths after the preview's (the order the fixture's topics and the body give the layout).
+    const order = layout().edges.map(edge => edge.to);
+    const after = folded.children.map(child => order.indexOf(child.id));
+    expect(after.every(index => index > order.indexOf(PLACEHOLDER_ID))).toBe(true);
+    expect({ added: paths().length > closed, last: svg.lastElementChild === preview[0] }).toEqual({ added: true, last: true });
+    previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 1 });
+    await frame();
+    const previews = paths().filter(path => path.classList.contains('is-preview'));
+    expect(previews).toEqual(preview);
+    expect(svg.lastElementChild).toBe(previews[0]);
+    previewDrop(null);
+    await frame();
+    expect({ count: paths().length, previews: paths().filter(path => path.classList.contains('is-preview')).length }).toEqual({ count: drawn, previews: 0 });
+  });
+
   it('renames a topic through the view and keeps its stored position under the new heading', async () => {
     const source = fixtureSource();
     const { app, view } = await mount(source);

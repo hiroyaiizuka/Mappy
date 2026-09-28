@@ -6,11 +6,11 @@ import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
-import { embedOnlyTitle } from "../core/embed";
+import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
 import { locateSubpath } from "../core/subpath";
-import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
+import { planTopicMoves, readTopicPositions, storedTopicPosition, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabel, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
@@ -26,6 +26,7 @@ import type { MapTheme } from "../obsidian/settings";
 import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
+import { EdgeLayer } from "./edge-layer";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
 import { MapEvents, nodeOf } from "./map-events";
@@ -211,7 +212,9 @@ export class MindmapView extends FileView {
    */
   private plain: { file: TFile | null; mode: LayoutMode; layout: LayoutResult } | undefined;
   private placeholder!: HTMLDivElement;
-  private edgePaths = new Map<string, SVGPathElement>();
+  private edges!: EdgeLayer;
+  /** The drop preview's connector as last drawn (`drawEdges`), the one marked `is-preview`. */
+  private previewPath: SVGPathElement | undefined;
   private dropPreview: MoveCommand | null = null;
   /**
    * A free tree following the pointer: the dragged root, and where each affected topic started and where
@@ -653,6 +656,7 @@ export class MindmapView extends FileView {
     this.emptyState.hidden = true;
     const world = this.canvas.createDiv({ cls: "mappy-world" });
     this.svg = world.createSvg("svg", { cls: "mappy-edges", attr: { "aria-hidden": "true" } });
+    this.edges = new EdgeLayer(this.svg);
     const nodes = world.createDiv({ cls: "mappy-nodes" });
     this.placeholder = nodes.createDiv({ cls: "mappy-drop-placeholder", attr: { "data-drop-placeholder": "", "aria-hidden": "true" } });
     this.placeholder.hidden = true;
@@ -1418,7 +1422,7 @@ export class MindmapView extends FileView {
     const topics = projected.trees.split.topics;
     // Keys come from the headings as written (`split`); the tree laid out is the one shown (a topic may call a map).
     const own = topics.map(topic => {
-      const stored = projected.positions.get(projected.keys.get(topic.id) ?? topic.title)?.[this.mode];
+      const stored = storedTopicPosition(projected.positions, projected.keys, topic, this.mode);
       const pending = this.pendingTopic?.id === topic.id && this.pendingTopic.layout === this.mode ? this.pendingTopic.position : undefined;
       return this.topicDrag?.overrides.get(topic.id) ?? stored ?? pending;
     });
@@ -1434,16 +1438,7 @@ export class MindmapView extends FileView {
 
   private visible(): MindNode[] {
     const projection = this.projection();
-    if (!projection) return [];
-    const result: MindNode[] = [];
-    const pending = [projection.root, ...projection.topics].reverse();
-    while (pending.length > 0) {
-      const node = pending.pop();
-      if (!node) break;
-      result.push(node);
-      if (!this.collapsed.has(node.id)) pending.push(...[...node.children].reverse());
-    }
-    return result;
+    return projection ? visibleNodes(projection, this.collapsed) : [];
   }
 
   private draw(): void {
@@ -1549,27 +1544,23 @@ export class MindmapView extends FileView {
     });
   }
 
-  /** Reuse path elements across frames; only changed connectors touch the DOM. */
+  /**
+   * The connectors, as the embed draws them (`EdgeLayer`), with the drop preview's own marked and drawn last: the thick
+   * connector must sit above the thin ones it overlaps along the shared trunk. Moved after the update, so a connector
+   * the update adds (a fold opened under the preview) does not land above it (LEV-248; before, it stayed under the new
+   * ones until the connectors were drawn again).
+   */
   private drawEdges(edges: LayoutResult["edges"]): void {
-    const retained = new Set<string>();
-    for (const edge of edges) {
-      retained.add(edge.id);
-      let path = this.edgePaths.get(edge.id);
-      if (!path) {
-        path = this.svg.createSvg("path");
-        this.edgePaths.set(edge.id, path);
-      }
-      if (path.getAttribute("d") !== edge.path) path.setAttribute("d", edge.path);
-      const preview = edge.to === PLACEHOLDER_ID;
-      path.toggleClass("is-preview", preview);
-      // The thick connector must sit above the thin ones it overlaps along the shared trunk.
-      if (preview && path !== this.svg.lastElementChild) this.svg.append(path);
+    this.edges.update(edges);
+    const preview = edges.find(edge => edge.to === PLACEHOLDER_ID);
+    const path = preview ? this.edges.path(preview.id) : undefined;
+    // Unmarked when it stops being the preview's, whatever `EdgeLayer` does with its paths (today it goes with the preview).
+    if (path !== this.previewPath) {
+      this.previewPath?.removeClass("is-preview");
+      path?.addClass("is-preview");
+      this.previewPath = path;
     }
-    for (const [id, path] of this.edgePaths) {
-      if (retained.has(id)) continue;
-      path.remove();
-      this.edgePaths.delete(id);
-    }
+    if (path && path !== this.svg.lastElementChild) this.svg.append(path);
   }
 
   /** Show or clear the slot a pending drop would fill; the layout makes room for it on the next frame. */

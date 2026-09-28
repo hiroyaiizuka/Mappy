@@ -8,7 +8,7 @@
 import { layoutFromValue, type LayoutMode } from './layout-mode';
 import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from './map-keys';
 import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
-import { topicKeys, type TopicPositionMap } from './topics';
+import { storedTopicPosition, topicKeys, type TopicPositionMap } from './topics';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
 
 /**
@@ -155,7 +155,7 @@ export function visibleNodes(trees: EmbedTrees, collapsed: ReadonlySet<string>):
 export function embedTopicLayouts(doc: MindDocument, trees: EmbedTrees, positions: TopicPositionMap, mode: LayoutMode): { tree: MindNode; position: { x: number; y: number } | null }[] {
   const keys = topicKeys(doc);
   return trees.topics.map((topic) => {
-    const stored = positions.get(keys.get(topic.id) ?? topic.title)?.[mode];
+    const stored = storedTopicPosition(positions, keys, topic, mode);
     return { tree: topic, position: stored ? { x: stored.x, y: stored.y } : null };
   });
 }
