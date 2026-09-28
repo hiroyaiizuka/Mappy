@@ -1,8 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-/** Specificity [ids, classes/attributes/pseudo-classes, types] of a compound or descendant selector without :is()/:where(). */
+/**
+ * Specificity [ids, classes/attributes, types] of a selector of classes, attributes, types and combinators only. A
+ * pseudo-class or pseudo-element is refused rather than counted (review 3: `:not(...)` and `::before` do not add what
+ * a simple count would give them).
+ */
 function specificity(selector) {
+  if (selector.includes(":")) throw new Error(`specificity() does not count pseudo-classes or elements: ${selector}`);
   const ids = selector.match(/#[\w-]+/gu)?.length ?? 0;
   const classes = selector.match(/\.[\w-]+|\[[^\]]*\]|:(?!:)[\w-]+/gu)?.length ?? 0;
   const types = selector.replace(/\[[^\]]*\]/gu, "").match(/(^|[\s>+~])[a-z][\w-]*/giu)?.length ?? 0;

@@ -27,32 +27,36 @@ function childrenNamed(folder: TFolder, segment: string): TAbstractFile[] {
   return folder.children.filter(child => child.name.toLowerCase() === lower).sort((left, right) => rank(left) - rank(right));
 }
 
-/**
- * The file or folder whose path equals `segments` ignoring case, a folder first. It walks down from the root through
- * each folder's own children instead of listing the vault (LEV-253: the community scan flags every listing), going
- * back up when a branch ends. `metadataCache.getFirstLinkpathDest` is no substitute: it resolves notes by link, not
- * folders.
- */
-function findIgnoringCase(folder: TFolder, segments: string[]): TAbstractFile | null {
-  const [segment = '', ...rest] = segments;
-  for (const child of childrenNamed(folder, segment)) {
-    if (rest.length === 0) return child;
-    const found = child instanceof TFolder ? findIgnoringCase(child, rest) : null;
-    if (found) return found;
-  }
-  return null;
+/** What one walk down the setting's path finds: the entry at the whole path, and how far existing folders reach. */
+interface Walk {
+  /** At the whole path ignoring case, a folder in any branch before a file in any branch; null when nothing is there. */
+  found: TAbstractFile | null;
+  /** The deepest existing folder along the path, and how many segments it covers. */
+  deepest: { folder: TFolder; depth: number };
+  /** A file stands where a folder of the path would have to go (a segment before the last names a file). */
+  blocked: boolean;
 }
 
-/** The deepest existing folder along `segments` ignoring case, and how many segments it covers. */
-function deepestFolder(folder: TFolder, segments: string[], depth = 0): { folder: TFolder; depth: number } {
-  let best = { folder, depth };
-  if (depth === segments.length) return best;
-  for (const child of childrenNamed(folder, segments[depth] ?? '')) {
-    if (!(child instanceof TFolder)) continue;
-    const found = deepestFolder(child, segments, depth + 1);
-    if (found.depth > best.depth) best = found;
-  }
-  return best;
+/**
+ * One walk down from the root through each folder's own children, instead of listing the vault (LEV-253: the community
+ * scan flags every listing). Every branch whose names match ignoring case is tried, so a vault synced from a
+ * case-sensitive system (`Maps/x` a file, `maps/x` a folder) resolves to the folder. `metadataCache.getFirstLinkpathDest`
+ * is no substitute: it resolves notes by link, not folders.
+ */
+function walkIgnoringCase(root: TFolder, segments: string[]): Walk {
+  const walk: Walk = { found: null, deepest: { folder: root, depth: 0 }, blocked: false };
+  const visit = (folder: TFolder, depth: number): void => {
+    if (depth > walk.deepest.depth) walk.deepest = { folder, depth };
+    for (const child of childrenNamed(folder, segments[depth] ?? '')) {
+      if (depth === segments.length - 1) {
+        if (!walk.found || (child instanceof TFolder && !(walk.found instanceof TFolder))) walk.found = child;
+      } else if (child instanceof TFolder) visit(child, depth + 1);
+      else walk.blocked = true;
+      if (walk.found instanceof TFolder) return;
+    }
+  };
+  visit(root, 0);
+  return walk;
 }
 
 function childPath(folder: string, name: string): string {
@@ -82,15 +86,17 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
   if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'folderDotName');
   // The file system is usually case-insensitive: `maps` must reuse an existing `Maps` rather than fail to create it,
   // and a file called `Maps` blocks `maps` just as it blocks `Maps`.
-  const segments = path.split('/');
   const exact = app.vault.getAbstractFileByPath(path);
-  const existing = exact instanceof TFolder ? exact : findIgnoringCase(app.vault.getRoot(), segments) ?? exact;
-  if (existing instanceof TFolder) return existing;
-  if (existing) throw badFolder(path, 'folderIsFile');
+  if (exact instanceof TFolder) return exact;
+  const segments = path.split('/');
+  const walk = walkIgnoringCase(app.vault.getRoot(), segments);
+  if (walk.found instanceof TFolder) return walk.found;
+  // A file of the name, or a file where one of its folders would go, blocks it: creating through a file only fails later.
+  if (walk.found ?? exact ?? walk.blocked) throw badFolder(path, 'folderIsFile');
   // Only what is missing takes the setting's spelling: `maps/2027` under an existing `Maps` is `Maps/2027`, not a
   // second parent differing in case in the vault's index.
-  const known = deepestFolder(app.vault.getRoot(), segments);
-  const created: TFolder | null = await app.vault.createFolder(childPath(known.folder.path, segments.slice(known.depth).join('/')));
+  const { folder: known, depth } = walk.deepest;
+  const created: TFolder | null = await app.vault.createFolder(childPath(known.path, segments.slice(depth).join('/')));
   if (!created) throw badFolder(path, 'folderNotCreated');
   return created;
 }

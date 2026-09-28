@@ -124,11 +124,12 @@ describe('resolveNewMapFolder', () => {
     expect((await resolveNewMapFolder(app, 'maps.md', '', 'x.md')).path).toBe('maps.md');
     await expect(resolveNewMapFolder(app, 'notes/sub/deep.md', '', 'x.md')).rejects.toThrow('はフォルダではありません');
     expect(createFolder).not.toHaveBeenCalled();
-    // A path that goes on under a file, or has no match at some level, is new: the vault is asked to create it, under
-    // the existing folders as they are spelled (review 2: not a second `maps` beside `Maps` in the vault's index).
-    await resolveNewMapFolder(app, 'notes/plan.md/inner', '', 'x.md');
+    // A path that goes on under a file is refused as a file is (review 3: creating through it fails with the adapter's
+    // own error). One with no match at some level is new: the vault is asked to create it, under the existing folders
+    // as they are spelled (review 2: not a second `maps` beside `Maps` in the vault's index).
+    await expect(resolveNewMapFolder(app, 'notes/plan.md/inner', '', 'x.md')).rejects.toThrow('はフォルダではありません');
     await resolveNewMapFolder(app, 'maps/2027', '', 'x.md');
-    expect(createFolder.mock.calls).toEqual([['Notes/plan.md/inner'], ['Maps/2027']]);
+    expect(createFolder.mock.calls).toEqual([['Maps/2027']]);
     expect(listing).not.toHaveBeenCalled();
   });
 
@@ -145,6 +146,10 @@ describe('resolveNewMapFolder', () => {
     expect((await resolveNewMapFolder(synced.app, 'plans', '', 'x.md')).path).toBe('PLANS');
     expect((await resolveNewMapFolder(synced.app, 'Plans', '', 'x.md')).path).toBe('PLANS');
     expect(synced.createFolder).not.toHaveBeenCalled();
+    // And across branches: a file at the whole path under one parent does not hide a folder there under another (review 3).
+    const branches = vault({ folders: ['Maps', 'maps/x'], files: ['Maps/x'] });
+    expect((await resolveNewMapFolder(branches.app, 'Maps/x', '', 'x.md')).path).toBe('maps/x');
+    expect(branches.createFolder).not.toHaveBeenCalled();
     expect(createFolder).not.toHaveBeenCalled();
     expect(listing).not.toHaveBeenCalled();
   });
