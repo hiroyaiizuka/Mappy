@@ -8,6 +8,16 @@ export interface RecordedWrite {
   readonly edits: readonly TextEdit[];
 }
 
+/**
+ * Whether `a` and `b` are one write told twice (the store's word and the caller's answer): the same texts and the same
+ * edits. The texts alone are not enough: deleting the first or the second of two twins writes the same text, and taken
+ * for each other, a re-read would carry the ids by the other one's edits (LEV-237).
+ */
+export function sameWrite(a: RecordedWrite, b: RecordedWrite): boolean {
+  return a.before === b.before && a.after === b.after && a.edits.length === b.edits.length
+    && a.edits.every((edit, index) => edit.from === b.edits[index]?.from && edit.to === b.edits[index]?.to && edit.text === b.edits[index]?.text);
+}
+
 /** A recorded write, numbered in the order it was recorded (`WriteRecord.mark`). */
 interface Recorded {
   readonly write: RecordedWrite;
@@ -26,8 +36,10 @@ interface Recorded {
  *
  * Used by a map embedded in another note (`MapEmbed`, LEV-217). `MindmapView` keeps its own record (`ownWrites`,
  * LEV-150) on the same rule for a read of the text on screen, but it is a separate copy and not the same in every
- * case: it tells the writes from before the read by identity rather than by number, and it skips a write already
- * recorded, texts and edits alike, or one that changed nothing (it hears its own writes twice). Both replay to the last
+ * case: it tells the writes from before the read by identity rather than by number, and, as it hears its own writes
+ * twice, it skips a write that changed nothing or that is the same (`sameWrite`: texts and edits) as the last one it
+ * recorded — or, starting the record again, as any one in it; one that leads on from the end is added even when the
+ * same write is further back (⌘Z, ⌘⇧Z, ⌘Z before one re-read write the same texts twice). Both replay to the last
  * write that reaches the text found (the view since code review 2 of LEV-237) and drop the rest past it on the same
  * rule (here since code review 1 of LEV-224, in the view since LEV-237). Bringing the view here is LEV-66's.
  */

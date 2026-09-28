@@ -71,7 +71,7 @@ try {
     await step(row, async () => {
       await evaluate(`window.__mappyE2E?.detach(); delete window.__mappyE2E; return true;`);
       await wait(200);
-      const opened = required(record, 'open', await makeOpenStep(evaluate, { note: NOTE, source })());
+      const opened = await makeOpenStep(evaluate, { note: NOTE, source })();
       check(opened.source === source, `${row}: the note did not open as written`);
       await wait(400);
       const initial = await read(shape.label, 1);
@@ -83,8 +83,10 @@ try {
       }
 
       // A (子1 renamed) and, but for 対照, B (the second twin deleted) by the store, and B put back by the Vault: inside
-      // the view's 45 ms debounce, timed from A's own modify event (what starts it). An observer on the view tells
-      // whether it ever drew B (were it to, B would be spent and the row prove nothing).
+      // the view's 45 ms debounce. The time from A's own modify event to the put-back is recorded, not checked: the
+      // debounce starts again on every event, so it neither proves nor refutes the window. What does is checked below:
+      // the view recorded both writes, its re-read replayed A alone out of them, and an observer on the view saw B
+      // never drawn (were it, B would be spent and the row prove nothing).
       const writes = await evaluate(`${VIEW}
         const twins = () => nodes().filter(node => label(node) === ${JSON.stringify(shape.label)}).length;
         let drawn = false;
@@ -129,7 +131,7 @@ try {
         }`);
       check(writes.reached === source.replace('  - 子1\n', `  - ${RENAMED}\n`), `${row}: the store did not rename 子1`);
       check(writes.source === writes.reached && writes.shown, `${row}: the view does not show the renamed note (${JSON.stringify({ source: writes.source, shown: writes.shown })})`);
-      if (writes.recorded !== (takesBack ? 2 : 1) || !writes.reachedA || writes.drawn || (takesBack && writes.putBack >= 45)) {
+      if (writes.recorded !== (takesBack ? 2 : 1) || !writes.reachedA || writes.drawn) {
         throw new Error(`the premise did not hold: ${JSON.stringify(writes)}`);
       }
       // The re-read left nothing of the record: A spent, B (recorded before it began, put back) dropped (LEV-237's drop;

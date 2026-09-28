@@ -594,7 +594,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
    * keeps its id after `release` (the view holds it as `refreshTimer`): until every held one has run or been cleared,
    * clearing that id clears the real timer it was started as, and new 45 ms timers are no longer held.
    */
-  function holdDebounces(): { release: () => void } {
+  function holdDebounces(): { release: () => number } {
     const set = window.setTimeout.bind(window);
     const clear = window.clearTimeout.bind(window);
     let next = -1;
@@ -617,13 +617,16 @@ describe('a re-read that reaches part of the record, with the writes past it tak
       restore();
     });
     return {
+      // How many were held: none means the view re-read in between, and the row did not build the state it tests.
       release: () => {
         holding = false;
+        const count = held.size;
         for (const [id, run] of Array.from(held)) {
           started.set(id, set(() => { started.delete(id); run(); restore(); }, 45));
         }
         held.clear();
         restore();
+        return count;
       },
     };
   }
@@ -645,6 +648,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
       const view = state(mounted);
       const id = foldAndSelect(mounted, label, 1);
       const held = holdDebounces();
+      let released = 0;
       let reached = '';
       try {
         // A: 子1 renamed; B: the second twin deleted; B alone put back. The re-read finds A's text and spends A.
@@ -654,8 +658,9 @@ describe('a re-read that reaches part of the record, with the writes past it tak
         expect(view.ownWrites).toHaveLength(2);
         mounted.app.put(PATH, reached);
       } finally {
-        held.release();
+        released = held.release();
       }
+      expect(released).toBeGreaterThan(0);
       await settled(mounted);
       expect(view.document?.source).toBe(reached);
       expect({ collapsed: [...view.collapsed], at: nodeNamed(mounted, label, 1).dataset.nodeId }).toEqual({ collapsed: [id], at: id });
@@ -746,6 +751,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
       const view = state(mounted);
       const id = foldAndSelect(mounted, label, 0);
       const held = holdDebounces();
+      let released = 0;
       try {
         // B an edit of the shared history (another map's delete), Z its ⌘Z.
         const second = source.indexOf(twin, source.indexOf(twin) + twin.length);
@@ -761,8 +767,9 @@ describe('a re-read that reaches part of the record, with the writes past it tak
         }
         expect(view.ownWrites).toHaveLength(by === 'the store' ? 3 : 0);
       } finally {
-        held.release();
+        released = held.release();
       }
+      expect(released).toBeGreaterThan(0);
       await settled(mounted);
       expect(mounted.source()).toBe(source.replace(twin, ''));
       // The first twin, folded and selected, is gone: nothing left carries its id, its fold or the selection.

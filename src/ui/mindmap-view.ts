@@ -17,7 +17,7 @@ import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabel, layoutTree, type Fre
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { ConflictError } from "../obsidian/conflict-error";
-import type { RecordedWrite } from "../core/write-record";
+import { sameWrite } from "../core/write-record";
 import { DocumentStore, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
 import { resolveEmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -2468,16 +2468,6 @@ export class MindmapView extends FileView {
       throw error;
     }
   }
-}
-
-/**
- * Whether `a` and `b` are one write told twice (the store's word and the caller's answer): the same texts and the same
- * edits. The texts alone are not enough: deleting the first or the second of two twins writes the same text, and taken
- * for each other, the re-read would carry the ids by the other one's edits (LEV-237).
- */
-function sameWrite(a: RecordedWrite, b: RecordedWrite): boolean {
-  return a.before === b.before && a.after === b.after && a.edits.length === b.edits.length
-    && a.edits.every((edit, index) => edit.from === b.edits[index]?.from && edit.to === b.edits[index]?.to && edit.text === b.edits[index]?.text);
 }
 
 /** The writes of `writes`, in order, that lead on one from the other from `source`: the first that does not ends them. */
