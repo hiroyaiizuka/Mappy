@@ -32,11 +32,12 @@ export const VAULT = process.env.MAPPY_E2E_VAULT ?? resolve(root, 'test-vault');
  */
 export const LANGUAGE = process.env.MAPPY_E2E_LANGUAGE ?? 'ja';
 /**
- * The language the window runs in, as `[stored, loaded]`. `getLanguage()` reads the stored `language` key (English when
- * unset), but only when the app starts: a key changed without a reload leaves the plugin in the language it loaded in.
- * Obsidian sets moment's locale from the same setting at startup, so that is what tells the loaded one.
+ * The language the window runs in: the one Obsidian settled on at startup, which is what `getLanguage()` gives the
+ * plugin. Obsidian sets moment's locale to it. The stored `language` key is not it: unset, Obsidian takes the OS's
+ * language (a new profile on a Japanese Mac starts in Japanese, LEV-235), and a key changed without a reload has not
+ * taken effect yet.
  */
-export const APP_LANGUAGE = "[window.localStorage.getItem('language') || 'en', window.moment?.locale?.() ?? null]";
+export const APP_LANGUAGE = "window.moment?.locale?.() ?? null";
 if (!existsSync(join(VAULT, '.mappy-generated'))) {
   throw new Error(`${VAULT} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
 }
@@ -102,11 +103,11 @@ export async function connect({ popout, language: expected = LANGUAGE } = {}) {
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
     // `language`: the one case that switches the app's language (E63) connects in the language it switched to.
-    const [stored, loaded] = popout === undefined ? await evaluate(APP_LANGUAGE) : [expected, expected];
+    const loaded = popout === undefined ? await evaluate(APP_LANGUAGE) : expected;
     // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
-    if (stored !== expected || (loaded ?? '').toLowerCase() !== expected.toLowerCase()) {
+    if ((loaded ?? '').toLowerCase() !== expected.toLowerCase()) {
       socket.close();
-      throw new Error(`The Obsidian for ${VAULT} is set to "${stored}" and loaded in "${loaded}", not "${expected}" (MAPPY_E2E_LANGUAGE). `
+      throw new Error(`The Obsidian for ${VAULT} runs in "${loaded}", not "${expected}" (MAPPY_E2E_LANGUAGE). `
         + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${expected}'), then reload the app. No action taken.`);
     }
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout

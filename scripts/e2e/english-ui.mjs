@@ -114,10 +114,15 @@ try {
   const select = makeSelect(cdp, evaluate);
   const menu = await step('menu-en', async () => {
     await select('Packing');
-    const box = await evaluate(`${VIEW} const rect = nth('Packing', 0).getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'right', clickCount: 1 });
-    await wait(300);
-    const titles = await evaluate(`return Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent);`);
+    // The menu's words are what this reads. On macOS Obsidian shows a native menu, which is not in the page: the
+    // test vault's "native menus" setting is turned off for the one menu and put back (E63's second run read nothing).
+    const titles = await evaluate(`${VIEW} const before = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false);
+      try {
+        const node = nth('Packing', 0); const rect = node.getBoundingClientRect();
+        node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent);
+      } finally { app.vault.setConfig('nativeMenus', before); }`);
     await cdp.realKey('Escape');
     await wait(200);
     return titles;
@@ -165,6 +170,8 @@ try {
   check(refused === 'This name would change the heading syntax. Edit it in Markdown.', `refusal line: ${JSON.stringify(refused)}`);
 
   required(record, 'to-ja', await step('to-ja', () => switchTo('ja')));
+  // The reload restores the map's tab; the note is opened afresh as the English run opened it.
+  await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); await new Promise(resolve => setTimeout(resolve, 300)); return true;');
   required(record, 'open-ja', await step('open-ja', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   const ja = required(record, 'read-ja', await step('read-ja', () => evaluate(READ)));
   check(JSON.stringify(ja.layouts) === JSON.stringify(['通常マップ', 'タイムライン', '階層図', '左右バランス']), `layout buttons back in Japanese: ${JSON.stringify(ja.layouts)}`);
@@ -183,7 +190,7 @@ try {
   if (!(error instanceof StopCase)) record.failures.push(`unexpected: ${error}`);
 } finally {
   // Whatever happened, the test Obsidian goes back to Japanese: every other case refuses a window in another language.
-  const language = await cdp.evaluate(`localStorage.getItem('language') || 'en'`).catch(() => null);
+  const language = await cdp.evaluate('window.moment?.locale?.() ?? null').catch(() => null);
   if (language !== 'ja') await step('restore-ja', () => switchTo('ja'));
   await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); return true;').catch(() => null);
   if (!flag('--keep')) await step('clean', clean);
