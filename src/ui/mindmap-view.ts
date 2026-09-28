@@ -490,7 +490,7 @@ export class MindmapView extends FileView {
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
-    this.targets = new Map(); this.knownCalled.clear();
+    this.targets = new Map(); this.knownCalled.clear(); this.reader.clear();
     await super.onUnloadFile(file);
   }
 
@@ -1278,6 +1278,8 @@ export class MindmapView extends FileView {
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
+    // A note that calls nothing lets go of the called notes read before (LEV-221: their records would grow unread).
+    if (!this.callsMaps(document)) this.reader.clear();
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path) : new Map();
     if (stale()) return;
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same

@@ -87,9 +87,10 @@ describe('CallReader.listen (LEV-221)', () => {
     const at = MAP.indexOf('記録する');
     // A reader nobody listens with (an export, the Excalidraw bridge: one read each) keeps nothing.
     await store.applyLatest(map as never, () => [{ from: at, to: at + 4, text: '記録' }]);
-    expect(writesOf(reader).get('Map.md')?.size).toBe(0);
-    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(false);
+    // A note read before `listen` is recorded from its next read on (the view listens before it reads anything).
     const stop = reader.listen();
+    await reader.read(host, 'Host.md');
     const text = app.content(map);
     await store.applyLatest(map as never, () => [{ from: text.indexOf('記録'), to: text.indexOf('記録') + 2, text: '記録する' }]);
     expect(writesOf(reader).get('Map.md')?.size).toBe(1);
@@ -97,7 +98,12 @@ describe('CallReader.listen (LEV-221)', () => {
     app.put('Map.md', MAP.replace('mappy: true', 'mappy: "true"'));
     await reader.read(host, 'Host.md');
     expect(writesOf(reader).has('Map.md')).toBe(false);
+    // A map again: recorded again, and let go of when the last listener stops.
+    app.put('Map.md', MAP);
+    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(true);
     stop();
+    expect(writesOf(reader).size).toBe(0);
   });
 });
 

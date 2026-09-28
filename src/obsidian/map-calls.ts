@@ -25,8 +25,12 @@ import { resolveEmbedTarget } from './embed-target';
  */
 export class CallReader {
   private readonly parsed = new Map<string, { source: string; document: MindDocument }>();
-  /** By path, the store's writes on a note since it was last parsed here; kept exactly as long as its parse. */
+  /**
+   * By path, the store's writes on a note since it was last parsed here, while someone listens (`listen`): kept exactly
+   * as long as its parse, and let go with every other parse once the host calls nothing (`clear`).
+   */
   private readonly writes = new Map<string, WriteRecord>();
+  private listening = 0;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -34,9 +38,24 @@ export class CallReader {
 
   /** Records the store's writes on the notes read here from now on; the returned function stops it. */
   listen(): () => void {
-    return this.store.onWrite((file, write) => {
+    this.listening += 1;
+    const stop = this.store.onWrite((file, write) => {
       this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
     });
+    return () => {
+      stop();
+      this.listening -= 1;
+      if (this.listening === 0) this.writes.clear();
+    };
+  }
+
+  /**
+   * Lets go of every note read here: the host no longer calls any (its items changed, it left the note). Without it the
+   * record of a note no read comes back for would take every write on that note for as long as the host is open.
+   */
+  clear(): void {
+    this.parsed.clear();
+    this.writes.clear();
   }
 
   read(document: MindDocument, hostPath: string): Promise<CallTargets> {
@@ -72,7 +91,7 @@ export class CallReader {
   }
 
   private async parse(file: TFile): Promise<MindDocument | null> {
-    const writes = this.writes.get(file.path);
+    let writes = this.writes.get(file.path);
     // The writes recorded before the read begins, which it will find if nobody else takes them back (LEV-224).
     const mark = writes?.mark() ?? 0;
     let text: string;
@@ -86,17 +105,22 @@ export class CallReader {
       this.forget(file.path);
       return null;
     }
+    // Made with the note's first parse, before the continuation of this read yields: a write the store queued after the
+    // read is told only once this has run (`DocumentStore.enqueue`), so it finds the record.
+    if (!writes && this.listening > 0) {
+      writes = new WriteRecord();
+      this.writes.set(file.path, writes);
+    }
     const previous = this.parsed.get(file.path);
     if (previous && previous.source === text && previous.document.root.title === file.basename) {
       // Writes that came back to the text parsed (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
       writes?.spend(text, mark);
       return previous.document;
     }
-    const parsed = previous && writes
-      ? writes.take(text, previous.document, file.basename, mark)
+    const parsed = writes
+      ? writes.take(text, previous?.document, file.basename, mark)
       : parseMarkdown(text, file.basename, previous?.document);
     this.parsed.set(file.path, { source: text, document: parsed });
-    if (!writes) this.writes.set(file.path, new WriteRecord());
     return parsed;
   }
 
