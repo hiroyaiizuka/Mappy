@@ -54,7 +54,7 @@ frontmatter に書くキーは 3 つです。Mappy が扱うのは `mappy: true`
 
 ## 導入（BRAT）
 
-ベータ版（0.x）は、このリポジトリの GitHub Release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。[コミュニティプラグインの一覧](https://community.obsidian.md)にも 0.4.1 から提出していますが、下の手順はそれに依りません。
+ベータ版（0.x）は、このリポジトリの GitHub Release から [BRAT](https://github.com/TfTHacker/obsidian42-brat) で入れます。0.4.1 で[コミュニティプラグインの一覧](https://community.obsidian.md)にも提出しましたが、下の手順はそれに依りません。
 
 1. Obsidian のコミュニティプラグインから BRAT を入れて有効にする
 2. コマンド「BRAT: Add a beta plugin for testing」（設定タブでは Add beta plugin）で、リポジトリに `hiroyaiizuka/Mappy` を入れて Add plugin。BRAT が最新の Release の 3 ファイルを `.obsidian/plugins/mappy/` に置く

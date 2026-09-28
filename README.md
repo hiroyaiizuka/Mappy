@@ -54,7 +54,7 @@ Mappy writes three frontmatter keys. It only handles notes with `mappy: true` an
 
 ## Installation (BRAT)
 
-The beta (0.x) is installed from this repository's GitHub Releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat). Mappy has also been submitted to the [community plugins directory](https://community.obsidian.md) (from 0.4.1); the steps below don't depend on it.
+The beta (0.x) is installed from this repository's GitHub Releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat). Mappy was also submitted to the [community plugins directory](https://community.obsidian.md) with version 0.4.1; the steps below don't depend on it.
 
 1. Install and enable BRAT from Obsidian's community plugins
 2. Run the command "BRAT: Add a beta plugin for testing" (Add beta plugin in the settings tab), enter `hiroyaiizuka/Mappy` as the repository, and choose Add plugin. BRAT puts the three files of the latest release in `.obsidian/plugins/mappy/`
