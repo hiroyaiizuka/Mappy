@@ -641,7 +641,6 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     it(`the first ${shape} twin deleted (${by}) after the second one's deletion was put back keeps the fold of the second`, async () => {
       const source = twinSource(twin);
       const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
-      opened.push(mounted);
       await settled(mounted);
       const view = state(mounted);
       const id = foldAndSelect(mounted, label, 1);
@@ -716,7 +715,6 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     const twin = '- \n  - 同じ子\n';
     const t = twinSource(twin);
     const mounted = await mountMapView(PATH, t, 'mindmap', new HarnessApp());
-    opened.push(mounted);
     await settled(mounted);
     const view = state(mounted);
     const internals = mounted.view as unknown as { recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void };
@@ -744,7 +742,6 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     it(`the first ${shape} twin deleted (C ${by}) after the second was deleted and put back: its fold stays with it`, async () => {
       const source = twinSource(twin);
       const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
-      opened.push(mounted);
       await settled(mounted);
       const view = state(mounted);
       const id = foldAndSelect(mounted, label, 0);
