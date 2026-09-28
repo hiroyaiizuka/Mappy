@@ -56,7 +56,21 @@ export default defineConfig(
         patterns: [{ group: ["node:*", "electron"], message: "Runtime must work on mobile." }],
       }],
       // The guidelines want only errors in the default console; `recommended` also lets warn and debug through.
-      "no-console": ["error", { allow: ["error"] }],
+      // Narrowed where `recommended` wraps `no-console`, so a call is reported once, with the guideline's link.
+      // Replacing this rule's options drops the rest of them, so `no-new-func` is restated as `recommended` has it.
+      "obsidianmd/rule-custom-message": ["error", {
+        "no-console": {
+          messages: {
+            "Unexpected console statement. Only these console methods are allowed: error.": "Avoid unnecessary logging to console. See https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines#Avoid+unnecessary+logging+to+console",
+          },
+          options: [{ allow: ["error"] }],
+        },
+        "no-new-func": {
+          messages: {
+            "The Function constructor is eval": "Using the `Function` constructor is dangerous because it executes arbitrary code, similar to `eval()`",
+          },
+        },
+      }],
     },
   },
 );

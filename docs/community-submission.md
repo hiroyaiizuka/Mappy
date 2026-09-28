@@ -3,7 +3,7 @@
 LEV-136（2026-09-27）。本人の決定: **コミュニティプラグインの公開審査に出す方向で進め、英語化を次の大きな柱にする。AI 機能（M9、LEV-28）は当面保留。** 本書はその前提で、審査要件と Mappy の現状の対応表（§1）と、英語化の方式の比較と推奨（§2）を記す。決定そのものは `product-plan.md` §5 M5 と §7 が正本で、本書は根拠と作業の分け方を持つ。
 
 - 参照した公式文書（2026-09-27 に取得）: [Submit your plugin](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)、[Submission requirements for plugins](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)、[Plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)、[Developer policies](https://docs.obsidian.md/community-directory/developer-policies)。公式 ESLint プラグイン `eslint-plugin-obsidianmd` 0.4.2 の規則（`node_modules` で確認）
-- 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。項目の分け方の正本は `docs/harness.md`「審査要件のチェック項目」で、本書の表はそれを 0.3.8 の木（`main` の `0e8c4d1`）で照合し直し、2026-09-27 の公式文書で変わった点（提出の手順など）を足した**この時点の結果**である（例外: #2・#27・#29・#31・#32 は README の英語版〔LEV-227、#122〕が、#12・#14・#16 は LEV-241 が英語化〔LEV-226〕のあとの木〔2026-09-28、`16d8384`〕で書き直した。ほかの行は 0.3.8 の木のまま照合し直していない）。番号は本書の中だけのもの。**本書の 32 行は harness.md の項目をすべては写していない**（`version` の 4 ファイル一致、manifest の不明なキー、サンプルコードの残り、`fs`／`process` の不使用、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしないこと、README の保存形式・導入・復旧・対応環境の節などは、LEV-24 から変わりうる点が無いと見て省いた）。提出の直前の再確認（LEV-228）は harness.md の全項目で行い、本書との食い違いはそこで片付ける。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
+- 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。項目の分け方の正本は `docs/harness.md`「審査要件のチェック項目」で、本書の表はそれを 0.3.8 の木（`main` の `0e8c4d1`）で照合し直し、2026-09-27 の公式文書で変わった点（提出の手順など）を足した**この時点の結果**である（例外: #2・#27・#29・#31・#32 は README の英語版〔LEV-227、#122〕が、#12・#14・#16 は LEV-241 が英語化〔LEV-226〕のあとの木〔2026-09-28、`16d8384`〕で書き直した。ほかの行は 0.3.8 の木のまま照合し直していない）。番号は本書の中だけのもの。**§1.1〜1.7 の 32 行は harness.md の項目をすべては写していない**（§1.8 の 6 行は LEV-228 が足した）（`version` の 4 ファイル一致、manifest の不明なキー、サンプルコードの残り、`fs`／`process` の不使用、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしないこと、README の保存形式・導入・復旧・対応環境の節などは、LEV-24 から変わりうる点が無いと見て省いた）。提出の直前の再確認（LEV-228）は harness.md の全項目で行い、本書との食い違いはそこで片付ける。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
 - **提出の直前の再確認（LEV-228、2026-09-28、0.4.0 の木 `ff49476`）は §4。** §1 の行は §4 の結果で「結果」と「担当」を書き換え、公式文書の Community directory の 5 文書・Release の文書から増えた項目を §1.8 に足した
 - 公式文書の**どれにも UI・README の言語の要件は無い**（4 文書とも、言語・英語・ローカライズへの言及なし）。英語化は審査の必須条件ではなく、一覧の読者（英語）に届けるための判断である
 
@@ -28,7 +28,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 6 | `description`: 動詞で始める、`This is a plugin` で始めない、250 字以内、ピリオドで終わる、絵文字・特殊文字なし、固有名詞と頭字語の大文字（Requirements） | `View and edit Markdown as linked, illustrated mind maps.`（56 字、英語） | PASS | — |
 | 7 | `fundingUrl` は寄付を受けるときだけ置く（Requirements） | 無し | PASS | — |
 | 8 | `minAppVersion` は必要な最小版（Requirements） | `1.8.7`。型 1.8.7 で型検査が通る。1.8.7 の実機は未確認 | PASS（型）／未実施（実機） | LEV-25 |
-| 9 | Node／Electron API を使うなら `isDesktopOnly: true`（Requirements） | `false`。`src/` に Node／Electron の import 0 件（ESLint で禁止）。バンドルの `require` は `obsidian`（17）・`@lezer/common`・`@lezer/highlight` だけ | PASS（コード）／未実施（モバイル実機）／判断: `false` のまま出すか `true` にするか（§4.4） | LEV-25（本人） |
+| 9 | Node／Electron API を使うなら `isDesktopOnly: true`（Requirements） | `false`。`src/` に Node／Electron の import 0 件（ESLint で禁止）。バンドルの `require` は `obsidian`（0.3.8 で 17、0.4.0 で 18）・`@lezer/common`・`@lezer/highlight` だけ | PASS（コード）／未実施（モバイル実機）／判断: `false` のまま出すか `true` にするか（§4.4） | LEV-25（本人） |
 | 10 | `name` に `Obsidian`・`Plugin` を含めない、`author` を置く（上の 4 文書には無い。`scripts/validate-release.mjs` の検査と LEV-24 の記録による） | `Mappy`、`Hiroya Iizuka` | PASS | — |
 
 ### 1.3 コマンド・UI 文言
@@ -40,7 +40,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 13 | 条件付きは `checkCallback`、無条件は `callback`（Guidelines） | LEV-24 から形は同じ | PASS | — |
 | 14 | UI 文言は sentence case（Guidelines） | 0.3.8 の時点では日本語なので実質何も検査していなかった。LEV-233 で `eslint.config.mjs` に `src/i18n/en.ts` を対象とする `ui/sentence-case-locale-module` の block を足し、`npm run lint` が英語の表を検査する（`tests/tooling/i18n-lint.test.mjs`）。値を差し込む関数（27 個。通知の `exitDraftNotSaved` など）の中の文字列は規則が読まない | PASS（文字列の値は lint、関数の文言 27 個は 2026-09-28 に目で確認。§4.2） | — |
 | 15 | 設定の見出しは区画が複数のときだけ、見出しに「settings」を入れない、`setHeading()` を使う（Guidelines） | 見出しなしの 4 項目（テーマ・既定レイアウト・作成先フォルダ・左下のレイアウト） | PASS | — |
-| 16 | UI の言語（要件なし） | 0.3.8 の時点では UI 文言が 24 ファイルに約 200 個、すべて日本語だった。§2 の (b) を 2026-09-28 に本人が確定し、LEV-226（LEV-233・LEV-234・LEV-235、#118・#120・#121）で `src/i18n` の表へ移した: Obsidian の言語が `ja` なら日本語、それ以外は英語。`src/` の日本語の文字列は `src/i18n/ja.ts` だけ。英語の Obsidian での実機確認は E63（macOS、Obsidian 1.14.2）の面だけ（コマンド名・ボタン・ポップオーバー・右クリックメニュー・タブの題名・設定タブと、仮の名前 `Subtopic`・core の拒否の文）。通知の全文、E63 以外の操作、Windows・Linux・モバイルは未実施。0.4.0 で初めて出る | PASS（(b) で実装）／未実施（E63 以外の面の実機。LEV-228 は実機を回していない。§4.2） | LEV-25 |
+| 16 | UI の言語（要件なし） | 0.3.8 の時点では UI 文言が 24 ファイルに約 200 個、すべて日本語だった。§2 の (b) を 2026-09-28 に本人が確定し、LEV-226（LEV-233・LEV-234・LEV-235、#118・#120・#121）で `src/i18n` の表へ移した: Obsidian の言語が `ja` なら日本語、それ以外は英語。`src/` の日本語の文字列は `src/i18n/ja.ts` だけ。英語の Obsidian での実機確認は E63（macOS、Obsidian 1.14.2）の面だけ（コマンド名・ボタン・ポップオーバー・右クリックメニュー・タブの題名・設定タブと、仮の名前 `Subtopic`・core の拒否の文）。通知の全文、E63 以外の操作、Windows・Linux・モバイルは未実施。0.4.0 で初めて出る | PASS（(b) で実装）／未実施（E63 以外の面の実機。2026-09-28 の再確認〔§4〕では実機を回していない。提出の前に回すかは本人が決める） | LEV-228 |
 
 ### 1.4 セキュリティ・リソース・ワークスペース・Vault
 
@@ -84,7 +84,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 | # | 要件（出典） | Mappy の現状 | 結果 | 担当 |
 | --- | --- | --- | --- | --- |
-| 33 | スキャナーはリポジトリのソースを読み、決まった名前（`tests`・`scripts`・`docs`・`i18n`・`test-vault`・`*.mjs` など）だけを除外する（FAQ） | 除外されないトップレベルのうち本体でないのは `harness/`（ブラウザ検証ページと Obsidian API のモック、9 ファイル）。公式 lint の `recommended` を当てると `src/` は 0 件、`harness/` は error 6・warning 22（`insertAdjacentHTML`、後読み、`navigator.platform` など。モックが本物の振る舞いを写すためのもの） | 要対応（スキャナーが同じ規則を当てるかは非公開。除外される置き場へ移す） | LEV-243 |
+| 33 | スキャナーはリポジトリのソースを読み、決まった名前（`tests`・`scripts`・`docs`・`i18n`・`test-vault`・`*.mjs` など）だけを除外する（FAQ） | 除外されないトップレベルのうち本体でないコードは `harness/`（ブラウザ検証ページと Obsidian API のモック、9 ファイル）と `vitest.config.ts`（テストの設定。`.ts` なので `*.mjs` などの除外に当たらない）。公式 lint の `recommended` を当てると `src/` は 0 件、`vitest.config.ts` は 0 件、`harness/` は error 6・warning 22（`insertAdjacentHTML`、後読み、`navigator.platform` など。モックが本物の振る舞いを写すためのもの） | 要対応（スキャナーが同じ規則を当てるかは非公開。除外される置き場へ移す） | LEV-243 |
 | 34 | Build verification: スキャナーは `build`（無ければ `build:plugin`、`compile`）を実行し、ビルドがコミットの内容と一致するかを見る（FAQ・Manage） | `npm run build`（型検査＋esbuild の本番ビルド）が `main.js` をルートに出す。0.4.0 の木で手元（macOS、Node 22.22.3）の `npm run build` の `main.js`・`manifest.json`・`styles.css` は Release 0.4.0 の添付（CI の Ubuntu で作ったもの）と sha256 が 3 つとも一致（§4.2） | PASS（手元で再現。スキャナーの環境での一致は提出後の結果で見る） | — |
 | 35 | Release の添付物の artifact attestation（`actions/attest`）は提出時に推奨（Release your plugin with GitHub Actions） | `release.yml` は attestation を作らない | 判断（推奨であって要件ではない。入れるなら `release.yml` に `id-token: write`・`attestations: write` と `actions/attest` の手順を足す。§4.3） | LEV-228（本人） |
 | 36 | 一覧の掲載情報: アイコン・短い説明と長い説明・カテゴリ・支払いの区分（Free／Optional payment／Paid）・スクリーンショット（Manage） | 未入力（提出のあとに Edit listing で本人が入れる）。支払いの区分は Free（課金・アカウント・有料サービスなし。#28） | 未実施（本人） | LEV-228（本人） |
@@ -138,7 +138,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 ## 4. 提出の直前の再確認（LEV-228、2026-09-28）
 
-対象の木は 0.4.0（`main` の `ff49476`、Release 0.4.0 は pre-release、2026-09-28T05:17:06Z 公開）。証跡は `artifacts/lev-228-submission-prep/`（git 管理外）の `record.md`。
+対象の木は 0.4.0 の tag（`ff49476`、Release 0.4.0 は pre-release、2026-09-28T05:17:06Z 公開）。**この結果は提出する木には引き継げない**: `main` は 0.4.0 のあとも `src/` が変わっており（LEV-237・LEV-239 など）、`manifest.json` は 0.4.0 のまま。スキャナーが HEAD をビルドして Release 0.4.0 の添付と照らせば #34 は一致しない（どの木をビルドするかは公式文書に無い）。提出は、提出する木で新しい版を切った直後（HEAD＝その版の tag）に行い、§4.2 の数値・#34 の sha256・#5 の衝突をその木で取り直す（§4.6 の 2）。証跡は `artifacts/lev-228-submission-prep/`（git 管理外）の `record.md`。
 
 ### 4.1 公式文書の版と、LEV-136 から変わった点
 
@@ -160,7 +160,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | README・LICENSE | 英語の `README.md` に What it does・Storage format・Installation・Basic usage・Compatibility・Known limitations・Troubleshooting・Network use・License がある。LICENSE は MIT で GitHub が認識する |
 | 公開審査の自動レビュー | §1.8（#33 は LEV-243、#35 と §4.3 は本人の判断） |
 
-実機（Obsidian）はこのチケットでは起動していない。§1 の #16（E63 以外の英語の表示）と #30（Windows・Linux・モバイル・1.8.7）は未実施のまま LEV-25 に残る。
+実機（Obsidian）はこの再確認では起動していない。§1 の #16（E63 以外の英語の表示。通知の全文など）は LEV-228 に未実施のまま残り、#30（Windows・Linux・モバイル・1.8.7）は LEV-25 に残る。
 
 ### 4.3 pre-release のままで一覧が版を拾えるか（#3）と `release.yml`
 
@@ -191,18 +191,18 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 **#21 — why `mappy-layout` and `mappy-topics` are written as source-range edits rather than with `processFrontMatter`**
 
-> Mappy uses `FileManager.processFrontMatter` for the explicit conversions (turning a note into a map and back: adding or removing `mappy` and `mappy-layout`). The two keys that change as a side effect of editing the map — `mappy-layout` when a layout button is pressed, and `mappy-topics` when a free topic is moved — are written through the same queue as the map's own edits to the note body: a minimal source-range edit computed against the latest revision of the file, applied through the `Editor` when the note is open and inside `Vault.process` (with the text checked against what the edit was planned on) when it isn't. We tried `processFrontMatter` for these first. Because it writes outside that queue, an edit to the body that was planned in the ~60 ms before the view re-read the file (for example, the text being typed, saved by the blur of the click on the layout button itself) was refused as a conflicting external change, and nodes whose titles repeat could not keep their identity across the re-read. Writing both kinds of change through one queue keeps them ordered and lets the plugin refuse to overwrite genuine external edits. Only these two keys, which Mappy owns, are touched this way, and the edit covers only their lines: the rest of the frontmatter is not re-serialized.
+> Mappy uses `FileManager.processFrontMatter` for the explicit conversions: turning a note into a map (setting `mappy` and `mappy-layout`) and back (removing `mappy`, `mappy-layout` and `mappy-topics`). The two keys that change as a side effect of editing the map — `mappy-layout` when a layout button is pressed, and `mappy-topics` when a free topic is moved — are written through the same queue as the map's own edits to the note body: a minimal source-range edit computed against the latest revision of the file, applied through the `Editor` when the note is open and inside `Vault.process` (with the text checked against what the edit was planned on) when it isn't. We tried `processFrontMatter` for these first. Because it writes outside that queue, an edit to the body that was planned in the ~60 ms before the view re-read the file (for example, the text being typed, saved by the blur of the click on the layout button itself) was refused as a conflicting external change, and nodes whose titles repeat could not keep their identity across the re-read. Writing both kinds of change through one queue keeps them ordered and lets the plugin refuse to overwrite genuine external edits. Only these two keys, which Mappy owns, are touched this way, and the edit covers only their lines: the rest of the frontmatter is not re-serialized.
 
 **#22 — why `WorkspaceLeaf.prototype.setViewState` is wrapped**
 
-> Mappy opens notes marked `mappy: true` in its map view, the same way Excalidraw and Kanban open their own Markdown-based files: it wraps `WorkspaceLeaf.prototype.setViewState` and, when a leaf is asked to show such a note as `markdown`, hands it the map view type instead. The wrapper only rewrites the `type` of that state; it always calls the original method, keeps a leaf that the user deliberately switched to Markdown on Markdown (including back/forward navigation), and passes every other state through untouched. It is installed once in `onload` and removed on unload through `this.register`. Removing it restores the original method; if another plugin has wrapped the method since, Mappy's wrapper instead becomes a pass-through, so the other plugin's wrapper is not undone (the same semantics as the widely used `monkey-around` helper, without the dependency). This is covered by unit tests.
+> Mappy opens notes marked `mappy: true` in its map view, the same way Excalidraw and Kanban open their own Markdown-based files: it wraps `WorkspaceLeaf.prototype.setViewState` and, when a leaf is asked to show such a note as `markdown`, hands it the map view type instead. The wrapper only ever changes the `type` of the state, between `markdown` and the map view: a map note asked for as `markdown` gets the map view, and a request for the map view on a note that is no longer a map falls back to `markdown`. It always calls the original method, keeps a leaf that the user deliberately switched to Markdown on Markdown (including back/forward navigation), and passes every other state through untouched. It is installed once in `onload` and removed on unload through `this.register`. Removing it restores the original method; if another plugin has wrapped the method since, Mappy's wrapper instead becomes a pass-through, so the other plugin's wrapper is not undone (the same semantics as the widely used `monkey-around` helper, without the dependency). This is covered by unit tests.
 
 ### 4.6 提出の手順と入力の下書き（本人の操作）
 
 提出は外部への公開なので、ここまでの準備はエージェントが行い、提出は本人（またはその確認のあとのオーケストレーター）が行う。
 
 1. 提出の当日に、`id`・`name` の衝突を一覧（`https://community.obsidian.md/assets/community-plugins.json` か obsidian-releases の `community-plugins.json`）で確かめ直す
-2. §4.3 の判断に従って、提出する版の Release を用意する（通常の Release にするなら、その版から）
+2. §4.3 の判断に従って、提出する版を切り、その Release を用意する（通常の Release にするなら、その版から）。版を切ったら、提出までの間に `main` へ別の変更を入れない（HEAD をその版の tag に揃えておく）。その木で §4.2 を取り直す: `npm run validate`・`npm run lint`、`npm run build` の 3 ファイルと Release の添付の sha256、`dist/mappy/` のサイズ
 3. community.obsidian.md に Obsidian アカウントでサインインし、Profile の GitHub で Connect（`hiroyaiizuka` を連携）。Action required notifications を有効にする
 4. Plugins → New plugin: GitHub repository URL `https://github.com/hiroyaiizuka/Mappy`、Owner は本人。Developer policies に同意し、保守を続けること（続けられなければ移譲か削除）を確認して Submit
 5. 自動レビューの結果（Manifest・Releases・Source code・Build verification）を記録する。Error は版を上げた Release で応える（Request review で再走査）。Warning は提出を止めないが、直せるものは直す
