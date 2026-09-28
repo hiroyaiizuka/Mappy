@@ -35,7 +35,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const owner of owners.splice(0)) owner.unload();
   // The views a reload left behind (no `onClose` on a reload) are closed too, after the test has read everything: their
-  // title drafts went at `pagehide` (`takeExitDraft`), so the close saves nothing, and their timers stop (LEV-239).
+  // title drafts went at `pagehide` (`takeExitDraft`), so the close saves nothing and says nothing, and their timers stop
+  // (LEV-239: checked with the store's writes and `Notice.log` watched across this close in every test; the one write
+  // is the kept page's, whose draft stays open and is saved on close as LEV-215 decided, as it was before LEV-239).
   await closeOpenViews();
   Notice.log.length = 0;
   window.localStorage.clear();

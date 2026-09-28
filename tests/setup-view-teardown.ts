@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
-import { closeEveryView, openViews, viewCount, type ClosableView } from './mocks/open-views';
+import { afterAll, afterEach, beforeEach } from 'vitest';
+import { closeEveryView, openedInTest, openViews, startTest, viewCount, type ClosableView } from './mocks/open-views';
 
 // The real timer, taken as this file loads: a test that leaves fake timers installed must not hold the wait below (and
 // `document` with it) forever.
@@ -32,33 +32,32 @@ async function withoutDocument(ms: number): Promise<void> {
  * Close the views left open (the check's own clean-up, so what follows starts without them), then look for what the
  * closed views left behind; a view left open fails, after the clean-up, and a failed close after that.
  */
-async function check(left: ClosableView[], where: string): Promise<void> {
+async function check(left: ClosableView[], where: string, how: string): Promise<void> {
   const [closing] = await Promise.allSettled([closeEveryView(left)]);
   if (typeof document !== 'undefined') {
     document.body.replaceChildren();
     await withoutDocument(60);
   }
   if (left.length > 0) {
-    throw new Error(`${left.length} view(s) left open ${where}: close them with closeOpenViews() (tests/mocks/open-views.ts)`);
+    throw new Error(`${left.length} view(s) left open ${where}: close them with ${how} (tests/mocks/open-views.ts)`);
   }
   if (closing.status === 'rejected') throw closing.reason;
 }
 
-let builtInFile = 0;
-beforeAll(() => { builtInFile = viewCount.built; });
+// Taken as this file loads, before the test module: a view the module builds as it loads counts as the file's.
+const builtInFile = viewCount.built;
 let builtBefore = 0;
-let openBefore = new Set<ClosableView>();
 beforeEach(() => {
   builtBefore = viewCount.built;
-  openBefore = new Set(openViews);
+  startTest();
 });
 
 afterEach(async () => {
   if (viewCount.built === builtBefore) return;
-  await check(Array.from(openViews).filter(view => !openBefore.has(view)), 'after the test');
+  await check(openedInTest(), 'after the test', 'closeOpenViews() in afterEach');
 });
 
 afterAll(async () => {
   if (viewCount.built === builtInFile) return;
-  await check(Array.from(openViews), 'after the file');
+  await check(Array.from(openViews), 'after the file', 'closeEveryView() in afterAll');
 });

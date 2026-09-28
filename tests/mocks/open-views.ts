@@ -29,20 +29,35 @@ export function closeView(view: object): Promise<void> {
 }
 
 /**
- * Set by `npm run harness:view-teardown` (scripts/check-view-teardown.mjs) to take the teardown out of every file at once,
+ * Set to `1` by `npm run harness:view-teardown` (scripts/check-view-teardown.mjs) to take the teardown out of every file at once,
  * so it can see each file fail without it. Read through `globalThis`: the browser page bundles this module too.
  */
 export const SKIP_CLOSE_ENV = 'MAPPY_SKIP_VIEW_CLOSE';
 
 /**
- * Close every view still open, as Obsidian closes a tab (the harness's `View.close`, 1.14.2's order: the container
+ * Close every view the current test built and left open, as Obsidian closes a tab (the harness's `View.close`, 1.14.2's order: the container
  * leaves the DOM, the view unloads, then `onClose`), one after another in the order they were built, as the files'
  * own loops did: views on one store then save their drafts in turn. Each is closed even when another's close fails;
  * the first failure is then thrown, for the test to report.
  */
 export async function closeOpenViews(): Promise<void> {
-  if ((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env[SKIP_CLOSE_ENV]) return;
-  await closeEveryView();
+  if ((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env[SKIP_CLOSE_ENV] === '1') return;
+  await closeEveryView(openedInTest());
+}
+
+/** The views open when the current test began (`startTest`, from the setup file's `beforeEach`). */
+let openAtStart = new Set<ClosableView>();
+
+export function startTest(): void {
+  openAtStart = new Set(openViews);
+}
+
+/**
+ * The views the current test built and has not closed. One built outside a test (`beforeAll`, the module) may be shared
+ * by the file's tests; the file closes it in its `afterAll` with `closeEveryView()`.
+ */
+export function openedInTest(): ClosableView[] {
+  return Array.from(openViews).filter(view => !openAtStart.has(view));
 }
 
 /** `closeOpenViews` without the check's switch (of `views`, all open ones by default): the setup file's own clean-up of what a file left open. */

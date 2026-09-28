@@ -12,6 +12,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+// The switch `closeOpenViews` reads (tests/mocks/open-views.ts `SKIP_CLOSE_ENV`); checked below against that file.
 const SKIP_CLOSE_ENV = 'MAPPY_SKIP_VIEW_CLOSE';
 /**
  * What builds a view in a test: the shipped map view, the shared mount, or a harness view stand-in, in a file that loads
@@ -40,7 +41,7 @@ function vitest(files, env) {
   const report = join(dir, 'report.json');
   return new Promise((resolve, reject) => {
     const args = ['vitest', 'run', '--reporter=json', `--outputFile=${report}`, ...files.map(file => relative(root, file))];
-    execFile('npx', args, { cwd: root, env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile('npx', args, { cwd: root, env, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       try {
         if (!existsSync(report)) throw new Error(`vitest wrote no report (${error?.message ?? 'no error'}):\n${stdout}${stderr}`);
         const results = new Map();
@@ -60,15 +61,23 @@ function vitest(files, env) {
 }
 
 const files = testFiles(join(root, 'tests')).sort();
-const teardown = files.filter(file => readFileSync(file, 'utf8').includes('closeOpenViews()'));
+// A file with the teardown calls it (a mention in a comment does not count).
+const CALLS = /^\s*(?:afterEach\(async \(\) => \{ )?await closeOpenViews\(\);/m;
+const teardown = files.filter(file => CALLS.test(readFileSync(file, 'utf8')));
 const missing = files.filter(file => {
   const text = readFileSync(file, 'utf8');
   return !teardown.includes(file) && BUILDS.test(text) && LOADS.test(text);
 });
 
 if (teardown.length === 0) throw new Error('No test file calls closeOpenViews(): nothing to check');
-const kept = await vitest(teardown, {});
-const removed = await vitest(teardown, { [SKIP_CLOSE_ENV]: '1' });
+if (!readFileSync(join(root, 'tests/mocks/open-views.ts'), 'utf8').includes(`SKIP_CLOSE_ENV = '${SKIP_CLOSE_ENV}'`)) {
+  throw new Error(`tests/mocks/open-views.ts no longer reads ${SKIP_CLOSE_ENV}: the second run would keep the teardown`);
+}
+// The run as it is must not inherit the switch from the shell.
+const asIs = { ...process.env };
+delete asIs[SKIP_CLOSE_ENV];
+const kept = await vitest(teardown, asIs);
+const removed = await vitest(teardown, { ...process.env, [SKIP_CLOSE_ENV]: '1' });
 let bad = 0;
 for (const file of teardown) {
   const as = kept.get(realpathSync(file));
