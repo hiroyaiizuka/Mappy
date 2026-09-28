@@ -528,11 +528,19 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
     // Review 1: code keeps its bytes behind the new indentation; its empty lines stay empty; HTML blocks too.
     ['fence with an empty line joining a tab list', '## R\n- A\n\t- A1\n\n## S\n- D\n\n```\na\n\nb\n```\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t\t- D\n\n\t  ```\n\t  a\n\n\t  b\n\t  ```\n'],
     ['HTML block joining a tab list', '## R\n- A\n\t- A1\n\n## S\n<pre>\n      x\n</pre>\n', 'reparent', 'S', 'A', '## R\n- A\n\t- A1\n\t- S\n\t  <pre>\n\t        x\n\t  </pre>\n'],
+    // Review 2: the list before the first H2 is its own list; frontmatter and comments are not lists; a rule is not an item.
+    ['tab list before the first H2', '- A\n\t- A1\n- B\n\n## S\n- D\n  - D1\n', 'add-child', 'B', undefined, '- A\n\t- A1\n- B\n\t- B1\n\n## S\n- D\n  - D1\n'],
+    ['unindented list in a tab note with a YAML list in its frontmatter', '---\ntags:\n  - x\n---\n## R\n- A\n\n## S\n- D\n\t- D1\n', 'add-child', 'A', undefined, '---\ntags:\n  - x\n---\n## R\n- A\n\t- B1\n\n## S\n- D\n\t- D1\n'],
+    ['tab list with a fence inside a comment', '## R\n- A\n\t%%\n\t```\n\t%%\n\t- A1\n- B\n\n## S\n- C\n  - C1\n', 'add-child', 'B', undefined, '## R\n- A\n\t%%\n\t```\n\t%%\n\t- A1\n- B\n\t- B1\n\n## S\n- C\n  - C1\n'],
+    ['tab list with an indented rule', '## R\n- A\n\t- A1\n\n  * * *\n- B\n', 'add-child', 'B', undefined, '## R\n- A\n\t- A1\n\n  * * *\n- B\n\t- B1\n'],
+    // Review 2: adding in a mixed list writes spaces, as moving does.
+    ['mixed list, child after existing children', '## R\n- P\n\t- X\n    - Z\n', 'add-child', 'P', undefined, '## R\n- P\n\t- X\n    - Z\n    - B1\n'],
+    ['mixed list, sibling of a tab item', '## R\n- P\n\t- X\n    - Z\n', 'add-sibling', 'X', undefined, '## R\n- P\n\t- X\n    - B1\n    - Z\n'],
   ])('%s', (_name, source, type, title, target, expected) => {
     const doc = parse(source);
     const nodeId = find(doc, title).id;
     const command = type === 'reparent' ? { type, nodeId, parentId: find(doc, target ?? '').id } as const
-      : type === 'add-child' ? { type, nodeId, title: 'B1' } as const
+      : type === 'add-child' || type === 'add-sibling' ? { type, nodeId, title: 'B1' } as const
       : { type: type as 'move-up' | 'move-down', nodeId };
     expect(applyEdits(source, planEdit(doc, command).edits)).toBe(expected);
   });
@@ -542,6 +550,17 @@ describe('new indentation follows the unit of the list (LEV-225)', () => {
     const doc = parse(source);
     const result = applyEdits(source, planEdit(doc, { type: 'reparent', nodeId: find(doc, 'D').id, parentId: find(doc, 'A').id }).edits);
     expect(result).toBe('## R\n- A\n  - A1\n  - D\n    - D1\n\n      ```\n      \tcode\n      ```\n\n## S\n');
+  });
+
+  // Review 2: a paragraph after a blank line ends the nested items to its right; a tab after the marker is measured where it lands.
+  it.each([
+    ['a topic whose nested item is ended by a paragraph', '## R\n- A\n\t- A1\n\n## S\n- a\n  - b\n\n  para\n    - c\n', 'S', 'A', ['R', 'A', 'A1', 'S', 'a', 'b', 'c'], 'c', 'a'],
+    ['a branch with a tab after an item marker', '## R\n- A\n   - A1\n\n## S\n- D\n  -\tD1\n    - x\n', 'D', 'A', ['R', 'A', 'A1', 'D', 'D1', 'x', 'S'], 'x', 'D1'],
+  ])('keeps the tree when moving %s', (_name, source, title, target, titles, child, parent) => {
+    const doc = parse(source);
+    const result = parse(applyEdits(source, planEdit(doc, { type: 'reparent', nodeId: find(doc, title).id, parentId: find(doc, target).id }).edits));
+    expect(result.nodes.map(node => node.title)).toEqual(titles);
+    expect(find(result, child).parentId).toBe(find(result, parent).id);
   });
 
   it('writes the indentation in front of a fence in the list\'s unit (review 1)', () => {

@@ -321,10 +321,17 @@ function headingHierarchy(source: string, root: MindNode, nodes: MindNode[]): vo
   });
 }
 
-function indentColumns(text: string): number {
+/** Columns `text` spans from the start of a line, a tab stopping at the next multiple of 4 (CommonMark). */
+export function indentColumns(text: string): number {
   let column = 0;
   for (const char of text) column += char === '\t' ? 4 - column % 4 : 1;
   return column;
+}
+
+/** Where a list item's content starts (CommonMark): its text's column 1 to 4 columns after the marker, else 1 column after it. */
+export function itemContentColumn(markerColumn: number, textColumn: number): number {
+  const spacing = textColumn - markerColumn;
+  return markerColumn + (spacing > 0 && spacing <= 4 ? spacing : 1);
 }
 
 function listNode(source: string, item: SyntaxNode, parent: MindNode): MindNode | undefined {
@@ -345,8 +352,7 @@ function listNode(source: string, item: SyntaxNode, parent: MindNode): MindNode 
   if (/^\[[ xX]\](?:[ \t]|$)/u.test(title)) return undefined;
   const markerColumn = indentColumns(source.slice(from, mark.to));
   const contentColumn = indentColumns(source.slice(from, titleFrom));
-  const spacing = contentColumn - markerColumn;
-  const continuationColumn = markerColumn + (spacing > 0 && spacing <= 4 ? spacing : 1);
+  const continuationColumn = itemContentColumn(markerColumn, contentColumn);
   const to = source.charAt(item.to - 1) === '\r' ? item.to - 1 : item.to;
   return {
     id: `node-${nextId++}`, title, level: parent.level + 1,
