@@ -26,11 +26,10 @@ interface Recorded {
  *
  * Used by a map embedded in another note (`MapEmbed`, LEV-217). `MindmapView` keeps its own record (`ownWrites`,
  * LEV-150) on the same rule for a read of the text on screen, but it is a separate copy and not the same in every
- * case: it tells the writes from before the read by identity rather than by number; its replay stops at the first
- * write that reaches the text found, where `follow` goes on to the last (a record that comes back to that text, ⌘Z
- * then ⌘⇧Z, is spent whole here and in part there; the rest past it is dropped on the same rule in both: here since
- * code review 1 of LEV-224, in the view since LEV-237); and it skips a write already recorded, texts and edits alike,
- * or one that changed nothing (it hears its own writes twice). Bringing the view here is LEV-66's.
+ * case: it tells the writes from before the read by identity rather than by number, and it skips a write already
+ * recorded, texts and edits alike, or one that changed nothing (it hears its own writes twice). Both replay to the last
+ * write that reaches the text found (the view since code review 2 of LEV-237) and drop the rest past it on the same
+ * rule (here since code review 1 of LEV-224, in the view since LEV-237). Bringing the view here is LEV-66's.
  */
 export class WriteRecord {
   private writes: Recorded[] = [];

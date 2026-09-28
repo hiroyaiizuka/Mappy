@@ -17,6 +17,7 @@ import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabel, layoutTree, type Fre
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { ConflictError } from "../obsidian/conflict-error";
+import type { RecordedWrite } from "../core/write-record";
 import { DocumentStore, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
 import { resolveEmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -1281,10 +1282,9 @@ export class MindmapView extends FileView {
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
     // read replayed is not in it. Past the write a read reached, the writes left get the rule of a read of the text
-    // on screen (LEV-237): one recorded before the read began was there for it to find, so either someone put the
-    // note back over it, or the record came back to the text found and the replay stopped at its first write there
-    // (⌘Z then ⌘⇧Z): the text found is shown either way, and the next write starts from it. Kept, a stale write would
-    // stand in the record where nothing can follow it. The array is replaced, not trimmed, even when nothing is
+    // on screen (LEV-237): one recorded before the read began was there for it to find (the replay goes on to the last
+    // write that wrote the text read), so someone put the note back over it. Kept, it would stand in the record where
+    // nothing can follow it. The array is replaced, not trimmed, even when nothing is
     // spent: another read in flight tells by identity (`replaying`) whether the record is still the one it replayed.
     if (this.ownWrites === replaying) this.ownWrites = replayed ? keptFrom(replaying.slice(replayed.used), source) : replaying.slice(0);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
@@ -1348,17 +1348,24 @@ export class MindmapView extends FileView {
 
   /**
    * The parse of `source` from the view's own writes (`ownWrites`): each re-parses its text from the parse
-   * before it, starting at the one the view shows, until one of them wrote exactly `source`. `used` is how
-   * many were spent. Undefined when they do not lead there.
+   * before it, starting at the one the view shows, through the last of them that wrote exactly `source`, as
+   * `WriteRecord.follow` does. Not the first: a record that comes back to that text (the second twin deleted, put back
+   * with ⌘Z, the first deleted) holds it twice, and only the last write carries the ids to the note as it is (LEV-237,
+   * code review 2). `used` is how many were spent. Undefined when they do not lead there.
    */
   private replayOwnWrites(source: string, basename: string): { document: MindDocument; used: number } | undefined {
-    let document = this.document;
+    // How many lead there, found by the texts: only those are parsed.
+    let used = 0;
+    let at = this.document?.source;
     for (const [index, own] of this.ownWrites.entries()) {
-      if (!document || document.source !== own.before) return undefined;
-      document = this.parseOwn(own, document, basename);
-      if (own.after === source) return { document, used: index + 1 };
+      if (at === undefined || at !== own.before) break;
+      at = own.after;
+      if (at === source) used = index + 1;
     }
-    return undefined;
+    let document = this.document;
+    if (!document || used === 0) return undefined;
+    for (const own of this.ownWrites.slice(0, used)) document = this.parseOwn(own, document, basename);
+    return { document, used };
   }
 
   /** True when a node's title is one embed: only then can another note's change alter what this map shows. */
@@ -2468,7 +2475,7 @@ export class MindmapView extends FileView {
  * edits. The texts alone are not enough: deleting the first or the second of two twins writes the same text, and taken
  * for each other, the re-read would carry the ids by the other one's edits (LEV-237).
  */
-function sameWrite(a: { before: string; after: string; edits: readonly TextEdit[] }, b: { before: string; after: string; edits: readonly TextEdit[] }): boolean {
+function sameWrite(a: RecordedWrite, b: RecordedWrite): boolean {
   return a.before === b.before && a.after === b.after && a.edits.length === b.edits.length
     && a.edits.every((edit, index) => edit.from === b.edits[index]?.from && edit.to === b.edits[index]?.to && edit.text === b.edits[index]?.text);
 }

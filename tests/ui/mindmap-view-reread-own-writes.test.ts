@@ -27,9 +27,9 @@
  * second breaks it — `modify` reaches the maps late — so only the fix holds there. The third is a write someone else
  * took back (code reviews 1 and 2 of the fix): how far the fix may go. The last two pin what the fix itself must not
  * break (code review 3): a no-op write recorded late, a record started again while a read waits for the called maps.
- * The last (LEV-237) is a read that reaches part of the record, with the writes past it taken back; its 6 rows fail
- * on the code before LEV-237, and each half of that fix taken out, or every write past the one reached dropped, fails
- * one white-box row (`artifacts/lev-237-view-reread-takeback/run-variants.sh`, `variants.txt`). The counts below are
+ * The last (LEV-237) is a read that reaches part of the record, with the writes past it taken back; its 10 rows fail
+ * on the code before LEV-237 (the 4 of code review 2 also on a replay that stops at the first write reaching the text
+ * read), and each half of that fix taken out, or every write past the one reached dropped, fails one white-box row (`artifacts/lev-237-view-reread-takeback/run-variants.sh`, `variants.txt`). The counts below are
  * of the 27 rows before it.
  *
  * Against each version (`artifacts/lev-218-reread-own-writes/run-jsdom-variants.sh`, `jsdom-*.log`): the fix passes
@@ -590,26 +590,40 @@ describe('a re-read that reaches part of the record, with the writes past it tak
 
   /**
    * The view's 45 ms re-reads held until `release`: the writes and the put-back all land before the view reads any.
-   * Spies, so `release` (or `afterEach`'s restore, should a row fail first) puts the window's own functions back.
+   * Spies, so the window's own functions come back (or `afterEach`'s restore, should a row fail first). A held timer
+   * keeps its id after `release` (the view holds it as `refreshTimer`): until every held one has run or been cleared,
+   * clearing that id clears the real timer it was started as, and new 45 ms timers are no longer held.
    */
   function holdDebounces(): { release: () => void } {
     const set = window.setTimeout.bind(window);
     const clear = window.clearTimeout.bind(window);
     let next = -1;
+    let holding = true;
     const held = new Map<number, () => void>();
+    const started = new Map<number, number>();
     const setSpy = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
-      if (delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
+      if (!holding || delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
       const id = next--;
       held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
       return id;
     }) as unknown as typeof window.setTimeout);
-    const clearSpy = vi.spyOn(window, 'clearTimeout').mockImplementation(id => { if (typeof id === 'number' && held.delete(id)) return; clear(id); });
+    const restore = (): void => { if (!holding && held.size === 0 && started.size === 0) { setSpy.mockRestore(); clearSpy.mockRestore(); } };
+    const clearSpy = vi.spyOn(window, 'clearTimeout').mockImplementation(id => {
+      if (typeof id === 'number' && held.delete(id)) return;
+      const real = typeof id === 'number' ? started.get(id) : undefined;
+      if (real === undefined) { clear(id); return; }
+      started.delete(id as number);
+      clear(real);
+      restore();
+    });
     return {
       release: () => {
-        setSpy.mockRestore();
-        clearSpy.mockRestore();
-        for (const run of Array.from(held.values())) set(run, 45);
+        holding = false;
+        for (const [id, run] of Array.from(held)) {
+          started.set(id, set(() => { started.delete(id); run(); restore(); }, 45));
+        }
         held.clear();
+        restore();
       },
     };
   }
@@ -715,4 +729,47 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     internals.recordWrite(mounted.file, { ...c, edits: c.edits.map(edit => ({ ...edit })) });
     expect(view.ownWrites).toEqual([c]);
   });
+
+  // Code review 2: the record comes back to the same text more than once before the view reads it — B deletes the
+  // second twin, Z (⌘Z) puts it back, C deletes the first — and the note holds C's text. A replay that stops at the
+  // first write reaching that text (B) carries the ids by B's edits: the twin left, the second, takes the id of the
+  // first, which is gone — its fold and selection with it. It must go on to the last (C), as `WriteRecord.follow`
+  // does; the twin left is then the one Z put back, parsed as a node of its own (a new id: what ⌘Z's insertion gives
+  // any replay, first or last, and not this ticket's). Through a re-read (B, Z, C by the store) and through this
+  // map's own write shown at once (B, Z by the store, C this map's Delete: `showOwnWrite`).
+  for (const { shape, label, twin } of TWIN_SHAPES) for (const by of ['the store', 'Delete in this map'] as const) {
+    it(`the first ${shape} twin deleted (C ${by}) after the second was deleted and put back: its fold stays with it`, async () => {
+      const source = twinSource(twin);
+      const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
+      opened.push(mounted);
+      await settled(mounted);
+      const view = state(mounted);
+      const id = foldAndSelect(mounted, label, 0);
+      const held = holdDebounces();
+      try {
+        // B an edit of the shared history (another map's delete), Z its ⌘Z.
+        const second = source.indexOf(twin, source.indexOf(twin) + twin.length);
+        await storeOf(mounted).applyOver(mounted.file, source, [{ from: second, to: second + twin.length, text: '' }]);
+        await storeOf(mounted).undo(mounted.file);
+        expect(mounted.source()).toBe(source);
+        expect(view.document?.source).toBe(source);
+        if (by === 'the store') await deleteTwin(mounted, twin, 0);
+        else {
+          click(nodeNamed(mounted, label, 0));
+          mounted.key(mounted.canvas, 'Delete');
+          await vi.waitFor(() => { expect(view.saving).toBe(false); expect(mounted.source()).not.toBe(source); }, { timeout: 1000, interval: 2 });
+        }
+        expect(view.ownWrites).toHaveLength(by === 'the store' ? 3 : 0);
+      } finally {
+        held.release();
+      }
+      await settled(mounted);
+      expect(mounted.source()).toBe(source.replace(twin, ''));
+      // The first twin, folded and selected, is gone: nothing left carries its id, its fold or the selection.
+      const left = nodeNamed(mounted, label, 0).dataset.nodeId;
+      expect({ left: left === id, collapsed: [...view.collapsed].filter(folded => folded === left), selected: view.selectedId === left })
+        .toEqual({ left: false, collapsed: [], selected: false });
+      expect(Notice.log).toEqual([]);
+    });
+  }
 });

@@ -103,9 +103,10 @@ try {
         };
         try {
           observer.observe(el, { subtree: true, childList: true, characterData: true });
-          const text = await app.vault.read(file);
-          const child = text.indexOf('  - 子1\\n') + 4;
-          const reached = (await view.store.applyLatest(file, () => [{ from: child, to: child + 2, text: ${JSON.stringify(RENAMED)} }])).after;
+          const reached = (await view.store.applyLatest(file, current => {
+            const child = current.indexOf('  - 子1\\n') + 4;
+            return [{ from: child, to: child + 2, text: ${JSON.stringify(RENAMED)} }];
+          })).after;
           let recorded = view.ownWrites.length;
           let putBack = null;
           if (${takesBack}) {
