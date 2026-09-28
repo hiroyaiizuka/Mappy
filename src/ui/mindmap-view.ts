@@ -1087,16 +1087,17 @@ export class MindmapView extends FileView {
    * record ends elsewhere starts the record again: the store wrote it on that text, so the note was put back there
    * (Undo in the Markdown pane, a sync) and the writes recorded were taken back (LEV-218). One already in the record
    * is not that: it was told before the caller got its answer, and others were recorded after it. Nor a write that
-   * changed nothing (told to no one): it takes nothing back, and carries no id anywhere.
+   * changed nothing (told to no one): it takes nothing back, and carries no id anywhere. "Already there" is the same
+   * texts and the same edits (`sameWrite`): another edit that writes the same texts is a write of its own (LEV-237).
    */
   private recordOwn(write: LatestWrite): void {
     if (write.before === write.after) return;
     const last = this.ownWrites[this.ownWrites.length - 1];
-    if (last?.before === write.before && last.after === write.after) return;
+    if (last && sameWrite(last, write)) return;
     const recorded = { before: write.before, after: write.after, edits: write.edits };
     if (write.before === (last?.after ?? this.document?.source)) { this.ownWrites.push(recorded); return; }
     if (write.before !== this.document?.source) return;
-    if (this.ownWrites.some(own => own.before === write.before && own.after === write.after)) return;
+    if (this.ownWrites.some(own => sameWrite(own, write))) return;
     this.ownWrites = [recorded];
   }
 
@@ -1110,7 +1111,7 @@ export class MindmapView extends FileView {
     let at = this.ownWrites[this.ownWrites.length - 1]?.after ?? this.document?.source;
     const recorded: OwnWrite[] = [];
     for (const write of carried) {
-      const own = this.ownWrites.find(item => item.before === write.before && item.after === write.after);
+      const own = this.ownWrites.find(item => sameWrite(item, write));
       if (own) { recorded.push(own); continue; }
       if (write.before !== at) continue;
       const added: OwnWrite = { ...write };
@@ -1249,6 +1250,8 @@ export class MindmapView extends FileView {
     }
     // The writes recorded before the read begins, which it will find if nobody else takes them back.
     const recorded = new Set(this.ownWrites);
+    // Of `writes`, those recorded while the read was under way that lead on one from the other from `text`.
+    const keptFrom = (writes: readonly OwnWrite[], text: string): OwnWrite[] => leadingFrom(writes.filter(write => !recorded.has(write)), text);
     const stale = (): boolean => this.closed || epoch !== this.epoch || file !== this.file;
     // A failed read whose result would have been dropped has nobody to tell (LEV-236): the scheduled one once it is stale
     // at all, one awaited (`setState`, `readNow`, the write's and ⌘Z's re-read) only once the tab closed, as its caller
@@ -1266,7 +1269,7 @@ export class MindmapView extends FileView {
     // back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where the
     // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
     const replayed = this.replayOwnWrites(source, file.basename);
-    if (!replayed) this.ownWrites = onScreen ? leadingFrom(this.ownWrites.filter(write => !recorded.has(write)), source) : [];
+    if (!replayed) this.ownWrites = onScreen ? keptFrom(this.ownWrites, source) : [];
     const replaying = this.ownWrites;
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
@@ -1278,12 +1281,12 @@ export class MindmapView extends FileView {
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
     // read replayed is not in it. Past the write a read reached, the writes left get the rule of a read of the text
-    // on screen (LEV-237): one recorded before the read began was there for it to find, so someone put the note back
-    // over it; kept, it would stand in the record, and the same text written again by another edit would be taken
-    // for it (`recordOwn`) and its re-read carry the ids by the stale write's edits.
-    if (this.ownWrites === replaying) this.ownWrites = replayed
-      ? leadingFrom(replaying.slice(replayed.used).filter(write => !recorded.has(write)), source)
-      : replaying.slice(0);
+    // on screen (LEV-237): one recorded before the read began was there for it to find, so either someone put the
+    // note back over it, or the record came back to the text found and the replay stopped at its first write there
+    // (⌘Z then ⌘⇧Z): the text found is shown either way, and the next write starts from it. Kept, a stale write would
+    // stand in the record where nothing can follow it. The array is replaced, not trimmed, even when nothing is
+    // spent: another read in flight tells by identity (`replaying`) whether the record is still the one it replayed.
+    if (this.ownWrites === replaying) this.ownWrites = replayed ? keptFrom(replaying.slice(replayed.used), source) : replaying.slice(0);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
@@ -2458,6 +2461,16 @@ export class MindmapView extends FileView {
       throw error;
     }
   }
+}
+
+/**
+ * Whether `a` and `b` are one write told twice (the store's word and the caller's answer): the same texts and the same
+ * edits. The texts alone are not enough: deleting the first or the second of two twins writes the same text, and taken
+ * for each other, the re-read would carry the ids by the other one's edits (LEV-237).
+ */
+function sameWrite(a: { before: string; after: string; edits: readonly TextEdit[] }, b: { before: string; after: string; edits: readonly TextEdit[] }): boolean {
+  return a.before === b.before && a.after === b.after && a.edits.length === b.edits.length
+    && a.edits.every((edit, index) => edit.from === b.edits[index]?.from && edit.to === b.edits[index]?.to && edit.text === b.edits[index]?.text);
 }
 
 /** The writes of `writes`, in order, that lead on one from the other from `source`: the first that does not ends them. */

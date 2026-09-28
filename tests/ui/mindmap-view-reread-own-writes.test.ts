@@ -27,9 +27,10 @@
  * second breaks it — `modify` reaches the maps late — so only the fix holds there. The third is a write someone else
  * took back (code reviews 1 and 2 of the fix): how far the fix may go. The last two pin what the fix itself must not
  * break (code review 3): a no-op write recorded late, a record started again while a read waits for the called maps.
- * The last (LEV-237) is a read that reaches part of the record, with the writes past it taken back; its 5 rows fail
- * on the code before LEV-237 and keeping none of the writes past the one reached fails its white-box row
- * (`artifacts/lev-237-view-reread-takeback/`). The counts below are of the 27 rows before it.
+ * The last (LEV-237) is a read that reaches part of the record, with the writes past it taken back; its 6 rows fail
+ * on the code before LEV-237, and each half of that fix taken out, or every write past the one reached dropped, fails
+ * one white-box row (`artifacts/lev-237-view-reread-takeback/run-variants.sh`, `variants.txt`). The counts below are
+ * of the 27 rows before it.
  *
  * Against each version (`artifacts/lev-218-reread-own-writes/run-jsdom-variants.sh`, `jsdom-*.log`): the fix passes
  * all 27, and all 27 with the epoch check taken out too. The code before it fails 11 (the 8 of the second describe,
@@ -576,31 +577,37 @@ describe('a re-read that reaches part of the record, with the writes past it tak
   // (`recordOwn` does not add a write already in the record: the store's word and the caller's answer tell the same
   // write twice), and the re-read carries the ids by the stale write's edits. Twins make that the user's loss: the
   // second deleted and put back, then the first deleted, and the stale edits give the survivor the first one's id — the
-  // fold on the second goes. The twin rows and the drop of the white-box row fail before the fix; its last step (a
-  // write recorded while the read reads) passes either way and pins what the fix must not drop.
+  // fold on the second goes. Two halves of the fix hold the twin rows, each alone (code review 1): the re-read drops
+  // the stale write, and `recordOwn` tells one write told twice from another with the same texts by its edits too
+  // (`sameWrite`), so the Delete is recorded over it. The twin rows fail only with both halves out (the code before
+  // LEV-237); the white-box rows pin each half: the re-read's drop (its last step, a write recorded while the read
+  // reads, passes either way and pins what the drop must not take), and `sameWrite`.
   const TWIN_SHAPES = [
     { shape: '空題名', label: EMPTY_LABEL, twin: '- \n  - 同じ子\n' },
     { shape: '同名', label: '同名', twin: '- 同名\n  - 同じ子\n' },
   ] as const;
   const twinSource = (twin: string): string => ['---', 'mappy: true', '---', '## 本体', '', '- 親', '  - 子1', ''].join('\n') + twin + twin;
 
-  /** The view's 45 ms re-reads held until `release`: the writes and the put-back all land before the view reads any. */
+  /**
+   * The view's 45 ms re-reads held until `release`: the writes and the put-back all land before the view reads any.
+   * Spies, so `release` (or `afterEach`'s restore, should a row fail first) puts the window's own functions back.
+   */
   function holdDebounces(): { release: () => void } {
     const set = window.setTimeout.bind(window);
     const clear = window.clearTimeout.bind(window);
     let next = -1;
     const held = new Map<number, () => void>();
-    window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
+    const setSpy = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]): number => {
       if (delay !== 45 || typeof handler !== 'function') return set(handler, delay, ...args);
       const id = next--;
       held.set(id, () => { (handler as (...data: unknown[]) => void)(...args); });
       return id;
-    }) as unknown as typeof window.setTimeout;
-    window.clearTimeout = (id => { if (typeof id === 'number' && held.delete(id)) return; clear(id); });
+    }) as unknown as typeof window.setTimeout);
+    const clearSpy = vi.spyOn(window, 'clearTimeout').mockImplementation(id => { if (typeof id === 'number' && held.delete(id)) return; clear(id); });
     return {
       release: () => {
-        window.setTimeout = set;
-        window.clearTimeout = clear;
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
         for (const run of Array.from(held.values())) set(run, 45);
         held.clear();
       },
@@ -683,5 +690,29 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     await internals.refresh();
     expect(view.document?.source).toBe(v);
     expect(view.ownWrites).toEqual([w]);
+  });
+
+  it('a write with the same texts as one in the record but other edits is recorded over it', async () => {
+    // White-box: the record holds B (T→U: the second twin deleted), left there by whatever path, and the note shows T.
+    // C deletes the first twin: the same texts as B, other edits. Taken for B told twice, C would not be recorded,
+    // and its re-read would carry the ids by B's edits.
+    const twin = '- \n  - 同じ子\n';
+    const t = twinSource(twin);
+    const mounted = await mountMapView(PATH, t, 'mindmap', new HarnessApp());
+    opened.push(mounted);
+    await settled(mounted);
+    const view = state(mounted);
+    const internals = mounted.view as unknown as { recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void };
+    const first = t.indexOf(twin);
+    const u = t.slice(0, first) + t.slice(first + twin.length);
+    const b = { before: t, after: u, edits: [{ from: first + twin.length, to: first + 2 * twin.length, text: '' }] };
+    const c = { before: t, after: u, edits: [{ from: first, to: first + twin.length, text: '' }] };
+    internals.recordWrite(mounted.file, b);
+    expect(view.ownWrites).toEqual([b]);
+    internals.recordWrite(mounted.file, c);
+    expect(view.ownWrites).toEqual([c]);
+    // The same write told twice (the store's word, then the caller's answer, as a copy) is recorded once.
+    internals.recordWrite(mounted.file, { ...c, edits: c.edits.map(edit => ({ ...edit })) });
+    expect(view.ownWrites).toEqual([c]);
   });
 });
