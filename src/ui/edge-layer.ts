@@ -6,7 +6,11 @@ export class EdgeLayer {
 
   constructor(private readonly svg: SVGSVGElement) {}
 
-  update(edges: readonly LayoutEdge[]): void {
+  /**
+   * `each`, when given, is called with every edge's path once its `d` is set, in the order of `edges`: the map view
+   * marks the drop preview's connector there and draws it last (LEV-248).
+   */
+  update(edges: readonly LayoutEdge[], each?: (edge: LayoutEdge, path: SVGPathElement) => void): void {
     const retained = new Set<string>();
     for (const edge of edges) {
       retained.add(edge.id);
@@ -16,6 +20,7 @@ export class EdgeLayer {
         this.paths.set(edge.id, path);
       }
       if (path.getAttribute("d") !== edge.path) path.setAttribute("d", edge.path);
+      each?.(edge, path);
     }
     for (const [id, path] of this.paths) {
       if (retained.has(id)) continue;

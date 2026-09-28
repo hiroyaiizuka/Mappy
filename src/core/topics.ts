@@ -43,6 +43,16 @@ export function topicKeys(doc: MindDocument): Map<string, string> {
   return keys;
 }
 
+/**
+ * The position `positions` holds for `topic` in `mode`, by its key (`keys`, from `topicKeys`; a topic missing there reads
+ * the plain heading). The one read the view and the embed both place a topic by (LEV-248).
+ */
+export function storedTopicPosition(
+  positions: TopicPositionMap, keys: ReadonlyMap<string, string>, topic: { id: string; title: string }, mode: string,
+): TopicPosition | undefined {
+  return positions.get(keys.get(topic.id) ?? topic.title)?.[mode];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

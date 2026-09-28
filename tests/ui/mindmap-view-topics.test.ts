@@ -274,6 +274,43 @@ describe('MindmapView with free topics', () => {
     expect(layout().nodes.some(node => node.id === PLACEHOLDER_ID)).toBe(false);
   });
 
+  it('draws the previewed slot\'s connector thick and above the others, and none once the preview goes', async () => {
+    // Pin (LEV-248), not a regression test: it holds before and after the connectors moved to `EdgeLayer`. The view
+    // keeps what the embed has no use for — the `is-preview` class and the preview's connector drawn last.
+    const source = fixtureSource();
+    const { view } = await mount(source);
+    const doc = documentOf(view);
+    const { root, topics } = projectMap(doc);
+    const dragged = doc.nodes.find(node => node.title === '習慣化する');
+    const folded = topics.find(topic => topic.children.length > 0);
+    if (!dragged || !folded) throw new Error('Missing fixture nodes');
+    const svg = view.containerEl.querySelector('svg.mappy-edges');
+    if (!svg) throw new Error('No connectors');
+    const paths = (): SVGPathElement[] => Array.from(svg.querySelectorAll('path'));
+    const drawn = paths().length;
+    const frame = (): Promise<unknown> => new Promise(resolve => requestAnimationFrame(resolve));
+    const fold = (view as unknown as { fold(id: string): void }).fold.bind(view);
+    const previewDrop = (view as unknown as { previewDrop(command: MoveCommand | null): void }).previewDrop.bind(view);
+    // A topic folded, the preview drawn, the topic opened again: its connectors are new paths, added after the
+    // preview's (which stays, as it was, under them until the connectors are drawn again: before LEV-248 too). The next
+    // draw of the connectors — the slot moved within the same parent, the preview's connector the same path — puts the
+    // preview's last again.
+    fold(folded.id);
+    await frame();
+    previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 0 });
+    await frame();
+    fold(folded.id);
+    await frame();
+    previewDrop({ type: 'move', nodeId: dragged.id, parentId: root.id, index: 1 });
+    await frame();
+    const previews = paths().filter(path => path.classList.contains('is-preview'));
+    expect(previews).toHaveLength(1);
+    expect(svg.lastElementChild).toBe(previews[0]);
+    previewDrop(null);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    expect({ count: paths().length, previews: paths().filter(path => path.classList.contains('is-preview')).length }).toEqual({ count: drawn, previews: 0 });
+  });
+
   it('renames a topic through the view and keeps its stored position under the new heading', async () => {
     const source = fixtureSource();
     const { app, view } = await mount(source);
