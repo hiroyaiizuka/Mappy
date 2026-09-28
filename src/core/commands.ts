@@ -3,6 +3,7 @@ import { planListEdit } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
 import { storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
+import { t } from '../i18n';
 
 export interface TextEdit { from: number; to: number; text: string }
 
@@ -44,9 +45,9 @@ export function applyEdits(source: string, edits: TextEdit[]): string {
   for (const edit of ordered) {
     if (!Number.isInteger(edit.from) || !Number.isInteger(edit.to)
       || edit.from < 0 || edit.to < edit.from || edit.to > source.length
-      || typeof edit.text !== 'string') throw new Error('編集範囲が不正です。');
+      || typeof edit.text !== 'string') throw new Error(t().editRangeInvalid);
     if (previous && (edit.from < previous.to || edit.from === previous.from)) {
-      throw new Error('編集範囲が重複しています。');
+      throw new Error(t().editRangeOverlap);
     }
     previous = edit;
   }
@@ -98,7 +99,7 @@ function deleteHeadingBranch(doc: MindDocument, node: MindNode): EditPlan {
   const attempt = (edits: TextEdit[]): EditPlan => {
     const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
     if (parsed.nodes.length !== titles.length || parsed.nodes.some((candidate, index) => candidate.title !== titles[index])) {
-      throw new Error('見出し構造を安全に変更できません。Markdown の構文を確認してください。');
+      throw new Error(t().headingsUnsafe);
     }
     const from = selectionAfterDelete(doc, node, edits);
     return { edits, selectionOffset: parsed.nodes.find((candidate) => candidate.from === from)?.titleFrom ?? null };
@@ -116,10 +117,10 @@ interface MoveTarget { parent: MindNode; siblings: MindNode[]; unchanged: boolea
 export function moveTarget(doc: MindDocument, node: MindNode, parentId: string, index: number): MoveTarget {
   const parent = getNode(doc, parentId);
   if (parent.id === node.id || (parent.kind !== 'root' && parent.from >= node.from && parent.from < node.to)) {
-    throw new Error('ノードを自分自身や子孫の下へ移動できません。');
+    throw new Error(t().moveIntoSelf);
   }
   const siblings = parent.children.filter((child) => child.id !== node.id);
-  if (!Number.isInteger(index) || index < 0 || index > siblings.length) throw new Error('移動先の位置が不正です。');
+  if (!Number.isInteger(index) || index < 0 || index > siblings.length) throw new Error(t().moveTargetInvalid);
   const current = parent.children.findIndex((child) => child.id === node.id);
   return { parent, siblings, unchanged: current === index };
 }
@@ -155,8 +156,8 @@ export function checkedMove(
   if (!moved || moved.title !== node.title || expected.length !== actual.length
     || expected.some((entry, position) => entry !== actual[position])) {
     throw new Error(doc.format === 'list'
-      ? 'リスト構造を安全に変更できません。Markdown の構文を確認してください。'
-      : '見出し構造を安全に変更できません。Markdown の構文を確認してください。');
+      ? t().listUnsafe
+      : t().headingsUnsafe);
   }
   return { edits, selectionOffset: moved.titleFrom };
 }
@@ -170,14 +171,14 @@ function shiftedBranch(doc: MindDocument, node: MindNode, level: number): string
   const edits: TextEdit[] = [];
   for (const descendant of branchNodes(doc, node)) {
     const nextLevel = descendant.level + delta;
-    if (nextLevel < 1 || nextLevel > 6) throw new Error('見出しは子孫を含めて 6 階層までです。');
+    if (nextLevel < 1 || nextLevel > 6) throw new Error(t().headingDepthSubtree);
     if (delta === 0) continue;
     if (descendant.kind === 'setext') {
       edits.push({ from: descendant.from - node.from, to: descendant.headingTo - node.from,
         text: `${'#'.repeat(nextLevel)} ${descendant.title}` });
     } else {
       const marker = /^ {0,3}#{1,6}/u.exec(doc.source.slice(descendant.from, descendant.headingTo));
-      if (!marker) throw new Error('見出しの編集位置を確認できません。');
+      if (!marker) throw new Error(t().headingMarkerMissing);
       const indent = marker[0].indexOf('#');
       edits.push({ from: descendant.from - node.from + indent,
         to: descendant.from - node.from + marker[0].length, text: '#'.repeat(nextLevel) });
@@ -235,13 +236,13 @@ export function swapSections(doc: MindDocument, node: MindNode, neighbor: MindNo
 /** A node's text is one line: a break would start another block and change the tree. */
 export function assertSingleLine(title: string): void {
   if (/[\r\n\u2028\u2029]/u.test(title)) {
-    throw new Error('ノード名は改行を含まない文字列にしてください。');
+    throw new Error(t().nameHasBreak);
   }
 }
 
 function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicPlacement): EditPlan {
   if (node.kind === 'setext' && draft.trim().length === 0) {
-    throw new Error('Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。');
+    throw new Error(t().setextEmpty);
   }
   const before = (node.kind === 'atx' || node.kind === 'list') && !/[ \t]/u.test(doc.source.charAt(node.titleFrom - 1)) ? ' ' : '';
   const after = node.kind === 'atx' && node.titleFrom === node.titleTo && doc.source.charAt(node.titleTo) === '#' ? ' ' : '';
@@ -253,7 +254,7 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
   const updated = parsed.nodes.find((candidate) => candidate.from === node.from);
   if (parsed.nodes.length !== doc.nodes.length || updated?.kind !== node.kind
     || updated.level !== node.level || updated.title !== title.trim()) {
-    throw new Error('この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。');
+    throw new Error(t().nameChangesHeading);
   }
   // A free topic's stored position follows its key within the same edit set (another topic of the old heading
   // may become its first, and take the plain key). Only topics carry entries: a list item or the body root
@@ -265,7 +266,7 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
 function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): EditPlan {
   assertSingleLine(title);
   const level = sibling ? node.level : node.level + 1;
-  if (level > 6) throw new Error('見出しは 6 階層までです。');
+  if (level > 6) throw new Error(t().headingDepth);
   const offset = node.to;
   const prefix = paragraphGap(doc.source.slice(0, offset), doc.eol);
   const suffix = offset < doc.source.length ? doc.eol + doc.eol : doc.source.endsWith('\n') ? doc.eol : '';
@@ -275,7 +276,7 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
   const added = parsed.nodes.find((candidate) => candidate.from === offset + prefix.length);
   if (parsed.nodes.length !== doc.nodes.length + 1 || added?.kind !== 'atx'
     || added.level !== level || added.title !== title.trim()) {
-    throw new Error('見出し構造を安全に変更できません。Markdown の構文を確認してください。');
+    throw new Error(t().headingsUnsafe);
   }
   return { edits, selectionOffset: added.titleFrom };
 }
@@ -372,7 +373,7 @@ function addTopic(doc: MindDocument, title = ''): EditPlan {
   const added = parsed.nodes.find((candidate) => candidate.from === offset + prefix.length);
   if (parsed.nodes.length !== doc.nodes.length + 1 || added?.kind !== 'atx' || added.level !== level
     || added.title !== title.trim() || added.parentId !== 'root') {
-    throw new Error('文書末尾にトピックを追加できません。Markdown の構文を確認してください。');
+    throw new Error(t().topicAtEndUnsafe);
   }
   return { edits, selectionOffset: added.titleFrom };
 }
@@ -427,7 +428,7 @@ function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode | undef
     : [key, ...plan.edits];
   const combined = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
   if (combined.nodes.length !== after.nodes.length || combined.nodes.some((candidate, index) => candidate.title !== after.nodes[index]?.title)) {
-    throw new Error('frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。');
+    throw new Error(t().topicsKeyUnsafe);
   }
   const selectionOffset = plan.selectionOffset !== null && plan.selectionOffset >= key.to ? plan.selectionOffset + delta : plan.selectionOffset;
   return { edits, selectionOffset };
@@ -466,7 +467,7 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   // A new section whose text is an ordinal key (`A (2)`) renumbers the topics of that heading: their entries follow.
   if (command.type === 'add-topic') return withTopicKeys(doc, addTopic(doc, command.title), undefined, 'adds');
   const node = getNode(doc, command.nodeId);
-  if (node.kind === 'root' && command.type !== 'add-child') throw new Error('ルートでは子ノードの追加だけを行えます。');
+  if (node.kind === 'root' && command.type !== 'add-child') throw new Error(t().rootAddsChildOnly);
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);
   const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
   if (!touchesTopLevel(doc, node, command)) return plan;

@@ -6,6 +6,7 @@ import {
   StyleRegistry, SVG_NAMESPACE, XHTML_NAMESPACE, XLINK_NAMESPACE, escapeAttribute, escapeText, formatNumber,
   type ExportTheme, type SvgBadge, type SvgEdge, type SvgNode, type SvgScene,
 } from './svg-document';
+import { t } from '../i18n';
 
 /**
  * The DOM half of the SVG export (§5 M13): the map view's node elements, laid
@@ -468,9 +469,6 @@ export function canRasterize(): boolean {
   }
 }
 
-/** The message every PNG failure of the host surfaces; the SVG route always remains. */
-export const PNG_UNAVAILABLE = 'この環境では PNG を作れません。SVG で書き出してください。';
-
 /** Width and height of the raster in device pixels. */
 export interface RasterSize {
   width: number;
@@ -489,7 +487,7 @@ function loadSvgImage(svg: string): Promise<HTMLImageElement> {
   const image = createEl('img');
   return new Promise<HTMLImageElement>((resolve, reject) => {
     image.addEventListener('load', () => { resolve(image); }, { once: true });
-    image.addEventListener('error', () => { reject(new Error('SVG を画像として読み込めませんでした。')); }, { once: true });
+    image.addEventListener('error', () => { reject(new Error(t().svgLoadFailed)); }, { once: true });
     // A data URL, not a blob URL: a blob made by a page with an opaque origin (`file://`) is cross-origin to itself and taints the canvas.
     image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   });
@@ -501,7 +499,7 @@ function drawToCanvas(image: HTMLImageElement, size: { width: number; height: nu
   canvas.width = raster.width;
   canvas.height = raster.height;
   const context = canvas.getContext('2d');
-  if (!context) throw new Error(PNG_UNAVAILABLE);
+  if (!context) throw new Error(t().pngUnavailable);
   context.scale(scale, scale);
   context.drawImage(image, 0, 0, size.width, size.height);
   return canvas;
@@ -549,10 +547,10 @@ export async function rasterizeSvg(svg: string, size: { width: number; height: n
   try {
     const canvas = drawToCanvas(image, size, scale);
     const blob = await new Promise<Blob | null>(resolve => { canvas.toBlob(resolve, 'image/png'); });
-    if (!blob) throw new Error('PNG を生成できませんでした。');
+    if (!blob) throw new Error(t().pngFailed);
     return { blob, width: canvas.width, height: canvas.height };
   } catch (error) {
-    if (isTaint(error)) throw new Error(PNG_UNAVAILABLE);
+    if (isTaint(error)) throw new Error(t().pngUnavailable);
     throw error;
   }
 }

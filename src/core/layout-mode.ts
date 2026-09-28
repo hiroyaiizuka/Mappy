@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 /**
  * The layouts a note can ask for. This list is the vocabulary shared by the
  * frontmatter value (`mappy-layout`), the view state, the layout buttons, the
@@ -16,12 +18,18 @@ export function isLayoutMode(value: unknown): value is LayoutMode {
   return typeof value === "string" && (LAYOUT_MODES as readonly string[]).includes(value);
 }
 
+/** The text key of each layout's name; the Record type turns a new mode into a compile error until it is named. */
+const LAYOUT_LABEL_KEYS: Record<LayoutMode, `layout${Capitalize<LayoutMode>}`> = {
+  mindmap: "layoutMindmap", timeline: "layoutTimeline", hierarchy: "layoutHierarchy", balanced: "layoutBalanced",
+};
+
 /**
- * The one name each layout goes by in the UI: the layout buttons and the settings
- * dropdown both read it, and the Record type turns a new mode into a compile error
- * until it is named here.
+ * The one name each layout goes by in the UI: the layout buttons and the settings dropdown both read it. Read
+ * when shown, as it follows the app's language, which is set after this module has loaded (src/i18n).
  */
-export const LAYOUT_LABELS: Record<LayoutMode, string> = { mindmap: "通常マップ", timeline: "タイムライン", hierarchy: "階層図", balanced: "左右バランス" };
+export function layoutLabel(mode: LayoutMode): string {
+  return t()[LAYOUT_LABEL_KEYS[mode]];
+}
 
 /** A frontmatter value naming a layout, tolerant of case and surrounding space; anything else is null. */
 export function parseLayout(value: unknown): LayoutMode | null {

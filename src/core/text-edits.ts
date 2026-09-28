@@ -1,5 +1,6 @@
 import type { TextEdit } from './commands';
 import type { MindDocument, MindNode } from './markdown';
+import { t } from '../i18n';
 
 /**
  * The rules every text edit shares, in one place: which node an edit addresses, where an offset lands
@@ -93,7 +94,7 @@ function splitsCharacter(text: string, at: number): boolean {
 /** The node an edit or a kept draft addresses; a re-parse after an external change may have dropped the id. */
 export function getNode(doc: MindDocument, id: string): MindNode {
   const node = findNode(doc, id);
-  if (!node) throw new Error('対象のノードが変更されています。再選択してください。');
+  if (!node) throw new Error(t().nodeChanged);
   return node;
 }
 

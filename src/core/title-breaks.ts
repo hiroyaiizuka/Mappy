@@ -1,4 +1,5 @@
 import { GFM, parser } from '@lezer/markdown';
+import { t } from '../i18n';
 
 /** The inline Markdown parser node titles are read with (`plainTitle` shares it). */
 export const inlineParser = parser.configure(GFM);
@@ -114,7 +115,7 @@ export function storedTitle(draft: string, current: string): string {
   });
   const read = breakRanges(stored);
   if (!inserted.every((tag) => read.some((range) => range.from <= tag.from && tag.to <= range.to))) {
-    throw new Error('この位置では改行できません（インラインコード・リンク・数式の中や \\ の直後など）。改行を外すか、Markdown 側で編集してください。');
+    throw new Error(t().lineBreakUnsafe);
   }
   return stored;
 }

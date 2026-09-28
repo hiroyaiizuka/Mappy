@@ -186,7 +186,7 @@ try {
       await expectAt('改名', renamed, edited);
 
       const at = (await evaluate(`${EMBED} return embedNth('親', 0)?.style.transform ?? null;`));
-      // A real click, by the button's name (src/core/layout-mode.ts LAYOUT_LABELS), as the user presses it.
+      // A real click, by the button's name (src/core/layout-mode.ts layoutLabel()), as the user presses it.
       await clickAt(`return el.querySelector('.mappy-modes button[aria-label="タイムライン"]');`);
       const switched = await after(edited);
       await embedShows({ moved: at });

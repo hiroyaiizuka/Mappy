@@ -40,7 +40,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
-import { LAYOUT_LABELS, type LayoutMode } from '../../src/core/layout-mode';
+import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindDocument } from '../../src/core/markdown';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -116,7 +116,7 @@ function click(element: HTMLElement): void {
 }
 
 function clickLayout(mounted: MountedMapView, mode: LayoutMode): void {
-  const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${LAYOUT_LABELS[mode]}"]`);
+  const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${layoutLabel(mode)}"]`);
   if (!button) throw new Error(`No button for ${mode}`);
   button.click();
 }

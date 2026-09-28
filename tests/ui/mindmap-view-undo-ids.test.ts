@@ -17,7 +17,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { Notice } from '../../harness/browser/obsidian';
-import { LAYOUT_LABELS } from '../../src/core/layout-mode';
+import { layoutLabel } from '../../src/core/layout-mode';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
 import { conflictMessage, type DocumentStore, type LatestWrite } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -160,7 +160,7 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
       const mounted = await mount();
       await run(mounted);
       if (layout) {
-        const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${LAYOUT_LABELS.timeline}"]`);
+        const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${layoutLabel('timeline')}"]`);
         if (!button) throw new Error('No layout button');
         button.click();
         await settled(mounted, source => source.includes('mappy-layout: timeline\n'));
@@ -195,7 +195,7 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     {
       action: 'a layout button', reached: (source: string) => source.includes('mappy-layout: timeline\n'),
       run: async (mounted: MountedMapView) => {
-        mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${LAYOUT_LABELS.timeline}"]`)?.click();
+        mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${layoutLabel('timeline')}"]`)?.click();
         await settled(mounted, source => source.includes('mappy-layout: timeline\n'));
       },
     },

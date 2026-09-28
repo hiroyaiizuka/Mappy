@@ -15,6 +15,16 @@ export default defineConfig(
     extends: obsidianmd.configs.recommended,
   },
   {
+    // The English table is the one `recommended` leaves out: this rule sits only in `recommendedWithLocalesEn`
+    // (docs/architecture.md §9e). It reads the plain strings, not the functions that splice values in.
+    files: ["src/i18n/en.ts"],
+    plugins: { obsidianmd },
+    rules: {
+      // Only `ignoreWords` extends the defaults; passing `brands` or `acronyms` replaces the built-in lists (Markdown, SVG...).
+      "obsidianmd/ui/sentence-case-locale-module": ["error", { ignoreWords: ["ATX", "H2"] }],
+    },
+  },
+  {
     files: ["tests/**/*.ts", "harness/**/*.ts", "vitest.config.ts"],
     extends: tseslint.configs.recommendedTypeChecked,
   },

@@ -1,0 +1,43 @@
+import type { Messages } from "./en";
+
+/** The UI's Japanese text. Typed as `Messages`, so a key missing from or added beyond `en.ts` fails the type check. */
+export const ja: Messages = {
+  layoutMindmap: "通常マップ",
+  layoutTimeline: "タイムライン",
+  layoutHierarchy: "階層図",
+  layoutBalanced: "左右バランス",
+
+  editRangeInvalid: "編集範囲が不正です。",
+  editRangeOverlap: "編集範囲が重複しています。",
+  headingsUnsafe: "見出し構造を安全に変更できません。Markdown の構文を確認してください。",
+  listUnsafe: "リスト構造を安全に変更できません。Markdown の構文を確認してください。",
+  moveIntoSelf: "ノードを自分自身や子孫の下へ移動できません。",
+  moveTargetInvalid: "移動先の位置が不正です。",
+  headingDepthSubtree: "見出しは子孫を含めて 6 階層までです。",
+  headingMarkerMissing: "見出しの編集位置を確認できません。",
+  nameHasBreak: "ノード名は改行を含まない文字列にしてください。",
+  setextEmpty: "Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。",
+  nameChangesHeading: "この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。",
+  headingDepth: "見出しは 6 階層までです。",
+  topicAtEndUnsafe: "文書末尾にトピックを追加できません。Markdown の構文を確認してください。",
+  topicsKeyUnsafe: "frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。",
+  rootAddsChildOnly: "ルートでは子ノードの追加だけを行えます。",
+  detachListOnly: "切り離せるのはリストの枝だけです。",
+  mainRootMove: "本体のルートは他のノードの下へ移動できません。",
+  listBranchTarget: "リストの枝は H2 ルートか別のリスト項目の下へ移動してください。",
+  nodeChanged: "対象のノードが変更されています。再選択してください。",
+  topicChanged: "対象のトピックが変更されています。再選択してください。",
+  frontmatterOpen: "先に Markdown 側で frontmatter を閉じてください。",
+  layoutNameInvalid: "レイアウト名が不正です。",
+  topicPositionInvalid: "トピックの位置が不正です。",
+  topicHeadingOneLine: "トピックの見出しは 1 行にしてください。",
+  bodyAffectsHeadings: "本文が既存の見出し構文に影響します。コードやコメントの閉じ忘れを確認してください。",
+  bodyAffectsList: "本文が既存のリスト階層に影響します。インデントを確認してください。",
+  lineBreakUnsafe: "この位置では改行できません（インラインコード・リンク・数式の中や \\ の直後など）。改行を外すか、Markdown 側で編集してください。",
+  listBodyShape: "本文の箇条書きなどがノード構造を変えるため、安全に変換できません。Markdown 側で本文とノードを分けてください。",
+  noHeadingsToConvert: "変換する見出しがありません。",
+
+  pngUnavailable: "この環境では PNG を作れません。SVG で書き出してください。",
+  svgLoadFailed: "SVG を画像として読み込めませんでした。",
+  pngFailed: "PNG を生成できませんでした。",
+};

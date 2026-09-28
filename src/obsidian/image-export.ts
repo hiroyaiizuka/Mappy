@@ -2,11 +2,12 @@ import { Platform, arrayBufferToBase64, requestUrl, type App, type TFile } from 
 import { imageMimeType } from '../core/attachments';
 import { hasUrlScheme, wikiLinkPath } from '../core/wiki-link';
 import {
-  PNG_UNAVAILABLE, canRasterize, captureScene, rasterizeSvg, type CaptureSource, type ImageResolver,
+  canRasterize, captureScene, rasterizeSvg, type CaptureSource, type ImageResolver,
 } from '../export/svg-capture';
 import {
   DESKTOP_PNG_LIMITS, MOBILE_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme, type PngScaleLimits, type SvgSize,
 } from '../export/svg-document';
+import { t } from '../i18n';
 
 /**
  * SVG／PNG export into the vault (§5 M13): the map view's scene is captured,
@@ -150,7 +151,7 @@ export function createSvgAttachment(app: App, name: string, owner: TFile, svg: s
  * before any work is done and before the attachment folder is touched.
  */
 export async function exportMap(app: App, note: TFile, source: CaptureSource, format: ExportFormat, options: ExportOptions = {}): Promise<TFile> {
-  if (format === 'png' && !canRasterize()) throw new Error(PNG_UNAVAILABLE);
+  if (format === 'png' && !canRasterize()) throw new Error(t().pngUnavailable);
   const { svg, size } = await renderSvg(app, note, source, options);
   if (format === 'svg') return createSvgAttachment(app, note.basename, note, svg);
   const png = await rasterizeSvg(svg, size, pngScale(size, options.limits ?? pixelLimits()));

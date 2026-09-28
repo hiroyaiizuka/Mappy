@@ -21,7 +21,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Notice } from '../../harness/browser/obsidian';
-import { LAYOUT_LABELS, type LayoutMode } from '../../src/core/layout-mode';
+import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import { readTopicPositions } from '../../src/core/topics';
 import { projectMap, type MindDocument } from '../../src/core/markdown';
 import { conflictMessage, type DocumentStore } from '../../src/obsidian/document-store';
@@ -68,7 +68,7 @@ function documentOf(mounted: MountedMapView): MindDocument {
 
 /** The button a click on which runs `selectMode`, found by its label as the user finds it. */
 function clickLayout(mounted: MountedMapView, mode: LayoutMode): void {
-  const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${LAYOUT_LABELS[mode]}"]`);
+  const button = mounted.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${layoutLabel(mode)}"]`);
   if (!button) throw new Error(`No button for ${mode}`);
   button.click();
 }

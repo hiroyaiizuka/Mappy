@@ -6,6 +6,7 @@ import {
   indentColumns, itemContentColumn, parseMarkdown, parseableSource, projectMap, type MindDocument, type MindNode, verbatimBlockRanges,
 } from './markdown';
 import { endsWithBlankLine, getNode, lineGap, paragraphGap, siblingOf } from './text-edits';
+import { t } from '../i18n';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
 
@@ -32,7 +33,7 @@ function validate(
   const selected = selectedFrom === null ? undefined : parsed.nodes.find(node => node.from === selectedFrom);
   if (parsed.nodes.length !== count || (expected && (!selected || selected.kind !== expected.kind
     || selected.level !== expected.level || selected.title !== expected.title))) {
-    throw new Error('リスト構造を安全に変更できません。Markdown の構文を確認してください。');
+    throw new Error(t().listUnsafe);
   }
   return { edits, selectionOffset: selected?.titleFrom ?? null };
 }
@@ -404,7 +405,7 @@ function branchAsSection(doc: MindDocument, node: MindNode): string {
 
 /** Detach a list branch into a new section at the end of the document: a free topic with the branch as its tree. */
 function detach(doc: MindDocument, node: MindNode): EditPlan {
-  if (node.kind !== 'list') throw new Error('切り離せるのはリストの枝だけです。');
+  if (node.kind !== 'list') throw new Error(t().detachListOnly);
   const removal = removalRange(doc, node);
   const remaining = doc.source.slice(0, removal.from) + doc.source.slice(removal.to);
   const prefix = paragraphGap(remaining, doc.eol);
@@ -418,9 +419,9 @@ function detach(doc: MindDocument, node: MindNode): EditPlan {
 function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: number): EditPlan {
   const { parent, siblings, unchanged } = moveTarget(doc, node, parentId, index);
   const joining = node.kind !== 'list' && parent.kind !== 'root';
-  if (joining && !projectMap(doc).topics.some(topic => topic.id === node.id)) throw new Error('本体のルートは他のノードの下へ移動できません。');
+  if (joining && !projectMap(doc).topics.some(topic => topic.id === node.id)) throw new Error(t().mainRootMove);
   if (node.kind !== 'list' && !joining) return moveHeadingSection(doc, node, parentId, index);
-  if (parent.kind === 'root') throw new Error('リストの枝は H2 ルートか別のリスト項目の下へ移動してください。');
+  if (parent.kind === 'root') throw new Error(t().listBranchTarget);
   if (unchanged) return { edits: [], selectionOffset: node.titleFrom };
   const before = siblings[index];
   const after = siblings[index - 1];
