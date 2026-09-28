@@ -1,3 +1,5 @@
+import { ConflictError } from "../obsidian/document-store";
+
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
   dispose: () => void;
@@ -32,6 +34,8 @@ export class InlineEditor {
   private blurAfterComposition = false;
   private compositionBlurTimer: number | undefined;
   private disposed = false;
+  /** Whether the error line shows a conflict, which `refreshed` swaps for the retry line. */
+  private conflicted = false;
   /**
    * The save that keeps the draft open (the window lost the focus, LEV-216), while it runs: an Enter, Tab or blur that
    * comes meanwhile waits for it instead of being dropped as a second save would be.
@@ -189,7 +193,7 @@ export class InlineEditor {
     if (this.busy || this.inPlace || this.disposed || text === this.written) return Promise.resolve();
     const task = this.options.save(text)
       .then(() => { this.written = text; })
-      .catch((error: unknown) => { if (!this.disposed) this.error.setText(failure(error)); })
+      .catch((error: unknown) => { if (!this.disposed) this.refuse(error); })
       .finally(() => {
         if (this.inPlace === task) this.inPlace = undefined;
         if (this.pending === task) this.pending = undefined;
@@ -210,7 +214,7 @@ export class InlineEditor {
       this.options.finish(next, false, this.input.value);
     } catch (error) {
       if (this.disposed) return;
-      this.error.setText(failure(error));
+      this.refuse(error);
       this.input.focus({ preventScroll: true });
     } finally {
       this.busy = false;
@@ -255,9 +259,16 @@ export class InlineEditor {
     if (!this.disposed) this.input.focus({ preventScroll: true });
   }
 
-  /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */
-  refreshed(stale: string): void {
-    if (this.disposed || this.error.textContent !== stale) return;
+  /** The reason a save was refused, on the error line; a conflict is remembered as one for `refreshed`. */
+  private refuse(error: unknown): void {
+    this.error.setText(failure(error));
+    this.conflicted = error instanceof ConflictError;
+  }
+
+  /** The map re-parsed under a draft kept by a conflict, whose line would still tell the user to wait for that. */
+  refreshed(): void {
+    if (this.disposed || !this.conflicted) return;
+    this.conflicted = false;
     this.error.setText(REFRESHED_MESSAGE);
   }
 

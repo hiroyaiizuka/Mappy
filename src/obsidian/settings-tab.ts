@@ -3,8 +3,13 @@ import { LAYOUT_MODES, layoutLabel } from '../core/layout-mode';
 import {
   DEFAULT_SETTINGS, MAP_THEMES, isSettingKey, readSettingField, type MapTheme, type MappySettings, type SettingKey,
 } from './settings';
+import { t } from '../i18n';
 
-export const THEME_LABELS: Record<MapTheme, string> = { follow: 'Obsidian に従う', light: '明色', dark: '暗色' };
+/** Each theme's name in the dropdown, read when the tab is drawn (the names follow the app's language, src/i18n). */
+export function themeLabel(theme: MapTheme): string {
+  const text = t();
+  return { follow: text.themeFollow, light: text.themeLight, dark: text.themeDark }[theme];
+}
 
 /** The plugin owns the settings object and `saveData`; the tab only reads and asks for a save. */
 export interface SettingsStore {
@@ -45,25 +50,26 @@ function options<K extends string>(keys: readonly K[], label: (key: K) => string
 
 /** The four settings, in the order the tab shows them; the layout lists follow LAYOUT_MODES. */
 export function mapSettingDefinitions(renderLayouts: (setting: Setting) => void | (() => void)): MapSettingDefinition[] {
+  const text = t();
   return [
     {
-      name: 'テーマ',
-      desc: 'マップの表示だけに適用します。Obsidian の埋め込みや Excalidraw への挿入は Obsidian のテーマに従います。',
-      control: { type: 'dropdown', key: 'theme', options: options(MAP_THEMES, mode => THEME_LABELS[mode]), defaultValue: DEFAULT_SETTINGS.theme },
+      name: text.setTheme,
+      desc: text.setThemeDesc,
+      control: { type: 'dropdown', key: 'theme', options: options(MAP_THEMES, themeLabel), defaultValue: DEFAULT_SETTINGS.theme },
     },
     {
-      name: '新規マップの既定レイアウト',
-      desc: '「新しいマインドマップを作成」と「このノートをマインドマップ化」が mappy-layout に書く値です。既存のノートの表示は変わりません。',
+      name: text.setDefaultLayout,
+      desc: text.setDefaultLayoutDesc(text.cmdCreateMap, text.cmdConvertNote),
       control: { type: 'dropdown', key: 'defaultLayout', options: options(LAYOUT_MODES, layoutLabel), defaultValue: DEFAULT_SETTINGS.defaultLayout },
     },
     {
-      name: '新規マップの作成先フォルダ',
-      desc: 'Vault からの相対パスです。空欄なら Obsidian の「新規ノートの作成場所」に従い、/ で最上位を指定します。存在しないフォルダは作成時に作ります。',
-      control: { type: 'text', key: 'newMapFolder', placeholder: '例: Maps', defaultValue: DEFAULT_SETTINGS.newMapFolder },
+      name: text.setFolder,
+      desc: text.setFolderDesc,
+      control: { type: 'text', key: 'newMapFolder', placeholder: text.setFolderPlaceholder, defaultValue: DEFAULT_SETTINGS.newMapFolder },
     },
     {
-      name: '左下に表示するレイアウト',
-      desc: 'マップの左下に並ぶレイアウトのボタンです。通常マップは外せません。開いているノートの mappy-layout が非表示のレイアウトなら、そのノートではそのボタンも出ます。非表示にしても mappy-layout の保存・復元、コマンド、埋め込み表示、Excalidraw への挿入は変わりません。',
+      name: text.setLayouts,
+      desc: text.setLayoutsDesc,
       render: renderLayouts,
     },
   ];
@@ -153,7 +159,7 @@ export class MappySettingTab extends PluginSettingTab {
     if (!line?.isConnected) return;
     const { defaultLayout, visibleLayouts } = this.store.current();
     const hidden = !visibleLayouts.includes(defaultLayout);
-    line.setText(hidden ? `既定レイアウト「${layoutLabel(defaultLayout)}」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。` : '');
+    line.setText(hidden ? t().setHiddenDefault(layoutLabel(defaultLayout)) : '');
     line.hidden = !hidden;
   }
 
@@ -161,7 +167,7 @@ export class MappySettingTab extends PluginSettingTab {
   private commit(key: SettingKey, value: unknown, revert?: () => void): void {
     this.setControlValue(key, value).catch((error: unknown) => {
       revert?.();
-      new Notice(error instanceof Error ? error.message : '設定を保存できませんでした。');
+      new Notice(error instanceof Error ? error.message : t().setSaveFailed);
     });
   }
 }

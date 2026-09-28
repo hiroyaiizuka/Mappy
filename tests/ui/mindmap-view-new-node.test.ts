@@ -16,7 +16,7 @@ import { HarnessApp } from '../../harness/browser/app';
 import { installObsidianDom } from '../../harness/browser/dom';
 import type { MindDocument } from '../../src/core/markdown';
 import type { LayoutMode } from '../../src/layout/layout';
-import { DocumentStore, conflictMessage } from '../../src/obsidian/document-store';
+import { ConflictError, DocumentStore } from '../../src/obsidian/document-store';
 import { NEW_NODE_TITLE, NEW_TOPIC_TITLE } from '../../src/ui/mindmap-view';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -354,7 +354,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
     // A change the view could not see before the store's turn (a race): the store refuses, the section stays.
-    mounted.store.retract = () => Promise.reject(new Error(conflictMessage));
+    mounted.store.retract = () => Promise.reject(new ConflictError());
     mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(`${LIST}\n## ${NEW_TOPIC_TITLE}\n`);

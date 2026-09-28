@@ -1,9 +1,12 @@
 import { Modal, Setting, type App } from "obsidian";
+import { ConflictError } from "../obsidian/document-store";
 import { REFRESHED_MESSAGE } from "./inline-editor";
 
 /** Keep the draft open when a concurrent edit prevents saving. */
 export class EditModal extends Modal {
   private error: HTMLDivElement | undefined;
+  /** Whether the error line shows a conflict, which `refreshed` swaps for the retry line. */
+  private conflicted = false;
 
   constructor(
     app: App,
@@ -31,6 +34,7 @@ export class EditModal extends Modal {
         this.close();
       } catch (reason) {
         error.setText(reason instanceof Error ? reason.message : "保存できませんでした。");
+        this.conflicted = reason instanceof ConflictError;
       } finally { busy = false; }
     };
     new Setting(this.contentEl)
@@ -51,9 +55,11 @@ export class EditModal extends Modal {
     if (!this.multiline) input.select();
   }
 
-  /** The map re-parsed under a draft kept by `stale` (the store's conflict line): the same save now applies to the new note. */
-  refreshed(stale: string): void {
-    if (this.error?.textContent === stale) this.error.setText(REFRESHED_MESSAGE);
+  /** The map re-parsed under a draft kept by a conflict: the same save now applies to the new note. */
+  refreshed(): void {
+    if (!this.error || !this.conflicted) return;
+    this.conflicted = false;
+    this.error.setText(REFRESHED_MESSAGE);
   }
 
   onClose(): void { this.error = undefined; this.contentEl.empty(); }

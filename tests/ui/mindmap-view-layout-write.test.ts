@@ -24,7 +24,8 @@ import { Notice } from '../../harness/browser/obsidian';
 import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import { readTopicPositions } from '../../src/core/topics';
 import { projectMap, type MindDocument } from '../../src/core/markdown';
-import { conflictMessage, type DocumentStore } from '../../src/obsidian/document-store';
+import { type DocumentStore } from '../../src/obsidian/document-store';
+import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { accessibleName } from './accessible-name';
 
@@ -114,7 +115,7 @@ function selectNode(mounted: MountedMapView, label: string, index = 0): HTMLElem
 }
 
 function refusals(): string[] {
-  return Notice.log.filter(message => message === conflictMessage || message.includes('保存処理'));
+  return Notice.log.filter(message => message === t().conflict || message.includes('保存処理'));
 }
 
 const SHAPES = [
@@ -254,7 +255,7 @@ describe('an edit started right after a layout button, before the re-read (LEV-1
     mounted.app.put(PATH, external);
     mounted.key(mounted.canvas, 'Delete');
     await settled(mounted, source => source === external);
-    await vi.waitFor(() => { expect(Notice.log).toContain(conflictMessage); });
+    await vi.waitFor(() => { expect(Notice.log).toContain(t().conflict); });
     expect(mounted.source()).toBe(external);
   });
 

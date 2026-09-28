@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import { parseMarkdown } from '../../src/core/markdown';
 import {
-  DEFAULT_DROP_STALLED_MESSAGE, EMBEDDABLE_MAX_SIDE, ExcalidrawBridge, embeddableFrameSize, isMappyDrop, type MapPainter, type PaintedMap,
+  EMBEDDABLE_MAX_SIDE, ExcalidrawBridge, embeddableFrameSize, isMappyDrop, type MapPainter, type PaintedMap,
 } from '../../src/obsidian/excalidraw-bridge';
 import { MAPPY_KEY } from '../../src/obsidian/frontmatter';
+import { t } from '../../src/i18n';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import type {
   ExcalidrawAutomate, ExcalidrawDropData, ExcalidrawDropHook, ExcalidrawElement, ExcalidrawStyle, ExcalidrawTextFormatting,
@@ -501,7 +502,7 @@ describe('ExcalidrawBridge default drop', () => {
 
     await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
-    expect(reports).toEqual([DEFAULT_DROP_STALLED_MESSAGE]);
+    expect(reports).toEqual([t().dropStalled]);
     expect(ea.added).toHaveLength(1);
     expect(ea.calls).toContain('addImage:attachments/Note.svg');
   });

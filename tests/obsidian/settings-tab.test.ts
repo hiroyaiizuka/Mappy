@@ -5,7 +5,7 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../../harness/browser/obsidian';
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
-import { MappySettingTab, THEME_LABELS } from '../../src/obsidian/settings-tab';
+import { MappySettingTab, themeLabel } from '../../src/obsidian/settings-tab';
 
 // The browser-harness stand-in for `obsidian`: Setting, DropdownComponent, TextComponent, ToggleComponent and PluginSettingTab on a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -88,7 +88,7 @@ describe('MappySettingTab', () => {
     expect(Array.from(layout.options, option => option.value)).toEqual(ALL_LAYOUTS);
     expect(Array.from(layout.options, option => option.text)).toEqual(LAYOUT_MODES.map(layoutLabel));
     expect(Array.from(theme.options, option => option.value)).toEqual([...MAP_THEMES]);
-    expect(Array.from(theme.options, option => option.text)).toEqual(MAP_THEMES.map(mode => THEME_LABELS[mode]));
+    expect(Array.from(theme.options, option => option.text)).toEqual(MAP_THEMES.map(themeLabel));
     expect(theme.value).toBe('follow');
     expect(layout.value).toBe('mindmap');
     // The toggles carry the same names, in the same order, each next to its label text.
