@@ -5,5 +5,5 @@
   "minAppVersion": "1.8.7",
   "description": "View and edit Markdown as linked, illustrated mind maps.",
   "author": "Hiroya Iizuka",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }
