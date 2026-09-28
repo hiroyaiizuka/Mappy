@@ -10,6 +10,7 @@ import type { App, MarkdownPostProcessorContext, TFile, WorkspaceLeaf as Obsidia
 import { installObsidianDom } from "./dom";
 import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext, type TFile as HarnessFile } from "./obsidian";
 import { HarnessApp } from "./app";
+import { closeView as closeTab } from "../../tests/mocks/open-views";
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost, type HarnessFixture, type HarnessHost } from "./fixtures";
 import {
   installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit, measureTopicDrag,
@@ -292,9 +293,9 @@ async function closeView(): Promise<void> {
   if (!view) return;
   const closing = view;
   view = null;
-  await closing.onClose();
-  closing.unload();
-  closing.containerEl.remove();
+  // As Obsidian 1.14.2 closes a tab (`View.close`: the container leaves the DOM, the view unloads, then `onClose`), which
+  // also takes the view off the harness's list of open views (tests/mocks/open-views.ts).
+  await closeTab(closing);
 }
 
 /** `mode` opens the fixture in that layout (the performance runner measures every layout); omitted, the note decides. */

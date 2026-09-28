@@ -48,15 +48,15 @@ import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindDocument } from '../../src/core/markdown';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -93,7 +93,6 @@ const storeOf = (mounted: MountedMapView): DocumentStore => (mounted.view as unk
 
 async function mount(app = new HarnessApp(), store?: DocumentStore): Promise<MountedMapView> {
   const mounted = await mountMapView(PATH, SOURCE, 'mindmap', app, store ? { store } : {});
-  opened.push(mounted);
   return mounted;
 }
 
@@ -539,7 +538,6 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     const app = new HarnessApp();
     app.put('Fixtures/map-a.md', MAP_A);
     const mounted = await mountMapView(PATH, host, 'mindmap', app);
-    opened.push(mounted);
     await settled(mounted);
     const view = state(mounted);
     const internals = mounted.view as unknown as Internals;

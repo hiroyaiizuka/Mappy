@@ -22,14 +22,14 @@ import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
 import { type DocumentStore, type LatestWrite } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -51,7 +51,6 @@ const SOURCE = [
 // The layout buttons write through the store (`applyLatest`, LEV-196), so no `processFrontMatter` stand-in is needed here.
 async function mount(): Promise<MountedMapView> {
   const mounted = await mountMapView(PATH, SOURCE, 'mindmap');
-  opened.push(mounted);
   return mounted;
 }
 
@@ -181,7 +180,6 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     const first = await mount();
     const store = (first.view as unknown as { store: DocumentStore }).store;
     const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
-    opened.push(second);
     await rename(first, 'ずっと長い題名に改名');
     await settled(second, source => source.includes('ずっと長い題名に改名'));
     const id = await foldAndSelect(second, EMPTY_LABEL, 1);
@@ -205,7 +203,6 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     const first = await mount();
     const store = (first.view as unknown as { store: DocumentStore }).store;
     const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
-    opened.push(second);
     const id = await foldAndSelect(second, '同名', 1);
     await run(first);
     await settled(second, reached);
@@ -218,7 +215,6 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     const first = await mount();
     const store = (first.view as unknown as { store: DocumentStore }).store;
     const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
-    opened.push(second);
     const id = await foldAndSelect(second, '同名', 1);
     click(nodeNamed(first, '子1'));
     first.key(first.canvas, 'Tab');
@@ -238,7 +234,6 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     const first = await mount();
     const store = (first.view as unknown as { store: DocumentStore }).store;
     const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
-    opened.push(second);
     await rename(first, 'ずっと長い題名に改名');
     await settled(second, source => source.includes('ずっと長い題名に改名'));
     const id = await foldAndSelect(second, EMPTY_LABEL, 1);

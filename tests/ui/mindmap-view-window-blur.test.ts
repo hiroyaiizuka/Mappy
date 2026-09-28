@@ -14,14 +14,14 @@ import { afterEach, beforeAll, describe, expect, it, vi, type MockInstance } fro
 import { installObsidianDom } from '../../harness/browser/dom';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -32,7 +32,6 @@ const RENAMED = SOURCE.replace('- 通常のノード\n', '- 戻って確定\n');
 /** F2 on 「通常のノード」 and a new title typed, then the window loses the OS focus (the draft stays active). */
 async function draftInBackgroundWindow(): Promise<{ mounted: MountedMapView; input: HTMLTextAreaElement; windowFocus: MockInstance<() => boolean> }> {
   const mounted = await mountMapView(PATH, SOURCE);
-  opened.push(mounted);
   mounted.key(mounted.select('通常のノード'), 'F2');
   await mounted.settle();
   const input = mounted.editor();
@@ -45,9 +44,8 @@ async function draftInBackgroundWindow(): Promise<{ mounted: MountedMapView; inp
   return { mounted, input, windowFocus };
 }
 
-/** Close the view the way Obsidian does (its element out of the document first, then `onClose`), once. */
+/** Close the view the way Obsidian 1.14.2 does (`View.close`: its element out of the document, the view unloaded, then `onClose`), once. */
 async function closeView(mounted: MountedMapView): Promise<void> {
-  opened.splice(opened.indexOf(mounted), 1);
   mounted.view.containerEl.remove();
   await mounted.close();
 }
@@ -99,7 +97,6 @@ describe('a draft whose window loses the OS focus (LEV-216)', () => {
   // store keeps for the take-back).
   it('leaves a node just added under its provisional name to Escape: nothing is written on leaving, and Escape takes it back', async () => {
     const mounted = await mountMapView(PATH, SOURCE);
-    opened.push(mounted);
     mounted.key(mounted.select('別のノード'), 'Tab');
     await mounted.settle();
     const added = mounted.source();

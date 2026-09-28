@@ -27,14 +27,14 @@ import { projectMap, type MindDocument } from '../../src/core/markdown';
 import { type DocumentStore } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -57,7 +57,6 @@ const SOURCE = [
 async function mount(source = SOURCE): Promise<MountedMapView> {
   const app = new HarnessApp();
   const mounted = await mountMapView(PATH, source, 'mindmap', app);
-  opened.push(mounted);
   return mounted;
 }
 
@@ -378,7 +377,6 @@ describe('two views on one note share the store (AGENTS.md: 複数ビュー)', (
     const first = await mount();
     const store = (first.view as unknown as { store: DocumentStore }).store;
     const second = await mountMapView(PATH, SOURCE, 'mindmap', first.app, { store });
-    opened.push(second);
     const element = selectNode(second, '同名', 1);
     const id = element.dataset.nodeId ?? '';
     element.querySelector<HTMLElement>('.mappy-node-toggle')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));

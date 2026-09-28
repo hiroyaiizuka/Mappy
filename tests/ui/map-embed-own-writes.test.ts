@@ -24,6 +24,7 @@ import { layoutLabel } from '../../src/core/layout-mode';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { MapEmbeds } from '../../src/ui/map-embed';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -46,11 +47,11 @@ const SOURCE = [
 interface Opened { map: MountedMapView; embeds: MapEmbeds; renderer: Component; section: HTMLElement }
 const opened: Opened[] = [];
 afterEach(async () => {
-  for (const { map, embeds, renderer } of opened.splice(0)) {
+  for (const { embeds, renderer } of opened.splice(0)) {
     embeds.dispose();
     renderer.unload();
-    await map.close();
   }
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 

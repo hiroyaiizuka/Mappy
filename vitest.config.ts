@@ -8,7 +8,7 @@ export default defineConfig({
     environment: "node",
     include: ["tests/**/*.test.{ts,mjs}"],
     // Japanese, as the plugin owner runs Obsidian: the tests' expected text is the Japanese table.
-    setupFiles: ["tests/setup-language.ts"],
+    setupFiles: ["tests/setup-language.ts", "tests/setup-view-teardown.ts"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts", "scripts/validate-release.mjs", "scripts/version-bump.mjs"],

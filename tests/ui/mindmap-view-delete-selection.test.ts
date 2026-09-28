@@ -5,14 +5,14 @@ import { Notice } from '../../harness/browser/obsidian';
 import { LAYOUT_MODES } from '../../src/core/layout-mode';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and store run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -42,7 +42,6 @@ describe('selection after Delete／Backspace in the view (LEV-204)', () => {
   describe.each(LAYOUT_MODES)('%s', (layout) => {
     it.each(['Delete', 'Backspace'] as const)('%s selects the sibling above, else below, else the parent; Undo brings the node back', async (key) => {
       const mounted = await mountMapView(PATH, SOURCE, layout);
-      opened.push(mounted);
 
       await remove(mounted, 'aaaa', key);
       expect(mounted.source()).not.toContain('- aaaa\n');
@@ -69,7 +68,6 @@ describe('selection after Delete／Backspace in the view (LEV-204)', () => {
   // selected and the focus left the map with the deleted element, so the next key did not reach it.
   it('keeps a node selected and focused when the last topic of a body without an H2 goes', async () => {
     const mounted = await mountMapView(PATH, '---\nmappy: true\n---\n- a\n\n## T\n- t\n', 'mindmap');
-    opened.push(mounted);
     await remove(mounted, 'T', 'Delete');
     expect(selectedTitles(mounted)).toEqual(['a']);
     expect(mounted.canvas.contains(document.activeElement)).toBe(true);
