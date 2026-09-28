@@ -790,8 +790,8 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
     recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
     refresh(): Promise<void>;
   }
-  // Run on the code before LEV-247 (artifacts/lev-247-view-write-record/tests-before.log), this read the view's own
-  // `ownWrites` instead.
+  // Run on the code before LEV-247 (its output is in the PR of LEV-247: the first row failed, the second passed), this
+  // read the view's own `ownWrites` instead.
   const recorded = (mounted: MountedMapView): readonly unknown[] => state(mounted).writes.recorded;
 
   it('the store telling again a write the record holds, on the text on screen, starts the record again', async () => {

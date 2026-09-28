@@ -1073,15 +1073,12 @@ export class MindmapView extends FileView {
   }
 
   /**
-   * The parse an edit planned on `planned` (from `source`) stands on in the text the store found (`write.before`):
-   * `planned` carried over the writes the store carried it over (recorded where the view's record leads to their
-   * start: another view's button, or this view's own write that a re-read has spent — `WriteRecord.carry`), or the
-   * view's own parse when a re-read got there first. Undefined when neither is that text; the drafts are then left for
-   * the re-read to measure.
+   * The parse an edit stands on in the text the store found (`write.before`): `carried`, the parse it was planned on
+   * carried over the writes the store carried it over (`WriteRecord.carry`), or the view's own parse when a re-read got
+   * there first. Undefined when neither is that text; the drafts are then left for the re-read to measure.
    */
-  private writeBase(planned: MindDocument | undefined, source: string, write: CarriedWrite, basename: string): MindDocument | undefined {
-    const base = this.writes.carry(write.carried, this.document?.source, planned?.source === source ? planned : undefined, basename);
-    if (base?.source === write.before) return base;
+  private writeBase(carried: MindDocument | undefined, write: CarriedWrite): MindDocument | undefined {
+    if (carried?.source === write.before) return carried;
     return this.document?.source === write.before ? this.document : undefined;
   }
 
@@ -2073,9 +2070,12 @@ export class MindmapView extends FileView {
       const written = write.after;
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146). The
-      // writes the edit was carried over are recorded first (`writeBase`), then the edit.
-      const base = this.writeBase(planned, source, write, file.basename);
+      // writes the edit was carried over are recorded first, where the record leads to their start (another view's
+      // button, or this view's own write a re-read has spent), and the plan parsed through them; then the edit, which
+      // starts where they end.
+      const carried = this.writes.carry(write.carried, this.document?.source, planned?.source === source ? planned : undefined, file.basename);
       this.writes.confirm(write, this.document?.source);
+      const base = this.writeBase(carried, write);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external

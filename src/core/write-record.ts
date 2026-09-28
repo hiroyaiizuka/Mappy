@@ -153,16 +153,16 @@ export class WriteRecord {
    */
   take(text: string, from: MindDocument | undefined, basename: string, mark: number): MindDocument {
     const { reaches, led } = this.follow(from?.source, text);
-    if (from && reaches > 0) {
-      const document = this.parse(from, reaches, basename);
-      this.keep(text, mark, reaches);
-      return document;
+    const replayed = this.replayed(from, reaches, basename, false);
+    if (replayed) {
+      this.keep(text, mark, replayed.used);
+      return replayed.document;
     }
     if (from && text === from.source) {
       this.keep(text, mark, 0);
       return parseMarkdown(text, basename, from);
     }
-    const reached = from ? this.parse(from, led, basename) : undefined;
+    const reached = from ? this.parse(from, led, basename, false) : undefined;
     this.clear();
     return parseMarkdown(text, basename, reached);
   }
@@ -179,13 +179,11 @@ export class WriteRecord {
   /**
    * `text` parsed from `from` through the writes that lead there, up to the last one that wrote exactly `text`: a record
    * that comes back to that text (the second twin deleted, put back with ⌘Z, the first deleted) holds it twice, and only
-   * the last write carries the ids to the note as it is (LEV-237). Nothing is spent. Undefined when they do not lead
-   * there.
+   * the last write carries the ids to the note as it is (LEV-237). Nothing is spent, and each write's parse is kept for
+   * the next replay from the same document (`parseWrite`). Undefined when they do not lead there.
    */
   replay(text: string, from: MindDocument | undefined, basename: string): Replayed | undefined {
-    const { reaches } = this.follow(from?.source, text);
-    if (!from || reaches === 0) return undefined;
-    return { document: this.parse(from, reaches, basename), used: reaches };
+    return this.replayed(from, this.follow(from?.source, text).reaches, basename, true);
   }
 
   /**
@@ -243,10 +241,21 @@ export class WriteRecord {
     return { reaches, led };
   }
 
-  /** `from` carried through the first `count` writes, each parsed with its edits. */
-  private parse(from: MindDocument, count: number, basename: string): MindDocument {
+  /** `from` parsed through the `reaches` first writes (`follow`), when they lead anywhere. */
+  private replayed(from: MindDocument | undefined, reaches: number, basename: string, cached: boolean): Replayed | undefined {
+    return from && reaches > 0 ? { document: this.parse(from, reaches, basename, cached), used: reaches } : undefined;
+  }
+
+  /**
+   * `from` carried through the first `count` writes, each parsed with its edits. `cached` for a reader that parses the
+   * same write from the same document again before it spends it (the view); `take` spends what it parses at once.
+   */
+  private parse(from: MindDocument, count: number, basename: string, cached: boolean): MindDocument {
     let document = from;
-    for (const recorded of this.writes.slice(0, count)) document = this.parseWrite(recorded, document, basename);
+    for (const recorded of this.writes.slice(0, count)) {
+      document = cached ? this.parseWrite(recorded, document, basename)
+        : parseMarkdown(recorded.write.after, basename, document, undefined, recorded.write.edits);
+    }
     return document;
   }
 
