@@ -10,7 +10,7 @@ import type { App, MarkdownPostProcessorContext, TFile, WorkspaceLeaf as Obsidia
 import { installObsidianDom } from "./dom";
 import { Component, MarkdownRenderer, Notice, WorkspaceLeaf, parseLinktext, type TFile as HarnessFile } from "./obsidian";
 import { HarnessApp } from "./app";
-import { closeView as closeTab } from "../../tests/mocks/open-views";
+import { closeView as closeTab } from "../mocks/open-views";
 import { EMBED_HOSTS, EMBED_TARGETS, FIXTURES, SAMPLE_IMAGE, findFixture, findHost, type HarnessFixture, type HarnessHost } from "./fixtures";
 import {
   installProbes, measureFrames, measureInlineEdit, measureLoad, measureMarkdownEdit, measureTopicDrag,

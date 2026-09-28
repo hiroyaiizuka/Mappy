@@ -2,18 +2,18 @@
  * The same documents `harness:prepare` places in test-vault/Fixtures: the static
  * Markdown from tests/fixtures and the generated 10/100/500/2,000 node files.
  */
-import headingDocument from "../../tests/fixtures/heading-document.md?raw";
-import roundtripEdgeCases from "../../tests/fixtures/roundtrip-edge-cases.md?raw";
-import unevenBranches from "../../tests/fixtures/uneven-branches.md?raw";
-import freeTopics from "../../tests/fixtures/free-topics.md?raw";
-import embedHost from "../../tests/fixtures/embed-host.md?raw";
-import embedTimeline from "../../tests/fixtures/embed-timeline.md?raw";
-import embedHierarchy from "../../tests/fixtures/embed-hierarchy.md?raw";
-import embedNodes from "../../tests/fixtures/embed-nodes.md?raw";
-import embedCycle from "../../tests/fixtures/embed-cycle.md?raw";
-import timelineStages from "../../tests/fixtures/timeline-stages.md?raw";
-import timelineGapRange from "../../tests/fixtures/timeline-gap-range.md?raw";
-import sampleImage from "../../tests/fixtures/sample-image.svg?raw";
+import headingDocument from "../fixtures/heading-document.md?raw";
+import roundtripEdgeCases from "../fixtures/roundtrip-edge-cases.md?raw";
+import unevenBranches from "../fixtures/uneven-branches.md?raw";
+import freeTopics from "../fixtures/free-topics.md?raw";
+import embedHost from "../fixtures/embed-host.md?raw";
+import embedTimeline from "../fixtures/embed-timeline.md?raw";
+import embedHierarchy from "../fixtures/embed-hierarchy.md?raw";
+import embedNodes from "../fixtures/embed-nodes.md?raw";
+import embedCycle from "../fixtures/embed-cycle.md?raw";
+import timelineStages from "../fixtures/timeline-stages.md?raw";
+import timelineGapRange from "../fixtures/timeline-gap-range.md?raw";
+import sampleImage from "../fixtures/sample-image.svg?raw";
 import { makeEmbedFixture, makePerformanceFixture, performanceFixtureMatrix } from "../../scripts/performance-fixtures.mjs";
 
 export interface HarnessFixture {

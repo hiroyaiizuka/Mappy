@@ -6,10 +6,10 @@
  * resolution, notices and menus approximate Obsidian's DOM, they do not prove it.
  */
 import type { App, EventRef, KeymapContext, KeymapEventHandler, KeymapEventListener, Modifier, TFile as ObsidianFile, ViewState, ViewStateResult } from "obsidian";
-import { TFile } from "../../tests/mocks/obsidian-file";
-import { enterView, leaveView } from "../../tests/mocks/open-views";
+import { TFile } from "../mocks/obsidian-file";
+import { enterView, leaveView } from "../mocks/open-views";
 
-export { TFile, TFolder, normalizePath } from "../../tests/mocks/obsidian-file";
+export { TFile, TFolder, normalizePath } from "../mocks/obsidian-file";
 
 interface HarnessEventRef extends EventRef {
   events: Events;

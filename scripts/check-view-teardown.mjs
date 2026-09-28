@@ -20,7 +20,7 @@ const SKIP_CLOSE_ENV = 'MAPPY_SKIP_VIEW_CLOSE';
  * A file this misses is still caught when it runs: the setup file fails a test that leaves a view open.
  */
 const BUILDS = /new MindmapView\(|mountMapView\(|new MarkdownView\(/;
-const LOADS = /harness\/browser\/obsidian|src\/ui\/mindmap-view|\.\/map-view-mount/;
+const LOADS = /browser-harness\/obsidian|src\/ui\/mindmap-view|\.\/map-view-mount/;
 const LEFT_OPEN = /view\(s\) left open/;
 
 function testFiles(dir) {
