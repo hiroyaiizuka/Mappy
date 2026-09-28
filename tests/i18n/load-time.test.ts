@@ -59,11 +59,16 @@ function readsText(module: Module, name: string | null, readers: Set<string>): b
   return member === 't' && namespace !== undefined && module.namespaces.has(namespace);
 }
 
-/** The named functions of a module: declarations, and `const f = () => …` / `const f = function …`. */
+/**
+ * The named functions of a module: declarations, `const f = () => …` / `const f = function …`, and a class's static
+ * methods as `C.m` (what `callee` names a call to one). Instance methods are left out: no instance exists at load time.
+ */
 function functions(module: Module): { name: string; body: ts.Node }[] {
   const found: { name: string; body: ts.Node }[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name && node.body) found.push({ name: node.name.text, body: node.body });
+    if (ts.isMethodDeclaration(node) && node.body && ts.isIdentifier(node.name) && ts.isClassDeclaration(node.parent) && node.parent.name
+      && node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.StaticKeyword)) found.push({ name: `${node.parent.name.text}.${node.name.text}`, body: node.body });
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
       && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) found.push({ name: node.name.text, body: node.initializer.body });
     ts.forEachChild(node, visit);
@@ -166,6 +171,8 @@ describe('text is read where it is used (architecture.md §9e)', () => {
       .toEqual(['label()']);
     expect(probe('import { en } from "../i18n/en";\nconst A = en.x;')).toEqual(['ui/probe.ts: ../i18n/en']);
     expect(probe(`${imports}const A = ["x"].map(key => t()[key]);`)).toEqual(['t()']);
+    expect(probe('import { Labels } from "../core/other";\nconst A = Labels.of("mindmap");', `${imports}export class Labels { static of(mode: string) { return t()[mode]; } }`))
+      .toEqual(['Labels.of()']);
     expect(probe('import { label } from "../core/other";\nconst A = ["mindmap"].map(label);', `${imports}export function label(mode: string) { return t()[mode]; }`))
       .toEqual(['label()']);
     expect(probe(`${imports}export function f() { return t().x; }\nconst g = () => t().y;\nclass C { m() { return ["x"].map(key => t()[key]); } }`)).toEqual([]);
