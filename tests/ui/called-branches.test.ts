@@ -11,7 +11,8 @@ import { sceneContents } from '../../src/export/excalidraw-scene';
 import { PLACEHOLDER_ID } from '../../src/layout/drop-preview';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
-import { CALLED_READ_ONLY_MESSAGE, MindmapView } from '../../src/ui/mindmap-view';
+import { t } from '../../src/i18n';
+import { MindmapView } from '../../src/ui/mindmap-view';
 import { accessibleDescription, accessibleName } from './accessible-name';
 
 /**
@@ -332,17 +333,17 @@ describe('the called branches are read-only', () => {
       expect(event.defaultPrevented).toBe(true);
       expect(source()).toBe(HOST);
       expect(editor()).toBeNull();
-      expect(Notice.log).toEqual([CALLED_READ_ONLY_MESSAGE]);
+      expect(Notice.log).toEqual([t().calledReadOnly]);
     }
     Notice.log.length = 0;
     key(leaf, 'ArrowUp', { altKey: true });
     await settle();
     expect(source()).toBe(HOST);
-    expect(Notice.log).toEqual([CALLED_READ_ONLY_MESSAGE]);
+    expect(Notice.log).toEqual([t().calledReadOnly]);
     Notice.log.length = 0;
     key(leaf, 'F2');
     expect(editor()).toBeNull();
-    expect(Notice.log).toEqual([CALLED_READ_ONLY_MESSAGE]);
+    expect(Notice.log).toEqual([t().calledReadOnly]);
     // A file dropped on it is refused before anything is created.
     Notice.log.length = 0;
     const image = new File(['png'], 'figure.png', { type: 'image/png' });
@@ -351,7 +352,7 @@ describe('the called branches are read-only', () => {
     Object.defineProperty(drop, 'dataTransfer', { value: transfer });
     leaf.dispatchEvent(drop);
     await settle();
-    expect(Notice.log).toEqual([CALLED_READ_ONLY_MESSAGE]);
+    expect(Notice.log).toEqual([t().calledReadOnly]);
     expect(source()).toBe(HOST);
     expect(document.querySelector('.modal')).toBeNull();
   });
@@ -480,7 +481,7 @@ describe('editing the calling item', () => {
     click(node('葉'));
     const timeline = app.vault.getAbstractFileByPath('Timeline.md');
     if (!timeline) throw new Error('no Timeline');
-    await expect(view.callMap(timeline as never)).rejects.toThrow(CALLED_READ_ONLY_MESSAGE);
+    await expect(view.callMap(timeline as never)).rejects.toThrow(t().calledReadOnly);
     expect(source()).toBe(HOST);
     click(node('講座'));
     await view.callMap(timeline as never);

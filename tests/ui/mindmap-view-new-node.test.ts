@@ -18,7 +18,7 @@ import type { MindDocument } from '../../src/core/markdown';
 import type { LayoutMode } from '../../src/layout/layout';
 import { ConflictError } from '../../src/obsidian/conflict-error';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { NEW_NODE_TITLE, NEW_TOPIC_TITLE } from '../../src/ui/mindmap-view';
+import { setLanguage, t } from '../../src/i18n';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
@@ -73,29 +73,48 @@ function provisionalDraft(mounted: MountedMapView, name: string): HTMLTextAreaEl
 
 /** How each shape adds a node, and where the provisional name lands in the note. */
 const SHAPES = [
-  { id: 'リストの子（Tab）', source: LIST, target: '持ち物', key: 'Tab', written: LIST.replace('- 持ち物\n', `- 持ち物\n  - ${NEW_NODE_TITLE}\n`) },
-  { id: 'リストの兄弟（Enter）', source: LIST, target: '温泉旅行', key: 'Enter', written: LIST.replace('  - 予約\n', `  - 予約\n- ${NEW_NODE_TITLE}\n`) },
-  { id: '本文のルートの子（Tab）', source: LIST, target: '旅の計画', key: 'Tab', written: LIST.replace('- 持ち物\n', `- 持ち物\n- ${NEW_NODE_TITLE}\n`) },
-  { id: '見出しの子（Tab）', source: HEADINGS, target: '温泉旅行', key: 'Tab', written: HEADINGS.replace('本文\n', `本文\n\n### ${NEW_NODE_TITLE}\n`) },
-  { id: '見出しの兄弟（Enter）', source: HEADINGS, target: '温泉旅行', key: 'Enter', written: HEADINGS.replace('本文\n', `本文\n\n## ${NEW_NODE_TITLE}\n`) },
+  { id: 'リストの子（Tab）', source: LIST, target: '持ち物', key: 'Tab', written: LIST.replace('- 持ち物\n', `- 持ち物\n  - ${t().newNodeTitle}\n`) },
+  { id: 'リストの兄弟（Enter）', source: LIST, target: '温泉旅行', key: 'Enter', written: LIST.replace('  - 予約\n', `  - 予約\n- ${t().newNodeTitle}\n`) },
+  { id: '本文のルートの子（Tab）', source: LIST, target: '旅の計画', key: 'Tab', written: LIST.replace('- 持ち物\n', `- 持ち物\n- ${t().newNodeTitle}\n`) },
+  { id: '見出しの子（Tab）', source: HEADINGS, target: '温泉旅行', key: 'Tab', written: HEADINGS.replace('本文\n', `本文\n\n### ${t().newNodeTitle}\n`) },
+  { id: '見出しの兄弟（Enter）', source: HEADINGS, target: '温泉旅行', key: 'Enter', written: HEADINGS.replace('本文\n', `本文\n\n## ${t().newNodeTitle}\n`) },
 ] as const;
+
+// The provisional names are Markdown: in an English app they are written in English (LEV-226). Every other row here
+// reads the expected name from the table, so a mix-up of the two keys would pass there; this row spells them out.
+describe('the provisional names in an English app', () => {
+  afterEach(() => { setLanguage('ja'); });
+
+  it('writes a child as Subtopic and a free topic as Topic', async () => {
+    setLanguage('en');
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    mounted.key(provisionalDraft(mounted, 'Subtopic'), 'Enter');
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'));
+    mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n')}\n## Topic\n`);
+  });
+});
 
 describe('a node added on the map opens under its provisional name, selected (LEV-203)', () => {
   for (const layout of LAYOUTS) {
     for (const shape of SHAPES) {
-      it(`${layout}: ${shape.id} — written as 「${NEW_NODE_TITLE}」, typed over, Enter`, async () => {
+      it(`${layout}: ${shape.id} — written as 「${t().newNodeTitle}」, typed over, Enter`, async () => {
         const mounted = await mount(shape.source, layout);
         mounted.key(mounted.select(shape.target), shape.key);
         await mounted.settle();
         expect(mounted.source()).toBe(shape.written);
-        const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+        const input = provisionalDraft(mounted, t().newNodeTitle);
         // What typing over the selection leaves (jsdom does not replace a selection on its own).
         input.value = '新しい項目';
         input.dispatchEvent(new Event('input', { bubbles: true }));
         mounted.key(input, 'Enter');
         await mounted.settle();
         expect(mounted.editor()).toBeNull();
-        expect(mounted.source()).toBe(shape.written.replace(NEW_NODE_TITLE, '新しい項目'));
+        expect(mounted.source()).toBe(shape.written.replace(t().newNodeTitle, '新しい項目'));
         expect(selectedNames(mounted)).toEqual(['新しい項目']);
       });
 
@@ -103,12 +122,12 @@ describe('a node added on the map opens under its provisional name, selected (LE
         const mounted = await mount(shape.source, layout);
         mounted.key(mounted.select(shape.target), shape.key);
         await mounted.settle();
-        const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+        const input = provisionalDraft(mounted, t().newNodeTitle);
         mounted.key(input, 'Escape');
         await mounted.settle();
         expect(mounted.editor()).toBeNull();
         expect(mounted.source()).toBe(shape.source);
-        expect(nodeElements(mounted, NEW_NODE_TITLE)).toHaveLength(0);
+        expect(nodeElements(mounted, t().newNodeTitle)).toHaveLength(0);
         expect(mounted.store.canUndo(mounted.file)).toBe(false);
         expect(mounted.store.canRedo(mounted.file)).toBe(false);
         // ⌘⇧Z brings nothing back either: the addition was taken back, not undone.
@@ -120,22 +139,22 @@ describe('a node added on the map opens under its provisional name, selected (LE
       });
     }
 
-    it(`${layout}: Enter on the untouched draft, or leaving it, keeps 「${NEW_NODE_TITLE}」 as written, one step for Undo`, async () => {
+    it(`${layout}: Enter on the untouched draft, or leaving it, keeps 「${t().newNodeTitle}」 as written, one step for Undo`, async () => {
       const mounted = await mount(LIST, layout);
       mounted.key(mounted.select('持ち物'), 'Tab');
       await mounted.settle();
-      mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Enter');
+      mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Enter');
       await mounted.settle();
-      const once = LIST.replace('- 持ち物\n', `- 持ち物\n  - ${NEW_NODE_TITLE}\n`);
+      const once = LIST.replace('- 持ち物\n', `- 持ち物\n  - ${t().newNodeTitle}\n`);
       expect(mounted.editor()).toBeNull();
       expect(mounted.source()).toBe(once);
       // Left by blur (a click elsewhere): the same.
       mounted.key(mounted.select('温泉旅行'), 'Tab');
       await mounted.settle();
-      provisionalDraft(mounted, NEW_NODE_TITLE).blur();
+      provisionalDraft(mounted, t().newNodeTitle).blur();
       await mounted.settle();
       expect(mounted.editor()).toBeNull();
-      expect(mounted.source()).toBe(once.replace('  - 予約\n', `  - 予約\n  - ${NEW_NODE_TITLE}\n`));
+      expect(mounted.source()).toBe(once.replace('  - 予約\n', `  - 予約\n  - ${t().newNodeTitle}\n`));
       mounted.key(mounted.canvas, 'z', { metaKey: true });
       await mounted.settle();
       expect(mounted.source()).toBe(once);
@@ -144,12 +163,12 @@ describe('a node added on the map opens under its provisional name, selected (LE
       expect(mounted.source()).toBe(LIST);
     });
 
-    it(`${layout}: a free topic is written as 「${NEW_TOPIC_TITLE}」 and Escape takes it back`, async () => {
+    it(`${layout}: a free topic is written as 「${t().newTopicTitle}」 and Escape takes it back`, async () => {
       const mounted = await mount(LIST, layout);
       mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
       await mounted.settle();
-      expect(mounted.source()).toBe(`${LIST}\n## ${NEW_TOPIC_TITLE}\n`);
-      mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+      expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
+      mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
       await mounted.settle();
       expect(mounted.source()).toBe(LIST);
       expect(mounted.store.canUndo(mounted.file)).toBe(false);
@@ -173,28 +192,28 @@ describe('a node added on the map opens under its provisional name, selected (LE
     // A node confirmed under its provisional name is an existing node from then on.
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Enter');
+    mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Enter');
     await mounted.settle();
-    mounted.key(mounted.select(NEW_NODE_TITLE), 'F2');
+    mounted.key(mounted.select(t().newNodeTitle), 'F2');
     const again = mounted.editor();
     if (!again) throw new Error('F2 did not open the editor');
     mounted.key(again, 'Escape');
     await mounted.settle();
-    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - ${NEW_NODE_TITLE}\n`));
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - ${t().newNodeTitle}\n`));
   });
 
   it('Tab in the draft confirms the new node and adds its own child, which Escape alone takes back', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    const first = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const first = provisionalDraft(mounted, t().newNodeTitle);
     first.value = '着替え';
     first.dispatchEvent(new Event('input', { bubbles: true }));
     mounted.key(first, 'Tab');
     await mounted.settle();
     await mounted.settle();
-    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - 着替え\n    - ${NEW_NODE_TITLE}\n`));
-    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Escape');
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - 着替え\n    - ${t().newNodeTitle}\n`));
+    mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - 着替え\n'));
     expect(selectedNames(mounted)).toEqual(['着替え']);
@@ -207,25 +226,25 @@ describe('a node added on the map opens under its provisional name, selected (LE
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const input = provisionalDraft(mounted, t().newNodeTitle);
     // An image pasted onto the node being edited is written under it at once (報告: 2026-09-22).
     const attach = (mounted.view as unknown as { attachImage(image: File): Promise<void> }).attachImage.bind(mounted.view);
     await attach(new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' }));
     await mounted.settle();
     const pasted = mounted.source();
-    expect(pasted).toMatch(new RegExp(`  - ${NEW_NODE_TITLE}\\n\\n    !\\[\\[\\d*-?shot\\.png\\]\\]`, "u"));
+    expect(pasted).toMatch(new RegExp(`  - ${t().newNodeTitle}\\n\\n    !\\[\\[\\d*-?shot\\.png\\]\\]`, "u"));
     expect(mounted.editor()).toBe(input);
     mounted.key(input, 'Escape');
     await mounted.settle();
     expect(mounted.editor()).toBeNull();
     expect(mounted.source()).toBe(pasted);
     expect(document.querySelector('.notice')).toBeNull();
-    expect(selectedNames(mounted)).toEqual([NEW_NODE_TITLE]);
+    expect(selectedNames(mounted)).toEqual([t().newNodeTitle]);
 
     // Someone else's change lands while a new node's draft is open (E05): taking the node back would take theirs too.
     mounted.key(mounted.select('温泉旅行'), 'Tab');
     await mounted.settle();
-    const second = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const second = provisionalDraft(mounted, t().newNodeTitle);
     const written = mounted.source();
     mounted.app.put(PATH, `${written}- 外から\n`);
     await mounted.settle();
@@ -240,15 +259,15 @@ describe('a node added on the map opens under its provisional name, selected (LE
     // Escape: the addition never happened, so the selection is the one before it (not LEV-204's sibling or parent).
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Escape');
+    mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Escape');
     await mounted.settle();
     expect(selectedNames(mounted)).toEqual(['持ち物']);
     // A confirmed new node deleted afterwards is a delete: its only parent's child gone, the parent is selected.
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Enter');
+    mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Enter');
     await mounted.settle();
-    mounted.key(mounted.select(NEW_NODE_TITLE), 'Delete');
+    mounted.key(mounted.select(t().newNodeTitle), 'Delete');
     await mounted.settle();
     expect(mounted.source()).toBe(LIST);
     expect(selectedNames(mounted)).toEqual(['持ち物']);
@@ -272,7 +291,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
     expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(false);
     // A pan by the reveal, or by the user while the draft is open: the viewport before the addition comes back.
     (mounted.view as unknown as { viewport: { set(value: object): void } }).viewport.set({ x: 11, y: 22, scale: 1 });
-    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Escape');
+    mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(LIST);
     expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(true);
@@ -285,35 +304,35 @@ describe('a node added on the map opens under its provisional name, selected (LE
     const mounted = await mount(source);
     mounted.key(mounted.select('買うもの'), 'Enter');
     await mounted.settle();
-    expect(mounted.source()).toBe(`${source}\n## ${NEW_TOPIC_TITLE}\n`);
-    mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+    expect(mounted.source()).toBe(`${source}\n## ${t().newTopicTitle}\n`);
+    mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(source);
     // A child of that topic's root is not a topic: 「サブトピック」.
     mounted.key(mounted.select('買うもの'), 'Tab');
     await mounted.settle();
-    provisionalDraft(mounted, NEW_NODE_TITLE);
+    provisionalDraft(mounted, t().newNodeTitle);
   });
 
   it('Escape after typing over the provisional name gives up the typing only: the node stays as 「サブトピック」 (review 2)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const input = provisionalDraft(mounted, t().newNodeTitle);
     input.value = '打ちかけ';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     mounted.key(input, 'Escape');
     await mounted.settle();
     expect(mounted.editor()).toBeNull();
-    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - ${NEW_NODE_TITLE}\n`));
-    expect(selectedNames(mounted)).toEqual([NEW_NODE_TITLE]);
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', `- 持ち物\n  - ${t().newNodeTitle}\n`));
+    expect(selectedNames(mounted)).toEqual([t().newNodeTitle]);
   });
 
   it('Escape pressed while the draft\'s own Enter is saving keeps what Enter saves, with no Notice (review 1)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const input = provisionalDraft(mounted, t().newNodeTitle);
     input.value = '着替え';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     mounted.key(input, 'Enter');
@@ -328,14 +347,14 @@ describe('a node added on the map opens under its provisional name, selected (LE
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    const input = provisionalDraft(mounted, NEW_NODE_TITLE);
+    const input = provisionalDraft(mounted, t().newNodeTitle);
     const attach = (mounted.view as unknown as { attachImage(image: File): Promise<void> }).attachImage.bind(mounted.view);
     // Not awaited: the file is read and stored before anything is written to the note.
     const pasting = attach(new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' }));
     mounted.key(input, 'Escape');
     await pasting;
     await mounted.settle();
-    expect(mounted.source()).toMatch(new RegExp(`- 持ち物\\n  - ${NEW_NODE_TITLE}\\n\\n    !\\[\\[\\d*-?shot\\.png\\]\\]`, 'u'));
+    expect(mounted.source()).toMatch(new RegExp(`- 持ち物\\n  - ${t().newNodeTitle}\\n\\n    !\\[\\[\\d*-?shot\\.png\\]\\]`, 'u'));
     expect(document.querySelector('.notice')).toBeNull();
   });
 
@@ -344,7 +363,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
     (mounted.view as unknown as { deselect(): void }).deselect();
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
-    mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+    mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(LIST);
     expect(selectedNames(mounted)).toEqual([]);
@@ -356,14 +375,14 @@ describe('a node added on the map opens under its provisional name, selected (LE
     await mounted.settle();
     // A change the view could not see before the store's turn (a race): the store refuses, the section stays.
     mounted.store.retract = () => Promise.reject(new ConflictError());
-    mounted.key(provisionalDraft(mounted, NEW_TOPIC_TITLE), 'Escape');
+    mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
     await mounted.settle();
-    expect(mounted.source()).toBe(`${LIST}\n## ${NEW_TOPIC_TITLE}\n`);
+    expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
     // A change from outside inside the refresh's debounce is not the user's error to be told about on Escape.
     expect(document.querySelector('.notice')).toBeNull();
     expect(mounted.editor()).toBeNull();
     // Named later, the topic is stored where it was pressed.
-    mounted.key(mounted.select(NEW_TOPIC_TITLE), 'F2');
+    mounted.key(mounted.select(t().newTopicTitle), 'F2');
     const input = mounted.editor();
     if (!input) throw new Error('F2 did not open the editor');
     input.value = '後で付けた名前';
@@ -381,36 +400,36 @@ describe('same-titled 「サブトピック」 nodes stay apart (LEV-203)', () =
     for (const parent of ['A', 'B']) {
       mounted.key(mounted.select(parent), 'Tab');
       await mounted.settle();
-      mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Enter');
+      mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Enter');
       await mounted.settle();
     }
-    const two = ['## 本体', '', '- A', `  - ${NEW_NODE_TITLE}`, '- B', `  - ${NEW_NODE_TITLE}`, ''].join('\n');
+    const two = ['## 本体', '', '- A', `  - ${t().newNodeTitle}`, '- B', `  - ${t().newNodeTitle}`, ''].join('\n');
     expect(mounted.source()).toBe(two);
-    const ids = (): string[] => documentOf(mounted).nodes.filter(node => node.title === NEW_NODE_TITLE).map(node => node.id);
+    const ids = (): string[] => documentOf(mounted).nodes.filter(node => node.title === t().newNodeTitle).map(node => node.id);
     const [underA, underB] = ids();
     // B folded: its 「サブトピック」 goes out of sight.
     mounted.key(mounted.select('B'), ' ');
     await mounted.settle();
-    expect(nodeElements(mounted, NEW_NODE_TITLE)).toHaveLength(1);
+    expect(nodeElements(mounted, t().newNodeTitle)).toHaveLength(1);
     // A sibling of A's 「サブトピック」, dismissed at once.
-    const [aChild] = nodeElements(mounted, NEW_NODE_TITLE);
+    const [aChild] = nodeElements(mounted, t().newNodeTitle);
     if (!aChild) throw new Error('A\'s 「サブトピック」 is not on the map');
     aChild.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     mounted.key(aChild, 'Enter');
     await mounted.settle();
-    expect(mounted.source()).toBe(two.replace(`  - ${NEW_NODE_TITLE}\n- B`, `  - ${NEW_NODE_TITLE}\n  - ${NEW_NODE_TITLE}\n- B`));
-    mounted.key(provisionalDraft(mounted, NEW_NODE_TITLE), 'Escape');
+    expect(mounted.source()).toBe(two.replace(`  - ${t().newNodeTitle}\n- B`, `  - ${t().newNodeTitle}\n  - ${t().newNodeTitle}\n- B`));
+    mounted.key(provisionalDraft(mounted, t().newNodeTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(two);
     expect(ids()).toEqual([underA, underB]);
     // The selection is A's, and B is still folded.
     const selected = mounted.view.containerEl.querySelector<HTMLElement>('.mappy-node.is-selected');
-    expect(selected && accessibleName(selected)).toBe(NEW_NODE_TITLE);
+    expect(selected && accessibleName(selected)).toBe(t().newNodeTitle);
     expect(mounted.node('B').classList.contains('is-collapsed')).toBe(true);
     // An edit goes to the node selected: Delete removes A's 「サブトピック」, B's stays.
     if (!selected) throw new Error('Nothing selected');
     mounted.key(selected, 'Delete');
     await mounted.settle();
-    expect(mounted.source()).toBe(['## 本体', '', '- A', '- B', `  - ${NEW_NODE_TITLE}`, ''].join('\n'));
+    expect(mounted.source()).toBe(['## 本体', '', '- A', '- B', `  - ${t().newNodeTitle}`, ''].join('\n'));
   });
 });

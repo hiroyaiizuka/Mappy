@@ -15,7 +15,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 担当 |
 | --- | --- | --- | --- | --- |
 | 1 | リポジトリのルートに `README.md`・`LICENSE`・`manifest.json`（Submit） | 3 つとも在る。LICENSE は MIT | PASS | — |
-| 2 | README は目的と使い方を説明する（Submit） | 日本語で、目的・保存形式・導入・操作・対応環境・制限・復旧・ネットワーク・ライセンスを持つ（218 行）。LEV-227 で `README.md` を英語にし、日本語を `README.ja.md` に移した（同じ節、先頭で互いにリンク） | PASS（要件は言語を問わない） | LEV-227 |
+| 2 | README は目的と使い方を説明する（Submit） | `README.md` は英語で、目的・保存形式・導入・操作・対応環境・制限・復旧・ネットワーク・ライセンスを持つ。日本語版は同じ節で `README.ja.md`（先頭で互いにリンク。LEV-227。それまでは日本語の `README.md` だけだった） | PASS（要件は言語を問わない） | LEV-227 |
 | 3 | `manifest.version` と同じ `x.y.z` タグの GitHub Release に `main.js`・`manifest.json`・`styles.css` を添付（Submit） | `release.yml` が検査して添付（LEV-68）。ただし **0.x のタグは必ず pre-release になる**（`release.yml` の `0.*) prerelease="--prerelease"`） | PASS（Submit の文面は満たす）／未確認: 公式文書は pre-release の可否に触れていない。pre-release のままで一覧が版を拾えるかを提出準備で確かめ、拾えないときだけ `release.yml` か 1.0.0 を本人が決める | LEV-228 |
 | 4 | 提出は community.obsidian.md で Obsidian アカウントに GitHub を連携して行い、自動レビューの指摘には版を上げた Release で応える（Submit） | 未提出。LEV-24 の時点の記録には無かった手順 | 未実施 | LEV-228 |
 | 5 | `id` は公開済みの全プラグインで一意、`obsidian` を含まない（Submit・Requirements） | `mappy`。`scripts/validate-release.mjs` が形を検査。一覧との衝突は本人が 2026-09-19 に確認 | PASS（提出の直前にもう一度確かめる） | LEV-228 |

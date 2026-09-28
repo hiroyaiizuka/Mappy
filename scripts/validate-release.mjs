@@ -12,6 +12,8 @@ const fenceOpen = /^([ \t]*)(`{3,}|~{3,})(.*)$/u;
 // A version written right after a Latin product name (「Obsidian 1.4.0 まで」) belongs to that
 // product, so it is not compared with Mappy's.
 const otherProductBefore = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+-]*)[ \t]+$/u;
+// Words that may stand between "up to" and a Mappy version without naming another product.
+const notAProduct = /^(?:mappy|version|ver|v|release)$/iu;
 
 /**
  * Each README's known-limitations section, where an item may be limited to a release
@@ -19,27 +21,37 @@ const otherProductBefore = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+-]*)[ \t]+$/u;
  * version; both are checked, since an item removed from one and left in the other would still warn
  * that release's users in one language only. The heading text is load-bearing; each README marks
  * it with a comment. Anything dotted is captured as `version`, so that 「0.3 まで」 or
- * "(up to 0.3.5-beta.1)" is reported instead of silently passing.
+ * "(up to 0.3.5-beta.1)" is reported instead of silently passing. `otherProduct(match, before)`
+ * tells whether the version belongs to another product (`before` is the line up to the match), so
+ * that version is not compared with Mappy's.
  */
 export const knownLimitationReadmes = [
   {
     file: 'README.md',
     heading: /^ {0,3}##[ \t]+Known limitations/iu,
     headingText: '## Known limitations',
-    // "up to x.y.z", allowing a v / ver. / version prefix, a soft wrap after "to" and a full stop
-    // after the version. A Latin word between "to" and the version names the product it belongs
-    // to ("up to Obsidian 1.4.0").
-    limit: /(?<![A-Za-z])up[ \t]+to\s+(?:(?<product>[A-Za-z][A-Za-z0-9+-]*)[ \t]+)??(?:(?:version|ver\.?)[ \t]*|v)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?!\d|\.\d)/giu,
+    // "up to x.y.z", allowing up to three words between "to" and the version ("up to version",
+    // "up to the", "up to Mappy's", "up to and including"), a v / ver. prefix, soft wraps and a
+    // full stop after the version.
+    limit: /(?<![A-Za-z])up\s+to\s+(?<words>(?:[A-Za-z][A-Za-z0-9'’.+-]*\s+){0,3}?)(?:v|ver\.?)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?!\d|\.\d)/giu,
+    // The word right before the version names another product when it is capitalized and not
+    // Mappy's own ("up to Obsidian 1.4.0"); a lower-case word ("up to the 0.3.5 release") does not.
+    otherProduct: (match) => {
+      const word = match.groups.words.trim().split(/\s+/u).at(-1)?.replace(/(?:['’]s|\.)$/u, '') ?? '';
+      return /^[A-Z]/u.test(word) && !notAProduct.test(word);
+    },
     example: '"(up to 0.3.5)"',
   },
   {
     file: 'README.ja.md',
     heading: /^ {0,3}##[ \t]+既知の制限/u,
     headingText: '## 既知の制限',
-    // 「x.y.z まで」, allowing a v / Ver. prefix and a soft wrap before まで. The product, if any,
-    // is the Latin word right before the version (otherProductBefore).
+    // 「x.y.z まで」, allowing a v / Ver. prefix and a soft wrap before まで.
     limit: /(?<![\d.])(?:v|ver\.?[ \t]*)?(?<version>\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?)(?![\d.])\s*まで/giu,
-    productBefore: true,
+    otherProduct: (match, before) => {
+      const word = before.match(otherProductBefore)?.[1];
+      return word !== undefined && word.toLowerCase() !== 'mappy';
+    },
     example: '「（0.3.5 まで）」',
   },
 ];
@@ -112,14 +124,13 @@ export function staleKnownLimitations(readme, readmeText, targetVersion) {
       break;
     }
   }
-  const section = lines.slice(start + 1, end).join('\n');
+  // Without blockquote markers, so an item wrapped inside a quote reads as one run of text.
+  const section = lines.slice(start + 1, end).map((line) => line.replace(blockquotePrefix, '')).join('\n');
 
   const errors = [];
   for (const match of section.matchAll(readme.limit)) {
     const lineStart = section.lastIndexOf('\n', match.index) + 1;
-    const product = match.groups.product
-      ?? (readme.productBefore ? section.slice(lineStart, match.index).match(otherProductBefore)?.[1] : undefined);
-    if (product && product.toLowerCase() !== 'mappy') continue;
+    if (readme.otherProduct(match, section.slice(lineStart, match.index))) continue;
     const { version } = match.groups;
     const line = start + 2 + (section.slice(0, match.index).match(/\n/gu)?.length ?? 0);
     const item = match[0].replace(/\s+/gu, ' ');
@@ -212,7 +223,11 @@ export function validateRelease(rootDir, { artifacts = false, knownLimitations =
   const versions = readJson('versions.json');
   const lockfile = readJson('package-lock.json');
   readRequired('LICENSE');
-  const readmes = knownLimitationReadmes.map((readme) => [readme, readRequired(readme.file)]);
+  // README.md is required in every mode (the community directory shows it); README.ja.md is read
+  // only for the known-limitations check, so packaging doesn't stop on it.
+  const readmes = knownLimitationReadmes
+    .filter((readme) => knownLimitations || readme.file === 'README.md')
+    .map((readme) => [readme, readRequired(readme.file)]);
 
   let manifestVersionOk = false;
   if (manifest) {

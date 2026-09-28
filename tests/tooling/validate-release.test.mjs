@@ -367,6 +367,39 @@ describe('README.md version-limited known limitations (「(up to x.y.z)」)', ()
     ]);
   });
 
+  // Review of LEV-227: a lower-case word before the version, "v " with a space, "Mappy's", a wrap
+  // between "up" and "to", and a wrap inside a blockquote all used to pass silently.
+  it('compares a Mappy version after other words, and across a wrap between "up" and "to" or inside a quote', () => {
+    const limitations = [
+      '- a (up to release 0.3.1)',
+      '- b (up to the 0.3.2 release)',
+      '- c (up to v 0.3.3)',
+      '- d (up to Mappy\'s 0.3.4)',
+      '- e (up to and including 0.3.5)',
+      '- f happens up',
+      '  to 0.3.0',
+      '> g happens up to',
+      '> 0.2.0',
+      '- h (up to Version 0.1.0)',
+    ].join('\n');
+    expect(readmeErrors('1.0.0', limitations)).toEqual([
+      stale(5, 'up to release 0.3.1', '1.0.0'),
+      stale(6, 'up to the 0.3.2', '1.0.0'),
+      stale(7, 'up to v 0.3.3', '1.0.0'),
+      stale(8, 'up to Mappy\'s 0.3.4', '1.0.0'),
+      stale(9, 'up to and including 0.3.5', '1.0.0'),
+      stale(10, 'up to 0.3.0', '1.0.0'),
+      stale(12, 'up to 0.2.0', '1.0.0'),
+      stale(14, 'up to Version 0.1.0', '1.0.0'),
+    ]);
+  });
+
+  it('does not require README.ja.md when packaging, which skips the known-limitations check', () => {
+    rmSync(join(root, 'README.ja.md'));
+    expect(validateRelease(root, { knownLimitations: false })).toEqual([]);
+    expect(validateRelease(root)).toEqual(['README.ja.md: file is missing.']);
+  });
+
   it('does not compare another product\'s version, a count, a lasting note, or text in code or comments', () => {
     const limitations = [
       '- Settings live elsewhere up to Obsidian 1.4.0.',

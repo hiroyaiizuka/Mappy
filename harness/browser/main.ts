@@ -20,7 +20,7 @@ import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
 import { LAYOUT_MODES, layoutLabel, type LayoutMode } from "../../src/core/layout-mode";
 import { frontmatterReader, readMapFromSource } from "../../src/core/embed";
-import { setLanguage } from "../../src/i18n";
+import { setLanguage, t } from "../../src/i18n";
 import { LAYOUT_KEY } from "../../src/core/map-keys";
 import { TIMELINE_STAGE_CLEARANCE } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
@@ -65,12 +65,13 @@ const router = {
 } as unknown as ViewRouter;
 /**
  * The plugin's items of the 操作 popover (§5 M3), as src/main.ts names them. Their routes (the search modal,
- * the export modal and its attachment) are not on this page: both report the request.
+ * the export modal and its attachment) are not on this page: both report the request. Built when a view is, as
+ * src/main.ts builds them in onload: the text is read where it is used (src/i18n), not while this module loads.
  */
-const menuActions: MapMenuAction[] = [
-  { title: "マップを検索して呼び出す", description: "他のマップを挿入する", icon: "search", check: map => map.file !== null,
+const menuActions = (): MapMenuAction[] => [
+  { title: t().cmdCallMap, description: t().popCallDesc, icon: "search", check: map => map.file !== null,
     run: () => { new Notice("マップの検索モーダルはこのページの対象外です（③ 実機で確認）。"); } },
-  { title: "書き出す", description: "SVG／PNG に保存", icon: "image-down", check: map => map.file !== null,
+  { title: t().popExport, description: t().popExportDesc, icon: "image-down", check: map => map.file !== null,
     run: () => { new Notice("書き出しの保存はこのページの対象外です（h.export が文字列を返すだけ。③ 実機で確認）。"); } },
 ];
 
@@ -274,7 +275,7 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
 async function openView(): Promise<MindmapView> {
   closeHost();
   const leaf = new WorkspaceLeaf(app.asApp<App>());
-  const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router, menuActions);
+  const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router, menuActions());
   // MindmapView is typed against Obsidian's View; at runtime it extends the mock.
   leaf.view = opened as unknown as WorkspaceLeaf["view"];
   // The plugin applies the settings when it constructs a view (src/main.ts); the page does the same.

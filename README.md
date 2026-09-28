@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-![A Mappy map in the light theme: the map on the left and the same note's Markdown on the right](docs/images/mappy-map.png)
+![A note open in Obsidian's light theme: its Markdown on the left and the same note as a Mappy map on the right](docs/images/mappy-map.png)
 
 Mappy lets you read and edit an Obsidian note as a mind map, without turning it into anything else. A plain note written with H2 headings and bullet lists is shown in one of four layouts (mind map, timeline, hierarchy, balanced), and adding, editing and moving nodes writes back to that note's Markdown. There is no special file format: without Mappy, the note is still headings and bullet lists.
 
@@ -91,7 +91,7 @@ The canvas fills the view, with floating buttons: the layouts in the bottom-left
 | --- | --- |
 | Gear | The gear in the top-right corner opens a popover below it with just three items: **Switch to Markdown** (Open the note in this tab), **Search and insert a map** (Insert another map) and **Export** (Save as SVG or PNG). ↑↓ move, Enter runs, and Escape, a click outside or pressing the gear again closes it. Node actions are on the keys below and in the context menu; everything else is in the command palette |
 | Moving the selection | ↑/↓ in display order, ← to the parent, → to the first child. Clicking empty space clears the selection (dragging the background doesn't), and the arrow keys start again from the main root. Undo and redo work with nothing selected |
-| Adding a sibling/child | Enter/Tab with a node selected. An input opens with "Subtopic" selected; typing replaces it (Enter without typing keeps "Subtopic", Escape right away cancels the addition, and Escape after typing cancels only the typing). A topic from double-clicking empty space or from the context menu (and a topic made with Enter on a topic's root) works the same way with "Topic" |
+| Adding a sibling/child | Enter/Tab with a node selected. An input opens with "Subtopic" selected; typing replaces it (Enter without typing keeps "Subtopic", Escape right away cancels the addition, and Escape after typing cancels only the typing). A topic from double-clicking empty space or from the context menu (and a topic made with Enter on a topic's root) works the same way with "Topic". The provisional name is written into the note as it is, in Japanese (`サブトピック`, `トピック`) when Obsidian's language is Japanese |
 | Editing text | Double-click or F2. Enter confirms, Shift+Enter breaks the line inside the node (saved on one line in Markdown, like `Hot<br>springs`), Escape cancels. The input widens with the text and wraps at the same width as the confirmed node (a line with link or emphasis syntax, a URL or runs of spaces may wrap at a different place than after confirming) |
 | Adding children in a row | Tab while editing text confirms and adds a child |
 | Link and attachment suggestions | `[[` or `![[` while editing text. While suggestions are shown, Enter/Tab picks a suggestion first |
