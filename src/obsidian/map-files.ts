@@ -1,4 +1,4 @@
-import { TFolder, normalizePath, type App, type TFile } from 'obsidian';
+import { TFolder, normalizePath, type App, type TAbstractFile, type TFile } from 'obsidian';
 import type { LayoutMode } from '../core/layout-mode';
 import { LAYOUT_KEY } from './frontmatter';
 import { t } from '../i18n';
@@ -15,6 +15,27 @@ export interface NewMapOptions {
 export function newMindmapSource(title: string, layout: LayoutMode = 'mindmap'): string {
   const properties = layout === 'mindmap' ? 'mappy: true\n' : `mappy: true\n${LAYOUT_KEY}: ${layout}\n`;
   return `---\n${properties}---\n\n## ${title}\n`;
+}
+
+/**
+ * The file or folder at `path`, a segment whose name differs only in case matching when no exact one does. It walks
+ * down from the root through each folder's own children instead of listing the vault (LEV-253: the community scan
+ * flags every listing). `metadataCache.getFirstLinkpathDest` is no substitute: it resolves notes by link, not folders.
+ */
+function findIgnoringCase(app: App, path: string): TAbstractFile | null {
+  const exact = app.vault.getAbstractFileByPath(path);
+  if (exact) return exact;
+  let folder = app.vault.getRoot();
+  const segments = path.split('/');
+  for (const [index, segment] of segments.entries()) {
+    const lower = segment.toLowerCase();
+    const child = folder.children.find(candidate => candidate.name === segment)
+      ?? folder.children.find(candidate => candidate.name.toLowerCase() === lower);
+    if (!child || index === segments.length - 1) return child ?? null;
+    if (!(child instanceof TFolder)) return null;
+    folder = child;
+  }
+  return null;
 }
 
 function childPath(folder: string, name: string): string {
@@ -44,9 +65,7 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
   if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'folderDotName');
   // The file system is usually case-insensitive: `maps` must reuse an existing `Maps` rather than fail to create it,
   // and a file called `Maps` blocks `maps` just as it blocks `Maps`.
-  const lower = path.toLowerCase();
-  const existing = app.vault.getAbstractFileByPath(path)
-    ?? app.vault.getAllLoadedFiles().find(candidate => candidate.path.toLowerCase() === lower);
+  const existing = findIgnoringCase(app, path);
   if (existing instanceof TFolder) return existing;
   if (existing) throw badFolder(path, 'folderIsFile');
   const created: TFolder | null = await app.vault.createFolder(path);

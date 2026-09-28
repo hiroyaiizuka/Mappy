@@ -219,6 +219,8 @@ Mappy has no server of its own, and sends no telemetry, update checks or note co
 - When a node has an image `![](https://…)`, it is loaded for display by the same rendering as Obsidian's reading view
 - SVG/PNG export embeds only the images at such external URLs that can be fetched within 15 seconds (nothing but images is fetched)
 
+Two features read the list of files in your vault, on your device only: the suggestions after `[[` / `![[` (file names and aliases) and the search for a map to call (the notes marked `mappy: true`). The list is not sent anywhere.
+
 ## License
 
 [MIT License](LICENSE) (Copyright (c) 2026 Hiroya Iizuka).

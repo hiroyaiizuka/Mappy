@@ -1,6 +1,42 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
+/** Specificity [ids, classes/attributes/pseudo-classes, types] of a compound or descendant selector without :is()/:where(). */
+function specificity(selector) {
+  const ids = selector.match(/#[\w-]+/gu)?.length ?? 0;
+  const classes = selector.match(/\.[\w-]+|\[[^\]]*\]|:(?!:)[\w-]+/gu)?.length ?? 0;
+  const types = selector.replace(/\[[^\]]*\]/gu, "").match(/(^|[\s>+~])[a-z][\w-]*/giu)?.length ?? 0;
+  return [ids, classes, types];
+}
+const outranks = (left, right) => {
+  const at = left.findIndex((value, index) => value !== right[index]);
+  return at >= 0 && left[at] > right[at];
+};
+
+describe("the map view's container (LEV-253)", () => {
+  it("has no !important anywhere in the sheet", async () => {
+    const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
+    expect(css).not.toMatch(/!\s*important/iu);
+  });
+
+  it("takes the pane's padding off by specificity, over every rule Obsidian 1.14.2 pads any view's .view-content with", async () => {
+    const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
+    // app.css 1.14.2: the base padding, and the mobile drawer's top padding. Obsidian's own views take it off the same
+    // way, e.g. `.workspace-leaf-content[data-type='markdown'] .view-content { padding: 0 }`.
+    const obsidian = [".workspace-leaf-content .view-content", ".workspace-drawer-active-tab-content .view-content"];
+    const rule = css.match(/(?<selectors>[^{}]*\.view-content\.mappy-view[^{}]*)\{(?<body>[^}]*)\}/u);
+    expect(rule?.groups?.body).toMatch(/(^|[\s;])padding:\s*0;/u);
+    const ours = rule.groups.selectors.split(",").map(selector => selector.trim()).filter(selector => selector.includes(".view-content.mappy-view"));
+    expect(ours.length).toBeGreaterThan(0);
+    for (const selector of ours) {
+      for (const theirs of obsidian) expect(outranks(specificity(selector), specificity(theirs)), `${selector} over ${theirs}`).toBe(true);
+    }
+    // An embed is not in a pane: the base rule keeps it unpadded too.
+    const base = css.match(/(?:^|\n)\.mappy-view \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+    expect(base).toMatch(/(^|[\s;])padding:\s*0;/u);
+  });
+});
+
 describe("map editing CSS", () => {
   it("wraps the inline node editor and the confirmed label at the same width, in the label's weight (LEV-198)", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
@@ -144,7 +180,7 @@ describe("map theme CSS (settings, M14)", () => {
     const css = (await readFile(new URL("../../styles.css", import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//gu, "");
     // app.css fixes `caret-color: var(--caret-color)` on body, and a descendant inherits body's computed colour: the
     // re-derived variable reaches the inline input only through a rule that reads it again, next to `color`.
-    const view = css.match(/(?:^|\n)\.mappy-view \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    const view = css.match(/(?:^|\n)\.mappy-view \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
     expect(view).toMatch(/(?:^|;)\s*color:\s*var\(--text-normal\);/u);
     expect(view).toMatch(/(?:^|;)\s*caret-color:\s*var\(--caret-color\);/u);
     // The one declaration of the property: no rule between the container and the textarea sets the caret on its own.
