@@ -7,8 +7,9 @@
  * every session runs the same steps.
  *
  * The port and the vault are the ones the harness document names, overridable for a second instance:
- *   MAPPY_E2E_PORT   CDP port (default 9231)
- *   MAPPY_E2E_VAULT  absolute path of the vault the window must have open (default: this project's test-vault)
+ *   MAPPY_E2E_PORT      CDP port (default 9231)
+ *   MAPPY_E2E_VAULT     absolute path of the vault the window must have open (default: this project's test-vault)
+ *   MAPPY_E2E_LANGUAGE  the app language the window must run in (default ja; LEV-226)
  */
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -24,6 +25,14 @@ export const PORT = process.env.MAPPY_E2E_PORT ?? '9231';
  * notes can only reach a generated one (AGENTS.md: 本番 Vault をテスト対象にしない).
  */
 export const VAULT = process.env.MAPPY_E2E_VAULT ?? resolve(root, 'test-vault');
+/**
+ * The plugin's text follows Obsidian's language (src/i18n: Japanese for `ja`, English otherwise), and the cases find
+ * buttons and read notices by their Japanese text. A window in another language is refused rather than driven, so a
+ * case never fails (or passes) on the wording instead of the behaviour. E63 is the one case run in English.
+ */
+export const LANGUAGE = process.env.MAPPY_E2E_LANGUAGE ?? 'ja';
+/** Obsidian's app language as the plugin's `getLanguage()` reads it: the `language` key, English when unset. */
+export const APP_LANGUAGE = "window.localStorage.getItem('language') || 'en'";
 if (!existsSync(join(VAULT, '.mappy-generated'))) {
   throw new Error(`${VAULT} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
 }
@@ -87,6 +96,13 @@ export async function connect({ popout } = {}) {
       || await connection.evaluate(`document.body?.dataset.mappyE2ePopout === ${JSON.stringify(String(popout))}`).catch(() => false);
     if (vault !== VAULT || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
+    // A popout shares its app (and language) with the main window this check already ran on.
+    const language = popout === undefined ? await evaluate(APP_LANGUAGE) : LANGUAGE;
+    if (language !== LANGUAGE) {
+      socket.close();
+      throw new Error(`The Obsidian for ${VAULT} runs in "${language}", not "${LANGUAGE}" (MAPPY_E2E_LANGUAGE). Set it in `
+        + `Settings → General → Language, or run localStorage.setItem('language', '${LANGUAGE}') and reload. No action taken.`);
+    }
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
     // frames and every screenshot; keep it running while the case does its steps (LEV-64, LEV-72).
     await evaluate(`(() => { try { require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false); return true; } catch { return false; } })()`);

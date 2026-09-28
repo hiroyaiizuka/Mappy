@@ -18,7 +18,7 @@ import {
 import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
-import { layoutLabels, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
+import { LAYOUT_MODES, layoutLabel, type LayoutMode } from "../../src/core/layout-mode";
 import { frontmatterReader, readMapFromSource } from "../../src/core/embed";
 import { setLanguage } from "../../src/i18n";
 import { LAYOUT_KEY } from "../../src/core/map-keys";
@@ -630,7 +630,7 @@ const api = {
   setVisibleLayouts,
   layoutButtons,
   /** The bar's expected labels, in LAYOUT_MODES order, from the one definition in core. */
-  layoutLabels: LAYOUT_MODES.map(mode => layoutLabels()[mode]),
+  layoutLabels: LAYOUT_MODES.map(layoutLabel),
   /** Theme classes as they are now: the page's body and the map container. */
   themes: () => ({
     page: document.body.classList.contains("theme-dark") ? "dark" : document.body.classList.contains("theme-light") ? "light" : "none",
@@ -793,7 +793,7 @@ function setupPanel(): void {
     box.checked = true;
     // The settings tab keeps the regular map on; the page's checkbox is locked the same way.
     box.disabled = mode === "mindmap";
-    label.appendText(layoutLabels()[mode]);
+    label.appendText(layoutLabel(mode));
     box.addEventListener("change", () => { setVisibleLayouts(visibleLayoutBoxes.filter(other => other.checked).map(other => other.value)); });
     visibleLayoutBoxes.push(box);
   }

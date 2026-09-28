@@ -20,7 +20,7 @@ import type { App, MarkdownPostProcessorContext } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { Component, MarkdownRenderer } from '../../harness/browser/obsidian';
-import { layoutLabels } from '../../src/core/layout-mode';
+import { layoutLabel } from '../../src/core/layout-mode';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { MapEmbeds } from '../../src/ui/map-embed';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -149,7 +149,7 @@ async function rename(opened: Opened, from = '子1', to = 'ずっと長い題名
 }
 
 async function layout(opened: Opened): Promise<void> {
-  const button = opened.map.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${layoutLabels().timeline}"]`);
+  const button = opened.map.view.containerEl.querySelector<HTMLButtonElement>(`.mappy-modes button[aria-label="${layoutLabel('timeline')}"]`);
   if (!button) throw new Error('No layout button');
   button.click();
   await settled(opened, source => source.includes('mappy-layout: timeline\n'));

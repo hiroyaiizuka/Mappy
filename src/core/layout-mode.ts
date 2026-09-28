@@ -18,15 +18,17 @@ export function isLayoutMode(value: unknown): value is LayoutMode {
   return typeof value === "string" && (LAYOUT_MODES as readonly string[]).includes(value);
 }
 
+/** The text key of each layout's name; the Record type turns a new mode into a compile error until it is named. */
+const LAYOUT_LABEL_KEYS: Record<LayoutMode, "layoutMindmap" | "layoutTimeline" | "layoutHierarchy" | "layoutBalanced"> = {
+  mindmap: "layoutMindmap", timeline: "layoutTimeline", hierarchy: "layoutHierarchy", balanced: "layoutBalanced",
+};
+
 /**
- * The one name each layout goes by in the UI: the layout buttons and the settings
- * dropdown both read it, and the Record type turns a new mode into a compile error
- * until it is named here. A function, not a table: the names follow the app's
- * language, which is set after this module has loaded (src/i18n).
+ * The one name each layout goes by in the UI: the layout buttons and the settings dropdown both read it. Read
+ * when shown, as it follows the app's language, which is set after this module has loaded (src/i18n).
  */
-export function layoutLabels(): Record<LayoutMode, string> {
-  const text = t();
-  return { mindmap: text.layoutMindmap, timeline: text.layoutTimeline, hierarchy: text.layoutHierarchy, balanced: text.layoutBalanced };
+export function layoutLabel(mode: LayoutMode): string {
+  return t()[LAYOUT_LABEL_KEYS[mode]];
 }
 
 /** A frontmatter value naming a layout, tolerant of case and surrounding space; anything else is null. */

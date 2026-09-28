@@ -26,14 +26,19 @@ describe('the text tables (architecture.md §9e)', () => {
     }
   });
 
-  it('English has no Japanese left in it, and Japanese is not a copy of the English', () => {
+  it('English has no Japanese left in it, and every Japanese text is Japanese', () => {
+    const render = (value: unknown): string => (typeof value === 'function' ? (value as (...args: string[]) => string)('A', 'B', 'C') : String(value));
     for (const [key, value] of Object.entries(en)) {
-      const text = typeof value === 'function' ? (value as (...args: string[]) => string)('A', 'B', 'C') : value;
+      const text = render(value);
       expect([key, JAPANESE.test(text)]).toEqual([key, false]);
       expect([key, text.trim().length > 0]).toEqual([key, true]);
     }
+    // A value copied over from en.ts untranslated would show English in the Japanese app. None is meant to be
+    // written the same in both languages; one that is goes here, by name.
+    const SAME_IN_BOTH: string[] = [];
     for (const [key, value] of Object.entries(ja)) {
-      if (typeof value === 'string' && !JAPANESE.test(value)) expect([key, value]).toEqual([key, en[key as keyof typeof en]]);
+      if (SAME_IN_BOTH.includes(key)) continue;
+      expect([key, JAPANESE.test(render(value))]).toEqual([key, true]);
     }
   });
 

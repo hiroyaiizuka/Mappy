@@ -4,7 +4,7 @@ import type { ViewStateResult } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { HarnessApp } from '../../harness/browser/app';
 import { EMBED_TARGETS, findFixture } from '../../harness/browser/fixtures';
-import { layoutLabels, LAYOUT_MODES, type LayoutMode } from '../../src/core/layout-mode';
+import { LAYOUT_MODES, layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
@@ -15,7 +15,7 @@ beforeAll(() => { installObsidianDom(); });
 
 const REGULAR = 'Fixtures/uneven-branches.md';
 const TIMELINE = 'Fixtures/embed-timeline.md';
-const ALL = LAYOUT_MODES.map(mode => layoutLabels()[mode]);
+const ALL = LAYOUT_MODES.map(layoutLabel);
 
 const regular = findFixture('uneven-branches');
 const timeline = EMBED_TARGETS.find(target => target.path === TIMELINE);
@@ -44,7 +44,7 @@ function buttons(view: MindmapView) {
 
 function button(view: MindmapView, mode: LayoutMode): HTMLButtonElement {
   const found = Array.from(view.containerEl.querySelectorAll<HTMLButtonElement>('.mappy-modes .mappy-button'))
-    .find(candidate => candidate.getAttribute('aria-label') === layoutLabels()[mode]);
+    .find(candidate => candidate.getAttribute('aria-label') === layoutLabel(mode));
   if (!found) throw new Error(`No button for ${mode}`);
   return found;
 }
