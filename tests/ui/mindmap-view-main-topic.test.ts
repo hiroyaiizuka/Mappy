@@ -8,6 +8,9 @@
  * 追加」・ドラッグで親を変えた後の Enter）× 文書の形（リスト形式・見出し形式〔H1 の下の H2 区画〕・フリートピックの
  * 本体・見出しの無いノート）× 4 レイアウト × 言語（ja・en）。期待は「開いた入力欄の値」と「そのノードの親」の両方で
  * 見る: 名前だけを見ると、別の場所に同じ名前が書かれても通ってしまう。
+ *
+ * 修正を戻すと落ちるのは Main topic の行（と空のノートの行）。Subtopic の行は戻しても通る: 深さで分けた結果、
+ * 第二階層より下まで「メイントピック」にしてしまう行き過ぎを固定する対照として置いている。
  */
 import type { App } from 'obsidian';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -36,6 +39,7 @@ const ROOT_TITLE = 'main-topic';
 const LIST = ['---', 'mappy: true', '---', '## 旅の計画', '', '- 温泉旅行', '  - 予約', '- 持ち物', ''].join('\n');
 const HEADINGS = ['# 旅の計画', '', '## 温泉旅行', '', '本文', '', '### 予約', '', '## 持ち物', ''].join('\n');
 const TOPIC = `${LIST}\n## 別の話\n\n- 項目\n  - 細目\n`;
+const EMPTY = ['---', 'mappy: true', '---', ''].join('\n');
 const NO_HEADING = ['---', 'mappy: true', '---', '- 温泉旅行', '  - 予約', ''].join('\n');
 const LAYOUTS: readonly LayoutMode[] = ['mindmap', 'timeline', 'hierarchy', 'balanced'];
 const LANGUAGES = ['ja', 'en'] as const;
@@ -176,19 +180,17 @@ describe('the provisional name follows the depth the node is added at (LEV-250)'
     expect([t().mainTopicTitle, t().newNodeTitle, t().newTopicTitle]).toEqual(['Main topic', 'Subtopic', 'Topic']);
   });
 
-  it('writes the main topic into the list as it is, one line under the root', async () => {
-    const mounted = await mount(LIST, 'timeline');
-    mounted.key(mounted.select('温泉旅行'), 'Enter');
-    await mounted.settle();
-    mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
-    await mounted.settle();
-    expect(mounted.source()).toBe(LIST.replace('  - 予約\n', '  - 予約\n- メイントピック\n'));
-  });
-
-  it('keeps a free topic made by Enter on a topic root as「トピック」', async () => {
-    const mounted = await mount(TOPIC, 'mindmap');
-    mounted.key(mounted.select('別の話'), 'Enter');
-    await mounted.settle();
-    expect(draftName(mounted)).toBe(t().newTopicTitle);
-  });
+  // Review 2: a node that becomes the map's own root (the first heading written into a note with nothing else) is
+  // neither under a root nor further down; it is named as the empty canvas names the node it makes (addTopic).
+  for (const layout of LAYOUTS) {
+    it(`${layout}: Tab on the file-name root of an empty note makes the body root, named「トピック」`, async () => {
+      const mounted = await mount(EMPTY, layout);
+      mounted.key(mounted.select(ROOT_TITLE), 'Tab');
+      await mounted.settle();
+      expect(draftName(mounted)).toBe(t().newTopicTitle);
+      mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
+      await mounted.settle();
+      expect(mounted.source()).toBe(`${EMPTY}\n## ${t().newTopicTitle}\n`);
+    });
+  }
 });

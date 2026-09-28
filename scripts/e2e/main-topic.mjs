@@ -6,11 +6,14 @@
  * the root read `Subtopic` where MarkMind reads `Main topic`.
  *
  * Rows: the operation (real keys on a real click's selection) × the note (a list under an H2 body root, headings under
- * an H1) × the layout (timeline, the report's, and mindmap) × the language (the test Obsidian's Japanese, then English
- * switched as E63 does, then back). Each row opens the fixture afresh, adds, checks the draft holds the expected name
+ * an H1, a free topic after the body, a list with no heading under the file-name root) × the layout (timeline, the
+ * report's, and mindmap) × the language (the test Obsidian's Japanese, then English switched as E63 does, then back). Each row opens the fixture afresh, adds, checks the draft holds the expected name
  * selected, presses Enter on it untouched and compares the whole note with what the row expects.
  *
  * The names are written out here, not read from src/i18n: the case must fail if the table changes them by accident.
+ * The context menu's 子／兄弟を追加 is not a row: on macOS Obsidian shows a native menu, outside the page (E63 turns
+ * the setting off to read it); it runs the same method as Tab／Enter, and tests/ui/mindmap-view-main-topic.test.ts has
+ * its rows.
  *
  * Usage: npm run harness:e2e:main-topic -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
  *   --shot  writes <out>.png (Japanese timeline after Enter on a stage) and <out>-en.png (the same in English)
@@ -27,6 +30,8 @@ const LIST_NOTE = 'Fixtures/E2E-main-topic.md';
 const HEADINGS_NOTE = 'Fixtures/E2E-main-topic-headings.md';
 const LIST = ['---', 'mappy: true', '---', '## 旅の計画', '', '- 温泉旅行', '  - 予約', '- 持ち物', ''].join('\n');
 const HEADINGS = ['---', 'mappy: true', '---', '# 旅の計画', '', '## 温泉旅行', '', '本文', '', '## 持ち物', ''].join('\n');
+const TOPIC = `${LIST}\n## 別の話\n\n- 項目\n`;
+const NO_HEADING = ['---', 'mappy: true', '---', '- 温泉旅行', '  - 予約', ''].join('\n');
 const NAMES = { ja: { main: 'メイントピック', sub: 'サブトピック' }, en: { main: 'Main topic', sub: 'Subtopic' } };
 const LAYOUTS = ['timeline', 'mindmap'];
 
@@ -38,6 +43,10 @@ const ROWS = [
   { id: 'list-deep-enter', note: LIST_NOTE, source: LIST, target: '予約', key: 'Enter', depth: 'sub', written: n => LIST.replace('  - 予約\n', `  - 予約\n  - ${n}\n`) },
   { id: 'headings-root-tab', note: HEADINGS_NOTE, source: HEADINGS, target: '旅の計画', key: 'Tab', depth: 'main', written: n => `${HEADINGS}\n## ${n}\n` },
   { id: 'headings-h2-enter', note: HEADINGS_NOTE, source: HEADINGS, target: '温泉旅行', key: 'Enter', depth: 'main', written: n => HEADINGS.replace('本文\n', `本文\n\n## ${n}\n`) },
+  { id: 'topic-root-tab', note: LIST_NOTE, source: TOPIC, target: '別の話', key: 'Tab', depth: 'main', written: n => `${TOPIC}- ${n}\n` },
+  { id: 'topic-first-tab', note: LIST_NOTE, source: TOPIC, target: '項目', key: 'Tab', depth: 'sub', written: n => `${TOPIC}  - ${n}\n` },
+  { id: 'no-heading-first-enter', note: LIST_NOTE, source: NO_HEADING, target: '温泉旅行', key: 'Enter', depth: 'main', written: n => `${NO_HEADING}- ${n}\n` },
+  { id: 'no-heading-first-tab', note: LIST_NOTE, source: NO_HEADING, target: '温泉旅行', key: 'Tab', depth: 'sub', written: n => NO_HEADING.replace('  - 予約\n', `  - 予約\n  - ${n}\n`) },
   { id: 'headings-h2-tab', note: HEADINGS_NOTE, source: HEADINGS, target: '温泉旅行', key: 'Tab', depth: 'sub', written: n => HEADINGS.replace('本文\n', `本文\n\n### ${n}\n`) },
 ];
 
