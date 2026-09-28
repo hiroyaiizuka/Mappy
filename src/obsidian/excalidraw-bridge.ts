@@ -16,6 +16,7 @@ import type { DocumentStore } from './document-store';
 import { readMapLayout } from './frontmatter';
 import { createSvgAttachment } from './image-export';
 import { CallReader } from './map-calls';
+import { t } from '../i18n';
 
 export interface ImportRequest {
   file: TFile;
@@ -54,7 +55,6 @@ const DEFAULT_DROP_POLL_MS = 200;
 const DEFAULT_DROP_TIMEOUT_MS = 60_000;
 /** An "Insert as embeddable" frame is no longer than this on its longer side; the live view inside fits the map to it. */
 export const EMBEDDABLE_MAX_SIDE = 800;
-export const DEFAULT_DROP_STALLED_MESSAGE = '描画が終わらないノードがあるため、描けたところまでのマップに合わせます。';
 
 const BASE_STYLE: Partial<ExcalidrawStyle> = {
   strokeColor: '#1e1e1e', backgroundColor: 'transparent', fillStyle: 'solid', strokeWidth: 1, strokeStyle: 'solid',
@@ -181,7 +181,7 @@ export class ExcalidrawBridge {
     const files = (data.payload.files ?? []).filter(file => readMapLayout(this.app, file) !== null);
     if (files.length === 0) return false;
     void this.importFiles(files, data.view, [data.pointerPosition.x, data.pointerPosition.y]).catch((error: unknown) => {
-      this.report(error instanceof Error ? error.message : 'Excalidraw への挿入に失敗しました。');
+      this.report(error instanceof Error ? error.message : t().excalidrawInsertFailed);
     });
     return true;
   }
@@ -204,7 +204,7 @@ export class ExcalidrawBridge {
     }
     const before = new Set(ea.getViewElements().map(element => element.id));
     void this.adoptDefaultDrop(ea, data.excalidrawFile, before).catch((error: unknown) => {
-      this.report(error instanceof Error ? error.message : 'Excalidraw の埋め込みをマップに合わせられませんでした。');
+      this.report(error instanceof Error ? error.message : t().excalidrawFitFailed);
     });
   }
 
@@ -284,7 +284,7 @@ export class ExcalidrawBridge {
         const id = await ea.addImage(element.x, element.y, attachment, true);
         const image = id ? ea.getElement(id) : null;
         if (!id || !image) {
-          this.report(`${file.basename} の画像を Excalidraw に読み込めませんでした。`);
+          this.report(t().excalidrawImageFailed(file.basename));
           await this.discard(attachments.pop());
           continue;
         }
@@ -292,13 +292,13 @@ export class ExcalidrawBridge {
         replaced.push({ original: element, id });
       }
       if (embeds.length === 0 && replaced.length === 0) return;
-      if (!await ea.addElementsToView(false, true, true)) throw new Error('Excalidraw の要素を更新できませんでした。');
+      if (!await ea.addElementsToView(false, true, true)) throw new Error(t().excalidrawUpdateFailed);
     } catch (error: unknown) {
       for (const attachment of attachments) await this.discard(attachment);
       throw error;
     }
     if (replaced.length > 0) {
-      if (!ea.deleteViewElements?.(replaced.map(({ original }) => original))) this.report('元の Markdown の画像を消せませんでした。');
+      if (!ea.deleteViewElements?.(replaced.map(({ original }) => original))) this.report(t().excalidrawOriginalKept);
       ea.selectElementsInView?.(replaced.map(({ id }) => id));
     }
   }
@@ -309,7 +309,7 @@ export class ExcalidrawBridge {
     try {
       await this.app.fileManager.trashFile(attachment);
     } catch {
-      this.report(`使わなかった添付ファイルを消せませんでした: ${attachment.path}`);
+      this.report(t().excalidrawAttachmentKept(attachment.path));
     }
   }
 
@@ -329,17 +329,17 @@ export class ExcalidrawBridge {
         maps.set(file.path, map);
         stalled = stalled || map.stalled;
       } catch (error: unknown) {
-        this.report(error instanceof Error ? error.message : `${file.basename} のマップを描けませんでした。`);
+        this.report(error instanceof Error ? error.message : t().excalidrawDrawFailed(file.basename));
       }
       if (this.disposed) break;
     }
-    if (stalled && !this.disposed) this.report(DEFAULT_DROP_STALLED_MESSAGE);
+    if (stalled && !this.disposed) this.report(t().dropStalled);
     return maps;
   }
 
   async importFiles(files: TFile[], view: ExcalidrawViewLike, origin: Point): Promise<void> {
     const host = this.automate();
-    if (!host) throw new Error('Excalidraw プラグインが見つかりません。');
+    if (!host) throw new Error(t().excalidrawMissing);
     const ea = host.getAPI(view);
     try {
       let y = origin[1];
@@ -356,10 +356,10 @@ export class ExcalidrawBridge {
   /** Command route: insert into the active drawing, centred on the viewport. */
   async insertIntoActiveDrawing(request: ImportRequest): Promise<void> {
     const host = this.automate();
-    if (!host) throw new Error('Excalidraw プラグインが見つかりません。');
+    if (!host) throw new Error(t().excalidrawMissing);
     const ea = host.getAPI();
     try {
-      if (!ea.setView('active')) throw new Error('Excalidraw の図面を開いてから実行してください。');
+      if (!ea.setView('active')) throw new Error(t().excalidrawOpenDrawing);
       await this.render(ea, request, null);
     } finally {
       ea.destroy?.();
@@ -378,7 +378,7 @@ export class ExcalidrawBridge {
       collapsed = new Set([...collapsed, ...initialCallFolds(projectCalls([split.root, ...split.topics], calls))]);
     }
     const contents = sceneContents(document, collapsed, calls);
-    if (contents.nodes.length === 0) throw new Error('マップにするノードがありません。');
+    if (contents.nodes.length === 0) throw new Error(t().excalidrawNoNodes);
     ea.reset();
     const fontFamily = this.drawingFontFamily(ea);
     const drawingPath = ea.targetView?.file?.path ?? file.path;
@@ -413,10 +413,11 @@ export class ExcalidrawBridge {
     this.applyStyle(ea, { ...BASE_STYLE, roundness: null });
     for (const line of scene.lines) ids.push(ea.addLine(line));
     ea.addToGroup(ids);
-    if (!await ea.addElementsToView(origin === null, true, true)) throw new Error('Excalidraw に要素を追加できませんでした。');
+    if (!await ea.addElementsToView(origin === null, true, true)) throw new Error(t().excalidrawAddFailed);
     ea.selectElementsInView?.(ids);
     if (refused.length > 0) {
-      this.report(`図面に入れられないリンクを ${refused.length} 件外しました（${[...new Set(refused.map(link => urlScheme(link) ?? link))].join('、')}）。`);
+      const text = t();
+      this.report(text.excalidrawLinksDropped(refused.length, [...new Set(refused.map(link => urlScheme(link) ?? link))].join(text.listSeparator)));
     }
     return scene.bounds.height;
   }

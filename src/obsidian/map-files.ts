@@ -1,8 +1,7 @@
 import { TFolder, normalizePath, type App, type TFile } from 'obsidian';
 import type { LayoutMode } from '../core/layout-mode';
 import { LAYOUT_KEY } from './frontmatter';
-
-const UNTITLED = '無題のマインドマップ';
+import { t } from '../i18n';
 
 /** What the settings (M14) contribute to a new map; both default to the pre-settings behaviour. */
 export interface NewMapOptions {
@@ -22,8 +21,10 @@ function childPath(folder: string, name: string): string {
   return normalizePath(folder ? `${folder}/${name}` : name);
 }
 
-function badFolder(path: string, reason: string): Error {
-  return new Error(`作成先「${path}」${reason}。設定の「新規マップの作成先フォルダ」を確認してください。`);
+/** Why the folder setting cannot be used, naming the setting as the tab shows it. */
+function badFolder(path: string, reason: 'folderDotName' | 'folderIsFile' | 'folderNotCreated'): Error {
+  const text = t();
+  return new Error(text[reason](path, text.setFolder));
 }
 
 /**
@@ -40,29 +41,31 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
   const path = normalizePath(requested);
   // normalizePath strips leading and trailing slashes, so "/" comes back as "" or "/"; either way the user asked for the root.
   if (!path || path === '/') return app.vault.getRoot();
-  if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'に . で始まる名前は使えません');
+  if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'folderDotName');
   // The file system is usually case-insensitive: `maps` must reuse an existing `Maps` rather than fail to create it,
   // and a file called `Maps` blocks `maps` just as it blocks `Maps`.
   const lower = path.toLowerCase();
   const existing = app.vault.getAbstractFileByPath(path)
     ?? app.vault.getAllLoadedFiles().find(candidate => candidate.path.toLowerCase() === lower);
   if (existing instanceof TFolder) return existing;
-  if (existing) throw badFolder(path, 'はフォルダではありません');
+  if (existing) throw badFolder(path, 'folderIsFile');
   const created: TFolder | null = await app.vault.createFolder(path);
-  if (!created) throw badFolder(path, 'を作成できませんでした');
+  if (!created) throw badFolder(path, 'folderNotCreated');
   return created;
 }
 
 /** Create without overwriting, in the configured folder (or Obsidian's), with the configured layout. */
 export async function createMindmapFile(app: App, sourcePath: string, options: NewMapOptions = {}): Promise<TFile> {
-  const requestedName = `${UNTITLED}.md`;
+  // The name is written into the note as its title, in the app's language (architecture.md §9e).
+  const untitled = t().untitled;
+  const requestedName = `${untitled}.md`;
   const parent = await resolveNewMapFolder(app, options.folder ?? '', sourcePath, requestedName);
   let index = 1;
-  let title = UNTITLED;
+  let title = untitled;
   let path = childPath(parent.path, `${title}.md`);
   while (app.vault.getAbstractFileByPath(path)) {
     index += 1;
-    title = `${UNTITLED} ${index}`;
+    title = `${untitled} ${index}`;
     path = childPath(parent.path, `${title}.md`);
   }
   return app.vault.create(path, newMindmapSource(title, options.layout));

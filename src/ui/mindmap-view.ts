@@ -15,7 +15,8 @@ import type { Viewport } from "../interaction/viewport";
 import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabel, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
-import { DocumentStore, conflictMessage, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
+import { ConflictError } from "../obsidian/conflict-error";
+import { DocumentStore, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
 import { resolveEmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
 import { CallReader, sameTargets } from "../obsidian/map-calls";
@@ -532,7 +533,7 @@ export class MindmapView extends FileView {
       catch (error) {
         // A change the map had not read yet (E05): read the note, as the refusal of an Enter does, and apply the draft to
         // it, as the Enter after that would. A node that cannot be told apart after the change (same titles) is refused again.
-        if (!(error instanceof Error) || error.message !== conflictMessage) throw error;
+        if (!(error instanceof ConflictError)) throw error;
         await this.readNow();
         await editor.flush();
       }
@@ -1302,8 +1303,8 @@ export class MindmapView extends FileView {
 
   /** A draft kept by a conflict (its error line up) learns that the note has moved on, and that saving it again may now apply. */
   private tellKeptDrafts(): void {
-    this.inlineEditor?.refreshed(conflictMessage);
-    this.bodyModal?.refreshed(conflictMessage);
+    this.inlineEditor?.refreshed();
+    this.bodyModal?.refreshed();
   }
 
   /**
@@ -2131,7 +2132,7 @@ export class MindmapView extends FileView {
     } catch (error) {
       // The note changed in a way the view had not read yet (an edit from outside within the refresh's debounce):
       // the node stays, and Escape is what it is on any node — the draft given up — rather than an error.
-      if (!(error instanceof Error) || error.message !== conflictMessage) throw error;
+      if (!(error instanceof ConflictError)) throw error;
       if (this.file === file && !this.closed) this.draw();
       return;
     }
@@ -2311,7 +2312,7 @@ export class MindmapView extends FileView {
       // A step refused because the note changed under it re-reads the note here too, as a refused edit does (`writeOwn`).
       let write: LatestWrite;
       try { write = await this.store[direction](file); } catch (error) {
-        if (error instanceof Error && error.message === conflictMessage) this.scheduleRefresh();
+        if (error instanceof ConflictError) this.scheduleRefresh();
         throw error;
       }
       const shown = this.showOwnWrite(file, write.after);

@@ -1,3 +1,5 @@
+import { RefusalLine } from "./refusal-line";
+
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
   dispose: () => void;
@@ -13,11 +15,6 @@ export interface InlineEditorOptions {
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
 }
 
-/** Shown in place of a conflict line once the map has re-read the note: the same Enter now applies the draft to it. */
-export const REFRESHED_MESSAGE = "Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。";
-
-const SAVE_FAILED_MESSAGE = "保存できませんでした。";
-
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
 const CARET_ALLOWANCE = 2;
 
@@ -25,6 +22,7 @@ const CARET_ALLOWANCE = 2;
 export class InlineEditor {
   private readonly input: HTMLTextAreaElement;
   private readonly error: HTMLDivElement;
+  private readonly refusal: RefusalLine;
   private busy = false;
   /** The save under way (`commit`), for a `flush` that must wait for it. */
   private pending: Promise<void> | undefined;
@@ -54,6 +52,7 @@ export class InlineEditor {
     this.sizesItself = this.input.ownerDocument.defaultView?.CSS?.supports?.("field-sizing", "content") === true;
     this.suggestion = options.suggest?.(this.input);
     this.error = host.createDiv({ cls: "mappy-inline-error", attr: { role: "alert" } });
+    this.refusal = new RefusalLine(this.error);
     this.input.addEventListener("compositionstart", () => { this.composing = true; });
     this.input.addEventListener("compositionend", () => {
       this.composing = false;
@@ -189,7 +188,7 @@ export class InlineEditor {
     if (this.busy || this.inPlace || this.disposed || text === this.written) return Promise.resolve();
     const task = this.options.save(text)
       .then(() => { this.written = text; })
-      .catch((error: unknown) => { if (!this.disposed) this.error.setText(failure(error)); })
+      .catch((error: unknown) => { if (!this.disposed) this.refusal.show(error); })
       .finally(() => {
         if (this.inPlace === task) this.inPlace = undefined;
         if (this.pending === task) this.pending = undefined;
@@ -210,7 +209,7 @@ export class InlineEditor {
       this.options.finish(next, false, this.input.value);
     } catch (error) {
       if (this.disposed) return;
-      this.error.setText(failure(error));
+      this.refusal.show(error);
       this.input.focus({ preventScroll: true });
     } finally {
       this.busy = false;
@@ -255,10 +254,9 @@ export class InlineEditor {
     if (!this.disposed) this.input.focus({ preventScroll: true });
   }
 
-  /** The map re-parsed under a draft kept by `stale` (the store's conflict line), which would still tell the user to wait for that. */
-  refreshed(stale: string): void {
-    if (this.disposed || this.error.textContent !== stale) return;
-    this.error.setText(REFRESHED_MESSAGE);
+  /** The map re-parsed under a draft kept by a conflict, whose line would still tell the user to wait for that. */
+  refreshed(): void {
+    if (!this.disposed) this.refusal.refreshed();
   }
 
   dispose(): void {
@@ -272,9 +270,4 @@ export class InlineEditor {
     this.host.removeClass("is-draft-empty");
     this.options.restore();
   }
-}
-
-/** The reason a refused save shows on the draft's error line. */
-function failure(error: unknown): string {
-  return error instanceof Error ? error.message : SAVE_FAILED_MESSAGE;
 }

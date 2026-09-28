@@ -1,5 +1,5 @@
 import { MarkdownView, Notice, Plugin, TFile, getLanguage, type WorkspaceLeaf } from "obsidian";
-import { setLanguage } from "./i18n";
+import { setLanguage, t } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
 import {
@@ -69,7 +69,7 @@ export default class MappyPlugin extends Plugin {
     this.register(() => { embeds.dispose(); });
     this.registerMarkdownPostProcessor(embeds.processor);
     this.addCommand({
-      id: "create-mindmap", name: "新しいマインドマップを作成",
+      id: "create-mindmap", name: t().cmdCreateMap,
       callback: () => {
         this.run(async () => {
           // "Same folder as current file" counts from the map's own note when a map is active (`activeFile()` asks
@@ -83,7 +83,7 @@ export default class MappyPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "convert-note-to-mindmap", name: "このノートをマインドマップ化",
+      id: "convert-note-to-mindmap", name: t().cmdConvertNote,
       checkCallback: checking => {
         const file = this.activeFile();
         if (!file || !isMappyCandidate(this.app, file) || readMapLayout(this.app, file) !== null) return false;
@@ -176,14 +176,14 @@ export default class MappyPlugin extends Plugin {
       const file = this.activeFile();
       const layout = file ? readMapLayout(this.app, file) : null;
       if (file && layout) this.run(() => this.open(file, false, layout), "マップを開けませんでした。");
-      else if (file && isMappyCandidate(this.app, file)) new Notice("先に「このノートをマインドマップ化」を実行してください。");
+      else if (file && isMappyCandidate(this.app, file)) new Notice(t().convertFirst(t().cmdConvertNote));
       else new Notice("Markdown ノートを開いてください。");
     });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       if (!(file instanceof TFile) || !isMappyCandidate(this.app, file)) return;
       const layout = readMapLayout(this.app, file);
       if (!layout) {
-        menu.addItem(item => item.setTitle("このノートをマインドマップ化").setIcon("git-fork")
+        menu.addItem(item => item.setTitle(t().cmdConvertNote).setIcon("git-fork")
           .onClick(() => { this.enableMap(file); }));
         return;
       }
@@ -224,7 +224,7 @@ export default class MappyPlugin extends Plugin {
   /** The command's route (§5 M6; a command only since LEV-81): the map as shown goes into the last active drawing. */
   private insertIntoExcalidraw(snapshot: ImportRequest | null): void {
     if (!snapshot) return;
-    this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), "Excalidraw への挿入に失敗しました。");
+    this.run(() => this.bridge.insertIntoActiveDrawing(snapshot), t().excalidrawInsertFailed);
   }
 
   /** The command's and the 操作 popover's route (§5 M13): choose the format, then the view captures what it shows. */

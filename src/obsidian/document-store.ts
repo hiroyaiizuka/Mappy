@@ -1,6 +1,8 @@
 import { MarkdownView, type App, type Editor, type TFile } from 'obsidian';
 import { applyEdits, type TextEdit } from '../core/commands';
 import { diffEdit, rebaseEdits } from '../core/text-edits';
+import { t } from '../i18n';
+import { ConflictError } from './conflict-error';
 
 interface DocumentStoreApp {
   workspace: {
@@ -54,8 +56,8 @@ const historyLimit = 50;
 const latestLimit = 16;
 /** `applyLatest` plans kept to carry the history's steps over (small closures); a step made before more layout switches than this goes. */
 const planLimit = 256;
-/** What a refused write says; the map view swaps it out once it has re-read the note. */
-export const conflictMessage = 'Markdown が変更されています。マップを更新してから再編集してください。';
+
+
 
 /** One file's map operations share a queue and a bounded, source-checked history. */
 export class DocumentStore {
@@ -186,7 +188,7 @@ export class DocumentStore {
       at = write.after;
       if (at === current) return { edits: rebasedEdits, carried };
     }
-    throw new Error(conflictMessage);
+    throw new ConflictError();
   }
 
   /**
@@ -230,10 +232,10 @@ export class DocumentStore {
   retract(file: TFile, write: LatestWrite): Promise<LatestWrite> {
     return this.enqueue(file, async (session) => {
       const current = await this.readCurrent(file);
-      if (this.observe(session, current)) throw new Error(conflictMessage);
+      if (this.observe(session, current)) throw new ConflictError();
       const entry = session.past[session.past.length - 1];
       if (!entry || entry.before !== write.before || entry.after !== write.after || current !== entry.after) {
-        throw new Error(conflictMessage);
+        throw new ConflictError();
       }
       await this.writeSafely(file, session, entry.after, entry.before, entry.inverse);
       session.latest = [];
@@ -298,7 +300,7 @@ export class DocumentStore {
   private editorSource(editors: DocumentEditor[]): string | undefined {
     const source = editors[0]?.getValue();
     if (editors.some((editor) => editor.getValue() !== source)) {
-      throw new Error('同じノートの編集内容が複数のタブで一致しません。Markdown 側の内容を揃えてから操作してください。');
+      throw new Error(t().tabsDisagree);
     }
     return source;
   }
@@ -352,7 +354,7 @@ export class DocumentStore {
   private navigateHistory(file: TFile, direction: 'undo' | 'redo'): Promise<LatestWrite> {
     return this.enqueue(file, async (session) => {
       const current = await this.readCurrent(file);
-      if (this.observe(session, current)) throw new Error(conflictMessage);
+      if (this.observe(session, current)) throw new ConflictError();
       const from = direction === 'undo' ? session.past : session.future;
       const to = direction === 'undo' ? session.future : session.past;
       this.carryTop(session, from);
@@ -363,7 +365,7 @@ export class DocumentStore {
       const edits = direction === 'undo' ? entry.inverse : entry.forward;
       if (current !== before) {
         this.invalidate(session);
-        throw new Error(conflictMessage);
+        throw new ConflictError();
       }
       await this.writeSafely(file, session, before, after, edits);
       session.latest = [];
@@ -399,12 +401,12 @@ export class DocumentStore {
     try {
       const editors = this.editorsFor(file);
       if (editors.length > 0) {
-        if (this.editorSource(editors) !== before) throw new Error(conflictMessage);
+        if (this.editorSource(editors) !== before) throw new ConflictError();
         for (const editor of editors) {
           const current = editor.getValue();
           // Obsidian may already have propagated a transaction to a shared buffer.
           if (current === after) continue;
-          if (current !== before) throw new Error(conflictMessage);
+          if (current !== before) throw new ConflictError();
           editor.transaction({
             changes: edits.map(({ from, to, text }) => ({
               from: editor.offsetToPos(from),
@@ -413,16 +415,16 @@ export class DocumentStore {
             })),
           }, 'mappy');
         }
-        if (this.editorSource(this.editorsFor(file)) !== after) throw new Error(conflictMessage);
+        if (this.editorSource(this.editorsFor(file)) !== after) throw new ConflictError();
       } else {
         const saved = await this.app.vault.process(file, (current) => {
           if (this.editorsFor(file).length > 0) {
-            throw new Error('保存中に Markdown エディタが開かれました。マップを更新して再度お試しください。');
+            throw new Error(t().editorOpenedWhileSaving);
           }
-          if (current !== before) throw new Error(conflictMessage);
+          if (current !== before) throw new ConflictError();
           return applyEdits(current, edits);
         });
-        if (saved !== after) throw new Error(conflictMessage);
+        if (saved !== after) throw new ConflictError();
       }
       session.source = after;
       session.revision += 1;

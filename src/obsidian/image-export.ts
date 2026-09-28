@@ -47,13 +47,16 @@ export interface FetchedImage {
 export async function fetchRemoteImage(url: string, timeoutMs = REMOTE_IMAGE_TIMEOUT_MS): Promise<FetchedImage> {
   let timer: number | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = window.setTimeout(() => { reject(new Error(`画像の取得が ${timeoutMs} ms 以内に終わりませんでした: ${url}`)); }, timeoutMs);
+    timer = window.setTimeout(() => { reject(new Error(t().imageTimeout(timeoutMs, url))); }, timeoutMs);
   });
   try {
     const response = await Promise.race([requestUrl({ url, throw: false }), timeout]);
-    if (response.status >= 400) throw new Error(`画像を取得できませんでした: ${response.status}`);
+    if (response.status >= 400) throw new Error(t().imageFetchFailed(response.status));
     const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
-    if (!mime.startsWith('image/')) throw new Error(`画像ではありません: ${mime || '不明な形式'}`);
+    if (!mime.startsWith('image/')) {
+      const text = t();
+      throw new Error(text.imageNotImage(mime || text.imageUnknownType));
+    }
     return { buffer: response.arrayBuffer, mime };
   } finally {
     window.clearTimeout(timer);
@@ -110,7 +113,7 @@ export function vaultImageResolver(app: App, sourcePath: string, fetchImage: (ur
 export function assertWellFormed(svg: string): void {
   const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
   const error = parsed.querySelector('parsererror');
-  if (error) throw new Error(`書き出した SVG が整形式ではありません: ${error.textContent?.trim().split('\n')[0] ?? ''}`);
+  if (error) throw new Error(t().svgMalformed(error.textContent?.trim().split('\n')[0] ?? ''));
 }
 
 export interface ExportOptions {
@@ -133,7 +136,7 @@ export async function renderSvg(app: App, note: TFile, source: CaptureSource, op
   const scene = await captureScene(source, {
     resolveImage: vaultImageResolver(app, note.path), ...(options.theme ? { theme: options.theme } : {}),
   });
-  if (scene.nodes.length === 0) throw new Error('書き出すノードがありません。');
+  if (scene.nodes.length === 0) throw new Error(t().exportNoNodes);
   const svg = buildSvg(scene);
   assertWellFormed(svg);
   return { svg, size: svgSize(scene.bounds) };

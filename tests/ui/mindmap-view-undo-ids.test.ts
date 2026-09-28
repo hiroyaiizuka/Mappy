@@ -19,7 +19,8 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { Notice } from '../../harness/browser/obsidian';
 import { layoutLabel } from '../../src/core/layout-mode';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
-import { conflictMessage, type DocumentStore, type LatestWrite } from '../../src/obsidian/document-store';
+import { type DocumentStore, type LatestWrite } from '../../src/obsidian/document-store';
+import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { accessibleName } from './accessible-name';
 
@@ -283,7 +284,7 @@ describe('the fold and the selection through Undo／Redo (LEV-150, the Undo／Re
     entry.content = entry.content.replace('- 子2\n', '- 外から\n');
     mounted.canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
     await settled(mounted, () => true);
-    expect(Notice.log).toContain(conflictMessage);
+    expect(Notice.log).toContain(t().conflict);
     expect(state(mounted).document?.source).toContain('- 外から\n');
   });
 

@@ -1,5 +1,6 @@
 import { FuzzySuggestModal, renderMatches, type App, type FuzzyMatch, type TFile } from 'obsidian';
 import { isMapNote } from './embed-target';
+import { t } from '../i18n';
 
 /**
  * The maps a note can call (§5 M12): every other Markdown note the metadata cache
@@ -40,11 +41,12 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
 
   constructor(app: App, private readonly except: TFile | null, private readonly choose: (file: TFile) => void) {
     super(app);
-    this.setPlaceholder('マップを検索（タイトルとパス）');
+    const text = t();
+    this.setPlaceholder(text.searchPlaceholder);
     this.setInstructions([
-      { command: '↑↓', purpose: '移動' },
-      { command: '↵', purpose: '呼び出す' },
-      { command: 'esc', purpose: '閉じる' },
+      { command: '↑↓', purpose: text.searchNavigate },
+      { command: '↵', purpose: text.searchInsert },
+      { command: 'esc', purpose: text.searchClose },
     ]);
   }
 
@@ -57,7 +59,8 @@ export class MapSearchModal extends FuzzySuggestModal<TFile> {
 
   /** No map at all and no map matching the query are different news; the empty line says which. */
   onNoSuggestion(): void {
-    this.emptyStateText = this.getItems().length === 0 ? 'マップがありません' : '一致するマップがありません';
+    const text = t();
+    this.emptyStateText = this.getItems().length === 0 ? text.searchNoMaps : text.searchNoMatch;
     super.onNoSuggestion();
   }
 
