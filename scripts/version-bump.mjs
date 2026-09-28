@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { releaseVersion, staleKnownLimitations } from './validate-release.mjs';
+import { knownLimitationReadmes, releaseVersion, staleKnownLimitations } from './validate-release.mjs';
 
 function readJsonObject(path, label) {
   let value;
@@ -21,8 +21,9 @@ function readJsonObject(path, label) {
  * package.json and package-lock.json are npm's job (`npm version <x.y.z>` runs this as its
  * `version` script); `npm run validate` catches any drift between the four files afterwards.
  * Mirrors the official sample plugin's version-bump.mjs, with the repository's 2-space JSON.
- * Refuses, before writing anything, when README still lists a known limitation limited to an
- * older release, so `npm version` stops before it commits and tags (LEV-209).
+ * Refuses, before writing anything, when either README (README.md, README.ja.md) still lists a
+ * known limitation limited to an older release, so `npm version` stops before it commits and tags
+ * (LEV-209, LEV-227).
  */
 export function bumpVersion(rootDir, version) {
   if (typeof version !== 'string' || !releaseVersion.test(version)) {
@@ -33,13 +34,15 @@ export function bumpVersion(rootDir, version) {
   const versionsPath = join(root, 'versions.json');
   const manifest = readJsonObject(manifestPath, 'manifest.json');
   const versions = readJsonObject(versionsPath, 'versions.json');
-  let readme;
-  try {
-    readme = readFileSync(join(root, 'README.md'), 'utf8');
-  } catch (error) {
-    throw new Error(`README.md: ${error.code === 'ENOENT' ? 'file is missing' : 'cannot read file'}.`);
-  }
-  const stale = staleKnownLimitations(readme, version);
+  const stale = knownLimitationReadmes.flatMap((readme) => {
+    let text;
+    try {
+      text = readFileSync(join(root, readme.file), 'utf8');
+    } catch (error) {
+      throw new Error(`${readme.file}: ${error.code === 'ENOENT' ? 'file is missing' : 'cannot read file'}.`);
+    }
+    return staleKnownLimitations(readme, text, version);
+  });
   if (stale.length > 0) throw new Error(stale.join('\n'));
   if (typeof manifest.minAppVersion !== 'string' || !releaseVersion.test(manifest.minAppVersion)) {
     throw new Error('manifest.json.minAppVersion: expected a version in x.y.z format.');

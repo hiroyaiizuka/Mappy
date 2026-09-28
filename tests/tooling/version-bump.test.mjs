@@ -54,7 +54,8 @@ beforeEach(() => {
     packages: { '': { name: 'mappy', version: '0.0.1' } },
   });
   writeFileSync(join(root, 'LICENSE'), 'Test license\n');
-  writeFileSync(join(root, 'README.md'), '# Mappy\n\n## 既知の制限\n');
+  writeFileSync(join(root, 'README.md'), '# Mappy\n\n## Known limitations\n');
+  writeFileSync(join(root, 'README.ja.md'), '# Mappy\n\n## 既知の制限\n');
 });
 
 afterEach(() => {
@@ -121,17 +122,25 @@ describe('bumpVersion', () => {
     expect(readJson('versions.json')).toEqual({ '0.0.1': '1.8.7' });
   });
 
-  it('refuses, before writing anything, while README lists a known limitation limited to an older release (LEV-209)', () => {
-    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## 既知の制限\n\n- a（0.0.1 まで）\n- b（0.1.0 まで）\n');
-    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.md:5: known limitation "0.0.1 まで" is limited to a release older than 0.1.0.');
+  it('refuses, before writing anything, while either README lists a known limitation limited to an older release (LEV-209, LEV-227)', () => {
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## Known limitations\n\n- a (up to 0.0.1)\n- b (up to 0.1.0)\n');
+    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.md:5: known limitation "up to 0.0.1" is limited to a release older than 0.1.0.');
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## Known limitations\n');
+    writeFileSync(join(root, 'README.ja.md'), '# Mappy\n\n## 既知の制限\n\n- a（0.0.1 まで）\n- b（0.1.0 まで）\n');
+    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.ja.md:5: known limitation "0.0.1 まで" is limited to a release older than 0.1.0.');
     expect(readJson('manifest.json').version).toBe('0.0.1');
     expect(readJson('versions.json')).toEqual({ '0.0.1': '1.8.7' });
     expect(bumpVersion(root, '0.0.1')).toEqual({ version: '0.0.1', minAppVersion: '1.8.7' });
   });
 
-  it('refuses without README, or without its known-limitations section, instead of skipping the check', () => {
+  it('refuses without either README, or without its known-limitations section, instead of skipping the check', () => {
     writeFileSync(join(root, 'README.md'), '# Mappy\n');
-    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.md: missing the "## 既知の制限" section');
+    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.md: missing the "## Known limitations" section');
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## Known limitations\n');
+    writeFileSync(join(root, 'README.ja.md'), '# Mappy\n');
+    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.ja.md: missing the "## 既知の制限" section');
+    rmSync(join(root, 'README.ja.md'));
+    expect(() => bumpVersion(root, '0.1.0')).toThrow('README.ja.md: file is missing.');
     rmSync(join(root, 'README.md'));
     expect(() => bumpVersion(root, '0.1.0')).toThrow('README.md: file is missing.');
     expect(readJson('manifest.json').version).toBe('0.0.1');
@@ -173,11 +182,11 @@ describe('version-bump CLI', () => {
   });
 
   it('fails on a stale README known limitation so `npm version` stops before committing and tagging', () => {
-    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## 既知の制限\n\n- a（0.0.1 まで）\n');
+    writeFileSync(join(root, 'README.md'), '# Mappy\n\n## Known limitations\n\n- a (up to 0.0.1)\n');
     npmBumpsPackageFiles('0.2.0');
     const result = runCli([], { npm_package_version: '0.2.0' });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Version bump: README.md:5: known limitation "0.0.1 まで"');
+    expect(result.stderr).toContain('Version bump: README.md:5: known limitation "up to 0.0.1"');
     expect(readJson('manifest.json').version).toBe('0.0.1');
   });
 
