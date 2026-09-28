@@ -26,6 +26,7 @@ import { layoutLabel } from '../../src/core/layout-mode';
 import type { CallTargets } from '../../src/core/calls';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -49,12 +50,8 @@ const SOURCE = [
 const HOST_SOURCE = '---\nmappy: true\n---\n## 呼び出し元\n- ![[undo-ids]]\n- ![[undo-ids#トピック]]\n';
 
 interface Opened { called: MountedMapView; host: MountedMapView; store: DocumentStore }
-const opened: Opened[] = [];
 afterEach(async () => {
-  for (const { called, host } of opened.splice(0)) {
-    await host.close();
-    await called.close();
-  }
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -66,7 +63,6 @@ async function open(): Promise<Opened> {
   app.put(HOST, HOST_SOURCE);
   const host = await mountMapView(HOST, HOST_SOURCE, 'mindmap', app, { store });
   const result = { called, host, store };
-  opened.push(result);
   await settled(result, () => true);
   return result;
 }
@@ -305,7 +301,6 @@ describe("the calling map's folds through the writes of the called note's map ta
     const listeners = (opened.store as unknown as { writeListeners: Set<unknown> }).writeListeners;
     const count = listeners.size;
     await opened.host.close();
-    opened.host.close = () => Promise.resolve();
     // The host view's own subscription and its reader's.
     expect(count - listeners.size).toBe(2);
   });
