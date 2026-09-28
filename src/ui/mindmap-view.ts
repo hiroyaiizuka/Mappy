@@ -1752,13 +1752,12 @@ export class MindmapView extends FileView {
     const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
     const before = this.shownState();
     // The provisional name (LEV-203) is written into the note, in the app's language (src/i18n): a note keeps it when the language changes.
+    // It is chosen by where the node lands (provisionalName), so the edit is planned once to find that place.
     let name = t().newNodeTitle;
     let plan = planEdit(document, provisional ? { ...command, title: name } : command);
-    // A node that lands as a free topic (Enter on a topic's root, Tab on the note's own root) is named as the empty
-    // canvas names one: the same kind of node under the same provisional name, whichever way it was made.
-    if (provisional && this.addsTopic(document, plan)) {
-      name = t().newTopicTitle;
-      plan = planEdit(document, { ...command, title: name });
+    if (provisional) {
+      name = this.provisionalName(document, plan);
+      if (name !== t().newNodeTitle) plan = planEdit(document, { ...command, title: name });
     }
     const write = await this.commit(document.source, plan.edits, file, provisional);
     if (this.file !== file || this.closed) return;
@@ -1766,11 +1765,20 @@ export class MindmapView extends FileView {
     if (selected && provisional) this.editTitle({ write, ...before, name });
   }
 
-  /** Whether the node `plan` adds is a free topic of the note it leaves. */
-  private addsTopic(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): boolean {
-    const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title);
+  /**
+   * The provisional name of the node `plan` adds, by where it stands on the map of the note it leaves: a node that is a
+   * root there (a free topic: Enter on a topic's root, Tab on the note's own root; or the body root of a note that had
+   * none) is named as the empty canvas names one, 「トピック」; one right under a root (the body's, which may be the note's
+   * own, or a topic's) 「メイントピック」 (LEV-250); one further down 「サブトピック」.
+   */
+  private provisionalName(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): string {
+    const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title, undefined, document.format);
     const added = nodeAt(after, plan.selectionOffset);
-    return added !== undefined && projectMap(after).topics.some(topic => topic.id === added.id);
+    if (!added) return t().newNodeTitle;
+    const { root, topics } = projectMap(after);
+    const roots = new Set([root.id, ...topics.map(topic => topic.id)]);
+    if (roots.has(added.id)) return t().newTopicTitle;
+    return added.parentId !== null && roots.has(added.parentId) ? t().mainTopicTitle : t().newNodeTitle;
   }
 
   /** What an addition changes on screen besides the note: the selection, the folds it opens, the viewport it pans. */

@@ -20,7 +20,8 @@ export type EditCommand =
   /**
    * A new last child, or a sibling right after the node's branch. Empty by default; `title` writes the item's
    * text in the same edit, so `![[map]]` called from the search (§5 M12) is one step, as Tab is, and so is a
-   * node the map adds under its provisional name (LEV-203: 「サブトピック」, which the inline editor then selects).
+   * node the map adds under its provisional name (LEV-203, LEV-250: 「メイントピック」 right under a root, 「サブトピック」 further
+   * down, which the inline editor then selects).
    */
   | { type: 'add-child' | 'add-sibling'; nodeId: string; title?: string }
   | { type: 'delete' | 'move-up' | 'move-down'; nodeId: string }

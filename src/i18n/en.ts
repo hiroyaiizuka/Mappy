@@ -154,7 +154,9 @@ export const en = {
   cancel: "Cancel",
   save: "Save",
 
-  // The map view (src/ui/mindmap-view.ts). `newNodeTitle` and `newTopicTitle` are written into the note.
+  // The map view (src/ui/mindmap-view.ts). `mainTopicTitle`, `newNodeTitle` and `newTopicTitle` are written into the note:
+  // a node added right under a root is a main topic, one further down a subtopic (LEV-250), a free topic a topic.
+  mainTopicTitle: "Main topic",
   newNodeTitle: "Subtopic",
   newTopicTitle: "Topic",
   noteChanged: "The note has changed. Open the original note and try again.",

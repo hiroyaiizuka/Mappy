@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
 // The workflow is not linted by ESLint, so this test is what keeps its shape honest:
-// tag-only releases, dry-runs that never get a write token, and the three BRAT assets.
+// tag-only releases, dry-runs that never get a write token, the three BRAT assets, a plain (not
+// pre-release) Release for every version, and a build provenance attestation of the same three files.
 const workflowPath = fileURLToPath(new URL('../../.github/workflows/release.yml', import.meta.url));
 const workflow = parse(readFileSync(workflowPath, 'utf8'));
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../manifest.json', import.meta.url)), 'utf8'));
@@ -19,6 +20,7 @@ describe('release workflow', () => {
   const triggers = workflow.on;
   const build = workflow.jobs.build;
   const release = workflow.jobs.release;
+  const attestJob = workflow.jobs.attest;
 
   it('runs on plain x.y.z tags only, matching manifest.version without a "v" prefix', () => {
     expect(triggers.push).toEqual({ tags: ['[0-9]+.[0-9]+.[0-9]+'] });
@@ -35,10 +37,15 @@ describe('release workflow', () => {
     ]));
   });
 
-  it('gives the build job a read-only token and only the tag-push release job a write token', () => {
+  it('gives the build job a read-only token and write tokens only to the tag-push jobs', () => {
     expect(workflow.permissions).toEqual({ contents: 'read' });
     expect(build.permissions).toBeUndefined();
     expect(release.permissions).toEqual({ contents: 'write' });
+    // What actions/attest's README asks for. Only the tag-push attest job has them, and it can't write Releases.
+    expect(attestJob.permissions).toEqual({
+      contents: 'read', 'id-token': 'write', attestations: 'write', 'artifact-metadata': 'write',
+    });
+    expect(attestJob.if).toBe(release.if);
     expect(release.needs).toBe('build');
     expect(release.if).toContain("github.event_name == 'push'");
     expect(release.if).toContain("github.ref_type == 'tag'");
@@ -69,9 +76,38 @@ describe('release workflow', () => {
     expect(create.env).toEqual({ GH_TOKEN: '${{ github.token }}', GH_REPO: '${{ github.repository }}' });
     expect(create.run).toContain('gh release create "$GITHUB_REF_NAME"');
     expect(create.run).toContain('--verify-tag');
-    expect(create.run).toContain('--prerelease');
+    // 0.x too is a plain Release (LEV-249): none of the 8,143 directory entries points its manifest version
+    // at a pre-release, and BRAT reads plain Releases too. Beta is shown by the 0.x version and the README.
+    expect(create.run).not.toContain('prerelease');
+    // BRAT can't see a draft (it isn't in the API response for users without push access).
     expect(create.run).not.toContain('--draft');
     for (const file of distributables) expect(create.run).toContain(file);
+  });
+
+  it('attests the three released files in a job after the release, with actions/attest pinned to a commit', () => {
+    // After the release and in its own job (LEV-249 review): a failed attestation must not stop distribution,
+    // and `gh run rerun --failed` re-runs only this job (re-running the release job would fail on the existing
+    // Release, and a pushed tag is never reused).
+    expect(attestJob.needs).toEqual(['build', 'release']);
+    const download = attestJob.steps.find((step) => step.uses?.startsWith('actions/download-artifact@'));
+    expect(download.with).toEqual({ name: 'mappy-${{ needs.build.outputs.version }}', path: `dist/${manifest.id}` });
+    const attestIndex = attestJob.steps.findIndex((step) => step.uses?.startsWith('actions/attest@'));
+    expect(attestIndex).toBeGreaterThan(attestJob.steps.indexOf(download));
+    const attest = attestJob.steps[attestIndex];
+    expect(attest.uses).toMatch(/^actions\/attest@/u);
+    expect(attest.with['subject-path'].trim().split('\n').map((line) => line.trim())).toEqual(distributables);
+    // No other job attests: build, and any job added later, may also run for pull requests and dry-runs.
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name !== 'attest') expect(job.steps.some((step) => step.uses?.startsWith('actions/attest')), name).toBe(false);
+    }
+  });
+
+  it('pins every action to a full commit SHA', () => {
+    // The attestation vouches for bytes that build, release and attest made and carried; a retagged action in any
+    // of them could change them, and the attest job holds id-token, which every step of that job can use.
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      for (const step of job.steps) if (step.uses) expect(step.uses, name).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/u);
+    }
   });
 
   it('never expands workflow context inside a shell script', () => {
