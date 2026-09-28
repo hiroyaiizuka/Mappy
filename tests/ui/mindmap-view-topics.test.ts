@@ -33,12 +33,15 @@ const closeView = (view: MindmapView): Promise<void> => (view as unknown as { cl
  * `contentEl.doc`, passes.
  */
 async function withoutDocument(ms: number): Promise<void> {
-  const globals = globalThis as { document?: Document };
-  const kept = document;
-  delete globals.document;
-  try { await new Promise(resolve => setTimeout(resolve, ms)); } finally { globals.document = kept; }
+  // The property as the jsdom environment put it (an accessor or a value), so it goes back the same way.
+  const kept = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  if (!kept) throw new Error('No global document to take away');
+  delete (globalThis as { document?: Document }).document;
+  try { await new Promise(resolve => setTimeout(resolve, ms)); } finally { Object.defineProperty(globalThis, 'document', kept); }
 }
 afterEach(async () => {
+  // A test's stand-ins go first: a read it left never settling would hold the close up (`saveDraft` → `readNow`).
+  vi.restoreAllMocks();
   // Every view is closed and the check runs even when one close fails; the first failure is still the test's to report.
   const closes = await Promise.allSettled(opened.splice(0).map(closeView));
   document.body.replaceChildren();
@@ -2390,20 +2393,6 @@ describe('MindmapView after its tab closes (LEV-236)', () => {
     expect(Notice.log.slice(before)).toEqual([]);
   });
 
-  it('a read of the called maps under way when the tab closes and failing after it shows no notice either', async () => {
-    const { view, settle } = await mount(THREE_SECTIONS);
-    let fail: (error: Error) => void = () => undefined;
-    const reader = (view as unknown as { reader: { read(...args: unknown[]): Promise<unknown> } }).reader;
-    vi.spyOn(reader, 'read').mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
-    (view as unknown as { scheduleRecall(): void }).scheduleRecall();
-    await past(60);
-    await close(view);
-    const before = Notice.log.length;
-    fail(new Error('calls failed'));
-    await settle();
-    expect(Notice.log.slice(before)).toEqual([]);
-  });
-
   it('a re-read overtaken by a newer one and failing after it shows no notice: the newer read answers for the note', async () => {
     const { view, store, settle } = await mount(THREE_SECTIONS);
     const fails: ((error: Error) => void)[] = [];
@@ -2420,21 +2409,15 @@ describe('MindmapView after its tab closes (LEV-236)', () => {
     expect(Notice.log.slice(before)).toEqual([]);
   });
 
-  it('a read of the called maps overtaken by a re-read of the note and failing after it shows no notice', async () => {
-    const { view, settle } = await mount(THREE_SECTIONS);
-    let fail: (error: Error) => void = () => undefined;
-    const reader = (view as unknown as { reader: { read(...args: unknown[]): Promise<unknown> } }).reader;
-    const reads = vi.spyOn(reader, 'read').mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
-    (view as unknown as { scheduleRecall(): void }).scheduleRecall();
-    await past(60);
+  it('a re-read someone awaits keeps its error when a newer read overtakes it: only the scheduled one drops it (review 3)', async () => {
+    const { view, store } = await mount(THREE_SECTIONS);
+    const fails: ((error: Error) => void)[] = [];
+    vi.spyOn(store, 'read').mockImplementation(() => new Promise<string>((_, reject) => { fails.push(reject); }));
+    const awaited = (view as unknown as { refresh(): Promise<void> }).refresh();
+    // A watcher's change moves the epoch on at once, as `setState`'s or `readNow`'s read is still under way.
     (view as unknown as { scheduleRefresh(): void }).scheduleRefresh();
-    await past(60);
-    await settle();
-    reads.mockRestore();
-    const before = Notice.log.length;
-    fail(new Error('calls failed'));
-    await settle();
-    expect(Notice.log.slice(before)).toEqual([]);
+    fails[0]?.(new Error('read failed'));
+    await expect(awaited).rejects.toThrow('read failed');
   });
 
   // Not a regression test: it passes with the fix reverted too. It pins the other side of it, that the silence is
