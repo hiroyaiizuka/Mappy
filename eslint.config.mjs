@@ -55,6 +55,8 @@ export default defineConfig(
       "no-restricted-imports": ["error", {
         patterns: [{ group: ["node:*", "electron"], message: "Runtime must work on mobile." }],
       }],
+      // The guidelines want only errors in the default console; `recommended` also lets warn and debug through.
+      "no-console": ["error", { allow: ["error"] }],
     },
   },
 );
