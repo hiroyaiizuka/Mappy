@@ -5,6 +5,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 - 参照した公式文書（2026-09-27 に取得）: [Submit your plugin](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)、[Submission requirements for plugins](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)、[Plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)、[Developer policies](https://docs.obsidian.md/community-directory/developer-policies)。公式 ESLint プラグイン `eslint-plugin-obsidianmd` 0.4.2 の規則（`node_modules` で確認）
 - 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。項目の分け方の正本は `docs/harness.md`「審査要件のチェック項目」で、本書の表はそれを 0.3.8 の木（`main` の `0e8c4d1`）で照合し直し、2026-09-27 の公式文書で変わった点（提出の手順など）を足した**この時点の結果**である（例外: #2・#27・#29・#31・#32 は README の英語版〔LEV-227、#122〕が、#12・#14・#16 は LEV-241 が英語化〔LEV-226〕のあとの木〔2026-09-28、`16d8384`〕で書き直した。ほかの行は 0.3.8 の木のまま照合し直していない）。番号は本書の中だけのもの。**§1.1〜1.7 の 32 行は harness.md の項目をすべては写していない**（§1.8 の 6 行は LEV-228 が足した。§1.1〜1.7 は、`version` の 4 ファイル一致、manifest の不明なキー、サンプルコードの残り、`fs`／`process` の不使用、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしないこと、README の保存形式・導入・復旧・対応環境の節などを、LEV-24 から変わりうる点が無いと見て省いた）。提出の直前の再確認（LEV-228）は harness.md の全項目で行い、本書との食い違いはそこで片付ける。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
 - **提出の直前の再確認（LEV-228、2026-09-28、0.4.0 の木 `ff49476`）は §4。** §1 の行は §4 の結果で「結果」と「担当」を書き換え、LEV-136 が読んでいなかった Community directory の 3 文書（FAQ・Manage your plugin or theme・Set up and claim）と Release your plugin with GitHub Actions から増えた項目を §1.8 に足した
+- **0.4.1 の自動レビューの結果と対応（LEV-253）は §4.7。** §1.8 に #39（CSS lint）・#40（Vault の列挙）を足した
 - **本人の決定（2026-09-28）と提出する版（LEV-249）:** #3 は §4.3 の (a)（0.x も通常の Release）、#9 は §4.4 の (B)（`isDesktopOnly: true`）、#35 は入れる。3 つとも 0.4.1 から効き、提出する版は 0.4.1（LEV-249 の merge のあとに tag を打って公開する）。§4 の結果（0.4.0 の木）は 0.4.1 の木で取り直す（§4.6 の 2）
 - 公式文書の**どれにも UI・README の言語の要件は無い**（4 文書とも、言語・英語・ローカライズへの言及なし）。英語化は審査の必須条件ではなく、一覧の読者（英語）に届けるための判断である
 
@@ -60,7 +61,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 担当 |
 | --- | --- | --- | --- | --- |
 | 24 | 静的な見た目をインラインスタイルで書かない。CSS 変数を使う（Guidelines） | インラインは位置・寸法（レイアウトの結果）だけ。lint の `no-static-styles-assignment` が通る | PASS | — |
-| 25 | CSS を自分の要素に限定する（Guidelines の意図） | `.mappy-*` と `.internal-embed.mappy-embed-host`（埋め込みの置き場）。`!important` は `.mappy-view { padding: 0 }` の 1 件 | PASS | — |
+| 25 | CSS を自分の要素に限定する（Guidelines の意図） | `.mappy-*` と `.internal-embed.mappy-embed-host`（埋め込みの置き場）。0.4.1 までは `!important` が `.mappy-view { padding: 0 }` の 1 件あり、自動レビューの CSS lint が Warning にした（#39）。LEV-253 で詳細度に置き換えた | PASS | — |
 
 ### 1.6 開発者ポリシー
 
@@ -91,6 +92,8 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 36 | 一覧の掲載情報: アイコン・短い説明と長い説明・カテゴリ・支払いの区分（Free／Optional payment／Paid）・スクリーンショット（Manage） | 未入力（提出のあとに Edit listing で本人が入れる）。支払いの区分は Free（課金・アカウント・有料サービスなし。#28） | 未実施（本人） | LEV-228（本人） |
 | 37 | リポジトリ: issues が有効、GitHub がライセンスを認識する（FAQ、廃止前の検証 workflow） | `hiroyaiizuka/Mappy` は public、issues 有効、GitHub のライセンス判定は `mit` | PASS | — |
 | 38 | 導入の案内（要件ではない） | README の導入は BRAT だけ（「It is not in the community plugins directory yet」）。一覧に載ったら「Community plugins から導入」を主にし、BRAT をベータの経路に回す | 一覧に載ったあとで直す | 載ったあとの版 |
+| 39 | 自動レビューの CSS lint: `!important` を避け、詳細度か CSS 変数で上書きする（0.4.1 の結果、Warning） | 0.4.1 の `styles.css:17`（`.mappy-view` の `padding: 0 !important`）。LEV-253 で `.workspace-leaf-content .view-content.mappy-view { padding: 0 }`（詳細度 0,3,0。app.css 1.14.2 の `.workspace-leaf-content .view-content`〔0,2,0〕に勝つ。Obsidian 自身の view と同じ打ち消し方）に置き換え、`styles.css` から `!important` を無くした（コメントの中の語も言い換えた）。`tests/tooling/ui-css.test.mjs` が不在と詳細度を検査する。見た目は実機 E70 で確かめる（§4.7） | 対応済み（main）／スキャナーの判定は次の版の Release で見る | LEV-253 |
+| 40 | 自動レビューの Behavior: Vault の列挙（`vault.getFiles`・`getMarkdownFiles` など）はすべてのファイルパスを読める（0.4.1 の結果、Recommendation） | 0.4.1 では 3 か所。`src/obsidian/map-files.ts` の作成先フォルダの解決（大文字小文字を無視するための `getAllLoadedFiles().find(...)`）は LEV-253 でルートから各フォルダの `children` をたどる形に変え、列挙をやめた（`metadataCache.getFirstLinkpathDest` はノートをリンクで引くものでフォルダを引けないので使わない）。残る 2 か所は機能が全ファイルを候補にするので残す: `src/ui/link-suggest.ts` の `getFiles`（`[[`／`![[` の候補）と `src/obsidian/map-search.ts` の `getMarkdownFiles`（呼び出すマップの検索）。両方の README の「ネットワーク利用」に、一覧は手元で読むだけで外に送らないと書いた。`tests/tooling/vault-enumeration.test.mjs` が `src/` の列挙の API（Vault の一覧・`recurseChildren`・metadataCache の表・`adapter.list`）の参照をこの 2 か所に固定する（`TFolder.children` を根から手で走査する書き方は見えないのでレビューで見る） | 一部対応（Recommendation は残る見込み。機能上要る） | LEV-253 |
 
 ## 2. 英語化の方式
 
@@ -206,7 +209,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 提出は外部への公開なので、ここまでの準備はエージェントが行い、提出は本人（またはその確認のあとのオーケストレーター）が行う。
 
 1. 提出の当日に、`id`・`name` の衝突を一覧（`https://community.obsidian.md/assets/community-plugins.json` か obsidian-releases の `community-plugins.json`）で確かめ直す
-2. 提出する版（0.4.1。§4.3 の (a) で通常の Release、§4.4 の (B)、#35 の attestation つき）を切り、その Release を用意する。attestation は Release の後の `attest` job が作るので、`release.yml` の run が `attest` job まで成功したことと、3 ファイルの `gh attestation verify` を確かめてから提出する（失敗していれば `gh run rerun <run-id> --failed`。harness.md「リリース手順」4）。版を切ったら、提出までの間に `main` へ別の変更を入れない（HEAD をその版の tag に揃えておく）。**掲載のあとも同じ問題が続く**: スキャナーは Release のたびと Request review・Check for new releases で走査し、どの木をビルドするか（Release の tag か既定ブランチの HEAD か）は公式文書に無い。HEAD なら、次の Release までに `main` へ入った `src/` の変更で Build verification が合わなくなりうる。提出後の最初の自動レビューで、どの木をビルドしたかを結果から読み取り、HEAD なら「`src/` を変えたら版を切るまで既定ブランチに入れない」か「リリース用のブランチを既定にする」かを決める（本人）。その木で §4.2 を取り直す: `npm run validate`・`npm run lint`、`npm run build` の 3 ファイルと Release の添付の sha256、`dist/mappy/` のサイズ
+2. 提出する版（0.4.1。§4.3 の (a) で通常の Release、§4.4 の (B)、#35 の attestation つき）を切り、その Release を用意する。attestation は Release の後の `attest` job が作るので、`release.yml` の run が `attest` job まで成功したことと、3 ファイルの `gh attestation verify` を確かめてから提出する（失敗していれば `gh run rerun <run-id> --failed`。harness.md「リリース手順」4）。版を切ったら、提出までの間に `main` へ別の変更を入れない（HEAD をその版の tag に揃えておく）。**掲載のあとも同じ問題が続く**: スキャナーは Release のたびと Request review・Check for new releases で走査し、どの木をビルドするか（Release の tag か既定ブランチの HEAD か）は公式文書に無い。HEAD なら、次の Release までに `main` へ入った `src/` の変更で Build verification が合わなくなりうる。提出後の最初の自動レビューで、どの木をビルドしたかを結果から読み取り、HEAD なら「`src/` を変えたら版を切るまで既定ブランチに入れない」か「リリース用のブランチを既定にする」かを決める（本人）。**0.4.1 の自動レビュー（§4.7）では判別できなかった**: 結果が出た時点（LEV-253 の起票 2026-09-28T10:53Z）の `main` の HEAD は 0.4.1 の tag と同じ `e1978e2` で（次の merge の LEV-251 は 10:57Z）、どちらをビルドしても同じ結果になる。その木で §4.2 を取り直す: `npm run validate`・`npm run lint`、`npm run build` の 3 ファイルと Release の添付の sha256、`dist/mappy/` のサイズ
 3. community.obsidian.md に Obsidian アカウントでサインインし、Profile の GitHub で Connect（`hiroyaiizuka` を連携）。Action required notifications を有効にする
 4. Plugins → New plugin: GitHub repository URL `https://github.com/hiroyaiizuka/Mappy`、Owner は本人。Developer policies に同意し、保守を続けること（続けられなければ移譲か削除）を確認して Submit
 5. 自動レビューの結果（Manifest・Releases・Source code・Build verification）を記録する。Error は版を上げた Release で応える（Request review で再走査）。Warning は提出を止めないが、直せるものは直す
@@ -223,3 +226,16 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
   "repo": "hiroyaiizuka/Mappy"
 }
 ```
+
+### 4.7 0.4.1 の自動レビューの結果と対応（LEV-253、2026-09-28）
+
+0.4.1（`e1978e2`、通常の Release、2026-09-28T10:00:01Z 公開）を提出したあとの自動レビューの結果（本人が Linear に貼ったもの）。
+
+| 節 | 結果 | 対応 |
+| --- | --- | --- |
+| Releases・Network requests・Dependencies・Code obfuscation・Build verification（`main.js` が byte-for-byte で一致） | Pass | — |
+| CSS lint | Warning: `Avoid !important — override styles by increasing selector specificity or using CSS variables instead.`（`styles.css:17`） | #39。詳細度に置き換えた |
+| Behavior | Recommendation: `Vault Enumeration: Enumerates all files in the vault (vault.getFiles, getMarkdownFiles, etc.). Gives the plugin access to every file path in the vault.` | #40。作成先フォルダの解決から列挙を外し、補完と検索の 2 か所は残して README に書いた |
+
+- Build verification の Pass は、スキャナーのビルドが tag の木と一致したことしか言えない（HEAD も同じ木だった。§4.6 の 2）
+- 直した結果は、版を上げた Release を出して Request review で再走査するまで一覧の結果に出ない（§4.6 の 5）。LEV-253 は版を切らない。merge すると `main` の HEAD が 0.4.1 の tag から離れるので、スキャナーが HEAD をビルドする場合は次の Release まで Build verification が合わなくなりうる（§4.6 の 2 の論点がそのまま効く）

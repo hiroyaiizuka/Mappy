@@ -196,6 +196,9 @@ code { background: var(--code-background); color: var(--code-normal); border-rad
   background: var(--background-primary);
 }
 .harness-pane .workspace-leaf-content, .harness-pane .view-content { position: absolute; inset: 0; }
+/* Obsidian 1.14.2's app.css pads every pane's content with this selector (`--size-4-3` 12px, `--size-4-8` 32px), and
+   this sheet loads before styles.css as app.css does before a plugin's: the map's own rule has to outrank it (LEV-253). */
+.workspace-leaf-content .view-content { padding: 12px 12px 32px; }
 
 /* A rendered host note standing in for Obsidian's reading view (embed fixtures, M10). */
 .harness-pane .markdown-reading-view { position: absolute; inset: 0; overflow: auto; padding: 24px 32px 48px; font-size: var(--font-text-size); line-height: 1.6; }

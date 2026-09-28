@@ -10,14 +10,21 @@
      body's computed colour, not the variable: the map reads each variable again so the explicit theme's re-derived value
      (below) reaches the nodes and the inline input (LEV-93). Read here in every mode, like `color`: following the app it
      resolves to the same colour the inherited property had. The one difference: the app hides carets during a modal's
-     open/close animation with `body.hide-cursor { caret-color: transparent !important }`, which this declaration outranks. */
+     open/close animation with an important `body.hide-cursor { caret-color: transparent }`, which a declaration on the
+     map outranks as it would any inherited value. */
   caret-color: var(--caret-color);
   position: relative;
   height: 100%;
-  padding: 0 !important;
+  padding: 0;
   overflow: hidden;
   background: var(--background-primary);
 }
+
+/* The view's own container is the pane's `.view-content`, which app.css pads by `.workspace-leaf-content .view-content`
+   (and the mobile drawer by `.workspace-drawer-active-tab-content .view-content`). Obsidian's own views take it off by
+   specificity (`.workspace-leaf-content[data-type='markdown'] .view-content { padding: 0 }`); this does the same, one
+   class above both (LEV-253: the community scan warns on important declarations). */
+.workspace-leaf-content .view-content.mappy-view { padding: 0; }
 
 /*
  * Explicit theme (settings, M14). The view puts Obsidian's own `theme-light` / `theme-dark`

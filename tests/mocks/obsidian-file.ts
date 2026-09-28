@@ -18,6 +18,8 @@ export class TFile {
 
 export class TFolder {
   path = '';
+  /** Filled by a test that builds a tree; Obsidian keeps it in step with the vault. */
+  children: { name: string }[] = [];
   get name(): string { return this.path.split('/').pop() ?? ''; }
   isRoot(): boolean { return this.path === '/'; }
 }

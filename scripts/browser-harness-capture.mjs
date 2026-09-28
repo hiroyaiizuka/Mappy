@@ -163,6 +163,32 @@ async function captureFixtures(recorder, page, timings) {
 }
 
 /**
+ * The pane's padding stays off the map (LEV-253). harness.css carries app.css's `.workspace-leaf-content .view-content`
+ * padding, loaded before styles.css as in Obsidian, so the map's rule has to win on specificity, not on `!important`.
+ */
+async function captureViewPadding(recorder, page) {
+  await loadFreshFixture(page, OPERATION_FIXTURE);
+  for (const theme of ['light', 'dark']) {
+    await recorder.run(`view-padding-${theme}`, `ページ${theme === 'light' ? '明色' : '暗色'}でマップのペインを読む`, 'マップの .view-content の padding が 4 辺とも 0 で、キャンバスがその箱いっぱい（同じペインの Obsidian の既定は 12px 12px 32px）', async () => {
+      await page.harness(`h.setPageTheme(${JSON.stringify(theme)})`);
+      await page.settle();
+      const box = await page.evaluate(`(() => {
+        const content = document.querySelector('#harness-pane .workspace-leaf-content .view-content.mappy-view');
+        if (!content) return null;
+        const style = getComputedStyle(content);
+        const rect = element => { const r = element.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; };
+        return { padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft], content: rect(content), canvas: rect(content.querySelector('.mappy-canvas')) };
+      })()`);
+      expect(box, 'no .workspace-leaf-content .view-content.mappy-view in the pane');
+      expect(box.padding.every(side => side === '0px'), `padding ${box.padding.join(' ')}`);
+      expect(box.canvas.every((value, index) => Math.abs(value - box.content[index]) < 0.5), `canvas ${box.canvas.join(',')} vs content ${box.content.join(',')}`);
+      return `padding ${box.padding.join(' ')}、キャンバス ${box.canvas.map(Math.round).join(',')}（コンテナと一致）`;
+    });
+  }
+  await page.harness('h.setPageTheme("light")');
+}
+
+/**
  * Which side of the body root every node sits on in the balanced layout, from the DOM rects and the
  * snapshot's tree: each first-level child with its source index and side, deeper nodes that are not on
  * their first-level ancestor's side (`strays`), and the vertical centres of the root and of each side's extent.
@@ -3421,6 +3447,7 @@ async function main() {
     await withHarnessPage(chrome, { output, window: WINDOW, fixture: OPERATION_FIXTURE, pane: PANE }, async page => {
       recorder = new Recorder(page, directory);
       await captureFixtures(recorder, page, timings);
+      await captureViewPadding(recorder, page);
       await captureOperations(recorder, page);
       await captureHierarchyRows(recorder, page);
       await captureTimelineStageGap(recorder, page);

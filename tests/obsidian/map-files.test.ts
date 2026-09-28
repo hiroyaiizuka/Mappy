@@ -26,30 +26,47 @@ function fileAt(path: string): TFile {
   return file;
 }
 
-/** A vault of folders and files by path (case-sensitive, as Obsidian's index is); `create` records what it was asked to write. */
+/**
+ * A vault of folders and files by path (case-sensitive, as Obsidian's index is), each folder holding its children as
+ * Obsidian's do; `create` records what it was asked to write. Listing the vault is a spy the resolver must not call
+ * (LEV-253: the community scan flags every listing, and a path resolves without one).
+ */
 function vault(options: { folders?: string[]; files?: string[]; newFileParent?: string } = {}) {
   const entries = new Map<string, TFolder | TFile>();
-  for (const path of options.folders ?? []) entries.set(path, folderAt(path));
-  for (const path of options.files ?? []) entries.set(path, fileAt(path));
   const root = folderAt('/');
-  const create = vi.fn((path: string) => Promise.resolve(fileAt(path)));
-  const createFolder = vi.fn((path: string) => {
+  const add = (entry: TFolder | TFile) => {
+    entries.set(entry.path, entry);
+    const slash = entry.path.lastIndexOf('/');
+    const parent = slash < 0 ? root : folderOf(entry.path.slice(0, slash));
+    parent.children.push(entry);
+  };
+  const folderOf = (path: string): TFolder => {
+    const existing = entries.get(path);
+    if (existing instanceof TFolder) return existing;
     const folder = folderAt(path);
-    entries.set(path, folder);
-    return Promise.resolve(folder);
-  });
+    add(folder);
+    return folder;
+  };
+  for (const path of options.folders ?? []) folderOf(path);
+  for (const path of options.files ?? []) add(fileAt(path));
+  const create = vi.fn((path: string) => Promise.resolve(fileAt(path)));
+  const createFolder = vi.fn((path: string) => Promise.resolve(folderOf(path)));
   const getNewFileParent = vi.fn(() => folderAt(options.newFileParent ?? 'Inbox'));
+  const listing = vi.fn(() => [root, ...entries.values()]);
   const app = {
     fileManager: { getNewFileParent },
     vault: {
       getRoot: () => root,
       getAbstractFileByPath: (path: string) => entries.get(path) ?? null,
-      getAllLoadedFiles: () => [root, ...entries.values()],
+      getAllLoadedFiles: listing,
+      getAllFolders: listing,
+      getFiles: listing,
+      getMarkdownFiles: listing,
       create,
       createFolder,
     },
   } as unknown as App;
-  return { app, create, createFolder, getNewFileParent, root };
+  return { app, create, createFolder, getNewFileParent, root, listing };
 }
 
 describe('resolveNewMapFolder', () => {
@@ -97,6 +114,44 @@ describe('resolveNewMapFolder', () => {
     expect((await resolveNewMapFolder(app, 'MAPS/', '', 'x.md')).path).toBe('Maps');
     await expect(resolveNewMapFolder(app, 'notes/plan.md', '', 'x.md')).rejects.toThrow('はフォルダではありません');
     expect(createFolder).not.toHaveBeenCalled();
+  });
+
+  it('finds a folder whose name differs in case by walking down from the root, without listing the vault (LEV-253)', async () => {
+    const { app, createFolder, listing } = vault({ folders: ['Maps/2026', 'maps.md'], files: ['Notes/Plan.md', 'Notes/Sub/Deep.md'] });
+    expect((await resolveNewMapFolder(app, 'maps/2026', '', 'x.md')).path).toBe('Maps/2026');
+    expect((await resolveNewMapFolder(app, 'NOTES/sub', '', 'x.md')).path).toBe('Notes/Sub');
+    // The exact name wins over one differing only in case.
+    expect((await resolveNewMapFolder(app, 'maps.md', '', 'x.md')).path).toBe('maps.md');
+    await expect(resolveNewMapFolder(app, 'notes/sub/deep.md', '', 'x.md')).rejects.toThrow('はフォルダではありません');
+    expect(createFolder).not.toHaveBeenCalled();
+    // A path that goes on under a file is refused as a file is (review 3: creating through it fails with the adapter's
+    // own error). One with no match at some level is new: the vault is asked to create it, under the existing folders
+    // as they are spelled (review 2: not a second `maps` beside `Maps` in the vault's index).
+    await expect(resolveNewMapFolder(app, 'notes/plan.md/inner', '', 'x.md')).rejects.toThrow('はフォルダではありません');
+    await resolveNewMapFolder(app, 'maps/2027', '', 'x.md');
+    expect(createFolder.mock.calls).toEqual([['Maps/2027']]);
+    expect(listing).not.toHaveBeenCalled();
+  });
+
+  it('goes back up when the first folder matching in case has no such child (review 1: a vault synced from a case-sensitive system)', async () => {
+    const { app, createFolder, listing } = vault({ folders: ['Maps', 'MAPS/2026', 'maps/x', 'notes/y'], files: ['Notes'] });
+    expect((await resolveNewMapFolder(app, 'maps/2026', '', 'x.md')).path).toBe('MAPS/2026');
+    // Nor does the exact name, or a file of that name, hide the folder beside it that has the rest.
+    expect((await resolveNewMapFolder(app, 'Maps/x', '', 'x.md')).path).toBe('maps/x');
+    expect((await resolveNewMapFolder(app, 'Notes/y', '', 'x.md')).path).toBe('notes/y');
+    // The exact path still wins when there is one.
+    expect((await resolveNewMapFolder(app, 'Maps', '', 'x.md')).path).toBe('Maps');
+    // At the last segment too, a folder differing in case is taken over a file of the name (review 2).
+    const synced = vault({ folders: ['PLANS'], files: ['Plans'] });
+    expect((await resolveNewMapFolder(synced.app, 'plans', '', 'x.md')).path).toBe('PLANS');
+    expect((await resolveNewMapFolder(synced.app, 'Plans', '', 'x.md')).path).toBe('PLANS');
+    expect(synced.createFolder).not.toHaveBeenCalled();
+    // And across branches: a file at the whole path under one parent does not hide a folder there under another (review 3).
+    const branches = vault({ folders: ['Maps', 'maps/x'], files: ['Maps/x'] });
+    expect((await resolveNewMapFolder(branches.app, 'Maps/x', '', 'x.md')).path).toBe('maps/x');
+    expect(branches.createFolder).not.toHaveBeenCalled();
+    expect(createFolder).not.toHaveBeenCalled();
+    expect(listing).not.toHaveBeenCalled();
   });
 
   it('refuses ".", ".." and dot-folders, which normalizePath keeps and the vault cannot index', async () => {
@@ -149,7 +204,8 @@ describe('createMindmapFile', () => {
     const { app, create, createFolder, getNewFileParent } = vault({ files: ['Maps/無題のマインドマップ.md'] });
     const file = await createMindmapFile(app, 'Notes/Current.md', { layout: 'hierarchy', folder: 'Maps' });
     expect(file.path).toBe('Maps/無題のマインドマップ 2.md');
-    expect(createFolder).toHaveBeenCalledWith('Maps');
+    // The note already there means the folder is too.
+    expect(createFolder).not.toHaveBeenCalled();
     expect(getNewFileParent).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledWith('Maps/無題のマインドマップ 2.md', '---\nmappy: true\nmappy-layout: hierarchy\n---\n\n## 無題のマインドマップ 2\n');
