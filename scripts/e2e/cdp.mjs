@@ -110,9 +110,13 @@ export async function connect({ popout, language: expected = LANGUAGE } = {}) {
     // `language`: the one case that switches the app's language (E63) connects in the language it switched to.
     const [loaded, stored, ready] = popout === undefined && expected !== null ? await evaluate(APP_LANGUAGE) : [expected, null, true];
     // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
-    if (expected !== null && (!ready || (loaded ?? '').toLowerCase() !== expected.toLowerCase() || (stored !== null && stored !== expected))) {
+    if (expected !== null && !ready) {
       socket.close();
-      throw new Error(`The Obsidian for ${VAULT} runs in "${loaded}" (stored "${stored}", ${ready ? 'ready' : 'still loading'}), not "${expected}" (MAPPY_E2E_LANGUAGE). `
+      throw new Error(`The Obsidian for ${VAULT} is still loading (its language is not settled yet); retry once it has opened. No action taken.`);
+    }
+    if (expected !== null && ((loaded ?? '').toLowerCase() !== expected.toLowerCase() || (stored !== null && stored !== expected))) {
+      socket.close();
+      throw new Error(`The Obsidian for ${VAULT} runs in "${loaded}" (stored "${stored}"), not "${expected}" (MAPPY_E2E_LANGUAGE). `
         + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${expected}'), then reload the app. No action taken.`);
     }
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
@@ -152,6 +156,8 @@ export async function connect({ popout, language: expected = LANGUAGE } = {}) {
         return path;
       },
       close: () => { socket.close(); },
+      /** Whether the socket is gone: a send on a closed socket is dropped, and the call would only wait out its timeout. */
+      get closed() { return socket.readyState !== WebSocket.OPEN; },
     };
   }
   throw new Error(`No Obsidian ${popout === undefined ? 'window' : `popout window marked ${popout}`} for ${VAULT} on port ${PORT}. No action taken.`);

@@ -204,12 +204,16 @@ try {
 } finally {
   // Whatever happened, the test Obsidian goes back to Japanese, with the stored key as it was: every other case refuses a
   // window in another language. A connection closed by a failed switch is opened again in whatever language it is in.
-  const alive = await cdp.evaluate('1').then(() => true, () => false);
-  if (!alive) cdp = await connect({ language: null }).catch(() => cdp);
-  const now = await cdp.evaluate("[window.moment?.locale?.() ?? null, localStorage.getItem('language')]").catch(() => [null, null]);
-  if (now[0] !== 'ja' || now[1] !== storedAtStart) await step('restore', () => switchTo(storedAtStart, 'ja'));
-  await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); return true;').catch(() => null);
-  if (!flag('--keep')) await step('clean', clean);
+  if (cdp.closed) cdp = await connect({ language: null }).catch(() => cdp);
+  if (cdp.closed) record.failures.push('the window could not be reached to put its language back: check it by hand');
+  else {
+    const now = await cdp.evaluate("[window.moment?.locale?.() ?? null, localStorage.getItem('language')]").catch(() => [null, null]);
+    if (now[0] !== 'ja' || now[1] !== storedAtStart) await step('restore', () => switchTo(storedAtStart, 'ja'));
+  }
+  if (!cdp.closed) {
+    await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); return true;').catch(() => null);
+    if (!flag('--keep')) await step('clean', clean);
+  }
   exitCode = await finish(record, value('--json'));
   cdp.close();
 }

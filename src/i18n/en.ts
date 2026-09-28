@@ -200,7 +200,7 @@ export const en = {
   rootIsFileName: "This node is the file name. You can add child nodes to it.",
   draftChanged: "The text being edited changed in Markdown. Cancel and check the new content.",
   formatWhileEditing: "Finish editing the text before changing the format.",
-  convertedToList: "Changed to headings and list format. Undo restores it.",
+  convertedToList: "Changed to H2 headings and list format. Undo restores it.",
   chooseImage: "Choose an image file.",
   imageTooLarge: "Images must be 20 MB or smaller.",
   imageNoteUpdated: "The note was updated. Add the image again.",

@@ -18,7 +18,7 @@ import type { MindDocument } from '../../src/core/markdown';
 import type { LayoutMode } from '../../src/layout/layout';
 import { ConflictError } from '../../src/obsidian/conflict-error';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { t } from '../../src/i18n';
+import { setLanguage, t } from '../../src/i18n';
 import { accessibleName } from './accessible-name';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 
@@ -79,6 +79,25 @@ const SHAPES = [
   { id: '見出しの子（Tab）', source: HEADINGS, target: '温泉旅行', key: 'Tab', written: HEADINGS.replace('本文\n', `本文\n\n### ${t().newNodeTitle}\n`) },
   { id: '見出しの兄弟（Enter）', source: HEADINGS, target: '温泉旅行', key: 'Enter', written: HEADINGS.replace('本文\n', `本文\n\n## ${t().newNodeTitle}\n`) },
 ] as const;
+
+// The provisional names are Markdown: in an English app they are written in English (LEV-226). Every other row here
+// reads the expected name from the table, so a mix-up of the two keys would pass there; this row spells them out.
+describe('the provisional names in an English app', () => {
+  afterEach(() => { setLanguage('ja'); });
+
+  it('writes a child as Subtopic and a free topic as Topic', async () => {
+    setLanguage('en');
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    mounted.key(provisionalDraft(mounted, 'Subtopic'), 'Enter');
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'));
+    mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n')}\n## Topic\n`);
+  });
+});
 
 describe('a node added on the map opens under its provisional name, selected (LEV-203)', () => {
   for (const layout of LAYOUTS) {
