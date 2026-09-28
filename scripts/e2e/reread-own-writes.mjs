@@ -241,7 +241,7 @@ const arm = (kind, late) => evaluate(`${VIEW}
     if (!fired || found.recorded !== null || inFlight === null) return;
     // The epoch moved, and the note's own watcher event had arrived since W2 was made (its re-read is what moved it).
     found.movedBeforeRecord = view.epoch !== inFlight && probe.watched;
-    found.recorded = view.ownWrites.some(item => item.after === args[1].after);
+    found.recorded = view.writes.recorded.some(item => item.after === args[1].after);
     found.beforeAnswer = !probe.answered;
   };
   mine.scheduleRefresh = view.scheduleRefresh;

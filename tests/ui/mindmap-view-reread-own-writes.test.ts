@@ -4,7 +4,7 @@
  * fix `reread` dropped the whole record whenever it did not lead to the text read (`if (!replayed) this.ownWrites =
  * []`). After LEV-219 the save shows what it wrote at once and spends the record (`showOwnWrite`), so both the save's
  * re-read and the watcher's find the text on screen. A second write W2 recorded while one of them reads — its start is
- * the text on screen, so the record takes it (`recordOwn`) — was then open to that drop, and W2's own re-read, with no
+ * the text on screen, so the record takes it (`recordOwn`, `WriteRecord.record` since LEV-247) — was then open to that drop, and W2's own re-read, with no
  * edits to carry the ids, would match nodes by title: the fold of the second untitled or same-titled node would go
  * (the LEV-146／LEV-150 symptom). The selection is not in the matrix: the rename itself selects 子1 before the window.
  *
@@ -18,7 +18,7 @@
  * Two things keep the record, and each is enough alone:
  * - the fix: a read of the text on screen keeps the writes recorded while it was under way that lead on from it
  *   (`reread`), and a write made on the text on screen starts the record again when it ends on a text someone took
- *   back (`recordOwn`);
+ *   back (`recordOwn`; `WriteRecord.record` since LEV-247);
  * - the order: every write the record takes is one the store has just made on this note, and the note's watcher
  *   (`modify` for a note no editor holds, `editor-change` for one it does) moves the epoch before the store tells the
  *   view (`DocumentStore.tell` after `writeSafely`), so the read gives up at the epoch check right after `store.read`.
@@ -84,7 +84,7 @@ const INSIDE_MS = 100;
 const LATE_MS = 400;
 
 interface ViewState {
-  document: MindDocument | undefined; epoch: number; saving: boolean; ownWrites: unknown[];
+  document: MindDocument | undefined; epoch: number; saving: boolean; writes: { recorded: readonly unknown[] };
   collapsed: Set<string>; selectedId: string | null;
   refreshTimer: number | undefined; refreshing: Promise<void> | undefined;
 }
@@ -227,7 +227,7 @@ async function renameThen(mounted: MountedMapView, second: () => void, { late = 
     recordWrite(file, write);
     if (found.newestBefore === null || found.recorded !== null || inFlight === null) return;
     found.movedBeforeRecord = view.epoch !== inFlight;
-    found.recorded = view.ownWrites.some(own => (own as { after: string }).after === write.after);
+    found.recorded = view.writes.recorded.some(own => (own as { after: string }).after === write.after);
     found.beforeAnswer = !answered;
   });
   rename(mounted, '子1', 0, '改名後');
@@ -422,7 +422,7 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
       other.key(other.canvas, 'ArrowUp', { altKey: true });
       // Put back the moment it lands, before either map's watcher re-reads it (45 ms).
       await vi.waitFor(() => { expect(mounted.source()).not.toBe(SOURCE); }, { timeout: 1000, interval: 1 });
-      expect(state(mounted).ownWrites).toHaveLength(1);
+      expect(state(mounted).writes.recorded).toHaveLength(1);
       mounted.app.put(PATH, SOURCE);
       await settled(mounted, other);
       expect(state(mounted).document?.source).toBe(SOURCE);
@@ -455,7 +455,7 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
         if (slowed || text !== SOURCE || view.document?.source !== SOURCE) return text;
         slowed = true;
         setTimeout(() => {
-          pressed = { stale: view.ownWrites.length === 1, recorded: null, answered: false };
+          pressed = { stale: view.writes.recorded.length === 1, recorded: null, answered: false };
           clickLayout(mounted, 'timeline');
         }, INSIDE_MS);
         await new Promise(resolve => setTimeout(resolve, SLOW_MS));
@@ -467,7 +467,7 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
       vi.spyOn(internals, 'recordWrite').mockImplementation((file, write) => {
         recordWrite(file, write);
         if (pressed && pressed.recorded === null && write.after.includes('mappy-layout: timeline')) {
-          pressed = { ...pressed, answered, recorded: view.ownWrites.some(own => (own as { after: string }).after === write.after) };
+          pressed = { ...pressed, answered, recorded: view.writes.recorded.some(own => (own as { after: string }).after === write.after) };
         }
       });
       mounted.app.put(PATH, SOURCE);
@@ -493,30 +493,31 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
     const a = SOURCE.replace('  - 子2\n', '  - 子二\n');
     const b = a.replace('  - 子1\n', '  - 子一\n');
     internals.recordWrite(mounted.file, { before: SOURCE, after: a, edits: [] });
-    expect(view.ownWrites).toHaveLength(1);
+    expect(view.writes.recorded).toHaveLength(1);
     const store = storeOf(mounted);
     const read = store.read.bind(store);
     vi.spyOn(store, 'read').mockImplementation(async file => {
       internals.recordWrite(mounted.file, { before: a, after: b, edits: [] });
-      expect(view.ownWrites).toHaveLength(2);
+      expect(view.writes.recorded).toHaveLength(2);
       return read(file);
     });
     await internals.refresh();
     expect(view.document?.source).toBe(SOURCE);
-    expect(view.ownWrites).toEqual([]);
+    expect(view.writes.recorded).toEqual([]);
   });
 });
 
 describe('the record kept whole through what the fix added (LEV-218, code review 3)', () => {
   interface Internals {
-    recordOwn(write: { before: string; after: string; edits: unknown[] }): void;
+    writes: { confirm(write: { before: string; after: string; edits: never[] }, shown: string | undefined): void };
     recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
     refresh(): Promise<void>;
     reader: { read(...args: unknown[]): Promise<unknown> };
   }
 
   it('a write that changed nothing, recorded late, leaves another map\'s write alone', async () => {
-    // White-box: the save found nothing to change (before = after, told to no one), and before its caller records it,
+    // White-box: the save found nothing to change (before = after, told to no one), and before its caller records it
+    // (`WriteRecord.confirm`, the store's answer),
     // another map's write X (S→A) is recorded. The no-op starts on the text on screen, but it takes nothing back: it
     // must not start the record again over X, whose re-read needs it.
     const mounted = await mount();
@@ -525,8 +526,8 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     const a = SOURCE.replace('  - 子2\n', '  - 子二\n');
     const x = { before: SOURCE, after: a, edits: [] };
     internals.recordWrite(mounted.file, x);
-    internals.recordOwn({ before: SOURCE, after: SOURCE, edits: [] });
-    expect(view.ownWrites).toEqual([x]);
+    internals.writes.confirm({ before: SOURCE, after: SOURCE, edits: [] }, view.document?.source);
+    expect(view.writes.recorded).toEqual([x]);
   });
 
   it('a record started again while the read waits for the called maps is not spent by that read', async () => {
@@ -558,7 +559,7 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     app.put(PATH, a);
     await internals.refresh();
     expect(restarted).toBe(true);
-    expect(view.ownWrites).toEqual([w]);
+    expect(view.writes.recorded).toEqual([w]);
   });
 });
 
@@ -572,11 +573,11 @@ describe('a re-read that reaches part of the record, with the writes past it tak
   // The view parses an external change from the text it shows, not from the end of the record, so the ticket's shape
   // (the next external change matched by titles from the taken-back write's text) leaves the view's ids alone. What a
   // stale write does to the view is stand in the record: the same text written again by another edit is taken for it
-  // (`recordOwn` does not add a write already in the record: the store's word and the caller's answer tell the same
+  // (`recordOwn` — `WriteRecord.confirm` since LEV-247 — does not add a write already in the record: the store's word and the caller's answer tell the same
   // write twice), and the re-read carries the ids by the stale write's edits. Twins make that the user's loss: the
   // second deleted and put back, then the first deleted, and the stale edits give the survivor the first one's id — the
   // fold on the second goes. Two halves of the fix hold the twin rows, each alone (code review 1): the re-read drops
-  // the stale write, and `recordOwn` tells one write told twice from another with the same texts by its edits too
+  // the stale write, and `recordOwn` (`confirm`) tells one write told twice from another with the same texts by its edits too
   // (`sameWrite`), so the Delete is recorded over it. The twin rows fail only with both halves out (the code before
   // LEV-237); the white-box rows pin each half: the re-read's drop (its last step, a write recorded while the read
   // reads, passes either way and pins what the drop must not take), and `sameWrite`.
@@ -652,7 +653,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
         const child = source.indexOf('  - 子1\n') + 4;
         reached = (await storeOf(mounted).applyLatest(mounted.file, () => [{ from: child, to: child + 2, text: '改名1' }])).after;
         await deleteTwin(mounted, twin, 1);
-        expect(view.ownWrites).toHaveLength(2);
+        expect(view.writes.recorded).toHaveLength(2);
         mounted.app.put(PATH, reached);
       } finally {
         released = held.release();
@@ -688,11 +689,11 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     const x = v.replace('- 親\n', '- 親2\n');
     internals.recordWrite(mounted.file, { before: SOURCE, after: t, edits: [] });
     internals.recordWrite(mounted.file, { before: t, after: u, edits: [] });
-    expect(view.ownWrites).toHaveLength(2);
+    expect(view.writes.recorded).toHaveLength(2);
     mounted.app.put(PATH, t);
     await internals.refresh();
     expect(view.document?.source).toBe(t);
-    expect(view.ownWrites).toEqual([]);
+    expect(view.writes.recorded).toEqual([]);
     const w = { before: v, after: x, edits: [] };
     internals.recordWrite(mounted.file, { before: t, after: v, edits: [] });
     mounted.app.put(PATH, v);
@@ -705,7 +706,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     });
     await internals.refresh();
     expect(view.document?.source).toBe(v);
-    expect(view.ownWrites).toEqual([w]);
+    expect(view.writes.recorded).toEqual([w]);
   });
 
   it('a write with the same texts as one in the record but other edits is recorded over it', async () => {
@@ -717,18 +718,23 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     const mounted = await mountMapView(PATH, t, 'mindmap', new HarnessApp());
     await settled(mounted);
     const view = state(mounted);
-    const internals = mounted.view as unknown as { recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void };
+    const internals = mounted.view as unknown as {
+      recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
+      writes: { confirm(write: { before: string; after: string; edits: unknown[] }, shown: string | undefined): void };
+    };
     const first = t.indexOf(twin);
     const u = t.slice(0, first) + t.slice(first + twin.length);
     const b = { before: t, after: u, edits: [{ from: first + twin.length, to: first + 2 * twin.length, text: '' }] };
     const c = { before: t, after: u, edits: [{ from: first, to: first + twin.length, text: '' }] };
     internals.recordWrite(mounted.file, b);
-    expect(view.ownWrites).toEqual([b]);
+    expect(view.writes.recorded).toEqual([b]);
     internals.recordWrite(mounted.file, c);
-    expect(view.ownWrites).toEqual([c]);
-    // The same write told twice (the store's word, then the caller's answer, as a copy) is recorded once.
-    internals.recordWrite(mounted.file, { ...c, edits: c.edits.map(edit => ({ ...edit })) });
-    expect(view.ownWrites).toEqual([c]);
+    expect(view.writes.recorded).toEqual([c]);
+    // The same write told twice (the store's word, then the caller's answer, as a copy: `WriteRecord.confirm`) is
+    // recorded once: the entry is still the store's word.
+    internals.writes.confirm({ ...c, edits: c.edits.map(edit => ({ ...edit })) }, view.document?.source);
+    expect(view.writes.recorded).toHaveLength(1);
+    expect(view.writes.recorded[0]).toBe(c);
   });
 
   // Code review 2: the record comes back to the same text more than once before the view reads it — B deletes the
@@ -760,7 +766,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
           mounted.key(mounted.canvas, 'Delete');
           await vi.waitFor(() => { expect(view.saving).toBe(false); expect(mounted.source()).not.toBe(source); }, { timeout: 1000, interval: 2 });
         }
-        expect(view.ownWrites).toHaveLength(by === 'the store' ? 3 : 0);
+        expect(view.writes.recorded).toHaveLength(by === 'the store' ? 3 : 0);
       } finally {
         released = held.release();
       }
@@ -774,4 +780,54 @@ describe('a re-read that reaches part of the record, with the writes past it tak
       expect(Notice.log).toEqual([]);
     });
   }
+});
+
+describe('the view on the record the embed and the called maps keep (LEV-247)', () => {
+  // The view's record is `WriteRecord` (src/core/write-record.ts) since LEV-247. Of the rules the two had apart
+  // (artifacts/lev-247-view-write-record/rules.md), these rows pin the two that are the view's to choose: the store's word
+  // taken as the embed takes it (row 3), and an external change parsed from the text the view shows (row 6).
+  interface Internals {
+    recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
+    refresh(): Promise<void>;
+  }
+  // Run on the code before LEV-247 (artifacts/lev-247-view-write-record/tests-before.log), this read the view's own
+  // `ownWrites` instead.
+  const recorded = (mounted: MountedMapView): readonly unknown[] => state(mounted).writes.recorded;
+
+  it('the store telling again a write the record holds, on the text on screen, starts the record again', async () => {
+    // White-box (row 3): the record is [B: S→T, X: T→U] and the view shows S. The store tells B again: it wrote it on S,
+    // so the note went back to S without a word (the Markdown pane's Undo) and B was made again. The store tells each
+    // write once, so this is no copy of the B recorded: the record starts again from it, as the embed's does. Before
+    // LEV-247 the view took it for the B it held (its rule against hearing its own writes twice) and kept [B, X].
+    const mounted = await mount();
+    const internals = mounted.view as unknown as Internals;
+    const t = SOURCE.replace('  - 子2\n', '  - 子二\n');
+    const u = t.replace('- 親\n', '- 改名\n');
+    const at = SOURCE.indexOf('子2');
+    const b = { before: SOURCE, after: t, edits: [{ from: at, to: at + 2, text: '子二' }] };
+    internals.recordWrite(mounted.file, b);
+    internals.recordWrite(mounted.file, { before: t, after: u, edits: [] });
+    expect(recorded(mounted)).toHaveLength(2);
+    internals.recordWrite(mounted.file, { ...b, edits: b.edits.map(edit => ({ ...edit })) });
+    expect(recorded(mounted)).toEqual([b]);
+  });
+
+  it('an external change the record does not lead to is matched by titles from the text the view shows', async () => {
+    // Pin (row 6), not a regression test: it passes before and after LEV-247. The record [W: S→T] (子1 renamed) and the
+    // note holds T with 子2 changed by someone else. The view parses that from S by titles, as it always has — the
+    // renamed node takes a new id — where the embed parses it from T (`WriteRecord.take`), and it would keep it.
+    const mounted = await mount();
+    const view = state(mounted);
+    const internals = mounted.view as unknown as Internals;
+    const at = SOURCE.indexOf('子1');
+    const t = SOURCE.slice(0, at) + 'ずっと長い題名' + SOURCE.slice(at + 2);
+    const before = nodeNamed(mounted, '子1').dataset.nodeId;
+    internals.recordWrite(mounted.file, { before: SOURCE, after: t, edits: [{ from: at, to: at + 2, text: 'ずっと長い題名' }] });
+    mounted.app.put(PATH, t.replace('  - 子2\n', '  - 外から\n'));
+    await internals.refresh();
+    await settled(mounted);
+    expect(view.document?.source).toContain('  - 外から\n');
+    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).not.toBe(before);
+    expect(recorded(mounted)).toEqual([]);
+  });
 });

@@ -17,7 +17,7 @@ import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabel, layoutTree, type Fre
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { ConflictError } from "../obsidian/conflict-error";
-import { sameWrite } from "../core/write-record";
+import { WriteRecord } from "../core/write-record";
 import { DocumentStore, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
 import { resolveEmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -57,26 +57,9 @@ function draftFingerprint(document: MindDocument, node: MindNode): string {
  * note (`draftFingerprint`). A save refuses when the two no longer agree, so the draft cannot overwrite
  * someone else's edit (E05). The text is re-based after the map's own writes — an image the user pasted
  * into the node being edited is not someone else's edit (LEV-140) — while the id needs no re-basing:
- * a write of this view's own carries every node's id across the re-parse (`ownWrites`, LEV-146).
+ * a write of this view's own carries every node's id across the re-parse (`writes`, LEV-146).
  */
 interface DraftBase { nodeId: string; value: string }
-
-/**
- * A write this view made: what the note read before it, what it wrote, and the edits between. The re-parse
- * that follows takes them so the nodes keep their ids — nothing else carries a node whose title repeats or
- * is empty (LEV-146) — and it is used once, for the read that finds exactly that text, or a text a run of
- * such writes led to from the one the view last parsed (a draft saved by the blur of the click on a layout
- * button, then the button's own write — LEV-150): anything else means someone else has written, and then the
- * ids are as much of a guess as E05 says they are. The layout buttons' writes are among them (LEV-196), this view's
- * own and those the store carried one of its edits over (`recordCarried`), from whichever view they came.
- */
-interface OwnWrite {
-  readonly before: string;
-  readonly after: string;
-  readonly edits: readonly TextEdit[];
-  /** `after` parsed from a document with these edits, kept so a replay and a draft's base do not parse it again (`parseOwn`). */
-  parsed?: { from: MindDocument; basename: string; document: MindDocument };
-}
 
 /** A node the view has just added for the inline editor to name (LEV-203): the write that added it, and the node selected before. */
 interface Created {
@@ -303,8 +286,16 @@ export class MindmapView extends FileView {
   /** The base of the open title draft and of the open body draft; see `DraftBase`. */
   private inlineDraft: DraftBase | undefined;
   private bodyDraft: DraftBase | undefined;
-  /** The writes this view made since its last re-parse, in order, for the re-parse that reads them back; see `OwnWrite`. */
-  private ownWrites: OwnWrite[] = [];
+  /**
+   * The store's writes on the note since the view's last re-parse (`recordWrite`, and the answers `writeOwn` and
+   * `writeLayout` get): an edit, a layout button, ⌘Z／⌘⇧Z, from this view or another map of the note. The re-parse that
+   * follows takes them so the nodes keep their ids — nothing else carries a node whose title repeats or is empty
+   * (LEV-146) — while they lead from the text the view last parsed to the text read (a draft saved by the blur of the
+   * click on a layout button, then the button's own write — LEV-150): anything else means someone else has written,
+   * and then the ids are as much of a guess as E05 says they are. The record the embed and the called maps keep
+   * (LEV-247).
+   */
+  private readonly writes = new WriteRecord();
   /** How many times a note has left this view (`onUnloadFile`): a layout write started before the last one is not this record's. */
   private loads = 0;
   /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
@@ -489,7 +480,7 @@ export class MindmapView extends FileView {
     await this.saveDraft(file);
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
-    this.pendingTopic = null; this.topicDrag = null; this.ownWrites = []; this.loads += 1;
+    this.pendingTopic = null; this.topicDrag = null; this.writes.clear(); this.loads += 1;
     this.targets = new Map(); this.knownCalled.clear(); void this.reader.clear();
     await super.onUnloadFile(file);
   }
@@ -1071,78 +1062,27 @@ export class MindmapView extends FileView {
    * dropped by the finger still on it — was refused as someone else's change, and the re-read had no edits to
    * carry the ids of a node whose title repeats or is empty (LEV-150). Queued, an edit already on its way
    * lands first, and one planned before it is carried over it by the store (`DocumentStore.applyOver`); recorded,
-   * the re-read carries the ids (`ownWrites`). The note of a view that moved on keeps the preference but none of
+   * the re-read carries the ids (`writes`). The note of a view that moved on keeps the preference but none of
    * the rest — nor does a view that left the note and came back while the write was under way (`loaded`): its
    * record starts again from the note it re-read, which a write from before that cannot lead on from.
    */
   private async writeLayout(file: TFile, mode: LayoutMode, loaded: number): Promise<void> {
     const write = await this.store.applyLatest(file, source => planMapLayout(source, mode));
     if (write.edits.length === 0 || file !== this.file || this.closed || loaded !== this.loads) return;
-    this.recordOwn(write);
-  }
-
-  /**
-   * `write` recorded where the view's record leads to its start: the end of the record, or the text the view shows
-   * when a re-read has spent it. A write already there — the store's `onWrite` told it before the caller got its
-   * answer (`recordWrite`) — is the last one and is not added again; nor is one a re-read has spent in between (its
-   * start is behind the text the view shows). Not matched against earlier writes to be added, as `recordCarried` does:
-   * ⌘Z, ⌘⇧Z, ⌘Z before one re-read write the same texts twice. A write made on the text the view shows while the
-   * record ends elsewhere starts the record again: the store wrote it on that text, so the note was put back there
-   * (Undo in the Markdown pane, a sync) and the writes recorded were taken back (LEV-218). One already in the record
-   * is not that: it was told before the caller got its answer, and others were recorded after it. Nor a write that
-   * changed nothing (told to no one): it takes nothing back, and carries no id anywhere. "Already there" is the same
-   * texts and the same edits (`sameWrite`): another edit that writes the same texts is a write of its own (LEV-237).
-   */
-  private recordOwn(write: LatestWrite): void {
-    if (write.before === write.after) return;
-    const last = this.ownWrites[this.ownWrites.length - 1];
-    if (last && sameWrite(last, write)) return;
-    const recorded = { before: write.before, after: write.after, edits: write.edits };
-    if (write.before === (last?.after ?? this.document?.source)) { this.ownWrites.push(recorded); return; }
-    if (write.before !== this.document?.source) return;
-    if (this.ownWrites.some(own => sameWrite(own, write))) return;
-    this.ownWrites = [recorded];
-  }
-
-  /**
-   * The layout writes the store carried this view's edit over (`CarriedWrite.carried`), recorded where the view's
-   * own record leads to their start: another view's button (several views share the store), or this view's own
-   * write that a re-read has spent and the record no longer holds. Without them the re-read could not replay
-   * from the text this view shows to the edit's (LEV-150 through LEV-196's carry). Returns them as recorded.
-   */
-  private recordCarried(carried: readonly LatestWrite[]): OwnWrite[] {
-    let at = this.ownWrites[this.ownWrites.length - 1]?.after ?? this.document?.source;
-    const recorded: OwnWrite[] = [];
-    for (const write of carried) {
-      const own = this.ownWrites.find(item => sameWrite(item, write));
-      if (own) { recorded.push(own); continue; }
-      if (write.before !== at) continue;
-      const added: OwnWrite = { ...write };
-      this.ownWrites.push(added);
-      recorded.push(added);
-      at = write.after;
-    }
-    return recorded;
+    this.writes.confirm(write, this.document?.source);
   }
 
   /**
    * The parse an edit planned on `planned` (from `source`) stands on in the text the store found (`write.before`):
-   * `planned` carried over the writes the store carried it over, or the view's own parse when a re-read got there
-   * first. Undefined when neither is that text; the drafts are then left for the re-read to measure.
+   * `planned` carried over the writes the store carried it over (recorded where the view's record leads to their
+   * start: another view's button, or this view's own write that a re-read has spent — `WriteRecord.carry`), or the
+   * view's own parse when a re-read got there first. Undefined when neither is that text; the drafts are then left for
+   * the re-read to measure.
    */
-  private writeBase(planned: MindDocument | undefined, source: string, write: CarriedWrite, carried: readonly OwnWrite[], basename: string): MindDocument | undefined {
-    let base = planned?.source === source ? planned : undefined;
-    for (const own of carried) if (base?.source === own.before) base = this.parseOwn(own, base, basename);
+  private writeBase(planned: MindDocument | undefined, source: string, write: CarriedWrite, basename: string): MindDocument | undefined {
+    const base = this.writes.carry(write.carried, this.document?.source, planned?.source === source ? planned : undefined, basename);
     if (base?.source === write.before) return base;
     return this.document?.source === write.before ? this.document : undefined;
-  }
-
-  /** `own.after` parsed from `from` with its edits, once per base document. */
-  private parseOwn(own: OwnWrite, from: MindDocument, basename: string): MindDocument {
-    if (own.parsed?.from !== from || own.parsed.basename !== basename) {
-      own.parsed = { from, basename, document: parseMarkdown(own.after, basename, from, undefined, own.edits) };
-    }
-    return own.parsed.document;
   }
 
   /**
@@ -1252,9 +1192,7 @@ export class MindmapView extends FileView {
       return;
     }
     // The writes recorded before the read begins, which it will find if nobody else takes them back.
-    const recorded = new Set(this.ownWrites);
-    // Of `writes`, those recorded while the read was under way that lead on one from the other from `text`.
-    const keptFrom = (writes: readonly OwnWrite[], text: string): OwnWrite[] => leadingFrom(writes.filter(write => !recorded.has(write)), text);
+    const mark = this.writes.mark();
     const stale = (): boolean => this.closed || epoch !== this.epoch || file !== this.file;
     // A failed read whose result would have been dropped has nobody to tell (LEV-236): the scheduled one once it is stale
     // at all, one awaited (`setState`, `readNow`, the write's and ⌘Z's re-read) only once the tab closed, as its caller
@@ -1271,9 +1209,12 @@ export class MindmapView extends FileView {
     // (LEV-218). Not those recorded before it began: the read would have found them, so someone put the note
     // back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where the
     // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
-    const replayed = this.replayOwnWrites(source, file.basename);
-    if (!replayed) this.ownWrites = onScreen ? keptFrom(this.ownWrites, source) : [];
-    const replaying = this.ownWrites;
+    const replayed = this.writes.replay(source, this.document, file.basename);
+    if (!replayed) {
+      if (onScreen) this.writes.keep(source, mark, 0);
+      else this.writes.clear();
+    }
+    const replaying = this.writes.version;
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
@@ -1284,13 +1225,12 @@ export class MindmapView extends FileView {
     if (!this.callsMaps(document) && this.reader.holding) void this.reader.clear(() => !stale());
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
-    // kept for the next one. So is a record started again meanwhile (`recordOwn`, `showOwnWrite`): what this
-    // read replayed is not in it. Past the write a read reached, the writes left get the rule of a read of the text
-    // on screen (LEV-237): one recorded before the read began was there for it to find (the replay goes on to the last
-    // write that wrote the text read), so someone put the note back over it. Kept, it would stand in the record where
-    // nothing can follow it. The array is replaced, not trimmed, even when nothing is
-    // spent: another read in flight tells by identity (`replaying`) whether the record is still the one it replayed.
-    if (this.ownWrites === replaying) this.ownWrites = replayed ? keptFrom(replaying.slice(replayed.used), source) : replaying.slice(0);
+    // kept for the next one. So is a record started again or spent meanwhile (`WriteRecord.record`, `showOwnWrite`,
+    // told by its `version`): what this read replayed is not in it. Past the write a read reached, the writes left get
+    // the rule of a read of the text on screen (LEV-237): one recorded before the read began was there for it to find
+    // (the replay goes on to the last write that wrote the text read), so someone put the note back over it. Kept, it
+    // would stand in the record where nothing can follow it.
+    if (replayed && this.writes.version === replaying) this.writes.keep(source, mark, replayed.used);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
@@ -1315,7 +1255,7 @@ export class MindmapView extends FileView {
 
   /**
    * A write of this view's own has landed on `file` (an edit, ⌘Z／⌘⇧Z): the text it wrote is shown at once, parsed
-   * from the view's own writes so every id carries over (`replayOwnWrites`), without waiting for a read (LEV-219).
+   * from the view's own writes so every id carries over (`WriteRecord.replay`), without waiting for a read (LEV-219).
    * The re-read after the write gives up when the watcher of that very write schedules a newer one while it reads (a
    * read longer than the watcher's debounce: E53's `slow`), and until the newer one drew, the map showed the note
    * from before the write: the old title, no new node, a topic dropped on a slot or a branch detached back where it
@@ -1331,9 +1271,9 @@ export class MindmapView extends FileView {
   private showOwnWrite(file: TFile, written: string): boolean {
     const previous = this.document;
     if (this.closed || this.unloading || file !== this.file || !previous || written === previous.source) return false;
-    const replayed = this.replayOwnWrites(written, file.basename);
+    const replayed = this.writes.replay(written, previous, file.basename);
     if (!replayed) return false;
-    this.ownWrites = this.ownWrites.slice(replayed.used);
+    this.writes.drop(replayed.used);
     // By what each item embeds, not its text: an alias added to a call (`![[map|A]]`) still calls the same map.
     const embeds = (document: MindDocument): Map<string, string | null> => new Map(this.targets.size === 0 ? []
       : document.nodes.filter(node => this.targets.has(node.id)).map(node => [node.id, embedOnlyTitle(node.title)]));
@@ -1348,28 +1288,6 @@ export class MindmapView extends FileView {
   private tellKeptDrafts(): void {
     this.inlineEditor?.refreshed();
     this.bodyModal?.refreshed();
-  }
-
-  /**
-   * The parse of `source` from the view's own writes (`ownWrites`): each re-parses its text from the parse
-   * before it, starting at the one the view shows, through the last of them that wrote exactly `source`, as
-   * `WriteRecord.follow` does. Not the first: a record that comes back to that text (the second twin deleted, put back
-   * with ⌘Z, the first deleted) holds it twice, and only the last write carries the ids to the note as it is (LEV-237,
-   * code review 2). `used` is how many were spent. Undefined when they do not lead there.
-   */
-  private replayOwnWrites(source: string, basename: string): { document: MindDocument; used: number } | undefined {
-    // How many lead there, found by the texts: only those are parsed.
-    let used = 0;
-    let at = this.document?.source;
-    for (const [index, own] of this.ownWrites.entries()) {
-      if (at === undefined || at !== own.before) break;
-      at = own.after;
-      if (at === source) used = index + 1;
-    }
-    let document = this.document;
-    if (!document || used === 0) return undefined;
-    for (const own of this.ownWrites.slice(0, used)) document = this.parseOwn(own, document, basename);
-    return { document, used };
   }
 
   /** True when a node's title is one embed: only then can another note's change alter what this map shows. */
@@ -2151,14 +2069,14 @@ export class MindmapView extends FileView {
       catch (error) { this.scheduleRefresh(); throw error; }
       const written = write.after;
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
-      // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146).
-      const carried = this.recordCarried(write.carried);
-      this.recordOwn(write);
+      // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146). The
+      // writes the edit was carried over are recorded first (`writeBase`), then the edit.
+      const base = this.writeBase(planned, source, write, file.basename);
+      this.writes.confirm(write, this.document?.source);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch
       // was scheduled — the modify watcher for this very write schedules one — so waiting for it would leave
       // the draft on the old note now and then, and adopting whatever came back would bless an external
       // change that landed in between. Both are the E05 refusal this fix exists to keep (LEV-140).
-      const base = this.writeBase(planned, source, write, carried, file.basename);
       if (drafts.length > 0 && base) this.rebaseDrafts(drafts, base, written, write.edits);
       const shown = this.showOwnWrite(file, written);
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
@@ -2396,13 +2314,14 @@ export class MindmapView extends FileView {
    * A write the store made on the note (`DocumentStore.onWrite`) — this view's, another map's of the note, or a step of
    * the shared history — recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the
    * folds and the selection stay on a node whose title repeats or is empty. Recorded only where the view's record
-   * leads to its start (`recordOwn`): a view that moved on, or whose text is not the one the write was made on,
-   * re-reads it as it would any change. The view that asked for the write records it again once the store answers
-   * (`writeOwn`, `writeLayout`), which skips the copy.
+   * leads to its start (`WriteRecord.record`, as the embed and the called maps record it): a view that moved on, or
+   * whose text is not the one the write was made on, re-reads it as it would any change. The view that asked for the
+   * write records it again once the store answers (`writeOwn`, `writeLayout`: `WriteRecord.confirm`), which skips the
+   * copy.
    */
   private recordWrite(file: TFile, write: LatestWrite): void {
     if (file !== this.file || this.closed) return;
-    this.recordOwn(write);
+    this.writes.record(write, this.document?.source);
   }
 
   async showSource(split: boolean): Promise<void> {
@@ -2475,14 +2394,3 @@ export class MindmapView extends FileView {
   }
 }
 
-/** The writes of `writes`, in order, that lead on one from the other from `source`: the first that does not ends them. */
-function leadingFrom<T extends { before: string; after: string }>(writes: readonly T[], source: string): T[] {
-  const chain: T[] = [];
-  let at = source;
-  for (const write of writes) {
-    if (write.before !== at) break;
-    chain.push(write);
-    at = write.after;
-  }
-  return chain;
-}
