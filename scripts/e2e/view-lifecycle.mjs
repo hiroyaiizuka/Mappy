@@ -262,11 +262,14 @@ try {
     await wait(3000);
     let restored = null;
     let connected = false;
+    /** Why the last connect() was refused (the window reloading, or back in another language), for the failure below. */
+    let refused = null;
     // Until the map is drawn or 30 s pass. Each try uses one connection and closes it unless it is the one kept.
     for (const started = Date.now(); Date.now() - started < 30000 && !(restored?.nodes > 0); await wait(500)) {
       let next = null;
       try {
         next = await connect();
+        refused = null;
         restored = await next.evaluate(`(async () => { if (!app.workspace.layoutReady || !app.plugins.plugins.mappy) return null;
           const leaves = app.workspace.getLeavesOfType('mappy-map');
           // By its view state: a tab restored in the background is deferred and has no \`view.file\` until loaded.
@@ -278,7 +281,8 @@ try {
           }
           window.__mappyE2E = leaf;
           return { leaves: leaves.length, nodes: leaf.view.contentEl.querySelectorAll('.mappy-node').length, views: document.querySelectorAll('.mappy-view').length }; })()`);
-      } catch {
+      } catch (error) {
+        refused = error;
         restored = null;
       }
       if (restored?.nodes > 0) { cdp = next; connected = true; } else next?.close();
@@ -286,7 +290,7 @@ try {
     // Without a live connection the \`finally\` below would wait out a closed socket's timeouts: connect once more.
     if (!connected) { try { cdp = await connect(); } catch { /* the finally records its own failure */ } }
     before.close();
-    check(restored !== null, 'the window did not come back with Mappy loaded within 30 s');
+    check(restored !== null, `the window did not come back with Mappy loaded within 30 s${refused ? ` (${refused.message})` : ''}`);
     check(connected, `the map was not drawn again within 30 s of the window reload: ${JSON.stringify(restored)}`);
     if (restored) {
       check(restored.leaves === 1 && restored.nodes > 0 && restored.views === 1, `after the window reload the map is not back exactly once: ${JSON.stringify(restored)}`);

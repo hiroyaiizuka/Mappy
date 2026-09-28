@@ -19,7 +19,7 @@ export function isLayoutMode(value: unknown): value is LayoutMode {
 }
 
 /** The text key of each layout's name; the Record type turns a new mode into a compile error until it is named. */
-const LAYOUT_LABEL_KEYS: Record<LayoutMode, "layoutMindmap" | "layoutTimeline" | "layoutHierarchy" | "layoutBalanced"> = {
+const LAYOUT_LABEL_KEYS: Record<LayoutMode, `layout${Capitalize<LayoutMode>}`> = {
   mindmap: "layoutMindmap", timeline: "layoutTimeline", hierarchy: "layoutHierarchy", balanced: "layoutBalanced",
 };
 

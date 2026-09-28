@@ -1,9 +1,10 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-const SRC = new URL('../../src/', import.meta.url).pathname;
+const SRC = `${fileURLToPath(new URL('../../src', import.meta.url))}/`;
 const I18N = resolve(SRC, 'i18n');
 
 function sources(dir: string): string[] {
@@ -37,16 +38,18 @@ function parse(path: string, text = readFileSync(path, 'utf8')): Module {
       if (bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) if ((element.propertyName ?? element.name).text === 't') module.aliases.add(element.name.text);
       }
-    } else if (target.startsWith(`${I18N}/`) && !path.startsWith(`${I18N}/`) && !statement.importClause?.isTypeOnly) {
+    } else if (target.startsWith(`${I18N}/`) && !path.startsWith(`${I18N}/`) && !statement.importClause?.isTypeOnly
+      && !(bindings && ts.isNamedImports(bindings) && bindings.elements.every(element => element.isTypeOnly))) {
       module.tables.push(`${module.name}: ${statement.moduleSpecifier.text}`);
     }
   }
   return module;
 }
 
-/** `f(...)` → `f`, `i18n.t(...)` → `i18n.t`; anything else is not a call this check follows. */
-function callee(node: ts.CallExpression): string | null {
+/** `f(...)` → `f`, `i18n.t(...)` → `i18n.t`, `new C(...)` → `new C`; anything else is not a call this check follows. */
+function callee(node: ts.CallExpression | ts.NewExpression): string | null {
   const expression = node.expression;
+  if (ts.isNewExpression(node)) return ts.isIdentifier(expression) ? `new ${expression.text}` : null;
   if (ts.isIdentifier(expression)) return expression.text;
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) return `${expression.expression.text}.${expression.name.text}`;
   return null;
@@ -59,11 +62,18 @@ function readsText(module: Module, name: string | null, readers: Set<string>): b
   return member === 't' && namespace !== undefined && module.namespaces.has(namespace);
 }
 
-/** The named functions of a module: declarations, and `const f = () => …` / `const f = function …`. */
+/**
+ * The named functions of a module: declarations, `const f = () => …` / `const f = function …`, a class's static
+ * methods as `C.m` (what `callee` names a call to one) and its constructor as `new C`. Instance methods are left out:
+ * a call through an instance made while the module loads (`const l = new C(); l.m()`) is not followed.
+ */
 function functions(module: Module): { name: string; body: ts.Node }[] {
   const found: { name: string; body: ts.Node }[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name && node.body) found.push({ name: node.name.text, body: node.body });
+    if (ts.isMethodDeclaration(node) && node.body && ts.isIdentifier(node.name) && ts.isClassDeclaration(node.parent) && node.parent.name
+      && node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.StaticKeyword)) found.push({ name: `${node.parent.name.text}.${node.name.text}`, body: node.body });
+    if (ts.isConstructorDeclaration(node) && node.body && ts.isClassDeclaration(node.parent) && node.parent.name) found.push({ name: `new ${node.parent.name.text}`, body: node.body });
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
       && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) found.push({ name: node.name.text, body: node.initializer.body });
     ts.forEachChild(node, visit);
@@ -87,7 +97,7 @@ function textReaders(modules: Module[]): Set<string> {
         let reads = false;
         const visit = (node: ts.Node): void => {
           if (reads) return;
-          if (ts.isCallExpression(node) && readsText(module, callee(node), readers)) reads = true;
+          if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && readsText(module, callee(node), readers)) reads = true;
           ts.forEachChild(node, visit);
         };
         visit(body);
@@ -124,6 +134,10 @@ function loadTimeReads(module: Module, readers: Set<string>): string[] {
   const visit = (node: ts.Node): void => {
     if (defers(node)) return;
     const at = (): string => `${module.name}:${module.file.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+    if (ts.isNewExpression(node)) {
+      const name = callee(node);
+      if (readsText(module, name, readers)) found.push(`${at()} ${name}()`);
+    }
     if (ts.isCallExpression(node)) {
       const name = callee(node);
       if (readsText(module, name, readers)) found.push(`${at()} ${name}()`);
@@ -165,7 +179,11 @@ describe('text is read where it is used (architecture.md §9e)', () => {
     expect(probe('import { label } from "../core/other";\nconst A = label("mindmap");', `${imports}export function label(mode: string) { return t()[mode]; }`))
       .toEqual(['label()']);
     expect(probe('import { en } from "../i18n/en";\nconst A = en.x;')).toEqual(['ui/probe.ts: ../i18n/en']);
+    expect(probe('import { type Messages } from "../i18n/en";\nexport function f(m: Messages) { return m; }')).toEqual([]);
+    expect(probe(`${imports}class Labels { name = ""; constructor() { this.name = t().x; } }\nexport const L = new Labels();`)).toEqual(['new Labels()']);
     expect(probe(`${imports}const A = ["x"].map(key => t()[key]);`)).toEqual(['t()']);
+    expect(probe('import { Labels } from "../core/other";\nconst A = Labels.of("mindmap");', `${imports}export class Labels { static of(mode: string) { return t()[mode]; } }`))
+      .toEqual(['Labels.of()']);
     expect(probe('import { label } from "../core/other";\nconst A = ["mindmap"].map(label);', `${imports}export function label(mode: string) { return t()[mode]; }`))
       .toEqual(['label()']);
     expect(probe(`${imports}export function f() { return t().x; }\nconst g = () => t().y;\nclass C { m() { return ["x"].map(key => t()[key]); } }`)).toEqual([]);

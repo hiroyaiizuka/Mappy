@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { en } from '../../src/i18n/en';
 import { ja } from '../../src/i18n/ja';
 import { messagesFor, setLanguage, t } from '../../src/i18n';
+import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 
 /** Kana, CJK and full-width forms: text that has no business in the English table. */
 const JAPANESE = /[　-鿿＀-￯]/u;
@@ -16,6 +17,14 @@ describe('the text tables (architecture.md §9e)', () => {
     expect(t()).toBe(en);
     setLanguage('ja');
     expect(t()).toBe(ja);
+  });
+
+  it('name each layout as the UI has named it', () => {
+    // The UI tests take the expected names from layoutLabel() itself, so a swap between two modes would pass there.
+    setLanguage('ja');
+    expect(LAYOUT_MODES.map(layoutLabel)).toEqual(['通常マップ', 'タイムライン', '階層図', '左右バランス']);
+    setLanguage('en');
+    expect(LAYOUT_MODES.map(layoutLabel)).toEqual(['Mind map', 'Timeline', 'Hierarchy', 'Balanced']);
   });
 
   it('have the same keys, each with the same kind of value', () => {

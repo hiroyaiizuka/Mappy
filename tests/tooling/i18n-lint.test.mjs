@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
 
@@ -7,8 +8,9 @@ import { describe, expect, it } from "vitest";
  * table, and that the built-in brand and acronym lists still apply there.
  */
 describe("the English table's lint", () => {
+  // One instance: each builds the type-aware program the config asks for.
+  const eslint = new ESLint({ cwd: fileURLToPath(new URL("../../", import.meta.url)) });
   const lint = async text => {
-    const eslint = new ESLint({ cwd: new URL("../../", import.meta.url).pathname });
     const [result] = await eslint.lintText(text, { filePath: "src/i18n/en.ts" });
     return result.messages.map(message => message.ruleId);
   };
