@@ -12,6 +12,7 @@ import { renderSvg } from "../obsidian/image-export";
 import { CallReader } from "../obsidian/map-calls";
 import { EdgeLayer } from "./edge-layer";
 import { NodeRenderer } from "./node-renderer";
+import { t } from "../i18n";
 
 /** The hidden host on the document's body; styles.css keeps it a pixel large and invisible. */
 export const OFFSCREEN_CLASS = "mappy-offscreen";
@@ -83,7 +84,7 @@ export class OffscreenMap extends Component {
     const text = await this.store.read(file);
     this.assertLive();
     const mode = readMapFromSource(text);
-    if (mode === null) throw new Error(`${file.basename} はマップではありません。`);
+    if (mode === null) throw new Error(t().notAMap(file.basename));
     const document = parseMarkdown(text, file.basename);
     const targets = await new CallReader(this.app, this.store).read(document, file.path);
     this.assertLive();
@@ -111,7 +112,7 @@ export class OffscreenMap extends Component {
   }
 
   private assertLive(): void {
-    if (this.released) throw new Error(`${this.file.basename} の描画は中断されました。`);
+    if (this.released) throw new Error(t().drawStopped(this.file.basename));
   }
 
   /** True once every render finished; false when one stalled or the budget ran out. */

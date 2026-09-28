@@ -5,6 +5,7 @@ import { displayTitle } from "../core/title-breaks";
 import { attachmentMarkdown, transclusionsAsLinks } from "../core/attachments";
 import type { CallSource } from "../core/calls";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
+import { t } from "../i18n";
 
 interface NodeEntry {
   element: HTMLDivElement;
@@ -130,7 +131,7 @@ export class NodeRenderer extends Component {
       // A `<br>` in the title is a break on screen and a space when read out (LEV-202).
       if (entry.named !== node.title) {
         entry.named = node.title;
-        const name = displayTitle(node.title).replace(/\s*\n\s*/gu, " ").trim() || "空のノード";
+        const name = displayTitle(node.title).replace(/\s*\n\s*/gu, " ").trim() || t().emptyNode;
         if (entry.name.textContent !== name) entry.name.setText(name);
       }
       // The branches of a called map are read-only on this map (the calling item itself is not); every node of them
@@ -139,7 +140,7 @@ export class NodeRenderer extends Component {
       else entry.element.removeAttribute("aria-readonly");
       if (source) {
         entry.description ??= nameElement(entry.element, "description");
-        const description = `呼び出し元: ${source.path}${source.subpath}`;
+        const description = t().insertedFrom(`${source.path}${source.subpath}`);
         if (entry.description.textContent !== description) entry.description.setText(description);
         if (entry.element.getAttribute("aria-describedby") !== entry.description.id) entry.element.setAttribute("aria-describedby", entry.description.id);
       } else if (entry.description?.textContent) {
@@ -156,7 +157,7 @@ export class NodeRenderer extends Component {
       entry.toggleMark.style.width = `${foldBadgeWidth(badgeCount)}px`;
       if (isCollapsed) entry.toggleMark.setText(String(hiddenCount));
       else if (node.children.length > 0) setIcon(entry.toggleMark, "minus");
-      entry.toggle.setAttribute("aria-label", isCollapsed ? `${hiddenCount} 個のノードを展開` : "折りたたみ");
+      entry.toggle.setAttribute("aria-label", isCollapsed ? t().expandHidden(hiddenCount) : t().collapse);
       entry.toggle.setAttribute("aria-expanded", String(!isCollapsed));
       if (node.children.length > 0) entry.element.setAttribute("aria-expanded", String(!collapsed.has(node.id)));
       else entry.element.removeAttribute("aria-expanded");

@@ -1,4 +1,5 @@
 import { RefusalLine } from "./refusal-line";
+import { t } from "../i18n";
 
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
@@ -45,7 +46,7 @@ export class InlineEditor {
     host.addClass("is-editing");
     // One row that widens with the text up to the node's wrap width (CSS max-width), then more rows (`resize`).
     this.input = host.createEl("textarea", {
-      cls: "mappy-inline-input", attr: { rows: "1", "aria-label": "ノードのテキスト" },
+      cls: "mappy-inline-input", attr: { rows: "1", "aria-label": t().nodeTextLabel },
     });
     this.input.value = options.initial;
     this.written = options.initial;

@@ -1,6 +1,7 @@
 import type { App, TFile } from "obsidian";
 import { insertWikiLink, wikiLinkContext } from "../core/wiki-link";
 import type { InlineSuggestion } from "./inline-editor";
+import { t } from "../i18n";
 
 interface LinkOption { file: TFile; label: string; alias?: string }
 let suggestionId = 0;
@@ -20,7 +21,7 @@ export class LinkSuggest implements InlineSuggestion {
     this.popup.className = "mappy-link-suggest";
     this.popup.id = `mappy-link-suggest-${++suggestionId}`;
     this.popup.setAttribute("role", "listbox");
-    this.popup.setAttribute("aria-label", "リンク先の候補");
+    this.popup.setAttribute("aria-label", t().linkSuggestions);
     input.setAttribute("aria-autocomplete", "list");
     this.listen(input, "input", () => { this.refresh(); });
     this.listen(input, "click", () => { this.refresh(); });

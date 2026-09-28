@@ -14,6 +14,7 @@ import { readMapLayout } from "../obsidian/frontmatter";
 import { EdgeLayer } from "./edge-layer";
 import { mapClick } from "./map-events";
 import { NodeRenderer } from "./node-renderer";
+import { t } from "../i18n";
 
 /** Obsidian's embed container whose content a map replaced; its own children are hidden by CSS while the map shows. */
 export const EMBED_HOST_CLASS = "mappy-embed-host";
@@ -96,14 +97,14 @@ export class MapEmbed extends MarkdownRenderChild {
     el.addClass("mappy-embed", "mappy-view");
     el.dataset.mappyEmbed = this.source.file.path + this.source.subpath;
     el.setAttribute("role", "figure");
-    el.setAttribute("aria-label", `マインドマップ: ${name}`);
+    el.setAttribute("aria-label", t().embedLabel(name));
     this.canvas = el.createDiv({ cls: "mappy-canvas", attr: { role: "tree", "aria-readonly": "true", "aria-label": name } });
     this.world = this.canvas.createDiv({ cls: "mappy-world" });
     this.edges = new EdgeLayer(this.world.createSvg("svg", { cls: "mappy-edges", attr: { "aria-hidden": "true" } }));
     this.nodes = this.world.createDiv({ cls: "mappy-nodes" });
     this.message = el.createDiv({ cls: "mappy-embed-message" });
     this.message.hidden = true;
-    const open = el.createEl("button", { cls: "mappy-button mappy-embed-open", attr: { type: "button", "aria-label": "マップで開く", title: "マップで開く" } });
+    const open = el.createEl("button", { cls: "mappy-button mappy-embed-open", attr: { type: "button", "aria-label": t().openInMap, title: t().openInMap } });
     setIcon(open, "git-fork");
     this.registerDomEvent(open, "click", event => {
       event.preventDefault();
@@ -184,7 +185,7 @@ export class MapEmbed extends MarkdownRenderChild {
       // No text to lead on from: a later write is recorded from the map last parsed, or matched by titles.
       if (epoch !== this.epoch) return;
       this.writes.clear();
-      this.show(`${file.basename} を読み込めませんでした。`);
+      this.show(t().embedLoadFailed(file.basename));
       return;
     }
     if (epoch !== this.epoch) return;
@@ -196,7 +197,7 @@ export class MapEmbed extends MarkdownRenderChild {
     const mode = readMapFromSource(text);
     if (!mode) {
       this.writes.clear();
-      this.show(`${file.basename} はマップではなくなりました。開き直すと通常の表示に戻ります。`);
+      this.show(t().embedNotAMap(file.basename));
       return;
     }
     // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
@@ -206,7 +207,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.positions = readTopicPositions(text);
     const trees = embedTrees(this.document, this.source.subpath);
     if (!trees) {
-      this.show(`${file.basename} に見出し「${this.source.subpath.replace(/^#/u, "")}」が見つかりません。`);
+      this.show(t().embedNoHeading(file.basename, this.source.subpath.replace(/^#/u, "")));
       return;
     }
     this.trees = trees;
