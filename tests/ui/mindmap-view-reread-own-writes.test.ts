@@ -55,8 +55,10 @@ vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
 afterEach(async () => {
-  vi.restoreAllMocks();
+  // The views close before the stand-ins go: a re-read `holdDebounces` let go runs on a real timer under a negative id,
+  // which only its `clearTimeout` stand-in can stop (the slow reads here end on their own, so none holds the close up).
   await closeOpenViews();
+  vi.restoreAllMocks();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
