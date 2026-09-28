@@ -818,34 +818,28 @@ export class MindmapView extends FileView {
     return super.onClose();
   }
 
-  /** Whether a title draft is open (LEV-230: Obsidian quitting is asked to wait only for a view that has one). */
-  hasTitleDraft(): boolean {
-    return this.inlineEditor !== undefined && !this.closed;
+  /**
+   * The page is going without closing this view (LEV-230: a window reload, Obsidian quitting or its main window
+   * closing; Obsidian 1.14.2 sends `pagehide` then, and no `onClose`): the title draft as the edit its save would make,
+   * planned now on the note the map shows, for the plugin's next load to apply (src/ui/exit-drafts.ts). Nothing is
+   * written here: a write started as the page goes is cut off, and can be cut after the file was emptied
+   * (artifacts/lev-230). The drafts go with it, so no save starts after this either — on a quit the window's blur
+   * comes after `unload` and would start the draft's blur save (LEV-216), a write the same cut can empty the note in.
+   * A draft that cannot be planned (its node changed outside the map, E05) is kept with the reason, to be reported
+   * then; one that would not change the note is not kept.
+   */
+  takeExitDraft(): ExitDraft | null {
+    if (this.closed) return null;
+    const kept = this.exitDraft();
+    this.dropDraft();
+    return kept;
   }
 
-  /**
-   * Obsidian is quitting (LEV-230: `workspace.on("quit")`, whose task it waits for before the window closes, which no
-   * view's `onClose` precedes): the title draft is saved as a close saves it (`saveDraft`). A draft saved goes with its
-   * editor; a refused one stays open, so the page's `pagehide` keeps it (`exitDraft`) and the next launch reports it —
-   * the Notice shown here goes with the window.
-   */
-  saveDraftOnQuit(): Promise<void> {
-    return this.saveDraft(this.file);
-  }
-
-  /**
-   * The page is going without a close (a window reload, LEV-230: Obsidian 1.14.2 sends `pagehide` and no `quit`, blur
-   * or `onClose`): the title draft as the edit its save would make, planned now on the note the map shows, for the
-   * plugin's next load to apply (src/ui/exit-drafts.ts). Nothing is written here: a write started as the page goes is
-   * cut off, and can be cut after the file was emptied (artifacts/lev-230). A draft that cannot be planned (its node
-   * changed outside the map, E05) is kept with the reason, to be reported then; one that would not change the note is
-   * not kept.
-   */
-  exitDraft(): ExitDraft | null {
+  private exitDraft(): ExitDraft | null {
     const draft = this.inlineDraft;
     const file = this.file;
     const title = this.inlineEditor?.text();
-    if (!draft || !file || title === undefined || this.closed) return null;
+    if (!draft || !file || title === undefined) return null;
     try {
       const { current, plan } = this.planTitle(file, draft, title);
       const after = applyEdits(current.source, plan.edits);

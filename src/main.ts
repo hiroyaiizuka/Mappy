@@ -64,7 +64,7 @@ export default class MappyPlugin extends Plugin {
       view.setVisibleLayouts(this.settings.visibleLayouts);
       return view;
     });
-    // A title draft open when Obsidian quits or the window reloads, neither of which closes the view (LEV-230).
+    // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230).
     installExitDrafts(this, this.app, store, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
       .map(leaf => leaf.view).filter((view): view is MindmapView => view instanceof MindmapView));
     // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is

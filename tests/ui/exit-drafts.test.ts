@@ -9,7 +9,7 @@
  * The rows are the way out × the draft's shape. A reload cannot write the note (a write started at `pagehide` empties
  * the file: artifacts/lev-230), so the draft is planned as its edit at `pagehide` and kept in the vault's
  * `localStorage`, and the reloaded plugin applies it through the store, checked against the note it was planned on.
- * A quit hands Obsidian the save (`workspace.on('quit')`'s tasks), which it waits for before the window closes.
+ * A quit sends `pagehide` too and takes the same way (a quit task would keep Obsidian running on macOS).
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
@@ -106,7 +106,6 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     window.dispatchEvent(new Event('pagehide'));
     await mounted.settle();
     expect(mounted.source()).toBe(SOURCE);
-    expect(mounted.editor()).not.toBeNull();
   });
 
   it('is saved as the draft showed it mid IME composition', async () => {
@@ -219,41 +218,28 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
 });
 
 describe('a title draft open when Obsidian quits (LEV-230)', () => {
-  it('is saved by a task Obsidian waits for before the window closes, and not kept for a reload too', async () => {
-    const { mounted } = await draft('終了の前の下書き');
-    const tasks = new Tasks();
-    mounted.app.workspaceEvents.trigger('quit', tasks);
-    expect(tasks.isEmpty()).toBe(false);
-    await tasks.promise();
-    expect(mounted.source()).toBe(renamed('終了の前の下書き'));
-    window.dispatchEvent(new Event('pagehide'));
-    expect(mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
-    expect(Notice.log).toEqual([]);
-  });
-
-  it('adds no task without a draft (Obsidian would show 「Saving...」 for nothing)', async () => {
-    const mounted = await mountMapView(PATH, SOURCE);
-    opened.push(mounted);
-    install(mounted.app, (mounted.view as unknown as { store: DocumentStore }).store, () => [mounted.view]);
+  // A task would make Obsidian wait, and waiting cancels the quit: on macOS only the window closes, and Obsidian keeps
+  // running with no window (seen on the real app with the build that added one). Quitting also sends `pagehide`.
+  it('adds no task to the quit, and the draft kept at pagehide is in the note at the next launch', async () => {
+    const { mounted, owner } = await draft('終了の前の下書き');
     const tasks = new Tasks();
     mounted.app.workspaceEvents.trigger('quit', tasks);
     expect(tasks.isEmpty()).toBe(true);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('終了の前の下書き'));
+    expect(Notice.log).toEqual([]);
   });
 
-  it('keeps a draft the quit could not save for the next launch, which says it was not saved', async () => {
-    const { mounted, input, owner } = await draft('終了で保存できない下書き');
-    const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');
-    mounted.app.put(PATH, external);
-    await new Promise(resolve => setTimeout(resolve, 100));
+  // On a quit the window's blur comes after `unload` (artifacts/lev-230), and the draft's blur save (LEV-216) started a
+  // write there that the page's end can cut after the file was emptied.
+  it('starts no save on the blur that follows pagehide', async () => {
+    const { mounted, input } = await draft('後から blur が来た下書き');
+    const applyOver = vi.spyOn((mounted.view as unknown as { store: DocumentStore }).store, 'applyOver');
+    window.dispatchEvent(new Event('pagehide'));
+    input.dispatchEvent(new FocusEvent('blur'));
     await mounted.settle();
-    mounted.key(input, 'Enter');
-    await mounted.settle();
-    const tasks = new Tasks();
-    mounted.app.workspaceEvents.trigger('quit', tasks);
-    await tasks.promise();
-    Notice.log.length = 0;
-    const app = await reload(mounted, owner);
-    expect(noteOf(app)).toBe(external);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('終了で保存できない下書き', t().draftChanged)]);
+    expect(applyOver).not.toHaveBeenCalled();
+    expect(mounted.source()).toBe(SOURCE);
+    expect(mounted.editor()).toBeNull();
   });
 });
