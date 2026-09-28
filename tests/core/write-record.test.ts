@@ -26,7 +26,7 @@ describe('WriteRecord', () => {
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
     record.record(write, A);
-    const read = record.take(write.after, shown, 'n');
+    const read = record.take(write.after, shown, 'n', record.mark());
     expect(second(read)).toBe(second(shown));
     // Spent: a later write leads on from the text the reader now shows, not from the end of the old record (code review 2).
     expect(record.size).toBe(0);
@@ -36,9 +36,104 @@ describe('WriteRecord', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
     const write = rename(A, '子1', 'ずっと長い題名');
+    const reading = record.mark();
     record.record(write, A);
-    const same = record.take(A, shown, 'n');
-    expect(record.take(write.after, same, 'n').nodes.filter(node => node.title === '')[1]?.id).toBe(second(same));
+    const same = record.take(A, shown, 'n', reading);
+    expect(record.take(write.after, same, 'n', record.mark()).nodes.filter(node => node.title === '')[1]?.id).toBe(second(same));
+  });
+
+  // LEV-224: a read of the text on screen keeps only the writes recorded while it was under way. One recorded before it
+  // began was there for the read to find: the text on screen found instead means the note was put back, and kept, the
+  // write would stand at the end of the record where the next write, made on the text on screen, could not follow it.
+  it.each([
+    ['take', (record: WriteRecord, shown: MindDocument, mark: number) => { record.take(A, shown, 'n', mark); }],
+    ['spend', (record: WriteRecord, _shown: MindDocument, mark: number) => { record.spend(A, mark); }],
+  ] as const)('%s: drops a write recorded before a read that found the text on screen (the note put back)', (_name, read) => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    record.record(rename(A, '子1', 'ずっと長い題名'), A);
+    read(record, shown, record.mark());
+    expect(record.size).toBe(0);
+    const next = rename(A, '- \n', '- 命名\n');
+    record.record(next, A);
+    expect(record.size).toBe(1);
+  });
+
+  it('keeps, of the writes recorded while a read of the text on screen was under way, only those that lead on from it', () => {
+    // W1 (A→X) recorded before the read, W2 (X→Y) while it reads, and the read finds A: W1 goes, and W2 with it — kept,
+    // it would start the record at X, a text the reader does not show, and no write on A could follow it.
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    record.record(there, A);
+    const reading = record.mark();
+    record.record(rename(there.after, 'ずっと長い題名', '別'), A);
+    record.spend(A, reading);
+    expect(record.size).toBe(0);
+  });
+
+  // Not a regression test of LEV-224 (it holds before the fix, which kept every write): it pins that the fix does not
+  // drop too much — a write recorded while the read was under way is the next read's to carry.
+  it('keeps the writes recorded while a read of the text on screen was under way that lead on from it', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const reading = record.mark();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    const on = rename(there.after, '- \n', '- 命名\n');
+    record.record(there, A);
+    record.record(on, A);
+    record.spend(A, reading);
+    expect(record.size).toBe(2);
+    expect(record.take(on.after, shown, 'n', record.mark()).nodes.filter(node => node.title === '')[0]?.id).toBe(second(shown));
+  });
+
+  // Code review 1 of LEV-224: a read that reaches part of the record spent it and kept the rest whole, so a write after
+  // the one it reached, recorded before it began and put back, stood at the end of the record all the same.
+  it('take: drops, past the write a read reached, a write recorded before the read began (put back)', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    record.record(there, A);
+    record.record(rename(there.after, '親', '改名'), A);
+    const read = record.take(there.after, shown, 'n', record.mark());
+    expect({ size: record.size, second: second(read) }).toEqual({ size: 0, second: second(shown) });
+  });
+
+  it('spend: drops, past the writes that came back to the text on screen, a write recorded before the read began', () => {
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    const back: RecordedWrite = { before: there.after, after: A, edits: [{ from: there.edits[0]!.from, to: there.edits[0]!.from + 'ずっと長い題名'.length, text: '子1' }] };
+    record.record(there, A);
+    record.record(back, A);
+    record.record(rename(A, '親', '改名'), A);
+    record.spend(A, record.mark());
+    expect(record.size).toBe(0);
+  });
+
+  // Not a regression test either (it holds before code review 1, which kept the rest whole): it pins that dropping past
+  // the write a read reached does not drop a write recorded while the read was under way.
+  it('keeps, past the write a read reached, the writes recorded while it was under way that lead on from the text', () => {
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    const there = rename(A, '子1', 'ずっと長い題名');
+    record.record(there, A);
+    const reading = record.mark();
+    const on = rename(there.after, '- \n', '- 命名\n');
+    record.record(on, A);
+    const read = record.take(there.after, shown, 'n', reading);
+    expect(record.size).toBe(1);
+    expect(record.take(on.after, read, 'n', record.mark()).nodes.filter(node => node.title === '')[0]?.id).toBe(second(shown));
+  });
+
+  it('starts the record again with a write on the text on screen while it ends elsewhere (the note was put back)', () => {
+    // A write read on the text last parsed: the store wrote on that text, so the writes recorded were taken back.
+    const shown = parseMarkdown(A, 'n');
+    const record = new WriteRecord();
+    record.record(rename(A, '子1', 'ずっと長い題名'), A);
+    const next = rename(A, '- \n', '- 命名\n');
+    record.record(next, A);
+    expect(record.size).toBe(1);
+    const read = record.take(next.after, shown, 'n', record.mark());
+    expect(read.nodes.filter(node => node.title === '')[0]?.id).toBe(second(shown));
   });
 
   it('matches an external change by titles from the last text the writes reached, and drops the record', () => {
@@ -47,14 +142,14 @@ describe('WriteRecord', () => {
     const write = rename(A, '子1', '改名');
     record.record(write, A);
     const external = write.after.replace('  - 空の子\n', '  - 外から\n');
-    const read = record.take(external, shown, 'n');
+    const read = record.take(external, shown, 'n', record.mark());
     // 改名 exists only in the written text: matched from `shown`, it would be a new node.
     const reached = parseMarkdown(write.after, 'n', shown, undefined, write.edits);
     expect(titled(read, '改名')).toBe(titled(reached, '改名'));
     // Dropped: a write on the external text leads on from what the reader now shows.
     const next = rename(external, '改名', 'もう一度');
     record.record(next, read.source);
-    expect(second(record.take(next.after, read, 'n'))).toBe(second(read));
+    expect(second(record.take(next.after, read, 'n', record.mark()))).toBe(second(read));
   });
 
   it('spends writes that came back to the text on screen (⌘Z then ⌘⇧Z), so a later write leads on from it', () => {
@@ -64,12 +159,12 @@ describe('WriteRecord', () => {
     const back: RecordedWrite = { before: there.after, after: A, edits: [{ from: there.edits[0]!.from, to: there.edits[0]!.from + 'ずっと長い題名'.length, text: '子1' }] };
     record.record(there, A);
     record.record(back, there.after);
-    record.spend(A);
+    record.spend(A, record.mark());
     // Not kept until some later read: each holds two copies of the note (code review 1).
     expect(record.size).toBe(0);
     const next = rename(A, '子1', '別の長い題名');
     record.record(next, A);
-    expect(second(record.take(next.after, shown, 'n'))).toBe(second(shown));
+    expect(second(record.take(next.after, shown, 'n', record.mark()))).toBe(second(shown));
   });
 
   it('spends every write up to the last one that wrote the text read (a rename, ⌘Z, ⌘⇧Z before one re-read)', () => {
@@ -81,7 +176,7 @@ describe('WriteRecord', () => {
     record.record(there, A);
     record.record(back, there.after);
     record.record(there, A);
-    const read = record.take(there.after, shown, 'n');
+    const read = record.take(there.after, shown, 'n', record.mark());
     expect({ size: record.size, second: second(read) }).toEqual({ size: 0, second: second(shown) });
   });
 
@@ -91,6 +186,6 @@ describe('WriteRecord', () => {
     record.record(rename(A.replace('子1', '外'), '外', 'ずっと長い題名'), A);
     const write = rename(A, '子1', 'ずっと長い題名');
     record.record(write, A);
-    expect(second(record.take(write.after, shown, 'n'))).toBe(second(shown));
+    expect(second(record.take(write.after, shown, 'n', record.mark()))).toBe(second(shown));
   });
 });

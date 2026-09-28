@@ -232,3 +232,163 @@ describe("the embed's folds through the writes of the note's map tab (LEV-217)",
     expect(seen(section, EMPTY_LABEL, 1)).toEqual({ id: after.id, folded: false });
   });
 });
+
+describe('a write taken back by someone else before the embed re-read it (LEV-224, after LEV-218)', () => {
+  // A read of the text on screen keeps only the writes recorded while it was under way. One recorded before it began
+  // was there for the read to find; finding the text on screen instead means someone put the note back (Undo in the
+  // Markdown pane, a sync), and kept, that write would stand at the end of the record, so the next write — made on the
+  // text on screen, not on that write's end — could not be recorded, and its re-read would match nodes by title: with
+  // the twin before it renamed, the node the reader opened would take the twin's id and close again. Before the fix
+  // every row here failed. What each pins of the fix (each part taken out on its own): the rows of a write made while
+  // the embed re-reads fail without the record started again on the text on screen (`WriteRecord.record`); the rows of
+  // an external change fail without the writes recorded before the read dropped (`keepFrom`, the second one also
+  // without it past the write a read reached, code review 1). The first two rows fail only before the fix (either part
+  // alone holds them): they pin the reported steps.
+  const TWINS = [
+    { shape: '空題名 (the second)', label: EMPTY_LABEL, twin: '- \n' },
+    { shape: '同名 (the second)', label: '同名', twin: '- 同名\n' },
+  ] as const;
+
+  type Embed = EmbedState & { writes: { size: number } };
+
+  /** The first node written `twin` (the one before the reader's) renamed 命名 by the store, on whatever the note holds. */
+  const renameTwin = (store: DocumentStore, opened: Opened, twin: string): Promise<unknown> => store.applyLatest(opened.map.file, source => {
+    const at = source.indexOf(twin) + 2;
+    return [{ from: at, to: at + twin.length - 3, text: '命名' }];
+  });
+
+  /** The reader opens the second `label` in the embed; returns what they see of it. */
+  async function openSecond(opened: Opened, label: string): Promise<{ id: string | undefined; folded: boolean }> {
+    click(nodeNamed(opened.section, label, 1).querySelector<HTMLElement>('.mappy-node-toggle') ?? opened.section);
+    await opened.map.settle();
+    const opens = seen(opened.section, label, 1);
+    expect(opens.folded).toBe(false);
+    return opens;
+  }
+
+  /**
+   * The store renames 子1, and the note is put back before the embed re-reads it (the re-read debounces held until
+   * `release`; were the embed to re-read the rename first, it would be spent, and the rows would pass whatever a read
+   * of the text on screen does with the record).
+   */
+  async function takenBack(opened: Opened, store: DocumentStore, title = '- 子1\n'): Promise<{ release: () => void; embed: Embed }> {
+    const from = SOURCE.indexOf(title) + 2;
+    const [embed] = (opened.embeds as unknown as { live: Set<Embed> }).live;
+    if (!embed) throw new Error('No embed');
+    const held = holdDebounces();
+    try {
+      await store.applyLatest(opened.map.file, () => [{ from, to: from + title.length - 3, text: '改名' }]);
+      expect(embed.writes.size).toBe(1);
+      opened.map.app.put(PATH, SOURCE);
+      expect(embed.drawnSource).toBe(SOURCE);
+    } catch (error) {
+      // Released here, or every later test's 45 ms timers would stay held and time out.
+      held.release();
+      throw error;
+    }
+    return { release: held.release, embed };
+  }
+
+  for (const { shape, label, twin } of TWINS) {
+    it(`a rename of the twin before ${shape} after a write was put back keeps its id and fold`, async () => {
+      const opened = await open();
+      const store = (opened.map.view as unknown as { store: DocumentStore }).store;
+      const opens = await openSecond(opened, label);
+      const { release, embed } = await takenBack(opened, store);
+      release();
+      await settled(opened, source => source === SOURCE);
+      await renameTwin(store, opened, twin);
+      await settled(opened, source => source.includes('- 命名\n'));
+      expect(seen(opened.section, label, 0)).toEqual(opens);
+      // Spent by that re-read: nothing waits to be carried to a later one.
+      expect(embed.writes.size).toBe(0);
+    });
+
+    it(`a write made while the embed re-reads the put-back note keeps the id and fold of ${shape}`, async () => {
+      // The rename taken back is still at the end of the record while the embed's re-read of the put-back note reads: a
+      // write made meanwhile starts from the text on screen, not from that rename's end, and must be recorded all the
+      // same (it starts the record again). Refused, its re-read would match nodes by title and the fold would go.
+      const opened = await open();
+      const store = (opened.map.view as unknown as { store: DocumentStore }).store;
+      const opens = await openSecond(opened, label);
+      const { release, embed } = await takenBack(opened, store);
+      // The embed's re-read of the put-back note is answered 40 ms late, and the store writes 10 ms into it.
+      const internals = embed as unknown as { refresh(): Promise<void> };
+      const refresh = internals.refresh.bind(embed);
+      let reading = 0;
+      internals.refresh = async () => { reading += 1; try { await refresh(); } finally { reading -= 1; } };
+      const read = store.read.bind(store);
+      let started = false;
+      let written: Promise<unknown> = Promise.resolve();
+      let premise: { stale: number; reading: number } | null = null;
+      vi.spyOn(store, 'read').mockImplementation(async file => {
+        const text = await read(file);
+        if (started || text !== SOURCE || reading === 0) return text;
+        started = true;
+        written = new Promise(resolve => {
+          setTimeout(() => {
+            premise = { stale: embed.writes.size, reading };
+            resolve(renameTwin(store, opened, twin));
+          }, 10);
+        });
+        await new Promise(resolve => setTimeout(resolve, 40));
+        return text;
+      });
+      release();
+      await vi.waitFor(() => { expect(started).toBe(true); }, { timeout: 2000, interval: 2 });
+      await written;
+      await settled(opened, source => source.includes('- 命名\n'));
+      // The stale rename was still in the record, and the embed's read not yet answered, when the store wrote.
+      expect(premise).toEqual({ stale: 1, reading: 1 });
+      expect(seen(opened.section, label, 0)).toEqual(opens);
+    });
+  }
+
+  it('an external change after a write was put back is matched by titles from the text on screen, not from the write', async () => {
+    // Kept, the rename of 親 taken back would still lead from the text on screen, and the next external change would be
+    // matched from the text it reached, where 親 is 改名: 親 would be new, and come back folded. Starting the record
+    // again on the next write (the other rows) does not reach this: no write of the store comes in between.
+    const opened = await open();
+    const { section, map } = opened;
+    const store = (map.view as unknown as { store: DocumentStore }).store;
+    click(nodeNamed(section, '親').querySelector<HTMLElement>('.mappy-node-toggle') ?? section);
+    await map.settle();
+    const opens = seen(section, '親', 0);
+    expect(opens.folded).toBe(false);
+    const { release } = await takenBack(opened, store, '- 親\n');
+    release();
+    await settled(opened, source => source === SOURCE);
+    await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
+    await settled(opened, source => source.includes('- 外から\n'));
+    expect(seen(section, '親', 0)).toEqual(opens);
+  });
+
+  it('a write put back after one the re-read reaches is dropped all the same (code review 1)', async () => {
+    // The store renames 子1 (A) and then 親 (B) within one debounce, and B alone is put back: the re-read finds A's text
+    // and spends A. Kept whole, the rest would hold B, and the next external change would be matched from B's text,
+    // where 親 is 改名.
+    const opened = await open();
+    const { section, map } = opened;
+    const store = (map.view as unknown as { store: DocumentStore }).store;
+    click(nodeNamed(section, '親').querySelector<HTMLElement>('.mappy-node-toggle') ?? section);
+    await map.settle();
+    const opens = seen(section, '親', 0);
+    const [embed] = (opened.embeds as unknown as { live: Set<Embed> }).live;
+    const held = holdDebounces();
+    let reached = '';
+    try {
+      const child = SOURCE.indexOf('  - 子1\n') + 4;
+      reached = (await store.applyLatest(map.file, () => [{ from: child, to: child + 2, text: '改名1' }])).after;
+      const parent = reached.indexOf('- 親\n') + 2;
+      await store.applyLatest(map.file, () => [{ from: parent, to: parent + 1, text: '改名' }]);
+      expect(embed?.writes.size).toBe(2);
+      map.app.put(PATH, reached);
+    } finally {
+      held.release();
+    }
+    await settled(opened, source => source === reached);
+    await map.app.asApp<App>().vault.process(map.file, text => text.replace('- 子2\n', '- 外から\n'));
+    await settled(opened, source => source.includes('- 外から\n'));
+    expect(seen(section, '親', 0)).toEqual(opens);
+  });
+});

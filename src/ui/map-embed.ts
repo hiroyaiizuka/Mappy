@@ -176,6 +176,8 @@ export class MapEmbed extends MarkdownRenderChild {
   private async refresh(): Promise<void> {
     const epoch = ++this.epoch;
     const file = this.source.file;
+    // The writes recorded before the read begins, which it will find if nobody else takes them back (LEV-224).
+    const mark = this.writes.mark();
     let text: string;
     try {
       text = await this.store.read(file);
@@ -189,7 +191,7 @@ export class MapEmbed extends MarkdownRenderChild {
     if (epoch !== this.epoch) return;
     if (text === this.drawnSource && this.document?.root.title === file.basename) {
       // Writes that came back to the text on screen (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
-      this.writes.spend(text);
+      this.writes.spend(text, mark);
       return;
     }
     const mode = readMapFromSource(text);
@@ -200,7 +202,7 @@ export class MapEmbed extends MarkdownRenderChild {
     }
     // The last map drawn stays the reference for node identity, so the reader's folds survive a sentence in between.
     const previous = this.document;
-    this.document = this.writes.take(text, previous, file.basename);
+    this.document = this.writes.take(text, previous, file.basename, mark);
     this.mode = mode;
     this.positions = readTopicPositions(text);
     const trees = embedTrees(this.document, this.source.subpath);
