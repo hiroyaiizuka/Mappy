@@ -48,15 +48,15 @@ import { layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindDocument } from '../../src/core/markdown';
 import type { DocumentStore } from '../../src/obsidian/document-store';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -93,7 +93,6 @@ const storeOf = (mounted: MountedMapView): DocumentStore => (mounted.view as unk
 
 async function mount(app = new HarnessApp(), store?: DocumentStore): Promise<MountedMapView> {
   const mounted = await mountMapView(PATH, SOURCE, 'mindmap', app, store ? { store } : {});
-  opened.push(mounted);
   return mounted;
 }
 
@@ -539,7 +538,6 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     const app = new HarnessApp();
     app.put('Fixtures/map-a.md', MAP_A);
     const mounted = await mountMapView(PATH, host, 'mindmap', app);
-    opened.push(mounted);
     await settled(mounted);
     const view = state(mounted);
     const internals = mounted.view as unknown as Internals;
@@ -643,7 +641,6 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     it(`the first ${shape} twin deleted (${by}) after the second one's deletion was put back keeps the fold of the second`, async () => {
       const source = twinSource(twin);
       const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
-      opened.push(mounted);
       await settled(mounted);
       const view = state(mounted);
       const id = foldAndSelect(mounted, label, 1);
@@ -718,7 +715,6 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     const twin = '- \n  - 同じ子\n';
     const t = twinSource(twin);
     const mounted = await mountMapView(PATH, t, 'mindmap', new HarnessApp());
-    opened.push(mounted);
     await settled(mounted);
     const view = state(mounted);
     const internals = mounted.view as unknown as { recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void };
@@ -746,7 +742,6 @@ describe('a re-read that reaches part of the record, with the writes past it tak
     it(`the first ${shape} twin deleted (C ${by}) after the second was deleted and put back: its fold stays with it`, async () => {
       const source = twinSource(twin);
       const mounted = await mountMapView(PATH, source, 'mindmap', new HarnessApp());
-      opened.push(mounted);
       await settled(mounted);
       const view = state(mounted);
       const id = foldAndSelect(mounted, label, 0);

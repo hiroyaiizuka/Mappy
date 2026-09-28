@@ -8,6 +8,7 @@ import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView, type MapMenuAction } from '../../src/ui/mindmap-view';
+import { closeView } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 export interface MountedMapView {
@@ -27,7 +28,7 @@ export interface MountedMapView {
   key: (target: EventTarget, value: string, init?: KeyboardEventInit) => KeyboardEvent;
   /** The inline title editor, if one is open. */
   editor: () => HTMLTextAreaElement | null;
-  /** Close the view and release its listeners; the container is left for the test to drop. */
+  /** Close the view as Obsidian closes its tab (1.14.2: the container leaves the DOM, the view unloads, then `onClose`). */
   close: () => Promise<void>;
 }
 
@@ -86,6 +87,6 @@ export async function mountMapView(
       return event;
     },
     editor: () => view.containerEl.querySelector<HTMLTextAreaElement>('textarea.mappy-inline-input'),
-    close: async () => { await view.onClose(); view.unload(); },
+    close: () => closeView(view),
   };
 }

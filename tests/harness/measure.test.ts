@@ -13,13 +13,14 @@ import { parseMarkdown, projectMap } from '../../src/core/markdown';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView } from '../../src/ui/mindmap-view';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against jsdom like it runs on the page.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 let probes: Probes;
 beforeAll(() => { installObsidianDom(); probes = installProbes(window); });
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(async () => { await closeOpenViews(); document.body.replaceChildren(); });
 
 function fixture(id: string): { id: string; path: string; source: string } {
   const found = findFixture(id);

@@ -7,6 +7,7 @@ import { EMBED_TARGETS, findFixture } from '../../harness/browser/fixtures';
 import { LAYOUT_MODES, layoutLabel, type LayoutMode } from '../../src/core/layout-mode';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view runs against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
@@ -22,9 +23,8 @@ const timeline = EMBED_TARGETS.find(target => target.path === TIMELINE);
 if (!regular || !timeline) throw new Error('Missing uneven-branches or embed-timeline fixture');
 const SOURCES: Record<string, string> = { [REGULAR]: regular.source, [TIMELINE]: timeline.source };
 
-const mounted: MountedMapView[] = [];
 afterEach(async () => {
-  for (const view of mounted.splice(0)) await view.close();
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -32,7 +32,6 @@ afterEach(async () => {
 async function mount(path: string, layout: LayoutMode | null, visible?: readonly LayoutMode[], app = new HarnessApp()): Promise<MountedMapView> {
   const view = await mountMapView(path, SOURCES[path] ?? '', layout, app, visible ? { prepare: v => { v.setVisibleLayouts(visible); } } : {});
   await view.settle();
-  mounted.push(view);
   return view;
 }
 

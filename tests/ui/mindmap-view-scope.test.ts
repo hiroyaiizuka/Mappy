@@ -4,15 +4,15 @@ import { installObsidianDom } from '../../harness/browser/dom';
 import { Scope } from '../../harness/browser/obsidian';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { keyAt } from './keys';
-import { mountMapView, type MountedMapView } from './map-view-mount';
+import { mountMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and inline editor run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -27,7 +27,6 @@ const SOURCE = ['---', 'mappy: true', '---', '## 講座の構成', '', '- はじ
  */
 async function mount() {
   const mounted = await mountMapView(PATH, SOURCE);
-  opened.push(mounted);
   // Stands in for Obsidian's HotkeyManager on the root scope: a catch-all that records every key it is offered.
   const offered: string[] = [];
   mounted.app.scope.register(null, null, event => { offered.push(event.key); return undefined; });

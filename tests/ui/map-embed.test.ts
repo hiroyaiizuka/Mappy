@@ -6,6 +6,7 @@ import { HarnessApp } from '../../harness/browser/app';
 import { Component, MarkdownRenderer, MarkdownView, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { accessibleName } from './accessible-name';
+import { closeOpenViews } from '../mocks/open-views';
 import { EMBED_ANCHOR_CLASS, EMBED_CLAIM_HOLD_MS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
 
 // The browser-harness stand-in for `obsidian`, so the shipped post processor, embed component and renderer run against a real DOM.
@@ -14,8 +15,10 @@ vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 /** Every renderer a test loaded; unloading them releases timers and subscriptions so nothing leaks into the next test. */
 const renderers: Component[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const renderer of renderers.splice(0)) renderer.unload();
+  // The MarkdownView stand-ins the reading-view tests build (tests/mocks/open-views.ts).
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 

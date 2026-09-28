@@ -20,15 +20,15 @@ import { Notice } from '../../harness/browser/obsidian';
 import type { MoveCommand } from '../../src/core/commands';
 import { projectMap, type MindDocument } from '../../src/core/markdown';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
 });
@@ -58,7 +58,6 @@ const frame = (): Promise<void> => new Promise(resolve => requestAnimationFrame(
 
 async function mount(): Promise<MountedMapView> {
   const mounted = await mountMapView(PATH, SOURCE, 'mindmap');
-  opened.push(mounted);
   return mounted;
 }
 
@@ -282,7 +281,6 @@ describe('the maps the items call, shown with a write of the map\'s own before i
     app.put('Fixtures/map-a.md', MAP_A);
     app.put('Fixtures/map-b.md', MAP_B);
     const mounted = await mountMapView(PATH, HOST, 'mindmap', app);
-    opened.push(mounted);
     await settled(mounted);
     expect(labels(mounted)).toEqual(expect.arrayContaining(['地図A', 'A の枝']));
     return mounted;

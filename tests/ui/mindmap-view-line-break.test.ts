@@ -13,14 +13,14 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
 
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -29,7 +29,6 @@ const HEADINGS = ['# 旅の計画', '', '## 温泉旅行', '', '本文', ''].joi
 
 async function mount(source: string, path = 'Fixtures/line-break.md'): Promise<MountedMapView> {
   const mounted = await mountMapView(path, source);
-  opened.push(mounted);
   return mounted;
 }
 

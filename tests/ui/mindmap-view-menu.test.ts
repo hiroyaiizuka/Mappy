@@ -7,14 +7,14 @@ import { Notice } from '../../harness/browser/obsidian';
 import { findFixture } from '../../harness/browser/fixtures';
 import type { MapMenuAction, MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { closeOpenViews } from '../mocks/open-views';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and store run against a real DOM.
 vi.mock('obsidian', () => import('../../harness/browser/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
-const opened: MountedMapView[] = [];
 afterEach(async () => {
-  for (const mounted of opened.splice(0)) await mounted.close();
+  await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
   vi.restoreAllMocks();
@@ -91,7 +91,6 @@ interface Mounted extends MountedMapView {
 async function mount(path = PATH, source = fixtureSource()): Promise<Mounted> {
   const plugin = pluginActions();
   const mounted = await mountMapView(path, source, 'mindmap', new HarnessApp(), { menuActions: plugin.actions });
-  opened.push(mounted);
   const actions = (): HTMLElement => {
     const element = mounted.view.containerEl.querySelector<HTMLElement>('.mappy-actions');
     if (!element) throw new Error('The view has no top-right control');
