@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type EditorPosition, type EditorTransaction } from 'obsidian';
-import { ConflictError, DocumentStore } from '../../src/obsidian/document-store';
+import { ConflictError } from '../../src/obsidian/conflict-error';
+import { DocumentStore } from '../../src/obsidian/document-store';
 import { MarkdownView } from '../mocks/obsidian';
 import { planMapLayout } from '../../src/core/layout-key';
 

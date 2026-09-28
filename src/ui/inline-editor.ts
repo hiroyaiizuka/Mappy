@@ -1,5 +1,4 @@
-import { t } from "../i18n";
-import { refusalLine } from "../obsidian/conflict-error";
+import { RefusalLine } from "./refusal-line";
 
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
@@ -16,7 +15,6 @@ export interface InlineEditorOptions {
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
 }
 
-
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
 const CARET_ALLOWANCE = 2;
 
@@ -24,6 +22,7 @@ const CARET_ALLOWANCE = 2;
 export class InlineEditor {
   private readonly input: HTMLTextAreaElement;
   private readonly error: HTMLDivElement;
+  private readonly refusal: RefusalLine;
   private busy = false;
   /** The save under way (`commit`), for a `flush` that must wait for it. */
   private pending: Promise<void> | undefined;
@@ -31,8 +30,6 @@ export class InlineEditor {
   private blurAfterComposition = false;
   private compositionBlurTimer: number | undefined;
   private disposed = false;
-  /** Whether the error line shows a conflict, which `refreshed` swaps for the retry line. */
-  private conflicted = false;
   /**
    * The save that keeps the draft open (the window lost the focus, LEV-216), while it runs: an Enter, Tab or blur that
    * comes meanwhile waits for it instead of being dropped as a second save would be.
@@ -55,6 +52,7 @@ export class InlineEditor {
     this.sizesItself = this.input.ownerDocument.defaultView?.CSS?.supports?.("field-sizing", "content") === true;
     this.suggestion = options.suggest?.(this.input);
     this.error = host.createDiv({ cls: "mappy-inline-error", attr: { role: "alert" } });
+    this.refusal = new RefusalLine(this.error);
     this.input.addEventListener("compositionstart", () => { this.composing = true; });
     this.input.addEventListener("compositionend", () => {
       this.composing = false;
@@ -190,7 +188,7 @@ export class InlineEditor {
     if (this.busy || this.inPlace || this.disposed || text === this.written) return Promise.resolve();
     const task = this.options.save(text)
       .then(() => { this.written = text; })
-      .catch((error: unknown) => { if (!this.disposed) this.refuse(error); })
+      .catch((error: unknown) => { if (!this.disposed) this.refusal.show(error); })
       .finally(() => {
         if (this.inPlace === task) this.inPlace = undefined;
         if (this.pending === task) this.pending = undefined;
@@ -211,7 +209,7 @@ export class InlineEditor {
       this.options.finish(next, false, this.input.value);
     } catch (error) {
       if (this.disposed) return;
-      this.refuse(error);
+      this.refusal.show(error);
       this.input.focus({ preventScroll: true });
     } finally {
       this.busy = false;
@@ -256,19 +254,9 @@ export class InlineEditor {
     if (!this.disposed) this.input.focus({ preventScroll: true });
   }
 
-  /** The reason a save was refused, on the error line; a conflict is remembered as one for `refreshed`. */
-  private refuse(error: unknown): void {
-    const { text, conflicted } = refusalLine(error);
-    this.error.setText(text);
-    this.conflicted = conflicted;
-  }
-
   /** The map re-parsed under a draft kept by a conflict, whose line would still tell the user to wait for that. */
   refreshed(): void {
-    if (this.disposed || !this.conflicted) return;
-    this.conflicted = false;
-    // Shown in place of the conflict line once the map has re-read the note: the same Enter now applies the draft to it.
-    this.error.setText(t().refreshed);
+    if (!this.disposed) this.refusal.refreshed();
   }
 
   dispose(): void {

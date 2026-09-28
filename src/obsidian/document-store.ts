@@ -58,8 +58,6 @@ const latestLimit = 16;
 const planLimit = 256;
 
 
-/** The store's refusal when the note moved under a write; the view tells it by this class (conflict-error.ts). */
-export { ConflictError };
 
 /** One file's map operations share a queue and a bounded, source-checked history. */
 export class DocumentStore {

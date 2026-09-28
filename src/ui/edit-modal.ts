@@ -1,12 +1,9 @@
 import { Modal, Setting, type App } from "obsidian";
-import { t } from "../i18n";
-import { refusalLine } from "../obsidian/conflict-error";
+import { RefusalLine } from "./refusal-line";
 
 /** Keep the draft open when a concurrent edit prevents saving. */
 export class EditModal extends Modal {
-  private error: HTMLDivElement | undefined;
-  /** Whether the error line shows a conflict, which `refreshed` swaps for the retry line. */
-  private conflicted = false;
+  private refusal: RefusalLine | undefined;
 
   constructor(
     app: App,
@@ -24,7 +21,8 @@ export class EditModal extends Modal {
       : this.contentEl.createEl("input", { cls: "mappy-edit-input", type: "text", attr: { "aria-label": this.titleText } });
     input.value = this.initial;
     const error = this.contentEl.createDiv({ cls: "mappy-edit-error", attr: { role: "alert" } });
-    this.error = error;
+    const refusal = new RefusalLine(error);
+    this.refusal = refusal;
     let busy = false;
     const save = async (): Promise<void> => {
       if (busy) return;
@@ -33,9 +31,7 @@ export class EditModal extends Modal {
         await this.submit(input.value);
         this.close();
       } catch (reason) {
-        const line = refusalLine(reason);
-        error.setText(line.text);
-        this.conflicted = line.conflicted;
+        refusal.show(reason);
       } finally { busy = false; }
     };
     new Setting(this.contentEl)
@@ -58,10 +54,8 @@ export class EditModal extends Modal {
 
   /** The map re-parsed under a draft kept by a conflict: the same save now applies to the new note. */
   refreshed(): void {
-    if (!this.error || !this.conflicted) return;
-    this.conflicted = false;
-    this.error.setText(t().refreshed);
+    this.refusal?.refreshed();
   }
 
-  onClose(): void { this.error = undefined; this.contentEl.empty(); }
+  onClose(): void { this.refusal = undefined; this.contentEl.empty(); }
 }
