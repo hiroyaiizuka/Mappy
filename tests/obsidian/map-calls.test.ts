@@ -104,6 +104,37 @@ describe('CallReader.listen (LEV-221)', () => {
     expect(writesOf(reader).has('Map.md')).toBe(true);
     stop();
     expect(writesOf(reader).size).toBe(0);
+    // Stopped twice, the second does nothing, and the reader can listen again and records again (code review 2). Not a
+    // regression test: with one subscription at a time a second stop has nothing left to undo; it pins that it stays so.
+    stop();
+    const again = reader.listen();
+    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(true);
+    again();
+  });
+
+  it('lets go of a note read while `clear` was asked for only once that read is done (code review 2)', async () => {
+    // A read paused on the store when the host stops calling would otherwise put its parse and a new record back after
+    // the clear, and nothing would read the note again to let go of them.
+    const app = new HarnessApp();
+    app.put('Host.md', HOST);
+    app.put('Map.md', MAP);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const read = store.read.bind(store);
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { answer = resolve; });
+    const spy = vi.spyOn(store, 'read').mockImplementation(async file => { await held; return read(file); });
+    const reading = reader.read(parseMarkdown(HOST, 'Host'), 'Host.md');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const cleared = reader.clear();
+    answer();
+    await reading;
+    await cleared;
+    expect({ reads: reader.reads('Map.md'), kept: writesOf(reader).size }).toEqual({ reads: false, kept: 0 });
+    spy.mockRestore();
+    stop();
   });
 });
 

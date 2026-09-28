@@ -30,32 +30,45 @@ export class CallReader {
    * as long as its parse, and let go with every other parse once the host calls nothing (`clear`).
    */
   private readonly writes = new Map<string, WriteRecord>();
-  private listening = 0;
+  /** One subscription at a time: the view that holds the reader (`listen`). */
+  private listening = false;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly app: App, private readonly store: DocumentStore) {}
 
-  /** Records the store's writes on the notes read here from now on; the returned function stops it. */
+  /**
+   * Records the store's writes on the notes read here from now on, until the returned function runs (once is enough; a
+   * second call does nothing). The reader is held by one view, which listens once for its life (`MindmapView`).
+   */
   listen(): () => void {
-    this.listening += 1;
+    if (this.listening) throw new Error('CallReader: already listening');
+    this.listening = true;
     const stop = this.store.onWrite((file, write) => {
       this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
     });
+    let stopped = false;
     return () => {
+      if (stopped) return;
+      stopped = true;
       stop();
-      this.listening -= 1;
-      if (this.listening === 0) this.writes.clear();
+      this.listening = false;
+      this.writes.clear();
     };
   }
 
   /**
    * Lets go of every note read here: the host no longer calls any (its items changed, it left the note). Without it the
-   * record of a note no read comes back for would take every write on that note for as long as the host is open.
+   * record of a note no read comes back for would take every write on that note for as long as the host is open. Queued
+   * behind the reads, as a read that finds no call does it: a read under way would put back what was let go of.
    */
-  clear(): void {
-    this.parsed.clear();
-    this.writes.clear();
+  clear(): Promise<void> {
+    const result = this.queue.then(() => {
+      this.parsed.clear();
+      this.writes.clear();
+    });
+    this.queue = result;
+    return result;
   }
 
   read(document: MindDocument, hostPath: string): Promise<CallTargets> {
@@ -107,7 +120,7 @@ export class CallReader {
     }
     // Made with the note's first parse, before the continuation of this read yields: a write the store queued after the
     // read is told only once this has run (`DocumentStore.enqueue`), so it finds the record.
-    if (!writes && this.listening > 0) {
+    if (!writes && this.listening) {
       writes = new WriteRecord();
       this.writes.set(file.path, writes);
     }
