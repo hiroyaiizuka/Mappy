@@ -65,9 +65,10 @@ const router = {
 } as unknown as ViewRouter;
 /**
  * The plugin's items of the 操作 popover (§5 M3), as src/main.ts names them. Their routes (the search modal,
- * the export modal and its attachment) are not on this page: both report the request.
+ * the export modal and its attachment) are not on this page: both report the request. Built when a view is, as
+ * src/main.ts builds them in onload: the text is read where it is used (src/i18n), not while this module loads.
  */
-const menuActions: MapMenuAction[] = [
+const menuActions = (): MapMenuAction[] => [
   { title: t().cmdCallMap, description: t().popCallDesc, icon: "search", check: map => map.file !== null,
     run: () => { new Notice("マップの検索モーダルはこのページの対象外です（③ 実機で確認）。"); } },
   { title: t().popExport, description: t().popExportDesc, icon: "image-down", check: map => map.file !== null,
@@ -274,7 +275,7 @@ async function loadHost(note: HarnessHost): Promise<HostTiming> {
 async function openView(): Promise<MindmapView> {
   closeHost();
   const leaf = new WorkspaceLeaf(app.asApp<App>());
-  const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router, menuActions);
+  const opened = new MindmapView(leaf as unknown as ObsidianLeaf, store, router, menuActions());
   // MindmapView is typed against Obsidian's View; at runtime it extends the mock.
   leaf.view = opened as unknown as WorkspaceLeaf["view"];
   // The plugin applies the settings when it constructs a view (src/main.ts); the page does the same.

@@ -15,7 +15,7 @@
  * must fail if the table changes it by accident.
  *
  * Usage: npm run harness:e2e:english-ui -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
- *   --shot  writes <out>-en.png (the map with the gear popover open) and <out>-ja.png
+ *   --shot  writes <out>.png (English, the gear popover open; the name run.mjs gives) and <out>-ja.png
  *   --keep  leave the note in the vault
  */
 import { LANGUAGE, VAULT, connect, wait } from './cdp.mjs';
@@ -69,7 +69,8 @@ const switchTo = async (language, expected = language) => {
     let next = null;
     try {
       next = await connect({ language: expected });
-      if (await next.evaluate('!!(app.workspace.layoutReady && app.plugins.plugins.mappy)')) {
+      // `plugins.mappy` exists before its async onload is through; the last command it registers says it is.
+      if (await next.evaluate("!!(app.workspace.layoutReady && app.plugins.plugins.mappy && app.commands.commands['mappy:convert-to-list'])")) {
         cdp = next;
         return { language: expected, loaded: await cdp.evaluate('window.moment.locale()') };
       }
@@ -116,7 +117,7 @@ try {
     await clickIn('.mappy-actions .mappy-button');
     await wait(300);
     const items = await evaluate(`${VIEW} return Array.from(el.querySelectorAll('.mappy-popover-item'), item => [item.querySelector('.mappy-popover-title')?.textContent ?? '', item.querySelector('.mappy-popover-description')?.textContent ?? '']);`);
-    if (value('--shot')) await cdp.screenshot(`${value('--shot').replace(/\.png$/u, '')}-en.png`);
+    if (value('--shot')) await cdp.screenshot(value('--shot'));
     await cdp.realKey('Escape');
     await wait(200);
     return items;

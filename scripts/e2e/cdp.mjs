@@ -57,8 +57,7 @@ const KEYS = {
  * `about:blank` page target of its own, with the same `app`, whose `document` is the popout's. The case marks
  * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
  * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
- */
-/**
+ *
  * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, which switches it, passes the
  * one it switched to, and `null` to take the window in whatever language it is (to put it back).
  */
