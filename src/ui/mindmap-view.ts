@@ -1784,7 +1784,7 @@ export class MindmapView extends FileView {
    * body root, which may be the note's own root, or a topic) or further down.
    */
   private placement(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): "topic" | "main" | "sub" {
-    const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title);
+    const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title, undefined, document.format);
     const added = nodeAt(after, plan.selectionOffset);
     if (!added) return "sub";
     const { root, topics } = projectMap(after);
