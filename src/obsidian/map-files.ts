@@ -18,24 +18,41 @@ export function newMindmapSource(title: string, layout: LayoutMode = 'mindmap'):
 }
 
 /**
- * The file or folder whose path equals `path` ignoring case, the exact one first. It walks down from the root through
- * each folder's own children instead of listing the vault (LEV-253: the community scan flags every listing), trying
- * at each level the child of that exact name before the ones differing in case, and going back up when a branch ends
- * (a vault synced from a case-sensitive system can hold `Maps/` and `MAPS/2026` side by side). An exact path is found
- * first, so this is `getAbstractFileByPath` when that finds anything. `metadataCache.getFirstLinkpathDest` is no
- * substitute: it resolves notes by link, not folders.
+ * The children of `folder` named `segment` ignoring case, folders before files and each in its exact name first: a
+ * vault synced from a case-sensitive system can hold `Maps/`, `MAPS/2026` and a file `maps` side by side.
+ */
+function childrenNamed(folder: TFolder, segment: string): TAbstractFile[] {
+  const lower = segment.toLowerCase();
+  const rank = (child: TAbstractFile) => (child instanceof TFolder ? 0 : 2) + (child.name === segment ? 0 : 1);
+  return folder.children.filter(child => child.name.toLowerCase() === lower).sort((left, right) => rank(left) - rank(right));
+}
+
+/**
+ * The file or folder whose path equals `segments` ignoring case, a folder first. It walks down from the root through
+ * each folder's own children instead of listing the vault (LEV-253: the community scan flags every listing), going
+ * back up when a branch ends. `metadataCache.getFirstLinkpathDest` is no substitute: it resolves notes by link, not
+ * folders.
  */
 function findIgnoringCase(folder: TFolder, segments: string[]): TAbstractFile | null {
   const [segment = '', ...rest] = segments;
-  const lower = segment.toLowerCase();
-  const matches = folder.children.filter(child => child.name.toLowerCase() === lower)
-    .sort((left, right) => Number(right.name === segment) - Number(left.name === segment));
-  for (const child of matches) {
+  for (const child of childrenNamed(folder, segment)) {
     if (rest.length === 0) return child;
     const found = child instanceof TFolder ? findIgnoringCase(child, rest) : null;
     if (found) return found;
   }
   return null;
+}
+
+/** The deepest existing folder along `segments` ignoring case, and how many segments it covers. */
+function deepestFolder(folder: TFolder, segments: string[], depth = 0): { folder: TFolder; depth: number } {
+  let best = { folder, depth };
+  if (depth === segments.length) return best;
+  for (const child of childrenNamed(folder, segments[depth] ?? '')) {
+    if (!(child instanceof TFolder)) continue;
+    const found = deepestFolder(child, segments, depth + 1);
+    if (found.depth > best.depth) best = found;
+  }
+  return best;
 }
 
 function childPath(folder: string, name: string): string {
@@ -65,10 +82,15 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
   if (path.split('/').some(segment => segment.startsWith('.'))) throw badFolder(path, 'folderDotName');
   // The file system is usually case-insensitive: `maps` must reuse an existing `Maps` rather than fail to create it,
   // and a file called `Maps` blocks `maps` just as it blocks `Maps`.
-  const existing = findIgnoringCase(app.vault.getRoot(), path.split('/'));
+  const segments = path.split('/');
+  const exact = app.vault.getAbstractFileByPath(path);
+  const existing = exact instanceof TFolder ? exact : findIgnoringCase(app.vault.getRoot(), segments) ?? exact;
   if (existing instanceof TFolder) return existing;
   if (existing) throw badFolder(path, 'folderIsFile');
-  const created: TFolder | null = await app.vault.createFolder(path);
+  // Only what is missing takes the setting's spelling: `maps/2027` under an existing `Maps` is `Maps/2027`, not a
+  // second parent differing in case in the vault's index.
+  const known = deepestFolder(app.vault.getRoot(), segments);
+  const created: TFolder | null = await app.vault.createFolder(childPath(known.folder.path, segments.slice(known.depth).join('/')));
   if (!created) throw badFolder(path, 'folderNotCreated');
   return created;
 }

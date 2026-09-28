@@ -34,7 +34,7 @@ describe("the map view's container (LEV-253)", () => {
       for (const theirs of obsidian) expect(outranks(specificity(selector), specificity(theirs)), `${selector} over ${theirs}`).toBe(true);
     }
     // An embed is not in a pane: the base rule keeps it unpadded too.
-    const base = css.match(/(?:^|\n)\.mappy-view \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body ?? "";
+    const base = bare.match(/(?:^|\n)\.mappy-view \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
     expect(base).toMatch(/(^|[\s;])padding:\s*0;/u);
   });
 });

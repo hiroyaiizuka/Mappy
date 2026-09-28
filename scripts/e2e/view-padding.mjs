@@ -166,8 +166,12 @@ try {
     await step('compare', async () => {
       const before = JSON.parse(await readFile(compare, 'utf8')).steps;
       const differences = [];
-      for (const [id, state] of Object.entries(states)) {
+      // Every state the case measures, not only the ones this run got to (review 2): a missing one is a difference.
+      const ids = SCHEMES.flatMap(scheme => ['main', 'popout', 'embed'].map(name => `${name}-${scheme}`));
+      for (const id of ids) {
+        const state = states[id];
         const old = before[id];
+        if (!state) { differences.push(`${id}: not measured in this run`); continue; }
         if (!old || 'error' in old) { differences.push(`${id}: not in ${compare}`); continue; }
         for (const key of ['size', 'inner', 'canvas', 'modes', 'actions', 'zoom', 'inLeaf']) {
           const now = state[key] ?? []; const then = old[key] ?? [];
@@ -177,7 +181,7 @@ try {
         }
       }
       check(differences.length === 0, `the geometry differs from ${compare}: ${differences.join('; ')}`);
-      return { compared: Object.keys(states).length, differences };
+      return { compared: ids.length, differences };
     });
   }
 

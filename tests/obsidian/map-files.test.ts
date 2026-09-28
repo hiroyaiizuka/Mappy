@@ -124,10 +124,11 @@ describe('resolveNewMapFolder', () => {
     expect((await resolveNewMapFolder(app, 'maps.md', '', 'x.md')).path).toBe('maps.md');
     await expect(resolveNewMapFolder(app, 'notes/sub/deep.md', '', 'x.md')).rejects.toThrow('はフォルダではありません');
     expect(createFolder).not.toHaveBeenCalled();
-    // A path that goes on under a file, or has no match at some level, is new: the vault is asked to create it.
+    // A path that goes on under a file, or has no match at some level, is new: the vault is asked to create it, under
+    // the existing folders as they are spelled (review 2: not a second `maps` beside `Maps` in the vault's index).
     await resolveNewMapFolder(app, 'notes/plan.md/inner', '', 'x.md');
     await resolveNewMapFolder(app, 'maps/2027', '', 'x.md');
-    expect(createFolder.mock.calls).toEqual([['notes/plan.md/inner'], ['maps/2027']]);
+    expect(createFolder.mock.calls).toEqual([['Notes/plan.md/inner'], ['Maps/2027']]);
     expect(listing).not.toHaveBeenCalled();
   });
 
@@ -139,6 +140,11 @@ describe('resolveNewMapFolder', () => {
     expect((await resolveNewMapFolder(app, 'Notes/y', '', 'x.md')).path).toBe('notes/y');
     // The exact path still wins when there is one.
     expect((await resolveNewMapFolder(app, 'Maps', '', 'x.md')).path).toBe('Maps');
+    // At the last segment too, a folder differing in case is taken over a file of the name (review 2).
+    const synced = vault({ folders: ['PLANS'], files: ['Plans'] });
+    expect((await resolveNewMapFolder(synced.app, 'plans', '', 'x.md')).path).toBe('PLANS');
+    expect((await resolveNewMapFolder(synced.app, 'Plans', '', 'x.md')).path).toBe('PLANS');
+    expect(synced.createFolder).not.toHaveBeenCalled();
     expect(createFolder).not.toHaveBeenCalled();
     expect(listing).not.toHaveBeenCalled();
   });
