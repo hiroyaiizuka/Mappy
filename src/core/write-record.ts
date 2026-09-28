@@ -134,7 +134,7 @@ export class WriteRecord {
     return this.writes.length;
   }
 
-  /** The writes waiting for a read, in order. */
+  /** The writes waiting for a read, in order: for the tests and the probes of the real-device cases (E58, E66), a copy each time. */
   get recorded(): readonly RecordedWrite[] {
     return this.writes.map(recorded => recorded.write);
   }

@@ -1214,7 +1214,7 @@ export class MindmapView extends FileView {
     }
     // The record this read replayed, to tell whether it is still the one below (the writes recorded meanwhile are added
     // to it; a restart, `showOwnWrite` and another read replace it).
-    const replaying = replayed ? this.writes.version : undefined;
+    const replaying = this.writes.version;
     const document = changed || !this.document
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
@@ -2073,7 +2073,8 @@ export class MindmapView extends FileView {
       // writes the edit was carried over are recorded first, where the record leads to their start (another view's
       // button, or this view's own write a re-read has spent), and the plan parsed through them; then the edit, which
       // starts where they end.
-      const carried = this.writes.carry(write.carried, this.document?.source, planned?.source === source ? planned : undefined, file.basename);
+      // The plan is parsed only for the drafts it rebases.
+      const carried = this.writes.carry(write.carried, this.document?.source, drafts.length > 0 && planned?.source === source ? planned : undefined, file.basename);
       this.writes.confirm(write, this.document?.source);
       const base = this.writeBase(carried, write);
       // Rebased from the text this view just wrote, before the re-read: `reread` gives up when a newer epoch

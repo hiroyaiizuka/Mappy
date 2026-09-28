@@ -812,6 +812,28 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
     expect(recorded(mounted)).toEqual([b]);
   });
 
+  it('an edit and a layout button confirm the store\'s answer against the text the view shows then', async () => {
+    // The wiring the white-box rows above take for granted when they call `confirm` themselves: `writeOwn` and
+    // `writeLayout` pass the answer and the text on screen at that moment.
+    const mounted = await mount();
+    const view = state(mounted);
+    const writes = (mounted.view as unknown as { writes: { confirm(write: { before: string; after: string }, shown: string | undefined): void } }).writes;
+    const confirm = writes.confirm.bind(writes);
+    const calls: { after: string; shown: boolean }[] = [];
+    vi.spyOn(writes, 'confirm').mockImplementation((write, shown) => {
+      calls.push({ after: write.after, shown: shown === view.document?.source });
+      confirm(write, shown);
+    });
+    rename(mounted, '子1', 0, '改名');
+    await vi.waitFor(() => { expect(mounted.source()).toContain('改名'); }, { timeout: 1000, interval: 2 });
+    await settled(mounted);
+    const renamed = mounted.source();
+    clickLayout(mounted, 'timeline');
+    await vi.waitFor(() => { expect(mounted.source()).toContain('mappy-layout: timeline'); }, { timeout: 1000, interval: 2 });
+    await settled(mounted);
+    expect(calls).toEqual([{ after: renamed, shown: true }, { after: mounted.source(), shown: true }]);
+  });
+
   it('an external change the record does not lead to is matched by titles from the text the view shows', async () => {
     // Pin, not a regression test: it passes before and after LEV-247. The record [W: S→T] (子1 renamed) and the
     // note holds T with 子2 changed by someone else. The view parses that from S by titles, as it always has — the
