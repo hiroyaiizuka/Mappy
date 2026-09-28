@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Plugin } from 'obsidian';
 import { installObsidianDom } from '../../harness/browser/dom';
 import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../../harness/browser/obsidian';
-import { LAYOUT_LABELS, LAYOUT_MODES } from '../../src/core/layout-mode';
+import { layoutLabels, LAYOUT_MODES } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, THEME_LABELS } from '../../src/obsidian/settings-tab';
 
@@ -43,7 +43,7 @@ function controls(container: HTMLElement) {
   const folder = container.querySelector<HTMLInputElement>('input[type="text"]');
   if (!theme || !layout || !folder) throw new Error('The tab did not render its dropdowns and text field');
   const toggles = Object.fromEntries(LAYOUT_MODES.map(mode => {
-    const toggle = container.querySelector<HTMLElement>(`.mappy-setting-layouts .checkbox-container[aria-label="${LAYOUT_LABELS[mode]}"]`);
+    const toggle = container.querySelector<HTMLElement>(`.mappy-setting-layouts .checkbox-container[aria-label="${layoutLabels()[mode]}"]`);
     if (!toggle) throw new Error(`No toggle for ${mode}`);
     return [mode, toggle];
   })) as Record<(typeof LAYOUT_MODES)[number], HTMLElement>;
@@ -86,15 +86,15 @@ describe('MappySettingTab', () => {
   it('lists the layouts from LAYOUT_MODES, in that order, and the themes from MAP_THEMES', () => {
     const { theme, layout, tab } = mount();
     expect(Array.from(layout.options, option => option.value)).toEqual(ALL_LAYOUTS);
-    expect(Array.from(layout.options, option => option.text)).toEqual(LAYOUT_MODES.map(mode => LAYOUT_LABELS[mode]));
+    expect(Array.from(layout.options, option => option.text)).toEqual(LAYOUT_MODES.map(mode => layoutLabels()[mode]));
     expect(Array.from(theme.options, option => option.value)).toEqual([...MAP_THEMES]);
     expect(Array.from(theme.options, option => option.text)).toEqual(MAP_THEMES.map(mode => THEME_LABELS[mode]));
     expect(theme.value).toBe('follow');
     expect(layout.value).toBe('mindmap');
     // The toggles carry the same names, in the same order, each next to its label text.
     const row = Array.from(tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout'));
-    expect(row.map(item => item.querySelector('span')?.textContent)).toEqual(LAYOUT_MODES.map(mode => LAYOUT_LABELS[mode]));
-    expect(row.map(item => item.querySelector('.checkbox-container')?.getAttribute('aria-label'))).toEqual(LAYOUT_MODES.map(mode => LAYOUT_LABELS[mode]));
+    expect(row.map(item => item.querySelector('span')?.textContent)).toEqual(LAYOUT_MODES.map(mode => layoutLabels()[mode]));
+    expect(row.map(item => item.querySelector('.checkbox-container')?.getAttribute('aria-label'))).toEqual(LAYOUT_MODES.map(mode => layoutLabels()[mode]));
   });
 
   it('saves one changed field at a time and leaves the others as they were', async () => {
@@ -136,7 +136,7 @@ describe('MappySettingTab', () => {
     expect(definitions.map(definition => definition.control?.type)).toEqual(['dropdown', 'dropdown', 'text', undefined]);
     const [theme, layout, folder, layouts] = definitions;
     expect(theme?.control?.type === 'dropdown' && Object.keys(theme.control.options)).toEqual([...MAP_THEMES]);
-    expect(layout?.control?.type === 'dropdown' && Object.entries(layout.control.options)).toEqual(LAYOUT_MODES.map(mode => [mode, LAYOUT_LABELS[mode]]));
+    expect(layout?.control?.type === 'dropdown' && Object.entries(layout.control.options)).toEqual(LAYOUT_MODES.map(mode => [mode, layoutLabels()[mode]]));
     expect(definitions.slice(0, 3).map(definition => definition.control?.defaultValue)).toEqual([DEFAULT_SETTINGS.theme, DEFAULT_SETTINGS.defaultLayout, DEFAULT_SETTINGS.newMapFolder]);
     expect(folder?.control?.type === 'text' && folder.control.placeholder).toBe('例: Maps');
     expect(typeof layouts?.render).toBe('function');

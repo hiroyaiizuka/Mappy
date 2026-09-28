@@ -1,5 +1,6 @@
 import { applyEdits, type TextEdit } from "./commands";
 import { parseMarkdown, type MindDocument, type MindNode } from "./markdown";
+import { t } from "../i18n";
 
 function indentBody(source: string, node: MindNode, depth: number, edits: TextEdit[]): void {
   const indent = "  ".repeat(depth + 1);
@@ -24,14 +25,14 @@ function validateConversion(doc: MindDocument, edits: TextEdit[], expected: Expe
     return !original || node.title !== original.title || parent !== original.parent
       || (index === 0 ? node.kind !== "atx" || node.level !== 2 : node.kind !== "list");
   })) {
-    throw new Error("本文の箇条書きなどがノード構造を変えるため、安全に変換できません。Markdown 側で本文とノードを分けてください。");
+    throw new Error(t().listBodyShape);
   }
 }
 
 /** Explicit migration only: edit heading ranges and indent existing body lines in place. */
 export function planListConversion(doc: MindDocument): TextEdit[] {
   if (doc.format === "list") return [];
-  if (doc.nodes.length === 0) throw new Error("変換する見出しがありません。");
+  if (doc.nodes.length === 0) throw new Error(t().noHeadingsToConvert);
   const singleRoot = doc.root.children.length === 1 ? doc.root.children[0] : undefined;
   const edits: TextEdit[] = [];
   const expected: ExpectedNode[] = singleRoot ? [] : [{ title: doc.root.title, parent: -1 }];

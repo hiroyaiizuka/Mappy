@@ -12,7 +12,7 @@ import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { Viewport } from "../interaction/viewport";
-import { LAYOUT_LABELS, LAYOUT_MODES, axisBand, isLayoutMode, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
+import { LAYOUT_MODES, axisBand, isLayoutMode, layoutLabels, layoutTree, type FreeTopicLayout, type LayoutMode, type LayoutNode, type LayoutPoint, type LayoutResult, type PositionedNode } from "../layout/layout";
 import { PLACEHOLDER_ID, previewTree } from "../layout/drop-preview";
 import { balancedSideOf, snapSlot, type NodePlace, type SnapSlot } from "../layout/snap";
 import { DocumentStore, conflictMessage, type CarriedWrite, type LatestWrite } from "../obsidian/document-store";
@@ -132,12 +132,15 @@ function rootOffsets(layout: LayoutResult, ids: Iterable<string>): Map<string, T
   return offsets;
 }
 
-/** One button per layout, in LAYOUT_MODES order, named as LAYOUT_LABELS names it; the Record keeps the list and the buttons in step. */
-const LAYOUT_BUTTONS: Record<LayoutMode, { label: string; icon: string }> = {
-  mindmap: { label: LAYOUT_LABELS.mindmap, icon: "git-fork" },
-  timeline: { label: LAYOUT_LABELS.timeline, icon: "git-commit-horizontal" },
-  hierarchy: { label: LAYOUT_LABELS.hierarchy, icon: "network" },
-  balanced: { label: LAYOUT_LABELS.balanced, icon: "unfold-horizontal" },
+/**
+ * One button per layout, in LAYOUT_MODES order, named as layoutLabels() names it when the view builds its
+ * controls (the name follows the app's language, src/i18n); the Record keeps the list and the icons in step.
+ */
+const LAYOUT_ICONS: Record<LayoutMode, string> = {
+  mindmap: "git-fork",
+  timeline: "git-commit-horizontal",
+  hierarchy: "network",
+  balanced: "unfold-horizontal",
 };
 
 /**
@@ -645,9 +648,9 @@ export class MindmapView extends FileView {
     this.contentEl.addClass("mappy-view");
     this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": "レイアウト" } });
+    const labels = layoutLabels();
     for (const mode of LAYOUT_MODES) {
-      const { label, icon } = LAYOUT_BUTTONS[mode];
-      const button = this.button(modes, label, icon, () => {
+      const button = this.button(modes, labels[mode], LAYOUT_ICONS[mode], () => {
         this.selectMode(mode);
       });
       this.modeButtons.set(mode, button);

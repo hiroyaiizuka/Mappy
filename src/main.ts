@@ -1,4 +1,5 @@
-import { MarkdownView, Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidian";
+import { MarkdownView, Notice, Plugin, TFile, getLanguage, type WorkspaceLeaf } from "obsidian";
+import { setLanguage } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
 import {
@@ -23,6 +24,8 @@ export default class MappyPlugin extends Plugin {
   private settings: MappySettings = DEFAULT_SETTINGS;
 
   async onload(): Promise<void> {
+    // Before anything shows text: Japanese when Obsidian runs in Japanese, English otherwise (src/i18n).
+    setLanguage(getLanguage());
     // Missing or old data falls back field by field, so an unset option behaves as before the settings existed.
     this.settings = normalizeSettings(await this.loadData());
     this.addSettingTab(new MappySettingTab(this.app, this, {

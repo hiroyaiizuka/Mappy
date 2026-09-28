@@ -15,6 +15,9 @@ export class WorkspaceLeaf {
   }
 }
 
+/** The app's language; the plugin owner runs Obsidian in Japanese. */
+export function getLanguage(): string { return 'ja'; }
+
 export class Notice {
   static messages: string[] = [];
   constructor(message: string) { Notice.messages.push(message); }

@@ -18,8 +18,9 @@ import {
 import { buildScene, sceneContents } from "../../src/export/excalidraw-scene";
 import { captureScene, rasterizeSvg, type ImageResolver } from "../../src/export/svg-capture";
 import { DESKTOP_PNG_LIMITS, buildSvg, pngScale, svgSize, type ExportTheme } from "../../src/export/svg-document";
-import { LAYOUT_LABELS, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
+import { layoutLabels, LAYOUT_MODES, type LayoutMode } from "../../src/core/layout-mode";
 import { frontmatterReader, readMapFromSource } from "../../src/core/embed";
+import { setLanguage } from "../../src/i18n";
 import { LAYOUT_KEY } from "../../src/core/map-keys";
 import { TIMELINE_STAGE_CLEARANCE } from "../../src/layout/layout";
 import { DocumentStore } from "../../src/obsidian/document-store";
@@ -34,6 +35,9 @@ declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
 
 // Product modules only touch the DOM inside methods, so installing here is early enough.
 installObsidianDom();
+// The page never runs the plugin's onload, which sets the language from Obsidian's; the checks read Japanese text
+// (scripts/browser-harness-perf.mjs, the headless runs), so the page stays in the plugin owner's language.
+setLanguage("ja");
 // Frame and timer probes must wrap the window before the view schedules anything.
 const probes = installProbes(window);
 
@@ -626,7 +630,7 @@ const api = {
   setVisibleLayouts,
   layoutButtons,
   /** The bar's expected labels, in LAYOUT_MODES order, from the one definition in core. */
-  layoutLabels: LAYOUT_MODES.map(mode => LAYOUT_LABELS[mode]),
+  layoutLabels: LAYOUT_MODES.map(mode => layoutLabels()[mode]),
   /** Theme classes as they are now: the page's body and the map container. */
   themes: () => ({
     page: document.body.classList.contains("theme-dark") ? "dark" : document.body.classList.contains("theme-light") ? "light" : "none",
@@ -789,7 +793,7 @@ function setupPanel(): void {
     box.checked = true;
     // The settings tab keeps the regular map on; the page's checkbox is locked the same way.
     box.disabled = mode === "mindmap";
-    label.appendText(LAYOUT_LABELS[mode]);
+    label.appendText(layoutLabels()[mode]);
     box.addEventListener("change", () => { setVisibleLayouts(visibleLayoutBoxes.filter(other => other.checked).map(other => other.value)); });
     visibleLayoutBoxes.push(box);
   }

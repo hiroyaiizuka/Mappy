@@ -1,5 +1,5 @@
 import { Notice, PluginSettingTab, Setting, ToggleComponent, type App, type Plugin } from 'obsidian';
-import { LAYOUT_LABELS, LAYOUT_MODES } from '../core/layout-mode';
+import { layoutLabels, LAYOUT_MODES } from '../core/layout-mode';
 import {
   DEFAULT_SETTINGS, MAP_THEMES, isSettingKey, readSettingField, type MapTheme, type MappySettings, type SettingKey,
 } from './settings';
@@ -54,7 +54,7 @@ export function mapSettingDefinitions(renderLayouts: (setting: Setting) => void 
     {
       name: '新規マップの既定レイアウト',
       desc: '「新しいマインドマップを作成」と「このノートをマインドマップ化」が mappy-layout に書く値です。既存のノートの表示は変わりません。',
-      control: { type: 'dropdown', key: 'defaultLayout', options: options(LAYOUT_MODES, LAYOUT_LABELS), defaultValue: DEFAULT_SETTINGS.defaultLayout },
+      control: { type: 'dropdown', key: 'defaultLayout', options: options(LAYOUT_MODES, layoutLabels()), defaultValue: DEFAULT_SETTINGS.defaultLayout },
     },
     {
       name: '新規マップの作成先フォルダ',
@@ -130,8 +130,8 @@ export class MappySettingTab extends PluginSettingTab {
     const shown = this.store.current().visibleLayouts;
     for (const mode of LAYOUT_MODES) {
       const item = list.createDiv({ cls: 'mappy-setting-layout' });
-      const label = item.createSpan({ text: LAYOUT_LABELS[mode] });
-      const toggle = new ToggleComponent(item).setValue(shown.includes(mode)).setTooltip(LAYOUT_LABELS[mode]);
+      const label = item.createSpan({ text: layoutLabels()[mode] });
+      const toggle = new ToggleComponent(item).setValue(shown.includes(mode)).setTooltip(layoutLabels()[mode]);
       if (mode === 'mindmap') { toggle.setDisabled(true); continue; }
       label.addEventListener('click', () => { toggle.setValue(!toggle.getValue()); });
       toggle.onChange(on => {
@@ -152,7 +152,7 @@ export class MappySettingTab extends PluginSettingTab {
     if (!line?.isConnected) return;
     const { defaultLayout, visibleLayouts } = this.store.current();
     const hidden = !visibleLayouts.includes(defaultLayout);
-    line.setText(hidden ? `既定レイアウト「${LAYOUT_LABELS[defaultLayout]}」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。` : '');
+    line.setText(hidden ? `既定レイアウト「${layoutLabels()[defaultLayout]}」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。` : '');
     line.hidden = !hidden;
   }
 

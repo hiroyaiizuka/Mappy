@@ -6,9 +6,10 @@ import { HarnessApp } from '../../harness/browser/app';
 import { MarkdownRenderer, Notice, WorkspaceLeaf } from '../../harness/browser/obsidian';
 import { FIXTURES, SAMPLE_IMAGE, findFixture } from '../../harness/browser/fixtures';
 import {
-  PNG_UNAVAILABLE, canRasterize, canRasterizeForeignObject, captureScene, rasterizeSvg, type ImageResolver,
+  canRasterize, canRasterizeForeignObject, captureScene, rasterizeSvg, type ImageResolver,
 } from '../../src/export/svg-capture';
 import { EXPORT_MARGIN, SVG_NAMESPACE, XHTML_NAMESPACE, buildSvg, svgSize } from '../../src/export/svg-document';
+import { t } from '../../src/i18n';
 import { foldBadgeWidth, type LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
@@ -596,7 +597,7 @@ describe('SVG export of the map view (jsdom)', () => {
     };
     win.createEl = (tag: string) => (tag === 'img' ? fakeImage : fakeCanvas);
     try {
-      await expect(rasterizeSvg('<svg xmlns="http://www.w3.org/2000/svg"/>', { width: 10, height: 10 }, 1)).rejects.toThrow(PNG_UNAVAILABLE);
+      await expect(rasterizeSvg('<svg xmlns="http://www.w3.org/2000/svg"/>', { width: 10, height: 10 }, 1)).rejects.toThrow(t().pngUnavailable);
       await expect(canRasterizeForeignObject()).resolves.toBe(false);
     } finally {
       win.createEl = original;

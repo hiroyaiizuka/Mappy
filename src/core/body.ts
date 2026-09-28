@@ -1,12 +1,13 @@
 import { applyEdits, type TextEdit } from './commands';
 import { parseMarkdown, type MindDocument, type MindNode } from './markdown';
 import { getNode, paragraphGap } from './text-edits';
+import { t } from '../i18n';
 
 function bodyNode(doc: MindDocument, nodeId: string): MindNode {
   const node = getNode(doc, nodeId);
   if (node.kind === 'root' && node.bodyFrom === doc.source.length && node.bodyFrom > 0
     && !/\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/u.test(doc.source)) {
-    throw new Error('先に Markdown 側で frontmatter を閉じてください。');
+    throw new Error(t().frontmatterOpen);
   }
   return node;
 }
@@ -63,10 +64,10 @@ function checkedBodyEdit(doc: MindDocument, edit: TextEdit): TextEdit {
     const expectedParentFrom = parent ? parent.from >= edit.to ? parent.from + delta : parent.from : undefined;
     const actualParentFrom = match?.parentId ? updatedById.get(match.parentId)?.from : undefined;
     if (!match || match.title !== node.title || match.level !== node.level || match.kind !== node.kind) {
-      throw new Error('本文が既存の見出し構文に影響します。コードやコメントの閉じ忘れを確認してください。');
+      throw new Error(t().bodyAffectsHeadings);
     }
     if (doc.format === 'list' && actualParentFrom !== expectedParentFrom) {
-      throw new Error('本文が既存のリスト階層に影響します。インデントを確認してください。');
+      throw new Error(t().bodyAffectsList);
     }
   }
   return edit;

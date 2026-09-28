@@ -1,6 +1,7 @@
 import type { TextEdit } from './commands';
 import { frontmatterLayout, projectMap, type MindDocument } from './markdown';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
+import { t } from '../i18n';
 
 /**
  * Frontmatter key holding free-topic positions as `<key>: { <layout>: [x, y] }`, the key being the
@@ -106,7 +107,7 @@ function canonical(positions: TopicPositionMap): string {
  */
 export function planTopicPositions(doc: MindDocument, positions: TopicPositionMap): TextEdit | null {
   const layout = frontmatterLayout(doc.source);
-  if (layout && !layout.closed) throw new Error('先に Markdown 側で frontmatter を閉じてください。');
+  if (layout && !layout.closed) throw new Error(t().frontmatterOpen);
   const text = serializeTopicPositions(positions, doc.eol);
   const key = layout ? locateFrontmatterKey(doc.source, layout, TOPICS_KEY) : null;
   if (key && layout) {
@@ -123,16 +124,16 @@ export function planTopicPositions(doc: MindDocument, positions: TopicPositionMa
 }
 
 function assertLayout(layout: string): void {
-  if (!LAYOUT_PATTERN.test(layout)) throw new Error('レイアウト名が不正です。');
+  if (!LAYOUT_PATTERN.test(layout)) throw new Error(t().layoutNameInvalid);
 }
 
 function assertPosition(position: TopicPosition): void {
-  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('トピックの位置が不正です。');
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error(t().topicPositionInvalid);
 }
 
 /** A key is one line of YAML (`yamlKey` escapes no line breaks). No heading spans lines since LEV-208; a key handed in still might. */
 function assertKeyLine(key: string): void {
-  if (/[\r\n]/u.test(key)) throw new Error('トピックの見出しは 1 行にしてください。');
+  if (/[\r\n]/u.test(key)) throw new Error(t().topicHeadingOneLine);
 }
 
 /**
@@ -146,7 +147,7 @@ export function planTopicMoves(doc: MindDocument, layout: string, moves: Readonl
   for (const [id, position] of moves) {
     assertPosition(position);
     const key = keys.get(id);
-    if (key === undefined) throw new Error('対象のトピックが変更されています。再選択してください。');
+    if (key === undefined) throw new Error(t().topicChanged);
     assertKeyLine(key);
     positions.set(key, { ...(positions.get(key) ?? {}), [layout]: position });
   }
