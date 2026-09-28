@@ -3,7 +3,7 @@
 LEV-136（2026-09-27）。本人の決定: **コミュニティプラグインの公開審査に出す方向で進め、英語化を次の大きな柱にする。AI 機能（M9、LEV-28）は当面保留。** 本書はその前提で、審査要件と Mappy の現状の対応表（§1）と、英語化の方式の比較と推奨（§2）を記す。決定そのものは `product-plan.md` §5 M5 と §7 が正本で、本書は根拠と作業の分け方を持つ。
 
 - 参照した公式文書（2026-09-27 に取得）: [Submit your plugin](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)、[Submission requirements for plugins](https://docs.obsidian.md/community-directory/submission-requirements-for-plugins)、[Plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)、[Developer policies](https://docs.obsidian.md/community-directory/developer-policies)。公式 ESLint プラグイン `eslint-plugin-obsidianmd` 0.4.2 の規則（`node_modules` で確認）
-- 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。項目の分け方の正本は `docs/harness.md`「審査要件のチェック項目」で、本書の表はそれを 0.3.8 の木（`main` の `0e8c4d1`）で照合し直し、2026-09-27 の公式文書で変わった点（提出の手順など）を足した**この時点の結果**である。番号は本書の中だけのもの。**本書の 32 行は harness.md の項目をすべては写していない**（`version` の 4 ファイル一致、manifest の不明なキー、サンプルコードの残り、`fs`／`process` の不使用、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしないこと、README の保存形式・導入・復旧・対応環境の節などは、LEV-24 から変わりうる点が無いと見て省いた）。提出の直前の再確認（LEV-228）は harness.md の全項目で行い、本書との食い違いはそこで片付ける。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
+- 前回の照合は LEV-24（2026-09-19、47 項目。`artifacts/lev-24-readme/record.md`、git 管理外）。項目の分け方の正本は `docs/harness.md`「審査要件のチェック項目」で、本書の表はそれを 0.3.8 の木（`main` の `0e8c4d1`）で照合し直し、2026-09-27 の公式文書で変わった点（提出の手順など）を足した**この時点の結果**である（例外: #12・#14・#16 は英語化〔LEV-226〕のあとの木〔2026-09-28、`16d8384`〕で書き直した。ほかの行は 0.3.8 の木のまま照合し直していない）。番号は本書の中だけのもの。**本書の 32 行は harness.md の項目をすべては写していない**（`version` の 4 ファイル一致、manifest の不明なキー、サンプルコードの残り、`fs`／`process` の不使用、`dist/mappy/` の 3 ファイルとサイズ、`main.js` をコミットしないこと、README の保存形式・導入・復旧・対応環境の節などは、LEV-24 から変わりうる点が無いと見て省いた）。提出の直前の再確認（LEV-228）は harness.md の全項目で行い、本書との食い違いはそこで片付ける。**表の PASS も公式 lint の通過も、審査の通過を保証しない**（審査は提出時点の公式文書と人のレビューで決まる）
 - 公式文書の**どれにも UI・README の言語の要件は無い**（4 文書とも、言語・英語・ローカライズへの言及なし）。英語化は審査の必須条件ではなく、一覧の読者（英語）に届けるための判断である
 
 ## 1. 審査要件と現状
@@ -37,9 +37,9 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 11 | コマンド ID にプラグイン ID を前置しない（Requirements） | 10 コマンド（`create-mindmap` … `call-map`、`convert-to-list`）。前置なし | PASS | — |
 | 12 | コマンド名にプラグイン名を入れない、既定ホットキーを置かない（Guidelines） | 名前は `src/i18n` の表から引き、英語（`Create new mind map` など）・日本語のどちらも `Mappy` を含まない（2026-09-28、LEV-226 のあとの木で確認）。`hotkeys` の指定 0 件 | PASS | — |
 | 13 | 条件付きは `checkCallback`、無条件は `callback`（Guidelines） | LEV-24 から形は同じ | PASS | — |
-| 14 | UI 文言は sentence case（Guidelines） | 0.3.8 の時点では日本語なので実質何も検査していなかった。LEV-233 で `eslint.config.mjs` に `src/i18n/en.ts` を対象とする `ui/sentence-case-locale-module` の block を足し、`npm run lint` が英語の表を検査する（`tests/tooling/i18n-lint.test.mjs`）。値を差し込む関数の中の文字列は規則が読まない | PASS（lint。関数の文言は読まない） | LEV-226 |
+| 14 | UI 文言は sentence case（Guidelines） | 0.3.8 の時点では日本語なので実質何も検査していなかった。LEV-233 で `eslint.config.mjs` に `src/i18n/en.ts` を対象とする `ui/sentence-case-locale-module` の block を足し、`npm run lint` が英語の表を検査する（`tests/tooling/i18n-lint.test.mjs`）。値を差し込む関数（27 個。通知の `exitDraftNotSaved` など）の中の文字列は規則が読まない | PASS（文字列の値。lint）／未実施（関数の文言 27 個は機械で検査していない。提出前に目で確かめる） | LEV-228 |
 | 15 | 設定の見出しは区画が複数のときだけ、見出しに「settings」を入れない、`setHeading()` を使う（Guidelines） | 見出しなしの 4 項目（テーマ・既定レイアウト・作成先フォルダ・左下のレイアウト） | PASS | — |
-| 16 | UI の言語（要件なし） | 0.3.8 の時点では UI 文言が 24 ファイルに約 200 個、すべて日本語だった。§2 の (b) を 2026-09-28 に本人が確定し、LEV-226（LEV-233・LEV-234・LEV-235、#118・#120・#121）で `src/i18n` の表へ移した: Obsidian の言語が `ja` なら日本語、それ以外は英語。`src/` の日本語の文字列は `src/i18n/ja.ts` だけ。英語の Obsidian での表示は実機 E63（macOS、Obsidian 1.14.2）で確認。0.4.0 で初めて出る | 判断済み（(b)） | LEV-226 |
+| 16 | UI の言語（要件なし） | 0.3.8 の時点では UI 文言が 24 ファイルに約 200 個、すべて日本語だった。§2 の (b) を 2026-09-28 に本人が確定し、LEV-226（LEV-233・LEV-234・LEV-235、#118・#120・#121）で `src/i18n` の表へ移した: Obsidian の言語が `ja` なら日本語、それ以外は英語。`src/` の日本語の文字列は `src/i18n/ja.ts` だけ。英語の Obsidian での実機確認は E63（macOS、Obsidian 1.14.2）の面だけ（コマンド名・ボタン・ポップオーバー・右クリックメニュー・タブの題名・設定タブと、仮の名前 `Subtopic`・core の拒否の文）。通知の全文、E63 以外の操作、Windows・Linux・モバイルは未実施。0.4.0 で初めて出る | PASS（(b) で実装）／未実施（E63 以外の面の実機） | LEV-228 |
 
 ### 1.4 セキュリティ・リソース・ワークスペース・Vault
 
