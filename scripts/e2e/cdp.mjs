@@ -102,7 +102,8 @@ export async function connect({ popout } = {}) {
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
     const [stored, loaded] = popout === undefined ? await evaluate(APP_LANGUAGE) : [LANGUAGE, LANGUAGE];
-    if (stored !== LANGUAGE || loaded?.split('-')[0] !== LANGUAGE) {
+    // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
+    if (stored !== LANGUAGE || (loaded ?? '').toLowerCase() !== LANGUAGE.toLowerCase()) {
       socket.close();
       throw new Error(`The Obsidian for ${VAULT} is set to "${stored}" and loaded in "${loaded}", not "${LANGUAGE}" (MAPPY_E2E_LANGUAGE). `
         + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${LANGUAGE}'), then reload the app. No action taken.`);

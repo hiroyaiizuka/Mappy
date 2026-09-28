@@ -123,9 +123,13 @@ const detachAll = () => evaluate(`for (const leaf of app.workspace.getLeavesOfTy
 /** Waits for the CDP port to answer with our vault's window again (after `app:reload`), and reconnects. */
 const reconnect = async () => {
   cdp.close();
+  // While the window reloads connect() refuses; the last refusal is the reason when it never comes back (a window
+  // that came back in another language says so, rather than "did not come back").
+  let refused = null;
   for (let started = Date.now(); Date.now() - started < 30000; await wait(1000)) {
-    try { cdp = await connect(); break; } catch { /* the window is reloading */ }
+    try { cdp = await connect(); refused = null; break; } catch (error) { refused = error; }
   }
+  if (refused) throw refused;
   evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
   for (let started = Date.now(); Date.now() - started < 30000; await wait(500)) {
     if (await evaluate('return !!app.plugins.plugins.mappy && app.workspace.layoutReady;').catch(() => false)) return;
