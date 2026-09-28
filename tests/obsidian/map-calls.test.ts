@@ -71,6 +71,104 @@ describe('CallReader', () => {
   });
 });
 
+describe('CallReader.listen (LEV-221)', () => {
+  function writesOf(reader: CallReader): Map<string, { size: number }> {
+    return (reader as unknown as { writes: Map<string, { size: number }> }).writes;
+  }
+
+  it('records the store\'s writes on a note read here only while listening, and forgets them with the note', async () => {
+    const app = new HarnessApp();
+    app.put('Host.md', HOST);
+    const map = app.put('Map.md', MAP);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const host = parseMarkdown(HOST, 'Host');
+    await reader.read(host, 'Host.md');
+    const at = MAP.indexOf('記録する');
+    // A reader nobody listens with (an export, the Excalidraw bridge: one read each) keeps nothing.
+    await store.applyLatest(map as never, () => [{ from: at, to: at + 4, text: '記録' }]);
+    expect(writesOf(reader).has('Map.md')).toBe(false);
+    // A note read before `listen` is recorded from its next read on (the view listens before it reads anything).
+    const stop = reader.listen();
+    await reader.read(host, 'Host.md');
+    const text = app.content(map);
+    await store.applyLatest(map as never, () => [{ from: text.indexOf('記録'), to: text.indexOf('記録') + 2, text: '記録する' }]);
+    expect(writesOf(reader).get('Map.md')?.size).toBe(1);
+    // No longer a map: the parse goes, and the writes that would have led on from it with it.
+    app.put('Map.md', MAP.replace('mappy: true', 'mappy: "true"'));
+    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(false);
+    // A map again: recorded again, and let go of when the listener stops.
+    app.put('Map.md', MAP);
+    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(true);
+    stop();
+    expect(writesOf(reader).size).toBe(0);
+    // Stopped twice, the second does nothing, and the reader can listen again and records again (code review 2).
+    stop();
+    const again = reader.listen();
+    await reader.read(host, 'Host.md');
+    expect(writesOf(reader).has('Map.md')).toBe(true);
+    again();
+  });
+
+  it('lets go of a note read while `clear` was asked for only once that read is done (code review 2)', async () => {
+    // A read paused on the store when the host stops calling would otherwise put its parse and a new record back after
+    // the clear, and nothing would read the note again to let go of them.
+    const app = new HarnessApp();
+    app.put('Host.md', HOST);
+    app.put('Map.md', MAP);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const read = store.read.bind(store);
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { answer = resolve; });
+    const spy = vi.spyOn(store, 'read').mockImplementation(async file => { await held; return read(file); });
+    const reading = reader.read(parseMarkdown(HOST, 'Host'), 'Host.md');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const cleared = reader.clear();
+    answer();
+    await reading;
+    await cleared;
+    expect({ reads: reader.reads('Map.md'), kept: writesOf(reader).size }).toEqual({ reads: false, kept: 0 });
+    spy.mockRestore();
+    stop();
+  });
+
+  it('a read or a clear whose host moved on lets go of nothing: the notes the host calls now keep their parse and record (code review 3)', async () => {
+    const app = new HarnessApp();
+    app.put('Host.md', HOST);
+    app.put('Map.md', MAP);
+    app.put('Other.md', MAP.replace('講座', '別'));
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    // The host now calls Other; a read (or a clear) of the document it showed before, still queued, must not drop Other.
+    await reader.read(parseMarkdown('---\nmappy: true\n---\n## ホスト\n- ![[Other]]\n', 'Host'), 'Host.md');
+    expect(writesOf(reader).has('Other.md')).toBe(true);
+    await reader.read(parseMarkdown(HOST, 'Host'), 'Host.md', () => false);
+    // Current as it starts, moved on by the time it would let go (the host published another document meanwhile).
+    let asked = 0;
+    await reader.read(parseMarkdown(HOST, 'Host'), 'Host.md', () => ++asked === 1);
+    expect(asked).toBe(2);
+    await reader.clear(() => false);
+    expect({ reads: reader.reads('Other.md'), kept: writesOf(reader).has('Other.md') }).toEqual({ reads: true, kept: true });
+    stop();
+  });
+
+  it('a second listen takes over, and the first one\'s stop leaves it be (code review 3)', async () => {
+    const { reader } = setup({ 'Host.md': HOST, 'Map.md': MAP });
+    const first = reader.listen();
+    const second = reader.listen();
+    await reader.read(parseMarkdown(HOST, 'Host'), 'Host.md');
+    first();
+    expect(writesOf(reader).has('Map.md')).toBe(true);
+    second();
+    expect(writesOf(reader).size).toBe(0);
+  });
+});
+
 describe('sameTargets', () => {
   it('compares by item, document identity, path and heading', () => {
     const document = parseMarkdown(MAP, 'Map');

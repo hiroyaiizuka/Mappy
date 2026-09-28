@@ -34,8 +34,8 @@ interface Recorded {
  * someone put the note back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record,
  * where the next write, made on the text on screen, could not follow them.
  *
- * Used by a map embedded in another note (`MapEmbed`, LEV-217). `MindmapView` keeps its own record (`ownWrites`,
- * LEV-150) on the same rule for a read of the text on screen, but it is a separate copy and not the same in every
+ * Used by a map embedded in another note (`MapEmbed`, LEV-217) and by the maps an item calls (`CallReader`, LEV-221).
+ * `MindmapView` keeps its own record (`ownWrites`, LEV-150) on the same rule for a read of the text on screen, but it is a separate copy and not the same in every
  * case: it tells the writes from before the read by identity rather than by number, and, as it hears its own writes
  * twice, it skips a write that changed nothing or that is the same (`sameWrite`: texts and edits) as the last one it
  * recorded — or, starting the record again, as any one in it; one that leads on from the end is added even when the
