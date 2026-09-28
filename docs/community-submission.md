@@ -65,17 +65,17 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 担当 |
 | --- | --- | --- | --- | --- |
 | 26 | 難読化・動的広告・クライアント側テレメトリ・自己更新をしない（Policies） | どれも無い。本番は esbuild の標準 minify（難読化ではない） | PASS | — |
-| 27 | ネットワーク利用は使う先と理由を明示する（Policies） | 自前の通信は SVG／PNG 書き出しでノートが参照する外部画像を `requestUrl` で取る 1 経路だけ（`image-export.ts`）。表示はノートの外部画像を Obsidian と同じく読む。README「Network use」（英語）と `README.ja.md`「ネットワーク利用」に同じ内容で開示（LEV-227） | PASS | LEV-227 |
+| 27 | ネットワーク利用は使う先と理由を明示する（Policies） | 自前の通信は SVG／PNG 書き出しでノートが参照する外部画像を `requestUrl` で取る 1 経路だけ（`image-export.ts`）。表示はノートの外部画像を Obsidian と同じく読む。README「Network use」（英語）と `README.ja.md`「ネットワーク利用」に同じ内容で開示（LEV-227） | PASS | —（LEV-227 で完了） |
 | 28 | 支払い・アカウント・Vault 外のファイル（Policies） | どれも無い。**M9（有料の AI 機能）を入れる時点でこの行が変わる**（保留中） | PASS | — |
-| 29 | LICENSE と同梱物の表示（Policies） | MIT。同梱の `@lezer/markdown`（MIT）を README（英語）と `README.ja.md` の「License／ライセンス」に表示（LEV-227） | PASS | LEV-227 |
+| 29 | LICENSE と同梱物の表示（Policies） | MIT。同梱の `@lezer/markdown`（MIT）を README（英語）と `README.ja.md` の「License／ライセンス」に表示（LEV-227） | PASS | —（LEV-227 で完了） |
 
 ### 1.7 公開の前に済ませたい品質（要件ではない）
 
 | # | 項目 | 現状 | 担当 |
 | --- | --- | --- | --- |
 | 30 | 宣言した対応環境での実機確認 | macOS の Obsidian 1.14.2 だけ。Windows・Linux・モバイル・1.8.7 は未確認 | LEV-25 |
-| 31 | 一覧に載せる画像（README の先頭のスクリーンショットか GIF） | LEV-227 で両方の README の先頭にテスト Vault のマップのスクリーンショット 1 枚（明色、`docs/images/mappy-map.png`）を置いた。一覧（Obsidian のプラグインの画面）が README の相対パスを解決するかは確かめていないので、`main` の raw.githubusercontent.com の絶対 URL で参照する（merge 前のブランチでは表示されない）。一覧での表示は提出準備（LEV-228）で確かめる | LEV-227 |
-| 32 | ベータ表記と既知の制限 | LEV-227 で英語の「Known limitations」を置き、IME の項目を「日本語以外（中国語・韓国語など）の IME も未確認」まで広げた（日本語版も同じ）。表示言語を「対応環境」に足した | LEV-227 |
+| 31 | 一覧に載せる画像（README の先頭のスクリーンショットか GIF） | LEV-227 で両方の README の先頭にテスト Vault のマップのスクリーンショット 1 枚（明色、`docs/images/mappy-map.png`）を置いた。一覧（Obsidian のプラグインの画面）が README の相対パスを解決するかは確かめていないので、`main` の raw.githubusercontent.com の絶対 URL で参照する（merge 前のブランチでは表示されない）。一覧での表示は提出準備（LEV-228）で確かめる | LEV-228（画像は LEV-227 で置いた） |
+| 32 | ベータ表記と既知の制限 | LEV-227 で英語の「Known limitations」を置き、IME の項目を「日本語以外（中国語・韓国語など）の IME も未確認」まで広げた（日本語版も同じ）。表示言語を「対応環境」に足した | —（LEV-227 で完了） |
 
 ## 2. 英語化の方式
 
@@ -85,7 +85,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 - **Markdown に書き込まれる既定の文字列**が 3 つある: 新しいノードの `サブトピック`、新しいトピックの `トピック`、新規ファイルの `無題のマインドマップ`。これは UI ではなく本文になる
 - 保存値は言語に依存しない: 設定は `follow`・`light`・`dark`、レイアウトは `mindmap` などの id を保存し、日本語はラベルにしか使っていない（`THEME_LABELS`・`LAYOUT_LABELS`。LEV-233・LEV-234 以降は `layoutLabel()`・`themeLabel()`）。言語を切り替えても既存の設定とノートは読める
 - バンドル: 本番の `main.js` は 239,762 B。esbuild の既定（`charset: ascii`）で非 ASCII の文字はすべて `\uXXXX`（1 字 6 B）に書かれる。その数は 3,454、うち CJK と仮名（U+3000〜U+9FFF）が 3,430 で約 20.6 KB（バンドルの約 8.6%）。全角の括弧・斜線（U+FF08 など）を足すと 3,444
-- Obsidian API 1.8.7（`minAppVersion` と同じ）に `getLanguage()`（アプリの言語の ISO コード、既定 `en`）がある。公式 lint には `prefer-get-language`（`localStorage.getItem('language')` を使わせない）（recommended に入っている）と、英語のロケールファイル（`**/en.ts`・`**/en/*.ts` など）の文字列に sentence case を強いる `ui/sentence-case-locale-module` がある。**後者は `configs.recommendedWithLocalesEn` にだけ入っていて、Mappy の `eslint.config.mjs` が使う `configs.recommended` には入っていない**。(b) で英語の表を検査させるには、設定を `recommendedWithLocalesEn` に切り替えるか、`src/i18n/en.ts` に当たる block を足す
+- Obsidian API 1.8.7（`minAppVersion` と同じ）に `getLanguage()`（アプリの言語の ISO コード、既定 `en`）がある。公式 lint には `prefer-get-language`（`localStorage.getItem('language')` を使わせない）（recommended に入っている）と、英語のロケールファイル（`**/en.ts`・`**/en/*.ts` など）の文字列に sentence case を強いる `ui/sentence-case-locale-module` がある。**後者は `configs.recommendedWithLocalesEn` にだけ入っていて、Mappy の `eslint.config.mjs` が使う `configs.recommended` には入っていない**。(b) で英語の表を検査させるには、設定を `recommendedWithLocalesEn` に切り替えるか、`src/i18n/en.ts` に当たる block を足す（2026-09-27 の時点の記述。LEV-233 で block を足した。§1 の #14）
 - テストの結合: `tests/` と `scripts/e2e/` に日本語の文言を照合する箇所が多い（代表的な 5 語だけで 18 ファイル）。e2e はテスト用 Obsidian の画面の文言を読むので、その Obsidian の言語が結果を左右する
 
 ### 2.2 比較
@@ -120,4 +120,4 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 - **UI 文言の抽出と置き換え**（LEV-226。(b) を前提。**完了**: #118・#120・#121、0.4.0 に入る）: `src/i18n/` の新設、約 200 の文字列の移し替え、`getLanguage()` による選択、読み込み時の定数を使う時点の参照に変えること、`conflictMessage` の文字列比較をやめること、lint の設定（`sentence-case-locale-module`）、テスト（キーの一致・言語の選択・英語の lint）、e2e とブラウザ検証ページ（`harness/browser/`）の言語の固定、`src/main.ts` の原文を照合する `tests/tooling/popover-wording.test.mjs` の書き換え。量が多いので、層（core／obsidian／ui）で PR を分けてよい
 - **README の英語版**（LEV-227。方式に依らない。**完了**: #122、0.4.0 に入る）: 英語を主にする README と日本語の README の置き方、ネットワーク利用・ライセンス・同梱物の開示、先頭の画像、既知の制限の書き直し。`scripts/validate-release.mjs` は `README.md` の `## 既知の制限` を探して無ければ失敗する（LEV-209）ので、`README.md` を英語にするなら検査も同じ PR で直す。見出しだけでなく項目の型（`versionLimit` は「x.y.z まで」だけを拾う。`scripts/version-bump.mjs` も同じ関数を使う）も英語の書き方に合わせないと、見出しが見つかって項目が 0 件のまま黙って通る。README の歯車の行を照合する `tests/tooling/popover-wording.test.mjs` も直す
-- **審査要件のチェックと提出準備**（LEV-228。方式に依らない）: `docs/harness.md`「審査要件のチェック項目」の全項目と本書 §1 の全行を提出直前の木で再確認する。とくに判断の #21（frontmatter の書き方の逸脱の説明）、未実施の #4（提出）、PASS だが提出の直前に確かめ直す #5（id の一意性）、未確認の #3（pre-release のままで一覧が版を拾えるか）、harness.md と食い違う #19（`console.error`）、審査で説明を求められうる #22（prototype の差し替え）。#2 は LEV-227 が片付け、ここでは結果を確かめるだけ。#14 の値を差し込む関数の文言 27 個（lint が読まない）を目で確かめることと、#16 の E63 以外の英語の表示（通知の全文・ほかの操作・Windows・Linux・モバイル）の実機確認はここで持つ。community.obsidian.md への提出と自動レビューへの対応も持つ。英語化の 2 本と LEV-25 の後に着手する
+- **審査要件のチェックと提出準備**（LEV-228。方式に依らない）: `docs/harness.md`「審査要件のチェック項目」の全項目と本書 §1 の全行を提出直前の木で再確認する。とくに判断の #21（frontmatter の書き方の逸脱の説明）、未実施の #4（提出）、PASS だが提出の直前に確かめ直す #5（id の一意性）、未確認の #3（pre-release のままで一覧が版を拾えるか）、harness.md と食い違う #19（`console.error`）、審査で説明を求められうる #22（prototype の差し替え）。#2 は LEV-227 が片付け、ここでは結果を確かめるだけ。#31 の一覧での画像の表示もここで確かめる。#14 の値を差し込む関数の文言 27 個（lint が読まない）を目で確かめることと、#16 の E63 以外の英語の表示（通知の全文・ほかの操作・Windows・Linux・モバイル）の実機確認はここで持つ。community.obsidian.md への提出と自動レビューへの対応も持つ。英語化の 2 本と LEV-25 の後に着手する
