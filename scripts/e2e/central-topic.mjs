@@ -44,7 +44,11 @@ const check = makeCheck(record);
 const storedAtStart = await cdp.evaluate("localStorage.getItem('language')");
 /** The plugin's settings as this run found them, read once the plugin step has (re)loaded it; put back at the end. */
 let settingsAtStart = null;
-const detachMaps = () => evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); await new Promise(resolve => setTimeout(resolve, 300)); return true;');
+/** Close the map tabs on this case's folder only: other tabs in the test Obsidian are not the case's to close. */
+const detachMaps = () => evaluate(`app.workspace.getLeavesOfType('mappy-map')
+  .filter(leaf => (leaf.view.file?.path ?? leaf.getViewState().state?.file ?? '').startsWith(${JSON.stringify(`${FOLDER}/`)}))
+  .forEach(leaf => leaf.detach());
+  await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
 const removeFolder = () => evaluate(`const folder = app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});
   if (folder) await app.vault.delete(folder, true); return true;`);
 
@@ -124,6 +128,8 @@ try {
   required(record, 'settings', await step('settings', async () => {
     settingsAtStart = await evaluate('return JSON.parse(JSON.stringify(app.plugins.plugins.mappy?.settings ?? null));');
     if (!settingsAtStart) throw new Error('the plugin has no settings to put back');
+    // A run killed before its restore leaves this case's folder in the settings: taking that as the start would "restore" it.
+    if (settingsAtStart.newMapFolder === FOLDER) throw new Error(`the settings still point at ${FOLDER} (a run stopped before its restore?): set "Folder for new maps" and the default layout back by hand first`);
     const leftover = await evaluate(`return !!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});`);
     if (leftover) throw new Error(`${FOLDER} is already in the vault (a --keep run?): remove it first`);
     ownsFolder = true;
@@ -145,7 +151,9 @@ try {
     await detachMaps().catch(() => null);
     if (settingsAtStart) {
       const restored = await step('restore-settings', () => saveSettings(settingsAtStart));
-      check(JSON.stringify(restored) === JSON.stringify(settingsAtStart), `the settings are ${JSON.stringify(restored)}, not ${JSON.stringify(settingsAtStart)} as the run found them`);
+      // Key by key: the reload of a language switch may normalize the object into another key order.
+      const differ = Object.keys(settingsAtStart).filter(key => JSON.stringify(restored?.[key]) !== JSON.stringify(settingsAtStart[key]));
+      check(restored && differ.length === 0, `the settings are ${JSON.stringify(restored)}, not ${JSON.stringify(settingsAtStart)} as the run found them (${differ.join(', ')})`);
     }
     if (ownsFolder && !flag('--keep')) await step('clean', removeFolder);
     const now = await cdp.evaluate("[window.moment?.locale?.() ?? null, localStorage.getItem('language')]").catch(() => [null, null]);
