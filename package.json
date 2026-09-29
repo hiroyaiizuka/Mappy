@@ -38,6 +38,7 @@
     "harness:e2e:embed-record-takeback": "node scripts/e2e/embed-record-takeback.mjs",
     "harness:e2e:view-reread-takeback": "node scripts/e2e/view-reread-takeback.mjs",
     "harness:e2e:call-own-writes": "node scripts/e2e/call-own-writes.mjs",
+    "harness:e2e:call-rename": "node scripts/e2e/call-rename.mjs",
     "harness:e2e:line-break": "node scripts/e2e/line-break.mjs",
     "harness:e2e:multiline-setext": "node scripts/e2e/multiline-setext.mjs",
     "harness:e2e:new-node": "node scripts/e2e/new-node-input.mjs",
