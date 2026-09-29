@@ -283,10 +283,10 @@ export class MindmapView extends FileView {
   private fitHeld = false;
   private saving = false;
   /**
-   * A save refused for a conflict (`writeOwn`) that no re-read has answered yet: the next one tells the kept drafts even
-   * when it finds the text on screen, since the map may have caught up while the refused save ran (LEV-252).
+   * Someone else's change a scheduled re-read published while a write of this view's own was under way (`saving`),
+   * which it did not tell the kept drafts: the write tells them when it ends (`writeOwn`, LEV-252).
    */
-  private refusedUnread = false;
+  private untold = false;
   private revealId: string | null = null;
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
@@ -1245,14 +1245,11 @@ export class MindmapView extends FileView {
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
     if (own && !changed && sameTargets(this.targets, targets)) return;
     this.publish(changed ? document : undefined, targets);
-    // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that. The
-    // first re-read after a refused save tells them too when it finds the text on screen: a read under way when the save
-    // began published the change while it ran (skipped here, as a save was under way), before the refusal, so no re-read
-    // after the refusal changes the map, and the line would ask for a refresh the map already shows (LEV-252).
-    if ((changed || this.refusedUnread) && !this.saving) {
-      this.refusedUnread = false;
-      this.tellKeptDrafts();
-    }
+    // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that. One a
+    // scheduled re-read published during a write is told when the write ends (LEV-252): no re-read after it changes the
+    // map, and the line would ask for a refresh the map already shows.
+    if (changed && !this.saving) this.tellKeptDrafts();
+    else if (changed && scheduled) this.untold = true;
   }
 
   /** `document` (when the note changed) and the called maps become what the map shows, and are drawn. */
@@ -2077,7 +2074,9 @@ export class MindmapView extends FileView {
       try { write = await perform(file); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
       catch (error) {
-        if (error instanceof ConflictError) this.refusedUnread = true;
+        // The map caught up while the write ran (a re-read under way when it began, LEV-252): the draft refused here is
+        // already on the note it would retry on, and no re-read after this changes the map to tell it so.
+        if (error instanceof ConflictError && this.document !== planned) error.caughtUp = true;
         this.scheduleRefresh();
         throw error;
       }
@@ -2100,7 +2099,16 @@ export class MindmapView extends FileView {
       // The note being left (a draft saved on the way out) is not read again: what it would show goes right after.
       if (!this.unloading) await this.refresh(shown);
       return write;
-    } finally { this.saving = false; done(); }
+    } finally {
+      this.saving = false;
+      done();
+      // The drafts kept by an earlier conflict learn of the change published meanwhile; the draft this write refused
+      // is shown its line after this (`ConflictError.caughtUp` says it).
+      if (this.untold) {
+        this.untold = false;
+        this.tellKeptDrafts();
+      }
+    }
   }
 
   /**

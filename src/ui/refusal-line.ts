@@ -12,6 +12,12 @@ export class RefusalLine {
   constructor(private readonly element: HTMLElement) {}
 
   show(error: unknown): void {
+    // A conflict the map had already caught up with when it was refused goes straight to the retry line (LEV-252).
+    if (error instanceof ConflictError && error.caughtUp) {
+      this.conflicted = false;
+      this.element.setText(t().refreshed);
+      return;
+    }
     this.element.setText(error instanceof Error ? error.message : t().saveFailed);
     this.conflicted = error instanceof ConflictError;
   }

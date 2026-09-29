@@ -143,6 +143,34 @@ function rushRefresh(view: MindmapView): () => void {
   return () => { schedule.mockRestore(); timer.mockRestore(); };
 }
 
+/**
+ * The vault's reads held after they have read the note, as a slow disk holds them (LEV-252): `held` is whether one is
+ * waiting, `release` lets every read answer, `restore` puts the vault's own read back.
+ */
+function holdReads(app: HarnessApp): { held: () => boolean; release: () => void; restore: () => void } {
+  const vault = app.asApp<App>().vault;
+  const read = vault.read.bind(vault);
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let waiting = 0;
+  const slow = vi.spyOn(vault, 'read').mockImplementation(async file => {
+    const text = await read(file);
+    waiting += 1;
+    try { await gate; } finally { waiting -= 1; }
+    return text;
+  });
+  return { held: () => waiting > 0, release: () => { release(); }, restore: () => { release(); slow.mockRestore(); } };
+}
+
+/** Until `condition` holds, in zero-delay timers, or a failure after `limit` ms. */
+async function until(condition: () => boolean, limit = 2000): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > limit) throw new Error('The condition never held');
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
 function menuItem(title: string): HTMLElement {
   const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
     .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
@@ -299,7 +327,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   // the save is under way, before the save is refused, and the re-read the refusal schedules finds the text on screen:
   // neither is a re-read that changed the map after the conflict, and the line stayed on CONFLICT though the map was
   // current and the next Enter applied. Both drafts, the body modal's and the inline editor's.
-  it.each(['body modal', 'inline editor'] as const)('turns the %s line to REFRESHED when the map caught up while the refused save ran', async (kind) => {
+  it.each(['body modal', 'inline editor'] as const)('shows the %s line as REFRESHED when the map caught up while the refused save ran', async (kind) => {
     const mounted = await mount(SOURCE);
     const { app, source, key, refreshed, element, node, external, settle, draft, view } = mounted;
     let input: HTMLTextAreaElement;
@@ -318,23 +346,20 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       line = mounted.error;
     }
     const enter = (): void => { key(input, 'Enter', kind === 'body modal' ? { metaKey: true } : {}); };
-    const vault = app.asApp<App>().vault;
-    const read = vault.read.bind(vault);
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const slow = vi.spyOn(vault, 'read').mockImplementation(async file => { const text = await read(file); await gate; return text; });
+    const reads = holdReads(app);
     try {
       external(EXTERNAL);
-      // Past the 45 ms debounce: the re-read has read the note and is held before it returns.
-      await new Promise(resolve => setTimeout(resolve, 60));
+      // The debounced re-read has read the note and is held before it answers (waited for, not timed: review 1).
+      await until(reads.held);
       expect(documentOf(view).source).toBe(SOURCE);
       enter();
-      release();
+      reads.release();
+      // The save was refused after the map had caught up: the line is the retry line at once, before any re-read.
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(source()).toBe(EXTERNAL);
       expect(documentOf(view).source).toBe(EXTERNAL);
-      expect(line()).toBe(CONFLICT);
-    } finally { slow.mockRestore(); }
+      expect(line()).toBe(REFRESHED);
+    } finally { reads.restore(); }
 
     await refreshed();
     expect(line()).toBe(REFRESHED);
@@ -345,6 +370,36 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       ? EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n')
       : EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n'));
     expect(document.contains(input)).toBe(false);
+  });
+
+  // Review 1 of LEV-252: a draft kept by an earlier conflict, whose re-read publishes the note while another write of the
+  // view's own is under way (an image pasted onto the node). The re-read skipped telling the draft, the write's refusal
+  // re-read found the text on screen, and the line stayed on CONFLICT though the map showed the note.
+  it('tells a draft kept by a conflict of the change a re-read published while another write ran', async () => {
+    const mounted = await mount(SOURCE);
+    const { app, canvas, source, key, error, draft, external, refreshed, view, editor } = mounted;
+    const input = await draft('学ぶこと', '学ぶこと（編集）');
+    external(EXTERNAL);
+    key(input, 'Enter');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(error()).toBe(CONFLICT);
+    const reads = holdReads(app);
+    try {
+      // The refusal's re-read has read the note and is held; an image pasted onto the node starts a write meanwhile.
+      await until(reads.held);
+      expect(documentOf(view).source).toBe(SOURCE);
+      const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
+      const paste = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
+      canvas.dispatchEvent(paste);
+      reads.release();
+    } finally { reads.restore(); }
+    await refreshed();
+    await refreshed();
+    expect(documentOf(view).source).toBe(source());
+    expect(source()).toContain('記録する（外部）');
+    expect(editor()).toBe(input);
+    expect(error()).toBe(REFRESHED);
   });
 
   it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
