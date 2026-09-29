@@ -162,15 +162,6 @@ function holdReads(app: HarnessApp): { held: () => boolean; release: () => void;
   return { held: () => waiting > 0, release: () => { release(); }, restore: () => { release(); slow.mockRestore(); } };
 }
 
-/** Until `condition` holds, in zero-delay timers, or a failure after `limit` ms. */
-async function until(condition: () => boolean, limit = 2000, what = "the condition"): Promise<void> {
-  const started = Date.now();
-  while (!condition()) {
-    if (Date.now() - started > limit) throw new Error(`${what} never held`);
-    await new Promise(resolve => setTimeout(resolve, 0));
-  }
-}
-
 function menuItem(title: string): HTMLElement {
   const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
     .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
@@ -327,7 +318,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   // the save is under way, before the save is refused, and the re-read the refusal schedules finds the text on screen:
   // neither is a re-read that changed the map after the conflict, and the line stayed on CONFLICT though the map was
   // current and the next Enter applied. Both drafts, the body modal's and the inline editor's.
-  it.each(['body modal', 'inline editor'] as const)('shows the %s line as REFRESHED when the map caught up while the refused save ran', async (kind) => {
+  it.each(['body modal', 'inline editor'] as const)('turns the %s line to REFRESHED when the map caught up while the refused save ran', async (kind) => {
     const mounted = await mount(SOURCE);
     const { app, source, key, refreshed, element, node, external, settle, draft, view } = mounted;
     let input: HTMLTextAreaElement;
@@ -350,15 +341,15 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     try {
       external(EXTERNAL);
       // The debounced re-read has read the note and is held before it answers (waited for, not timed: review 1).
-      await until(reads.held);
+      await vi.waitFor(() => { expect(reads.held()).toBe(true); }, { timeout: 2000, interval: 0 });
       expect(documentOf(view).source).toBe(SOURCE);
       enter();
       reads.release();
-      // The save was refused after the map had caught up: the line is the retry line at once, before any re-read.
+      // The save was refused after the map had caught up with the note: the window LEV-252 is about.
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(source()).toBe(EXTERNAL);
       expect(documentOf(view).source).toBe(EXTERNAL);
-      expect(line()).toBe(REFRESHED);
+      expect(line()).toBe(CONFLICT);
     } finally { reads.restore(); }
 
     await refreshed();
@@ -388,7 +379,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     let modalInput: HTMLTextAreaElement | null = null;
     try {
       // The refusal's re-read has read the note and is held; a body draft on another node is saved meanwhile.
-      await until(reads.held, 2000, 'the held read');
+      await vi.waitFor(() => { expect(reads.held()).toBe(true); }, { timeout: 2000, interval: 0 });
       expect(documentOf(view).source).toBe(SOURCE);
       element(node('全体の流れ').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
       menuItem('本文・リンクを編集').click();
@@ -401,23 +392,23 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       const apply = Object.getOwnPropertyDescriptor(DocumentStore.prototype, 'applyOver')?.value as ApplyOver;
       const during = vi.spyOn(DocumentStore.prototype, 'applyOver').mockImplementation(async function (this: DocumentStore, ...args) {
         reads.release();
-        await until(() => documentOf(view).source === EXTERNAL, 2000, 'the map showing the note');
+        await vi.waitFor(() => { expect(documentOf(view).source).toBe(EXTERNAL); }, { timeout: 2000, interval: 0 });
         return apply.apply(this, args);
       });
       try {
         key(modalInput, 'Enter', { metaKey: true });
-        await until(() => during.mock.calls.length > 0, 2000, 'the body draft\'s write');
+        await vi.waitFor(() => { expect(during).toHaveBeenCalled(); }, { timeout: 2000, interval: 0 });
         await new Promise(resolve => setTimeout(resolve, 0));
       } finally { during.mockRestore(); }
     } finally { reads.restore(); }
-    // The body draft was refused on a map that had caught up: its line is the retry line too.
-    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
+    // The body draft was refused on a map that had caught up (the window), and the published change told nobody.
+    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT);
     expect(documentOf(view).source).toBe(EXTERNAL);
     expect(source()).toBe(EXTERNAL);
+    await refreshed();
     expect(editor()).toBe(input);
     expect(error()).toBe(REFRESHED);
-    await refreshed();
-    expect(error()).toBe(REFRESHED);
+    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
     key(input, 'Enter');
     await refreshed();
     expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n'));
