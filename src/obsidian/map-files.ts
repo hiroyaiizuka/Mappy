@@ -103,17 +103,18 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
 
 /** Create without overwriting, in the configured folder (or Obsidian's), with the configured layout. */
 export async function createMindmapFile(app: App, sourcePath: string, options: NewMapOptions = {}): Promise<TFile> {
-  // The name is written into the note as its title, in the app's language (architecture.md §9e).
-  const untitled = t().untitled;
+  // The file is named in the app's language (architecture.md §9e); the note's root is the central topic, not the file
+  // name (LEV-255): the maps XMind and MarkMind make start from a central topic, and the root is written as a heading.
+  const { untitled, centralTopicTitle } = t();
   const requestedName = `${untitled}.md`;
   const parent = await resolveNewMapFolder(app, options.folder ?? '', sourcePath, requestedName);
   let index = 1;
-  let title = untitled;
-  let path = childPath(parent.path, `${title}.md`);
+  let name = untitled;
+  let path = childPath(parent.path, `${name}.md`);
   while (app.vault.getAbstractFileByPath(path)) {
     index += 1;
-    title = `${untitled} ${index}`;
-    path = childPath(parent.path, `${title}.md`);
+    name = `${untitled} ${index}`;
+    path = childPath(parent.path, `${name}.md`);
   }
-  return app.vault.create(path, newMindmapSource(title, options.layout));
+  return app.vault.create(path, newMindmapSource(centralTopicTitle, options.layout));
 }

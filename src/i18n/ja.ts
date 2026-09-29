@@ -52,6 +52,7 @@ export const ja: Messages = {
   convertFirst: (command: string) => `先に「${command}」を実行してください。`,
 
   untitled: "無題のマインドマップ",
+  centralTopicTitle: "中心トピック",
   folderDotName: (path: string, setting: string) => `作成先「${path}」に . で始まる名前は使えません。設定の「${setting}」を確認してください。`,
   folderIsFile: (path: string, setting: string) => `作成先「${path}」はフォルダではありません。設定の「${setting}」を確認してください。`,
   folderNotCreated: (path: string, setting: string) => `作成先「${path}」を作成できませんでした。設定の「${setting}」を確認してください。`,
