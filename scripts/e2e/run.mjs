@@ -36,6 +36,7 @@ export const CASES = [
   { name: 'embed-record-takeback', file: 'embed-record-takeback.mjs', description: 'E65 元に戻された書き込みのあとの埋め込みの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'view-reread-takeback', file: 'view-reread-takeback.mjs', description: 'E66 途中まで届いた再読込の先の元に戻された書き込みのあとのビューの同名・空題名ノードの折りたたみ', shot: false },
   { name: 'call-own-writes', file: 'call-own-writes.mjs', description: 'E67 呼び出し先のマップのタブの編集・切替・Undo/Redo・元に戻しの前後で、呼び出し元の同名・空題名ノードの折りたたみ', shot: false },
+  { name: 'call-rename', file: 'call-rename.mjs', description: 'E73 呼び出し先のノートの改名・移動・フォルダ改名・一時的にマップでない（保存・未保存）の前後で、呼び出し元の呼び出し先ノードの id と折りたたみ', shot: false },
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'multiline-setext', file: 'multiline-setext.mjs', description: 'E60 複数行の Setext 見出しは段落（マップの見出しが metadataCache と一致、閲覧モード、周りの編集）', shot: false },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
@@ -59,6 +60,7 @@ export const CASES = [
   { name: 'central-topic', file: 'central-topic.mjs', description: 'E71 新しいマップのルートが中心トピック（ファイル名は無題のマインドマップのまま）、そこで Tab → メイントピック → サブトピック × 既定レイアウト 4 種 × 日本語・英語', shot: true },
   { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語', shot: true },
   { name: 'view-padding', file: 'view-padding.mjs', description: 'E70 マップの容器にペインの余白が付かない（!important なし）× 本体・別ウィンドウ・埋め込み × 明色・暗色', shot: true },
+  { name: 'reread-conflict-line', file: 'reread-conflict-line.mjs', description: 'E76 再読込がノートを読んでいる最中に確定して衝突で拒否された下書き（本文モーダル・インライン編集）のエラー行が、拒否のあとのマップの再読込で「更新されました」に変わり、次の確定で適用される', shot: false },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
 ];
 
