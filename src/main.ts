@@ -8,7 +8,7 @@ import {
 import { canSaveAttachments } from "./obsidian/image-export";
 import { createMindmapFile } from "./obsidian/map-files";
 import { MapSearchModal } from "./obsidian/map-search";
-import { DEFAULT_SETTINGS, normalizeSettings, type MappySettings } from "./obsidian/settings";
+import { DEFAULT_SETTINGS, normalizeSettings, showDefaultLayout, type MappySettings } from "./obsidian/settings";
 import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
@@ -246,7 +246,9 @@ export default class MappyPlugin extends Plugin {
    * value is current as soon as it is asked for (the tab reads it back for its next change) and put
    * back if the data file cannot be written, so what the tab shows after its own revert is what is stored.
    */
-  private async saveSettings(next: MappySettings): Promise<void> {
+  private async saveSettings(asked: MappySettings): Promise<void> {
+    // The default layout's button is always shown (LEV-257), whoever asks for the save.
+    const next = showDefaultLayout(asked);
     const previous = this.settings;
     const themeChanged = next.theme !== previous.theme;
     // Both lists are normalized (LAYOUT_MODES order, no repeats), so their text is their identity.

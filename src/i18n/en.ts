@@ -90,8 +90,8 @@ export const en = {
   setFolderDesc: "A path relative to the vault. Leave it empty to follow Obsidian's default location for new notes, or enter / for the vault root. A missing folder is created with the first map.",
   setFolderPlaceholder: "For example: Maps",
   setLayouts: "Layouts in the bottom-left corner",
-  setLayoutsDesc: "The layout buttons in the map's bottom-left corner. The mind map can't be hidden. When an open note's mappy-layout is a hidden layout, that note still shows its button. Hiding a layout doesn't change how mappy-layout is saved and restored, the commands, embeds or inserting into Excalidraw.",
-  setHiddenDefault: (layout: string) => `The default layout, ${layout}, isn't shown in the bottom-left corner. New maps still use it, and those notes show its button.`,
+  setLayoutsDesc: "The layout buttons in the map's bottom-left corner. The mind map and the default layout for new maps can't be hidden. When an open note's mappy-layout is a hidden layout, that note still shows its button. Hiding a layout doesn't change how mappy-layout is saved and restored, the commands, embeds or inserting into Excalidraw.",
+  setLockedDefault: (layout: string) => `${layout} is the default layout for new maps, so it can't be hidden.`,
   setSaveFailed: "Couldn't save the settings.",
 
   // Excalidraw (src/obsidian/excalidraw-bridge.ts).

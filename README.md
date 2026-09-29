@@ -138,12 +138,12 @@ All of these can be undone. A note with no headings gets a root showing the file
 
 ### Settings
 
-Obsidian's Settings → Mappy has four items. Left at their defaults, Mappy behaves as it did before they existed, and changing them doesn't rewrite any note.
+Obsidian's Settings → Mappy has four items. Changing them doesn't rewrite any note.
 
 - **Theme**: Follow Obsidian (default) / Light / Dark. Applies only to the map view
 - **Default layout for new maps**: the value "Create new mind map" and "Turn this note into a mind map" write to `mappy-layout`. Notes that already exist keep their layout
 - **Folder for new maps**: a path relative to the vault. Empty follows Obsidian's "Default location for new notes", and `/` is the vault root
-- **Layouts in the bottom-left corner**: chooses the layout buttons shown in the map's bottom-left corner (all four by default). The mind map can't be hidden. When an open note's `mappy-layout` is a hidden layout, that note still shows its button. This is a display setting, not a way to turn features off: saving and restoring `mappy-layout`, the commands, embeds and inserting into Excalidraw don't change
+- **Layouts in the bottom-left corner**: chooses the layout buttons shown in the map's bottom-left corner (by default the mind map, the timeline and the hierarchy; turn Balanced on to show it too). The mind map and the layout chosen as the default for new maps can't be hidden (choosing a hidden layout as the default shows its button as well). When an open note's `mappy-layout` is a hidden layout, that note still shows its button. This is a display setting, not a way to turn features off: saving and restoring `mappy-layout`, the commands, embeds and inserting into Excalidraw don't change. Up to 0.4.2 all four were shown by default. After updating to 0.4.3, if you haven't changed any Mappy setting since 0.2.0, the Balanced button leaves the bottom-left corner (turn it on in the settings to bring it back). If you have changed any setting since 0.2.0, your saved choice stays as it is
 
 ### Embedding in another note
 

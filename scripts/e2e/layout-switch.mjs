@@ -72,7 +72,11 @@ const SHAPES = [
 const reopen = async () => {
   await evaluate(`const leaf = window.__mappyE2E; if (leaf) leaf.detach(); delete window.__mappyE2E; return true;`);
   await wait(200);
-  return required(record, 'open', await makeOpenStep(evaluate, { note: NOTE, source: SOURCE })());
+  const opened = required(record, 'open', await makeOpenStep(evaluate, { note: NOTE, source: SOURCE })());
+  // The buttons this case presses, all four on this leaf only: the setting's default hides the balanced map (LEV-257),
+  // and a hidden button has no box to click. The vault's setting is left as it is.
+  await evaluate(`window.__mappyE2E.view.setVisibleLayouts(['mindmap', 'timeline', 'hierarchy', 'balanced']); return true;`);
+  return opened;
 };
 
 /** A real mouse click on the `index`-th layout button, in the order the view creates them (`LAYOUT_MODES`: mindmap, timeline, hierarchy, balanced). */
@@ -80,6 +84,7 @@ const clickLayout = async index => {
   const box = await evaluate(`${VIEW}
     const button = el.querySelectorAll('.mappy-modes button')[${index}];
     const rect = button.getBoundingClientRect();
+    if (button.hidden || rect.width === 0) throw new Error('layout button ${index} is hidden: nothing to click');
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
   for (const type of ['mousePressed', 'mouseReleased']) {
     await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });

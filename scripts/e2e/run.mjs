@@ -56,6 +56,7 @@ export const CASES = [
   { name: 'english-ui', file: 'english-ui.mjs', description: 'E63 英語の Obsidian での表示（コマンド・ボタン・ポップオーバー・右クリック・設定・拒否の行）と Markdown に書く仮の名前、日本語へ戻したあと', shot: true },
   { name: 'main-topic', file: 'main-topic.mjs', description: 'E69 新しいノードの仮の名前が追加先の深さで決まる（ルートの直下はメイントピック、その下はサブトピック）× リスト・見出し × タイムライン・通常マップ × 日本語・英語', shot: true },
   { name: 'central-topic', file: 'central-topic.mjs', description: 'E71 新しいマップのルートが中心トピック（ファイル名は無題のマインドマップのまま）、そこで Tab → メイントピック → サブトピック × 既定レイアウト 4 種 × 日本語・英語', shot: true },
+  { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語', shot: true },
   { name: 'view-padding', file: 'view-padding.mjs', description: 'E70 マップの容器にペインの余白が付かない（!important なし）× 本体・別ウィンドウ・埋め込み × 明色・暗色', shot: true },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
 ];
