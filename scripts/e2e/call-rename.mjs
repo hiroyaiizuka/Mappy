@@ -146,8 +146,8 @@ const reopen = async () => {
     ${refuseOpenLeaves([HOST, NOTE, RENAMED, `${MOVED_FOLDER}/${NAME}.md`, `${RENAMED_FOLDER}/${NAME}.md`])}
     ${removeAll}
     await app.vault.createFolder(${JSON.stringify(FOLDER)});
-    ${writeNote(NOTE, SOURCE)}
-    ${writeNote(HOST, hostSource(NAME))}
+    { ${writeNote(NOTE, SOURCE)} }
+    { ${writeNote(HOST, hostSource(NAME))} }
     const opened = app.workspace.getLeaf('tab');
     await opened.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(HOST)}, layout: 'mindmap' }, active: true });
     await new Promise(resolve => setTimeout(resolve, 1500));
@@ -219,12 +219,17 @@ const OPERATIONS = [
     run: async () => {
       // A Markdown editor on the called note, in a split beside the map; the header broken and mended in its buffer.
       await evaluate(`
+        // The map note's Markdown, as the map's source button opens it (the router would make a plain Markdown state a map).
         const editor = app.workspace.createLeafBySplit(window.__mappyE2E, 'vertical');
-        await editor.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(NOTE)}, mode: 'source' }, active: false });
-        await new Promise(resolve => setTimeout(resolve, 800));
+        await app.plugins.plugins.mappy.router.openMarkdown(editor, app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)}), false);
+        // Source mode (not live preview, whose header is the Properties widget): the header is text in the buffer.
+        await editor.setViewState({ type: 'markdown', state: { ...editor.getViewState().state, mode: 'source', source: true }, active: false });
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        if (editor.view.getViewType() !== 'markdown' || editor.view.getMode?.() !== 'source') throw new Error('no Markdown editor on the called note: ' + editor.view.getViewType());
         window.__mappyE2EEditor = editor;
         const at = editor.view.editor.getValue().indexOf('mappy: true');
         editor.view.editor.replaceRange('tru', editor.view.editor.offsetToPos(at + 7), editor.view.editor.offsetToPos(at + 11));
+        if (!editor.view.editor.getValue().includes('mappy: tru\\n')) throw new Error('the buffer was not edited');
         return true;`);
       const between = await caughtUp(NOTE, 0, true);
       const disk = await evaluate(`return app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)}));`);
