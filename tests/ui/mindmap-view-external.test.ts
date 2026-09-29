@@ -345,11 +345,11 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       expect(documentOf(view).source).toBe(SOURCE);
       enter();
       reads.release();
-      // The save was refused after the map had caught up with the note: the window LEV-252 is about.
-      await new Promise(resolve => setTimeout(resolve, 0));
+      // The save was refused after the map had caught up with the note: the window LEV-252 is about. Waited for, not timed
+      // (review 3): the line can only leave CONFLICT at the refusal's 45 ms re-read.
+      await vi.waitFor(() => { expect(line()).toBe(CONFLICT); }, { timeout: 2000, interval: 0 });
       expect(source()).toBe(EXTERNAL);
       expect(documentOf(view).source).toBe(EXTERNAL);
-      expect(line()).toBe(CONFLICT);
     } finally { reads.restore(); }
 
     await refreshed();
@@ -397,12 +397,10 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       });
       try {
         key(modalInput, 'Enter', { metaKey: true });
-        await vi.waitFor(() => { expect(during).toHaveBeenCalled(); }, { timeout: 2000, interval: 0 });
-        await new Promise(resolve => setTimeout(resolve, 0));
+        // The body draft refused on a map that had caught up (the window), waited for rather than timed (review 3).
+        await vi.waitFor(() => { expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT); }, { timeout: 2000, interval: 0 });
       } finally { during.mockRestore(); }
     } finally { reads.restore(); }
-    // The body draft was refused on a map that had caught up (the window), and the published change told nobody.
-    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(CONFLICT);
     expect(documentOf(view).source).toBe(EXTERNAL);
     expect(source()).toBe(EXTERNAL);
     await refreshed();
