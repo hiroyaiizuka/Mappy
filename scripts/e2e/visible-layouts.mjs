@@ -22,7 +22,8 @@
  *   --shot  writes <out>.png (the Japanese settings tab with the timeline locked) and <out>-en.png (the same in English)
  *   --keep  leave the note in the vault
  */
-import { LANGUAGE, VAULT, connect, wait } from './cdp.mjs';
+import { writeFile } from 'node:fs/promises';
+import { LANGUAGE, PORT, VAULT, connect, wait } from './cdp.mjs';
 import { switchLanguage } from './language.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeOpenStep, makeDeleteNote, makePluginStep } from './dom-helpers.mjs';
@@ -55,7 +56,62 @@ let settingsAtStart = null;
 let ownsData = false;
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const closeSettings = () => evaluate('app.setting.close(); await new Promise(resolve => setTimeout(resolve, 200)); return true;');
+/**
+ * Obsidian 1.14 opens the settings in a window of their own (an `about:blank` page target, `is-popout-modal`): a real
+ * click has to go to that window's connection. That window has no `app` of its own, so `connect({ popout })` (which
+ * checks the vault there) cannot take it: the main window, already checked, marks the settings window's body, and only
+ * the target carrying that mark is taken.
+ */
+async function connectSettings() {
+  const targets = await fetch(`http://127.0.0.1:${PORT}/json/list`).then(response => response.json());
+  for (const target of targets.filter(item => item.type === 'page' && item.url === 'about:blank')) {
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
+    let id = 0;
+    const send = (method, params) => new Promise((resolve, reject) => {
+      const mine = ++id;
+      const receive = event => {
+        const message = JSON.parse(event.data);
+        if (message.id !== mine) return;
+        socket.removeEventListener('message', receive);
+        if (message.error) reject(new Error(message.error.message)); else resolve(message.result);
+      };
+      socket.addEventListener('message', receive);
+      socket.send(JSON.stringify({ id: mine, method, params }));
+    });
+    const evaluateIn = async expression => {
+      const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
+      return result.value;
+    };
+    if (await evaluateIn("document.body?.dataset.mappyE2ePopout === 'settings'").catch(() => false)) {
+      return {
+        send, evaluate: evaluateIn,
+        screenshot: async path => { const shot = await send('Page.captureScreenshot', { format: 'png' }); await writeFile(path, Buffer.from(shot.data, 'base64')); return path; },
+        close: () => { socket.close(); },
+        get closed() { return socket.readyState !== WebSocket.OPEN; },
+      };
+    }
+    socket.close();
+  }
+  throw new Error(`no settings window marked for this run on port ${PORT}`);
+}
+let settingsCdp = null;
+const closeSettings = async () => {
+  settingsCdp?.close();
+  settingsCdp = null;
+  return evaluate('app.setting.close(); await new Promise(resolve => setTimeout(resolve, 400)); return true;');
+};
+async function openSettings() {
+  if (settingsCdp && !settingsCdp.closed) return settingsCdp;
+  await evaluate(`app.setting.open(); await new Promise(resolve => setTimeout(resolve, 600));
+    app.setting.openTabById('mappy'); await new Promise(resolve => setTimeout(resolve, 600));
+    if (app.setting.activeTab?.id !== 'mappy') throw new Error('the Mappy settings tab did not open');
+    app.setting.activeTab.containerEl.ownerDocument.body.dataset.mappyE2ePopout = 'settings';
+    return true;`);
+  for (let tries = 0; tries < 10 && !settingsCdp; tries += 1) settingsCdp = await connectSettings().catch(async error => { if (tries === 9) throw error; await wait(300); return null; });
+  return settingsCdp;
+}
 /** Close the map tabs on this case's note only. */
 const detachMaps = () => evaluate(`app.workspace.getLeavesOfType('mappy-map')
   .filter(leaf => (leaf.view.file?.path ?? leaf.getViewState().state?.file) === ${JSON.stringify(NOTE)})
@@ -78,13 +134,13 @@ async function load(data) {
   return { settings, labels: opened.labels };
 }
 
-/** What a person sees: the settings tab's layout row (opened if it is not), the map's bottom-left buttons, and the data file. */
+/** Script: the default layout's dropdown (Obsidian 1.14 puts a hidden measuring select beside each one). */
+const LAYOUT_SELECT = `app.setting.activeTab.containerEl.querySelectorAll('.setting-item')[1].querySelector('select.dropdown:not(.is-measuring)')`;
+
+/** What a person sees: the settings tab's layout row, the map's bottom-left buttons, and the data file. */
 const READ = `${VIEW}
-  if (app.setting.activeTab?.id !== 'mappy' || !app.setting.containerEl.isConnected) {
-    app.setting.open(); app.setting.openTabById('mappy');
-    await new Promise(resolve => setTimeout(resolve, 400));
-  }
   const tab = app.setting.activeTab.containerEl;
+  const style = node => node.ownerDocument.defaultView.getComputedStyle(node);
   const row = Array.from(tab.querySelectorAll('.setting-item')).find(item => item.querySelector('.mappy-setting-layouts'));
   const note = row?.querySelector('.mappy-setting-note');
   const toggles = Array.from(row?.querySelectorAll('.mappy-setting-layout') ?? [], item => {
@@ -97,27 +153,28 @@ const READ = `${VIEW}
   const raw = await app.vault.adapter.exists(${JSON.stringify(DATA)}) ? await app.vault.adapter.read(${JSON.stringify(DATA)}) : null;
   return {
     toggles,
-    note: note ? { text: note.textContent, hidden: note.hidden || getComputedStyle(note).display === 'none' } : null,
-    layout: tab.querySelectorAll('select')[1]?.value ?? null,
+    note: note ? { text: note.textContent, hidden: note.hidden || style(note).display === 'none' } : null,
+    layout: ${LAYOUT_SELECT}?.value ?? null,
     bar,
     data: raw === null ? null : JSON.parse(raw),
     settings: JSON.parse(JSON.stringify(app.plugins.plugins.mappy.settings)),
   };`;
-const read = () => evaluate(READ);
+const read = async () => { await openSettings(); return evaluate(READ); };
 
 /** A real click at the centre of the `index`-th layout toggle in the open settings tab (a toggle takes a click as a checkbox does). */
 async function clickToggle(index) {
-  const box = await evaluate(`const toggle = app.setting.activeTab.containerEl.querySelectorAll('.mappy-setting-layout .checkbox-container')[${index}];
+  const popout = await openSettings();
+  const box = await popout.evaluate(`(async () => { const toggle = document.querySelectorAll('.mappy-setting-layout .checkbox-container')[${index}];
     if (!toggle) throw new Error('no toggle ${index}');
     toggle.scrollIntoView({ block: 'center' });
     await new Promise(resolve => setTimeout(resolve, 150));
     const rect = toggle.getBoundingClientRect();
     const x = rect.left + rect.width / 2; const y = rect.top + rect.height / 2;
     const top = document.elementFromPoint(x, y);
-    return { x, y, hit: toggle.contains(top), cover: top ? String(top.className) : 'nothing' };`);
+    return { x, y, hit: toggle.contains(top), cover: top ? String(top.className) : 'nothing' }; })()`);
   if (!box.hit) throw new Error(`toggle ${index} is covered by ${box.cover}`);
   for (const type of ['mousePressed', 'mouseReleased']) {
-    await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    await popout.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
   }
   await wait(600);
   return read();
@@ -125,7 +182,8 @@ async function clickToggle(index) {
 
 /** The default layout dropdown set as a person's choice leaves it (Electron draws the list natively, out of reach of CDP). */
 async function chooseDefault(layout) {
-  await evaluate(`const select = app.setting.activeTab.containerEl.querySelectorAll('select')[1];
+  await openSettings();
+  await evaluate(`const select = ${LAYOUT_SELECT};
     select.value = ${JSON.stringify(layout)}; select.dispatchEvent(new Event('change', { bubbles: true })); return true;`);
   await wait(600);
   return read();
@@ -159,7 +217,7 @@ async function rows(language, shot) {
   check(same(flags(toTimeline), [[true, true], [true, true], [true, false], [true, false]]), `${row('default-timeline')}: toggles ${JSON.stringify(toTimeline?.toggles)}`);
   check(toTimeline?.note?.hidden === false && toTimeline.note.text === locked(labels[1]), `${row('default-timeline')}: note ${JSON.stringify(toTimeline?.note)}`);
   check(same(toTimeline?.bar, labels), `${row('default-timeline')}: the bar shows ${JSON.stringify(toTimeline?.bar)}`);
-  if (shot) await cdp.screenshot(shot);
+  if (shot) await settingsCdp?.screenshot(shot);
   const lockedClick = await step(row('locked-clicks'), async () => { await clickToggle(1); return clickToggle(0); });
   check(same(lockedClick?.data, toTimeline?.data), `${row('locked-clicks')}: a locked toggle saved ${JSON.stringify(lockedClick?.data)}`);
   check(same(flags(lockedClick), flags(toTimeline)), `${row('locked-clicks')}: toggles ${JSON.stringify(lockedClick?.toggles)}`);
