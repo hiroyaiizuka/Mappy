@@ -105,8 +105,9 @@ describe('a new map starts from a central topic (LEV-255)', () => {
     for (const language of ['ja', 'en'] as const) {
       setLanguage(language);
       const text = t();
-      expect([text.untitled, text.centralTopicTitle, text.mainTopicTitle, text.newNodeTitle])
-        .toEqual(Object.values(NAMES[language]));
+      const names = NAMES[language];
+      expect({ file: text.untitled, root: text.centralTopicTitle, main: text.mainTopicTitle, sub: text.newNodeTitle })
+        .toEqual({ file: names.file, root: names.root, main: names.main, sub: names.sub });
     }
   });
 });

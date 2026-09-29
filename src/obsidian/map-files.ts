@@ -109,12 +109,10 @@ export async function createMindmapFile(app: App, sourcePath: string, options: N
   const requestedName = `${untitled}.md`;
   const parent = await resolveNewMapFolder(app, options.folder ?? '', sourcePath, requestedName);
   let index = 1;
-  let name = untitled;
-  let path = childPath(parent.path, `${name}.md`);
+  let path = childPath(parent.path, requestedName);
   while (app.vault.getAbstractFileByPath(path)) {
     index += 1;
-    name = `${untitled} ${index}`;
-    path = childPath(parent.path, `${name}.md`);
+    path = childPath(parent.path, `${untitled} ${index}.md`);
   }
   return app.vault.create(path, newMindmapSource(centralTopicTitle, options.layout));
 }

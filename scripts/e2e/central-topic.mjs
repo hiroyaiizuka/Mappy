@@ -40,9 +40,10 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 
-/** The stored `language` key and the plugin's settings as this run found them, put back at the end. */
+/** The stored `language` key as this run found it, put back at the end. */
 const storedAtStart = await cdp.evaluate("localStorage.getItem('language')");
-const settingsAtStart = await evaluate('return JSON.parse(JSON.stringify(app.plugins.plugins.mappy?.settings ?? null));');
+/** The plugin's settings as this run found them, read once the plugin step has (re)loaded it; put back at the end. */
+let settingsAtStart = null;
 const detachMaps = () => evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); await new Promise(resolve => setTimeout(resolve, 300)); return true;');
 const removeFolder = () => evaluate(`const folder = app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});
   if (folder) await app.vault.delete(folder, true); return true;`);
@@ -121,6 +122,7 @@ let ownsFolder = false;
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
   required(record, 'settings', await step('settings', async () => {
+    settingsAtStart = await evaluate('return JSON.parse(JSON.stringify(app.plugins.plugins.mappy?.settings ?? null));');
     if (!settingsAtStart) throw new Error('the plugin has no settings to put back');
     const leftover = await evaluate(`return !!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});`);
     if (leftover) throw new Error(`${FOLDER} is already in the vault (a --keep run?): remove it first`);
@@ -134,18 +136,20 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`unexpected: ${error}`);
 } finally {
-  // Whatever happened, the test Obsidian goes back to Japanese with the stored key as it was (as E63 and E69 do).
+  // Whatever happened, the settings and the folder are put back first (they do not depend on the language, and a
+  // language switch that never comes back would leave them), then the test Obsidian goes back to Japanese with the
+  // stored key as it was (as E63 and E69 do).
   if (cdp.closed) cdp = await connect({ language: null }).catch(() => cdp);
-  if (cdp.closed) record.failures.push('the window could not be reached to put its language and settings back: check them by hand');
+  if (cdp.closed) record.failures.push('the window could not be reached to put its settings and language back: check them by hand');
   else {
-    const now = await cdp.evaluate("[window.moment?.locale?.() ?? null, localStorage.getItem('language')]").catch(() => [null, null]);
-    if (now[0] !== 'ja' || now[1] !== storedAtStart) await step('restore', async () => { cdp = await switchLanguage(cdp, storedAtStart, 'ja'); return true; });
     await detachMaps().catch(() => null);
     if (settingsAtStart) {
       const restored = await step('restore-settings', () => saveSettings(settingsAtStart));
       check(JSON.stringify(restored) === JSON.stringify(settingsAtStart), `the settings are ${JSON.stringify(restored)}, not ${JSON.stringify(settingsAtStart)} as the run found them`);
     }
     if (ownsFolder && !flag('--keep')) await step('clean', removeFolder);
+    const now = await cdp.evaluate("[window.moment?.locale?.() ?? null, localStorage.getItem('language')]").catch(() => [null, null]);
+    if (now[0] !== 'ja' || now[1] !== storedAtStart) await step('restore', async () => { cdp = await switchLanguage(cdp, storedAtStart, 'ja'); return true; });
   }
   exitCode = await finish(record, value('--json'));
   cdp.close();
