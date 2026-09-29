@@ -11,7 +11,8 @@
  * style, layout, paint and layerization, unlike long tasks) over them are recorded. Judged:
  * - p95 of the frame intervals at most `--budget` ms (default 50: three frames at 60 Hz; before LEV-213 it was 450–967);
  * - the wheel really reached the world: at least 90% of the wheel events changed its transform (a write of the same
- *   value is not counted), so a window where the input is swallowed or clamped to no-ops cannot pass on quiet frames;
+ *   value is not counted), so a window where the input is swallowed or clamped to no-ops cannot pass on quiet frames.
+ *   Behind slow frames Chromium coalesces queued wheel events too, so a slow build can fail this as well as the p95;
  * - the same window with no input runs at the display's rate (p95 under 25 ms) before and after each cell, or the case
  *   stops there without judging the rest (`stopped` in the record, exit code 1): a throttled or hidden window has no
  *   frame clock to judge by, and a slow frame there says nothing about the map.
@@ -26,9 +27,8 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makePluginStep, refuseOpenLeaves, writeNote } from './dom-helpers.mjs';
-import { makeFrameRecorder } from './frame-recorder.mjs';
+import { makeFrameRecorder, summarizeFrames } from './frame-recorder.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
-import { frameIntervals, summarize } from '../perf-stats.mjs';
 
 const { flag, value } = parseArgs();
 const COUNT = Number(value('--count') ?? 2000);
@@ -50,7 +50,8 @@ const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
-const frameRecorder = makeFrameRecorder(evaluate, { watch: "window.__mappyE2E.view.contentEl.querySelector('.mappy-world')" });
+// 100 ms after the last wheel is enough for the frame it asked for; more idle frames would thin a slow one out of the p95.
+const frameRecorder = makeFrameRecorder(evaluate, { watch: "window.__mappyE2E.view.contentEl.querySelector('.mappy-world')", tail: 100 });
 
 const wheel = (point, deltaX, deltaY, modifiers = 0) => cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX, deltaY, modifiers });
 const click = async point => {
@@ -76,12 +77,13 @@ async function open(layout) {
       await new Promise(resolve => setTimeout(resolve, 100));
       const el = leaf.view.contentEl;
       const images = Array.from(el.querySelectorAll('.mappy-node img'));
-      if (el.querySelectorAll('.mappy-node').length >= ${COUNT} && leaf.view.layout && images.every(image => image.complete)) {
+      // Every embed's <img>, not just the ones there so far: the nodes are drawn before MarkdownRenderer puts the images in.
+      if (el.querySelectorAll('.mappy-node').length >= ${COUNT} && leaf.view.layout && images.length >= ${IMAGES} && images.every(image => image.complete)) {
         return { nodes: el.querySelectorAll('.mappy-node').length, images: images.length, broken: images.filter(image => image.naturalWidth === 0).length, ms: Math.round(performance.now() - started) };
       }
     }
     return null;`);
-  if (!opened) throw new Error(`the ${layout} map did not draw ${COUNT} nodes with every image within 60 s`);
+  if (!opened) throw new Error(`the ${layout} map did not draw ${COUNT} nodes with its ${IMAGES} images within 60 s: is Fixtures/sample-image.svg in the vault?`);
   // The map re-fits once its images have sized the nodes; the frames are measured on the view it settles to.
   await wait(1500);
   return opened;
@@ -103,6 +105,9 @@ async function zoomTo(which) {
       await wheel(at.canvas, dx, dy);
       await wait(600);
     }
+    // A 100% view of empty canvas is cheap to draw: the rows are meant to time the dense part around the root.
+    const at = await where();
+    if (Math.abs(at.root.x - at.canvas.x) >= 40 || Math.abs(at.root.y - at.canvas.y) >= 40) throw new Error('the root did not come to the canvas\'s centre at 100%');
   }
   const label = await evaluate(`${VIEW} return el.querySelectorAll('.mappy-zoom button')[1]?.textContent.trim() ?? null;`);
   if (which === 'actual' && label !== '100%') throw new Error(`the zoom label reads ${label}, not 100%`);
@@ -116,10 +121,8 @@ async function zoomTo(which) {
  */
 async function recordFrames(drive) {
   const raw = await frameRecorder(drive);
-  const intervals = frameIntervals(raw.frames);
-  const { n, p50, p95, max } = summarize(intervals);
   return {
-    frames: n, p50: round(p50), p95: round(p95), max: round(max), over100: intervals.filter(interval => interval > 100).length,
+    ...summarizeFrames(raw.frames, [100]),
     loaf: raw.loaf.length, loafMax: round(Math.max(0, ...raw.loaf.map(entry => entry.duration))), loafRenderMax: round(Math.max(0, ...raw.loaf.map(entry => entry.render))),
     longTasks: raw.longTasks, transforms: raw.transforms, writes: raw.writes,
   };
@@ -170,7 +173,7 @@ try {
         for (const [input, drive] of Object.entries(drives)) {
           const frames = await recordFrames(drive(at));
           result[input] = frames;
-          verdicts.push([frames.writes >= WHEELS * 0.9, `${name} ${input}: ${frames.writes} of ${WHEELS} wheel events changed the world's transform`]);
+          verdicts.push([frames.writes >= WHEELS * 0.9, `${name} ${input}: ${frames.writes} of ${WHEELS} wheel events changed the world's transform (the input was swallowed or clamped, or the renderer coalesced wheel events behind slow frames: see the p95)`]);
           verdicts.push([frames.p95 !== null && frames.p95 <= BUDGET, `${name} ${input}: frame p95 ${frames.p95} ms over ${BUDGET} ms (max ${frames.max}, ${frames.over100} over 100 ms, longest animation frame ${frames.loafMax} ms of which rendering ${frames.loafRenderMax})`]);
           await wait(500);
         }

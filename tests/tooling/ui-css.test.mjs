@@ -222,11 +222,16 @@ describe("the map's world (LEV-213)", () => {
    * own declarations, so an at-rule's block never passes for one and the rules nested in it are each read (review 2).
    */
   const worldRules = css => [...css.replace(/\/\*[\s\S]*?\*\//gu, "").matchAll(/(?<selectors>[^{}]+)\{(?<body>[^{}]*)\}/gu)]
-    // The world's own class only: `\b` would also take a `.mappy-world-…` class of something else (review 1).
-    .filter(rule => rule.groups.selectors.split(",").some(selector => /\.mappy-world(?![\w-])/u.test(selector)));
-  const promotes = body => /(^|[;\s])(will-change|backface-visibility)\s*:/u.test(body) || /translateZ|translate3d|matrix3d|scale3d|rotate3d/u.test(body);
+    // The world and what is inside it (the edges, the node layer, the nodes and their parts, the drop slot): a layer of
+    // its own anywhere in there lifts the nodes drawn over it into layers again (review 3). Whole class names only:
+    // `\b` would also take `.mappy-world-…` (review 1). The drag ghost is the canvas's, outside the world.
+    .filter(rule => rule.groups.selectors.split(",").some(selector => /\.mappy-(?:world|edges|nodes|node|drop-placeholder)(?![\w-])|\.mappy-node-[\w-]+/u.test(selector)
+      && !/\.mappy-drag-ghost(?![\w-])/u.test(selector)));
+  // Only the values that make a layer: `will-change: auto` or `backface-visibility: visible` promote nothing (review 3).
+  const promotes = body => /(^|[;\s])will-change\s*:[^;]*\b(?:transform|translate|scale|rotate|opacity|filter)\b/u.test(body)
+    || /(^|[;\s])backface-visibility\s*:\s*hidden/u.test(body) || /translateZ|translate3d|matrix3d|scale3d|rotate3d/u.test(body);
 
-  it("is not promoted to a layer of its own, by will-change or a 3D transform", async () => {
+  it("is not promoted to a layer of its own, nor is anything inside it, by will-change or a 3D transform", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
     const rules = worldRules(css);
     expect(rules.length).toBeGreaterThan(0);
@@ -239,9 +244,14 @@ describe("the map's world (LEV-213)", () => {
       "@media (max-width: 400px) { .mappy-view .mappy-world { will-change : transform; } }",
       "@supports (display: grid) { .mappy-view .mappy-world { transform: translateZ(0); } }",
       ".mappy-view .mappy-world-overlay { will-change: opacity; }",
+      ".mappy-view .mappy-drag-ghost { will-change: transform; }",
+      ".mappy-view .mappy-node.is-drag-moving { will-change: auto; backface-visibility: visible; }",
+      ".mappy-view .mappy-node-toggle { transform: translate3d(-50%, -50%, 0); }",
     ].join("\n");
     const rules = worldRules(sample);
-    expect(rules.map(rule => rule.groups.selectors.trim())).toEqual([".mappy-view .mappy-world", ".mappy-view .mappy-world", ".mappy-view .mappy-world"]);
-    expect(rules.map(rule => promotes(rule.groups.body))).toEqual([false, true, true]);
+    expect(rules.map(rule => rule.groups.selectors.trim())).toEqual([
+      ".mappy-view .mappy-world", ".mappy-view .mappy-world", ".mappy-view .mappy-world", ".mappy-view .mappy-node.is-drag-moving", ".mappy-view .mappy-node-toggle",
+    ]);
+    expect(rules.map(rule => promotes(rule.groups.body))).toEqual([false, true, true, false, true]);
   });
 });

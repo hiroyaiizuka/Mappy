@@ -29,9 +29,8 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, PARSE, makePluginStep, makeSelect, makeAfter, makeState, refuseOpenLeaves } from './dom-helpers.mjs';
-import { makeFrameRecorder } from './frame-recorder.mjs';
+import { makeFrameRecorder, summarizeFrames } from './frame-recorder.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
-import { frameIntervals, summarize } from '../perf-stats.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -233,10 +232,7 @@ function judge(what, state, { closed = 0 } = {}) {
 
 /** Frame intervals as the other performance records summarise them (nearest rank), with the counts over one and two frames. */
 function frameStats({ frames, longTasks }) {
-  const intervals = frameIntervals(frames);
-  const { n, p50, p95, max } = summarize(intervals);
-  const round = number => (Number.isFinite(number) ? Math.round(number * 10) / 10 : null);
-  return { frames: n, p50: round(p50), p95: round(p95), max: round(max), over17: intervals.filter(v => v > 17.2).length, over33: intervals.filter(v => v > 33.4).length, longTasks };
+  return { ...summarizeFrames(frames, [17.2, 33.4]), longTasks };
 }
 
 /** Frame timestamps and long tasks while `drive` runs (frame-recorder.mjs, shared with E75). */

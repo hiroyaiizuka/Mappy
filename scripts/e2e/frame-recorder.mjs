@@ -7,13 +7,25 @@
  * 0.45–0.97 s went.
  */
 
+import { frameIntervals, summarize } from '../perf-stats.mjs';
+
+/** Script: stops a recorder a run left behind (its teardown failed), so its rAF loop and observers do not run on. */
+const STOP = `const left = window.__mappyE2EFrames;
+  if (left) { left.on = false; left.long?.disconnect(); left.animation?.disconnect(); left.watch?.disconnect(); delete window.__mappyE2EFrames; }`;
+
 /**
  * `watch` (script expression, optional): the element whose `style` writes are counted. Only writes that changed the
  * value count (`attributeOldValue`): a write of the same transform, such as a pan clamped at a bound, moves nothing.
+ * `tail` (ms): how long the frames are still recorded after `drive` ends, for the frame its last input asked for. E45
+ * keeps the 200 ms it always had; E75 takes less, since idle frames after the input thin a slow frame out of the p95.
  */
-export function makeFrameRecorder(evaluate, { watch = null } = {}) {
+export function makeFrameRecorder(evaluate, { watch = null, tail = 200 } = {}) {
   return async drive => {
-    await evaluate(`const state = window.__mappyE2EFrames = { frames: [], longTasks: 0, loaf: [], values: [], on: true };
+    let raw = null;
+    let failure = null;
+    try {
+      await evaluate(`${STOP}
+      const state = window.__mappyE2EFrames = { frames: [], longTasks: 0, loaf: [], values: [], on: true };
       state.long = new PerformanceObserver(list => { state.longTasks += list.getEntries().length; });
       state.long.observe({ type: 'longtask' });
       state.animation = new PerformanceObserver(list => {
@@ -30,11 +42,8 @@ export function makeFrameRecorder(evaluate, { watch = null } = {}) {
       }
       const loop = time => { if (!state.on) return; state.frames.push(time); requestAnimationFrame(loop); };
       requestAnimationFrame(loop); return true;`);
-    let raw = null;
-    let failure = null;
-    try {
       await drive();
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise(resolve => setTimeout(resolve, tail));
     } catch (error) {
       failure = error;
     } finally {
@@ -58,4 +67,16 @@ export function makeFrameRecorder(evaluate, { watch = null } = {}) {
     const writes = values.slice(1).filter((value, index) => value !== values[index]).length;
     return { ...rest, writes, transforms: new Set(values).size };
   };
+}
+
+/**
+ * The frames as E45 and E75 report them: count and nearest-rank p50 / p95 / max of the intervals, rounded to 0.1 ms,
+ * and how many intervals exceed each of `over` (ms), under `over<ms>`.
+ */
+export function summarizeFrames(frames, over = []) {
+  const intervals = frameIntervals(frames);
+  const { n, p50, p95, max } = summarize(intervals);
+  const round = number => (Number.isFinite(number) ? Math.round(number * 10) / 10 : null);
+  const counts = Object.fromEntries(over.map(limit => [`over${Math.floor(limit)}`, intervals.filter(interval => interval > limit).length]));
+  return { frames: n, p50: round(p50), p95: round(p95), max: round(max), ...counts };
 }
