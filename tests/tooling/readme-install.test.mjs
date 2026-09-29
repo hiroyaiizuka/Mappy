@@ -22,7 +22,7 @@ const read = file => readFile(new URL(`../../${file}`, import.meta.url), "utf8")
 describe("the READMEs' installation and side-by-side command (LEV-259)", () => {
   it.each(READMES)("$file installs from the community plugins directory, not BRAT", async ({ file, heading }) => {
     const readme = await read(file);
-    expect(readme).not.toMatch(/brat/i);
+    expect(readme).not.toMatch(/\bbrat\b/i);
     const lines = readme.split("\n");
     expect(lines.filter(line => line === heading)).toHaveLength(1);
   });
@@ -36,12 +36,16 @@ describe("the READMEs' installation and side-by-side command (LEV-259)", () => {
   it.each(READMES)("$file links its documentation by the language links and after the installation steps", async ({ file, heading, docs }) => {
     const readme = await read(file);
     const link = `](${docs})`;
-    expect(readme.split("\n")[2]).toContain(link);
+    const languages = readme.split("\n").filter(line => /\]\(README(\.ja)?\.md\)/.test(line));
+    expect(languages).toHaveLength(1);
+    expect(languages[0]).toContain(link);
     const install = readme.split(`${heading}\n`)[1]?.split("\n## ")[0] ?? "";
     expect(install.trimEnd().split("\n").at(-1)).toContain(link);
   });
 
+  // From a map the command hands over to `showSource(true)`, so "from a map, Markdown on the left" rests on that branch too.
   it.each([
+    ["src/main.ts", "if (split && map?.file === file) {\n      return map.showSource(true);"],
     ["src/main.ts", "workspace.createLeafBySplit(current, \"vertical\", true)"],
     ["src/ui/mindmap-view.ts", "this.app.workspace.createLeafBySplit(this.leaf, \"vertical\", true)"],
   ])("%s opens the new pane before (left of) the current one", async (file, call) => {

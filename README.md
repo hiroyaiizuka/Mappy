@@ -54,7 +54,7 @@ Mappy writes three frontmatter keys. It only handles notes with `mappy: true` an
 
 ## Installation
 
-Mappy works with the desktop version of Obsidian (1.8.7 or later).
+Mappy can be installed on the desktop version of Obsidian (1.8.7 or later; see [Compatibility](#compatibility) for what has been checked).
 
 1. Open Obsidian's Settings and choose Community plugins. If Restricted mode is on, turn it off first
 2. Click Browse, search for `Mappy`, and choose Install
