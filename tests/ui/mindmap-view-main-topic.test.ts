@@ -175,9 +175,9 @@ describe('the provisional name follows the depth the node is added at (LEV-250)'
   // The names themselves, spelled out: every row above reads them from the table, so a mix-up of the keys would pass there.
   it('spells the names in both languages', () => {
     setLanguage('ja');
-    expect([t().mainTopicTitle, t().newNodeTitle, t().newTopicTitle]).toEqual(['メイントピック', 'サブトピック', 'トピック']);
+    expect([t().mainTopicTitle, t().newNodeTitle, t().newTopicTitle, t().centralTopicTitle]).toEqual(['メイントピック', 'サブトピック', 'トピック', '中心トピック']);
     setLanguage('en');
-    expect([t().mainTopicTitle, t().newNodeTitle, t().newTopicTitle]).toEqual(['Main topic', 'Subtopic', 'Topic']);
+    expect([t().mainTopicTitle, t().newNodeTitle, t().newTopicTitle, t().centralTopicTitle]).toEqual(['Main topic', 'Subtopic', 'Topic', 'Central topic']);
   });
 
   // Review 2: a node that becomes the map's own root (the first heading written into a note with nothing else) is

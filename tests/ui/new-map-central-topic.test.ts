@@ -9,8 +9,8 @@
  * 開く、ファイルメニューは既存のノートを変換するだけで、どちらもノートを作らない）で、それが呼ぶ `createMindmapFile`
  * の書いた原文をそのままビューで開く。
  *
- * 修正を戻すと 9 件すべてが落ちる（8 行は作られた原文の見出し、1 行は文言表に `centralTopicTitle` が無いこと。
- * `artifacts/lev-255/before-fix.txt`）。同じ行の後半の Tab 2 段は LEV-250 の挙動で、ルートが見出しの区画になっても
+ * 修正を戻すと 8 行すべてが作られた原文の見出しで落ちる（`artifacts/lev-255/before-fix.txt`。記録の時点では、
+ * 文言表のキーを照合する 9 件目があった。行が名前をすべて書き写しているので、レビュー 3 回目で重複として外した）。同じ行の後半の Tab 2 段は LEV-250 の挙動で、ルートが見出しの区画になっても
  * 深さの判定（ルートの直下はメイントピック、その下はサブトピック）が崩れないことを見ている。
  */
 import type { App } from 'obsidian';
@@ -20,7 +20,7 @@ import { TFile, TFolder } from '../browser-harness/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
 import { projectMap } from '../../src/core/markdown';
 import { createMindmapFile } from '../../src/obsidian/map-files';
-import { setLanguage, t } from '../../src/i18n';
+import { setLanguage } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -100,14 +100,4 @@ describe('a new map starts from a central topic (LEV-255)', () => {
       });
     }
   }
-
-  it('reads the names from the table in both languages', () => {
-    for (const language of ['ja', 'en'] as const) {
-      setLanguage(language);
-      const text = t();
-      const names = NAMES[language];
-      expect({ file: text.untitled, root: text.centralTopicTitle, main: text.mainTopicTitle, sub: text.newNodeTitle })
-        .toEqual({ file: names.file, root: names.root, main: names.main, sub: names.sub });
-    }
-  });
 });

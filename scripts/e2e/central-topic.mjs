@@ -102,7 +102,8 @@ async function rows(language, shot) {
     check(created?.source === expected(layout, names), `${label}: the new note is ${JSON.stringify(created?.source)}, not ${JSON.stringify(expected(layout, names))}`);
     check(JSON.stringify(created?.roots) === JSON.stringify([names.root]), `${label}: the root drawn is ${JSON.stringify(created?.roots)}, not 「${names.root}」`);
     check(!created?.labels?.includes(names.file), `${label}: the file name 「${names.file}」 is drawn as a node: ${JSON.stringify(created?.labels)}`);
-    if (!created) continue;
+    // `step` gives `{ error }` for a failed step: the Tabs would go to the previous row's closed leaf.
+    if (!created || 'error' in created) continue;
     // Right after the command: the tab titled with the file name, the map with the central topic alone.
     if (shot && layout === 'mindmap') await cdp.screenshot(shot);
 
@@ -126,19 +127,21 @@ let ownsFolder = false;
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
   required(record, 'settings', await step('settings', async () => {
-    settingsAtStart = await evaluate('return JSON.parse(JSON.stringify(app.plugins.plugins.mappy?.settings ?? null));');
-    if (!settingsAtStart) throw new Error('the plugin has no settings to put back');
+    const found = await evaluate('return JSON.parse(JSON.stringify(app.plugins.plugins.mappy?.settings ?? null));');
+    if (!found) throw new Error('the plugin has no settings to put back');
     // A run killed before its restore leaves this case's folder in the settings: taking that as the start would "restore" it.
-    if (settingsAtStart.newMapFolder === FOLDER) throw new Error(`the settings still point at ${FOLDER} (a run stopped before its restore?): set "Folder for new maps" and the default layout back by hand first`);
+    if (found.newMapFolder === FOLDER) throw new Error(`the settings still point at ${FOLDER} (a run stopped before its restore?): set "Folder for new maps" and the default layout back by hand first`);
     const leftover = await evaluate(`return !!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});`);
     if (leftover) throw new Error(`${FOLDER} is already in the vault (a --keep run?): remove it first`);
+    // Only now are the settings and the folder this run's: a refused run puts nothing back and closes nothing.
+    settingsAtStart = found;
     ownsFolder = true;
     return settingsAtStart;
   }));
-  await rows('ja', value('--shot'));
+  const shot = value('--shot')?.replace(/\.png$/u, '');
+  await rows('ja', shot && `${shot}.png`);
   required(record, 'to-en', await step('to-en', async () => { cdp = await switchLanguage(cdp, 'en'); return cdp.evaluate('window.moment.locale()'); }));
-  const shot = value('--shot');
-  await rows('en', shot && `${shot.replace(/\.png$/u, '')}-en.png`);
+  await rows('en', shot && `${shot}-en.png`);
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`unexpected: ${error}`);
 } finally {
@@ -148,7 +151,7 @@ try {
   if (cdp.closed) cdp = await connect({ language: null }).catch(() => cdp);
   if (cdp.closed) record.failures.push('the window could not be reached to put its settings and language back: check them by hand');
   else {
-    await detachMaps().catch(() => null);
+    if (ownsFolder) await detachMaps().catch(() => null);
     if (settingsAtStart) {
       const restored = await step('restore-settings', () => saveSettings(settingsAtStart));
       // Key by key: the reload of a language switch may normalize the object into another key order.
