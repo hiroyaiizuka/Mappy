@@ -58,7 +58,7 @@ const KEYS = {
  * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
  * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
  *
- * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63 and E69, which switch it (language.mjs), pass the
+ * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, E69 and E71, which switch it (language.mjs), pass the
  * one they switched to, and `null` to take the window in whatever language it is (to put it back).
  */
 export async function connect({ popout, language: expected = LANGUAGE } = {}) {
@@ -106,7 +106,7 @@ export async function connect({ popout, language: expected = LANGUAGE } = {}) {
     if (vault !== VAULT || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
-    // `language`: the cases that switch the app's language (E63, E69) connect in the language they switched to.
+    // `language`: the cases that switch the app's language (E63, E69, E71) connect in the language they switched to.
     const [loaded, stored, ready] = popout === undefined && expected !== null ? await evaluate(APP_LANGUAGE) : [expected, null, true];
     // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
     if (expected !== null && !ready) {

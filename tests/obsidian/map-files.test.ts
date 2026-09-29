@@ -177,17 +177,17 @@ describe('createMindmapFile', () => {
     expect(getNewFileParent).toHaveBeenCalledWith('Notes/Current.md', '無題のマインドマップ.md');
     expect(create).toHaveBeenCalledWith(
       'Maps/無題のマインドマップ 2.md',
-      '---\nmappy: true\n---\n\n## 無題のマインドマップ 2\n',
+      '---\nmappy: true\n---\n\n## 中心トピック\n',
     );
   });
 
-  // The name is written into the note as its title: it follows the app's language, as the UI does (LEV-226).
-  it('names a new map in English when the app is not in Japanese, and the folder refusal names the setting as the tab does', async () => {
+  // The file name and the root written into the note (LEV-255) follow the app's language, as the UI does (LEV-226).
+  it('names a new map and its central topic in English when the app is not in Japanese, and the folder refusal names the setting as the tab does', async () => {
     setLanguage('en');
     try {
       const { app, create } = vault({ newFileParent: 'Maps', files: ['Maps/Untitled mind map.md'] });
       await createMindmapFile(app, 'Notes/Current.md');
-      expect(create).toHaveBeenCalledWith('Maps/Untitled mind map 2.md', '---\nmappy: true\n---\n\n## Untitled mind map 2\n');
+      expect(create).toHaveBeenCalledWith('Maps/Untitled mind map 2.md', '---\nmappy: true\n---\n\n## Central topic\n');
       const blocked = vault({ files: ['Maps'] });
       await expect(resolveNewMapFolder(blocked.app, 'Maps', '', 'x.md')).rejects.toThrow('"Maps" is not a folder. Check "Folder for new maps" in the settings.');
     } finally { setLanguage('ja'); }
@@ -197,7 +197,7 @@ describe('createMindmapFile', () => {
     const { app, create, getNewFileParent } = vault({ newFileParent: 'Inbox' });
     await createMindmapFile(app, 'Notes/Current.md', { layout: 'mindmap', folder: '' });
     expect(getNewFileParent).toHaveBeenCalledWith('Notes/Current.md', '無題のマインドマップ.md');
-    expect(create).toHaveBeenCalledWith('Inbox/無題のマインドマップ.md', '---\nmappy: true\n---\n\n## 無題のマインドマップ\n');
+    expect(create).toHaveBeenCalledWith('Inbox/無題のマインドマップ.md', '---\nmappy: true\n---\n\n## 中心トピック\n');
   });
 
   it('writes the default layout into the new note only, and puts it in the configured folder', async () => {
@@ -208,13 +208,13 @@ describe('createMindmapFile', () => {
     expect(createFolder).not.toHaveBeenCalled();
     expect(getNewFileParent).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith('Maps/無題のマインドマップ 2.md', '---\nmappy: true\nmappy-layout: hierarchy\n---\n\n## 無題のマインドマップ 2\n');
+    expect(create).toHaveBeenCalledWith('Maps/無題のマインドマップ 2.md', '---\nmappy: true\nmappy-layout: hierarchy\n---\n\n## 中心トピック\n');
   });
 
   it('creates at the vault root without a leading slash', async () => {
     const { app, create } = vault();
     await createMindmapFile(app, '', { layout: 'timeline', folder: '/' });
-    expect(create).toHaveBeenCalledWith('無題のマインドマップ.md', '---\nmappy: true\nmappy-layout: timeline\n---\n\n## 無題のマインドマップ\n');
+    expect(create).toHaveBeenCalledWith('無題のマインドマップ.md', '---\nmappy: true\nmappy-layout: timeline\n---\n\n## 中心トピック\n');
   });
 
   it('does not create the note when the folder cannot be resolved', async () => {

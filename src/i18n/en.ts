@@ -62,8 +62,10 @@ export const en = {
   cmdConvertNote: "Turn this note into a mind map",
   convertFirst: (command: string) => `Run "${command}" first.`,
 
-  // New maps (src/obsidian/map-files.ts). `untitled` is written into the note as its title.
+  // New maps (src/obsidian/map-files.ts). `untitled` names the file; `centralTopicTitle` is written into the note as its
+  // root (LEV-255), under which main topics and then subtopics grow.
   untitled: "Untitled mind map",
+  centralTopicTitle: "Central topic",
   folderDotName: (path: string, setting: string) => `The folder "${path}" can't have a name starting with a dot. Check "${setting}" in the settings.`,
   folderIsFile: (path: string, setting: string) => `"${path}" is not a folder. Check "${setting}" in the settings.`,
   folderNotCreated: (path: string, setting: string) => `Couldn't create the folder "${path}". Check "${setting}" in the settings.`,

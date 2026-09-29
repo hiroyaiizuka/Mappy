@@ -1,6 +1,6 @@
 /**
  * Switching the test Obsidian's language, for the cases that run in more than one (E63 english-ui.mjs, E69
- * main-topic.mjs). Every other case refuses a window in a language other than `MAPPY_E2E_LANGUAGE` (cdp.mjs `connect`).
+ * main-topic.mjs, E71 central-topic.mjs). Every other case refuses a window in a language other than `MAPPY_E2E_LANGUAGE` (cdp.mjs `connect`).
  */
 import { connect, wait } from './cdp.mjs';
 

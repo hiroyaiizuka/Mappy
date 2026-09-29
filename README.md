@@ -70,7 +70,7 @@ Use the command palette, the ribbon icon on the left, or a file's context menu. 
 
 | Command | What it does |
 | --- | --- |
-| Create new mind map | Creates a note with `mappy: true` and an H2 root in the folder from the settings, and opens it |
+| Create new mind map | Creates a note with `mappy: true` and an H2 root in the folder from the settings, and opens it. The file is named "Untitled mind map" and the root "Central topic" (written into the note as `## Central topic`). Tab there adds a "Main topic", and Tab on that a "Subtopic" |
 | Turn this note into a mind map | Writes `mappy: true` into the open note's frontmatter and opens it as a map (also in the file's context menu) |
 | Open mind map | Opens a `mappy: true` note as a map (same as the ribbon icon) |
 | Open mind map beside Markdown | Map on the left, standard editor on the right |
@@ -178,7 +178,7 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 | Windows and Linux desktop | Not checked |
 | iOS and Android | Not available for now. Mappy is marked desktop only (`isDesktopOnly` in `manifest.json`), so Obsidian doesn't offer or load it on mobile. It doesn't use desktop-only features; it will be opened to mobile once it has been tried there. Version 0.4.0 and earlier could be installed on mobile. If you use one there through BRAT, BRAT on mobile doesn't install 0.4.1 or later (it says the plugin will not be installed and the update failed) unless its setting to allow incompatible plugins is on, in which case it asks before installing it anyway. But if your vault's `.obsidian` folder is synced between devices (Obsidian Sync with plugin sync on, iCloud and so on), the version your desktop installs reaches the phone as well, and from 0.4.1 Obsidian on mobile stops loading Mappy. In every case map notes stay plain Markdown and nothing in them changes |
 | Obsidian 1.8.7 to 1.13 | Can be installed on 1.8.7 and later, but not checked in this range |
-| Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices, and the provisional names Mappy writes into notes: `Main topic` / `メイントピック`, `Subtopic` / `サブトピック`, `Topic` / `トピック`, and the new map's `Untitled mind map` / `無題のマインドマップ`). English was checked on macOS only for command names, buttons, the gear popover, context menus, the tab title, the settings tab, `Subtopic`, `Main topic` and one refusal message; not every notice |
+| Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices, and the provisional names Mappy writes into notes: `Main topic` / `メイントピック`, `Subtopic` / `サブトピック`, `Topic` / `トピック`, and the new map's root `Central topic` / `中心トピック`; the new map's file name `Untitled mind map` / `無題のマインドマップ` follows it too). English was checked on macOS only for command names, buttons, the gear popover, context menus, the tab title, the settings tab, `Subtopic`, `Main topic`, `Central topic` and one refusal message; not every notice |
 
 ## Known limitations
 

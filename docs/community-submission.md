@@ -100,7 +100,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 ### 2.1 前提（実測、2026-09-27、`0e8c4d1`）
 
 - UI 文言: `src/` の 24 ファイルに日本語の文字列リテラル約 200 個。多いのは `ui/mindmap-view.ts`（54）、`main.ts`（36）、`core/commands.ts`（18）、`obsidian/settings-tab.ts`・`obsidian/excalidraw-bridge.ts`（14 ずつ）。core・export の例外文（約 40）も `Notice` を通って利用者に見える
-- **Markdown に書き込まれる既定の文字列**が 3 つある: 新しいノードの `サブトピック`、新しいトピックの `トピック`、新規ファイルの `無題のマインドマップ`。これは UI ではなく本文になる
+- **Markdown に書き込まれる既定の文字列**（今の一覧は `docs/architecture.md` §9e）: 新しいノードの `サブトピック`、ルートの直下に足すノードの `メイントピック`（LEV-250）、新しいトピックの `トピック`、新しいマップのルートの見出しの `中心トピック`（LEV-255）の 4 つ。これは UI ではなく本文になる。新規ファイルの `無題のマインドマップ` はファイル名にだけ使う（2026-09-27 の調査時点では、この 3 つ目として本文の見出しにも書いていた）
 - 保存値は言語に依存しない: 設定は `follow`・`light`・`dark`、レイアウトは `mindmap` などの id を保存し、日本語はラベルにしか使っていない（`THEME_LABELS`・`LAYOUT_LABELS`。LEV-233・LEV-234 以降は `layoutLabel()`・`themeLabel()`）。言語を切り替えても既存の設定とノートは読める
 - バンドル: 本番の `main.js` は 239,762 B。esbuild の既定（`charset: ascii`）で非 ASCII の文字はすべて `\uXXXX`（1 字 6 B）に書かれる。その数は 3,454、うち CJK と仮名（U+3000〜U+9FFF）が 3,430 で約 20.6 KB（バンドルの約 8.6%）。全角の括弧・斜線（U+FF08 など）を足すと 3,444
 - Obsidian API 1.8.7（`minAppVersion` と同じ）に `getLanguage()`（アプリの言語の ISO コード、既定 `en`）がある。公式 lint には `prefer-get-language`（`localStorage.getItem('language')` を使わせない）（recommended に入っている）と、英語のロケールファイル（`**/en.ts`・`**/en/*.ts` など）の文字列に sentence case を強いる `ui/sentence-case-locale-module` がある。**後者は `configs.recommendedWithLocalesEn` にだけ入っていて、Mappy の `eslint.config.mjs` が使う `configs.recommended` には入っていない**。(b) で英語の表を検査させるには、設定を `recommendedWithLocalesEn` に切り替えるか、`src/i18n/en.ts` に当たる block を足す（2026-09-27 の時点の記述。LEV-233 で block を足した。§1 の #14）
