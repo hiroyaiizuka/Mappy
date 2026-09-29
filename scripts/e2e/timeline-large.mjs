@@ -29,8 +29,8 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, PARSE, makePluginStep, makeSelect, makeAfter, makeState, refuseOpenLeaves } from './dom-helpers.mjs';
+import { makeFrameRecorder, summarizeFrames } from './frame-recorder.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
-import { summarize } from '../perf-stats.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -62,6 +62,7 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const after = makeAfter(evaluate);
 const state = makeState(evaluate);
+const frameRecorder = makeFrameRecorder(evaluate);
 
 /**
  * Script string, after VIEW and PARSE: the geometry of the map on screen in layout px (screen px over the zoom).
@@ -231,31 +232,12 @@ function judge(what, state, { closed = 0 } = {}) {
 
 /** Frame intervals as the other performance records summarise them (nearest rank), with the counts over one and two frames. */
 function frameStats({ frames, longTasks }) {
-  // A frame the renderer catches up on hands the same timestamp to the callback queued in it: not a frame of its own.
-  const intervals = frames.slice(1).map((time, index) => time - (frames[index] ?? time)).filter(interval => interval > 0);
-  const { n, p50, p95, max } = summarize(intervals);
-  const round = number => (Number.isFinite(number) ? Math.round(number * 10) / 10 : null);
-  return { frames: n, p50: round(p50), p95: round(p95), max: round(max), over17: intervals.filter(v => v > 17.2).length, over33: intervals.filter(v => v > 33.4).length, longTasks };
+  return { ...summarizeFrames(frames, [17.2, 33.4]), longTasks };
 }
 
-/** Frame timestamps while `drive` runs. */
+/** Frame timestamps and long tasks while `drive` runs (frame-recorder.mjs, shared with E75). */
 async function recordFrames(drive) {
-  // Long tasks tell script from drawing: a slow frame with none is the renderer's (paint, raster, compositing), not the map's code.
-  await evaluate(`window.__mappyE2EFrames = []; window.__mappyE2EFramesOn = true; window.__mappyE2ELong = [];
-    window.__mappyE2ELongObserver = new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__mappyE2ELong.push(entry.duration); });
-    window.__mappyE2ELongObserver.observe({ type: 'longtask' });
-    const loop = time => { if (!window.__mappyE2EFramesOn) return; window.__mappyE2EFrames.push(time); requestAnimationFrame(loop); };
-    requestAnimationFrame(loop); return true;`);
-  let frames;
-  try {
-    await drive();
-    await wait(200);
-  } finally {
-    frames = await evaluate(`window.__mappyE2EFramesOn = false; window.__mappyE2ELongObserver.disconnect();
-      const result = { frames: window.__mappyE2EFrames, longTasks: window.__mappyE2ELong.length };
-      delete window.__mappyE2EFrames; delete window.__mappyE2ELong; delete window.__mappyE2ELongObserver; return result;`);
-  }
-  return frameStats(frames);
+  return frameStats(await frameRecorder(drive));
 }
 
 /**

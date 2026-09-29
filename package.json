@@ -64,6 +64,7 @@
     "harness:e2e:visible-layouts": "node scripts/e2e/visible-layouts.mjs",
     "harness:e2e:view-padding": "node scripts/e2e/view-padding.mjs",
     "harness:e2e:reread-conflict-line": "node scripts/e2e/reread-conflict-line.mjs",
+    "harness:e2e:panzoom-frames": "node scripts/e2e/panzoom-frames.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",

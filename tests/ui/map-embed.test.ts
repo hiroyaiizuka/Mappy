@@ -409,7 +409,8 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     nodeByTitle(section, '回復する').querySelector<HTMLElement>('.mappy-node-toggle')?.click();
     await wait();
     const world = section.querySelector<HTMLElement>('.mappy-world');
-    const match = (world?.style.transform ?? '').match(/translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)/u);
+    // Anchored: the whole transform is 2D, nothing (translateZ, …) after it that would give the world a layer (LEV-213).
+    const match = (world?.style.transform ?? '').match(/^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)$/u);
     expect(match).not.toBeNull();
     expect(Number(match?.[3])).toBeLessThanOrEqual(1);
     expect(Number(match?.[3])).toBeGreaterThan(0);

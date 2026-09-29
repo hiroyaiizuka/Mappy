@@ -45,6 +45,7 @@ export const CASES = [
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },
   { name: 'timeline-gap-range', file: 'timeline-gap-range.mjs', description: 'E61 タイムラインの同じ側の間隔を次のステージの高さの範囲で測る', shot: true },
   { name: 'timeline-large', file: 'timeline-large.mjs', description: 'E45 長文・画像・深い枝が混在する大規模タイムライン', shot: true },
+  { name: 'panzoom-frames', file: 'panzoom-frames.mjs', description: 'E75 2,000 ノードのパン・ズームのフレーム間隔（タイムライン・通常マップ × 全体表示・100% × pan・zoom）', shot: false },
   { name: 'theme', file: 'theme.mjs', description: 'E48 明色・暗色テーマ × テーマ設定（従う／明色／暗色）のコントラストと色', shot: true },
   { name: 'drag-viewport', file: 'drag-viewport.mjs', description: 'E49 フリーツリーのドラッグ中のホイール・ズーム／全体表示と保存位置', shot: false },
   { name: 'popout', file: 'popout.mjs', description: 'E50 別ウィンドウでの描画・キー操作・移動・閉じたあとの残留', shot: true },
