@@ -1363,8 +1363,8 @@ export class MindmapView extends FileView {
     // An item that still calls a map whose read fails for now (the note unreadable, not a map by its text, renamed
     // before the link to it is) keeps the folds of the branches it drew, as an embed keeps the reader's: the reader
     // gives the note back with the same ids once it reads again (LEV-246).
-    const waiting = new Set(document.nodes.filter(node => !this.targets.has(node.id) && embedOnlyTitle(node.title) !== null).map(node => node.id));
-    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller); };
+    const waiting = this.reader.waiting;
+    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller) && !this.targets.has(caller); };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;

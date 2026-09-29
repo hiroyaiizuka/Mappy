@@ -198,6 +198,16 @@ describe('the calling map\'s folds through a rename, a move or a failed read of 
     expect(seen(host, label, index)).toEqual(opened);
   });
 
+  it('two call items swapped on the Markdown side keep their own ids and folds: a swap is no rename (code review 2)', async () => {
+    // Not the bug: it pins what the rule for a rename's link update must not do, give the swapped items each other's ids.
+    const host = await open();
+    const opened = await unfold(host, '親', 0);
+    const topic = await unfold(host, '枝', 0);
+    await host.app.asApp<App>().vault.process(host.file, () => '---\nmappy: true\n---\n## 呼び出し元\n- ![[undo-ids#トピック]]\n- ![[undo-ids]]\n');
+    await settled(host, 2);
+    expect({ parent: seen(host, '親', 0), topic: seen(host, '枝', 0) }).toEqual({ parent: opened, topic });
+  });
+
   it.each(RENAMES)('$operation, $host: the $shape node the reader opened keeps its id and stays open', async ({ run, calls, label, index }) => {
     const host = await open(calls);
     const opened = await unfold(host, label, index);

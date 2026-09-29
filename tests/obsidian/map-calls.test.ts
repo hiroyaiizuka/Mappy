@@ -225,6 +225,34 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     stop();
   });
 
+  it('counts as waiting only the items that may call a map again, and keeps the last parses only while one waits (code review 2)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    app.put('pic.png', '');
+    app.put('Host.md', '---\nmappy: true\n---\n## ホスト\n');
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const host = (items: string[]): ReturnType<typeof parseMarkdown> => parseMarkdown(`---\nmappy: true\n---\n## ホスト\n${items.map(item => `- ${item}\n`).join('')}`, 'Host');
+    const calling = host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']);
+    await reader.read(calling, 'Host.md');
+    const lasts = (): string[] => Array.from((reader as unknown as { last: Map<{ path: string }, unknown> }).last.keys(), file => file.path);
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: ['Map.md'] });
+    // The call taken out, an image, a block reference and the host itself left: nothing waits, the last parse goes.
+    await reader.read(host(['![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: [] });
+    // A link that finds no note, and a Markdown note that is no map now: both wait.
+    await reader.read(calling, 'Host.md');
+    app.put('Map.md', TWINS.replace('mappy: true\n', ''));
+    const pending = host(['![[Map]]', '![[Missing]]']);
+    await reader.read(pending, 'Host.md');
+    expect({ waiting: Array.from(reader.waiting).sort(), lasts: lasts() }).toEqual({ waiting: pending.nodes.slice(1).map(node => node.id).sort(), lasts: ['Map.md'] });
+    // Deleted: its last parse goes at once, and that it was read stays for the host's next read.
+    app.remove('Map.md');
+    expect(lasts()).toEqual([]);
+    stop();
+  });
+
   it('keeps the last parse as the reference past a failed read, a text that is no map and a read that no longer calls the note; clear lets go of it', async () => {
     const app = new HarnessApp();
     app.put('Map.md', TWINS);
