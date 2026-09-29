@@ -72,8 +72,10 @@ describe('CallReader', () => {
 });
 
 describe('CallReader.listen (LEV-221)', () => {
+  /** The reader's records by the path of their note now (it keeps them by the note's `TFile`). */
   function writesOf(reader: CallReader): Map<string, { size: number }> {
-    return (reader as unknown as { writes: Map<string, { size: number }> }).writes;
+    const writes = (reader as unknown as { writes: Map<{ path: string } | string, { size: number }> }).writes;
+    return new Map(Array.from(writes, ([file, record]) => [typeof file === 'string' ? file : file.path, record]));
   }
 
   it('records the store\'s writes on a note read here only while listening, and forgets them with the note', async () => {
@@ -174,10 +176,11 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
   const hostOf = (link: string): ReturnType<typeof parseMarkdown> => parseMarkdown(`---\nmappy: true\n---\n## ホスト\n- ![[${link}]]\n`, 'Host');
   const ids = (targets: Awaited<ReturnType<CallReader['read']>>): string[] | undefined => Array.from(targets.values())[0]?.document.nodes.map(node => node.id);
   function writesOf(reader: CallReader): Map<string, unknown> {
-    return (reader as unknown as { writes: Map<string, unknown> }).writes;
+    const writes = (reader as unknown as { writes: Map<{ path: string } | string, unknown> }).writes;
+    return new Map(Array.from(writes, ([file, record]) => [typeof file === 'string' ? file : file.path, record]));
   }
 
-  it('follows the note renamed, and moved with a folder above it, with its parse and its record', async () => {
+  it('follows the note renamed and moved (the same `TFile`) with its parse and its record', async () => {
     const app = new HarnessApp();
     app.put('Fixtures/Map.md', TWINS);
     const store = new DocumentStore(app.asApp<App>());
@@ -188,17 +191,38 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     app.rename('Fixtures/Map.md', 'Fixtures/Renamed.md');
     expect({ reads: reader.reads('Fixtures/Renamed.md'), kept: writesOf(reader).has('Fixtures/Renamed.md') }).toEqual({ reads: true, kept: true });
     expect(ids(await reader.read(hostOf('Renamed'), 'Host.md'))).toEqual(first);
-    // The folder's own event, then the note's (already where the folder's took it): either one moves it, once.
-    app.vaultEvents.trigger('rename', { path: 'Moved' }, 'Fixtures');
     app.rename('Fixtures/Renamed.md', 'Moved/Renamed.md');
     expect(reader.reads('Moved/Renamed.md')).toBe(true);
-    expect(ids(await reader.read(hostOf('Renamed'), 'Host.md'))).toEqual(first);
+    const moved = await reader.read(hostOf('Renamed'), 'Host.md');
+    expect({ ids: ids(moved), path: Array.from(moved.values())[0]?.path }).toEqual({ ids: first, path: 'Moved/Renamed.md' });
+    // Deleted, and a note made again at the same path: another file, whose nodes are new (code review 1 of LEV-246).
+    app.remove('Moved/Renamed.md');
+    app.put('Moved/Renamed.md', TWINS);
+    const made = ids(await reader.read(hostOf('Renamed'), 'Host.md'));
+    expect(made?.some(id => first?.includes(id))).toBe(false);
     stop();
-    // A reader nobody listens with (one read each) follows nothing.
-    const once = new CallReader(app.asApp<App>(), store);
-    await once.read(hostOf('Renamed'), 'Host.md');
-    app.rename('Moved/Renamed.md', 'Moved/Again.md');
-    expect(once.reads('Moved/Again.md')).toBe(false);
+  });
+
+  it('a rename while the note is being read keeps its parse and its record, and the target names the new path (code review 1 of LEV-246)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const first = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    const read = store.read.bind(store);
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { answer = resolve; });
+    const spy = vi.spyOn(store, 'read').mockImplementation(async file => { await held; return read(file); });
+    const reading = reader.read(hostOf('Map'), 'Host.md');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    app.rename('Map.md', 'Renamed.md');
+    answer();
+    const targets = await reading;
+    spy.mockRestore();
+    expect({ ids: ids(targets), path: Array.from(targets.values())[0]?.path, reads: reader.reads('Renamed.md'), kept: writesOf(reader).has('Renamed.md') })
+      .toEqual({ ids: first, path: 'Renamed.md', reads: true, kept: true });
+    stop();
   });
 
   it('keeps the last parse as the reference past a failed read, a text that is no map and a read that no longer calls the note; clear lets go of it', async () => {

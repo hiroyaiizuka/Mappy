@@ -41,6 +41,8 @@ const SOURCE = [
 /** The calling note's items: the whole called map under one, its free topic under another (by default). */
 type Calls = readonly ((name: string) => string)[];
 const WHOLE_AND_TOPIC: Calls = [name => `![[${name}]]`, name => `![[${name}#トピック]]`];
+/** How many of the items call a map (an item that only mentions the note is a link). */
+const callCount = (calls: Calls): number => calls.filter(call => call('x').startsWith('![[')).length;
 const hostSource = (name: string, calls: Calls = WHOLE_AND_TOPIC): string =>
   `---\nmappy: true\n---\n## 呼び出し元\n${calls.map(call => `- ${call(name)}\n`).join('')}`;
 
@@ -56,7 +58,7 @@ async function open(calls: Calls = WHOLE_AND_TOPIC): Promise<MountedMapView> {
   const app = new HarnessApp();
   app.put(PATH, SOURCE);
   const host = await mountMapView(HOST, hostSource('undo-ids', calls), 'mindmap', app);
-  await settled(host, calls.length);
+  await settled(host, callCount(calls));
   return host;
 }
 
@@ -114,7 +116,7 @@ const OPERATIONS: { operation: string; run: (host: MountedMapView, calls: Calls)
     run: async (host, calls) => {
       host.app.rename(PATH, 'Fixtures/改名後.md');
       await relink(host, '改名後', calls);
-      await settled(host, calls.length);
+      await settled(host, callCount(calls));
     },
   },
   {
@@ -124,7 +126,7 @@ const OPERATIONS: { operation: string; run: (host: MountedMapView, calls: Calls)
       host.app.rename(PATH, 'Fixtures/改名後.md');
       await settled(host, 0);
       await relink(host, '改名後', calls);
-      await settled(host, calls.length);
+      await settled(host, callCount(calls));
     },
   },
   {
@@ -180,6 +182,10 @@ const MATRIX = OPERATIONS.flatMap(({ operation, run }) => SHAPES.map(shape => ({
 const HOSTS = [
   { host: 'one item calling the whole map', calls: [(name: string) => `![[${name}]]`] as Calls },
   { host: 'two items calling the same whole map', calls: [(name: string) => `![[${name}]]`, (name: string) => `![[${name}]]`] as Calls },
+  {
+    host: 'two items calling the same whole map and one linking to it',
+    calls: [(name: string) => `![[${name}]]`, (name: string) => `![[${name}]]`, (name: string) => `参照 [[${name}]]`] as Calls,
+  },
 ] as const;
 const RENAMES = OPERATIONS.slice(0, 2).flatMap(({ operation, run }) => HOSTS.flatMap(({ host, calls }) =>
   SHAPES.filter(({ label }) => label !== '枝').map(shape => ({ operation, run, host, calls, ...shape }))));

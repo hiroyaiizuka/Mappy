@@ -285,14 +285,15 @@ describe("the calling map's folds through the writes of the called note's map ta
     // the called tab, each with two copies of the note, for as long as the calling map is open.
     const opened = await open();
     const { host, called, store } = opened;
-    const reader = (host.view as unknown as { reader: { writes: Map<string, { size: number }>; reads: (path: string) => boolean } }).reader;
-    expect(reader.writes.has(PATH)).toBe(true);
+    const reader = (host.view as unknown as { reader: { writes: Map<{ path: string }, unknown>; reads: (path: string) => boolean } }).reader;
+    const kept = (): boolean => Array.from(reader.writes.keys()).some(file => file.path === PATH);
+    expect(kept()).toBe(true);
     await host.app.asApp<App>().vault.process(host.file, () => '---\nmappy: true\n---\n## 呼び出し元\n- ただの項目\n');
     await vi.waitFor(() => { expect(nodeNamed(host.view.containerEl, 'ただの項目')).toBeTruthy(); }, { timeout: 2000, interval: 5 });
     await host.settle();
     const from = SOURCE.indexOf('子1');
     await store.applyLatest(called.file, () => [{ from, to: from + 2, text: '改名' }]);
-    expect({ kept: reader.writes.has(PATH), reads: reader.reads(PATH) }).toEqual({ kept: false, reads: false });
+    expect({ kept: kept(), reads: reader.reads(PATH) }).toEqual({ kept: false, reads: false });
   });
 
   it('the calling map listens to the store while it is open, and not after it closed', async () => {

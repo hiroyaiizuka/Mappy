@@ -17,8 +17,10 @@ import { resolveEmbedTarget } from './embed-target';
  * called map survive an edit of that note; a note whose text did not change keeps the
  * very same document, so the caller can tell an unchanged result by reference. A note
  * that cannot be read makes its items links. The previous parse outlives such a read, and
- * a read that no longer calls the note, as an embed's last map does (`MapEmbed`), and it
- * follows the note when it is renamed or moved: the ids come back with the note (LEV-246).
+ * a read that no longer finds the note while an item waits for a map, as an embed's last map
+ * does (`MapEmbed`). Everything is kept by the note's `TFile`, which Obsidian keeps through a
+ * rename and a move, so the ids come back with the note; a note deleted and made again is
+ * another file, and starts anew (LEV-246).
  *
  * A reader that `listen`s also records the store's writes on the notes it read (an edit, a layout button, ⌘Z／⌘⇧Z in a
  * map tab of the called note) and carries the ids over with their edits, as an embed does (`WriteRecord`, LEV-217):
@@ -26,18 +28,19 @@ import { resolveEmbedTarget } from './embed-target';
  * matched by titles alone. The reader has no lifecycle of its own: whoever calls `listen` ends it (`MindmapView`).
  */
 export class CallReader {
-  /** By path, the notes the last read parsed (`reads`). */
-  private readonly parsed = new Map<string, { source: string; document: MindDocument }>();
+  /** The notes the last read parsed (`reads`). */
+  private readonly parsed = new Set<TFile>();
   /**
-   * By path, the last parse of each note read here, the identity reference of its next parse: kept when a read fails,
-   * finds no map or no longer calls the note (it may come back), and let go of with the rest (`clear`).
+   * The last parse of each note read here, the identity reference of its next parse: kept when a read fails or finds
+   * no map, and past a read that did not reach the note while one of its items waited for a map (the note renamed
+   * before the link to it, no map by its saved header); let go of with the rest (`clear`).
    */
-  private readonly last = new Map<string, { source: string; document: MindDocument }>();
+  private readonly last = new Map<TFile, { source: string; document: MindDocument }>();
   /**
-   * By path, the store's writes on a note since it was last parsed here, while someone listens (`listen`): kept exactly
-   * as long as its parse, and let go with every other parse once the host calls nothing (`clear`).
+   * The store's writes on a note since it was last parsed here, while someone listens (`listen`): kept exactly as long
+   * as it is read, and let go with every other parse once the host calls nothing (`clear`).
    */
-  private readonly writes = new Map<string, WriteRecord>();
+  private readonly writes = new Map<TFile, WriteRecord>();
   /** The subscription writes are recorded for (`listen`); the view that holds the reader listens once for its life. */
   private listening: object | null = null;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
@@ -54,16 +57,13 @@ export class CallReader {
     const token = {};
     this.listening = token;
     const stop = this.store.onWrite((file, write) => {
-      if (this.listening === token) this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
+      if (this.listening === token) this.writes.get(file)?.record(write, this.last.get(file)?.source);
     });
-    // Kept by path: a note renamed or moved (or a folder above it) takes what is kept for it to its new path (LEV-246).
-    const rename = this.app.vault.on('rename', (file, oldPath) => { if (this.listening === token) this.move(oldPath, file.path); });
     let stopped = false;
     return () => {
       if (stopped) return;
       stopped = true;
       stop();
-      this.app.vault.offref(rename);
       if (this.listening !== token) return;
       this.listening = null;
       this.writes.clear();
@@ -105,89 +105,82 @@ export class CallReader {
 
   private async readNow(document: MindDocument, hostPath: string, current: () => boolean): Promise<CallTargets> {
     if (!current()) return new Map();
-    const wanted = new Map<string, { file: TFile; callers: { id: string; subpath: string }[] }>();
+    const wanted = new Map<TFile, { id: string; subpath: string }[]>();
+    // An item that calls no map now (its link unresolved, the note no map by the cache or by its text, unreadable).
+    let waiting = false;
     for (const node of document.nodes) {
       const linktext = embedOnlyTitle(node.title);
       if (!linktext) continue;
       const target = resolveEmbedTarget(this.app, linktext, hostPath);
+      if (!target) waiting = true;
       if (!target || target.file.path === hostPath) continue;
-      const entry = wanted.get(target.file.path) ?? { file: target.file, callers: [] };
-      entry.callers.push({ id: node.id, subpath: target.subpath });
-      wanted.set(target.file.path, entry);
+      wanted.set(target.file, [...wanted.get(target.file) ?? [], { id: node.id, subpath: target.subpath }]);
     }
     const targets = new Map<string, CallTarget>();
-    for (const [path, { file, callers }] of wanted) {
+    for (const [file, callers] of wanted) {
       const parsed = await this.parse(file);
-      if (!parsed) continue;
-      for (const caller of callers) targets.set(caller.id, { path, subpath: caller.subpath, document: parsed });
+      if (!parsed) { waiting = true; continue; }
+      // The path as it is now: a rename while the note was read moved the same file.
+      for (const caller of callers) targets.set(caller.id, { path: file.path, subpath: caller.subpath, document: parsed });
     }
-    if (current()) for (const path of Array.from(this.parsed.keys())) if (!wanted.has(path)) this.forget(path);
+    if (current()) {
+      for (const file of Array.from(this.parsed)) if (!wanted.has(file)) this.forget(file);
+      // A note not reached keeps its last parse only while an item waits for a map, and only while it is in the vault.
+      for (const file of Array.from(this.last.keys())) {
+        if (!wanted.has(file) && (!waiting || this.app.vault.getAbstractFileByPath(file.path) !== file)) this.last.delete(file);
+      }
+    }
     return targets;
   }
 
-  /** True when the last read parsed this note: a change of it can alter what the host shows. */
+  /** True when the last read parsed the note now at `path`: a change of it can alter what the host shows. */
   reads(path: string): boolean {
-    return this.parsed.has(path);
+    for (const file of this.parsed) if (file.path === path) return true;
+    return false;
   }
 
   private async parse(file: TFile): Promise<MindDocument | null> {
-    let writes = this.writes.get(file.path);
+    let writes = this.writes.get(file);
     // The writes recorded before the read begins, which it will find if nobody else takes them back (LEV-224).
     const mark = writes?.mark() ?? 0;
     let text: string;
     try {
       text = await this.store.read(file);
     } catch {
-      this.forget(file.path);
+      this.forget(file);
       return null;
     }
     if (readMapFromSource(text) === null) {
-      this.forget(file.path);
+      this.forget(file);
       return null;
     }
     // Made with the note's first parse, before the continuation of this read yields: a write the store queued after the
     // read is told only once this has run (`DocumentStore.enqueue`), so it finds the record.
     if (!writes && this.listening) {
       writes = new WriteRecord();
-      this.writes.set(file.path, writes);
+      this.writes.set(file, writes);
     }
-    const previous = this.last.get(file.path);
+    const previous = this.last.get(file);
+    this.parsed.add(file);
     if (previous && previous.source === text && previous.document.root.title === file.basename) {
       // Writes that came back to the text parsed (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
       writes?.spend(text, mark);
-      this.parsed.set(file.path, previous);
       return previous.document;
     }
     const parsed = writes
       ? writes.take(text, previous?.document, file.basename, mark)
       : parseMarkdown(text, file.basename, previous?.document);
-    const entry = { source: text, document: parsed };
-    this.parsed.set(file.path, entry);
-    this.last.set(file.path, entry);
+    this.last.set(file, { source: text, document: parsed });
     return parsed;
   }
 
   /**
-   * A note no longer read here: its parse for `reads`, and the writes that would have led on from it (nothing reads it to
-   * spend them). The last parse stays the reference for identity, should the note come back (LEV-246).
+   * A note no longer read here: that it was read, and the writes that would have led on from its parse (nothing reads it
+   * to spend them). The last parse stays the reference for identity, should the note come back (LEV-246).
    */
-  private forget(path: string): void {
-    this.parsed.delete(path);
-    this.writes.delete(path);
-  }
-
-  /** What is kept for the note at `from`, or for the notes under the folder at `from`, now at `to`. */
-  private move(from: string, to: string): void {
-    const moved = (path: string): string | null =>
-      path === from ? to : path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : null;
-    for (const kept of [this.parsed, this.last, this.writes] as Map<string, unknown>[]) {
-      for (const [path, value] of Array.from(kept)) {
-        const next = moved(path);
-        if (next === null) continue;
-        kept.delete(path);
-        kept.set(next, value);
-      }
-    }
+  private forget(file: TFile): void {
+    this.parsed.delete(file);
+    this.writes.delete(file);
   }
 }
 

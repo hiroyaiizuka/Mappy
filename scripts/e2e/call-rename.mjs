@@ -240,9 +240,15 @@ const OPERATIONS = [
 
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
-  // The link update of a rename, without the dialog that asks for it (the vault's setting, put back at the end).
-  const updateLinks = await evaluate(`const was = app.vault.getConfig('alwaysUpdateLinks'); app.vault.setConfig('alwaysUpdateLinks', true); return was ?? null;`);
-  record.alwaysUpdateLinks = updateLinks;
+  // The link update of a rename, without the dialog that asks for it, and links by the shortest path (the rows expect
+  // `![[name]]`): the vault's settings, each put back at the end as it was (a key the vault did not have is removed).
+  const settings = { alwaysUpdateLinks: true, newLinkFormat: 'shortest' };
+  const saved = await evaluate(`
+    const settings = ${JSON.stringify(settings)};
+    const was = {};
+    for (const [key, value] of Object.entries(settings)) { was[key] = key in app.vault.config ? { value: app.vault.config[key] } : null; app.vault.setConfig(key, value); }
+    return was;`);
+  record.settings = saved;
   try {
     for (const operation of OPERATIONS) {
       for (const shape of SHAPES) {
@@ -263,7 +269,13 @@ try {
       }
     }
   } finally {
-    await evaluate(`app.vault.setConfig('alwaysUpdateLinks', ${JSON.stringify(updateLinks)}); return true;`);
+    await evaluate(`
+      const was = ${JSON.stringify(saved)};
+      for (const [key, entry] of Object.entries(was)) {
+        if (entry) app.vault.setConfig(key, entry.value);
+        else { delete app.vault.config[key]; app.vault.requestSaveConfig(); }
+      }
+      return true;`);
   }
 
   check(rowsRun > 0, `no row ran${only ? ` (--only ${only} matches none of the rows)` : ''}`);

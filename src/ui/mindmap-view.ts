@@ -5,7 +5,7 @@ import { EXIT_SOURCE_LIMIT, textFingerprint, type ExitDraft } from "../core/exit
 import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
-import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
+import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
@@ -1364,7 +1364,7 @@ export class MindmapView extends FileView {
     // before the link to it is) keeps the folds of the branches it drew, as an embed keeps the reader's: the reader
     // gives the note back with the same ids once it reads again (LEV-246).
     const waiting = new Set(document.nodes.filter(node => !this.targets.has(node.id) && embedOnlyTitle(node.title) !== null).map(node => node.id));
-    const kept = (id: string): boolean => { const slash = id.indexOf("/"); return slash > 0 && waiting.has(id.slice(0, slash)); };
+    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller); };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
