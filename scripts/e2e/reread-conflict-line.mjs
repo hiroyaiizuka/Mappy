@@ -16,9 +16,10 @@
  * are Obsidian's and the plugin's own.
  *
  * Each row checks that the window was hit (the held read found the external text, the map showed it while the save
- * was under way, and the save was refused as a conflict — the line said CONFLICT right after), then the outcome: the
- * line says REFRESHED after the map's re-read, the draft is still open, and the next Enter applies the draft on top of
- * the external text and closes it. With the fix reverted the REFRESHED check fails in both rows.
+ * was under way, and the save was refused as a conflict), then the outcome: the line says REFRESHED right after the
+ * refusal (the map had caught up by then) and still after the map's re-read, the draft is still open, and the next
+ * Enter applies the draft on top of the external text and closes it. With the fix reverted both REFRESHED checks fail
+ * in both rows (the line says CONFLICT).
  *
  * Usage: npm run harness:e2e:reread-conflict-line -- [--reload] [--json <out.json>] [--keep] [--only <row>[,<row>…]]
  */
@@ -36,7 +37,6 @@ const SOURCE = [
   '- 記録する', '  - 毎日のログ', '',
 ].join('\n');
 const EXTERNAL = SOURCE.replace('- 記録する\n', '- 記録する（外部）\n');
-const CONFLICT = 'Markdown が変更されています。マップを更新してから再編集してください。';
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 /** ⌘ in `Input.dispatchKeyEvent`'s modifiers. */
 const META = 4;
@@ -183,7 +183,7 @@ const run = async row => {
   if (!await until(`return window.__mappyE2EConflict.refused !== null || window.__mappyE2EConflict.publishedWhileSaving === false;`)) {
     failures.push('the save was neither refused nor let through');
   }
-  // Right after the refusal, before the map's own re-read of it (45 ms).
+  // Right after the refusal, before the map's re-read of it (45 ms).
   const refused = await read();
   await wait(600);
   const after = await read();
@@ -192,7 +192,7 @@ const run = async row => {
   expect(probe.heldExternal, `the held read did not find the external text (${JSON.stringify(probe)})`);
   expect(probe.publishedWhileSaving === true, `the map did not show the external change while the save was under way (${JSON.stringify(probe)}): not the window`);
   expect(probe.refused === 'ConflictError', `the save was not refused as a conflict (${probe.refused})`);
-  expect(refused.line === CONFLICT, `right after the refusal the line said ${JSON.stringify(refused.line)}: not the window`);
+  expect(refused.line === REFRESHED, `right after the refusal the line says ${JSON.stringify(refused.line)}`);
   expect(after.shown === EXTERNAL && after.text === EXTERNAL, 'the map or the note is not the external text');
   expect(after.open && after.value === row.typed, `the draft did not stay open with its text (${JSON.stringify(after)})`);
   expect(after.line === REFRESHED, `after the map's re-read the line says ${JSON.stringify(after.line)}`);
@@ -229,7 +229,7 @@ try {
   record.rows = {
     total: results.length,
     failed: results.filter(({ result }) => !result || result.error || result.failures?.length).map(({ id }) => id),
-    windowHit: results.filter(({ result }) => result?.probe?.publishedWhileSaving === true && result.probe.refused === 'ConflictError' && result.refused === CONFLICT).length,
+    windowHit: results.filter(({ result }) => result?.probe?.publishedWhileSaving === true && result.probe.refused === 'ConflictError').length,
   };
   check(results.length > 0, 'no row ran');
 } catch (error) {

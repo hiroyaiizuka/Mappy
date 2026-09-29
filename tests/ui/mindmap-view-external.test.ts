@@ -163,10 +163,10 @@ function holdReads(app: HarnessApp): { held: () => boolean; release: () => void;
 }
 
 /** Until `condition` holds, in zero-delay timers, or a failure after `limit` ms. */
-async function until(condition: () => boolean, limit = 2000): Promise<void> {
+async function until(condition: () => boolean, limit = 2000, what = "the condition"): Promise<void> {
   const started = Date.now();
   while (!condition()) {
-    if (Date.now() - started > limit) throw new Error('The condition never held');
+    if (Date.now() - started > limit) throw new Error(`${what} never held`);
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 }
@@ -373,33 +373,54 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   });
 
   // Review 1 of LEV-252: a draft kept by an earlier conflict, whose re-read publishes the note while another write of the
-  // view's own is under way (an image pasted onto the node). The re-read skipped telling the draft, the write's refusal
-  // re-read found the text on screen, and the line stayed on CONFLICT though the map showed the note.
+  // view's own is under way (a body draft on another node, saved meanwhile). The re-read skipped telling the kept draft,
+  // the other write's refusal re-read found the text on screen, and the line stayed on CONFLICT though the map showed
+  // the note.
   it('tells a draft kept by a conflict of the change a re-read published while another write ran', async () => {
     const mounted = await mount(SOURCE);
-    const { app, canvas, source, key, error, draft, external, refreshed, view, editor } = mounted;
+    const { app, source, key, error, draft, external, refreshed, view, editor, element, node, settle } = mounted;
     const input = await draft('学ぶこと', '学ぶこと（編集）');
     external(EXTERNAL);
     key(input, 'Enter');
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(error()).toBe(CONFLICT);
     const reads = holdReads(app);
+    let modalInput: HTMLTextAreaElement | null = null;
     try {
-      // The refusal's re-read has read the note and is held; an image pasted onto the node starts a write meanwhile.
-      await until(reads.held);
+      // The refusal's re-read has read the note and is held; a body draft on another node is saved meanwhile.
+      await until(reads.held, 2000, 'the held read');
       expect(documentOf(view).source).toBe(SOURCE);
-      const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' });
-      const paste = new Event('paste', { bubbles: true, cancelable: true });
-      Object.defineProperty(paste, 'clipboardData', { value: { files: [image] } });
-      canvas.dispatchEvent(paste);
-      reads.release();
+      element(node('全体の流れ').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+      menuItem('本文・リンクを編集').click();
+      await settle();
+      modalInput = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
+      if (!modalInput) throw new Error('The body modal did not open');
+      modalInput.value = '別の本文';
+      // The held read answers once that write is under way, and the write goes on once the map shows the note.
+      type ApplyOver = (this: DocumentStore, ...args: Parameters<DocumentStore['applyOver']>) => ReturnType<DocumentStore['applyOver']>;
+      const apply = Object.getOwnPropertyDescriptor(DocumentStore.prototype, 'applyOver')?.value as ApplyOver;
+      const during = vi.spyOn(DocumentStore.prototype, 'applyOver').mockImplementation(async function (this: DocumentStore, ...args) {
+        reads.release();
+        await until(() => documentOf(view).source === EXTERNAL, 2000, 'the map showing the note');
+        return apply.apply(this, args);
+      });
+      try {
+        key(modalInput, 'Enter', { metaKey: true });
+        await until(() => during.mock.calls.length > 0, 2000, 'the body draft\'s write');
+        await new Promise(resolve => setTimeout(resolve, 0));
+      } finally { during.mockRestore(); }
     } finally { reads.restore(); }
-    await refreshed();
-    await refreshed();
-    expect(documentOf(view).source).toBe(source());
-    expect(source()).toContain('記録する（外部）');
+    // The body draft was refused on a map that had caught up: its line is the retry line too.
+    expect(document.querySelector('.modal .mappy-edit-error')?.textContent).toBe(REFRESHED);
+    expect(documentOf(view).source).toBe(EXTERNAL);
+    expect(source()).toBe(EXTERNAL);
     expect(editor()).toBe(input);
     expect(error()).toBe(REFRESHED);
+    await refreshed();
+    expect(error()).toBe(REFRESHED);
+    key(input, 'Enter');
+    await refreshed();
+    expect(source()).toBe(EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n'));
   });
 
   it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
