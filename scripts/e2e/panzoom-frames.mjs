@@ -1,38 +1,47 @@
 /**
  * E75 (docs/harness.md, LEV-213): wheel pan and ⌘-wheel zoom stay at the display's frame rate on a 2,000-node map, on
  * the real Obsidian. The note is E45's `makeMixedFixture(2000)` (long Japanese titles, 232 images, deep chains). Before
- * LEV-213 every wheel event there cost one 0.65–0.95 s frame, with no long task: the time was the renderer's, in the
- * main thread's layerization (`PaintArtifactCompositor::Update`) that `will-change: transform` on `.mappy-world` made it
- * run over every node on each change of the world's transform (artifacts/lev-213). Nothing on the map's side changes
- * per wheel but the world's `style`.
+ * LEV-213 every wheel event there cost one frame of p95 0.45–0.97 s (E45 and this case, 2026-09-29), with no long task:
+ * the time was the renderer's, in the main thread's layerization (`PaintArtifactCompositor::Update`) that
+ * `will-change: transform` on `.mappy-world` made it run over every node on each change of the world's transform
+ * (artifacts/lev-213). Nothing on the map's side changes per wheel but the world's `style`.
  *
  * For each layout (timeline, normal map) × zoom (fit, 100% on the root) × input (wheel pan, ⌘-wheel zoom), 40 wheel
  * events 16 ms apart; the frame intervals (requestAnimationFrame) and the long animation frames (LoAF, which include
  * style, layout, paint and layerization, unlike long tasks) over them are recorded. Judged:
- * - p95 of the frame intervals at most `--budget` ms (default 50: three frames at 60 Hz; before LEV-213 it was 650–950);
- * - the wheel really moved the world (more than one distinct transform over the run), so a quiet window cannot pass;
- * - the same window with no input runs at the display's rate (p95 under 25 ms), or the run is refused: a throttled or
- *   hidden window has no frame clock to judge by.
+ * - p95 of the frame intervals at most `--budget` ms (default 50: three frames at 60 Hz; before LEV-213 it was 450–967);
+ * - the wheel really reached the world: at least 90% of the wheel events rewrote its transform, so a window where the
+ *   input is swallowed (or clamped to no-ops) cannot pass on its quiet frames;
+ * - the same window with no input runs at the display's rate (p95 under 25 ms) before and after each cell, or the case
+ *   stops there without judging the rest (`stopped` in the record, exit code 1): a throttled or hidden window has no
+ *   frame clock to judge by, and a slow frame there says nothing about the map.
  * A Performance trace is not the measure here: recording one (even `devtools.timeline` alone) makes layerization
  * several times slower, so it inflates the frames it would time (artifacts/lev-213/record.md).
  *
- * Usage: npm run harness:e2e:panzoom-frames -- [--count 2000] [--budget 50] [--reload] [--json <out.json>] [--keep]
+ * Usage: npm run harness:e2e:panzoom-frames -- [--count 2000] [--budget 50] [--emulate <w>x<h>x<dpr>] [--reload] [--json <out.json>] [--keep]
+ *   --emulate  draws the window at that size and device pixel ratio (CDP Emulation.setDeviceMetricsOverride, cleared at
+ *              the end), e.g. 1728x1080x2 for a full-screen Retina window: without the world's layer every pan repaints
+ *              and rasters what is on screen, which grows with the pixels. An emulated size is not a real display.
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makePluginStep, refuseOpenLeaves, writeNote } from './dom-helpers.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
-import { summarize } from '../perf-stats.mjs';
+import { frameIntervals, summarize } from '../perf-stats.mjs';
 
 const { flag, value } = parseArgs();
 const COUNT = Number(value('--count') ?? 2000);
 if (!Number.isInteger(COUNT) || COUNT < 100) throw new Error(`--count needs a node count of 100 or more, not ${value('--count')}`);
 const BUDGET = Number(value('--budget') ?? 50);
 if (!Number.isFinite(BUDGET) || BUDGET <= 0) throw new Error(`--budget needs a positive number of ms, not ${value('--budget')}`);
+const EMULATE = value('--emulate')?.match(/^(\d+)x(\d+)x(\d+(?:\.\d+)?)$/u);
+if (value('--emulate') && !EMULATE) throw new Error(`--emulate needs <width>x<height>x<dpr>, not ${value('--emulate')}`);
 const NOTE = `Fixtures/E2E-panzoom-${COUNT}.md`;
 const [, SOURCE] = makeMixedFixture(COUNT);
 const LAYOUTS = ['timeline', 'mindmap'];
 const WHEELS = 40;
+/** Every image the fixture embeds that exists (both forms of sample-image.svg); the missing one is no <img> at all. */
+const IMAGES = (SOURCE.match(/!\[\[sample-image\.svg|\]\(sample-image\.svg\)/gu) ?? []).length;
 
 const record = createRecord(VAULT, NOTE);
 record.budget = BUDGET;
@@ -106,7 +115,8 @@ async function recordFrames(drive) {
     const state = window.__mappyE2EFrames = { frames: [], loaf: [], transforms: new Set(), on: true };
     state.long = new PerformanceObserver(list => { for (const entry of list.getEntries()) state.loaf.push({ duration: entry.duration, render: entry.renderStart ? entry.startTime + entry.duration - entry.renderStart : 0 }); });
     state.long.observe({ type: 'long-animation-frame' });
-    state.watch = new MutationObserver(() => state.transforms.add(world.style.transform));
+    state.writes = 0;
+    state.watch = new MutationObserver(records => { state.writes += records.length; state.transforms.add(world.style.transform); });
     state.watch.observe(world, { attributes: true, attributeFilter: ['style'] });
     const loop = time => { if (!state.on) return; state.frames.push(time); requestAnimationFrame(loop); };
     requestAnimationFrame(loop); return true;`);
@@ -118,16 +128,28 @@ async function recordFrames(drive) {
     // Stopped whatever happens: a recorder left running would share every later frame the case measures.
     raw = await evaluate(`const state = window.__mappyE2EFrames; if (!state) return null;
       state.on = false; state.long.disconnect(); state.watch.disconnect(); delete window.__mappyE2EFrames;
-      return { frames: state.frames, loaf: state.loaf, transforms: state.transforms.size };`);
+      return { frames: state.frames, loaf: state.loaf, transforms: state.transforms.size, writes: state.writes };`);
   }
-  // A frame the renderer catches up on hands the same timestamp to the callback queued in it: not a frame of its own.
-  const intervals = raw.frames.slice(1).map((time, index) => time - raw.frames[index]).filter(interval => interval > 0);
+  const intervals = frameIntervals(raw.frames);
   const { n, p50, p95, max } = summarize(intervals);
   return {
     frames: n, p50: round(p50), p95: round(p95), max: round(max), over100: intervals.filter(interval => interval > 100).length,
     loaf: raw.loaf.length, loafMax: round(Math.max(0, ...raw.loaf.map(entry => entry.duration))), loafRenderMax: round(Math.max(0, ...raw.loaf.map(entry => entry.render))),
-    transforms: raw.transforms,
+    transforms: raw.transforms, writes: raw.writes,
   };
+}
+
+/**
+ * The frame clock with no input. A throttled or hidden window (behind another, a locked screen) runs it slow or not at
+ * all: the case then stops without judging (`stopped`), since what it would record is the window's, not the map's.
+ */
+async function quiet(when) {
+  const idle = await recordFrames(() => wait(1000));
+  if (idle.p95 === null || idle.p95 >= 25) {
+    record.stopped = `${when}: with no input the frames run at p95 ${idle.p95} ms. The window is throttled or hidden; the rest was not judged`;
+    throw new StopCase(record.stopped);
+  }
+  return idle;
 }
 
 const drives = {
@@ -137,30 +159,43 @@ const drives = {
 
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
+  if (EMULATE) {
+    const [, width, height, dpr] = EMULATE.map(Number);
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: dpr, mobile: false });
+    record.emulated = { width, height, dpr };
+    await wait(800);
+  }
   required(record, 'note', await step('note', () => evaluate(`${refuseOpenLeaves([NOTE])}
     window.__mappyE2EBefore = new Set(app.vault.getFiles().map(file => file.path));
     ${writeNote(NOTE, SOURCE)}
     return { obsidian: require('electron').ipcRenderer.sendSync('version'), dpr: devicePixelRatio, window: [innerWidth, innerHeight] };`)));
   for (const layout of LAYOUTS) {
     const opened = required(record, `${layout} open`, await step(`${layout} open`, () => open(layout)));
-    check(opened.broken === 0, `${layout}: ${opened.broken} images are broken (is Fixtures/sample-image.svg in the vault?)`);
+    // Without Fixtures/sample-image.svg the embeds draw no <img> at all, and the case would time a light map without them.
+    check(opened.broken === 0 && opened.images === IMAGES, `${layout}: ${opened.images - opened.broken} of ${IMAGES} images loaded (${opened.broken} broken): is Fixtures/sample-image.svg in the vault?`);
     for (const zoom of ['fit', 'actual']) {
       const name = `${layout} ${zoom}`;
       await step(name, async () => {
         const label = await zoomTo(zoom);
         const at = (await where()).canvas;
-        const idle = await recordFrames(() => wait(1000));
-        if (idle.p95 === null || idle.p95 >= 25) throw new Error(`with no input the frames run at p95 ${idle.p95} ms: the window is throttled or hidden, nothing to judge by`);
+        const idle = await quiet(`${name}, before the wheel`);
         const result = { label, idle };
+        const verdicts = [];
         for (const [input, drive] of Object.entries(drives)) {
           const frames = await recordFrames(drive(at));
           result[input] = frames;
-          check(frames.transforms > 1, `${name} ${input}: the wheel did not move the world (${frames.transforms} distinct transforms)`);
-          check(frames.p95 !== null && frames.p95 <= BUDGET, `${name} ${input}: frame p95 ${frames.p95} ms over ${BUDGET} ms (max ${frames.max}, ${frames.over100} over 100 ms, longest animation frame ${frames.loafMax} ms of which rendering ${frames.loafRenderMax})`);
+          verdicts.push([frames.writes >= WHEELS * 0.9, `${name} ${input}: ${frames.writes} of ${WHEELS} wheel events moved the world`]);
+          verdicts.push([frames.p95 !== null && frames.p95 <= BUDGET, `${name} ${input}: frame p95 ${frames.p95} ms over ${BUDGET} ms (max ${frames.max}, ${frames.over100} over 100 ms, longest animation frame ${frames.loafMax} ms of which rendering ${frames.loafRenderMax})`]);
           await wait(500);
         }
+        // A window hidden mid-cell would pass its slow frames off as the map's: the clock is read again after the input,
+        // and the cell is judged only if it still runs.
+        result.idleAfter = await quiet(`${name}, after the wheel`);
+        for (const [condition, failure] of verdicts) check(condition, failure);
         return result;
       });
+      // `step` records what a cell throws; a stopped clock ends the case here instead of timing the next cell on it.
+      if (record.stopped) throw new StopCase(record.stopped);
     }
     await step(`${layout} close`, () => evaluate(`window.__mappyE2E?.detach(); delete window.__mappyE2E; return true;`));
   }
@@ -175,6 +210,7 @@ try {
     if (file && remove) await app.vault.delete(file, true);
     delete window.__mappyE2EBefore;
     return { removed: file && remove ? ${JSON.stringify(NOTE)} : null };`));
+  if (EMULATE) await cdp.send('Emulation.clearDeviceMetricsOverride');
   cdp.close();
 }
 

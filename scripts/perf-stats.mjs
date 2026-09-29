@@ -21,3 +21,11 @@ export function summarize(values) {
     mean: finite.reduce((sum, value) => sum + value, 0) / finite.length,
   };
 }
+
+/**
+ * Intervals between requestAnimationFrame timestamps. A frame the renderer catches up on hands the same timestamp to
+ * the callback queued in it: not a frame of its own, so zero intervals are dropped (E45 and E75 read frames the same way).
+ */
+export function frameIntervals(frames) {
+  return frames.slice(1).map((time, index) => time - frames[index]).filter(interval => interval > 0);
+}

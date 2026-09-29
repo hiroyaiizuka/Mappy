@@ -214,16 +214,18 @@ describe("map theme CSS (settings, M14)", () => {
 
 describe("the map's world (LEV-213)", () => {
   // What this pins is the declaration, not the frame time: E75 (real Obsidian) times it, and only there. With the world
-  // composited, every pan and zoom re-layerized all 2,000 nodes of E45's mixed map on the main thread, 0.5–0.95 s per
-  // wheel event; painted with its page, the same map pans at 60 fps.
+  // composited, every pan and zoom re-layerized all 2,000 nodes of E45's mixed map on the main thread, p95 0.45–0.97 s per
+  // wheel event; painted with its page, the same map pans in one ordinary frame. The transform the scripts write is
+  // pinned to 2D in tests/ui/map-viewport.test.ts and tests/ui/map-embed.test.ts.
   it("is not promoted to a layer of its own, by will-change or a 3D transform", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
     const bare = css.replace(/\/\*[\s\S]*?\*\//gu, "");
     const rules = [...bare.matchAll(/(?<selectors>[^{}]+)\{(?<body>[^}]*)\}/gu)]
-      .filter(rule => rule.groups.selectors.split(",").some(selector => /\.mappy-world\b/u.test(selector)));
+      // The world's own class only: `\b` would also take a `.mappy-world-…` class of something else (review 1).
+      .filter(rule => rule.groups.selectors.split(",").some(selector => /\.mappy-world(?![\w-])/u.test(selector)));
     expect(rules.length).toBeGreaterThan(0);
     for (const rule of rules) {
-      expect(rule.groups.body, rule.groups.selectors.trim()).not.toMatch(/(^|[;\s])(will-change|backface-visibility):/u);
+      expect(rule.groups.body, rule.groups.selectors.trim()).not.toMatch(/(^|[;\s])(will-change|backface-visibility)\s*:/u);
       expect(rule.groups.body, rule.groups.selectors.trim()).not.toMatch(/translateZ|translate3d|matrix3d/u);
     }
   });

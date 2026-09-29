@@ -110,3 +110,18 @@ describe('MapViewport reports a click on the empty canvas', () => {
     expect(clicked).toHaveBeenCalledOnce();
   });
 });
+
+describe('MapViewport moves the world with a 2D transform only (LEV-213)', () => {
+  // A 3D transform (translate3d, scale3d, translateZ…) promotes the world to a layer of its own, as `will-change` did:
+  // every pan and zoom then re-layerized all 2,000 nodes of E45's mixed map on the main thread, p95 0.45–0.97 s per wheel
+  // event (E75 times it on the real Obsidian; tests/tooling/ui-css.test.mjs pins the stylesheet's side).
+  it('after a wheel pan and a ⌘-wheel zoom', () => {
+    const { canvas, world } = fixture();
+    const twoD = /^translate\(-?[\d.e-]+px, -?[\d.e-]+px\) scale\([\d.e-]+\)$/u;
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaX: 24, deltaY: 12, bubbles: true, cancelable: true }));
+    expect(world.style.transform).toMatch(twoD);
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -8, metaKey: true, clientX: 50, clientY: 40, bubbles: true, cancelable: true }));
+    expect(world.style.transform).toMatch(twoD);
+    expect(world.style.transform).not.toMatch(/scale\(1\)$/u);
+  });
+});
