@@ -10,8 +10,8 @@
  * events 16 ms apart; the frame intervals (requestAnimationFrame) and the long animation frames (LoAF, which include
  * style, layout, paint and layerization, unlike long tasks) over them are recorded. Judged:
  * - p95 of the frame intervals at most `--budget` ms (default 50: three frames at 60 Hz; before LEV-213 it was 450–967);
- * - the wheel really reached the world: at least 90% of the wheel events rewrote its transform, so a window where the
- *   input is swallowed (or clamped to no-ops) cannot pass on its quiet frames;
+ * - the wheel really reached the world: at least 90% of the wheel events changed its transform (a write of the same
+ *   value is not counted), so a window where the input is swallowed or clamped to no-ops cannot pass on quiet frames;
  * - the same window with no input runs at the display's rate (p95 under 25 ms) before and after each cell, or the case
  *   stops there without judging the rest (`stopped` in the record, exit code 1): a throttled or hidden window has no
  *   frame clock to judge by, and a slow frame there says nothing about the map.
@@ -26,6 +26,7 @@
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makePluginStep, refuseOpenLeaves, writeNote } from './dom-helpers.mjs';
+import { makeFrameRecorder } from './frame-recorder.mjs';
 import { makeMixedFixture } from '../performance-fixtures.mjs';
 import { frameIntervals, summarize } from '../perf-stats.mjs';
 
@@ -49,6 +50,7 @@ const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
+const frameRecorder = makeFrameRecorder(evaluate, { watch: "window.__mappyE2E.view.contentEl.querySelector('.mappy-world')" });
 
 const wheel = (point, deltaX, deltaY, modifiers = 0) => cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX, deltaY, modifiers });
 const click = async point => {
@@ -108,34 +110,18 @@ async function zoomTo(which) {
   return label;
 }
 
-/** Frame intervals, long animation frames and the distinct world transforms while `drive` runs. */
+/**
+ * Frame intervals, long animation frames and the world's transform writes while `drive` runs (frame-recorder.mjs,
+ * shared with E45). `writes` counts only the writes that changed the transform.
+ */
 async function recordFrames(drive) {
-  await evaluate(`${VIEW}
-    const world = el.querySelector('.mappy-world');
-    const state = window.__mappyE2EFrames = { frames: [], loaf: [], transforms: new Set(), on: true };
-    state.long = new PerformanceObserver(list => { for (const entry of list.getEntries()) state.loaf.push({ duration: entry.duration, render: entry.renderStart ? entry.startTime + entry.duration - entry.renderStart : 0 }); });
-    state.long.observe({ type: 'long-animation-frame' });
-    state.writes = 0;
-    state.watch = new MutationObserver(records => { state.writes += records.length; state.transforms.add(world.style.transform); });
-    state.watch.observe(world, { attributes: true, attributeFilter: ['style'] });
-    const loop = time => { if (!state.on) return; state.frames.push(time); requestAnimationFrame(loop); };
-    requestAnimationFrame(loop); return true;`);
-  let raw;
-  try {
-    await drive();
-    await wait(300);
-  } finally {
-    // Stopped whatever happens: a recorder left running would share every later frame the case measures.
-    raw = await evaluate(`const state = window.__mappyE2EFrames; if (!state) return null;
-      state.on = false; state.long.disconnect(); state.watch.disconnect(); delete window.__mappyE2EFrames;
-      return { frames: state.frames, loaf: state.loaf, transforms: state.transforms.size, writes: state.writes };`);
-  }
+  const raw = await frameRecorder(drive);
   const intervals = frameIntervals(raw.frames);
   const { n, p50, p95, max } = summarize(intervals);
   return {
     frames: n, p50: round(p50), p95: round(p95), max: round(max), over100: intervals.filter(interval => interval > 100).length,
     loaf: raw.loaf.length, loafMax: round(Math.max(0, ...raw.loaf.map(entry => entry.duration))), loafRenderMax: round(Math.max(0, ...raw.loaf.map(entry => entry.render))),
-    transforms: raw.transforms, writes: raw.writes,
+    longTasks: raw.longTasks, transforms: raw.transforms, writes: raw.writes,
   };
 }
 
@@ -184,7 +170,7 @@ try {
         for (const [input, drive] of Object.entries(drives)) {
           const frames = await recordFrames(drive(at));
           result[input] = frames;
-          verdicts.push([frames.writes >= WHEELS * 0.9, `${name} ${input}: ${frames.writes} of ${WHEELS} wheel events moved the world`]);
+          verdicts.push([frames.writes >= WHEELS * 0.9, `${name} ${input}: ${frames.writes} of ${WHEELS} wheel events changed the world's transform`]);
           verdicts.push([frames.p95 !== null && frames.p95 <= BUDGET, `${name} ${input}: frame p95 ${frames.p95} ms over ${BUDGET} ms (max ${frames.max}, ${frames.over100} over 100 ms, longest animation frame ${frames.loafMax} ms of which rendering ${frames.loafRenderMax})`]);
           await wait(500);
         }
@@ -210,7 +196,8 @@ try {
     if (file && remove) await app.vault.delete(file, true);
     delete window.__mappyE2EBefore;
     return { removed: file && remove ? ${JSON.stringify(NOTE)} : null };`));
-  if (EMULATE) await cdp.send('Emulation.clearDeviceMetricsOverride');
+  // Guarded: a dropped socket here must not keep `finish` from writing the record.
+  if (EMULATE) await cdp.send('Emulation.clearDeviceMetricsOverride').catch(error => record.failures.push(`clearing the emulated metrics: ${error}`));
   cdp.close();
 }
 

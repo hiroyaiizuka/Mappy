@@ -206,7 +206,8 @@
 .mappy-view .mappy-empty-state[hidden] { display: none; }
 /* No `will-change: transform` on the world (LEV-213): a composited world made every pan and zoom re-layerize each of
    the 2,000 nodes of a large map on the main thread, p95 0.45–0.97 s per wheel event (E45 and E75, 2026-09-29).
-   Painted with its page, a moved world costs one ordinary frame. */
+   Painted with its page, a moved world costs one ordinary frame. This holds while nothing inside the world is a layer
+   of its own: a composited child (an iframe or video in a node) would lift the nodes drawn over it into layers again. */
 .mappy-view .mappy-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .mappy-view .mappy-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 .mappy-view .mappy-edges path { fill: none; stroke: var(--mappy-line); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
