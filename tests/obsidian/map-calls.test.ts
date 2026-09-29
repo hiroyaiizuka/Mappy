@@ -71,13 +71,13 @@ describe('CallReader', () => {
   });
 });
 
-describe('CallReader.listen (LEV-221)', () => {
-  /** The reader's records by the path of their note now (it keeps them by the note's `TFile`). */
-  function writesOf(reader: CallReader): Map<string, { size: number }> {
-    const writes = (reader as unknown as { writes: Map<{ path: string } | string, { size: number }> }).writes;
-    return new Map(Array.from(writes, ([file, record]) => [typeof file === 'string' ? file : file.path, record]));
-  }
+/** The reader's records by the path of their note now (it keeps them by the note's `TFile`, LEV-246). */
+function writesOf(reader: CallReader): Map<string, { size: number }> {
+  const writes = (reader as unknown as { writes: Map<{ path: string } | string, { size: number }> }).writes;
+  return new Map(Array.from(writes, ([file, record]) => [typeof file === 'string' ? file : file.path, record]));
+}
 
+describe('CallReader.listen (LEV-221)', () => {
   it('records the store\'s writes on a note read here only while listening, and forgets them with the note', async () => {
     const app = new HarnessApp();
     app.put('Host.md', HOST);
@@ -173,12 +173,10 @@ describe('CallReader.listen (LEV-221)', () => {
 
 describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', () => {
   const TWINS = '---\nmappy: true\n---\n## 講座\n- 同名\n  - A\n- 同名\n  - B\n- \n- \n';
-  const hostOf = (link: string): ReturnType<typeof parseMarkdown> => parseMarkdown(`---\nmappy: true\n---\n## ホスト\n- ![[${link}]]\n`, 'Host');
+  /** The host as its view parses it: from the document it showed, so the calling item keeps its id when its link changes. */
+  let shown: ReturnType<typeof parseMarkdown> | undefined;
+  const hostOf = (link: string): ReturnType<typeof parseMarkdown> => (shown = parseMarkdown(`---\nmappy: true\n---\n## ホスト\n- ![[${link}]]\n`, 'Host', shown));
   const ids = (targets: Awaited<ReturnType<CallReader['read']>>): string[] | undefined => Array.from(targets.values())[0]?.document.nodes.map(node => node.id);
-  function writesOf(reader: CallReader): Map<string, unknown> {
-    const writes = (reader as unknown as { writes: Map<{ path: string } | string, unknown> }).writes;
-    return new Map(Array.from(writes, ([file, record]) => [typeof file === 'string' ? file : file.path, record]));
-  }
 
   it('follows the note renamed and moved (the same `TFile`) with its parse and its record', async () => {
     const app = new HarnessApp();
@@ -233,7 +231,8 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     const store = new DocumentStore(app.asApp<App>());
     const reader = new CallReader(app.asApp<App>(), store);
     const stop = reader.listen();
-    const host = (items: string[]): ReturnType<typeof parseMarkdown> => parseMarkdown(`---\nmappy: true\n---\n## ホスト\n${items.map(item => `- ${item}\n`).join('')}`, 'Host');
+    let previous: ReturnType<typeof parseMarkdown> | undefined;
+    const host = (items: string[]): ReturnType<typeof parseMarkdown> => (previous = parseMarkdown(`---\nmappy: true\n---\n## ホスト\n${items.map(item => `- ${item}\n`).join('')}`, 'Host', previous));
     const calling = host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']);
     await reader.read(calling, 'Host.md');
     const lasts = (): string[] => Array.from((reader as unknown as { last: Map<{ path: string }, unknown> }).last.keys(), file => file.path);
@@ -242,7 +241,7 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     await reader.read(host(['![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
     expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: [] });
     // A link that finds no note, and a Markdown note that is no map now: both wait.
-    await reader.read(calling, 'Host.md');
+    await reader.read(host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
     app.put('Map.md', TWINS.replace('mappy: true\n', ''));
     const pending = host(['![[Map]]', '![[Missing]]']);
     await reader.read(pending, 'Host.md');
@@ -250,6 +249,13 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     // Deleted: its last parse goes at once, and that it was read stays for the host's next read.
     app.remove('Map.md');
     expect(lasts()).toEqual([]);
+    // Per note (code review 3): an item waiting for another note keeps nothing of a note its own item left.
+    app.put('A.md', TWINS);
+    app.put('B.md', TWINS);
+    await reader.read(host(['![[A]]', '![[Missing]]']), 'Host.md');
+    expect(lasts()).toEqual(['A.md']);
+    await reader.read(host(['![[B]]', '![[Missing]]']), 'Host.md');
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 1, lasts: ['B.md'] });
     stop();
   });
 

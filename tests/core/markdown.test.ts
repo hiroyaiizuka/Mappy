@@ -352,9 +352,9 @@ describe('source-preserving Markdown projection', () => {
     expect(edited.nodes[0]?.id).toBe(ids[0]);
     expect([edited.nodes[1]?.id, edited.nodes[3]?.id].some((id) => ids.includes(id ?? ''))).toBe(false);
     // The update rewrites every link to the note at once: in the header, in a body and as a Markdown link too (code review 1).
-    const everywhere = `---\nrelated: "[[地図]]"\n---\n${before}  本文の [[地図]] と [地図](地図.md)\n`;
+    const everywhere = `---\nrelated: "[[地図]]"\n---\n${before}  本文の [[地図]] と [地図](地図.md) と [題つき](地図.md "メモ")\n`;
     const everywhereFirst = parseMarkdown(everywhere, 'Note');
-    const everywhereRelinked = parseMarkdown(everywhere.replaceAll('[[地図', '[[新しい地図').replaceAll('(地図.md)', '(新しい地図.md)'), 'Note', everywhereFirst);
+    const everywhereRelinked = parseMarkdown(everywhere.replaceAll('[[地図', '[[新しい地図').replaceAll('(地図.md', '(新しい地図.md'), 'Note', everywhereFirst);
     expect(everywhereRelinked.nodes.map((node) => node.id)).toEqual(everywhereFirst.nodes.map((node) => node.id));
     // A name with parentheses: the Markdown link's destination holds them (code review 2).
     const parens = parseMarkdown(everywhere.replaceAll('[[地図', '[[地図 (2)').replaceAll('(地図.md)', '(地図%20(2).md)'), 'Note', everywhereFirst);

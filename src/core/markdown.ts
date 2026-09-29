@@ -208,15 +208,18 @@ function carriedIds(nodes: MindNode[], previous: MindDocument, edits: readonly T
   return carried;
 }
 
-/** A wikilink or embed (its target), or a Markdown link's destination (`<…>`, or with one level of parentheses). */
-const LINK = /\[\[([^\]\n]*)\]\]|\]\((<[^>\n]*>|(?:[^()\s]|\([^()\s]*\))*)\)/gu;
+/**
+ * A wikilink or embed (its target), or a Markdown link's destination (`<…>`, or with one level of parentheses) and its
+ * title, which a rename leaves as it is.
+ */
+const LINK = /\[\[([^\]\n]*)\]\]|\]\((<[^>\n]*>|(?:[^()\s]|\([^()\s]*\))*)((?:[ \t]+"[^"\n]*")?)\)/gu;
 
 /** `text` with the targets of its links left out, and those targets in order: what a rename's link update does not change, and what it does. */
 function linkTargets(text: string): { skeleton: string; targets: string[] } {
   const targets: string[] = [];
-  const skeleton = text.replace(LINK, (_match, wiki: string | undefined, destination: string | undefined) => {
+  const skeleton = text.replace(LINK, (_match, wiki: string | undefined, destination: string | undefined, title: string | undefined) => {
     targets.push(wiki ?? destination ?? '');
-    return wiki === undefined ? ']()' : '[[]]';
+    return wiki === undefined ? '](' + (title ?? '') + ')' : '[[]]';
   });
   return { skeleton, targets };
 }
@@ -234,10 +237,11 @@ function linksRewritten(nodes: readonly MindNode[], previous: MindDocument, sour
   if (!source.includes('[[') && !source.includes('](')) return false;
   const before = linkTargets(previous.source);
   const after = linkTargets(source);
-  if (before.skeleton !== after.skeleton || before.targets.length !== after.targets.length) return false;
+  // Equal skeletons hold the same number of links: each leaves one mark.
+  if (before.skeleton !== after.skeleton) return false;
   const renamed = new Map<string, string>();
   for (const [index, from] of before.targets.entries()) {
-    const to = after.targets[index] ?? '';
+    const to = after.targets[index]!;
     if (from === to) continue;
     if ((renamed.get(from) ?? to) !== to) return false;
     renamed.set(from, to);

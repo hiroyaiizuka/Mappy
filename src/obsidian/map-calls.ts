@@ -43,6 +43,8 @@ export class CallReader {
   private readonly writes = new Map<TFile, WriteRecord>();
   /** The items the last read found waiting for a map (`waiting`). */
   private waitingIds: ReadonlySet<string> = new Set();
+  /** The items that reached each note when it was last reached: its last parse is kept while one of them waits. */
+  private readonly callersOf = new Map<TFile, readonly string[]>();
   /** The subscription writes are recorded for (`listen`); the view that holds the reader listens once for its life. */
   private listening: object | null = null;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
@@ -67,6 +69,7 @@ export class CallReader {
       if (this.listening !== token || !(file instanceof TFile)) return;
       this.last.delete(file);
       this.writes.delete(file);
+      this.callersOf.delete(file);
     });
     let stopped = false;
     return () => {
@@ -97,6 +100,7 @@ export class CallReader {
       this.parsed.clear();
       this.last.clear();
       this.writes.clear();
+      this.callersOf.clear();
       this.waitingIds = new Set();
     });
     this.queue = result;
@@ -144,9 +148,16 @@ export class CallReader {
     if (current()) {
       this.waitingIds = waiting;
       for (const file of Array.from(this.parsed)) if (!wanted.has(file)) this.forget(file);
-      // A note not reached keeps its last parse only while an item waits for a map, and only while it is in the vault.
+      for (const [file, callers] of wanted) this.callersOf.set(file, callers.map(caller => caller.id));
+      // A note not reached keeps its last parse only while an item that reached it before now waits for a map (the
+      // note renamed before the link to it, no map for now), and only while it is in the vault (code review 3).
       for (const file of Array.from(this.last.keys())) {
-        if (!wanted.has(file) && (waiting.size === 0 || this.app.vault.getAbstractFileByPath(file.path) !== file)) this.last.delete(file);
+        if (wanted.has(file)) continue;
+        const pending = this.callersOf.get(file)?.some(id => waiting.has(id)) ?? false;
+        if (!pending || this.app.vault.getAbstractFileByPath(file.path) !== file) {
+          this.last.delete(file);
+          this.callersOf.delete(file);
+        }
       }
     }
     return targets;
