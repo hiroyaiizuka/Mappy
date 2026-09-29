@@ -112,8 +112,13 @@ export class MappySettingTab extends PluginSettingTab {
     if (accepted === null) return Promise.resolve();
     const saved = this.store.save(showDefaultLayout({ ...this.store.current(), [key]: accepted }));
     if (key !== 'defaultLayout' && key !== 'visibleLayouts') return saved;
-    // A row left behind by display() (the tab hidden meanwhile) is detached and left alone.
-    const sync = (): void => { for (const row of this.layoutRows) if (row.note.isConnected) this.syncLayoutRow(row); };
+    // A row no longer in the document (the tab hidden, a search result dropped without its cleanup) is let go, untouched.
+    const sync = (): void => {
+      for (const row of this.layoutRows) {
+        if (row.note.isConnected) this.syncLayoutRow(row);
+        else this.layoutRows.delete(row);
+      }
+    };
     return saved.then(sync, (error: unknown) => { sync(); throw error; });
   }
 

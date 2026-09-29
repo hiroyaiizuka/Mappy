@@ -66,15 +66,20 @@ const closeSettings = async () => {
   settingsCdp = null;
   return evaluate('app.setting.close(); await new Promise(resolve => setTimeout(resolve, 400)); return true;');
 };
+/** This run's own mark, so a settings window of another vault's Obsidian on the same port is never taken. */
+const MARK = `settings-${process.pid}-${Date.now()}`;
 async function openSettings() {
   if (settingsCdp && !settingsCdp.closed) return settingsCdp;
   await evaluate(`app.setting.open(); await new Promise(resolve => setTimeout(resolve, 600));
     app.setting.openTabById('mappy'); await new Promise(resolve => setTimeout(resolve, 600));
     if (app.setting.activeTab?.id !== 'mappy') throw new Error('the Mappy settings tab did not open');
-    app.setting.activeTab.containerEl.ownerDocument.body.dataset.mappyE2ePopout = 'settings';
+    const settingsDocument = app.setting.activeTab.containerEl.ownerDocument;
+    // Before 1.14 the settings are a modal in this window: the case is written for their own window, and says so.
+    if (settingsDocument === document) throw new Error('the settings opened in the main window: E72 needs Obsidian 1.14+, where they have a window of their own');
+    settingsDocument.body.dataset.mappyE2ePopout = ${JSON.stringify(MARK)};
     return true;`);
   for (let tries = 0; tries < 10 && !settingsCdp; tries += 1) {
-    settingsCdp = await connect({ popout: 'settings', appless: true }).catch(async error => { if (tries === 9) throw error; await wait(300); return null; });
+    settingsCdp = await connect({ popout: MARK, appless: true }).catch(async error => { if (tries === 9) throw error; await wait(300); return null; });
   }
   return settingsCdp;
 }

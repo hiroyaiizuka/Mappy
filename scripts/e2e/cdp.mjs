@@ -58,7 +58,7 @@ const KEYS = {
  * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
  * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
  * With `appless` as well, the popout has no `app` of its own to name its vault (Obsidian 1.14's settings window,
- * E72): the mark alone identifies it, which holds because only the main window, checked first, can set it.
+ * E72): the mark alone identifies it, so the case makes the mark its own run's (another vault's Obsidian may share the port).
  *
  * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, E69 and E71, which switch it (language.mjs), pass the
  * one they switched to, and `null` to take the window in whatever language it is (to put it back).
