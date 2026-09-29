@@ -57,11 +57,13 @@ const KEYS = {
  * `about:blank` page target of its own, with the same `app`, whose `document` is the popout's. The case marks
  * the popout's body with `data-mappy-e2e-popout="<popout>"` from the main window first, and only the window
  * carrying that mark is taken, so a second popout (or one another step left open) is never driven by mistake.
+ * With `appless` as well, the popout has no `app` of its own to name its vault (Obsidian 1.14's settings window,
+ * E72): the mark alone identifies it, which holds because only the main window, checked first, can set it.
  *
  * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, E69 and E71, which switch it (language.mjs), pass the
  * one they switched to, and `null` to take the window in whatever language it is (to put it back).
  */
-export async function connect({ popout, language: expected = LANGUAGE } = {}) {
+export async function connect({ popout, appless = false, language: expected = LANGUAGE } = {}) {
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
@@ -103,7 +105,7 @@ export async function connect({ popout, language: expected = LANGUAGE } = {}) {
     const vault = await connection.evaluate('app.vault.adapter.basePath').catch(() => null);
     const marked = popout === undefined
       || await connection.evaluate(`document.body?.dataset.mappyE2ePopout === ${JSON.stringify(String(popout))}`).catch(() => false);
-    if (vault !== VAULT || !marked) { connection.socket.close(); continue; }
+    if ((vault !== VAULT && !(appless && popout !== undefined)) || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
     // `language`: the cases that switch the app's language (E63, E69, E71) connect in the language they switched to.

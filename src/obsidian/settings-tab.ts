@@ -102,15 +102,19 @@ export class MappySettingTab extends PluginSettingTab {
 
   /**
    * A value the control cannot hold (or a key that is not a setting) is not saved. A hidden layout
-   * chosen as the default is shown in the same save, so the pair is never stored apart.
+   * chosen as the default is shown in the same save, so the pair is never stored apart. When the
+   * save settles either way, the layout rows are drawn again from what is stored: after a failure
+   * that is the value the store put back, whichever path (a toggle, the 1.13 binding) asked.
    */
   setControlValue(key: string, value: unknown): Promise<void> {
     if (!isSettingKey(key)) return Promise.resolve();
     const accepted = readSettingField(key, value);
     if (accepted === null) return Promise.resolve();
-    return this.store.save(showDefaultLayout({ ...this.store.current(), [key]: accepted })).then(() => {
-      for (const row of this.layoutRows) if (row.note.isConnected) this.syncLayoutRow(row);
-    });
+    const saved = this.store.save(showDefaultLayout({ ...this.store.current(), [key]: accepted }));
+    if (key !== 'defaultLayout' && key !== 'visibleLayouts') return saved;
+    // A row left behind by display() (the tab hidden meanwhile) is detached and left alone.
+    const sync = (): void => { for (const row of this.layoutRows) if (row.note.isConnected) this.syncLayoutRow(row); };
+    return saved.then(sync, (error: unknown) => { sync(); throw error; });
   }
 
   /** Obsidian before 1.13: the same four settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
@@ -160,7 +164,8 @@ export class MappySettingTab extends PluginSettingTab {
         // Already so: the toggle was put back after a failed save, synced to the store, or the store changed under it.
         if (on === current.includes(mode)) return;
         const others = current.filter(other => other !== mode);
-        this.commit('visibleLayouts', on ? [...others, mode] : others, () => { toggle.setValue(!on); });
+        // A failed save needs no revert here: setControlValue draws every row again from the store.
+        this.commit('visibleLayouts', on ? [...others, mode] : others);
       });
     }
     const row: LayoutRow = { toggles, note: setting.descEl.createDiv({ cls: 'mappy-setting-note' }) };

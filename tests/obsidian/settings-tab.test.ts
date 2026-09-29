@@ -358,6 +358,20 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(Notice.log).toHaveLength(1);
   });
 
+  it('draws the toggles from the store after a failed save that another save overtook', async () => {
+    const pending: { resolve: () => void; reject: (error: Error) => void }[] = [];
+    const { toggles, settings } = mount(DEFAULT_SETTINGS, () => new Promise<void>((resolve, reject) => { pending.push({ resolve, reject }); }));
+    click(toggles.balanced);
+    click(toggles.timeline);
+    // The second save (built on the first) lands; then the first fails. The store keeps the second, which holds the balanced map.
+    pending[1]?.resolve();
+    await flush();
+    pending[0]?.reject(new Error('data.json は書き込めません'));
+    await flush();
+    expect(settings().visibleLayouts).toEqual(['mindmap', 'hierarchy', 'balanced']);
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, false, true, true]);
+  });
+
   it('starts a row drawn before it is in the document with the stored values and locks', () => {
     const tab = new MappySettingTab({} as App, {} as Plugin, { current: () => ({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' }), save: vi.fn() });
     tab.display();

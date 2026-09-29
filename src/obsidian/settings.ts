@@ -27,7 +27,7 @@ export interface MappySettings {
   visibleLayouts: LayoutMode[];
 }
 
-/** The balanced map is off until chosen (LEV-257); a stored list, whatever it holds, is kept. */
+/** The balanced map is off until chosen (LEV-257). A stored list is kept as chosen, apart from the default layout `showDefaultLayout` adds. */
 export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '', visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] };
 
 export type SettingKey = keyof MappySettings;
