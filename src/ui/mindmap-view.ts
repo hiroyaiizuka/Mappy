@@ -1360,10 +1360,15 @@ export class MindmapView extends FileView {
     if (!sameTargets(this.targets, targets)) this.targets = targets;
     const trees = projectShown(document, this.targets);
     this.projected = { document, targets: this.targets, trees, positions: readTopicPositions(document.source), keys: topicKeys(document) };
-    const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id)));
+    // An item that still calls a map whose read fails for now (the note unreadable, not a map by its text, renamed
+    // before the link to it is) keeps the folds of the branches it drew, as an embed keeps the reader's: the reader
+    // gives the note back with the same ids once it reads again (LEV-246).
+    const waiting = new Set(document.nodes.filter(node => !this.targets.has(node.id) && embedOnlyTitle(node.title) !== null).map(node => node.id));
+    const kept = (id: string): boolean => { const slash = id.indexOf("/"); return slash > 0 && waiting.has(id.slice(0, slash)); };
+    const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
-    this.knownCalled = new Set(trees.calls.sources.keys());
+    this.knownCalled = new Set([...trees.calls.sources.keys(), ...Array.from(this.knownCalled).filter(kept)]);
   }
 
   /** The trees on the map as `adopt` made them: the body root (`root`) and the free topics with the calls grafted in, and the projection. */

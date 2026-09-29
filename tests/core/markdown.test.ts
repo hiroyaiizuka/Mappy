@@ -341,6 +341,21 @@ describe('source-preserving Markdown projection', () => {
     expect(renamed.nodes[0]?.id).toBe(moved.nodes[0]?.id);
   });
 
+  it('keeps every id through a rename\'s link update: titles rewritten inside their links and not a byte besides (LEV-246)', () => {
+    const before = '## 呼び出し元\n- ![[地図]]\n  - 子\n- ![[地図]]\n- 見て [[地図|別名]] ![[地図#節]]\n- \n- \n';
+    const first = parseMarkdown(before, 'Note');
+    const ids = first.nodes.map((node) => node.id);
+    const relinked = parseMarkdown(before.replaceAll('[[地図', '[[Folder/新しい地図'), 'Note', first);
+    expect(relinked.nodes.map((node) => node.id)).toEqual(ids);
+    // Anything else changed with it is no link update: the titles are matched as before, and the twins guessed at by nothing.
+    const edited = parseMarkdown(before.replaceAll('[[地図', '[[新').replace('  - 子\n', '  - 子を改名\n'), 'Note', first);
+    expect(edited.nodes[0]?.id).toBe(ids[0]);
+    expect([edited.nodes[1]?.id, edited.nodes[3]?.id].some((id) => ids.includes(id ?? ''))).toBe(false);
+    // Titles changed outside their links are no link update either, even with every other byte in place.
+    const retitled = parseMarkdown(before.replaceAll('![[地図]]', '![[地図]] 済'), 'Note', first);
+    expect([retitled.nodes[1]?.id, retitled.nodes[3]?.id].some((id) => ids.includes(id ?? ''))).toBe(false);
+  });
+
   it('keeps same-titled top-level sections whose text is unchanged, and guesses nothing from a title or a position alone', () => {
     const source = '# Same\nOne\n\n# Same\nTwo';
     const first = parseMarkdown(source, 'Note');

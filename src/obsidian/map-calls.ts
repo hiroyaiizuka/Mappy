@@ -16,7 +16,9 @@ import { resolveEmbedTarget } from './embed-target';
  * previous parse as the identity reference, so the ids and with them the folds of a
  * called map survive an edit of that note; a note whose text did not change keeps the
  * very same document, so the caller can tell an unchanged result by reference. A note
- * that cannot be read makes its items links.
+ * that cannot be read makes its items links. The previous parse outlives such a read, and
+ * a read that no longer calls the note, as an embed's last map does (`MapEmbed`), and it
+ * follows the note when it is renamed or moved: the ids come back with the note (LEV-246).
  *
  * A reader that `listen`s also records the store's writes on the notes it read (an edit, a layout button, ⌘Z／⌘⇧Z in a
  * map tab of the called note) and carries the ids over with their edits, as an embed does (`WriteRecord`, LEV-217):
@@ -24,7 +26,13 @@ import { resolveEmbedTarget } from './embed-target';
  * matched by titles alone. The reader has no lifecycle of its own: whoever calls `listen` ends it (`MindmapView`).
  */
 export class CallReader {
+  /** By path, the notes the last read parsed (`reads`). */
   private readonly parsed = new Map<string, { source: string; document: MindDocument }>();
+  /**
+   * By path, the last parse of each note read here, the identity reference of its next parse: kept when a read fails,
+   * finds no map or no longer calls the note (it may come back), and let go of with the rest (`clear`).
+   */
+  private readonly last = new Map<string, { source: string; document: MindDocument }>();
   /**
    * By path, the store's writes on a note since it was last parsed here, while someone listens (`listen`): kept exactly
    * as long as its parse, and let go with every other parse once the host calls nothing (`clear`).
@@ -48,11 +56,14 @@ export class CallReader {
     const stop = this.store.onWrite((file, write) => {
       if (this.listening === token) this.writes.get(file.path)?.record(write, this.parsed.get(file.path)?.source);
     });
+    // Kept by path: a note renamed or moved (or a folder above it) takes what is kept for it to its new path (LEV-246).
+    const rename = this.app.vault.on('rename', (file, oldPath) => { if (this.listening === token) this.move(oldPath, file.path); });
     let stopped = false;
     return () => {
       if (stopped) return;
       stopped = true;
       stop();
+      this.app.vault.offref(rename);
       if (this.listening !== token) return;
       this.listening = null;
       this.writes.clear();
@@ -61,7 +72,7 @@ export class CallReader {
 
   /** True while any note's parse or record is kept here, so `clear` has something to let go of. */
   get holding(): boolean {
-    return this.parsed.size > 0 || this.writes.size > 0;
+    return this.parsed.size > 0 || this.last.size > 0 || this.writes.size > 0;
   }
 
   /**
@@ -74,6 +85,7 @@ export class CallReader {
     const result = this.queue.then(() => {
       if (!current()) return;
       this.parsed.clear();
+      this.last.clear();
       this.writes.clear();
     });
     this.queue = result;
@@ -139,23 +151,43 @@ export class CallReader {
       writes = new WriteRecord();
       this.writes.set(file.path, writes);
     }
-    const previous = this.parsed.get(file.path);
+    const previous = this.last.get(file.path);
     if (previous && previous.source === text && previous.document.root.title === file.basename) {
       // Writes that came back to the text parsed (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
       writes?.spend(text, mark);
+      this.parsed.set(file.path, previous);
       return previous.document;
     }
     const parsed = writes
       ? writes.take(text, previous?.document, file.basename, mark)
       : parseMarkdown(text, file.basename, previous?.document);
-    this.parsed.set(file.path, { source: text, document: parsed });
+    const entry = { source: text, document: parsed };
+    this.parsed.set(file.path, entry);
+    this.last.set(file.path, entry);
     return parsed;
   }
 
-  /** A note no longer read here: its parse, and the writes that would have led on from it. */
+  /**
+   * A note no longer read here: its parse for `reads`, and the writes that would have led on from it (nothing reads it to
+   * spend them). The last parse stays the reference for identity, should the note come back (LEV-246).
+   */
   private forget(path: string): void {
     this.parsed.delete(path);
     this.writes.delete(path);
+  }
+
+  /** What is kept for the note at `from`, or for the notes under the folder at `from`, now at `to`. */
+  private move(from: string, to: string): void {
+    const moved = (path: string): string | null =>
+      path === from ? to : path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : null;
+    for (const kept of [this.parsed, this.last, this.writes] as Map<string, unknown>[]) {
+      for (const [path, value] of Array.from(kept)) {
+        const next = moved(path);
+        if (next === null) continue;
+        kept.delete(path);
+        kept.set(next, value);
+      }
+    }
   }
 }
 

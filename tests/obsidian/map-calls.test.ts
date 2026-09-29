@@ -169,6 +169,68 @@ describe('CallReader.listen (LEV-221)', () => {
   });
 });
 
+describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', () => {
+  const TWINS = '---\nmappy: true\n---\n## 講座\n- 同名\n  - A\n- 同名\n  - B\n- \n- \n';
+  const hostOf = (link: string): ReturnType<typeof parseMarkdown> => parseMarkdown(`---\nmappy: true\n---\n## ホスト\n- ![[${link}]]\n`, 'Host');
+  const ids = (targets: Awaited<ReturnType<CallReader['read']>>): string[] | undefined => Array.from(targets.values())[0]?.document.nodes.map(node => node.id);
+  function writesOf(reader: CallReader): Map<string, unknown> {
+    return (reader as unknown as { writes: Map<string, unknown> }).writes;
+  }
+
+  it('follows the note renamed, and moved with a folder above it, with its parse and its record', async () => {
+    const app = new HarnessApp();
+    app.put('Fixtures/Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const first = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    expect(first).toHaveLength(7);
+    app.rename('Fixtures/Map.md', 'Fixtures/Renamed.md');
+    expect({ reads: reader.reads('Fixtures/Renamed.md'), kept: writesOf(reader).has('Fixtures/Renamed.md') }).toEqual({ reads: true, kept: true });
+    expect(ids(await reader.read(hostOf('Renamed'), 'Host.md'))).toEqual(first);
+    // The folder's own event, then the note's (already where the folder's took it): either one moves it, once.
+    app.vaultEvents.trigger('rename', { path: 'Moved' }, 'Fixtures');
+    app.rename('Fixtures/Renamed.md', 'Moved/Renamed.md');
+    expect(reader.reads('Moved/Renamed.md')).toBe(true);
+    expect(ids(await reader.read(hostOf('Renamed'), 'Host.md'))).toEqual(first);
+    stop();
+    // A reader nobody listens with (one read each) follows nothing.
+    const once = new CallReader(app.asApp<App>(), store);
+    await once.read(hostOf('Renamed'), 'Host.md');
+    app.rename('Moved/Renamed.md', 'Moved/Again.md');
+    expect(once.reads('Moved/Again.md')).toBe(false);
+  });
+
+  it('keeps the last parse as the reference past a failed read, a text that is no map and a read that no longer calls the note; clear lets go of it', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const first = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    const read = app.vault.read;
+    app.vault.read = () => Promise.reject(new Error('busy'));
+    expect((await reader.read(hostOf('Map'), 'Host.md')).size).toBe(0);
+    expect(reader.reads('Map.md')).toBe(false);
+    app.vault.read = read;
+    expect(ids(await reader.read(hostOf('Map'), 'Host.md'))).toEqual(first);
+    app.put('Map.md', TWINS.replace('mappy: true', 'mappy: "true"'));
+    expect((await reader.read(hostOf('Map'), 'Host.md')).size).toBe(0);
+    app.put('Map.md', TWINS);
+    expect(ids(await reader.read(hostOf('Map'), 'Host.md'))).toEqual(first);
+    // The item points elsewhere for a read (the link not yet updated): the note is not read, and comes back as it was.
+    expect((await reader.read(hostOf('Missing'), 'Host.md')).size).toBe(0);
+    expect(reader.holding).toBe(true);
+    expect(ids(await reader.read(hostOf('Map'), 'Host.md'))).toEqual(first);
+    // The host calls nothing: every parse goes, the last ones too, and the note comes back as new.
+    await reader.clear();
+    expect(reader.holding).toBe(false);
+    const again = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    expect(again?.some(id => first?.includes(id))).toBe(false);
+    stop();
+  });
+});
+
 describe('sameTargets', () => {
   it('compares by item, document identity, path and heading', () => {
     const document = parseMarkdown(MAP, 'Map');

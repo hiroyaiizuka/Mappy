@@ -208,6 +208,34 @@ function carriedIds(nodes: MindNode[], previous: MindDocument, edits: readonly T
   return carried;
 }
 
+/** A title with the targets of its wikilinks and embeds left out: what a rename's link update does not change. */
+function withoutLinkTargets(title: string): string {
+  return title.replace(/\[\[[^\]]*\]\]/gu, '[[]]');
+}
+
+/**
+ * Whether `source` is `previous.source` with the titles of some nodes rewritten inside their links, and not a byte
+ * besides: the link update of a rename (Obsidian rewrites every link to the renamed note in one write, so two items
+ * calling one note change together, and neither the title rules nor the single title-only edit can match them). Every
+ * other byte in place, the nodes correspond by position, which is no guess (LEV-246).
+ */
+function linksRewritten(nodes: readonly MindNode[], previous: MindDocument, source: string): boolean {
+  if (previous.nodes.length !== nodes.length) return false;
+  let rebuilt = '';
+  let at = 0;
+  let rewritten = false;
+  for (const [index, node] of nodes.entries()) {
+    const old = previous.nodes[index];
+    if (!old || old.kind !== node.kind || old.level !== node.level) return false;
+    if (old.title === node.title) continue;
+    if (old.titleFrom < at || withoutLinkTargets(old.title) !== withoutLinkTargets(node.title)) return false;
+    rebuilt += previous.source.slice(at, old.titleFrom) + source.slice(node.titleFrom, node.titleTo);
+    at = old.titleTo;
+    rewritten = true;
+  }
+  return rewritten && rebuilt + previous.source.slice(at) === source;
+}
+
 function assignIds(
   nodes: MindNode[], previous: MindDocument | undefined, source: string, edits?: readonly TextEdit[],
 ): void {
@@ -217,6 +245,10 @@ function assignIds(
     return;
   }
   if (!previous) return;
+  if (!edits?.length && linksRewritten(nodes, previous, source)) {
+    nodes.forEach((node, index) => { node.id = previous.nodes[index]?.id ?? node.id; });
+    return;
+  }
   // The rules below guess from the text, for the changes this map did not make; a node the edits already
   // answered for is left alone, and its id is not handed to a second node.
   // An empty set is not a set of edits: a caller that has nothing to say about how `source` came about is
