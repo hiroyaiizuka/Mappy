@@ -62,7 +62,7 @@ Mappy はデスクトップ版の Obsidian（1.8.7 以降）に入れられま�
 
 新しい版が出たら、コミュニティプラグインの画面で更新を確認して取り込めます。
 
-手動で入れる場合は、[Releases](https://github.com/hiroyaiizuka/Mappy/releases) の各版に添付された `main.js`・`manifest.json`・`styles.css` の 3 ファイルを Vault の `.obsidian/plugins/mappy/` に置き、コミュニティプラグインの一覧で Mappy を有効にします（リポジトリのソースコードをそのまま置いても動きません）。
+手動で入れる場合は、[Releases](https://github.com/hiroyaiizuka/Mappy/releases) の各版に添付された `main.js`・`manifest.json`・`styles.css` の 3 ファイルを Vault の `.obsidian/plugins/mappy/` に置き、コミュニティプラグインの一覧で Mappy を有効にします（制限モードはオフにしておく。一覧に出ないときは一覧を再読み込みするか Obsidian を再起動する）。リポジトリのソースコードをそのまま置いても動きません。
 
 詳しい使い方は[ドキュメント](https://obsidian.levers.co.jp/ja/mappy)をご覧ください。
 

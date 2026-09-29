@@ -43,7 +43,7 @@ describe("the READMEs' installation and side-by-side command (LEV-259)", () => {
     const install = section(readme, heading);
     for (const step of steps) expect(install).toContain(step);
     const { minAppVersion } = JSON.parse(await read("manifest.json"));
-    expect(install).toContain(`${minAppVersion}`);
+    expect(install).toMatch(new RegExp(`(?<![\\d.])${minAppVersion.replaceAll(".", "\\.")}(?![\\d.]*\\d)`));
   });
 
   it.each(READMES)("$file says which side the new pane opens on, from either side", async ({ file, row, phrases }) => {

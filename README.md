@@ -62,7 +62,7 @@ Mappy can be installed on the desktop version of Obsidian (1.8.7 or later; see [
 
 When a new version comes out, check for updates on the Community plugins screen to bring it in.
 
-To install by hand, put the three files `main.js`, `manifest.json` and `styles.css` attached to a version on [Releases](https://github.com/hiroyaiizuka/Mappy/releases) in your vault's `.obsidian/plugins/mappy/`, then enable Mappy in the community plugins list (the repository's source code does not work as it is).
+To install by hand, put the three files `main.js`, `manifest.json` and `styles.css` attached to a version on [Releases](https://github.com/hiroyaiizuka/Mappy/releases) in your vault's `.obsidian/plugins/mappy/`, then enable Mappy in the community plugins list (with Restricted mode off; if Mappy isn't listed, reload the list or restart Obsidian). The repository's source code does not work as it is.
 
 For a step-by-step guide to using Mappy, see the [documentation](https://obsidian.levers.co.jp/mappy).
 
