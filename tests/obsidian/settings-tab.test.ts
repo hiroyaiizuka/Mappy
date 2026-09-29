@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Plugin } from 'obsidian';
 import { installObsidianDom } from '../browser-harness/dom';
-import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../browser-harness/obsidian';
+import { Notice, PluginSettingTab as MockSettingTab, Setting, type PluginSettingTab as HarnessSettingTab } from '../browser-harness/obsidian';
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, themeLabel } from '../../src/obsidian/settings-tab';
@@ -310,11 +310,13 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(note.textContent).toBe('');
   });
 
-  it('keeps the toggles as they were when the default layout cannot be saved', async () => {
+  it('keeps the toggles as they were, and puts the dropdown back, when the default layout cannot be saved', async () => {
     const { toggles, layout, settings } = mount(DEFAULT_SETTINGS, () => Promise.reject(new Error('data.json は書き込めません')));
     change(layout, 'balanced');
     await flush();
     expect(settings()).toEqual(DEFAULT_SETTINGS);
+    // The dropdown names what is stored again, so it never shows a default the toggles do not lock.
+    expect(layout.value).toBe('mindmap');
     expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
     expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, false, false]);
     expect(Notice.log).toEqual(['data.json は書き込めません']);
@@ -354,6 +356,28 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(settings().visibleLayouts).toEqual(ALL_LAYOUTS);
     expect(on(toggles.balanced)).toBe(true);
     expect(Notice.log).toHaveLength(1);
+  });
+
+  it('starts a row drawn before it is in the document with the stored values and locks', () => {
+    const tab = new MappySettingTab({} as App, {} as Plugin, { current: () => ({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' }), save: vi.fn() });
+    tab.display();
+    expect(tab.containerEl.isConnected).toBe(false);
+    const { toggles, note } = controls(tab.containerEl);
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, true, false]);
+    expect(note.textContent).toContain('階層図');
+  });
+
+  it('keeps every drawn row in step, as when 1.13+ draws the row for the tab and again for a settings search', async () => {
+    const { tab, toggles } = mount();
+    const layouts = tab.getSettingDefinitions()[3];
+    const search = new Setting(document.body.createDiv());
+    layouts?.render?.(search as unknown as Parameters<NonNullable<typeof layouts.render>>[0]);
+    await tab.setControlValue('defaultLayout', 'balanced');
+    for (const shown of [toggles, Object.fromEntries(LAYOUT_MODES.map(mode => [mode, search.controlEl.querySelector<HTMLElement>(`.checkbox-container[aria-label="${layoutLabel(mode)}"]`)!])) as typeof toggles]) {
+      expect(LAYOUT_MODES.map(mode => on(shown[mode]))).toEqual([true, true, true, true]);
+      expect(LAYOUT_MODES.map(mode => locked(shown[mode]))).toEqual([true, false, false, true]);
+    }
   });
 
   it('leaves a detached note alone after the tab was hidden, on both paths', async () => {

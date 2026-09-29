@@ -13,6 +13,9 @@ export function themeLabel(theme: MapTheme): string {
   return t()[THEME_LABEL_KEYS[theme]];
 }
 
+/** One drawn「左下に表示するレイアウト」row. */
+interface LayoutRow { toggles: Map<LayoutMode, ToggleComponent>; note: HTMLElement }
+
 /** The plugin owns the settings object and `saveData`; the tab only reads and asks for a save. */
 export interface SettingsStore {
   current(): MappySettings;
@@ -79,11 +82,12 @@ export function mapSettingDefinitions(renderLayouts: (setting: Setting) => void 
 
 export class MappySettingTab extends PluginSettingTab {
   /**
-   * The layout row's toggles and the line under them naming the locked default layout. Set by the
-   * row's render and dropped by its cleanup (1.13+) or the next `display()`; a save that resolves
-   * after the tab was hidden finds them detached and leaves them alone.
+   * Each drawn layout row: its toggles and the line under them naming the locked default layout.
+   * More than one can be drawn at once (1.13+ draws the row for the tab and again for a settings
+   * search result). Added by the row's render, dropped by its cleanup (1.13+) or the next
+   * `display()`; a save that resolves after the tab was hidden finds a row detached and leaves it alone.
    */
-  private layoutRow: { toggles: Map<LayoutMode, ToggleComponent>; note: HTMLElement } | undefined;
+  private readonly layoutRows = new Set<LayoutRow>();
 
   constructor(app: App, plugin: Plugin, private readonly store: SettingsStore) { super(app, plugin); }
 
@@ -104,14 +108,16 @@ export class MappySettingTab extends PluginSettingTab {
     if (!isSettingKey(key)) return Promise.resolve();
     const accepted = readSettingField(key, value);
     if (accepted === null) return Promise.resolve();
-    return this.store.save(showDefaultLayout({ ...this.store.current(), [key]: accepted })).then(() => { this.refreshLayoutRow(); });
+    return this.store.save(showDefaultLayout({ ...this.store.current(), [key]: accepted })).then(() => {
+      for (const row of this.layoutRows) if (row.note.isConnected) this.syncLayoutRow(row);
+    });
   }
 
   /** Obsidian before 1.13: the same four settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    this.layoutRow = undefined;
+    this.layoutRows.clear();
     const settings = this.store.current();
     for (const definition of this.getSettingDefinitions()) {
       const setting = new Setting(containerEl).setName(definition.name).setDesc(definition.desc);
@@ -120,7 +126,10 @@ export class MappySettingTab extends PluginSettingTab {
       const value = settings[control.key];
       if (control.type === 'dropdown') {
         setting.addDropdown(dropdown => {
-          dropdown.addOptions(control.options).setValue(value).onChange(next => { this.commit(control.key, next); });
+          // A failed save puts the dropdown back too, so it never names a default the toggles do not lock.
+          dropdown.addOptions(control.options).setValue(value).onChange(next => {
+            this.commit(control.key, next, () => { dropdown.setValue(this.store.current()[control.key]); });
+          });
         });
       } else {
         setting.addText(text => {
@@ -154,16 +163,15 @@ export class MappySettingTab extends PluginSettingTab {
         this.commit('visibleLayouts', on ? [...others, mode] : others, () => { toggle.setValue(!on); });
       });
     }
-    const row = { toggles, note: setting.descEl.createDiv({ cls: 'mappy-setting-note' }) };
-    this.layoutRow = row;
-    this.refreshLayoutRow();
-    return () => { if (this.layoutRow === row) this.layoutRow = undefined; };
+    const row: LayoutRow = { toggles, note: setting.descEl.createDiv({ cls: 'mappy-setting-note' }) };
+    this.layoutRows.add(row);
+    // Drawn whether or not the row is in the document yet: a row built before it is attached still starts right.
+    this.syncLayoutRow(row);
+    return () => { this.layoutRows.delete(row); };
   }
 
   /** Show the stored list and lock the regular map and the default layout; called on render and after each save. */
-  private refreshLayoutRow(): void {
-    const row = this.layoutRow;
-    if (!row?.note.isConnected) return;
+  private syncLayoutRow(row: LayoutRow): void {
     const { defaultLayout, visibleLayouts } = this.store.current();
     for (const [mode, toggle] of row.toggles) {
       toggle.setDisabled(mode === 'mindmap' || mode === defaultLayout);

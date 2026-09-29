@@ -66,7 +66,12 @@ async function connectSettings() {
   const targets = await fetch(`http://127.0.0.1:${PORT}/json/list`).then(response => response.json());
   for (const target of targets.filter(item => item.type === 'page' && item.url === 'about:blank')) {
     const socket = new WebSocket(target.webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
+    const opened = await new Promise(resolve => {
+      const timer = setTimeout(() => resolve(false), 5000);
+      socket.addEventListener('open', () => { clearTimeout(timer); resolve(true); }, { once: true });
+      socket.addEventListener('error', () => { clearTimeout(timer); resolve(false); }, { once: true });
+    });
+    if (!opened) { socket.close(); continue; }
     let id = 0;
     const send = (method, params) => new Promise((resolve, reject) => {
       const mine = ++id;
@@ -79,8 +84,12 @@ async function connectSettings() {
       socket.addEventListener('message', receive);
       socket.send(JSON.stringify({ id: mine, method, params }));
     });
+    // Every call is bounded: a hung target (another popout, a devtools-held page) must fail the run, not stall it
+    // before the finally block puts the data file and the language back.
     const evaluateIn = async expression => {
-      const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      let timer;
+      const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer from ${target.url} within 5 s`)), 5000); });
+      const { result, exceptionDetails } = await Promise.race([send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }), timeout]).finally(() => clearTimeout(timer));
       if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
       return result.value;
     };
