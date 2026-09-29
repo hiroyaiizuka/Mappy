@@ -1,6 +1,6 @@
 # Mappy
 
-English | [日本語](README.ja.md)
+English | [日本語](README.ja.md) | [Documentation](https://obsidian.levers.co.jp/mappy)
 
 ![A note open in Obsidian's light theme: its Markdown on the left and the same note as a Mappy map on the right](https://raw.githubusercontent.com/hiroyaiizuka/Mappy/main/docs/images/mappy-map.png)
 
@@ -10,7 +10,7 @@ Mappy lets you read and edit an Obsidian note as a mind map, without turning it 
 
 ## What it does
 
-- Switch one note between Markdown and a map. Put the map on the left and the standard editor on the right, and an edit in either shows up in the other at once
+- Switch one note between Markdown and a map, or put the two side by side; an edit in either shows up in the other at once
 - Add a sibling or child with Enter/Tab and type in place, drag to reorder or change the parent (the destination is shown beforehand), fold branches, undo and redo
 - Show internal links, external links and images in nodes, and suggest notes and attachments after `[[` / `![[`
 - Keep one of four layouts (mind map, timeline, hierarchy, balanced) per note
@@ -52,15 +52,19 @@ Mappy writes three frontmatter keys. It only handles notes with `mappy: true` an
 - Headings are read as Obsidian reads them. A line of text followed by `===` / `---` (a setext heading) is a heading only when the text is a single line (including a single line with `<br>`). `===` / `---` under text of two or more lines is read as body paragraphs, not a heading, as Obsidian's reading view and outline do (with `---`, a paragraph and a horizontal rule). Mappy 0.3.8 and earlier showed this form as a heading node too, so in such notes that node leaves the map and becomes body text of the node above, and the nodes below it may get a new parent. A note whose only heading besides H2 was this form of `===` now opens as the list format, and the list items that used to be body text appear as nodes. The note's text doesn't change. To keep the node, make the heading text a single line in Markdown (use `<br>` for line breaks), or rewrite it as `## Heading`. `%%…%%` comments are also read as Obsidian reads them: inside one line they are part of that line's text, and across lines they count as a blank line (a `Heading` and `===` right below a line holding only `%%note%%` are two lines of text, so they are not a heading; with a blank line between them, they are).
 - Numbered lists and task lists don't become nodes, but their text is kept as it is. A node shows its text and the links and images in its body. Body text (continuation lines before any child list) is not shown in the map; use "Edit body and links" in the context menu for it.
 
-## Installation (BRAT)
+## Installation
 
-The beta (0.x) is installed from this repository's GitHub Releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat). Mappy was also submitted to the [community plugins directory](https://community.obsidian.md) with version 0.4.1; the steps below don't depend on it.
+Mappy can be installed on the desktop version of Obsidian (1.8.7 or later; see [Compatibility](#compatibility) for what has been checked).
 
-1. Install and enable BRAT from Obsidian's community plugins
-2. Run the command "BRAT: Add a beta plugin for testing" (Add beta plugin in the settings tab), enter `hiroyaiizuka/Mappy` as the repository, and choose Add plugin. BRAT puts the three files of the latest release in `.obsidian/plugins/mappy/`
-3. Enable Mappy in the community plugins list. From then on, BRAT's "Check for updates" brings in new versions. To stay on one version, give its tag with BRAT's "frozen version"
+1. Open Obsidian's Settings and choose Community plugins. If Restricted mode is on, turn it off first
+2. Click Browse, search for `Mappy`, and choose Install
+3. When it finishes, choose Enable
 
-To install by hand, put the three files `main.js`, `manifest.json` and `styles.css` attached to a version on [Releases](https://github.com/hiroyaiizuka/Mappy/releases) in your vault's `.obsidian/plugins/mappy/` (the repository's source code does not work as it is).
+When a new version comes out, check for updates on the Community plugins screen to bring it in.
+
+To install by hand, put the three files `main.js`, `manifest.json` and `styles.css` attached to a version on [Releases](https://github.com/hiroyaiizuka/Mappy/releases) in your vault's `.obsidian/plugins/mappy/`, then enable Mappy in the community plugins list (with Restricted mode off; if Mappy isn't listed, reload the list or restart Obsidian). The repository's source code does not work as it is.
+
+For a step-by-step guide to using Mappy, see the [documentation](https://obsidian.levers.co.jp/mappy).
 
 ## Basic usage
 
@@ -73,7 +77,7 @@ Use the command palette, the ribbon icon on the left, or a file's context menu. 
 | Create new mind map | Creates a note with `mappy: true` and an H2 root in the folder from the settings, and opens it. The file is named "Untitled mind map" and the root "Central topic" (written into the note as `## Central topic`). Tab there adds a "Main topic", and Tab on that a "Subtopic" |
 | Turn this note into a mind map | Writes `mappy: true` into the open note's frontmatter and opens it as a map (also in the file's context menu) |
 | Open mind map | Opens a `mappy: true` note as a map (same as the ribbon icon) |
-| Open mind map beside Markdown | Map on the left, standard editor on the right |
+| Open mind map beside Markdown | Puts the map and the standard editor side by side. Run from a Markdown note, the map is on the left and the editor on the right. Run from a map, the Markdown opens on the left |
 | Switch between map and Markdown | Flips the same pane between the two. The Markdown side scrolls to the selected node's line |
 | Turn off mind map for this note | Removes `mappy`, `mappy-layout` and `mappy-topics` and goes back to Markdown, keeping the body |
 | Change current map to list format | Converts a heading-hierarchy note to an H2 root and a list (undo reverts it) |
@@ -176,7 +180,7 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 | --- | --- |
 | macOS desktop, Obsidian 1.14 | Checked (main actions, by automation and by eye) |
 | Windows and Linux desktop | Not checked |
-| iOS and Android | Not available for now. Mappy is marked desktop only (`isDesktopOnly` in `manifest.json`), so Obsidian doesn't offer or load it on mobile. It doesn't use desktop-only features; it will be opened to mobile once it has been tried there. Version 0.4.0 and earlier could be installed on mobile. If you use one there through BRAT, BRAT on mobile doesn't install 0.4.1 or later (it says the plugin will not be installed and the update failed) unless its setting to allow incompatible plugins is on, in which case it asks before installing it anyway. But if your vault's `.obsidian` folder is synced between devices (Obsidian Sync with plugin sync on, iCloud and so on), the version your desktop installs reaches the phone as well, and from 0.4.1 Obsidian on mobile stops loading Mappy. In every case map notes stay plain Markdown and nothing in them changes |
+| iOS and Android | Not available for now. Mappy is marked desktop only (`isDesktopOnly` in `manifest.json`), so Obsidian doesn't offer or load it on mobile. It doesn't use desktop-only features; it will be opened to mobile once it has been tried there. If your vault's `.obsidian` folder is synced between devices (Obsidian Sync with plugin sync on, iCloud and so on), the version your desktop installs reaches the phone as well, but from 0.4.1 Obsidian on mobile doesn't load Mappy (0.4.0 and earlier could be installed on mobile). Synced or not, map notes stay plain Markdown and nothing in them changes |
 | Obsidian 1.8.7 to 1.13 | Can be installed on 1.8.7 and later, but not checked in this range |
 | Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices, and the provisional names Mappy writes into notes: `Main topic` / `メイントピック`, `Subtopic` / `サブトピック`, `Topic` / `トピック`, and the new map's root `Central topic` / `中心トピック`; the new map's file name `Untitled mind map` / `無題のマインドマップ` follows it too). English was checked on macOS only for command names, buttons, the gear popover, context menus, the tab title, the settings tab, `Subtopic`, `Main topic`, `Central topic` and one refusal message; not every notice |
 

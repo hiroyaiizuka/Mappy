@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest';
  * submitted to the community directory (mobile hasn't been tried; docs/community-submission.md §4.4 (B)), and
  * turning it back to `false` after checking mobile is meant to be one version bump. This keeps the mobile row of
  * both READMEs tied to the manifest: the row names the manifest key exactly when it is `true`. Only that token is
- * checked, not the words around it, and other passages that mention mobile (the beta banner, export, the BRAT
- * note) are not pinned, so flipping it back still means reading every mention of mobile in both READMEs. That the
+ * checked, not the words around it, and other passages that mention mobile (the beta banner, export, the synced
+ * `.obsidian` note) are not pinned, so flipping it back still means reading every mention of mobile in both READMEs. That the
  * value is a boolean is checked by scripts/validate-release.mjs.
  */
 const manifest = JSON.parse(await readFile(new URL('../../manifest.json', import.meta.url), 'utf8'));
