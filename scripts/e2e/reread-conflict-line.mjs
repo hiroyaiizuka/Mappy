@@ -16,10 +16,10 @@
  * are Obsidian's and the plugin's own.
  *
  * Each row checks that the window was hit (the held read found the external text, the map showed it while the save
- * was under way, and the save was refused as a conflict), then the outcome: the line says REFRESHED right after the
- * refusal (the map had caught up by then) and still after the map's re-read, the draft is still open, and the next
- * Enter applies the draft on top of the external text and closes it. With the fix reverted both REFRESHED checks fail
- * in both rows (the line says CONFLICT).
+ * was under way, the save was refused as a conflict, and the line said CONFLICT right after the refusal — read in the
+ * page in the task after it, before the refusal's 45 ms re-read), then the outcome: the line says REFRESHED after the
+ * map's re-read, the draft is still open, and the next Enter applies the draft on top of the external text and closes
+ * it. With the fix reverted the REFRESHED check fails in both rows (the line stays on CONFLICT).
  *
  * Usage: npm run harness:e2e:reread-conflict-line -- [--reload] [--json <out.json>] [--keep] [--only <row>[,<row>…]]
  */
@@ -37,6 +37,7 @@ const SOURCE = [
   '- 記録する', '  - 毎日のログ', '',
 ].join('\n');
 const EXTERNAL = SOURCE.replace('- 記録する\n', '- 記録する（外部）\n');
+const CONFLICT = 'Markdown が変更されています。マップを更新してから再編集してください。';
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 /** ⌘ in `Input.dispatchKeyEvent`'s modifiers. */
 const META = 4;
@@ -105,9 +106,9 @@ const openDraft = async row => {
  * Installs the probe: this map's watcher re-read reads the note and waits before it answers; the store's write for the
  * draft lets it answer and goes on only once the map shows what it read (or after 2 s).
  */
-const arm = () => evaluate(`${VIEW}
+const arm = () => evaluate(`${VIEW} ${DRAFT}
   const store = view.store;
-  const probe = window.__mappyE2EConflict = { log: [], held: null, heldText: null, publishedWhileSaving: null, refused: null, t0: performance.now() };
+  const probe = window.__mappyE2EConflict = { log: [], held: null, heldText: null, publishedWhileSaving: null, refused: null, lineAtRefusal: null, t0: performance.now() };
   const now = () => Math.round((performance.now() - probe.t0) * 10) / 10;
   const own = {};
   const mine = {};
@@ -143,6 +144,8 @@ const arm = () => evaluate(`${VIEW}
       try { return await own.applyOver.apply(this, args); } catch (error) {
         probe.refused = error?.name ?? String(error);
         probe.log.push({ at: now(), what: 'refused', error: probe.refused });
+        // The line the draft shows for the refusal (set in the microtasks after this throw), before the 45 ms re-read.
+        setTimeout(() => { probe.lineAtRefusal = line(); probe.log.push({ at: now(), what: 'line', line: probe.lineAtRefusal }); }, 0);
         throw error;
       }
     }
@@ -180,19 +183,17 @@ const run = async row => {
   // The watcher's re-read (45 ms after the modify) has read the note and is held.
   if (!await until(`return window.__mappyE2EConflict.held !== null;`)) return { failures: ['the map never re-read the note after the external change'] };
   await cdp.realKey('Enter', row.id === 'modal' ? META : 0);
-  if (!await until(`return window.__mappyE2EConflict.refused !== null || window.__mappyE2EConflict.publishedWhileSaving === false;`)) {
+  if (!await until(`return window.__mappyE2EConflict.lineAtRefusal !== null || window.__mappyE2EConflict.publishedWhileSaving === false;`)) {
     failures.push('the save was neither refused nor let through');
   }
-  // Right after the refusal, before the map's re-read of it (45 ms).
-  const refused = await read();
   await wait(600);
   const after = await read();
   const probe = await evaluate(`const probe = window.__mappyE2EConflict; probe.release();
-    return { held: probe.held, heldExternal: probe.heldText === ${JSON.stringify(EXTERNAL)}, publishedWhileSaving: probe.publishedWhileSaving, refused: probe.refused, log: probe.log };`);
+    return { held: probe.held, heldExternal: probe.heldText === ${JSON.stringify(EXTERNAL)}, publishedWhileSaving: probe.publishedWhileSaving, refused: probe.refused, lineAtRefusal: probe.lineAtRefusal, log: probe.log };`);
   expect(probe.heldExternal, `the held read did not find the external text (${JSON.stringify(probe)})`);
   expect(probe.publishedWhileSaving === true, `the map did not show the external change while the save was under way (${JSON.stringify(probe)}): not the window`);
   expect(probe.refused === 'ConflictError', `the save was not refused as a conflict (${probe.refused})`);
-  expect(refused.line === REFRESHED, `right after the refusal the line says ${JSON.stringify(refused.line)}`);
+  expect(probe.lineAtRefusal === CONFLICT, `right after the refusal the line said ${JSON.stringify(probe.lineAtRefusal)}: not the window`);
   expect(after.shown === EXTERNAL && after.text === EXTERNAL, 'the map or the note is not the external text');
   expect(after.open && after.value === row.typed, `the draft did not stay open with its text (${JSON.stringify(after)})`);
   expect(after.line === REFRESHED, `after the map's re-read the line says ${JSON.stringify(after.line)}`);
@@ -203,7 +204,7 @@ const run = async row => {
   for (let tries = 0; tries < 30 && (retried.open || retried.text !== row.applied); tries += 1) { await wait(100); retried = await read(); }
   expect(retried.text === row.applied, `the retry wrote ${JSON.stringify(retried.text)}`);
   expect(!retried.open, 'the retry did not close the draft');
-  return { failures, probe, refused: refused.line, after: after.line, retried: { open: retried.open, applied: retried.text === row.applied } };
+  return { failures, probe, after: after.line, retried: { open: retried.open, applied: retried.text === row.applied } };
 };
 
 try {
@@ -229,7 +230,7 @@ try {
   record.rows = {
     total: results.length,
     failed: results.filter(({ result }) => !result || result.error || result.failures?.length).map(({ id }) => id),
-    windowHit: results.filter(({ result }) => result?.probe?.publishedWhileSaving === true && result.probe.refused === 'ConflictError').length,
+    windowHit: results.filter(({ result }) => result?.probe?.publishedWhileSaving === true && result.probe.refused === 'ConflictError' && result.probe.lineAtRefusal === CONFLICT).length,
   };
   check(results.length > 0, 'no row ran');
 } catch (error) {
