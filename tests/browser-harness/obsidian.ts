@@ -791,7 +791,8 @@ export class TextComponent {
 export class ToggleComponent {
   readonly toggleEl: HTMLElement;
   private on = false;
-  private disabled = false;
+  /** Public, as BaseComponent's is in obsidian.d.ts. */
+  disabled = false;
   private changeCallback: ((value: boolean) => unknown) | undefined;
   constructor(container: HTMLElement) {
     this.toggleEl = container.createEl("label", { cls: "checkbox-container", attr: { tabIndex: "0" } });

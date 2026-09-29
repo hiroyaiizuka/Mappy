@@ -95,7 +95,7 @@ let current: HarnessFixture | null = null;
 let openCount = 0;
 /** What the settings' "テーマ" would hold; applied to every view this page opens. */
 let mapTheme: MapTheme = "follow";
-/** What the settings' "左下に表示するレイアウト" would hold; applied to every view this page opens. */
+/** What the settings' "左下に表示するレイアウト" would hold; applied to every view this page opens. All four, not the settings' default, so the capture reaches every layout. */
 let visibleLayouts: readonly LayoutMode[] = LAYOUT_MODES;
 const visibleLayoutBoxes: HTMLInputElement[] = [];
 const timings: HarnessTiming[] = [];

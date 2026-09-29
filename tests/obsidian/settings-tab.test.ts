@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, Plugin } from 'obsidian';
 import { installObsidianDom } from '../browser-harness/dom';
-import { Notice, PluginSettingTab as MockSettingTab, type PluginSettingTab as HarnessSettingTab } from '../browser-harness/obsidian';
+import { Notice, PluginSettingTab as MockSettingTab, Setting, type PluginSettingTab as HarnessSettingTab } from '../browser-harness/obsidian';
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, themeLabel } from '../../src/obsidian/settings-tab';
@@ -15,6 +15,8 @@ afterEach(() => { document.body.replaceChildren(); Notice.log.length = 0; });
 
 const NAMES = ['テーマ', '新規マップの既定レイアウト', '新規マップの作成先フォルダ', '左下に表示するレイアウト'];
 const ALL_LAYOUTS = [...LAYOUT_MODES];
+/** DEFAULT_SETTINGS.visibleLayouts: everything but the balanced map (LEV-257). */
+const DEFAULT_LAYOUTS = ['mindmap', 'timeline', 'hierarchy'];
 
 /** The store as the plugin keeps it (src/main.ts `saveSettings`): the new value is current at once, and put back when `saveData` fails. */
 function mount(initial: MappySettings = DEFAULT_SETTINGS, saving: (next: MappySettings) => Promise<void> = () => Promise.resolve()) {
@@ -69,6 +71,8 @@ function click(toggle: HTMLElement): void {
 
 function on(toggle: HTMLElement): boolean { return toggle.classList.contains('is-enabled'); }
 
+function locked(toggle: HTMLElement): boolean { return toggle.classList.contains('is-disabled'); }
+
 /** Let a save settle: the store's promise, the tab's refresh after it, and a revert after a failure. */
 function flush(): Promise<void> { return new Promise(resolve => setTimeout(resolve, 0)); }
 
@@ -100,17 +104,17 @@ describe('MappySettingTab', () => {
   it('saves one changed field at a time and leaves the others as they were', async () => {
     const { save, theme, layout, folder, toggles, settings } = mount();
     change(layout, 'hierarchy');
-    expect(save).toHaveBeenLastCalledWith({ theme: 'follow', defaultLayout: 'hierarchy', newMapFolder: '', visibleLayouts: ALL_LAYOUTS });
+    expect(save).toHaveBeenLastCalledWith({ theme: 'follow', defaultLayout: 'hierarchy', newMapFolder: '', visibleLayouts: DEFAULT_LAYOUTS });
     change(theme, 'light');
-    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: '', visibleLayouts: ALL_LAYOUTS });
+    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: '', visibleLayouts: DEFAULT_LAYOUTS });
     type(folder, ' Maps/2026 ');
-    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ALL_LAYOUTS });
+    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: DEFAULT_LAYOUTS });
     // The input keeps what was typed; only the stored value is trimmed.
     expect(folder.value).toBe(' Maps/2026 ');
     click(toggles.timeline);
-    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
+    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'hierarchy'] });
     await flush();
-    expect(settings()).toEqual({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
+    expect(settings()).toEqual({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'hierarchy'] });
     expect(save).toHaveBeenCalledTimes(4);
   });
 
@@ -171,28 +175,34 @@ describe('MappySettingTab', () => {
     for (const name of fields) expect(own).not.toContain(name);
   });
 
-  it('draws the layout row the same way through the 1.13 declarative path, saving and noting through the same code', async () => {
+  it('draws the layout row the same way through the 1.13 declarative path, saving, locking and noting through the same code', async () => {
     const { tab, save } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' });
     const runtime = tab as unknown as HarnessSettingTab;
     runtime.update();
     runtime.renderTab();
     const { toggles, note, layout } = controls(tab.containerEl);
-    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, true]);
-    expect(note.hidden).toBe(true);
-    click(toggles.hierarchy);
-    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy', visibleLayouts: ['mindmap', 'timeline', 'balanced'] });
-    await flush();
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, true, false]);
     expect(note.hidden).toBe(false);
     expect(note.textContent).toContain('階層図');
-    // The dropdown goes through the binding (setControlValue), which refreshes the note as well.
+    click(toggles.hierarchy);
+    expect(save).not.toHaveBeenCalled();
+    // The dropdown goes through the binding (setControlValue): a hidden layout chosen as the default is shown in the same save.
+    change(layout, 'balanced');
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, defaultLayout: 'balanced', visibleLayouts: ALL_LAYOUTS });
+    await flush();
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, true]);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, false, true]);
+    expect(note.textContent).toContain('左右バランス');
+    change(layout, 'mindmap');
+    await flush();
+    expect(note.hidden).toBe(true);
+    // hide() runs the row's cleanup; a later save no longer touches the dropped elements.
+    runtime.hide();
     change(layout, 'timeline');
     await flush();
     expect(note.hidden).toBe(true);
-    // hide() runs the row's cleanup; a later save no longer touches the dropped element.
-    runtime.hide();
-    change(layout, 'hierarchy');
-    await flush();
-    expect(note.hidden).toBe(true);
+    expect(locked(toggles.timeline)).toBe(false);
   });
 
   it('reads and writes the controls through the store, trimming the folder and refusing unusable values', async () => {
@@ -206,9 +216,9 @@ describe('MappySettingTab', () => {
     expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps', visibleLayouts: ALL_LAYOUTS });
     await tab.setControlValue('newMapFolder', '  Maps/2026 ');
     expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ALL_LAYOUTS });
-    // The list is normalized on the way in: order, no repeats, and the regular map whether or not it was named.
+    // The list is normalized on the way in: order, no repeats, and the regular map and the default layout whether or not they were named.
     await tab.setControlValue('visibleLayouts', ['balanced', 'timeline', 'balanced']);
-    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ['mindmap', 'timeline', 'balanced'] });
+    expect(save).toHaveBeenLastCalledWith({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps/2026', visibleLayouts: ALL_LAYOUTS });
     await tab.setControlValue('theme', 'system');
     await tab.setControlValue('defaultLayout', 'issue-tree');
     await tab.setControlValue('newMapFolder', 42);
@@ -234,11 +244,10 @@ describe('MappySettingTab', () => {
 });
 
 describe('MappySettingTab: 左下に表示するレイアウト', () => {
-  it('shows one toggle per layout, all on by default, with the regular map on and locked', () => {
+  it('shows one toggle per layout, the balanced map off by default (LEV-257), with the regular map on and locked', () => {
     const { toggles, note } = mount();
-    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, true]);
-    expect(toggles.mindmap.classList.contains('is-disabled')).toBe(true);
-    expect(LAYOUT_MODES.filter(mode => mode !== 'mindmap').some(mode => toggles[mode].classList.contains('is-disabled'))).toBe(false);
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, false, false]);
     expect(note.hidden).toBe(true);
   });
 
@@ -254,43 +263,63 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     const { toggles, save, settings } = mount();
     click(toggles.timeline);
     expect(on(toggles.timeline)).toBe(false);
-    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
-    click(toggles.balanced);
     expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy'] });
+    click(toggles.balanced);
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
     click(toggles.timeline);
     expect(on(toggles.timeline)).toBe(true);
-    // Re-adding timeline after balanced was removed still yields LAYOUT_MODES order, not click order.
-    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] });
+    // Re-adding timeline after balanced was added still yields LAYOUT_MODES order, not click order.
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ALL_LAYOUTS });
     await flush();
-    expect(settings().visibleLayouts).toEqual(['mindmap', 'timeline', 'hierarchy']);
+    expect(settings().visibleLayouts).toEqual(ALL_LAYOUTS);
     expect(settings().theme).toBe('follow');
     expect(settings().defaultLayout).toBe('mindmap');
   });
 
-  it('notes a hidden default layout under the toggles, whether the toggle or the default changed, and clears the note when they agree again', async () => {
-    const { toggles, layout, note } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' });
-    expect(note.hidden).toBe(true);
-    expect(note.textContent).toBe('');
-    click(toggles.timeline);
-    await flush();
+  it('locks the default layout on, naming it under the toggles; neither its toggle nor its text saves anything (LEV-257)', () => {
+    const { tab, toggles, note, save } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' });
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, true, false, false]);
     expect(note.hidden).toBe(false);
-    expect(note.textContent).toBe('既定レイアウト「タイムライン」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。');
-    // Changing the default to a visible layout clears it; to another hidden one, it names that layout.
-    change(layout, 'hierarchy');
-    await flush();
-    expect(note.hidden).toBe(true);
-    click(toggles.hierarchy);
-    await flush();
-    expect(note.textContent).toContain('「階層図」');
-    click(toggles.hierarchy);
-    await flush();
-    expect(note.hidden).toBe(true);
+    expect(note.textContent).toBe('「タイムライン」は新規マップの既定レイアウトなので外せません。');
+    click(toggles.timeline);
+    toggles.timeline.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+    tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout > span')[1]?.click();
+    expect(on(toggles.timeline)).toBe(true);
+    expect(save).not.toHaveBeenCalled();
   });
 
-  it('shows the note on open when the stored default is already hidden, and never for the regular map', () => {
-    expect(mount({ ...DEFAULT_SETTINGS, defaultLayout: 'balanced', visibleLayouts: ['mindmap', 'timeline'] }).note.hidden).toBe(false);
-    document.body.replaceChildren();
-    expect(mount({ ...DEFAULT_SETTINGS, defaultLayout: 'mindmap', visibleLayouts: ['mindmap'] }).note.hidden).toBe(true);
+  it('choosing a hidden layout as the default shows it in the same save, and frees the previous default', async () => {
+    const { toggles, layout, note, save, settings } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' });
+    change(layout, 'balanced');
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, defaultLayout: 'balanced', visibleLayouts: ALL_LAYOUTS });
+    await flush();
+    expect(on(toggles.balanced)).toBe(true);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, false, true]);
+    expect(note.textContent).toBe('「左右バランス」は新規マップの既定レイアウトなので外せません。');
+    // The previous default can be turned off now; the new one stays.
+    click(toggles.timeline);
+    await flush();
+    expect(settings().visibleLayouts).toEqual(['mindmap', 'hierarchy', 'balanced']);
+    // Back to the regular map: nothing but it is locked, and the note goes away.
+    change(layout, 'mindmap');
+    await flush();
+    expect(settings()).toEqual({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, false, false]);
+    expect(note.hidden).toBe(true);
+    expect(note.textContent).toBe('');
+  });
+
+  it('keeps the toggles as they were, and puts the dropdown back, when the default layout cannot be saved', async () => {
+    const { toggles, layout, settings } = mount(DEFAULT_SETTINGS, () => Promise.reject(new Error('data.json は書き込めません')));
+    change(layout, 'balanced');
+    await flush();
+    expect(settings()).toEqual(DEFAULT_SETTINGS);
+    // The dropdown names what is stored again, so it never shows a default the toggles do not lock.
+    expect(layout.value).toBe('mindmap');
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, false, false]);
+    expect(Notice.log).toEqual(['data.json は書き込めません']);
   });
 
   it('flips a toggle from its text too, except the locked regular map', () => {
@@ -298,10 +327,10 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     const labels = Array.from(tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout > span'));
     labels[1]?.click();
     expect(on(toggles.timeline)).toBe(false);
-    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy', 'balanced'] });
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy'] });
     labels[1]?.click();
     expect(on(toggles.timeline)).toBe(true);
-    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ALL_LAYOUTS });
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: DEFAULT_LAYOUTS });
     labels[0]?.click();
     expect(on(toggles.mindmap)).toBe(true);
     expect(save).toHaveBeenCalledTimes(2);
@@ -315,18 +344,54 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     await flush();
     // The store still has the old list; the toggle shows it again and the failure is reported once.
     expect(on(toggles.timeline)).toBe(true);
-    expect(settings().visibleLayouts).toEqual(ALL_LAYOUTS);
+    expect(settings().visibleLayouts).toEqual(DEFAULT_LAYOUTS);
     expect(Notice.log).toEqual(['data.json は書き込めません']);
     // Putting it back did not start another save (the store already says "visible").
     expect(save).toHaveBeenCalledTimes(1);
     fail = false;
     click(toggles.balanced);
     // Computed from the stored list, so timeline stays in it.
-    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] });
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ALL_LAYOUTS });
     await flush();
-    expect(settings().visibleLayouts).toEqual(['mindmap', 'timeline', 'hierarchy']);
-    expect(on(toggles.balanced)).toBe(false);
+    expect(settings().visibleLayouts).toEqual(ALL_LAYOUTS);
+    expect(on(toggles.balanced)).toBe(true);
     expect(Notice.log).toHaveLength(1);
+  });
+
+  it('draws the toggles from the store after a failed save that another save overtook', async () => {
+    const pending: { resolve: () => void; reject: (error: Error) => void }[] = [];
+    const { toggles, settings } = mount(DEFAULT_SETTINGS, () => new Promise<void>((resolve, reject) => { pending.push({ resolve, reject }); }));
+    click(toggles.balanced);
+    click(toggles.timeline);
+    // The second save (built on the first) lands; then the first fails. The store keeps the second, which holds the balanced map.
+    pending[1]?.resolve();
+    await flush();
+    pending[0]?.reject(new Error('data.json は書き込めません'));
+    await flush();
+    expect(settings().visibleLayouts).toEqual(['mindmap', 'hierarchy', 'balanced']);
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, false, true, true]);
+  });
+
+  it('starts a row drawn before it is in the document with the stored values and locks', () => {
+    const tab = new MappySettingTab({} as App, {} as Plugin, { current: () => ({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' }), save: vi.fn() });
+    tab.display();
+    expect(tab.containerEl.isConnected).toBe(false);
+    const { toggles, note } = controls(tab.containerEl);
+    expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, false, true, false]);
+    expect(note.textContent).toContain('階層図');
+  });
+
+  it('keeps every drawn row in step, as when 1.13+ draws the row for the tab and again for a settings search', async () => {
+    const { tab, toggles } = mount();
+    const layouts = tab.getSettingDefinitions()[3];
+    const search = new Setting(document.body.createDiv());
+    layouts?.render?.(search as unknown as Parameters<NonNullable<typeof layouts.render>>[0]);
+    await tab.setControlValue('defaultLayout', 'balanced');
+    for (const shown of [toggles, Object.fromEntries(LAYOUT_MODES.map(mode => [mode, search.controlEl.querySelector<HTMLElement>(`.checkbox-container[aria-label="${layoutLabel(mode)}"]`)!])) as typeof toggles]) {
+      expect(LAYOUT_MODES.map(mode => on(shown[mode]))).toEqual([true, true, true, true]);
+      expect(LAYOUT_MODES.map(mode => locked(shown[mode]))).toEqual([true, false, false, true]);
+    }
   });
 
   it('leaves a detached note alone after the tab was hidden, on both paths', async () => {
