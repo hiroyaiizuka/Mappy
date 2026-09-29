@@ -282,6 +282,11 @@ export class MindmapView extends FileView {
    */
   private fitHeld = false;
   private saving = false;
+  /**
+   * A save refused for a conflict (`writeOwn`) that no re-read has answered yet: the next one tells the kept drafts even
+   * when it finds the text on screen, since the map may have caught up while the refused save ran (LEV-252).
+   */
+  private refusedUnread = false;
   private revealId: string | null = null;
   private inlineEditor: InlineEditor | undefined;
   /** The last 本文・リンクを編集 modal, so a refresh under its kept draft can update its error line; closed modals no longer show one. */
@@ -1240,8 +1245,14 @@ export class MindmapView extends FileView {
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
     if (own && !changed && sameTargets(this.targets, targets)) return;
     this.publish(changed ? document : undefined, targets);
-    // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that.
-    if (changed && !this.saving) this.tellKeptDrafts();
+    // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that. The
+    // first re-read after a refused save tells them too when it finds the text on screen: a read under way when the save
+    // began published the change while it ran (skipped here, as a save was under way), before the refusal, so no re-read
+    // after the refusal changes the map, and the line would ask for a refresh the map already shows (LEV-252).
+    if ((changed || this.refusedUnread) && !this.saving) {
+      this.refusedUnread = false;
+      this.tellKeptDrafts();
+    }
   }
 
   /** `document` (when the note changed) and the called maps become what the map shows, and are drawn. */
@@ -2065,7 +2076,11 @@ export class MindmapView extends FileView {
       // A layout button pressed after the edit was planned (LEV-196) is carried over by the store.
       try { write = await perform(file); }
       // A refused write means the note moved on; re-read it here too, so a kept draft can retry even where no watcher reports the change.
-      catch (error) { this.scheduleRefresh(); throw error; }
+      catch (error) {
+        if (error instanceof ConflictError) this.refusedUnread = true;
+        this.scheduleRefresh();
+        throw error;
+      }
       const written = write.after;
       // What the next read of this note is measured against: the folds, the selection, a drag and any open
       // draft all name nodes by id, and only these edits can carry those ids over the re-parse (LEV-146). The

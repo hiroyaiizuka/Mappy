@@ -295,6 +295,58 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     } finally { restore(); }
   });
 
+  // LEV-252: Enter while the debounced re-read is still reading the note. The read publishes the external change while
+  // the save is under way, before the save is refused, and the re-read the refusal schedules finds the text on screen:
+  // neither is a re-read that changed the map after the conflict, and the line stayed on CONFLICT though the map was
+  // current and the next Enter applied. Both drafts, the body modal's and the inline editor's.
+  it.each(['body modal', 'inline editor'] as const)('turns the %s line to REFRESHED when the map caught up while the refused save ran', async (kind) => {
+    const mounted = await mount(SOURCE);
+    const { app, source, key, refreshed, element, node, external, settle, draft, view } = mounted;
+    let input: HTMLTextAreaElement;
+    let line: () => string;
+    if (kind === 'body modal') {
+      element(node('学ぶこと').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+      menuItem('本文・リンクを編集').click();
+      await settle();
+      const modal = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
+      if (!modal) throw new Error('The body modal did not open');
+      input = modal;
+      input.value = '新しい本文';
+      line = () => document.querySelector('.modal .mappy-edit-error')?.textContent ?? '';
+    } else {
+      input = await draft('学ぶこと', '学ぶこと（編集）');
+      line = mounted.error;
+    }
+    const enter = (): void => { key(input, 'Enter', kind === 'body modal' ? { metaKey: true } : {}); };
+    const vault = app.asApp<App>().vault;
+    const read = vault.read.bind(vault);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow = vi.spyOn(vault, 'read').mockImplementation(async file => { const text = await read(file); await gate; return text; });
+    try {
+      external(EXTERNAL);
+      // Past the 45 ms debounce: the re-read has read the note and is held before it returns.
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(documentOf(view).source).toBe(SOURCE);
+      enter();
+      release();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(source()).toBe(EXTERNAL);
+      expect(documentOf(view).source).toBe(EXTERNAL);
+      expect(line()).toBe(CONFLICT);
+    } finally { slow.mockRestore(); }
+
+    await refreshed();
+    expect(line()).toBe(REFRESHED);
+    expect(document.contains(input)).toBe(true);
+    enter();
+    await refreshed();
+    expect(source()).toBe(kind === 'body modal'
+      ? EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと\n\n    新しい本文\n')
+      : EXTERNAL.replace('  - 学ぶこと\n', '  - 学ぶこと（編集）\n'));
+    expect(document.contains(input)).toBe(false);
+  });
+
   it('refuses a title draft when the external change wrote a body under the node, as the doc row says', async () => {
     const mounted = await mount(SOURCE);
     const input = await mounted.draft('学ぶこと', '学ぶこと（編集）');
