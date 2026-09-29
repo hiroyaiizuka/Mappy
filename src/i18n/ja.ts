@@ -75,8 +75,8 @@ export const ja: Messages = {
   setFolderDesc: "Vault からの相対パスです。空欄なら Obsidian の「新規ノートの作成場所」に従い、/ で最上位を指定します。存在しないフォルダは作成時に作ります。",
   setFolderPlaceholder: "例: Maps",
   setLayouts: "左下に表示するレイアウト",
-  setLayoutsDesc: "マップの左下に並ぶレイアウトのボタンです。通常マップは外せません。開いているノートの mappy-layout が非表示のレイアウトなら、そのノートではそのボタンも出ます。非表示にしても mappy-layout の保存・復元、コマンド、埋め込み表示、Excalidraw への挿入は変わりません。",
-  setHiddenDefault: (layout: string) => `既定レイアウト「${layout}」は左下に出しません。新規マップはそのレイアウトで作られ、そのノートではボタンも出ます。`,
+  setLayoutsDesc: "マップの左下に並ぶレイアウトのボタンです。通常マップと新規マップの既定レイアウトは外せません。開いているノートの mappy-layout が非表示のレイアウトなら、そのノートではそのボタンも出ます。非表示にしても mappy-layout の保存・復元、コマンド、埋め込み表示、Excalidraw への挿入は変わりません。",
+  setLockedDefault: (layout: string) => `「${layout}」は新規マップの既定レイアウトなので外せません。`,
   setSaveFailed: "設定を保存できませんでした。",
 
   dropStalled: "描画が終わらないノードがあるため、描けたところまでのマップに合わせます。",

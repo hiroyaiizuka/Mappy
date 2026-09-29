@@ -3,8 +3,8 @@ import { LAYOUT_MODES } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, isMapTheme, normalizeSettings, readSettingField, readVisibleLayouts } from '../../src/obsidian/settings';
 
 describe('normalizeSettings', () => {
-  it('returns the defaults, which reproduce the behaviour before the settings existed, when nothing is stored', () => {
-    expect(DEFAULT_SETTINGS).toEqual({ theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '', visibleLayouts: ['mindmap', 'timeline', 'hierarchy', 'balanced'] });
+  it('returns the defaults when nothing is stored: three buttons at the bottom left, the balanced map off (LEV-257)', () => {
+    expect(DEFAULT_SETTINGS).toEqual({ theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '', visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] });
     for (const raw of [undefined, null, '', 0, false, [], 'settings']) {
       expect(normalizeSettings(raw)).toEqual(DEFAULT_SETTINGS);
     }
@@ -29,10 +29,11 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ newMapFolder: 42 })).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings({ newMapFolder: null })).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings({ theme: null, defaultLayout: null, newMapFolder: undefined, visibleLayouts: null })).toEqual(DEFAULT_SETTINGS);
-    // The data file of the version before the layout list: every button shows, as it did then.
+    // The data file of the version before the layout list: nothing was chosen, so the current default list, plus the default layout.
     expect(normalizeSettings({ theme: 'dark', defaultLayout: 'timeline', newMapFolder: 'Maps' })).toEqual({
-      theme: 'dark', defaultLayout: 'timeline', newMapFolder: 'Maps', visibleLayouts: [...LAYOUT_MODES],
+      theme: 'dark', defaultLayout: 'timeline', newMapFolder: 'Maps', visibleLayouts: ['mindmap', 'timeline', 'hierarchy'],
     });
+    expect(normalizeSettings({ defaultLayout: 'balanced' }).visibleLayouts).toEqual([...LAYOUT_MODES]);
   });
 
   it('trims the folder and drops keys it does not know', () => {
@@ -63,9 +64,9 @@ describe('visibleLayouts (the bottom-left layout buttons, M14)', () => {
     expect(normalizeSettings({ visibleLayouts: [...LAYOUT_MODES].reverse() }).visibleLayouts).toEqual([...LAYOUT_MODES]);
   });
 
-  it('treats anything but an array as unset, so every button shows', () => {
+  it('treats anything but an array as unset, so the default buttons show', () => {
     for (const raw of ['timeline', 'mindmap,timeline', 0, true, {}, { mindmap: true }, null, undefined]) {
-      expect(normalizeSettings({ visibleLayouts: raw }).visibleLayouts).toEqual([...LAYOUT_MODES]);
+      expect(normalizeSettings({ visibleLayouts: raw }).visibleLayouts).toEqual(['mindmap', 'timeline', 'hierarchy']);
       expect(readVisibleLayouts(raw)).toBeNull();
     }
     expect(readSettingField('visibleLayouts', 'timeline')).toBeNull();
@@ -73,8 +74,18 @@ describe('visibleLayouts (the bottom-left layout buttons, M14)', () => {
   });
 
   it('does not touch the other fields when normalizing the list', () => {
-    expect(normalizeSettings({ theme: 'light', defaultLayout: 'timeline', newMapFolder: 'Maps', visibleLayouts: ['hierarchy'] })).toEqual({
-      theme: 'light', defaultLayout: 'timeline', newMapFolder: 'Maps', visibleLayouts: ['mindmap', 'hierarchy'],
+    expect(normalizeSettings({ theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps', visibleLayouts: ['timeline'] })).toEqual({
+      theme: 'light', defaultLayout: 'hierarchy', newMapFolder: 'Maps', visibleLayouts: ['mindmap', 'timeline', 'hierarchy'],
     });
+  });
+
+  it('keeps a stored list as chosen, the balanced map included, but always shows the default layout (LEV-257)', () => {
+    // Saved by an earlier version with all four on: the user's list stays, the new default does not replace it.
+    expect(normalizeSettings({ visibleLayouts: [...LAYOUT_MODES] }).visibleLayouts).toEqual([...LAYOUT_MODES]);
+    // A default layout that was hidden before the lock: it is shown again and stays the default.
+    const stored = normalizeSettings({ defaultLayout: 'balanced', visibleLayouts: ['mindmap', 'timeline'] });
+    expect(stored.defaultLayout).toBe('balanced');
+    expect(stored.visibleLayouts).toEqual(['mindmap', 'timeline', 'balanced']);
+    for (const layout of LAYOUT_MODES) expect(normalizeSettings({ defaultLayout: layout, visibleLayouts: [] }).visibleLayouts).toEqual(layout === 'mindmap' ? ['mindmap'] : ['mindmap', layout]);
   });
 });

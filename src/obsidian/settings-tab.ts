@@ -1,7 +1,7 @@
 import { Notice, PluginSettingTab, Setting, ToggleComponent, type App, type Plugin } from 'obsidian';
-import { LAYOUT_MODES, layoutLabel } from '../core/layout-mode';
+import { LAYOUT_MODES, layoutLabel, type LayoutMode } from '../core/layout-mode';
 import {
-  DEFAULT_SETTINGS, MAP_THEMES, isSettingKey, readSettingField, type MapTheme, type MappySettings, type SettingKey,
+  DEFAULT_SETTINGS, MAP_THEMES, isSettingKey, readSettingField, showDefaultLayout, type MapTheme, type MappySettings, type SettingKey,
 } from './settings';
 import { t } from '../i18n';
 
@@ -79,11 +79,11 @@ export function mapSettingDefinitions(renderLayouts: (setting: Setting) => void 
 
 export class MappySettingTab extends PluginSettingTab {
   /**
-   * The line under the layout toggles about a hidden default layout. Set by the row's render and
-   * dropped by its cleanup (1.13+) or the next `display()`; a save that resolves after the tab was
-   * hidden finds it detached and leaves it alone.
+   * The layout row's toggles and the line under them naming the locked default layout. Set by the
+   * row's render and dropped by its cleanup (1.13+) or the next `display()`; a save that resolves
+   * after the tab was hidden finds them detached and leaves them alone.
    */
-  private hiddenDefaultEl: HTMLElement | undefined;
+  private layoutRow: { toggles: Map<LayoutMode, ToggleComponent>; note: HTMLElement } | undefined;
 
   constructor(app: App, plugin: Plugin, private readonly store: SettingsStore) { super(app, plugin); }
 
@@ -96,19 +96,22 @@ export class MappySettingTab extends PluginSettingTab {
     return isSettingKey(key) ? this.store.current()[key] : undefined;
   }
 
-  /** A value the control cannot hold (or a key that is not a setting) is not saved. */
+  /**
+   * A value the control cannot hold (or a key that is not a setting) is not saved. A hidden layout
+   * chosen as the default is shown in the same save, so the pair is never stored apart.
+   */
   setControlValue(key: string, value: unknown): Promise<void> {
     if (!isSettingKey(key)) return Promise.resolve();
     const accepted = readSettingField(key, value);
     if (accepted === null) return Promise.resolve();
-    return this.store.save({ ...this.store.current(), [key]: accepted }).then(() => { this.refreshHiddenDefault(); });
+    return this.store.save(showDefaultLayout({ ...this.store.current(), [key]: accepted })).then(() => { this.refreshLayoutRow(); });
   }
 
   /** Obsidian before 1.13: the same four settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    this.hiddenDefaultEl = undefined;
+    this.layoutRow = undefined;
     const settings = this.store.current();
     for (const definition of this.getSettingDefinitions()) {
       const setting = new Setting(containerEl).setName(definition.name).setDesc(definition.desc);
@@ -128,41 +131,47 @@ export class MappySettingTab extends PluginSettingTab {
   }
 
   /**
-   * The bottom-left bar's buttons as four toggles on one row: the regular map is on and cannot be
-   * changed, the others save through the same reader as the data file, so the stored list stays
-   * normalized. Each toggle's text flips it too, as a setting row's name does. The line under them
-   * notes a default layout that is hidden: new maps are still created with it, and then show its button.
+   * The bottom-left bar's buttons as four toggles on one row: the regular map and the default layout
+   * are on and cannot be changed (the line under them names the default), the others save through
+   * the same reader as the data file, so the stored list stays normalized. Each toggle's text flips
+   * it too, as a setting row's name does.
    */
   private renderLayoutToggles(setting: Setting): () => void {
     const list = setting.controlEl.createDiv({ cls: 'mappy-setting-layouts' });
-    const shown = this.store.current().visibleLayouts;
+    const toggles = new Map<LayoutMode, ToggleComponent>();
     for (const mode of LAYOUT_MODES) {
       const item = list.createDiv({ cls: 'mappy-setting-layout' });
       const name = layoutLabel(mode);
       const label = item.createSpan({ text: name });
-      const toggle = new ToggleComponent(item).setValue(shown.includes(mode)).setTooltip(name);
-      if (mode === 'mindmap') { toggle.setDisabled(true); continue; }
-      label.addEventListener('click', () => { toggle.setValue(!toggle.getValue()); });
+      const toggle = new ToggleComponent(item).setTooltip(name);
+      toggles.set(mode, toggle);
+      label.addEventListener('click', () => { if (!toggle.disabled) toggle.setValue(!toggle.getValue()); });
       toggle.onChange(on => {
         const current = this.store.current().visibleLayouts;
-        // Already so: the toggle was put back after a failed save, or the store changed under it.
+        // Already so: the toggle was put back after a failed save, synced to the store, or the store changed under it.
         if (on === current.includes(mode)) return;
         const others = current.filter(other => other !== mode);
         this.commit('visibleLayouts', on ? [...others, mode] : others, () => { toggle.setValue(!on); });
       });
     }
-    this.hiddenDefaultEl = setting.descEl.createDiv({ cls: 'mappy-setting-note' });
-    this.refreshHiddenDefault();
-    return () => { this.hiddenDefaultEl = undefined; };
+    const row = { toggles, note: setting.descEl.createDiv({ cls: 'mappy-setting-note' }) };
+    this.layoutRow = row;
+    this.refreshLayoutRow();
+    return () => { if (this.layoutRow === row) this.layoutRow = undefined; };
   }
 
-  private refreshHiddenDefault(): void {
-    const line = this.hiddenDefaultEl;
-    if (!line?.isConnected) return;
+  /** Show the stored list and lock the regular map and the default layout; called on render and after each save. */
+  private refreshLayoutRow(): void {
+    const row = this.layoutRow;
+    if (!row?.note.isConnected) return;
     const { defaultLayout, visibleLayouts } = this.store.current();
-    const hidden = !visibleLayouts.includes(defaultLayout);
-    line.setText(hidden ? t().setHiddenDefault(layoutLabel(defaultLayout)) : '');
-    line.hidden = !hidden;
+    for (const [mode, toggle] of row.toggles) {
+      toggle.setDisabled(mode === 'mindmap' || mode === defaultLayout);
+      toggle.setValue(visibleLayouts.includes(mode));
+    }
+    const named = defaultLayout !== 'mindmap';
+    row.note.setText(named ? t().setLockedDefault(layoutLabel(defaultLayout)) : '');
+    row.note.hidden = !named;
   }
 
   /** Save one field; when the save fails, `revert` puts the control back to what is still stored. */

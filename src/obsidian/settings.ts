@@ -21,12 +21,14 @@ export interface MappySettings {
   newMapFolder: string;
   /**
    * The layout buttons the map shows at the bottom left, in LAYOUT_MODES order and always with the
-   * regular map. Presentation only: a hidden layout still saves, restores, embeds and exports as before.
+   * regular map and the default layout. Presentation only: a hidden layout still saves, restores,
+   * embeds and exports as before.
    */
   visibleLayouts: LayoutMode[];
 }
 
-export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '', visibleLayouts: [...LAYOUT_MODES] };
+/** The balanced map is off until chosen (LEV-257); a stored list, whatever it holds, is kept. */
+export const DEFAULT_SETTINGS: MappySettings = { theme: 'follow', defaultLayout: 'mindmap', newMapFolder: '', visibleLayouts: ['mindmap', 'timeline', 'hierarchy'] };
 
 export type SettingKey = keyof MappySettings;
 
@@ -61,15 +63,26 @@ export function readSettingField<K extends SettingKey>(key: K, value: unknown): 
 }
 
 /**
+ * The default layout's button is always shown, as the regular map's is (LEV-257): a list without
+ * it — stored before the lock, or left behind when a hidden layout becomes the default — gets it
+ * back, in LAYOUT_MODES order. The default itself is never moved; it is the more deliberate choice.
+ */
+export function showDefaultLayout(settings: MappySettings): MappySettings {
+  const { defaultLayout, visibleLayouts } = settings;
+  if (visibleLayouts.includes(defaultLayout)) return settings;
+  return { ...settings, visibleLayouts: LAYOUT_MODES.filter(mode => mode === defaultLayout || visibleLayouts.includes(mode)) };
+}
+
+/**
  * Stored data may be missing, from an older version or hand-edited; anything
  * unknown falls back to the default field by field, and unknown keys are dropped.
  */
 export function normalizeSettings(raw: unknown): MappySettings {
   const data = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
-  return {
+  return showDefaultLayout({
     theme: readSettingField('theme', data.theme) ?? DEFAULT_SETTINGS.theme,
     defaultLayout: readSettingField('defaultLayout', data.defaultLayout) ?? DEFAULT_SETTINGS.defaultLayout,
     newMapFolder: readSettingField('newMapFolder', data.newMapFolder) ?? DEFAULT_SETTINGS.newMapFolder,
     visibleLayouts: readSettingField('visibleLayouts', data.visibleLayouts) ?? [...DEFAULT_SETTINGS.visibleLayouts],
-  };
+  });
 }
