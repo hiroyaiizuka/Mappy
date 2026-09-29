@@ -51,6 +51,12 @@ export function calledNodeId(callerId: string, nodeId: string): string {
   return `${callerId}/${nodeId}`;
 }
 
+/** The calling item's id in an id of `calledNodeId`; undefined for a document's own id. */
+export function callerOfCalledNode(id: string): string | undefined {
+  const slash = id.indexOf('/');
+  return slash > 0 ? id.slice(0, slash) : undefined;
+}
+
 /**
  * Graft the called maps into the trees: an item in `targets` whose title is still one
  * embed becomes a copy titled as the called root, its children the called root's children

@@ -208,6 +208,48 @@ function carriedIds(nodes: MindNode[], previous: MindDocument, edits: readonly T
   return carried;
 }
 
+/**
+ * A wikilink or embed (its target), or a Markdown link's destination (`<…>`, or with one level of parentheses) and its
+ * title, which a rename leaves as it is.
+ */
+const LINK = /\[\[([^\]\n]*)\]\]|\]\((<[^>\n]*>|(?:[^()\s]|\([^()\s]*\))*)((?:[ \t]+"[^"\n]*")?)\)/gu;
+
+/** `text` with the targets of its links left out, and those targets in order: what a rename's link update does not change, and what it does. */
+function linkTargets(text: string): { skeleton: string; targets: string[] } {
+  const targets: string[] = [];
+  const skeleton = text.replace(LINK, (_match, wiki: string | undefined, destination: string | undefined, title: string | undefined) => {
+    targets.push(wiki ?? destination ?? '');
+    return wiki === undefined ? '](' + (title ?? '') + ')' : '[[]]';
+  });
+  return { skeleton, targets };
+}
+
+/**
+ * Whether `source` is `previous.source` with some links rewritten the way the link update of a rename rewrites them,
+ * and not a byte besides: Obsidian rewrites every link to the renamed note in one write — in titles, bodies and the
+ * header alike — so two items calling one note change together, and neither the title rules nor the single title-only
+ * edit can match them. Every other byte in place, the nodes correspond by position, which is no guess (LEV-246). A
+ * rename sends each old target one way and to no target another rewritten link had: two lines of links swapped
+ * (`A`→`B` with `B`→`A`) are no rename, and are matched by their titles as before (code review 2).
+ */
+function linksRewritten(nodes: readonly MindNode[], previous: MindDocument, source: string): boolean {
+  if (source === previous.source || previous.nodes.length !== nodes.length) return false;
+  if (!source.includes('[[') && !source.includes('](')) return false;
+  const before = linkTargets(previous.source);
+  const after = linkTargets(source);
+  // Equal skeletons hold the same number of links: each leaves one mark.
+  if (before.skeleton !== after.skeleton) return false;
+  const renamed = new Map<string, string>();
+  for (const [index, from] of before.targets.entries()) {
+    const to = after.targets[index]!;
+    if (from === to) continue;
+    if ((renamed.get(from) ?? to) !== to) return false;
+    renamed.set(from, to);
+  }
+  if (renamed.size === 0 || Array.from(renamed.values()).some((to) => renamed.has(to))) return false;
+  return nodes.every((node, index) => previous.nodes[index]?.kind === node.kind && previous.nodes[index]?.level === node.level);
+}
+
 function assignIds(
   nodes: MindNode[], previous: MindDocument | undefined, source: string, edits?: readonly TextEdit[],
 ): void {
@@ -217,6 +259,10 @@ function assignIds(
     return;
   }
   if (!previous) return;
+  if (!edits?.length && linksRewritten(nodes, previous, source)) {
+    nodes.forEach((node, index) => { node.id = previous.nodes[index]?.id ?? node.id; });
+    return;
+  }
   // The rules below guess from the text, for the changes this map did not make; a node the edits already
   // answered for is left alone, and its id is not handed to a second node.
   // An empty set is not a set of edits: a caller that has nothing to say about how `source` came about is

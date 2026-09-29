@@ -71,11 +71,13 @@ describe('CallReader', () => {
   });
 });
 
-describe('CallReader.listen (LEV-221)', () => {
-  function writesOf(reader: CallReader): Map<string, { size: number }> {
-    return (reader as unknown as { writes: Map<string, { size: number }> }).writes;
-  }
+/** The reader's records by the path of their note now (it keeps them by the note's `TFile`, LEV-246). */
+function writesOf(reader: CallReader): Map<string, { size: number }> {
+  const writes = (reader as unknown as { writes: Map<{ path: string } | string, { size: number }> }).writes;
+  return new Map(Array.from(writes, ([file, record]) => [typeof file === 'string' ? file : file.path, record]));
+}
 
+describe('CallReader.listen (LEV-221)', () => {
   it('records the store\'s writes on a note read here only while listening, and forgets them with the note', async () => {
     const app = new HarnessApp();
     app.put('Host.md', HOST);
@@ -166,6 +168,124 @@ describe('CallReader.listen (LEV-221)', () => {
     expect(writesOf(reader).has('Map.md')).toBe(true);
     second();
     expect(writesOf(reader).size).toBe(0);
+  });
+});
+
+describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', () => {
+  const TWINS = '---\nmappy: true\n---\n## 講座\n- 同名\n  - A\n- 同名\n  - B\n- \n- \n';
+  /** The host as its view parses it: from the document it showed, so the calling item keeps its id when its link changes. */
+  let shown: ReturnType<typeof parseMarkdown> | undefined;
+  const hostOf = (link: string): ReturnType<typeof parseMarkdown> => (shown = parseMarkdown(`---\nmappy: true\n---\n## ホスト\n- ![[${link}]]\n`, 'Host', shown));
+  const ids = (targets: Awaited<ReturnType<CallReader['read']>>): string[] | undefined => Array.from(targets.values())[0]?.document.nodes.map(node => node.id);
+
+  it('follows the note renamed and moved (the same `TFile`) with its parse and its record', async () => {
+    const app = new HarnessApp();
+    app.put('Fixtures/Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const first = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    expect(first).toHaveLength(7);
+    app.rename('Fixtures/Map.md', 'Fixtures/Renamed.md');
+    expect({ reads: reader.reads('Fixtures/Renamed.md'), kept: writesOf(reader).has('Fixtures/Renamed.md') }).toEqual({ reads: true, kept: true });
+    expect(ids(await reader.read(hostOf('Renamed'), 'Host.md'))).toEqual(first);
+    app.rename('Fixtures/Renamed.md', 'Moved/Renamed.md');
+    expect(reader.reads('Moved/Renamed.md')).toBe(true);
+    const moved = await reader.read(hostOf('Renamed'), 'Host.md');
+    expect({ ids: ids(moved), path: Array.from(moved.values())[0]?.path }).toEqual({ ids: first, path: 'Moved/Renamed.md' });
+    // Deleted, and a note made again at the same path: another file, whose nodes are new (code review 1 of LEV-246).
+    app.remove('Moved/Renamed.md');
+    app.put('Moved/Renamed.md', TWINS);
+    const made = ids(await reader.read(hostOf('Renamed'), 'Host.md'));
+    expect(made?.some(id => first?.includes(id))).toBe(false);
+    stop();
+  });
+
+  it('a rename while the note is being read keeps its parse and its record, and the target names the new path (code review 1 of LEV-246)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const first = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    const read = store.read.bind(store);
+    let answer: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { answer = resolve; });
+    const spy = vi.spyOn(store, 'read').mockImplementation(async file => { await held; return read(file); });
+    const reading = reader.read(hostOf('Map'), 'Host.md');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    app.rename('Map.md', 'Renamed.md');
+    answer();
+    const targets = await reading;
+    spy.mockRestore();
+    expect({ ids: ids(targets), path: Array.from(targets.values())[0]?.path, reads: reader.reads('Renamed.md'), kept: writesOf(reader).has('Renamed.md') })
+      .toEqual({ ids: first, path: 'Renamed.md', reads: true, kept: true });
+    stop();
+  });
+
+  it('counts as waiting only the items that may call a map again, and keeps the last parses only while one waits (code review 2)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    app.put('pic.png', '');
+    app.put('Host.md', '---\nmappy: true\n---\n## ホスト\n');
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    let previous: ReturnType<typeof parseMarkdown> | undefined;
+    const host = (items: string[]): ReturnType<typeof parseMarkdown> => (previous = parseMarkdown(`---\nmappy: true\n---\n## ホスト\n${items.map(item => `- ${item}\n`).join('')}`, 'Host', previous));
+    const calling = host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']);
+    await reader.read(calling, 'Host.md');
+    const lasts = (): string[] => Array.from((reader as unknown as { last: Map<{ path: string }, unknown> }).last.keys(), file => file.path);
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: ['Map.md'] });
+    // The call taken out, an image, a block reference and the host itself left: nothing waits, the last parse goes.
+    await reader.read(host(['![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: [] });
+    // A link that finds no note, and a Markdown note that is no map now: both wait.
+    await reader.read(host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
+    app.put('Map.md', TWINS.replace('mappy: true\n', ''));
+    const pending = host(['![[Map]]', '![[Missing]]']);
+    await reader.read(pending, 'Host.md');
+    expect({ waiting: Array.from(reader.waiting).sort(), lasts: lasts() }).toEqual({ waiting: pending.nodes.slice(1).map(node => node.id).sort(), lasts: ['Map.md'] });
+    // Deleted: its last parse goes at once, and that it was read stays for the host's next read.
+    app.remove('Map.md');
+    expect(lasts()).toEqual([]);
+    // Per note (code review 3): an item waiting for another note keeps nothing of a note its own item left.
+    app.put('A.md', TWINS);
+    app.put('B.md', TWINS);
+    await reader.read(host(['![[A]]', '![[Missing]]']), 'Host.md');
+    expect(lasts()).toEqual(['A.md']);
+    await reader.read(host(['![[B]]', '![[Missing]]']), 'Host.md');
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 1, lasts: ['B.md'] });
+    stop();
+  });
+
+  it('keeps the last parse as the reference past a failed read, a text that is no map and a read that no longer calls the note; clear lets go of it', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const first = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    const read = app.vault.read;
+    app.vault.read = () => Promise.reject(new Error('busy'));
+    expect((await reader.read(hostOf('Map'), 'Host.md')).size).toBe(0);
+    expect(reader.reads('Map.md')).toBe(false);
+    app.vault.read = read;
+    expect(ids(await reader.read(hostOf('Map'), 'Host.md'))).toEqual(first);
+    app.put('Map.md', TWINS.replace('mappy: true', 'mappy: "true"'));
+    expect((await reader.read(hostOf('Map'), 'Host.md')).size).toBe(0);
+    app.put('Map.md', TWINS);
+    expect(ids(await reader.read(hostOf('Map'), 'Host.md'))).toEqual(first);
+    // The item points elsewhere for a read (the link not yet updated): the note is not read, and comes back as it was.
+    expect((await reader.read(hostOf('Missing'), 'Host.md')).size).toBe(0);
+    expect(reader.holding).toBe(true);
+    expect(ids(await reader.read(hostOf('Map'), 'Host.md'))).toEqual(first);
+    // The host calls nothing: every parse goes, the last ones too, and the note comes back as new.
+    await reader.clear();
+    expect(reader.holding).toBe(false);
+    const again = ids(await reader.read(hostOf('Map'), 'Host.md'));
+    expect(again?.some(id => first?.includes(id))).toBe(false);
+    stop();
   });
 });
 

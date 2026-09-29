@@ -341,6 +341,33 @@ describe('source-preserving Markdown projection', () => {
     expect(renamed.nodes[0]?.id).toBe(moved.nodes[0]?.id);
   });
 
+  it('keeps every id through a rename\'s link update: titles rewritten inside their links and not a byte besides (LEV-246)', () => {
+    const before = '## 呼び出し元\n- ![[地図]]\n  - 子\n- ![[地図]]\n- 見て [[地図|別名]] ![[地図#節]]\n- \n- \n';
+    const first = parseMarkdown(before, 'Note');
+    const ids = first.nodes.map((node) => node.id);
+    const relinked = parseMarkdown(before.replaceAll('[[地図', '[[Folder/新しい地図'), 'Note', first);
+    expect(relinked.nodes.map((node) => node.id)).toEqual(ids);
+    // Anything else changed with it is no link update: the titles are matched as before, and the twins guessed at by nothing.
+    const edited = parseMarkdown(before.replaceAll('[[地図', '[[新').replace('  - 子\n', '  - 子を改名\n'), 'Note', first);
+    expect(edited.nodes[0]?.id).toBe(ids[0]);
+    expect([edited.nodes[1]?.id, edited.nodes[3]?.id].some((id) => ids.includes(id ?? ''))).toBe(false);
+    // The update rewrites every link to the note at once: in the header, in a body and as a Markdown link too (code review 1).
+    const everywhere = `---\nrelated: "[[地図]]"\n---\n${before}  本文の [[地図]] と [地図](地図.md) と [題つき](地図.md "メモ")\n`;
+    const everywhereFirst = parseMarkdown(everywhere, 'Note');
+    const everywhereRelinked = parseMarkdown(everywhere.replaceAll('[[地図', '[[新しい地図').replaceAll('(地図.md', '(新しい地図.md'), 'Note', everywhereFirst);
+    expect(everywhereRelinked.nodes.map((node) => node.id)).toEqual(everywhereFirst.nodes.map((node) => node.id));
+    // A name with parentheses: the Markdown link's destination holds them (code review 2).
+    const parens = parseMarkdown(everywhere.replaceAll('[[地図', '[[地図 (2)').replaceAll('(地図.md)', '(地図%20(2).md)'), 'Note', everywhereFirst);
+    expect(parens.nodes.map((node) => node.id)).toEqual(everywhereFirst.nodes.map((node) => node.id));
+    // Two lines of links swapped are no rename (A→B with B→A): each keeps its own id by its title (code review 2).
+    const pair = parseMarkdown('## 目次\n- ![[甲]]\n- ![[乙]]\n- [[丙]]\n- [[丁|別名]]\n', 'Note');
+    const swapped = parseMarkdown('## 目次\n- ![[乙]]\n- ![[甲]]\n- [[丁|別名]]\n- [[丙]]\n', 'Note', pair);
+    expect(swapped.nodes.map((node) => node.id)).toEqual([pair.nodes[0]?.id, pair.nodes[2]?.id, pair.nodes[1]?.id, pair.nodes[4]?.id, pair.nodes[3]?.id]);
+    // Titles changed outside their links are no link update either, even with every other byte in place.
+    const retitled = parseMarkdown(before.replaceAll('![[地図]]', '![[地図]] 済'), 'Note', first);
+    expect([retitled.nodes[1]?.id, retitled.nodes[3]?.id].some((id) => ids.includes(id ?? ''))).toBe(false);
+  });
+
   it('keeps same-titled top-level sections whose text is unchanged, and guesses nothing from a title or a position alone', () => {
     const source = '# Same\nOne\n\n# Same\nTwo';
     const first = parseMarkdown(source, 'Note');

@@ -5,7 +5,7 @@ import { EXIT_SOURCE_LIMIT, textFingerprint, type ExitDraft } from "../core/exit
 import { findNode, getNode, nodeAt } from "../core/text-edits";
 import { planMapLayout } from "../core/layout-key";
 import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
-import { initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
+import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
@@ -165,6 +165,8 @@ export class MindmapView extends FileView {
   private readonly reader: CallReader;
   /** Ids of the called nodes the view has shown; a call new to it starts folded below the called root's children. */
   private knownCalled = new Set<string>();
+  /** The items the read of `targets` found waiting for a map (`CallReader.waiting`), for a draw with no read of its own. */
+  private waitingCalls: ReadonlySet<string> = new Set();
   private recallTimer: number | undefined;
   /**
    * The trees on the map (§5 M7, M12): the body root and the free topics as written (`split`) and with the called
@@ -492,7 +494,7 @@ export class MindmapView extends FileView {
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.writes.clear(); this.loads += 1; this.owed = false;
-    this.targets = new Map(); this.knownCalled.clear(); void this.reader.clear();
+    this.targets = new Map(); this.knownCalled.clear(); this.waitingCalls = new Set(); void this.reader.clear();
     await super.onUnloadFile(file);
   }
 
@@ -1233,6 +1235,8 @@ export class MindmapView extends FileView {
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path, () => !stale()) : new Map();
     if (stale()) return;
+    // The items this very read found waiting for a map (the reader's reads run one after another).
+    const waiting = this.callsMaps(document) ? this.reader.waiting : new Set<string>();
     // A note that calls nothing lets go of the called notes read before (LEV-221: their records would grow unread).
     if (!this.callsMaps(document) && this.reader.holding) void this.reader.clear(() => !stale());
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
@@ -1247,7 +1251,7 @@ export class MindmapView extends FileView {
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
     if (own && !changed && sameTargets(this.targets, targets)) return;
-    this.publish(changed ? document : undefined, targets);
+    this.publish(changed ? document : undefined, targets, waiting);
     // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that. So is
     // any read of the note a refused save left owed (`owed`, LEV-252): a read under way when the save began may have
     // published the change while it ran, before the refusal, and then no re-read after it changes the map.
@@ -1258,14 +1262,14 @@ export class MindmapView extends FileView {
   }
 
   /** `document` (when the note changed) and the called maps become what the map shows, and are drawn. */
-  private publish(document: MindDocument | undefined, targets: CallTargets): void {
+  private publish(document: MindDocument | undefined, targets: CallTargets, waiting: ReadonlySet<string>): void {
     if (document) {
       this.document = document;
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
       if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
     }
-    this.adopt(targets);
+    this.adopt(targets, waiting);
     this.emptyState.hidden = true;
     this.draw();
   }
@@ -1297,7 +1301,7 @@ export class MindmapView extends FileView {
     const before = embeds(previous);
     const after = embeds(replayed.document);
     const kept = new Map(Array.from(this.targets).filter(([id]) => (before.get(id) ?? null) !== null && before.get(id) === after.get(id)));
-    this.publish(replayed.document, kept);
+    this.publish(replayed.document, kept, this.waitingCalls);
     return true;
   }
 
@@ -1347,8 +1351,9 @@ export class MindmapView extends FileView {
     const current = (): boolean => !this.closed && epoch === this.epoch && this.document === document && file === this.file;
     const targets = await this.reader.read(document, file.path, current);
     if (!current()) return;
+    const waiting = this.reader.waiting;
     if (sameTargets(this.targets, targets)) return;
-    this.adopt(targets);
+    this.adopt(targets, waiting);
     this.draw();
   }
 
@@ -1366,17 +1371,22 @@ export class MindmapView extends FileView {
    * folds are pruned to the nodes that exist, and a call new to the view starts folded below its root's children.
    * The only place `targets`, the projection and the fold set change together, so `projection()` stays a reader.
    */
-  private adopt(targets: CallTargets): void {
+  private adopt(targets: CallTargets, waiting: ReadonlySet<string>): void {
     const document = this.document;
     if (!document) return;
     if (this.projected?.document === document && sameTargets(this.projected.targets, targets)) return;
     if (!sameTargets(this.targets, targets)) this.targets = targets;
     const trees = projectShown(document, this.targets);
     this.projected = { document, targets: this.targets, trees, positions: readTopicPositions(document.source), keys: topicKeys(document) };
-    const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id)));
+    // An item that still calls a map whose read fails for now (the note unreadable, not a map by its text, renamed
+    // before the link to it is) keeps the folds of the branches it drew, as an embed keeps the reader's: the reader
+    // gives the note back with the same ids once it reads again (LEV-246).
+    this.waitingCalls = waiting;
+    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller) && !this.targets.has(caller); };
+    const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
-    this.knownCalled = new Set(trees.calls.sources.keys());
+    this.knownCalled = new Set([...trees.calls.sources.keys(), ...Array.from(this.knownCalled).filter(kept)]);
   }
 
   /** The trees on the map as `adopt` made them: the body root (`root`) and the free topics with the calls grafted in, and the projection. */
