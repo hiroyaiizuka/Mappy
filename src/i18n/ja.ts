@@ -184,6 +184,7 @@ export const ja: Messages = {
   savingWait: "保存処理が終わってから、もう一度実行してください。",
   rootIsFileName: "このノードはファイル名です。子ノードを追加できます。",
   draftChanged: "編集中の内容が Markdown 側で変わりました。取り消して新しい内容を確認してください。",
+  draftSavedCommandRefused: (reason: string) => `編集中の内容は保存しました。操作は実行していません: ${reason}`,
   formatWhileEditing: "テキストの編集を確定してから、形式を変更してください。",
   convertedToList: "H2 とリストの形式に変更しました。元に戻す操作で復元できます。",
   chooseImage: "画像ファイルを選んでください。",
