@@ -1213,8 +1213,8 @@ export class MindmapView extends FileView {
     const source = read.value;
     const onScreen = source === this.document?.source;
     const changed = !onScreen || this.document?.root.title !== file.basename;
-    // The view's own writes answer for this read while they lead from the text this view last parsed to
-    // exactly the text found; their edits then carry the ids across (LEV-146), and a change someone else made
+    // The view's own writes answer for this read while one of them wrote exactly the text found (replayed from
+    // the text this view last parsed); their edits then carry the ids across (LEV-146), and a change someone else made
     // between them is matched by titles (LEV-238). Another text means someone else has written after them: it is
     // matched by titles from the text the writes the read passed reached (`WriteRecord.unled`, as the embed reads;
     // until LEV-238 from the map on screen, so a node the writes renamed got a new id). A write recorded while this

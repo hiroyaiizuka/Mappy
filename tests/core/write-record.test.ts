@@ -396,6 +396,21 @@ describe('WriteRecord', () => {
     expect(record.replay(write.after, shown, 'n')?.document).toBe(record.replay(write.after, shown, 'n')?.document);
   });
 
+  it('record: a write on the change the first write was made on cuts the write that was taken back (code review 3)', () => {
+    // The reader shows H; someone changes it to X, the store writes w1 on X, the note is put back to X (the Markdown
+    // pane's Undo), and the store writes w2 on X. w1 was taken back: replayed, the read would carry 子1 over a rename the
+    // note no longer has, and match X by titles from its text, where 子1 is not.
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const w1 = rename(elsewhere(H), '子1', 'ずっと長い題名');
+    const w2 = rename(elsewhere(H), '- 親', '- 改名');
+    record.record(w1, H);
+    record.record(w2, H);
+    expect(record.recorded).toEqual([w2]);
+    const read = record.take(w2.after, shown, 'n', record.mark());
+    expect({ child: titled(read, '子1'), parent: titled(read, '改名') }).toEqual({ child: titled(shown, '子1'), parent: titled(shown, '親') });
+  });
+
   it('record: a write on the text a write in the middle of the record left cuts the record there (code review 2)', () => {
     // [w1 A→B, w2 B→C], the note put back to B (the Markdown pane's Undo), and the map writes w3 on B: w2 was taken
     // back, and replayed it would carry ids over a change the note no longer has.

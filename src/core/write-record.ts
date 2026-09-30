@@ -50,8 +50,8 @@ export interface Replayed {
  *
  * Kept by a map embedded in another note (`MapEmbed`, LEV-217), by the maps an item calls (`CallReader`, LEV-221) and by
  * the map tab (`MindmapView`, LEV-150; here since LEV-247). The embed and the called maps read with `take` and `spend`.
- * The view composes the same steps itself (`replay`, `keep`, `drop`, and `take` for a text the record does not lead to,
- * since LEV-238; until then it parsed that text from the map it shows, by titles alone), spends a read's writes only
+ * The view composes the same steps itself (`replay`, `keep`, `drop`, and `unled` for a text the record does not lead
+ * to, since LEV-238; until then it parsed that text from the map it shows, by titles alone), spends a read's writes only
  * after the maps the note calls are read (`version`), and shows its own write before the re-read does. It also hears its own writes twice,
  * the store's word (`record`) and the store's answer (`confirm`, `carry`).
  */
@@ -68,9 +68,10 @@ export class WriteRecord {
    * `shown`, when it is empty) was made on someone else's change the reader has not read yet, and is kept all the same
    * (LEV-238): the store tells a write before any read can find it (`DocumentStore.tell`), so its start is the note as
    * it was then, and the read matches the change by titles and carries the ids through the write. Left out, the
-   * nodes the write renamed or moved would be matched by titles too, from a text two changes away. A write on the text
-   * a write in the middle of the record left cuts the record there, as one on `shown` starts it again: the note was put
-   * back to that text, and the writes after it were taken back (code review 2). Not for a reader that has parsed
+   * nodes the write renamed or moved would be matched by titles too, from a text two changes away. A write on a text
+   * the record passed — one a write in the middle of it left, or one a write was made on (a change the reader had not
+   * read) — cuts the record there, as one on `shown` starts it again: the note was put back to that text, and the
+   * writes after it were taken back (code reviews 2 and 3). Not for a reader that has parsed
    * nothing yet (`shown` undefined): only the writes that lead on from the record's end, as before, so its record does
    * not take every write while its reads fail. A write that changed nothing (the store tells no such write) takes
    * nothing back and carries no id.
@@ -80,10 +81,9 @@ export class WriteRecord {
     const last = this.writes[this.writes.length - 1];
     if (write.before === (last?.write.after ?? shown)) { this.push(write); return; }
     if (write.before === shown) { this.restart(write); return; }
-    let back = this.writes.length - 1;
-    while (back >= 0 && this.writes[back]!.write.after !== write.before) back -= 1;
+    const back = this.passedTo(write.before);
     if (back >= 0) {
-      this.replace(this.writes.slice(0, back + 1));
+      this.replace(this.writes.slice(0, back));
       this.push(write);
     } else if (shown !== undefined) this.push(write);
   }
@@ -166,8 +166,8 @@ export class WriteRecord {
    * read was under way kept for a later read: one recorded before it was put back). When they do not lead there, a
    * parse matched by titles: from `from` for its own text (the note renamed, or put back), keeping the writes recorded
    * while the read was under way; else from the text the writes the read passed reached (`passed`), keeping the rest.
-   * The writes are parsed only once the texts show where they lead. The view takes a text the record does not lead to
-   * here too (LEV-238), and keeps the text on screen itself.
+   * The writes are parsed only once the texts show where they lead. The view parses a text the record does not lead
+   * to with `unled` and spends later; it keeps the text on screen itself.
    */
   take(text: string, from: MindDocument | undefined, basename: string, mark: number): MindDocument {
     const replayed = this.replayed(from, this.reaches(text), basename, false);
@@ -179,7 +179,7 @@ export class WriteRecord {
       this.keep(mark, 0);
       return parseMarkdown(text, basename, from);
     }
-    const unled = this.unled(text, from, basename, mark);
+    const unled = this.unled(text, from, basename, mark, false);
     this.keep(mark, unled.used);
     return unled.document;
   }
@@ -207,11 +207,12 @@ export class WriteRecord {
    * `text` — a text no write reached (`replay`), nor the one on screen — parsed by a read begun at `mark`: from `from`
    * through the writes the read passed (`passed`), then by titles. Nothing is spent: the reader spends `used` writes
    * (`keep`) once what it read is shown, as after a replay (the view, which a newer read may supersede meanwhile, code
-   * review 2 of LEV-238). Each write is parsed once per base document (`parseWrite`), as a replay parses it.
+   * review 2 of LEV-238). For the view (`cached`) each write is parsed once per base document (`parseWrite`), as a
+   * replay parses it; `take` spends what it parses at once.
    */
-  unled(text: string, from: MindDocument | undefined, basename: string, mark: number): Replayed {
+  unled(text: string, from: MindDocument | undefined, basename: string, mark: number, cached = true): Replayed {
     const used = this.passed(text, mark);
-    const reached = from ? this.parse(from, used, basename, true) : undefined;
+    const reached = from ? this.parse(from, used, basename, cached) : undefined;
     return { document: parseMarkdown(text, basename, reached), used };
   }
 
@@ -257,6 +258,19 @@ export class WriteRecord {
   private replace(writes: Recorded[]): void {
     this.writes = writes;
     this.replaced += 1;
+  }
+
+  /**
+   * How many writes to keep when the note was put back to `text`: up to the last one that wrote it, or up to (not
+   * including) the last one made on it after a change the record does not hold; -1 when the record never passed it.
+   */
+  private passedTo(text: string): number {
+    for (let index = this.writes.length - 1; index >= 0; index -= 1) {
+      const { write } = this.writes[index]!;
+      if (write.after === text) return index + 1;
+      if (write.before === text && write.before !== this.writes[index - 1]?.write.after) return index;
+    }
+    return -1;
   }
 
   /** How many writes lead to `text`: up to the last one that wrote it (0 when none does). */
