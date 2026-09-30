@@ -1684,33 +1684,58 @@ export class MindmapView extends FileView {
     // comes back to, so the draft is written first and the command plans against the note that leaves
     // (LEV-140). A draft that cannot be saved keeps its reason on its own error line, where the user is
     // typing, and the command stops rather than planning against a note the draft has not reached.
-    // A command the note refuses as it stands (a sixth-level heading's child, a move the list cannot take) is
-    // refused before the draft is written, as it was when commands did not confirm drafts: the refusal alone must
-    // not leave a write behind that nobody was told of (LEV-141). The draft only renames its node, which leaves
-    // the structure the command is checked on as it is.
+    // A command the note would refuse once the draft is written (a sixth-level heading's child, a move the list cannot
+    // take) is refused before anything is written, as it was when commands did not confirm drafts: the refusal alone
+    // must not leave a write behind that nobody was told of (LEV-141). It is checked on the note the draft's rename
+    // leaves (`refusalOverDraft`), since a rename can change the plan (a topic's key in `mappy-topics`).
     const draft = this.inlineEditor;
+    // Only a draft still open here is this call's to save: one a blur already closed was saved (or given up) before.
+    const saving = draft !== undefined && draft.text() !== undefined;
     if (draft) {
-      if (this.document) this.planCommand(this.document, command);
+      this.refusalOverDraft(command);
       if (!await draft.confirm()) return;
     }
     const document = this.document;
     const file = this.file;
     if (!document || this.saving) return;
     const before = this.shownState();
+    // Refused once the draft was written (the note changed under it meanwhile, so the node is gone or the edit no
+    // longer applies): the draft's save stays, and the message says so rather than reading as if nothing happened.
+    // Only the refusals that leave the command unwritten: planning, and the store refusing the write (a conflict).
+    const refused = (error: unknown): unknown => {
+      if (saving && error instanceof Error) error.message = t().draftSavedCommandRefused(error.message);
+      return error;
+    };
     let planned: ReturnType<MindmapView["planCommand"]>;
+    try { planned = this.planCommand(document, command); } catch (error) { throw refused(error); }
     let write: CarriedWrite;
-    try {
-      planned = this.planCommand(document, command);
-      write = await this.commit(document.source, planned.plan.edits, file, planned.provisional);
-    } catch (error) {
-      // Refused once the draft was written (the note changed under it meanwhile, so the node is gone or the edit no
-      // longer applies): the draft's save stays, and the message says so rather than reading as if nothing happened.
-      if (draft && error instanceof Error) error.message = t().draftSavedCommandRefused(error.message);
-      throw error;
+    try { write = await this.commit(document.source, planned.plan.edits, file, planned.provisional); } catch (error) {
+      throw error instanceof ConflictError ? refused(error) : error;
     }
     if (this.file !== file || this.closed) return;
     const selected = this.reveal(planned.plan.selectionOffset);
     if (selected && planned.provisional) this.editTitle({ write, ...before, name: planned.name });
+  }
+
+  /**
+   * Throws the refusal `command` meets on the note as the open title draft's save would leave it: the rename planned as
+   * the save plans it (`planTitle`) and parsed with its edits, so the ids the command names carry over. A draft whose own
+   * save would be refused is left to that save, which shows the reason on the draft's error line.
+   */
+  private refusalOverDraft(command: EditCommand): void {
+    const document = this.document;
+    const file = this.file;
+    const base = this.inlineDraft;
+    const text = this.inlineEditor?.text();
+    if (!document || !file) return;
+    let after = document;
+    if (base && text !== undefined) {
+      let rename: ReturnType<MindmapView["planTitle"]>;
+      try { rename = this.planTitle(file, base, text); } catch { return; }
+      after = parseMarkdown(applyEdits(rename.current.source, rename.plan.edits), file.basename, rename.current, undefined, rename.plan.edits);
+    }
+    const provisional = (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
+    planEdit(after, provisional ? { ...command, title: t().newNodeTitle } : command);
   }
 
   /**

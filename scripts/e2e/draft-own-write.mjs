@@ -152,7 +152,9 @@ try {
     await rightClick(CANVAS_CORNER);
     const menu = await evaluate(`${VIEW} return { menu: !!document.querySelector('.menu'), editing: !!input(), draft: input()?.value ?? null };`);
     check(menu.menu, 'the right click did not open the menu');
-    // Where the draft closed on the right click (its blur saved it), Undo takes that save back: recorded, not driven on.
+    // Where the draft closed on the right click (its blur saved it), Undo would take that save back instead: the case has
+    // not reached what it is for, and says so as a failure rather than a PASS that ran nothing (PR #76).
+    check(menu.editing, 'the right click closed the draft: Undo over an open draft was not reached');
     if (!menu.menu || !menu.editing) {
       await cdp.realKey('Escape');
       return { pasted: pasted.source, menu, reachable: false };
@@ -182,6 +184,7 @@ try {
     if (!menu.menu || !menu.editing) {
       await cdp.realKey('Escape');
       check(menu.menu, 'the right click on 七 did not open the menu');
+      check(menu.editing, 'the right click closed the draft: the refused command over an open draft was not reached');
       return { menu, reachable: false };
     }
     await menuItem('子を追加');
