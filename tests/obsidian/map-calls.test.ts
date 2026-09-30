@@ -223,65 +223,62 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     stop();
   });
 
-  it('counts as waiting only the items that may call a map again, and keeps the last parses only while one waits (code review 2)', async () => {
+  it('keeps the last parses of the notes no read reaches, the ones read last, while in the vault, and no record of them (LEV-260)', async () => {
+    // Replaces LEV-246's per-item rule (a note's parse kept only while an item that reached it waited for a map): an
+    // item whose own link is broken for a while (`![[Map]`, `[[Map]]`, plain text) waits for nothing, and its note must
+    // still come back under the same ids (LEV-260).
     const app = new HarnessApp();
     app.put('Map.md', TWINS);
-    app.put('pic.png', '');
     app.put('Host.md', '---\nmappy: true\n---\n## ホスト\n');
     const store = new DocumentStore(app.asApp<App>());
     const reader = new CallReader(app.asApp<App>(), store);
     const stop = reader.listen();
     let previous: ReturnType<typeof parseMarkdown> | undefined;
     const host = (items: string[]): ReturnType<typeof parseMarkdown> => (previous = parseMarkdown(`---\nmappy: true\n---\n## ホスト\n${items.map(item => `- ${item}\n`).join('')}`, 'Host', previous));
-    const calling = host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']);
-    await reader.read(calling, 'Host.md');
     const lasts = (): string[] => Array.from((reader as unknown as { last: Map<{ path: string }, unknown> }).last.keys(), file => file.path);
-    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: ['Map.md'] });
-    // The call taken out, an image, a block reference and the host itself left: nothing waits, the last parse goes.
-    await reader.read(host(['![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
-    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: [] });
-    // A link that finds no note, and a Markdown note that is no map now: both wait.
-    await reader.read(host(['![[Map]]', '![[pic.png]]', '![[Map#^block]]', '![[Host]]']), 'Host.md');
-    app.put('Map.md', TWINS.replace('mappy: true\n', ''));
-    const pending = host(['![[Map]]', '![[Missing]]']);
-    await reader.read(pending, 'Host.md');
-    expect({ waiting: Array.from(reader.waiting).sort(), lasts: lasts() }).toEqual({ waiting: pending.nodes.slice(1).map(node => node.id).sort(), lasts: ['Map.md'] });
-    // Deleted: its last parse goes at once, and that it was read stays for the host's next read.
-    app.remove('Map.md');
-    expect(lasts()).toEqual([]);
-    // Per note (code review 3): the item that reached A deleted, A goes, though another item still waits (for a note
-    // it never reached): that item holds nothing of A.
-    app.put('A.md', TWINS);
-    app.put('B.md', TWINS);
-    await reader.read(host(['![[A]]', '![[Missing]]']), 'Host.md');
-    expect(lasts()).toEqual(['A.md']);
-    const missing = host(['![[Missing]]']);
-    await reader.read(missing, 'Host.md');
-    expect({ waiting: Array.from(reader.waiting), held: reader.held.size, lasts: lasts() })
-      .toEqual({ waiting: [missing.nodes[1]?.id], held: 0, lasts: [] });
-    // Per item (LEV-260): an item made plain text, or pointed at another map, keeps the note it called and waits, for as
-    // long as it is in the host (the cost of the hold: a parse, no record), and holds that note's nodes and no other.
-    const pointed = host(['![[A]]']);
-    await reader.read(pointed, 'Host.md');
-    const item = pointed.nodes[1]?.id ?? '';
-    const nodesOf = (path: string): string[] => Array.from((reader as unknown as { last: Map<{ path: string }, { document: { nodes: { id: string }[] } }> }).last)
-      .find(([file]) => file.path === path)?.[1].document.nodes.map(node => node.id) ?? [];
-    const aNodes = nodesOf('A.md');
-    await reader.read(host(['Aのメモ']), 'Host.md');
-    expect({ waiting: Array.from(reader.waiting), held: Array.from(reader.held.get(item) ?? []), lasts: lasts() })
-      .toEqual({ waiting: [item], held: aNodes, lasts: ['A.md'] });
-    await reader.read(host(['![[B]]']), 'Host.md');
-    expect({ waiting: Array.from(reader.waiting), held: Array.from(reader.held.get(item) ?? []), lasts: lasts().sort() })
-      .toEqual({ waiting: [item], held: aNodes, lasts: ['A.md', 'B.md'] });
-    // Four notes an item: the fifth one it reaches lets go of the first.
-    for (const name of ['C', 'D', 'E']) {
+    const first = ids(await reader.read(host(['![[Map]]']), 'Host.md'));
+    // The link broken for a while, the item made plain text, or gone: the parse stays, the record and `reads` go.
+    for (const items of [['![[Map]'], ['[[Map]]'], ['Map のメモ'], []]) {
+      await reader.read(host(items), 'Host.md');
+      expect({ lasts: lasts(), reads: reader.reads('Map.md'), kept: writesOf(reader).size }).toEqual({ lasts: ['Map.md'], reads: false, kept: 0 });
+    }
+    expect(ids(await reader.read(host(['![[Map]]']), 'Host.md'))).toEqual(first);
+    // Eight notes no read reaches, the ones read last: a ninth lets go of the one read first.
+    const names = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    for (const name of names) {
       app.put(`${name}.md`, TWINS);
       await reader.read(host([`![[${name}]]`]), 'Host.md');
     }
-    expect(lasts().sort()).toEqual(['B.md', 'C.md', 'D.md', 'E.md']);
-    // The item deleted, every note it held goes.
     await reader.read(host([]), 'Host.md');
-    expect({ waiting: reader.waiting.size, held: reader.held.size, lasts: lasts() }).toEqual({ waiting: 0, held: 0, lasts: [] });
+    expect(lasts()).toEqual(names.map(name => `${name}.md`));
+    // A deleted note is let go of at once (code review 2 of LEV-246), and the host left lets go of every one.
+    app.remove('H.md');
+    expect(lasts()).toEqual(names.slice(0, -1).map(name => `${name}.md`));
+    await reader.clear();
+    expect({ lasts: lasts(), holding: reader.holding }).toEqual({ lasts: [], holding: false });
+    stop();
+  });
+
+  it('holds while a read is under way, so a host that calls nothing reads after it and lets go of its record (code review 2)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', TWINS);
+    const store = new DocumentStore(app.asApp<App>());
+    const reader = new CallReader(app.asApp<App>(), store);
+    const stop = reader.listen();
+    const read = store.read.bind(store);
+    let answer: () => void = () => undefined;
+    const paused = new Promise<void>(resolve => { answer = resolve; });
+    const spy = vi.spyOn(store, 'read').mockImplementation(async file => { await paused; return read(file); });
+    expect(reader.holding).toBe(false);
+    // The first call typed, then taken out before its read is done: the read that follows is superseded.
+    const reading = reader.read(hostOf('Map'), 'Host.md', () => false);
+    expect(reader.holding).toBe(true);
+    const after = reader.read(parseMarkdown('---\nmappy: true\n---\n## ホスト\n- メモ\n', 'Host'), 'Host.md');
+    answer();
+    await reading;
+    await after;
+    spy.mockRestore();
+    expect({ reads: reader.reads('Map.md'), kept: writesOf(reader).size }).toEqual({ reads: false, kept: 0 });
     stop();
   });
 

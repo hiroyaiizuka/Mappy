@@ -1,16 +1,17 @@
-import { parseLinktext, TFile, type App } from 'obsidian';
+import { TFile, type App } from 'obsidian';
 import type { CallTarget, CallTargets } from '../core/calls';
-import { embedOnlyTitle, isBlockReference, readMapFromSource } from '../core/embed';
+import { embedOnlyTitle, readMapFromSource } from '../core/embed';
 import { parseMarkdown, type MindDocument } from '../core/markdown';
 import { WriteRecord } from '../core/write-record';
 import type { DocumentStore } from './document-store';
 import { resolveEmbedTarget } from './embed-target';
 
 /**
- * How many notes an item keeps (`CallReader.reached`): the one it reaches, and those it passed through while its link was
- * typed again letter by letter (each name that is a map on the way), with the one it called before at the end.
+ * How many notes the reads no longer reach keep their last parses (`CallReader.last`), the ones read last: an item's
+ * link typed back letter by letter reads each map whose name begins it on the way, and the note it called before them
+ * is the one to find again. Past that, a note an item comes back to is parsed anew, under new ids.
  */
-const KEPT_PER_ITEM = 4;
+const KEPT_UNREAD = 8;
 
 /**
  * The maps a note's items call (§5 M12), read from the vault. An item whose title is one
@@ -23,10 +24,12 @@ const KEPT_PER_ITEM = 4;
  * called map survive an edit of that note; a note whose text did not change keeps the
  * very same document, so the caller can tell an unchanged result by reference. A note
  * that cannot be read makes its items links. The previous parse outlives such a read, and
- * a read that no longer finds the note while an item waits for a map, as an embed's last map
- * does (`MapEmbed`). Everything is kept by the note's `TFile`, which Obsidian keeps through a
- * rename and a move, so the ids come back with the note; a note deleted and made again is
- * another file, and starts anew (LEV-246).
+ * the reads that no longer reach the note (`KEPT_UNREAD`), as an embed's last map does
+ * (`MapEmbed`): whatever an item's text says for a while (the note renamed before the link to
+ * it, the link broken and typed again, pointed at another map), the note comes back under the
+ * same ids. Everything is kept by the note's `TFile`, which Obsidian keeps through a rename and
+ * a move, so the ids come back with the note; a note deleted and made again is another file,
+ * and starts anew (LEV-246, LEV-260).
  *
  * A reader that `listen`s also records the store's writes on the notes it read (an edit, a layout button, ⌘Z／⌘⇧Z in a
  * map tab of the called note) and carries the ids over with their edits, as an embed does (`WriteRecord`, LEV-217):
@@ -37,10 +40,9 @@ export class CallReader {
   /** The notes the last read parsed (`reads`). */
   private readonly parsed = new Set<TFile>();
   /**
-   * The last parse of each note read here, the identity reference of its next parse: kept when a read fails or finds
-   * no map, and past a read that did not reach the note while an item that reached it is still in the host (`reached`:
-   * the note renamed before the link to it, no map by its saved header, the link broken for a while); let go of with
-   * the rest (`clear`).
+   * The last parse of each note read here, the identity reference of its next parse, the note read last at the end:
+   * kept when a read fails or finds no map, and past the reads that do not reach the note, for `KEPT_UNREAD` notes in
+   * the vault; let go of with the rest (`clear`).
    */
   private readonly last = new Map<TFile, { source: string; document: MindDocument }>();
   /**
@@ -48,17 +50,8 @@ export class CallReader {
    * as it is read, and let go with every other parse once the host calls nothing (`clear`).
    */
   private readonly writes = new Map<TFile, WriteRecord>();
-  /** The items the last read found waiting for a map (`waiting`). */
-  private waitingIds: ReadonlySet<string> = new Set();
-  /** By item, the nodes of the notes it holds (`held`). */
-  private heldIds: ReadonlyMap<string, ReadonlySet<string>> = new Map();
-  /**
-   * By item id, the notes the item reached, the latest first (`KEPT_PER_ITEM` of them). While the item is in the host,
-   * a note of these it does not reach now keeps its last parse and the item is `waiting`: a link broken for a while on
-   * the Markdown side (`![[Map]` while `]` is typed again, `[[Map]]`, an empty title), pointed at another map, or typed
-   * back letter by letter through the maps whose names begin its own, finds the same ids (LEV-246, LEV-260).
-   */
-  private readonly reached = new Map<string, readonly TFile[]>();
+  /** The reads asked for and not done yet (`holding`). */
+  private pending = 0;
   /** The subscription writes are recorded for (`listen`); the view that holds the reader listens once for its life. */
   private listening: object | null = null;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
@@ -80,14 +73,9 @@ export class CallReader {
     // A deleted note never comes back as the same file: its last parse and record are of no use (code review 2 of
     // LEV-246). That it was read stays until the next read: the host asks `reads` to know that read is due.
     const deleted = this.app.vault.on('delete', file => {
-      // Every note an item reached has its last parse here (the reads keep it while the item does): no other matters.
-      if (this.listening !== token || !(file instanceof TFile) || !this.last.has(file)) return;
+      if (this.listening !== token || !(file instanceof TFile)) return;
       this.last.delete(file);
       this.writes.delete(file);
-      for (const [id, files] of Array.from(this.reached)) {
-        const left = files.filter(other => other !== file);
-        if (left.length > 0) this.reached.set(id, left); else this.reached.delete(id);
-      }
     });
     let stopped = false;
     return () => {
@@ -101,9 +89,12 @@ export class CallReader {
     };
   }
 
-  /** True while any note's parse or record is kept here, so `clear` has something to let go of. */
+  /**
+   * True while any note's parse or record is kept here, or a read that may keep one is under way or queued: the host
+   * that calls nothing reads through the reader then, so the reader lets go of what no item reaches (LEV-221).
+   */
   get holding(): boolean {
-    return this.parsed.size > 0 || this.last.size > 0 || this.writes.size > 0;
+    return this.pending > 0 || this.parsed.size > 0 || this.last.size > 0 || this.writes.size > 0;
   }
 
   /**
@@ -118,9 +109,6 @@ export class CallReader {
       this.parsed.clear();
       this.last.clear();
       this.writes.clear();
-      this.reached.clear();
-      this.waitingIds = new Set();
-      this.heldIds = new Map();
     });
     this.queue = result;
     return result;
@@ -132,7 +120,8 @@ export class CallReader {
    * when it would let go of the notes `document` does not call — those may be the ones the host calls now.
    */
   read(document: MindDocument, hostPath: string, current: () => boolean = () => true): Promise<CallTargets> {
-    const result = this.queue.then(() => this.readNow(document, hostPath, current));
+    this.pending += 1;
+    const result = this.queue.then(() => this.readNow(document, hostPath, current)).finally(() => { this.pending -= 1; });
     this.queue = result.then(() => undefined, () => undefined);
     return result;
   }
@@ -140,94 +129,36 @@ export class CallReader {
   private async readNow(document: MindDocument, hostPath: string, current: () => boolean): Promise<CallTargets> {
     if (!current()) return new Map();
     const wanted = new Map<TFile, { id: string; subpath: string }[]>();
-    const waiting = new Set<string>();
     for (const node of document.nodes) {
       const linktext = embedOnlyTitle(node.title);
       if (!linktext) continue;
       const target = resolveEmbedTarget(this.app, linktext, hostPath);
-      if (!target) {
-        if (this.mayBecomeMap(linktext, hostPath)) waiting.add(node.id);
-        continue;
-      }
-      if (target.file.path === hostPath) continue;
+      if (!target || target.file.path === hostPath) continue;
       const callers = wanted.get(target.file) ?? [];
       callers.push({ id: node.id, subpath: target.subpath });
       wanted.set(target.file, callers);
     }
     const targets = new Map<string, CallTarget>();
-    const reachedNow = new Map<string, TFile>();
     for (const [file, callers] of wanted) {
       const parsed = await this.parse(file);
-      if (!parsed) {
-        for (const caller of callers) waiting.add(caller.id);
-        continue;
-      }
+      if (!parsed) continue;
       // The path as it is now: a rename while the note was read moved the same file.
-      for (const caller of callers) {
-        targets.set(caller.id, { path: file.path, subpath: caller.subpath, document: parsed });
-        reachedNow.set(caller.id, file);
-      }
+      for (const caller of callers) targets.set(caller.id, { path: file.path, subpath: caller.subpath, document: parsed });
     }
     if (current()) {
       for (const file of Array.from(this.parsed)) if (!wanted.has(file)) this.forget(file);
-      // An item keeps the notes it reached for as long as it is in the host, whatever its title says meanwhile (LEV-260):
-      // its id is what the called nodes' ids are made of, so an item deleted, or the host left (`clear`), lets them go.
-      // Only the parse is kept, not the note's record (`forget`): nothing is recorded for a note no item reaches (LEV-221).
-      const present = new Set(document.nodes.map(node => node.id));
-      const held = new Set<TFile>();
-      const heldIds = new Map<string, Set<string>>();
-      for (const id of Array.from(this.reached.keys())) if (!present.has(id)) this.reached.delete(id);
-      for (const [id, file] of reachedNow) {
-        this.reached.set(id, [file, ...(this.reached.get(id) ?? []).filter(other => other !== file)].slice(0, KEPT_PER_ITEM));
+      // The notes this read did not reach keep their last parses, the ones read last, while they are in the vault (code
+      // review 3 of LEV-246): an item's link broken for a while (`![[Map]`, `[[Map]]`, an empty title, `![[Map#トピッ]]`),
+      // pointed at another map or typed back letter by letter through the maps whose names begin it, finds its note under
+      // the same ids (LEV-260). Only the parse: the record went with `forget` (LEV-221).
+      let room = KEPT_UNREAD;
+      for (const file of Array.from(this.last.keys()).reverse()) {
+        if (wanted.has(file)) continue;
+        if (room > 0 && this.app.vault.getAbstractFileByPath(file.path) === file) room -= 1;
+        else this.last.delete(file);
       }
-      for (const [id, files] of Array.from(this.reached)) {
-        // A note deleted is gone for good, and one no longer in the vault is not waited for (code review 3 of LEV-246).
-        const kept = files.filter(file => reachedNow.get(id) === file || this.app.vault.getAbstractFileByPath(file.path) === file);
-        if (kept.length === 0) {
-          this.reached.delete(id);
-          continue;
-        }
-        if (kept.length !== files.length) this.reached.set(id, kept);
-        for (const file of kept) {
-          if (reachedNow.get(id) === file) continue;
-          held.add(file);
-          waiting.add(id);
-          const nodes = heldIds.get(id) ?? new Set<string>();
-          for (const node of this.last.get(file)?.document.nodes ?? []) nodes.add(node.id);
-          heldIds.set(id, nodes);
-        }
-      }
-      this.waitingIds = waiting;
-      this.heldIds = heldIds;
-      for (const file of Array.from(this.last.keys())) if (!wanted.has(file) && !held.has(file)) this.last.delete(file);
     }
     return targets;
-  }
-
-  /**
-   * The items the last read found waiting for a map: one whose link finds no note (the note renamed before the link to
-   * it), or a Markdown note that is no map for now (by the cache or by its text) or could not be read. Not an image, a
-   * block reference or the host itself: those never call a map. The host keeps the folds of their branches (LEV-246).
-   * Also an item that does not reach a note it reached before (`reached`): its link broken for a while, whatever it
-   * reads meanwhile, or pointed at another map (LEV-260).
-   */
-  get waiting(): ReadonlySet<string> {
-    return this.waitingIds;
-  }
-
-  /**
-   * By waiting item, the nodes of the notes it holds (their last parses) that it does not reach now: an item that draws
-   * another map now keeps the folds of these and of no other node of its own (LEV-260).
-   */
-  get held(): ReadonlyMap<string, ReadonlySet<string>> {
-    return this.heldIds;
-  }
-
-  private mayBecomeMap(linktext: string, hostPath: string): boolean {
-    const { path, subpath } = parseLinktext(linktext);
-    if (isBlockReference(subpath)) return false;
-    const file = this.app.metadataCache.getFirstLinkpathDest(path, hostPath);
-    return !file || (file.extension === 'md' && file.path !== hostPath);
   }
 
   /** True when the last read parsed the note now at `path`: a change of it can alter what the host shows. */
@@ -259,9 +190,12 @@ export class CallReader {
     }
     const previous = this.last.get(file);
     this.parsed.add(file);
+    // Read last: the note moves to the end of `last`, the last one `KEPT_UNREAD` lets go of.
+    this.last.delete(file);
     if (previous && previous.source === text && previous.document.root.title === file.basename) {
       // Writes that came back to the text parsed (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
       writes?.spend(text, mark);
+      this.last.set(file, previous);
       return previous.document;
     }
     const parsed = writes

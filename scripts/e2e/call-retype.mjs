@@ -13,7 +13,10 @@
  * buffer of a Markdown editor (source mode) open on the calling note beside its map: `]` (the closing `]` of the item's
  * link deleted, then typed again), `!` (the `!` deleted, then typed again: a link for a while), Undo (the item's whole
  * title deleted, then the editor's Undo), 別名 (`|別名` typed into the link: the editor closes the brackets, so the item
- * calls the map throughout), 別のマップ (the link pointed at another map, then typed back); and on the map, F2 (the
+ * calls the map throughout), 別のマップ (the link pointed at another map, then typed back), 見出し (the heading part
+ * typed again: `#` added to a whole-note call, the last letter of `#トピック` deleted, then put back), 打ち直し (the
+ * name deleted and typed back a letter at a time at a typist's pace, through `E2E-call` and `E2E-call-re`, two maps
+ * whose names begin it); and on the map, F2 (the
  * item's `!` deleted with F2 → the title typed → Enter, then put back the same way: the map shows its own write before
  * it reads the calls again). The calling note: 1項目 (one item, calling the part the shape is in), 2項目 (`- ![[…]]` and
  * `- ![[…#トピック]]`, the item the shape is under broken: the note is still read for the other) or 2項目-別のノート
@@ -47,6 +50,8 @@ const SOURCE = [
   '- 枝', '  - 枝の子', '',
 ].join('\n');
 const OTHER_SOURCE = ['---', 'mappy: true', '---', '## 別のマップ', '', '- 別の枝', '  - 別の子', ''].join('\n');
+/** Maps whose names begin the called note's: the name typed back letter by letter reaches each on the way. */
+const PREFIXES = ['E2E-call', 'E2E-call-re'].map(name => `${FOLDER}/${name}.md`);
 const hostSource = items => `---\nmappy: true\n---\n## 呼び出し元\n${items.map(item => `- ${item}\n`).join('')}`;
 
 const record = createRecord(VAULT, HOST);
@@ -116,14 +121,17 @@ const caughtUp = async calls => {
   return state;
 };
 
-const clickAt = async locate => {
+/** A real click on what `locate` finds, at its centre, or `edge` pixels in from its left edge (off the text it shows). */
+const clickAt = async (locate, edge) => {
   const box = await evaluate(`${HOSTED}
     const target = (() => { ${locate} })();
     if (!target) throw new Error('nothing to click');
     const rect = target.getBoundingClientRect();
-    const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const x = ${edge === undefined ? 'rect.left + rect.width / 2' : `rect.left + ${edge}`}; const y = rect.top + rect.height / 2;
+    const top = document.elementFromPoint(x, y);
     if (!target.contains(top)) throw new Error('something else is on top: ' + (top?.className?.baseVal ?? top?.className ?? 'nothing'));
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
+    if (top.closest('a, .internal-link')) throw new Error('the click would follow a link');
+    return { x, y };`);
   for (const type of ['mousePressed', 'mouseReleased']) {
     await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
   }
@@ -154,11 +162,12 @@ const reopen = async items => {
   await evaluate(`${detach} return true;`);
   await wait(200);
   return evaluate(`
-    ${refuseOpenLeaves([HOST, NOTE, OTHER])}
+    ${refuseOpenLeaves([HOST, NOTE, OTHER, ...PREFIXES])}
     ${removeAll}
     await app.vault.createFolder(${JSON.stringify(FOLDER)});
     { ${writeNote(NOTE, SOURCE)} }
     { ${writeNote(OTHER, OTHER_SOURCE)} }
+    for (const path of ${JSON.stringify(PREFIXES)}) { ${writeNote('__PATH__', OTHER_SOURCE).replaceAll('"__PATH__"', 'path')} }
     { ${writeNote(HOST, hostSource(items))} }
     const opened = app.workspace.getLeaf('tab');
     await opened.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(HOST)}, layout: 'mindmap' }, active: true });
@@ -191,18 +200,23 @@ const openRow = async shape => {
  * In the editor's buffer, the text `from`..`to` characters into the broken item's title replaced by `text`, as a key
  * press would (`replaceRange`, one transaction the editor's Undo takes back); the item is found by its `- ` line.
  */
+let brokenItem = 0;
 const edit = (title, from, to, text) => evaluate(`${HOSTED}
-  const value = editor.getValue();
-  const at = value.indexOf('\\n- ' + ${JSON.stringify(title)} + '\\n');
-  if (at < 0) throw new Error('no item ' + ${JSON.stringify(title)} + ' in the buffer');
-  const start = at + 3;
+  // By its place among the items (\`brokenItem\`), not its text: typed back, it passes through the other item's text.
+  const lines = editor.getValue().split('\\n');
+  const line = lines.indexOf('## 呼び出し元') + 1 + ${brokenItem};
+  if (lines[line] !== '- ' + ${JSON.stringify(title)}) throw new Error('item ' + ${brokenItem} + ' is ' + JSON.stringify(lines[line]) + ', not ' + ${JSON.stringify(title)});
+  const start = lines.slice(0, line).reduce((sum, text) => sum + text.length + 1, 0) + 2;
   editor.replaceRange(${JSON.stringify(text)}, editor.offsetToPos(start + ${from}), editor.offsetToPos(start + ${to}));
   return editor.getValue();`);
 
 /** The calling item edited on the map: a real click on it, F2, the title typed over its own (IME-style commit), Enter. */
 const retitleOnMap = async (id, title) => {
-  await clickAt(`return nodes().find(node => node.dataset.nodeId === ${JSON.stringify(id)});`);
+  // Near the left edge: a broken item shows its `[[…]]` as a link, and a click on it would open the called note here.
+  await clickAt(`return nodes().find(node => node.dataset.nodeId === ${JSON.stringify(id)});`, 4);
   await wait(300);
+  const selected = await evaluate(`${HOSTED} return { file: view.file?.path, selected: view.selectedId };`);
+  if (selected.file !== HOST || selected.selected !== id) throw new Error('the click did not select the calling item: ' + JSON.stringify(selected));
   await cdp.realKey('F2');
   let editing = false;
   for (let tries = 0; tries < 20 && !editing; tries += 1) {
@@ -266,6 +280,31 @@ const OPERATIONS = [
     },
   },
   {
+    name: '見出し',
+    run: async (title, count) => {
+      const inner = title.slice(3, -2);
+      const broken = inner.includes('#') ? `![[${inner.slice(0, -1)}]]` : `![[${inner}#]]`;
+      await edit(title, 0, title.length, broken);
+      const between = await caughtUp(count.broken);
+      await edit(broken, 0, broken.length, title);
+      return { final: title, between };
+    },
+  },
+  {
+    name: '打ち直し',
+    run: async (title, count) => {
+      const inner = title.slice(3, -2);
+      await edit(title, 3, 3 + inner.length, '');
+      const between = await caughtUp(count.broken);
+      // A letter at a time between the brackets the editor closed, at about 8 letters a second.
+      for (let at = 0; at < inner.length; at += 1) {
+        await edit(`![[${inner.slice(0, at)}]]`, 3 + at, 3 + at, inner[at]);
+        await wait(120);
+      }
+      return { final: title, between };
+    },
+  },
+  {
     name: 'F2',
     run: async (title, count, caller) => {
       // The `!`, not the `]`: with the caret inside an unclosed `[[…`, Enter picks the link suggestion (`LinkSuggest`).
@@ -289,6 +328,7 @@ try {
           await reopen(items);
           await caughtUp(items.length);
           const toggled = await openRow(shape);
+          brokenItem = items.indexOf(title);
           const done = await operation.run(title, { all: items.length, broken: host.others }, toggled.id.split('/')[0]);
           await caughtUp(items.length);
           const state = await readId(toggled.id);

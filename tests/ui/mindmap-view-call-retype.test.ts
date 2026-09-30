@@ -8,9 +8,12 @@
  *
  * The matrix is what the reader does to the calling item's text on the Markdown side (a `]` deleted and typed again, the
  * `!` deleted and typed again, the whole title deleted and put back with Undo, the name typed again through a prefix no
- * note has, an alias typed in, the link pointed at another map for a while) × the calling note's shape (one item, two
+ * note has, an alias typed in, the link pointed at another map for a while, the heading part typed again, the name typed
+ * back through maps whose names begin it) × the calling note's shape (one item, two
  * items calling the two parts of one note, two items calling different notes) × the shape of the called node the reader
  * toggled (one title, the second untitled node, the second of two same-titled nodes, a branch under a called topic).
+ * The heading part typed again (a link that reaches the note at a heading it does not have) was kept before the fix too, by
+ * LEV-246's rule for an item waiting for a map, in 9 of its 12 rows: they pin an operation the fix must not lose.
  * Two items with the same title are the limit (the last test): the Markdown side's edit renumbers the calling item itself.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -82,6 +85,11 @@ const OPERATIONS: { operation: string; steps: (call: string) => string[] }[] = [
   { operation: 'the name typed again through a prefix no note has', steps: call => [`![[${call}`, '![[undo]]', `![[${call}]]`] },
   { operation: 'an alias typed in', steps: call => [`![[${call}|`, `![[${call}|別名]`, `![[${call}|別名]]`] },
   { operation: 'pointed at another map for a while', steps: call => ['![[other]]', `![[${call}]]`] },
+  {
+    // The link still reaches the note, at a heading it does not have (code review 2): the item draws nothing for a while.
+    operation: 'the heading part typed again',
+    steps: call => call.includes('#') ? [`![[${call.slice(0, -1)}]]`, `![[${call}]]`] : [`![[${call}#]]`, `![[${call}]]`],
+  },
   {
     // The name deleted and typed back letter by letter, the brackets closed by the editor: each prefix that names a map
     // (`u`, `un`, `und` are maps here) draws that map on the way (code review 1: two notes an item were not enough).
@@ -187,20 +195,18 @@ describe('the calling map\'s folds through the calling item\'s link broken on th
     expect(seenById(host, opened.id)).toEqual({ ...opened, label });
   });
 
-  it('an item pointed at another map prunes the folds of that map\'s nodes deleted meanwhile, and keeps those of the map it held (code review 1)', async () => {
-    const host = await open(['![[undo-ids]]']);
+  it('the folds of a calling item go with the item: deleted, its called nodes are forgotten, and a new item starts folded (the hold\'s end)', async () => {
+    const host = await open(['![[undo-ids]]', '![[other]]']);
     const opened = await unfold(host, '親', 0);
-    await retitle(host, ['![[other]]']);
-    const other = await unfold(host, '別の枝', 0);
-    // 別の枝 deleted from the map drawn now (in its own tab, or on disk), while the item still holds undo-ids.
-    await host.app.asApp<App>().vault.process(host.app.asApp<App>().vault.getAbstractFileByPath(OTHER) as never, () => OTHER_SOURCE.replace('- 別の枝\n  - 別の子\n', ''));
-    await settled(host);
     const view = host.view as unknown as { collapsed: Set<string>; knownCalled: Set<string> };
-    const openedAgain = (other.id ?? '').split('/')[1] ?? '';
-    expect({ collapsed: view.collapsed.has(other.id ?? ''), known: Array.from(view.knownCalled).some(id => id.endsWith(`/${openedAgain}`)) })
-      .toEqual({ collapsed: false, known: false });
-    await retitle(host, ['![[undo-ids]]']);
-    expect(seenById(host, opened.id)).toEqual({ ...opened, label: '親' });
+    const caller = (opened.id ?? '').split('/')[0] ?? '';
+    const mine = (): string[] => [...view.collapsed, ...view.knownCalled].filter(id => id.startsWith(`${caller}/`));
+    await retitle(host, ['![[undo-ids]', '![[other]]']);
+    expect(mine().length).toBeGreaterThan(0);
+    await retitle(host, ['![[other]]']);
+    expect(mine()).toEqual([]);
+    await retitle(host, ['![[undo-ids]]', '![[other]]']);
+    expect(seen(host, '親', 0).folded).toBe(true);
   });
 
   it('two items calling the same note with the same title: the edit renumbers the calling item itself, so its branch starts anew (E05)', async () => {
