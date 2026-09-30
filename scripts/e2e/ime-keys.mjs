@@ -10,15 +10,15 @@
  *   A. 既存ノードを F2 で開き、変換中（「にほんご」）に Enter・Tab・Escape × IME の受け方 × 通常ノード・本文のルート・
  *      トピック・ステージ。IME の受け方は 2 通り:
  *        ime  — IME がキーを受けた形。Chromium（macOS）が送る keyCode 229 の keydown（`isComposing`）。
- *        pass — IME がキーを受けずにそのまま流した形。そのキー本来の keyCode の keydown（`isComposing`）で、
+ *        pass — IME がキーを受けずにそのまま流した形。そのキー本来の keyCode の keydown（`isComposing`。Enter・Tab は文字も伴う）で、
  *               止めなければ既定動作（Tab ならフォーカス移動）が走る。LEV-15 の review 3 がこの形で A3 が壊れうると指摘した。
  *      キーのあとで IME が自分の仕事をする: Enter・Tab は変換の確定（「日本語」）、Escape は変換の取り消し。
  *      期待（E01）: (A1) 変換中の Enter で題名を確定しない・ノードは増えない、(A2) 確定後の Enter で題名が確定、
  *      (A3) 変換中の Tab で子が増えず、変換中の文字が残り編集が続く、(A4) 変換中の Escape で編集を閉じない。
  *   A5. Enter（兄弟）・Tab（子）・空白のダブルクリック（トピック）で開いた新しいノードの入力欄で、全選択の仮の名前の上で
  *      変換して、変換中に Enter（ime）・Tab（pass）→ 確定 → Enter。ノードは 1 つだけ増え、題名は確定した文字。
- *   B. 分割で並べた Markdown 側で、リスト項目・見出しを変換しながら入力する（Obsidian の保存の間隔より長く変換を続け、
- *      変換中の保存を挟む）。確定後、マップのノードが 1 つだけ増え、題名は確定した文字で、変換途中の読みが残らない。
+ *   B. 分割で並べた Markdown 側で、リスト項目・見出しを変換しながら入力する（変換の途中でノートを保存させ〔読みが
+ *      ディスクに書かれたことを確かめる〕、マップに変換途中の原文を読ませる）。確定後、マップのノードが 1 つだけ増え、題名は確定した文字で、変換途中の読みが残らない。
  *
  * 実行されていない行を PASS にしない（PR #76 の教訓）:
  *   - 行の一覧（`ROWS`）を先に決め、最後に全行が結果を持つことを確かめる。例外で飛んだ行は「実行されていない」で FAIL。
@@ -26,16 +26,16 @@
  *     （`isComposing` の keydown、keyCode も）をページ側の記録で確かめる。届いていなければ「何も起きなかった」は PASS にならない。
  *   - 対照の行: 同じキーを変換なしで送ると本来の動作（Enter で確定、Tab で子、Escape で閉じる）をすること。
  *     キーが Mappy に届かない窓では、変換中の行の「何も起きない」が素通りで緑になるので、対照が落ちれば全体を FAIL にする。
- *   - 読み込まれているビルドを記録する（版と、Vault に入っている main.js の SHA-256）。
+ *   - 読み込まれているビルドを記録する: 毎回 Vault の main.js からプラグインを読み直し（`--reload` の有無に依らない）、その前後で同じだった main.js の SHA-256 と版。
  *
- * Usage: npm run harness:e2e:ime-keys -- [--reload] [--json <out.json>] [--keep]
+ * Usage: npm run harness:e2e:ime-keys -- [--json <out.json>] [--keep]
  */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { connect, VAULT, wait } from './cdp.mjs';
-import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
-import { VIEW, makeOpenStep, makePluginStep, makeSelect } from './dom-helpers.mjs';
+import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
+import { VIEW, makeOpenStep, makePluginStep, makePress, makeSelect } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -87,6 +87,7 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
+const press = makePress(cdp, evaluate);
 
 const source = () => evaluate(`${VIEW} return await source();`);
 /** What the map shows: whether a draft is open and what it holds, the node labels, and where the focus is. */
@@ -114,23 +115,20 @@ const take = () => evaluate(`${LOG} return window.__mappyImeLog.splice(0);`);
 /** The fixture's nodes, in any order: the DOM puts a node drawn again after an edit elsewhere. */
 const sameLabels = labels => [...labels].sort().join('|') === [...LABELS].sort().join('|');
 
-async function until(test, timeout, what) {
-  const started = Date.now();
-  for (;;) {
-    const result = await test();
-    if (result) return result;
-    if (Date.now() - started > timeout) throw new Error(`${what} (waited ${timeout} ms)`);
-    await wait(100);
-  }
-}
 const waitEditing = (wanted = true) => until(async () => (await look()).editing === wanted, 3000,
   wanted ? 'the inline editor did not open' : 'the inline editor did not close').then(() => wait(250));
 
-/** A key as the IME hands it on: keyCode 229 when it took the key (`ime`), the key's own when it let it through (`pass`). */
+/**
+ * A key as the IME hands it on: keyCode 229 and no text when it took the key (`ime`); the key's own keyCode, and for
+ * Enter and Tab the character the keyboard types with it (`\r`, `\t`), when it let it through (`pass`). With the
+ * character the key's default runs wherever nothing prevents it: the textarea's line break for Enter.
+ */
+const TEXTS = { Enter: '\r', Tab: '\t' };
 async function imeKey(key, delivery) {
   const keyCode = delivery === 'ime' ? 229 : KEYS[key];
   const base = { key, code: key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
-  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+  const text = delivery === 'pass' ? TEXTS[key] : undefined;
+  await cdp.send('Input.dispatchKeyEvent', text ? { type: 'keyDown', ...base, text, unmodifiedText: text } : { type: 'rawKeyDown', ...base });
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
 }
 const compose = text => cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
@@ -186,11 +184,21 @@ async function row(label, run) {
 
 
 try {
-  await step('plugin', makePluginStep(cdp, evaluate, flag));
-  record.chromium = await evaluate(`return navigator.userAgent.match(/Chrome\\/[\\d.]+/u)?.[0] ?? null;`);
-  record.obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version') ?? null;`).catch(() => null);
-  // The build this run reports on: the file Obsidian loads the plugin from (a reverted build is told apart by it).
-  record.mainJs = createHash('sha256').update(await readFile(join(VAULT, '.obsidian', 'plugins', 'mappy', 'main.js'))).digest('hex');
+  // The build this run reports on is the file on disk, so the plugin is always read again from it first (`--reload`
+  // or not): a build copied in without a reload would otherwise run the previous one under the new file's hash.
+  const mainJs = join(VAULT, '.obsidian', 'plugins', 'mappy', 'main.js');
+  const hashed = async () => createHash('sha256').update(await readFile(mainJs)).digest('hex');
+  const loaded = await step('build-before', async () => ({ mainJs: await hashed() }));
+  required(record, 'build-before', loaded);
+  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, name => name === '--reload' || flag(name))));
+  required(record, 'build', await step('build', async () => {
+    const hash = await hashed();
+    if (hash !== loaded.mainJs) throw new Error('main.js changed while the plugin was reloaded; run again');
+    record.mainJs = hash;
+    record.chromium = await evaluate(`return navigator.userAgent.match(/Chrome\\/[\\d.]+/u)?.[0] ?? null;`);
+    record.obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version') ?? null;`);
+    return { mainJs: hash, chromium: record.chromium, obsidian: record.obsidian };
+  }));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   await evaluate(`${LOG} return true;`);
 
@@ -275,9 +283,10 @@ try {
             await select(way.from);
             await cdp.realKey(way.id);
           } else {
-            const point = await evaluate(`${VIEW}
-              const rect = el.querySelector('.mappy-canvas').getBoundingClientRect();
-              return { x: rect.left + 24, y: rect.bottom - 120 };`);
+            // Empty canvas near its lower left, clear of the nodes, the floating controls and a Notice (`makePress`).
+            const point = await press(`const node = el.querySelector('.mappy-canvas');
+              const rect = node.getBoundingClientRect(); at = { x: rect.left + 24, y: rect.bottom - 120 };`,
+            { avoid: '.mappy-node, .mappy-floating, button', click: false });
             for (const clickCount of [1, 2]) {
               for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount });
             }
@@ -339,11 +348,16 @@ try {
         await cdp.realKey('Enter', 0, '\r');
         await wait(300);
         for (const text of item.lead) await cdp.insertText(text);
-        // Slower than Obsidian's save interval (2 s): a save of the note falls in the middle of the composition.
         for (const text of item.reading) {
           await compose(text);
           await wait(800);
         }
+        // A save in the middle of the composition, made rather than waited for: Obsidian's debounced save need not fall
+        // inside it. The note on disk then holds the reading, and the map re-reads a note that is still being composed.
+        const saved = await evaluate(`await window.__mappyE2EMarkdown.view.save(); await new Promise(resolve => setTimeout(resolve, 600));
+          return await app.vault.read(window.__mappyE2EMarkdown.view.file);`);
+        const reading = item.reading.at(-1);
+        expect(saved.includes(reading), `the save mid-composition did not write the reading: ${JSON.stringify(saved)}`);
         const during = await look();
         await cdp.insertText(item.word);
         const log = await take();
@@ -358,7 +372,7 @@ try {
         expect(final.labels.length === LABELS.length + 1 && final.labels.filter(label => label === item.word).length === 1,
           `the map has ${JSON.stringify(final.labels)}, not the fixture and one ${item.word}`);
         expect(!final.labels.some(label => item.reading.some(reading => label.includes(reading))), `a reading is left on the map: ${JSON.stringify(final.labels)}`);
-        return { during: during.labels, final: final.labels, written };
+        return { saved, during: during.labels, final: final.labels, written };
       });
     }
     return Object.fromEntries(MARKDOWN.map(item => [item.id, record.rows[`B/${item.id}`]?.failures.length === 0]));

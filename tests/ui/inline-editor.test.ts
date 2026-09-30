@@ -308,7 +308,9 @@ describe('InlineEditor DOM interactions', () => {
   });
 
   // E01 A3 (LEV-223): an IME that lets Tab through leaves the keydown its own keyCode, and the browser's default then
-  // moves the focus off the draft, which confirms the reading and closes it. One that took the key sends keyCode 229.
+  // moves the focus off the draft, which confirms the reading and closes it. One that took the key sends keyCode 229:
+  // its row pins that the handler does not tell the two apart (a `keyCode !== 229` condition would fail it), so a Tab
+  // mid-composition never leaves the draft whichever way the IME treated it.
   it.each([
     { name: 'let through', keyCode: 9 },
     { name: 'taken by the IME', keyCode: 229 },
