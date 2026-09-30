@@ -55,6 +55,7 @@ export const CASES = [
   { name: 'own-write-flicker', file: 'own-write-flicker.mjs', description: 'E54 自分の書き込み（改名・追加・キー移動・⌘Z／⌘⇧Z・スロットへのドロップ・切り離し）のあと、書き込み前の原文が描かれないこと', shot: false },
   { name: 'window-blur-draft', file: 'window-blur-draft.mjs', description: 'E56 下書きの途中でウィンドウのフォーカスが外れて戻ったあとの Enter・押下', shot: false },
   { name: 'node-tooltip', file: 'node-tooltip.mjs', description: 'E57 ノード・入力欄・埋め込みのノードに乗せても吹き出しが出ない（ボタンには出る）', shot: true },
+  { name: 'link-preview', file: 'link-preview.mjs', description: 'E81 マップのリンクに乗せると Obsidian のページプレビューが出る（タブ・並べた表示・埋め込み・呼び出した枝 × リンクの形 × ⌘ × 設定、入力中・ドラッグ・パンは出さない、タブを閉じる・無効化で消える）', shot: true },
   { name: 'reread-own-writes', file: 'reread-own-writes.mjs', description: 'E58 変わらない原文の再読込の最中に記録された書き込み（このマップのボタン・⌥↑・⌘Z、別のマップのボタン・移動・⌘Z）× Markdown エディタの有無 × ウォッチャーが遅れて届く場合で、空題名・同名の折りたたみが保たれること', shot: false },
   { name: 'english-ui', file: 'english-ui.mjs', description: 'E63 英語の Obsidian での表示（コマンド・ボタン・ポップオーバー・右クリック・設定・拒否の行）と Markdown に書く仮の名前、日本語へ戻したあと', shot: true },
   { name: 'main-topic', file: 'main-topic.mjs', description: 'E69 新しいノードの仮の名前が追加先の深さで決まる（ルートの直下はメイントピック、その下はサブトピック）× リスト・見出し × タイムライン・通常マップ × 日本語・英語', shot: true },
