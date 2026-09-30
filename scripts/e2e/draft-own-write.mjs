@@ -199,19 +199,23 @@ try {
     return { menu, reachable: true, after: { ...after, draft: typed } };
   });
 
-  if (!flag('--keep')) {
-    await step('clean', () => evaluate(`${VIEW}
-      const before = window.__mappyE2EBefore ?? new Set();
-      const attachments = app.vault.getFiles().filter(file => !before.has(file.path) && file.extension === 'png');
-      for (const file of [...attachments, view.file]) await app.vault.delete(file, true);
-      leaf.detach();
-      delete window.__mappyE2E;
-      delete window.__mappyE2EBefore;
-      return { removed: attachments.map(file => file.path) };`));
-  }
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
+  // Whatever stopped the steps, the note, its attachments and the leaf this run made go (not with --keep): a next run
+  // would otherwise open a note left open here, and count its attachments as the vault's own.
+  if (!flag('--keep')) {
+    await step('clean', () => evaluate(`const leaf = window.__mappyE2E;
+      if (!leaf) return { removed: [] };
+      const before = window.__mappyE2EBefore ?? new Set();
+      const attachments = app.vault.getFiles().filter(file => !before.has(file.path) && file.extension === 'png');
+      const note = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)});
+      for (const file of [...attachments, ...(note ? [note] : [])]) await app.vault.delete(file, true);
+      leaf.detach();
+      delete window.__mappyE2E;
+      delete window.__mappyE2EBefore;
+      return { removed: attachments.map(file => file.path) };`)).catch(() => undefined);
+  }
   // The user's clipboard back as it was, whatever the steps did.
   await step('clipboard-restored', () => evaluate(`const saved = window.__mappyE2EClipboard;
     if (!saved) return { restored: false };

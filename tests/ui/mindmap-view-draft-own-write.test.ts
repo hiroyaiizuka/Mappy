@@ -24,6 +24,7 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
+import { InlineEditor } from '../../src/ui/inline-editor';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
@@ -205,6 +206,27 @@ describe('2. a command the note refuses leaves the open draft unwritten, with th
     });
   }
 
+  it('a command that finds another write of the map\'s own under way once the draft is written says so, rather than stopping silently', async () => {
+    const LIST = ['---', 'mappy: true', '---', '## 計画', '', '- 学ぶこと', '- 記録する', ''].join('\n');
+    const mounted = await mount(LIST);
+    await mounted.draft(find(mounted.document(), '学ぶこと'), '学ぶこと（編集）');
+    // Right after the draft's save, another write of this view begins (a layout button's, a pasted image's).
+    const view = mounted.view as unknown as { saving: boolean };
+    const confirm = (editor: InlineEditor): Promise<boolean> => InlineEditor.prototype.confirm.call(editor);
+    const spy = vi.spyOn(InlineEditor.prototype, 'confirm').mockImplementationOnce(async function (this: InlineEditor) {
+      spy.mockRestore();
+      const closed = await confirm(this);
+      view.saving = true;
+      return closed;
+    });
+    mounted.internals.executeSelected('add-child');
+    await mounted.idle();
+    spy.mockRestore();
+    view.saving = false;
+    expect(Notice.log).toEqual([t().draftSavedCommandRefused(t().savingWait)]);
+    expect(mounted.source()).toBe(LIST.replace('- 学ぶこと\n', '- 学ぶこと（編集）\n'));
+  });
+
   it('a command refused only after the draft was written (the note changed during that save) says the draft was saved', async () => {
     const LIST = ['---', 'mappy: true', '---', '## 計画', '', '- 学ぶこと', '- 記録する', ''].join('\n');
     const mounted = await mount(LIST);
@@ -309,12 +331,57 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     await mounted.menu(t().undo);
     await mounted.menu(t().undo);
     expect(mounted.source()).toBe(LIST);
-    if (mounted.editor() === input) {
-      mounted.key(input, 'Enter');
-      await mounted.idle();
-      expect(mounted.error()).toBe(t().nodeGone);
-    }
+    // What this row pins (it passes with the fix reverted too): the draft outlives its node's removal by Undo, and its
+    // save is refused as the node is gone, not written somewhere else.
+    expect(mounted.editor()).toBe(input);
+    mounted.key(input, 'Enter');
+    await mounted.idle();
+    expect(mounted.error()).toBe(t().nodeGone);
     expect(mounted.source()).toBe(LIST);
+  });
+
+  it('Undo chosen while an image pasted onto the node being edited is still being written: Enter writes the draft', async () => {
+    const mounted = await mount(LIST);
+    // An earlier step, so the menu's Undo is enabled while the paste is still on its way.
+    let first = await mounted.draft(find(mounted.document(), '記録する'), '記録');
+    mounted.key(first, 'Enter');
+    await mounted.idle();
+    first = await mounted.draft(find(mounted.document(), '記録'), '記録する');
+    mounted.key(first, 'Enter');
+    await mounted.idle();
+    expect(mounted.source()).toBe(LIST);
+    const input = await mounted.draft(find(mounted.document(), '学ぶこと'), '学ぶこと（編集）');
+    // The paste's write, in the store's queue, answered to the view only once Undo has been chosen (a slow disk): the
+    // store runs Undo after it, so Undo takes the paste back while the view is still in the paste's save.
+    const applyOver = mounted.store.applyOver.bind(mounted.store);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let held = false;
+    const spy = vi.spyOn(mounted.store, 'applyOver').mockImplementationOnce(async (...args) => {
+      const write = applyOver(...args);
+      held = true;
+      await gate;
+      return write;
+    });
+    paste(mounted.canvas, [image()]);
+    for (let round = 0; round < 20 && !held; round += 1) await mounted.settle();
+    expect(held).toBe(true);
+    // Undo is chosen from the menu (the earlier step keeps it enabled); the store runs it after the paste, so it takes the paste back.
+    mounted.canvas.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 700, clientY: 700 }));
+    const undo = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
+      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === t().undo);
+    if (!undo) throw new Error('No Undo item');
+    undo.click();
+    await mounted.settle();
+    release();
+    spy.mockRestore();
+    await mounted.idle();
+    expect(mounted.source()).toBe(LIST);
+    expect(mounted.editor()).toBe(input);
+    mounted.key(input, 'Enter');
+    await mounted.idle();
+    expect(mounted.error()).toBe('');
+    expect(mounted.source()).toBe(LIST.replace('- 学ぶこと\n', '- 学ぶこと（編集）\n'));
   });
 });
 
