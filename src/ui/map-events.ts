@@ -50,13 +50,9 @@ export function mapClick(event: MouseEvent, canvas: Element): MapClick | null {
 }
 
 export class MapEvents extends Component {
-  private composing = false;
-
   constructor(private readonly canvas: HTMLElement, private readonly actions: MapActions) { super(); }
 
   onload(): void {
-    this.registerDomEvent(this.canvas, "compositionstart", () => { this.composing = true; });
-    this.registerDomEvent(this.canvas, "compositionend", () => { this.composing = false; });
     // A click on the empty canvas is MapViewport's to judge (a pan ends with one too); it clears the selection there.
     this.registerDomEvent(this.canvas, "click", event => {
       const click = mapClick(event, this.canvas);
@@ -149,7 +145,9 @@ export class MapEvents extends Component {
    * Shift+Tab keeps moving the focus and Shift+Enter adds nothing.
    */
   private keydown(event: KeyboardEvent): boolean {
-    if (event.defaultPrevented || event.isComposing || this.composing || event.key === "Process"
+    // No composition flag of its own: a composition is in an editable (left alone below), and a flag the canvas kept
+    // stayed up for good when a draft was removed before its compositionend reached the canvas (LEV-223).
+    if (event.defaultPrevented || event.isComposing || event.key === "Process"
       || this.element(event.targetNode)?.closest("input,textarea,button,a,select,[contenteditable]:not([contenteditable='false'])")) return false;
     const modifier = event.metaKey || event.ctrlKey;
     // The map's history is not bound to a node: it answers with nothing selected too.

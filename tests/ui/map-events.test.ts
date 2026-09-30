@@ -212,12 +212,17 @@ describe('MapEvents DOM interactions', () => {
     expect(actions.command).not.toHaveBeenCalled();
   });
 
-  it('suppresses Enter during a composition session and resumes after compositionend', () => {
+  // A composition only happens in an editable, whose keys the map leaves alone anyway; the keys it does see carry
+  // `isComposing` (above). A draft removed mid-composition sends its compositionend from outside the canvas: before
+  // LEV-223 a flag set by the canvas's compositionstart then stayed up and every map key was dropped until the next one.
+  it('takes its keys again after a draft is removed in the middle of a composition', () => {
     const { canvas, selected, actions } = fixture();
-    canvas.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-    expect(key(canvas, 'Enter').defaultPrevented).toBe(false);
-    expect(actions.command).not.toHaveBeenCalled();
-    canvas.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+    const draft = document.createElement('textarea');
+    canvas.append(draft);
+    draft.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    expect(key(draft, 'Enter', { isComposing: true }).defaultPrevented).toBe(false);
+    draft.remove();
+    draft.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'にほんご' }));
     expect(key(canvas, 'Enter').defaultPrevented).toBe(true);
     expect(actions.command).toHaveBeenCalledExactlyOnceWith({ type: 'add-sibling', nodeId: selected.id });
   });

@@ -140,12 +140,14 @@ export async function connect({ popout, appless = false, language: expected = LA
       /**
        * A key as the keyboard sends it, so Obsidian's own keymap sees it (a synthesized keydown does not). With
        * `text` (`'\r'` for Enter) the key also types it, so the default action runs where nothing prevents it:
-       * a textarea's line break on Shift+Enter (LEV-202). Without it no text is typed.
+       * a textarea's line break on Shift+Enter (LEV-202). Without it no text is typed. `keyCode` replaces the key's own:
+       * 229 is how Chromium marks a key an IME took while it composes (E01).
        */
-      realKey: async (key, modifiers = 0, text) => {
+      realKey: async (key, modifiers = 0, text, keyCode) => {
         const spec = KEYS[key];
         if (!spec) throw new Error(`Unknown key ${key}`);
-        const base = { key, code: spec.code, windowsVirtualKeyCode: spec.keyCode, nativeVirtualKeyCode: spec.keyCode, modifiers };
+        const code = keyCode ?? spec.keyCode;
+        const base = { key, code: spec.code, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code, modifiers };
         await send('Input.dispatchKeyEvent', text ? { type: 'keyDown', ...base, text, unmodifiedText: text } : { type: 'rawKeyDown', ...base });
         await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
       },

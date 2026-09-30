@@ -109,13 +109,14 @@ describe('a line break typed inside a node (Shift+Enter, LEV-202)', () => {
     expect(mounted.source()).toBe(source);
   });
 
-  // Not a regression: this held before LEV-202 too. It pins that the new Shift+Enter branch sits after the IME's.
+  // It pins that the new Shift+Enter branch sits after the IME's: mid-composition neither key breaks the line nor
+  // confirms. Since LEV-223 both are prevented, so one the IME lets through types no line break into the reading.
   it('leaves Shift+Enter to the IME while it is composing', async () => {
     const mounted = await mount(LIST);
     const input = openEditor(mounted, '温泉旅行');
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-    expect(mounted.key(input, 'Enter', { shiftKey: true, isComposing: true }).defaultPrevented).toBe(false);
-    expect(mounted.key(input, 'Enter', { isComposing: true }).defaultPrevented).toBe(false);
+    expect(mounted.key(input, 'Enter', { shiftKey: true, isComposing: true }).defaultPrevented).toBe(true);
+    expect(mounted.key(input, 'Enter', { isComposing: true }).defaultPrevented).toBe(true);
     await mounted.settle();
     expect(mounted.editor()).toBe(input);
     expect(mounted.source()).toBe(LIST);

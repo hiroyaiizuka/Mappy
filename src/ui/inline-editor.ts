@@ -76,7 +76,14 @@ export class InlineEditor {
     this.input.addEventListener("dblclick", event => { event.stopPropagation(); });
     this.input.addEventListener("keydown", event => {
       event.stopPropagation();
-      if (event.isComposing || this.composing || event.key === "Process") return;
+      if (event.isComposing || this.composing || event.key === "Process") {
+        // A key the IME lets through keeps its default: Tab moves the focus off the draft, which confirms the reading and
+        // closes the draft (E01 A3), and Enter types a line break into the reading (A1). Both are the IME's keys while it
+        // composes (LEV-223). This prevents the keys the IME took (keyCode 229) as well, on the premise that Chromium hands a
+        // key to the IME before the page sees it, so cancelling that keydown cannot undo the IME's own work.
+        if (event.key === "Tab" || event.key === "Enter") event.preventDefault();
+        return;
+      }
       if (this.suggestion?.handleKey(event)) return;
       if (event.key === "Escape") {
         event.preventDefault();
