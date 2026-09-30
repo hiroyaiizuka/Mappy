@@ -265,6 +265,17 @@ export class InlineEditor {
     return this.disposed ? undefined : this.input.value;
   }
 
+  /**
+   * The node's title changed under the draft by the map's own step (⌘Z／⌘⇧Z, LEV-141): a draft still reading `from`
+   * (nothing typed over it) reads `to`, so saving it does not write back what the step undid. Typed text stays.
+   */
+  retitle(from: string, to: string): void {
+    if (this.disposed || this.input.value !== from) return;
+    this.input.value = to;
+    this.written = to;
+    this.resize();
+  }
+
   /** Bring the keyboard back to a held draft another edit was asked for over. */
   focus(): void {
     if (!this.disposed) this.input.focus({ preventScroll: true });

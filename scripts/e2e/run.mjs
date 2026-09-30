@@ -62,6 +62,7 @@ export const CASES = [
   { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語', shot: true },
   { name: 'view-padding', file: 'view-padding.mjs', description: 'E70 マップの容器にペインの余白が付かない（!important なし）× 本体・別ウィンドウ・埋め込み × 明色・暗色', shot: true },
   { name: 'reread-conflict-line', file: 'reread-conflict-line.mjs', description: 'E76 再読込がノートを読んでいる最中に確定して衝突で拒否された下書き（本文モーダル・インライン編集）のエラー行が、拒否のあとのマップの再読込で「更新されました」に変わり、次の確定で適用される', shot: false },
+  { name: 'draft-own-write', file: 'draft-own-write.mjs', description: 'E77 OS のクリップボードから下書きに貼る（画像・文字・画像と文字）、エラー行の無い下書きは右ボタンで閉じる、保持した下書きの上の右クリックの「元に戻す」は下書きを拒否させず、拒否される「子を追加」は何も書かない', shot: false },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
 ];
 

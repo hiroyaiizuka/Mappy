@@ -208,6 +208,7 @@ export const en = {
   savingWait: "Wait for saving to finish, then try again.",
   rootIsFileName: "This node is the file name. You can add child nodes to it.",
   draftChanged: "The text being edited changed in Markdown. Cancel and check the new content.",
+  draftSavedCommandRefused: (reason: string) => `The text being edited was saved. The action was not run: ${reason}`,
   formatWhileEditing: "Finish editing the text before changing the format.",
   convertedToList: "Changed to H2 headings and list format. Undo restores it.",
   chooseImage: "Choose an image file.",
