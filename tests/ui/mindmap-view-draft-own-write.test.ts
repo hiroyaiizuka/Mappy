@@ -305,6 +305,26 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     expect(mounted.source()).toBe(LIST.replace('- 学ぶこと\n', '- 学ぶこと（編集）\n'));
   });
 
+  it('Undo of the rename of the node being edited, nothing typed: the draft takes the title Undo brought back, and Enter keeps it', async () => {
+    const mounted = await mount(LIST);
+    let input = await mounted.draft(find(mounted.document(), '学ぶこと'), '学ぶ');
+    mounted.key(input, 'Enter');
+    await mounted.idle();
+    // Opened again and left as it opened.
+    input = await mounted.draft(find(mounted.document(), '学ぶ'), '学ぶ');
+    await mounted.menu(t().undo);
+    expect(mounted.source()).toBe(LIST);
+    expect(mounted.editor()).toBe(input);
+    expect(input.value).toBe('学ぶこと');
+    mounted.key(input, 'Enter');
+    await mounted.idle();
+    expect(mounted.error()).toBe('');
+    // The Undo stands: the draft did not write the undone title back.
+    expect(mounted.source()).toBe(LIST);
+  });
+
+  // Pins, not regressions (they pass with the fix reverted): Undo of a step that never touched the drafted node leaves
+  // its fingerprint as it was, so the draft was never refused there; this row keeps it so.
   it('Undo of an addition elsewhere: Enter writes the draft (the draft\'s node never changed)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('記録する'), 'Tab');
@@ -385,6 +405,9 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
   });
 });
 
+// Pins, not regressions (they pass with the fix reverted: LEV-141 changed nothing on this path). They fix the reading the
+// real clipboard takes, which every earlier check skipped by dispatching on the canvas: the event starts in the draft's
+// textarea, nothing there prevents it, and the map reads the selected node (the one being edited). E77 takes the OS clipboard.
 describe('4. a paste that happens in the draft reaches the map from the textarea (LEV-141)', () => {
   const LIST = ['---', 'mappy: true', '---', '## 計画', '', '- 学ぶこと', '- 記録する', ''].join('\n');
   const paste = (target: EventTarget, files: File[], text: string): Event => {

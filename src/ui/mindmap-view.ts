@@ -48,12 +48,12 @@ const SNAP_STICK = 16;
 export const EXPORT_RENDER_WAIT_MS = 2000;
 /** How long a topic added right after a confirmed draft waits for the labels to render before it is measured. */
 const TOPIC_RENDER_WAIT_MS = 300;
-/** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 /** A node added without its text (Tab, Enter, the menu): written under its provisional name and named in place (LEV-203). */
 function isProvisional(command: EditCommand): command is Extract<EditCommand, { type: "add-child" | "add-sibling" }> {
   return (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
 }
 
+/** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
 }
@@ -1694,8 +1694,7 @@ export class MindmapView extends FileView {
     // must not leave a write behind that nobody was told of (LEV-141). It is checked on the note the draft's rename
     // leaves (`refusalOverDraft`), since a rename can change the plan (a topic's key in `mappy-topics`).
     const draft = this.inlineEditor;
-    // Only a draft still open here is this call's to save: one a blur already closed was saved (or given up) before.
-    const draftOpen = draft !== undefined && draft.text() !== undefined;
+    const draftOpen = draft !== undefined;
     if (draft) {
       this.refusalOverDraft(command);
       if (!await draft.confirm()) return;
@@ -1748,8 +1747,8 @@ export class MindmapView extends FileView {
       try { rename = this.planTitle(file, base, text); } catch { return; }
       after = parseMarkdown(applyEdits(rename.current.source, rename.plan.edits), file.basename, rename.current, undefined, rename.plan.edits);
     }
-    const provisional = isProvisional(command);
-    planEdit(after, provisional ? { ...command, title: t().newNodeTitle } : command);
+    // The planner `execute` writes with, provisional name included: the check and the write plan the same edit.
+    this.planCommand(after, command);
   }
 
   /**
@@ -2347,12 +2346,13 @@ export class MindmapView extends FileView {
    * re-read nor an external change that arrived in between can decide what the draft is measured against.
    * The parse takes the edits, as the re-read's will, so both number the nodes the same way (LEV-146).
    */
-  private rebaseDrafts(drafts: readonly DraftBase[], planned: MindDocument, written: string, edits: readonly TextEdit[]): void {
+  private rebaseDrafts(drafts: readonly DraftBase[], planned: MindDocument, written: string, edits: readonly TextEdit[]): MindDocument {
     const document = parseMarkdown(written, this.file?.basename ?? "", planned, undefined, edits);
     for (const draft of drafts) {
       const node = findNode(document, draft.nodeId);
       if (node) draft.value = draftFingerprint(document, node);
     }
+    return document;
   }
 
   /**
@@ -2394,10 +2394,12 @@ export class MindmapView extends FileView {
       // a draft that already disagrees with the note (an external change came first) is still refused. A write of this
       // view's own under way (a draft's save, a pasted image) goes first in the store's queue and rebases the drafts
       // itself: read after it, or the step would be measured from the note before it and rebase nothing.
-      while (this.saving) await this.writeSettled;
+      // An image still being read before its write (`prepared`) counts too: its write would come after the step.
+      while (this.saving || this.prepared > 0) await (this.saving ? this.writeSettled : this.nextFrame());
       if (file !== this.file || this.closed) return;
       const drafts = this.currentDrafts();
       const planned = this.document;
+      const title = this.inlineDraft && drafts.includes(this.inlineDraft) && planned ? findNode(planned, this.inlineDraft.nodeId)?.title : undefined;
       // A step refused because the note changed under it re-reads the note here too, as a refused edit does (`writeOwn`).
       let write: LatestWrite;
       try { write = await this.store[direction](file); } catch (error) {
@@ -2406,7 +2408,14 @@ export class MindmapView extends FileView {
       }
       // Only from the note the drafts were read on: a step made on another text (a change the map had not read yet)
       // leaves them to be measured against that change, as E05 would.
-      if (drafts.length > 0 && write.edits.length > 0 && file === this.file && planned?.source === write.before) this.rebaseDrafts(drafts, planned, write.after, write.edits);
+      if (drafts.length > 0 && write.edits.length > 0 && file === this.file && planned?.source === write.before) {
+        const rebased = this.rebaseDrafts(drafts, planned, write.after, write.edits);
+        // A step that changed the drafted node's own title (Undo of its rename): a draft still showing the title it opened
+        // on takes the step's title, so its save does not write back what was just undone. Text typed over it is the
+        // user's, and is kept to be written over the step's title.
+        const after = this.inlineDraft && title !== undefined ? findNode(rebased, this.inlineDraft.nodeId)?.title : undefined;
+        if (title !== undefined && after !== undefined && after !== title) this.inlineEditor?.retitle(displayTitle(title), displayTitle(after));
+      }
       const shown = this.showOwnWrite(file, write.after);
       // ⌘Z／⌘⇧Z are not saves: a draft kept by a conflict learns the note moved on, whether or not a save is under way
       // and whether this view or its re-read shows the step.
