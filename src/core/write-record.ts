@@ -68,18 +68,24 @@ export class WriteRecord {
    * `shown`, when it is empty) was made on someone else's change the reader has not read yet, and is kept all the same
    * (LEV-238): the store tells a write before any read can find it (`DocumentStore.tell`), so its start is the note as
    * it was then, and the read matches the change by titles and carries the ids through the write. Left out, the
-   * nodes the write renamed or moved would be matched by titles too, from a text two changes away. Not for a reader
-   * that has parsed nothing yet (`shown` undefined): only the writes that lead on from the record's end, as before, so
-   * its record does not take every write while its reads fail. A write that changed nothing (the store tells no such
-   * write) takes nothing back and carries no id.
+   * nodes the write renamed or moved would be matched by titles too, from a text two changes away. A write on the text
+   * a write in the middle of the record left cuts the record there, as one on `shown` starts it again: the note was put
+   * back to that text, and the writes after it were taken back (code review 2). Not for a reader that has parsed
+   * nothing yet (`shown` undefined): only the writes that lead on from the record's end, as before, so its record does
+   * not take every write while its reads fail. A write that changed nothing (the store tells no such write) takes
+   * nothing back and carries no id.
    */
   record(write: RecordedWrite, shown: string | undefined): void {
     if (write.before === write.after) return;
     const last = this.writes[this.writes.length - 1];
-    const end = last?.write.after ?? shown;
-    if (write.before === end) this.push(write);
-    else if (write.before === shown) this.restart(write);
-    else if (shown !== undefined) this.push(write);
+    if (write.before === (last?.write.after ?? shown)) { this.push(write); return; }
+    if (write.before === shown) { this.restart(write); return; }
+    let back = this.writes.length - 1;
+    while (back >= 0 && this.writes[back]!.write.after !== write.before) back -= 1;
+    if (back >= 0) {
+      this.replace(this.writes.slice(0, back + 1));
+      this.push(write);
+    } else if (shown !== undefined) this.push(write);
   }
 
   /**
@@ -173,10 +179,9 @@ export class WriteRecord {
       this.keep(mark, 0);
       return parseMarkdown(text, basename, from);
     }
-    const passed = this.passed(text, mark);
-    const reached = from ? this.parse(from, passed, basename, false) : undefined;
-    this.keep(mark, passed);
-    return parseMarkdown(text, basename, reached);
+    const unled = this.unled(text, from, basename, mark);
+    this.keep(mark, unled.used);
+    return unled.document;
   }
 
   /**
@@ -199,11 +204,24 @@ export class WriteRecord {
   }
 
   /**
-   * How many writes a read begun at `mark` that found `text` — a text no write reached, nor the one on screen — has
-   * passed: up to the last write recorded while it was under way that was made on `text` (the store wrote on the text
-   * the read found before the reader parsed it, LEV-238), else all of them. The writes after it are the next read's.
+   * `text` — a text no write reached (`replay`), nor the one on screen — parsed by a read begun at `mark`: from `from`
+   * through the writes the read passed (`passed`), then by titles. Nothing is spent: the reader spends `used` writes
+   * (`keep`) once what it read is shown, as after a replay (the view, which a newer read may supersede meanwhile, code
+   * review 2 of LEV-238). Each write is parsed once per base document (`parseWrite`), as a replay parses it.
    */
-  passed(text: string, mark: number): number {
+  unled(text: string, from: MindDocument | undefined, basename: string, mark: number): Replayed {
+    const used = this.passed(text, mark);
+    const reached = from ? this.parse(from, used, basename, true) : undefined;
+    return { document: parseMarkdown(text, basename, reached), used };
+  }
+
+  /**
+   * How many writes a read begun at `mark` that found `text` has passed: up to the last write recorded while it was
+   * under way that was made on `text` (the store wrote on the text the read found before the reader parsed it,
+   * LEV-238), else all of them. The writes after it are the next read's. A write recorded while the read was under way
+   * on a text after a change it did not find is taken for one before the read: the texts cannot tell the two apart.
+   */
+  private passed(text: string, mark: number): number {
     for (let index = this.writes.length - 1; index >= 0; index -= 1) {
       const recorded = this.writes[index]!;
       if (recorded.serial >= mark && recorded.write.before === text) return index;

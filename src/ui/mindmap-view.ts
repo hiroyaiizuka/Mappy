@@ -1216,23 +1216,22 @@ export class MindmapView extends FileView {
     // The view's own writes answer for this read while they lead from the text this view last parsed to
     // exactly the text found; their edits then carry the ids across (LEV-146), and a change someone else made
     // between them is matched by titles (LEV-238). Another text means someone else has written after them: it is
-    // matched by titles from the text the writes the read passed reached (`WriteRecord.take`, as the embed reads;
+    // matched by titles from the text the writes the read passed reached (`WriteRecord.unled`, as the embed reads;
     // until LEV-238 from the map on screen, so a node the writes renamed got a new id). A write recorded while this
     // read was under way, on the text found or on the text on screen found again, is the next read's to replay
     // (LEV-218, LEV-238). Not those recorded before it began: the read would have found them, so someone put the note
     // back (Undo in the Markdown pane, a sync), and kept they would be replayed over the put-back (LEV-224).
-    // Either replaces the record (a new `version`), so another read that replayed it before does not spend it.
+    // The text on screen found again spends here, which replaces the record (a new `version`), so another read that
+    // replayed it before does not spend it; any other text spends below, once it is shown.
     const replayed = this.writes.replay(source, this.document, file.basename);
-    let unled: MindDocument | undefined;
-    if (!replayed) {
-      if (onScreen) this.writes.keep(mark, 0);
-      else unled = this.writes.take(source, this.document, file.basename, mark);
-    }
+    const unled = replayed || onScreen ? undefined : this.writes.unled(source, this.document, file.basename, mark);
+    if (!replayed && onScreen) this.writes.keep(mark, 0);
+    const reached = replayed ?? unled;
     // The record this read replayed, to tell whether it is still the one below (the writes recorded meanwhile are added
     // to it; a restart, `showOwnWrite` and another read replace it).
     const replaying = this.writes.version;
     const document = changed || !this.document
-      ? replayed?.document ?? unled ?? parseMarkdown(source, file.basename, this.document) : this.document;
+      ? reached?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path, () => !stale()) : new Map();
@@ -1247,8 +1246,8 @@ export class MindmapView extends FileView {
     // told by its `version`): what this read replayed is not in it. Past the write a read reached, the writes left get
     // the rule of a read of the text on screen (LEV-237): one recorded before the read began was there for it to find
     // (the replay goes on to the last write that wrote the text read), so someone put the note back over it. Kept, it
-    // would stand in the record where nothing can follow it. A read that replayed nothing spent what it had to above.
-    if (replayed && this.writes.version === replaying) this.writes.keep(mark, replayed.used);
+    // would stand in the record where nothing can follow it. A read of the text on screen spent what it had to above.
+    if (reached && this.writes.version === replaying) this.writes.keep(mark, reached.used);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).

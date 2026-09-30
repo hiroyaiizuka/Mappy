@@ -368,17 +368,48 @@ describe('WriteRecord', () => {
     expect({ child: titled(read, 'ずっと長い題名'), parent: titled(read, '改名') }).toEqual({ child: titled(shown, '子1'), parent: titled(shown, '親') });
   });
 
-  it('replay and keep (the view): a write on a text not read yet replays after the change; one found by a read is kept', () => {
+  it('replay and unled (the view): a write on a text not read yet replays after the change; one found by a read is kept', () => {
     const shown = parseMarkdown(H, 'n');
     const record = new WriteRecord();
     const write = rename(elsewhere(H), '子1', 'ずっと長い題名');
     const reading = record.mark();
     record.record(write, H);
     expect(titled(record.replay(write.after, shown, 'n')?.document ?? shown, 'ずっと長い題名')).toBe(titled(shown, '子1'));
-    // The view's read that found the change the write was made on (no replay reaches it) keeps the write.
+    // The view's read that found the change the write was made on (no replay reaches it) passes no write, and spends
+    // nothing until it spends what it used (code review 2: a newer read may supersede it first).
     expect(record.replay(elsewhere(H), shown, 'n')).toBeUndefined();
-    record.keep(reading, record.passed(elsewhere(H), reading));
+    const unled = record.unled(elsewhere(H), shown, 'n', reading);
+    expect({ used: unled.used, recorded: record.recorded }).toEqual({ used: 0, recorded: [write] });
+    record.keep(reading, unled.used);
     expect(record.recorded).toEqual([write]);
+  });
+
+  it('unled: parses through the writes a read passed and spends none of them; the same parse for the same base', () => {
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const write = rename(H, '子1', 'ずっと長い題名');
+    record.record(write, H);
+    const added = rename(elsewhere(write.after), '  - 空の子\n', '  - 空の子\n  - 新しい子\n');
+    const unled = record.unled(added.after, shown, 'n', record.mark());
+    expect({ used: unled.used, size: record.size, renamed: titled(unled.document, 'ずっと長い題名') }).toEqual({ used: 1, size: 1, renamed: titled(shown, '子1') });
+    // The write parsed once per base, as a replay (and `carry`, for a draft's base) parses it.
+    expect(record.replay(write.after, shown, 'n')?.document).toBe(record.replay(write.after, shown, 'n')?.document);
+  });
+
+  it('record: a write on the text a write in the middle of the record left cuts the record there (code review 2)', () => {
+    // [w1 A→B, w2 B→C], the note put back to B (the Markdown pane's Undo), and the map writes w3 on B: w2 was taken
+    // back, and replayed it would carry ids over a change the note no longer has.
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const w1 = rename(H, '子1', 'ずっと長い題名');
+    const w2 = rename(w1.after, '- 親', '- 改名');
+    const w3 = rename(w1.after, '  - 空の子2', '  - 別の子');
+    record.record(w1, H);
+    record.record(w2, H);
+    record.record(w3, H);
+    expect(record.recorded).toEqual([w1, w3]);
+    const read = record.take(w3.after, shown, 'n', record.mark());
+    expect({ parent: titled(read, '親'), renamed: titled(read, 'ずっと長い題名') }).toEqual({ parent: titled(shown, '親'), renamed: titled(shown, '子1') });
   });
 
   // Until LEV-238 this row pinned that a write on another text was left out. It is now recorded (the rows above), and
@@ -395,7 +426,9 @@ describe('WriteRecord', () => {
   });
 
   it('record: a reader that has parsed nothing keeps only the writes that lead on from the record (code review 1)', () => {
-    // Its reads may be failing: kept, every write on the note would wait for a read that does not come.
+    // Its reads may be failing: kept, every write on the note would wait for a read that does not come. Not a regression
+    // test against the code before LEV-238 (it left out every such write); it fails on this branch's first commit, which
+    // kept them, and pins that the new rule stops where nothing has been parsed.
     const record = new WriteRecord();
     record.record(rename(H, '子1', 'ずっと長い題名'), undefined);
     expect(record.size).toBe(0);

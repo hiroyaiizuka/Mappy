@@ -565,6 +565,48 @@ describe('the record kept whole through what the fix added (LEV-218, code review
   });
 });
 
+describe('a read of a text the record does not lead to, superseded while it waits for the called maps (LEV-238)', () => {
+  interface Internals {
+    recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
+    refresh(): Promise<void>;
+    reader: { read(...args: unknown[]): Promise<unknown> };
+  }
+
+  it('leaves the writes it passed for the read that wins', async () => {
+    // White-box (code review 2 of LEV-238): the record is [W: S→T] (子1 renamed, with its edit) and the note holds T with
+    // 子2 changed by someone else. The first read parses that through W and then waits for the maps the note calls; a
+    // newer read begins meanwhile, and the first gives up. Spent by the first read before it gave up, W would be gone
+    // for the newer one, which would match the text from S by titles: the renamed node would take a new id.
+    const MAP_A = '---\nmappy: true\n---\n## 地図A\n- A の枝\n';
+    const host = ['---', 'mappy: true', '---', '## 本体', '', '- ![[map-a]]', '- 子1', '- 子2', ''].join('\n');
+    const app = new HarnessApp();
+    app.put('Fixtures/map-a.md', MAP_A);
+    const mounted = await mountMapView(PATH, host, 'mindmap', app);
+    await settled(mounted);
+    const view = state(mounted);
+    const internals = mounted.view as unknown as Internals;
+    const before = nodeNamed(mounted, '子1').dataset.nodeId;
+    const at = host.indexOf('子1');
+    const t = host.slice(0, at) + 'ずっと長い題名' + host.slice(at + 2);
+    internals.recordWrite(mounted.file, { before: host, after: t, edits: [{ from: at, to: at + 2, text: 'ずっと長い題名' }] });
+    app.put(PATH, t.replace('- 子2\n', '- 外から\n'));
+    const read = internals.reader.read.bind(internals.reader);
+    const pending: { newer?: Promise<void> } = {};
+    vi.spyOn(internals.reader, 'read').mockImplementation(async (...args: unknown[]) => {
+      const targets = await read(...args);
+      pending.newer ??= internals.refresh();
+      return targets;
+    });
+    await internals.refresh();
+    expect(pending.newer).toBeDefined();
+    await pending.newer;
+    await settled(mounted);
+    expect(view.document?.source).toContain('- 外から\n');
+    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).toBe(before);
+    expect(view.writes.recorded).toEqual([]);
+  });
+});
+
 describe('a re-read that reaches part of the record, with the writes past it taken back (LEV-237)', () => {
   // The read finds the text a write of the record wrote (it replays up to it), and the writes past it were recorded
   // before the read began: the read would have found them, so someone put the note back (Undo in the Markdown pane, a
