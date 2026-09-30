@@ -1216,24 +1216,25 @@ export class MindmapView extends FileView {
     const source = read.value;
     const onScreen = source === this.document?.source;
     const changed = !onScreen || this.document?.root.title !== file.basename;
-    // The view's own writes answer for this read while they lead from the text this view last parsed to
-    // exactly the text found; their edits then carry the ids across (LEV-146). Another text means someone
-    // else has written, and the writes are of no use to any later read either. The text on screen found again
-    // keeps the writes recorded while this read was under way that lead on from it: the next read's to replay
-    // (LEV-218). Not those recorded before it began: the read would have found them, so someone put the note
-    // back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where the
-    // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
-    // Either replaces the record (a new `version`), so another read that replayed it before does not spend it.
+    // The view's own writes answer for this read while one of them wrote exactly the text found (replayed from
+    // the text this view last parsed); their edits then carry the ids across (LEV-146), and a change someone else made
+    // between them is matched by titles (LEV-238). Another text means someone else has written after them: it is
+    // matched by titles from the text the writes the read passed reached (`WriteRecord.unled`, as the embed reads;
+    // until LEV-238 from the map on screen, so a node the writes renamed got a new id). A write recorded while this
+    // read was under way, on the text found or on the text on screen found again, is the next read's to replay
+    // (LEV-218, LEV-238). Not those recorded before it began: the read would have found them, so someone put the note
+    // back (Undo in the Markdown pane, a sync), and kept they would be replayed over the put-back (LEV-224).
+    // The text on screen found again spends here, which replaces the record (a new `version`), so another read that
+    // replayed it before does not spend it; any other text spends below, once it is shown.
     const replayed = this.writes.replay(source, this.document, file.basename);
-    if (!replayed) {
-      if (onScreen) this.writes.keep(source, mark, 0);
-      else this.writes.clear();
-    }
+    const unled = replayed || onScreen ? undefined : this.writes.unled(source, this.document, file.basename, mark);
+    if (!replayed && onScreen) this.writes.keep(mark, 0);
+    const reached = replayed ?? unled;
     // The record this read replayed, to tell whether it is still the one below (the writes recorded meanwhile are added
     // to it; a restart, `showOwnWrite` and another read replace it).
     const replaying = this.writes.version;
     const document = changed || !this.document
-      ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
+      ? reached?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     // A note that calls nothing for now is read through the reader too while it holds anything, or a read of it is under
@@ -1248,8 +1249,8 @@ export class MindmapView extends FileView {
     // told by its `version`): what this read replayed is not in it. Past the write a read reached, the writes left get
     // the rule of a read of the text on screen (LEV-237): one recorded before the read began was there for it to find
     // (the replay goes on to the last write that wrote the text read), so someone put the note back over it. Kept, it
-    // would stand in the record where nothing can follow it. A read that replayed nothing spent what it had to above.
-    if (replayed && this.writes.version === replaying) this.writes.keep(source, mark, replayed.used);
+    // would stand in the record where nothing can follow it. A read of the text on screen spent what it had to above.
+    if (reached && this.writes.version === replaying) this.writes.keep(mark, reached.used);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
@@ -1287,9 +1288,10 @@ export class MindmapView extends FileView {
    * watcher of its own, whose re-read draws it. The caller re-reads right after (`refresh`, in the same task), which
    * drops the reads begun before the write (the epoch): they may have read the note from before it. The maps the
    * items call are kept for the items that embed the same note as before; an item the write made a call or pointed
-   * elsewhere waits for that read, so no caller shows the map another text called. Nothing is shown when the record
-   * does not lead from the note shown to the text written (a re-read published another text meanwhile): the re-read
-   * decides then. Nor for a note being left (`unloading`), which is neither re-read nor drawn again: the next note
+   * elsewhere waits for that read, so no caller shows the map another text called. A change someone else made that
+   * this view has not read yet, before the write or between its writes, is matched by titles on the way (LEV-238), as
+   * its re-read would. Nothing is shown when no write recorded wrote the text written (a re-read spent them
+   * meanwhile): the re-read decides then. Nor for a note being left (`unloading`), which is neither re-read nor drawn again: the next note
    * follows. True when it drew.
    */
   private showOwnWrite(file: TFile, written: string): boolean {
@@ -2429,9 +2431,9 @@ export class MindmapView extends FileView {
   /**
    * A write the store made on the note (`DocumentStore.onWrite`) — this view's, another map's of the note, or a step of
    * the shared history — recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the
-   * folds and the selection stay on a node whose title repeats or is empty. Recorded only where the view's record
-   * leads to its start (`WriteRecord.record`, as the embed and the called maps record it): a view that moved on, or
-   * whose text is not the one the write was made on, re-reads it as it would any change. The view that asked for the
+   * folds and the selection stay on a node whose title repeats or is empty. Recorded as the embed and the called maps
+   * record it (`WriteRecord.record`): a write on a change this view has not read yet too, whose re-read matches the
+   * change by titles and carries the ids through the write (LEV-238). The view that asked for the
    * write records it again once the store answers (`writeOwn`, `writeLayout`: `WriteRecord.confirm`), which skips the
    * copy.
    */

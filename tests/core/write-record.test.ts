@@ -60,16 +60,21 @@ describe('WriteRecord', () => {
     expect(record.size).toBe(1);
   });
 
-  it('keeps, of the writes recorded while a read of the text on screen was under way, only those that lead on from it', () => {
-    // W1 (A→X) recorded before the read, W2 (X→Y) while it reads, and the read finds A: W1 goes, and W2 with it — kept,
-    // it would start the record at X, a text the reader does not show, and no write on A could follow it.
+  it('keeps, of the writes recorded while a read of the text on screen was under way, one on a change it did not find', () => {
+    // W1 (A→X) recorded before the read, W2 (X→Y) while it reads, and the read finds A: W1 goes (put back), and W2 stays.
+    // Until LEV-238 it went with W1: kept, it started the record at X, where no write on A could follow it. Now a write
+    // on A starts the record again, and a read of another text matches the change to X by titles and carries W2's edits.
     const record = new WriteRecord();
     const there = rename(A, '子1', 'ずっと長い題名');
     record.record(there, A);
     const reading = record.mark();
-    record.record(rename(there.after, 'ずっと長い題名', '別'), A);
+    const on = rename(there.after, 'ずっと長い題名', '別');
+    record.record(on, A);
     record.spend(A, reading);
-    expect(record.size).toBe(0);
+    expect(record.recorded).toEqual([on]);
+    const next = rename(A, '- \n', '- 命名\n');
+    record.record(next, A);
+    expect(record.recorded).toEqual([next]);
   });
 
   // Not a regression test of LEV-224 (it holds before the fix, which kept every write): it pins that the fix does not
@@ -281,7 +286,7 @@ describe('WriteRecord', () => {
     // [on] ends elsewhere than A: a write on A starts it again.
     record.record(rename(A, '親', '別'), A);
     versions.push(record.version);
-    record.keep(A, record.mark(), 0);
+    record.keep(record.mark(), 0);
     versions.push(record.version);
     record.clear();
     versions.push(record.version);
@@ -289,12 +294,158 @@ describe('WriteRecord', () => {
     expect(new Set(versions.slice(1)).size).toBe(versions.length - 1);
   });
 
-  it('leaves out a write that does not start where the record leads, so it does not block the ones that do', () => {
+  // LEV-238: a write the store made on a text the reader had not read yet — someone changed the note (a sync, the
+  // Markdown pane) and the map wrote on it before the reader's re-read — was left out, and the re-read matched every node
+  // by titles from the text on screen. A node the write renamed then matched nothing (two changes, so not the single
+  // title edit either) and got a new id. Now the write is recorded, and the re-read matches the change it did not see by
+  // titles (E05) and carries the ids through the write by its edits.
+  const H = ['---', 'mappy: true', '---', '## 履歴', '', '- 親', '  - 子1', '- ', '  - 空の子', '- ', '  - 空の子2', '', '## 別', '', '- 枝', ''].join('\n');
+  /** Someone else's change to `text`, away from the nodes the writes touch. */
+  const elsewhere = (text: string): string => text.replace('- 枝\n', '- 外から\n');
+  /** The id of the first untitled node. */
+  const first = (document: MindDocument): string | undefined => document.nodes.filter(node => node.title === '')[0]?.id;
+
+  it('records a write on a text the reader has not read yet, and carries the ids through it after the change before it', () => {
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const write = rename(elsewhere(H), '子1', 'ずっと長い題名');
+    record.record(write, H);
+    expect(record.recorded).toEqual([write]);
+    const read = record.take(write.after, shown, 'n', record.mark());
+    expect({ size: record.size, renamed: titled(read, 'ずっと長い題名'), 外から: titled(read, '外から') })
+      .toEqual({ size: 0, renamed: titled(shown, '子1'), 外から: titled(shown, '枝') });
+  });
+
+  it('records a write after a change that followed a recorded write, and carries the ids through both writes', () => {
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const there = rename(H, '子1', 'ずっと長い題名');
+    record.record(there, H);
+    const write = rename(elsewhere(there.after), '- 親', '- 改名');
+    record.record(write, H);
+    expect(record.recorded).toEqual([there, write]);
+    const read = record.take(write.after, shown, 'n', record.mark());
+    expect({ child: titled(read, 'ずっと長い題名'), parent: titled(read, '改名') }).toEqual({ child: titled(shown, '子1'), parent: titled(shown, '親') });
+  });
+
+  it('matches the change before such a write by titles alone: the untitled twins get new ids, the write\'s edits or not (E05)', () => {
+    // Not a regression test (it holds before the fix): it pins that the write's edits are not laid over the change. Titles
+    // cannot tell twins apart, so any change the reader did not see renumbers them — with or without a write after it.
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const write = rename(elsewhere(H), '- \n', '- 命名\n');
+    record.record(write, H);
+    const read = record.take(write.after, shown, 'n', record.mark());
+    expect(shown.nodes.map(node => node.id)).not.toContain(first(read));
+  });
+
+  it('take: a read that finds the change a write recorded while it was under way was made on keeps the write for the next read', () => {
+    // The read is answered with the changed text, and the store writes on it before the reader parses it (the view waits
+    // for the maps the note calls; the called maps and the embed yield too).
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const reading = record.mark();
+    const write = rename(elsewhere(H), '子1', 'ずっと長い題名');
+    record.record(write, H);
+    const found = record.take(elsewhere(H), shown, 'n', reading);
+    expect(record.size).toBe(1);
+    expect(titled(record.take(write.after, found, 'n', record.mark()), 'ずっと長い題名')).toBe(titled(shown, '子1'));
+  });
+
+  it('keeps the writes recorded while a read was under way past a change between them, and carries the ids through both', () => {
+    // The read finds the text on screen; meanwhile the store writes on it, someone changes the note, and the store writes
+    // on the change. Cut at the change, the second write would be left to titles.
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const reading = record.mark();
+    const there = rename(H, '子1', 'ずっと長い題名');
+    record.record(there, H);
+    const write = rename(elsewhere(there.after), '- 親', '- 改名');
+    record.record(write, H);
+    record.take(H, shown, 'n', reading);
+    expect(record.recorded).toEqual([there, write]);
+    const read = record.take(write.after, shown, 'n', record.mark());
+    expect({ child: titled(read, 'ずっと長い題名'), parent: titled(read, '改名') }).toEqual({ child: titled(shown, '子1'), parent: titled(shown, '親') });
+  });
+
+  it('replay and unled (the view): a write on a text not read yet replays after the change; one found by a read is kept', () => {
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const write = rename(elsewhere(H), '子1', 'ずっと長い題名');
+    const reading = record.mark();
+    record.record(write, H);
+    expect(titled(record.replay(write.after, shown, 'n')?.document ?? shown, 'ずっと長い題名')).toBe(titled(shown, '子1'));
+    // The view's read that found the change the write was made on (no replay reaches it) passes no write, and spends
+    // nothing until it spends what it used (code review 2: a newer read may supersede it first).
+    expect(record.replay(elsewhere(H), shown, 'n')).toBeUndefined();
+    const unled = record.unled(elsewhere(H), shown, 'n', reading);
+    expect({ used: unled.used, recorded: record.recorded }).toEqual({ used: 0, recorded: [write] });
+    record.keep(reading, unled.used);
+    expect(record.recorded).toEqual([write]);
+  });
+
+  it('unled: parses through the writes a read passed and spends none of them; the same parse for the same base', () => {
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const write = rename(H, '子1', 'ずっと長い題名');
+    record.record(write, H);
+    const added = rename(elsewhere(write.after), '  - 空の子\n', '  - 空の子\n  - 新しい子\n');
+    const unled = record.unled(added.after, shown, 'n', record.mark());
+    expect({ used: unled.used, size: record.size, renamed: titled(unled.document, 'ずっと長い題名') }).toEqual({ used: 1, size: 1, renamed: titled(shown, '子1') });
+    // The write parsed once per base, as a replay (and `carry`, for a draft's base) parses it.
+    expect(record.replay(write.after, shown, 'n')?.document).toBe(record.replay(write.after, shown, 'n')?.document);
+  });
+
+  it('record: a write on the change the first write was made on cuts the write that was taken back (code review 3)', () => {
+    // The reader shows H; someone changes it to X, the store writes w1 on X, the note is put back to X (the Markdown
+    // pane's Undo), and the store writes w2 on X. w1 was taken back: replayed, the read would carry 子1 over a rename the
+    // note no longer has, and match X by titles from its text, where 子1 is not.
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const w1 = rename(elsewhere(H), '子1', 'ずっと長い題名');
+    const w2 = rename(elsewhere(H), '- 親', '- 改名');
+    record.record(w1, H);
+    record.record(w2, H);
+    expect(record.recorded).toEqual([w2]);
+    const read = record.take(w2.after, shown, 'n', record.mark());
+    expect({ child: titled(read, '子1'), parent: titled(read, '改名') }).toEqual({ child: titled(shown, '子1'), parent: titled(shown, '親') });
+  });
+
+  it('record: a write on the text a write in the middle of the record left cuts the record there (code review 2)', () => {
+    // [w1 A→B, w2 B→C], the note put back to B (the Markdown pane's Undo), and the map writes w3 on B: w2 was taken
+    // back, and replayed it would carry ids over a change the note no longer has.
+    const shown = parseMarkdown(H, 'n');
+    const record = new WriteRecord();
+    const w1 = rename(H, '子1', 'ずっと長い題名');
+    const w2 = rename(w1.after, '- 親', '- 改名');
+    const w3 = rename(w1.after, '  - 空の子2', '  - 別の子');
+    record.record(w1, H);
+    record.record(w2, H);
+    record.record(w3, H);
+    expect(record.recorded).toEqual([w1, w3]);
+    const read = record.take(w3.after, shown, 'n', record.mark());
+    expect({ parent: titled(read, '親'), renamed: titled(read, 'ずっと長い題名') }).toEqual({ parent: titled(shown, '親'), renamed: titled(shown, '子1') });
+  });
+
+  // Until LEV-238 this row pinned that a write on another text was left out. It is now recorded (the rows above), and
+  // this pins what stays of the old rule: a write on the text on screen after it starts the record again, so the write
+  // on the other text — the note was put back over it — does not stand before it.
+  it('starts the record again with a write on the text on screen after a write on a change the reader had not read', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
     record.record(rename(A.replace('子1', '外'), '外', 'ずっと長い題名'), A);
     const write = rename(A, '子1', 'ずっと長い題名');
     record.record(write, A);
+    expect(record.recorded).toEqual([write]);
     expect(second(record.take(write.after, shown, 'n', record.mark()))).toBe(second(shown));
+  });
+
+  it('record: a reader that has parsed nothing keeps only the writes that lead on from the record (code review 1)', () => {
+    // Its reads may be failing: kept, every write on the note would wait for a read that does not come. Not a regression
+    // test against the code before LEV-238 (it left out every such write); it fails on this branch's first commit, which
+    // kept them, and pins that the new rule stops where nothing has been parsed.
+    const record = new WriteRecord();
+    record.record(rename(H, '子1', 'ずっと長い題名'), undefined);
+    expect(record.size).toBe(0);
   });
 });

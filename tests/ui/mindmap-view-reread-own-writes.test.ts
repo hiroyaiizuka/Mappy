@@ -481,10 +481,11 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
     });
   }
 
-  it('a read of the text on screen keeps only writes that lead on from it', async () => {
+  it('a read of the text on screen keeps the writes recorded while it read, even one on a change it did not find', async () => {
     // White-box: the record is [W1: S→A] when the read begins, W2 (A→B) is recorded while it reads, and the read finds S
-    // (someone put the note back). W1 goes (recorded before the read), and W2 with it: kept, it would start the record
-    // at A, a text the map does not show, and no write made on the text on screen could follow it.
+    // (someone put the note back). W1 goes (recorded before the read), and W2 stays. Until LEV-238 it went with W1:
+    // kept, it started the record at A, where no write made on the text on screen could follow it. Now such a write starts
+    // the record again, and a read of another text matches the change to A by titles and carries W2's edits.
     const mounted = await mount();
     const view = state(mounted);
     const internals = mounted.view as unknown as {
@@ -496,14 +497,15 @@ describe('a write taken back by someone else before the map re-read it (LEV-218,
     expect(view.writes.recorded).toHaveLength(1);
     const store = storeOf(mounted);
     const read = store.read.bind(store);
+    const w2 = { before: a, after: b, edits: [] };
     vi.spyOn(store, 'read').mockImplementation(async file => {
-      internals.recordWrite(mounted.file, { before: a, after: b, edits: [] });
+      internals.recordWrite(mounted.file, w2);
       expect(view.writes.recorded).toHaveLength(2);
       return read(file);
     });
     await internals.refresh();
     expect(view.document?.source).toBe(SOURCE);
-    expect(view.writes.recorded).toEqual([]);
+    expect(view.writes.recorded).toEqual([w2]);
   });
 });
 
@@ -560,6 +562,48 @@ describe('the record kept whole through what the fix added (LEV-218, code review
     await internals.refresh();
     expect(restarted).toBe(true);
     expect(view.writes.recorded).toEqual([w]);
+  });
+});
+
+describe('a read of a text the record does not lead to, superseded while it waits for the called maps (LEV-238)', () => {
+  interface Internals {
+    recordWrite(file: unknown, write: { before: string; after: string; edits: unknown[] }): void;
+    refresh(): Promise<void>;
+    reader: { read(...args: unknown[]): Promise<unknown> };
+  }
+
+  it('leaves the writes it passed for the read that wins', async () => {
+    // White-box (code review 2 of LEV-238): the record is [W: S→T] (子1 renamed, with its edit) and the note holds T with
+    // 子2 changed by someone else. The first read parses that through W and then waits for the maps the note calls; a
+    // newer read begins meanwhile, and the first gives up. Spent by the first read before it gave up, W would be gone
+    // for the newer one, which would match the text from S by titles: the renamed node would take a new id.
+    const MAP_A = '---\nmappy: true\n---\n## 地図A\n- A の枝\n';
+    const host = ['---', 'mappy: true', '---', '## 本体', '', '- ![[map-a]]', '- 子1', '- 子2', ''].join('\n');
+    const app = new HarnessApp();
+    app.put('Fixtures/map-a.md', MAP_A);
+    const mounted = await mountMapView(PATH, host, 'mindmap', app);
+    await settled(mounted);
+    const view = state(mounted);
+    const internals = mounted.view as unknown as Internals;
+    const before = nodeNamed(mounted, '子1').dataset.nodeId;
+    const at = host.indexOf('子1');
+    const t = host.slice(0, at) + 'ずっと長い題名' + host.slice(at + 2);
+    internals.recordWrite(mounted.file, { before: host, after: t, edits: [{ from: at, to: at + 2, text: 'ずっと長い題名' }] });
+    app.put(PATH, t.replace('- 子2\n', '- 外から\n'));
+    const read = internals.reader.read.bind(internals.reader);
+    const pending: { newer?: Promise<void> } = {};
+    vi.spyOn(internals.reader, 'read').mockImplementation(async (...args: unknown[]) => {
+      const targets = await read(...args);
+      pending.newer ??= internals.refresh();
+      return targets;
+    });
+    await internals.refresh();
+    expect(pending.newer).toBeDefined();
+    await pending.newer;
+    await settled(mounted);
+    expect(view.document?.source).toContain('- 外から\n');
+    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).toBe(before);
+    expect(view.writes.recorded).toEqual([]);
   });
 });
 
@@ -740,7 +784,7 @@ describe('a re-read that reaches part of the record, with the writes past it tak
   // Code review 2: the record comes back to the same text more than once before the view reads it — B deletes the
   // second twin, Z (⌘Z) puts it back, C deletes the first — and the note holds C's text. A replay that stops at the
   // first write reaching that text (B) carries the ids by B's edits: the twin left, the second, takes the id of the
-  // first, which is gone — its fold and selection with it. It must go on to the last (C), as `WriteRecord.follow`
+  // first, which is gone — its fold and selection with it. It must go on to the last (C), as `WriteRecord.reaches`
   // does; the twin left is then the one Z put back, parsed as a node of its own (a new id: what ⌘Z's insertion gives
   // any replay, first or last, and not this ticket's). Through a re-read (B, Z, C by the store) and through this
   // map's own write shown at once (B, Z by the store, C this map's Delete: `showOwnWrite`).
@@ -834,10 +878,11 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
     expect(calls).toEqual([{ after: renamed, shown: true }, { after: mounted.source(), shown: true }]);
   });
 
-  it('an external change the record does not lead to is matched by titles from the text the view shows', async () => {
-    // Pin, not a regression test: it passes before and after LEV-247. The record [W: S→T] (子1 renamed) and the
-    // note holds T with 子2 changed by someone else. The view parses that from S by titles, as it always has — the
-    // renamed node takes a new id — where the embed parses it from T (`WriteRecord.take`), and it would keep it.
+  it('an external change the record does not lead to is matched by titles from the text the writes reached', async () => {
+    // The record [W: S→T] (子1 renamed) and the note holds T with 子2 changed by someone else. Until LEV-238 the view
+    // parsed that from S by titles — the renamed node took a new id — where the embed parsed it from T
+    // (`WriteRecord.take`) and kept it; this row pinned the difference. Now the view takes it as the embed does (code
+    // review 1 of LEV-238: a write, then a change before the re-read, lost the node in the tab alone).
     const mounted = await mount();
     const view = state(mounted);
     const internals = mounted.view as unknown as Internals;
@@ -849,7 +894,7 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
     await internals.refresh();
     await settled(mounted);
     expect(view.document?.source).toContain('  - 外から\n');
-    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).not.toBe(before);
+    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).toBe(before);
     expect(recorded(mounted)).toEqual([]);
   });
 });
