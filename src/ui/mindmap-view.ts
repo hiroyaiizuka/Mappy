@@ -1214,17 +1214,16 @@ export class MindmapView extends FileView {
     const onScreen = source === this.document?.source;
     const changed = !onScreen || this.document?.root.title !== file.basename;
     // The view's own writes answer for this read while they lead from the text this view last parsed to
-    // exactly the text found; their edits then carry the ids across (LEV-146). Another text means someone
-    // else has written, and the writes are of no use to any later read either. The text on screen found again
-    // keeps the writes recorded while this read was under way that lead on from it: the next read's to replay
-    // (LEV-218). Not those recorded before it began: the read would have found them, so someone put the note
-    // back (Undo in the Markdown pane, a sync), and kept they would stand at the end of the record, where the
-    // next write, made on the text on screen, could not follow them. Nor a write that starts elsewhere.
+    // exactly the text found; their edits then carry the ids across (LEV-146), and a change someone else made
+    // between them is matched by titles (LEV-238). Another text means someone else has written: the writes the
+    // read passed are of no use to any later read (`WriteRecord.passed`). A write recorded while this read was
+    // under way, on the text found or on the text on screen found again, is the next read's to replay (LEV-218,
+    // LEV-238). Not those recorded before it began: the read would have found them, so someone put the note
+    // back (Undo in the Markdown pane, a sync), and kept they would be replayed over the put-back (LEV-224).
     // Either replaces the record (a new `version`), so another read that replayed it before does not spend it.
     const replayed = this.writes.replay(source, this.document, file.basename);
     if (!replayed) {
-      if (onScreen) this.writes.keep(source, mark, 0);
-      else this.writes.clear();
+      this.writes.keep(mark, onScreen ? 0 : this.writes.passed(source, mark));
     }
     // The record this read replayed, to tell whether it is still the one below (the writes recorded meanwhile are added
     // to it; a restart, `showOwnWrite` and another read replace it).
@@ -1246,7 +1245,7 @@ export class MindmapView extends FileView {
     // the rule of a read of the text on screen (LEV-237): one recorded before the read began was there for it to find
     // (the replay goes on to the last write that wrote the text read), so someone put the note back over it. Kept, it
     // would stand in the record where nothing can follow it. A read that replayed nothing spent what it had to above.
-    if (replayed && this.writes.version === replaying) this.writes.keep(source, mark, replayed.used);
+    if (replayed && this.writes.version === replaying) this.writes.keep(mark, replayed.used);
     // The write's own re-read finding the text the write just put on screen (`showOwnWrite`), with the same called maps, has
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
@@ -2343,9 +2342,9 @@ export class MindmapView extends FileView {
   /**
    * A write the store made on the note (`DocumentStore.onWrite`) — this view's, another map's of the note, or a step of
    * the shared history — recorded as a write of this view's own so the re-read carries the ids over (LEV-150): the
-   * folds and the selection stay on a node whose title repeats or is empty. Recorded only where the view's record
-   * leads to its start (`WriteRecord.record`, as the embed and the called maps record it): a view that moved on, or
-   * whose text is not the one the write was made on, re-reads it as it would any change. The view that asked for the
+   * folds and the selection stay on a node whose title repeats or is empty. Recorded as the embed and the called maps
+   * record it (`WriteRecord.record`): a write on a change this view has not read yet too, whose re-read matches the
+   * change by titles and carries the ids through the write (LEV-238). The view that asked for the
    * write records it again once the store answers (`writeOwn`, `writeLayout`: `WriteRecord.confirm`), which skips the
    * copy.
    */
