@@ -9,12 +9,16 @@
  * link typed back parsed the note anew, every called node took a new id, and the branch the reader opened closed again.
  *
  * Rows: the operation × the calling note's shape × the shape of the called node the reader opened (通常 親 ・空題名 the
- * second untitled node ・同名 the second of two ・トピック 枝 under an item calling `#トピック`). Operations, each in the
+ * second untitled node ・同名 the second of two ・トピック 枝 under an item calling `#トピック`). Operations, in the
  * buffer of a Markdown editor (source mode) open on the calling note beside its map: `]` (the closing `]` of the item's
- * link deleted, then typed again), Undo (the item's whole title deleted, then the editor's Undo), 別のマップ (the link
- * pointed at another map, then typed back). The calling note: 1項目 (one item, calling the part the shape is in) or
- * 2項目 (`- ![[E2E-call-retype]]` and `- ![[E2E-call-retype#トピック]]`, the item the shape is under broken). The
- * reader opens 親 and the row's node with real clicks; after the operation, the node keeps its id and stays open.
+ * link deleted, then typed again), `!` (the `!` deleted, then typed again: a link for a while), Undo (the item's whole
+ * title deleted, then the editor's Undo), 別名 (`|別名` typed into the link: the editor closes the brackets, so the item
+ * calls the map throughout), 別のマップ (the link pointed at another map, then typed back); and on the map, F2 (the
+ * item's `!` deleted with F2 → the title typed → Enter, then put back the same way: the map shows its own write before
+ * it reads the calls again). The calling note: 1項目 (one item, calling the part the shape is in), 2項目 (`- ![[…]]` and
+ * `- ![[…#トピック]]`, the item the shape is under broken: the note is still read for the other) or 2項目-別のノート
+ * (the item the shape is under, and one calling another map). The reader opens 親 and the row's node with real clicks;
+ * after the operation, the node keeps its id and stays open.
  *
  * Usage (see docs/harness.md 実機検証 for the Obsidian instance):
  *   npm run harness:e2e:call-retype -- [--reload] [--json <out.json>] [--keep] [--only <row name prefix>]
@@ -67,10 +71,15 @@ const SHAPES = [
   { name: 'トピック', label: '枝', index: 0, link: `${NAME}#トピック` },
 ];
 
-/** The calling note's items, and how many of them call a map while the broken one does not. */
+/** The calling note's items, the broken one's title given (`title`), and how many others call a map meanwhile. */
 const HOSTS = [
-  { name: '1項目', items: shape => [`![[${shape.link}]]`], others: 0 },
-  { name: '2項目', items: () => [`![[${NAME}]]`, `![[${NAME}#トピック]]`], others: 1 },
+  { name: '1項目', items: (shape, title) => [title], others: 0 },
+  {
+    name: '2項目',
+    items: (shape, title) => shape.link === NAME ? [title, `![[${NAME}#トピック]]`] : [`![[${NAME}]]`, title],
+    others: 1,
+  },
+  { name: '2項目-別のノート', items: (shape, title) => [title, `![[${OTHER_NAME}]]`], others: 1 },
 ];
 
 /** VIEW (the calling map), plus the Markdown editor on the calling note. */
@@ -190,33 +199,80 @@ const edit = (title, from, to, text) => evaluate(`${HOSTED}
   editor.replaceRange(${JSON.stringify(text)}, editor.offsetToPos(start + ${from}), editor.offsetToPos(start + ${to}));
   return editor.getValue();`);
 
+/** The calling item edited on the map: a real click on it, F2, the title typed over its own (IME-style commit), Enter. */
+const retitleOnMap = async (id, title) => {
+  await clickAt(`return nodes().find(node => node.dataset.nodeId === ${JSON.stringify(id)});`);
+  await wait(300);
+  await cdp.realKey('F2');
+  let editing = false;
+  for (let tries = 0; tries < 20 && !editing; tries += 1) {
+    editing = await evaluate(`${HOSTED} return input() !== null;`);
+    if (!editing) await wait(100);
+  }
+  if (!editing) throw new Error('F2 did not open the inline editor on the calling item');
+  await evaluate(`${HOSTED} input().select(); return true;`);
+  await cdp.insertText(title);
+  await wait(200);
+  await cdp.realKey('Enter');
+  await wait(300);
+};
+
+/** Each operation leaves the item with `final` as its title (its own again, or with an alias). */
 const OPERATIONS = [
   {
     name: ']',
-    run: async (title, host) => {
-      const broken = await edit(title, title.length - 1, title.length, '');
-      const between = await caughtUp(host.others);
+    run: async (title, count) => {
+      await edit(title, title.length - 1, title.length, '');
+      const between = await caughtUp(count.broken);
       await edit(title.slice(0, -1), title.length - 1, title.length - 1, ']');
-      return { broken: broken.includes(`- ${title.slice(0, -1)}\n`), between };
+      return { final: title, between };
+    },
+  },
+  {
+    name: '!',
+    run: async (title, count) => {
+      await edit(title, 0, 1, '');
+      const between = await caughtUp(count.broken);
+      await edit(title.slice(1), 0, 0, '!');
+      return { final: title, between };
     },
   },
   {
     name: 'Undo',
-    run: async (title, host) => {
+    run: async (title, count) => {
       await edit(title, 0, title.length, '');
-      const between = await caughtUp(host.others);
-      const undone = await evaluate(`${HOSTED} editor.undo(); return editor.getValue();`);
-      return { between, undone: undone.includes(`- ${title}\n`) };
+      const between = await caughtUp(count.broken);
+      await evaluate(`${HOSTED} editor.undo(); return true;`);
+      return { final: title, between };
+    },
+  },
+  {
+    name: '別名',
+    run: async (title, count) => {
+      await edit(title, title.length - 2, title.length - 2, '|');
+      const between = await caughtUp(count.all);
+      await edit(`${title.slice(0, -2)}|]]`, title.length - 1, title.length - 1, '別名');
+      return { final: `${title.slice(0, -2)}|別名]]`, between };
     },
   },
   {
     name: '別のマップ',
-    run: async (title, host) => {
+    run: async (title, count) => {
       const other = `![[${OTHER_NAME}]]`;
       await edit(title, 0, title.length, other);
-      const between = await caughtUp(host.others + 1);
+      const between = await caughtUp(count.all);
       await edit(other, 0, other.length, title);
-      return { between };
+      return { final: title, between };
+    },
+  },
+  {
+    name: 'F2',
+    run: async (title, count, caller) => {
+      // The `!`, not the `]`: with the caret inside an unclosed `[[…`, Enter picks the link suggestion (`LinkSuggest`).
+      await retitleOnMap(caller, title.slice(1));
+      const between = await caughtUp(count.broken);
+      await retitleOnMap(caller, title);
+      return { final: title, between };
     },
   },
 ];
@@ -228,16 +284,17 @@ try {
       for (const shape of SHAPES) {
         const row = `${operation.name}-${host.name}-${shape.name}`;
         await step(row, async () => {
-          const items = host.items(shape);
+          const title = `![[${shape.link}]]`;
+          const items = host.items(shape, title);
           await reopen(items);
           await caughtUp(items.length);
           const toggled = await openRow(shape);
-          const title = `![[${shape.link}]]`;
-          const done = await operation.run(title, host);
+          const done = await operation.run(title, { all: items.length, broken: host.others }, toggled.id.split('/')[0]);
           await caughtUp(items.length);
           const state = await readId(toggled.id);
           const buffer = await evaluate(`${HOSTED} return editor.getValue();`);
-          check(buffer === hostSource(items), `${row}: the buffer did not come back to the calling note: ${JSON.stringify(buffer)}`);
+          const expected = hostSource(host.items(shape, done.final));
+          check(buffer === expected, `${row}: the buffer is not the calling note with the item put back: ${JSON.stringify(buffer)}`);
           check(state.id === toggled.id, `${row}: no node ${toggled.id} in the calling map after the link came back (a new id)`);
           check(state.label === shape.label, `${row}: node ${toggled.id} is ${JSON.stringify(state.label)}, not ${shape.label}`);
           check(state.folded === false, `${row}: the branch the reader opened closed again`);

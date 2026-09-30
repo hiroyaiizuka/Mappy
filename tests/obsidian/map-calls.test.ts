@@ -249,24 +249,39 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     // Deleted: its last parse goes at once, and that it was read stays for the host's next read.
     app.remove('Map.md');
     expect(lasts()).toEqual([]);
-    // Per note (code review 3): an item waiting for another note keeps nothing of a note another item left.
+    // Per note (code review 3): the item that reached A deleted, A goes, though another item still waits (for a note
+    // it never reached): that item holds nothing of A.
     app.put('A.md', TWINS);
     app.put('B.md', TWINS);
     await reader.read(host(['![[A]]', '![[Missing]]']), 'Host.md');
     expect(lasts()).toEqual(['A.md']);
-    await reader.read(host(['![[Missing]]']), 'Host.md');
-    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 1, lasts: [] });
-    // Per item (LEV-260): an item pointed at another map keeps the one it called, and waits, for as long as it is in the
-    // host; the note before that goes (two notes an item).
+    const missing = host(['![[Missing]]']);
+    await reader.read(missing, 'Host.md');
+    expect({ waiting: Array.from(reader.waiting), held: reader.held.size, lasts: lasts() })
+      .toEqual({ waiting: [missing.nodes[1]?.id], held: 0, lasts: [] });
+    // Per item (LEV-260): an item made plain text, or pointed at another map, keeps the note it called and waits, for as
+    // long as it is in the host (the cost of the hold: a parse, no record), and holds that note's nodes and no other.
     const pointed = host(['![[A]]']);
     await reader.read(pointed, 'Host.md');
+    const item = pointed.nodes[1]?.id ?? '';
+    const nodesOf = (path: string): string[] => Array.from((reader as unknown as { last: Map<{ path: string }, { document: { nodes: { id: string }[] } }> }).last)
+      .find(([file]) => file.path === path)?.[1].document.nodes.map(node => node.id) ?? [];
+    const aNodes = nodesOf('A.md');
+    await reader.read(host(['Aのメモ']), 'Host.md');
+    expect({ waiting: Array.from(reader.waiting), held: Array.from(reader.held.get(item) ?? []), lasts: lasts() })
+      .toEqual({ waiting: [item], held: aNodes, lasts: ['A.md'] });
     await reader.read(host(['![[B]]']), 'Host.md');
-    expect({ waiting: Array.from(reader.waiting), lasts: lasts().sort() }).toEqual({ waiting: [pointed.nodes[1]?.id], lasts: ['A.md', 'B.md'] });
-    app.put('C.md', TWINS);
-    await reader.read(host(['![[C]]']), 'Host.md');
-    expect(lasts().sort()).toEqual(['B.md', 'C.md']);
+    expect({ waiting: Array.from(reader.waiting), held: Array.from(reader.held.get(item) ?? []), lasts: lasts().sort() })
+      .toEqual({ waiting: [item], held: aNodes, lasts: ['A.md', 'B.md'] });
+    // Four notes an item: the fifth one it reaches lets go of the first.
+    for (const name of ['C', 'D', 'E']) {
+      app.put(`${name}.md`, TWINS);
+      await reader.read(host([`![[${name}]]`]), 'Host.md');
+    }
+    expect(lasts().sort()).toEqual(['B.md', 'C.md', 'D.md', 'E.md']);
+    // The item deleted, every note it held goes.
     await reader.read(host([]), 'Host.md');
-    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: [] });
+    expect({ waiting: reader.waiting.size, held: reader.held.size, lasts: lasts() }).toEqual({ waiting: 0, held: 0, lasts: [] });
     stop();
   });
 

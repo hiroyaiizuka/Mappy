@@ -7,6 +7,12 @@ import type { DocumentStore } from './document-store';
 import { resolveEmbedTarget } from './embed-target';
 
 /**
+ * How many notes an item keeps (`CallReader.reached`): the one it reaches, and those it passed through while its link was
+ * typed again letter by letter (each name that is a map on the way), with the one it called before at the end.
+ */
+const KEPT_PER_ITEM = 4;
+
+/**
  * The maps a note's items call (§5 M12), read from the vault. An item whose title is one
  * `![[…]]` is resolved as a note embed is (`resolveEmbedTarget`: a Markdown note with
  * `mappy: true` in the cache, not a block reference), the note itself is refused, and the
@@ -44,11 +50,13 @@ export class CallReader {
   private readonly writes = new Map<TFile, WriteRecord>();
   /** The items the last read found waiting for a map (`waiting`). */
   private waitingIds: ReadonlySet<string> = new Set();
+  /** By item, the nodes of the notes it holds (`held`). */
+  private heldIds: ReadonlyMap<string, ReadonlySet<string>> = new Map();
   /**
-   * By item id, the notes the item last reached, the latest first: the one it reaches now or last did, and the one it
-   * reached before that. While the item is in the host, a note of these it does not reach now keeps its last parse and
-   * the item is `waiting`: a link broken for a while on the Markdown side (`![[Map]` while `]` is typed again, `[[Map]]`,
-   * an empty title), pointed at another map or renamed away and back finds the same ids (LEV-246, LEV-260).
+   * By item id, the notes the item reached, the latest first (`KEPT_PER_ITEM` of them). While the item is in the host,
+   * a note of these it does not reach now keeps its last parse and the item is `waiting`: a link broken for a while on
+   * the Markdown side (`![[Map]` while `]` is typed again, `[[Map]]`, an empty title), pointed at another map, or typed
+   * back letter by letter through the maps whose names begin its own, finds the same ids (LEV-246, LEV-260).
    */
   private readonly reached = new Map<string, readonly TFile[]>();
   /** The subscription writes are recorded for (`listen`); the view that holds the reader listens once for its life. */
@@ -72,7 +80,8 @@ export class CallReader {
     // A deleted note never comes back as the same file: its last parse and record are of no use (code review 2 of
     // LEV-246). That it was read stays until the next read: the host asks `reads` to know that read is due.
     const deleted = this.app.vault.on('delete', file => {
-      if (this.listening !== token || !(file instanceof TFile)) return;
+      // Every note an item reached has its last parse here (the reads keep it while the item does): no other matters.
+      if (this.listening !== token || !(file instanceof TFile) || !this.last.has(file)) return;
       this.last.delete(file);
       this.writes.delete(file);
       for (const [id, files] of Array.from(this.reached)) {
@@ -111,6 +120,7 @@ export class CallReader {
       this.writes.clear();
       this.reached.clear();
       this.waitingIds = new Set();
+      this.heldIds = new Map();
     });
     this.queue = result;
     return result;
@@ -165,9 +175,10 @@ export class CallReader {
       // Only the parse is kept, not the note's record (`forget`): nothing is recorded for a note no item reaches (LEV-221).
       const present = new Set(document.nodes.map(node => node.id));
       const held = new Set<TFile>();
+      const heldIds = new Map<string, Set<string>>();
       for (const id of Array.from(this.reached.keys())) if (!present.has(id)) this.reached.delete(id);
       for (const [id, file] of reachedNow) {
-        this.reached.set(id, [file, ...(this.reached.get(id) ?? []).filter(other => other !== file)].slice(0, 2));
+        this.reached.set(id, [file, ...(this.reached.get(id) ?? []).filter(other => other !== file)].slice(0, KEPT_PER_ITEM));
       }
       for (const [id, files] of Array.from(this.reached)) {
         // A note deleted is gone for good, and one no longer in the vault is not waited for (code review 3 of LEV-246).
@@ -181,9 +192,13 @@ export class CallReader {
           if (reachedNow.get(id) === file) continue;
           held.add(file);
           waiting.add(id);
+          const nodes = heldIds.get(id) ?? new Set<string>();
+          for (const node of this.last.get(file)?.document.nodes ?? []) nodes.add(node.id);
+          heldIds.set(id, nodes);
         }
       }
       this.waitingIds = waiting;
+      this.heldIds = heldIds;
       for (const file of Array.from(this.last.keys())) if (!wanted.has(file) && !held.has(file)) this.last.delete(file);
     }
     return targets;
@@ -198,6 +213,14 @@ export class CallReader {
    */
   get waiting(): ReadonlySet<string> {
     return this.waitingIds;
+  }
+
+  /**
+   * By waiting item, the nodes of the notes it holds (their last parses) that it does not reach now: an item that draws
+   * another map now keeps the folds of these and of no other node of its own (LEV-260).
+   */
+  get held(): ReadonlyMap<string, ReadonlySet<string>> {
+    return this.heldIds;
   }
 
   private mayBecomeMap(linktext: string, hostPath: string): boolean {

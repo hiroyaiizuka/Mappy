@@ -62,6 +62,10 @@ function draftFingerprint(document: MindDocument, node: MindNode): string {
  */
 interface DraftBase { nodeId: string; value: string }
 
+/** What a read of the calls found waiting (`CallReader.waiting`) and held (`CallReader.held`): the folds `adopt` keeps. */
+interface WaitingCalls { items: ReadonlySet<string>; held: ReadonlyMap<string, ReadonlySet<string>> }
+const NOTHING_WAITS: WaitingCalls = { items: new Set(), held: new Map() };
+
 /** A node the view has just added for the inline editor to name (LEV-203): the write that added it, and the node selected before. */
 interface Created {
   readonly write: LatestWrite;
@@ -165,8 +169,11 @@ export class MindmapView extends FileView {
   private readonly reader: CallReader;
   /** Ids of the called nodes the view has shown; a call new to it starts folded below the called root's children. */
   private knownCalled = new Set<string>();
-  /** The items the read of `targets` found waiting for a map (`CallReader.waiting`), for a draw with no read of its own. */
-  private waitingCalls: ReadonlySet<string> = new Set();
+  /**
+   * The items the read of `targets` found waiting for a map (`CallReader.waiting`) and the nodes of the notes they hold
+   * (`CallReader.held`), for a draw with no read of its own.
+   */
+  private waitingCalls: WaitingCalls = NOTHING_WAITS;
   private recallTimer: number | undefined;
   /**
    * The trees on the map (§5 M7, M12): the body root and the free topics as written (`split`) and with the called
@@ -494,7 +501,7 @@ export class MindmapView extends FileView {
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.writes.clear(); this.loads += 1; this.owed = false;
-    this.targets = new Map(); this.knownCalled.clear(); this.waitingCalls = new Set(); void this.reader.clear();
+    this.targets = new Map(); this.knownCalled.clear(); this.waitingCalls = NOTHING_WAITS; void this.reader.clear();
     await super.onUnloadFile(file);
   }
 
@@ -1239,7 +1246,7 @@ export class MindmapView extends FileView {
     const targets: CallTargets = reads ? await this.reader.read(document, file.path, () => !stale()) : new Map();
     if (stale()) return;
     // The items this very read found waiting for a map (the reader's reads run one after another).
-    const waiting = reads ? this.reader.waiting : new Set<string>();
+    const waiting: WaitingCalls = reads ? { items: this.reader.waiting, held: this.reader.held } : NOTHING_WAITS;
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again or spent meanwhile (`WriteRecord.record`, `showOwnWrite`,
@@ -1263,7 +1270,7 @@ export class MindmapView extends FileView {
   }
 
   /** `document` (when the note changed) and the called maps become what the map shows, and are drawn. */
-  private publish(document: MindDocument | undefined, targets: CallTargets, waiting: ReadonlySet<string>): void {
+  private publish(document: MindDocument | undefined, targets: CallTargets, waiting: WaitingCalls): void {
     if (document) {
       this.document = document;
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
@@ -1302,7 +1309,12 @@ export class MindmapView extends FileView {
     const before = embeds(previous);
     const after = embeds(replayed.document);
     const kept = new Map(Array.from(this.targets).filter(([id]) => (before.get(id) ?? null) !== null && before.get(id) === after.get(id)));
-    this.publish(replayed.document, kept, this.waitingCalls);
+    // An item the write took off its map keeps the folds of the branches it drew until the re-read, whose reader tells
+    // whether it still waits (its link broken for a while: LEV-260); pruned here, they would be gone by then.
+    const ids = new Set(replayed.document.nodes.map(node => node.id));
+    const left = Array.from(this.targets.keys()).filter(id => !kept.has(id) && ids.has(id));
+    const waiting = this.waitingCalls;
+    this.publish(replayed.document, kept, left.length === 0 ? waiting : { items: new Set([...waiting.items, ...left]), held: waiting.held });
     return true;
   }
 
@@ -1352,7 +1364,7 @@ export class MindmapView extends FileView {
     const current = (): boolean => !this.closed && epoch === this.epoch && this.document === document && file === this.file;
     const targets = await this.reader.read(document, file.path, current);
     if (!current()) return;
-    const waiting = this.reader.waiting;
+    const waiting: WaitingCalls = { items: this.reader.waiting, held: this.reader.held };
     if (sameTargets(this.targets, targets)) return;
     this.adopt(targets, waiting);
     this.draw();
@@ -1372,7 +1384,7 @@ export class MindmapView extends FileView {
    * folds are pruned to the nodes that exist, and a call new to the view starts folded below its root's children.
    * The only place `targets`, the projection and the fold set change together, so `projection()` stays a reader.
    */
-  private adopt(targets: CallTargets, waiting: ReadonlySet<string>): void {
+  private adopt(targets: CallTargets, waiting: WaitingCalls): void {
     const document = this.document;
     if (!document) return;
     if (this.projected?.document === document && sameTargets(this.projected.targets, targets)) return;
@@ -1382,9 +1394,13 @@ export class MindmapView extends FileView {
     // An item that still calls a map whose read fails for now (the note unreadable, not a map by its text, renamed
     // before the link to it is) keeps the folds of the branches it drew, as an embed keeps the reader's: the reader
     // gives the note back with the same ids once it reads again (LEV-246). So does an item whose link is broken for a
-    // while or points at another map: the branches of the map it called are not drawn now (LEV-260).
+    // while (LEV-260). One that draws another map now keeps the folds of the notes it holds, and prunes its own.
     this.waitingCalls = waiting;
-    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller); };
+    const kept = (id: string): boolean => {
+      const caller = callerOfCalledNode(id);
+      if (caller === undefined || !waiting.items.has(caller)) return false;
+      return !this.targets.has(caller) || (waiting.held.get(caller)?.has(id.slice(caller.length + 1)) ?? false);
+    };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;

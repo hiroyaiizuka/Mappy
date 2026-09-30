@@ -82,12 +82,19 @@ const OPERATIONS: { operation: string; steps: (call: string) => string[] }[] = [
   { operation: 'the name typed again through a prefix no note has', steps: call => [`![[${call}`, '![[undo]]', `![[${call}]]`] },
   { operation: 'an alias typed in', steps: call => [`![[${call}|`, `![[${call}|別名]`, `![[${call}|別名]]`] },
   { operation: 'pointed at another map for a while', steps: call => ['![[other]]', `![[${call}]]`] },
+  {
+    // The name deleted and typed back letter by letter, the brackets closed by the editor: each prefix that names a map
+    // (`u`, `un`, `und` are maps here) draws that map on the way (code review 1: two notes an item were not enough).
+    operation: 'the name typed back through maps whose names begin it',
+    steps: call => ['![[]]', '![[u]]', '![[un]]', '![[und]]', '![[undo]]', `![[${call}]]`],
+  },
 ];
 
 async function open(items: readonly string[]): Promise<MountedMapView> {
   const app = new HarnessApp();
   app.put(PATH, SOURCE);
   app.put(OTHER, OTHER_SOURCE);
+  for (const prefix of ['u', 'un', 'und']) app.put(`Fixtures/${prefix}.md`, OTHER_SOURCE);
   const host = await mountMapView(HOST, hostSource(items), 'mindmap', app);
   await settled(host);
   return host;
@@ -138,6 +145,24 @@ async function retitle(host: MountedMapView, items: readonly string[]): Promise<
   await settled(host);
 }
 
+/**
+ * The same on the map: the calling item edited with F2 (the item's own text, `![[…]]`, in the inline editor) and Enter.
+ * The map shows its own write at once, before the reader reads the calls again (`showOwnWrite`, LEV-219).
+ */
+async function retitleOnMap(host: MountedMapView, id: string, title: string): Promise<void> {
+  const item = Array.from(host.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).find(node => node.dataset.nodeId === id);
+  if (!item) throw new Error(`No calling item ${id}`);
+  item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  host.key(host.canvas, 'F2');
+  const editor = host.editor();
+  if (!editor) throw new Error('F2 opened no editor');
+  editor.value = title;
+  editor.dispatchEvent(new Event('input', { bubbles: true }));
+  host.key(editor, 'Enter');
+  await vi.waitFor(() => expect(host.source()).toContain(`- ${title}\n`), { timeout: 2000, interval: 5 });
+  await settled(host);
+}
+
 const MATRIX = OPERATIONS.flatMap(({ operation, steps }) => HOSTS.flatMap(({ host, items }) =>
   SHAPES.map(shape => ({ operation, steps, host, items, ...shape }))));
 
@@ -147,6 +172,35 @@ describe('the calling map\'s folds through the calling item\'s link broken on th
     const opened = await unfold(host, label, index);
     for (const title of steps(call)) await retitle(host, items(title, call));
     expect(seenById(host, opened.id)).toEqual({ ...opened, label });
+  });
+
+  // Not the whole title deleted (Undo on the map is its own history, LEV-150), nor a name typed through an unclosed
+  // `![[…`: Enter there picks the link suggestion (`link-suggest`), so the map never writes that step.
+  const ON_MAP = OPERATIONS.filter(({ operation }) => !operation.startsWith('the whole title') && !operation.startsWith('the name typed'))
+    .flatMap(({ operation, steps }) => HOSTS.flatMap(({ host, items }) => SHAPES.map(shape => ({ operation, steps, host, items, ...shape }))));
+
+  it.each(ON_MAP)('on the map with F2, $operation, $host: the $shape node the reader opened keeps its id and stays open', async ({ steps, items, call, label, index }) => {
+    const host = await open(items(`![[${call}]]`, call));
+    const opened = await unfold(host, label, index);
+    const caller = (opened.id ?? '').split('/')[0] ?? '';
+    for (const title of steps(call)) await retitleOnMap(host, caller, title);
+    expect(seenById(host, opened.id)).toEqual({ ...opened, label });
+  });
+
+  it('an item pointed at another map prunes the folds of that map\'s nodes deleted meanwhile, and keeps those of the map it held (code review 1)', async () => {
+    const host = await open(['![[undo-ids]]']);
+    const opened = await unfold(host, '親', 0);
+    await retitle(host, ['![[other]]']);
+    const other = await unfold(host, '別の枝', 0);
+    // 別の枝 deleted from the map drawn now (in its own tab, or on disk), while the item still holds undo-ids.
+    await host.app.asApp<App>().vault.process(host.app.asApp<App>().vault.getAbstractFileByPath(OTHER) as never, () => OTHER_SOURCE.replace('- 別の枝\n  - 別の子\n', ''));
+    await settled(host);
+    const view = host.view as unknown as { collapsed: Set<string>; knownCalled: Set<string> };
+    const openedAgain = (other.id ?? '').split('/')[1] ?? '';
+    expect({ collapsed: view.collapsed.has(other.id ?? ''), known: Array.from(view.knownCalled).some(id => id.endsWith(`/${openedAgain}`)) })
+      .toEqual({ collapsed: false, known: false });
+    await retitle(host, ['![[undo-ids]]']);
+    expect(seenById(host, opened.id)).toEqual({ ...opened, label: '親' });
   });
 
   it('two items calling the same note with the same title: the edit renumbers the calling item itself, so its branch starts anew (E05)', async () => {
