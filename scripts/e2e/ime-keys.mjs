@@ -100,15 +100,20 @@ const look = () => evaluate(`${VIEW}
  */
 const LOG = `if (!window.__mappyImeLog) {
     window.__mappyImeLog = [];
-    for (const type of ['compositionstart', 'compositionend', 'keydown']) {
-      document.addEventListener(type, event => {
-        const target = event.target;
-        window.__mappyImeLog.push({
-          type, key: event.key ?? null, keyCode: event.keyCode ?? null, isComposing: event.isComposing ?? null, data: event.data ?? null,
-          where: target?.closest?.('.cm-content') ? 'markdown' : target?.classList?.contains('mappy-inline-input') ? 'draft' : String(target?.tagName ?? ''),
-        });
-      }, true);
-    }
+    const listen = event => {
+      const target = event.target;
+      window.__mappyImeLog.push({
+        type: event.type, key: event.key ?? null, keyCode: event.keyCode ?? null, isComposing: event.isComposing ?? null, data: event.data ?? null,
+        where: target?.closest?.('.cm-content') ? 'markdown' : target?.classList?.contains('mappy-inline-input') ? 'draft' : String(target?.tagName ?? ''),
+      });
+    };
+    for (const type of ['compositionstart', 'compositionend', 'keydown']) document.addEventListener(type, listen, true);
+    // Taken away at the end of the case (with --keep too): the window records nothing once it is over.
+    window.__mappyImeLogStop = () => {
+      for (const type of ['compositionstart', 'compositionend', 'keydown']) document.removeEventListener(type, listen, true);
+      delete window.__mappyImeLog;
+      delete window.__mappyImeLogStop;
+    };
   }`;
 const take = () => evaluate(`${LOG} return window.__mappyImeLog.splice(0);`);
 
@@ -138,8 +143,12 @@ async function restore() {
   if ((await look()).editing) {
     await compose('');
     await cdp.realKey('Escape');
-    await wait(400);
+    await waitEditing(false);
   }
+  // A draft closed just now may still be writing (Escape on a new node takes it back): the note must hold still first.
+  let last = await source();
+  await until(async () => { await wait(300); const now = await source(); const still = now === last; last = now; return still; }, 5000,
+    'the note did not settle before the row');
   await evaluate(`${VIEW}
     if (await source() !== ${JSON.stringify(SOURCE)}) await app.vault.modify(view.file, ${JSON.stringify(SOURCE)});
     await new Promise(resolve => setTimeout(resolve, 700));
@@ -187,16 +196,17 @@ try {
   // The build this run reports on is the file on disk, so the plugin is always read again from it first (`--reload`
   // or not): a build copied in without a reload would otherwise run the previous one under the new file's hash.
   const mainJs = join(VAULT, '.obsidian', 'plugins', 'mappy', 'main.js');
+  const ALWAYS_RELOAD = () => true;
   const hashed = async () => createHash('sha256').update(await readFile(mainJs)).digest('hex');
   const loaded = await step('build-before', async () => ({ mainJs: await hashed() }));
   required(record, 'build-before', loaded);
-  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, name => name === '--reload' || flag(name))));
+  required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, ALWAYS_RELOAD)));
   required(record, 'build', await step('build', async () => {
     const hash = await hashed();
     if (hash !== loaded.mainJs) throw new Error('main.js changed while the plugin was reloaded; run again');
     record.mainJs = hash;
     record.chromium = await evaluate(`return navigator.userAgent.match(/Chrome\\/[\\d.]+/u)?.[0] ?? null;`);
-    record.obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version') ?? null;`);
+    record.obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version') ?? null;`).catch(() => null);
     return { mainJs: hash, chromium: record.chromium, obsidian: record.obsidian };
   }));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
@@ -308,7 +318,7 @@ try {
           await wait(400);
           await cdp.realKey('Enter');
           await waitEditing(false);
-          const written = await until(async () => { const text = await source(); return text.replace(/mappy-topics:[\s\S]*?(?=---)/u, '') === way.written ? text : null; }, 3000,
+          const written = await until(async () => { const text = await source(); return text.replace(/^mappy-topics:\n(?: {2}.*\n)*/mu, '') === way.written ? text : null; }, 3000,
             'the new node was not written with the confirmed word').catch(async error => { expect(false, `${error.message}: ${JSON.stringify(await source())}`); return null; });
           const final = await look();
           expect(final.labels.length === LABELS.length + 1 && final.labels.filter(item => item === WORD).length === 1,
@@ -321,10 +331,9 @@ try {
   });
 
   // B: the Markdown beside the map, typed in with the IME. Last: from here on the note is open in an editor too.
-  await step('markdown', async () => {
-    // The map's own 「Markdown を横に開く」 (a plain markdown view state of a map note is routed to a map), then editing
-    // mode with live preview: the reading view would never take the keys.
-    required(record, 'split', await step('split', () => evaluate(`${VIEW}
+  // The map's own 「Markdown を横に開く」 (a plain markdown view state of a map note is routed to a map), then editing
+  // mode with live preview: the reading view would never take the keys.
+  required(record, 'split', await step('split', () => evaluate(`${VIEW}
       await view.showSource(true);
       await new Promise(resolve => setTimeout(resolve, 1000));
       const md = app.workspace.getLeavesOfType('markdown').find(item => item.view.file?.path === view.file.path);
@@ -334,6 +343,7 @@ try {
       if (md.view.getMode?.() !== 'source') throw new Error('The Markdown leaf beside the map is not in editing mode: ' + md.view.getMode?.());
       window.__mappyE2EMarkdown = md;
       return { type: md.view.getViewType(), file: md.view.file?.path ?? null };`)));
+  await step('markdown', async () => {
     for (const item of MARKDOWN) {
       await row(`B/${item.id}`, async expect => {
         // The cursor at the end of 「- 野菜」 (list) or of the note (heading), in the editor, with the focus there.
@@ -392,6 +402,8 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
+  // The page-side log goes whatever happened (--keep, a stop, a crash of a row): nothing of the case keeps listening.
+  await evaluate('window.__mappyImeLogStop?.(); return true;').catch(() => null);
   cdp.close();
 }
 
