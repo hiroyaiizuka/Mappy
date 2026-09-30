@@ -16,8 +16,8 @@
  * calls the map throughout), 別のマップ (the link pointed at another map, then typed back), 見出し (the heading part
  * typed again: a heading the note does not have added to a whole-note call, the last letter of `#トピック` deleted,
  * then put back), 打ち直し (the
- * name deleted and typed back a letter at a time at a typist's pace, through `E2E-call` and `E2E-call-re`, two maps
- * whose names begin it); and on the map, F2 (the
+ * note's name deleted and typed back a letter at a time at a typist's pace, through `E2E-call` and `E2E-call-re`, two
+ * maps whose names begin it; a topic call keeps its `#トピック`); and on the map, F2 (the
  * item's `!` deleted with F2 → the title typed → Enter, then put back the same way: the map shows its own write before
  * it reads the calls again). The calling note: 1項目 (one item, calling the part the shape is in), 2項目 (`- ![[…]]` and
  * `- ![[…#トピック]]`, the item the shape is under broken: the note is still read for the other) or 2項目-別のノート
@@ -295,12 +295,14 @@ const OPERATIONS = [
   {
     name: '打ち直し',
     run: async (title, count) => {
-      const inner = title.slice(3, -2);
-      await edit(title, 3, 3 + inner.length, '');
+      // The note's name, not a topic call's `#トピック`: typed back whole, the item would pass through the other item's
+      // `![[E2E-call-retype]]`, two items with one title, which E05 does not match (the limit left out of scope).
+      const [name, heading = ''] = title.slice(3, -2).split(/(?=#)/u);
+      await edit(title, 3, 3 + name.length, '');
       const between = await caughtUp(count.broken);
       // A letter at a time between the brackets the editor closed, at about 8 letters a second.
-      for (let at = 0; at < inner.length; at += 1) {
-        await edit(`![[${inner.slice(0, at)}]]`, 3 + at, 3 + at, inner[at]);
+      for (let at = 0; at < name.length; at += 1) {
+        await edit(`![[${name.slice(0, at)}${heading}]]`, 3 + at, 3 + at, name[at]);
         await wait(120);
       }
       return { final: title, between };

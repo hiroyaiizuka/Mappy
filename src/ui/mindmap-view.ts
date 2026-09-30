@@ -1378,9 +1378,13 @@ export class MindmapView extends FileView {
     // A calling item keeps the folds of the branches it drew for as long as it is in the note, whatever it draws for now
     // (the note unreadable or not a map for a while, renamed before the link to it is: LEV-246; its own link broken and
     // typed again, pointed at another map: LEV-260), as an embed keeps the reader's: the reader gives the note back with
-    // the same ids once the item reaches it again. The ids are made of the item's, so a deleted item takes them along.
+    // the same ids once the item reaches it again. The ids are made of the item's, so a deleted item takes them along, and
+    // of the called node's, so a node deleted from its note, or a note the reader let go of, takes its own (code review 3).
     const items = new Set(document.nodes.map(node => node.id));
-    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && items.has(caller); };
+    const kept = (id: string): boolean => {
+      const caller = callerOfCalledNode(id);
+      return caller !== undefined && items.has(caller) && this.reader.keeps(id.slice(caller.length + 1));
+    };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;

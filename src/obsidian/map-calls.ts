@@ -52,6 +52,8 @@ export class CallReader {
   private readonly writes = new Map<TFile, WriteRecord>();
   /** The reads asked for and not done yet (`holding`). */
   private pending = 0;
+  /** The ids of the nodes of the parses kept in `last`, made again when a read is done (`keeps`). */
+  private keptIds: ReadonlySet<string> = new Set();
   /** The subscription writes are recorded for (`listen`); the view that holds the reader listens once for its life. */
   private listening: object | null = null;
   /** Reads run one after another, so two overlapping reads cannot parse the same note twice under different ids. */
@@ -98,17 +100,16 @@ export class CallReader {
   }
 
   /**
-   * Lets go of every note read here: the host no longer calls any (its items changed, it left the note). Without it the
+   * Lets go of every note read here: the host left the note. Without it the
    * record of a note no read comes back for would take every write on that note for as long as the host is open. Queued
-   * behind the reads, as a read that finds no call does it: a read under way would put back what was let go of. Nothing
-   * is let go of when `current` no longer holds by then (the host moved on, and its own reads decide).
+   * behind the reads: a read under way would put back what was let go of.
    */
-  clear(current: () => boolean = () => true): Promise<void> {
+  clear(): Promise<void> {
     const result = this.queue.then(() => {
-      if (!current()) return;
       this.parsed.clear();
       this.last.clear();
       this.writes.clear();
+      this.keptIds = new Set();
     });
     this.queue = result;
     return result;
@@ -157,8 +158,17 @@ export class CallReader {
         if (room > 0 && this.app.vault.getAbstractFileByPath(file.path) === file) room -= 1;
         else this.last.delete(file);
       }
+      this.keptIds = new Set(Array.from(this.last.values(), kept => kept.document.nodes.map(node => node.id)).flat());
     }
     return targets;
+  }
+
+  /**
+   * True when a note's parse kept here has a node `id` (as of the last read done): the host keeps the folds of a called
+   * node only while this holds, so the folds of a node deleted from its note, or of a note let go of, go (LEV-260).
+   */
+  keeps(id: string): boolean {
+    return this.keptIds.has(id);
   }
 
   /** True when the last read parsed the note now at `path`: a change of it can alter what the host shows. */
@@ -190,19 +200,23 @@ export class CallReader {
     }
     const previous = this.last.get(file);
     this.parsed.add(file);
-    // Read last: the note moves to the end of `last`, the last one `KEPT_UNREAD` lets go of.
-    this.last.delete(file);
     if (previous && previous.source === text && previous.document.root.title === file.basename) {
       // Writes that came back to the text parsed (⌘Z then ⌘⇧Z) are spent here, not carried to the next read.
       writes?.spend(text, mark);
-      this.last.set(file, previous);
+      this.keep(file, previous);
       return previous.document;
     }
     const parsed = writes
       ? writes.take(text, previous?.document, file.basename, mark)
       : parseMarkdown(text, file.basename, previous?.document);
-    this.last.set(file, { source: text, document: parsed });
+    this.keep(file, { source: text, document: parsed });
     return parsed;
+  }
+
+  /** `file`'s parse, read last: at the end of `last`, the end `KEPT_UNREAD` keeps (moved only once the parse is made). */
+  private keep(file: TFile, parse: { source: string; document: MindDocument }): void {
+    this.last.delete(file);
+    this.last.set(file, parse);
   }
 
   /**

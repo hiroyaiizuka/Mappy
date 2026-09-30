@@ -154,7 +154,6 @@ describe('CallReader.listen (LEV-221)', () => {
     let asked = 0;
     await reader.read(parseMarkdown(HOST, 'Host'), 'Host.md', () => ++asked === 1);
     expect(asked).toBe(2);
-    await reader.clear(() => false);
     expect({ reads: reader.reads('Other.md'), kept: writesOf(reader).has('Other.md') }).toEqual({ reads: true, kept: true });
     stop();
   });
@@ -270,12 +269,18 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     const paused = new Promise<void>(resolve => { answer = resolve; });
     const spy = vi.spyOn(store, 'read').mockImplementation(async file => { await paused; return read(file); });
     expect(reader.holding).toBe(false);
-    // The first call typed, then taken out before its read is done: the read that follows is superseded.
-    const reading = reader.read(hostOf('Map'), 'Host.md', () => false);
+    // The first call typed, then taken out while its read is parsing the note: that read is superseded, and lets go of
+    // nothing; it leaves the note parsed and recorded.
+    let live = true;
+    const reading = reader.read(hostOf('Map'), 'Host.md', () => live);
     expect(reader.holding).toBe(true);
-    const after = reader.read(parseMarkdown('---\nmappy: true\n---\n## ホスト\n- メモ\n', 'Host'), 'Host.md');
+    await vi.waitFor(() => { expect(spy).toHaveBeenCalled(); });
+    live = false;
     answer();
     await reading;
+    expect({ reads: reader.reads('Map.md'), kept: writesOf(reader).size }).toEqual({ reads: true, kept: 1 });
+    // The host that calls nothing reads after it (`holding`): that read lets go of the record.
+    const after = reader.read(parseMarkdown('---\nmappy: true\n---\n## ホスト\n- メモ\n', 'Host'), 'Host.md');
     await after;
     spy.mockRestore();
     expect({ reads: reader.reads('Map.md'), kept: writesOf(reader).size }).toEqual({ reads: false, kept: 0 });

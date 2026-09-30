@@ -207,6 +207,15 @@ describe('the calling map\'s folds through the calling item\'s link broken on th
     expect(seen(host, '親', 0).folded).toBe(true);
   });
 
+  it('a called node deleted from its note takes its folds along while the item still draws the map (code review 3)', async () => {
+    const host = await open(['![[undo-ids]]']);
+    const opened = await unfold(host, '同名', 1);
+    const view = host.view as unknown as { collapsed: Set<string>; knownCalled: Set<string> };
+    await host.app.asApp<App>().vault.process(host.app.asApp<App>().vault.getAbstractFileByPath(PATH) as never, () => SOURCE.replace('- 同名\n  - 同名の子B\n', ''));
+    await settled(host);
+    expect({ collapsed: view.collapsed.has(opened.id ?? ''), known: view.knownCalled.has(opened.id ?? '') }).toEqual({ collapsed: false, known: false });
+  });
+
   it('two items calling the same note with the same title: the edit renumbers the calling item itself, so its branch starts anew (E05)', async () => {
     // Not the bug: it pins the limit of the fix. An edit on the Markdown side is an external change, matched by titles
     // alone, and neither of two same-titled items is guessed at by its place (E05), so the item broken and typed again
