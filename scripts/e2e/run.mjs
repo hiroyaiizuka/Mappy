@@ -40,6 +40,7 @@ export const CASES = [
   { name: 'line-break', file: 'line-break.mjs', description: 'E40 ノード内の改行（Shift+Enter → <br>）', shot: true },
   { name: 'multiline-setext', file: 'multiline-setext.mjs', description: 'E60 複数行の Setext 見出しは段落（マップの見出しが metadataCache と一致、閲覧モード、周りの編集）', shot: false },
   { name: 'new-node', file: 'new-node-input.mjs', description: 'E43 新しいノードの入力欄（外形・仮の名前・Escape での取り消し）', shot: false },
+  { name: 'ime-keys', file: 'ime-keys.mjs', description: 'E01 変換中の Enter・Tab・Escape（IME が受けた／素通しした）× 通常ノード・本文のルート・トピック・ステージ・新しいノード、Markdown 側の変換中の入力（CDP の変換。OS の IME ではない）', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },

@@ -307,6 +307,20 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, expect.any(String));
   });
 
+  // E01 A3 (LEV-223): an IME that lets Tab through leaves the keydown its own keyCode, and the browser's default then
+  // moves the focus off the draft, which confirms the reading and closes it. One that took the key sends keyCode 229.
+  it.each([
+    { name: 'let through', keyCode: 9 },
+    { name: 'taken by the IME', keyCode: 229 },
+  ])('keeps the focus on the draft for a Tab mid-composition the IME $name', ({ keyCode }) => {
+    const { options, input } = fixture();
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = 'にほんご';
+    expect(key(input, 'Tab', { isComposing: true, keyCode }).defaultPrevented).toBe(true);
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
   it('waits for compositionend and the final input before saving after blur', async () => {
     const { options, input } = fixture();
     input.dispatchEvent(new CompositionEvent('compositionstart'));

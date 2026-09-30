@@ -76,7 +76,12 @@ export class InlineEditor {
     this.input.addEventListener("dblclick", event => { event.stopPropagation(); });
     this.input.addEventListener("keydown", event => {
       event.stopPropagation();
-      if (event.isComposing || this.composing || event.key === "Process") return;
+      if (event.isComposing || this.composing || event.key === "Process") {
+        // A Tab the IME lets through would move the focus off the draft, which confirms the reading and closes the draft
+        // mid-composition (E01 A3, LEV-223). The composition goes on in place; one the IME took has no default to stop.
+        if (event.key === "Tab") event.preventDefault();
+        return;
+      }
       if (this.suggestion?.handleKey(event)) return;
       if (event.key === "Escape") {
         event.preventDefault();
