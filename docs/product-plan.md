@@ -4,7 +4,7 @@
 
 本書は製品方針と受入条件を記す。現在はベータ（0.x）をコミュニティプラグインの一覧と GitHub Release で公開しながら、専用テスト Vault で検証を進めており、機能の実装と全受入条件の達成を分けて扱う。最新のユーザー選択により、通常の入力は「H2 のルート＋インデントした箇条書き」とし、本文・リンク・画像を持たせる。従来の見出し階層も保持し、明示操作で変換する。通常の Markdown が正本であることは変えない。
 
-H0a の静的検査・テスト・配布物検証に加え、M1〜M4 の機能を試作し、DOM テスト、Obsidian に依存しないブラウザ検証ページ（`npm run harness:browser`）、Obsidian の専用環境（`scripts/e2e/` のケースを `npm run harness:e2e` で CDP 経由で実行）で検証を進めている。性能はブラウザ検証ページで計測済み（§6）だが実機でのレイアウト別の計測、モバイルやネイティブ IME の確認は完了していない（ネイティブ IME は macOS での本人の証跡のない報告だけ。harness.md の E01）。最新の実行結果は `artifacts/` の記録を参照する。残項目の起票と進め方は [linear-workflow.md](./linear-workflow.md) に記す。
+H0a の静的検査・テスト・配布物検証に加え、M1〜M4 の機能を試作し、DOM テスト、Obsidian に依存しないブラウザ検証ページ（`npm run harness:browser`）、Obsidian の専用環境（`scripts/e2e/` のケースを `npm run harness:e2e` で CDP 経由で実行）で検証を進めている。性能はブラウザ検証ページで計測済み（§6）だが実機でのレイアウト別の計測、モバイルやネイティブ IME の確認は完了していない（ネイティブ IME は macOS での本人の証跡のない報告だけ。変換中のキー制御は CDP の実機ケース `npm run harness:e2e:ime-keys` で固定したが、これは OS の IME の確認ではない。LEV-223、harness.md の E01）。最新の実行結果は `artifacts/` の記録を参照する。残項目の起票と進め方は [linear-workflow.md](./linear-workflow.md) に記す。
 
 | 領域 | 現在の実装 | 残る検証・機能 |
 | --- | --- | --- |
