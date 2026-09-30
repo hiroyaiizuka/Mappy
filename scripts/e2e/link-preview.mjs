@@ -132,14 +132,18 @@ function absent(label, shown) {
   check(shown.popovers.length === 0, `${label}: popover ${JSON.stringify(shown.popovers)}`);
 }
 
-/** Page preview's settings for our source: `true` when ⌘ is needed. Obsidian 1.x keeps them in the plugin instance's `overrides`. */
+/**
+ * Page preview's switch for our source: `options[source]` of its instance, `true` when ⌘ is needed, absent for the
+ * source's `defaultMod` (Obsidian 1.14.3 app.js, `onHoverLink`). Saved as its settings tab does, through the core
+ * plugin's `saveData`. The value found at the start (`original`) is what `clean` puts back.
+ */
 const PREVIEW = `const preview = app.internalPlugins.getPluginById('page-preview');`;
+let original = null;
 const setMod = needed => evaluate(`${PREVIEW}
-  const instance = preview.instance;
-  instance.overrides = instance.overrides ?? {};
-  if (${needed}) delete instance.overrides.mappy; else instance.overrides.mappy = false;
-  await (preview.instance.saveData?.(instance) ?? Promise.resolve());
-  return { overrides: instance.overrides };`);
+  const options = preview.instance.options;
+  if (${needed === undefined ? 'true' : 'false'}) delete options.mappy; else options.mappy = ${Boolean(needed)};
+  await preview.saveData?.(options);
+  return { options: { ...options } };`);
 
 /** The map's leaves this run opened; `window.__mappyE2E` is the tab under test (VIEW). */
 const openMap = (key, direction) => evaluate(`
@@ -173,7 +177,8 @@ const clean = () => made.size === 0 ? [] : evaluate(`
     const item = app.vault.getAbstractFileByPath(folder);
     if (item && item.children?.length === 0) await app.vault.delete(item, true);
   }
-  ${PREVIEW} const instance = preview?.instance; if (instance?.overrides) { delete instance.overrides.mappy; await instance.saveData?.(instance); }
+  ${PREVIEW} const options = preview?.instance?.options;
+  if (options) { if (${JSON.stringify(original)} === null) delete options.mappy; else options.mappy = ${JSON.stringify(original)}; await preview.saveData?.(options); }
   return ${JSON.stringify([...made])};`);
 
 try {
@@ -194,10 +199,12 @@ try {
   // 1. The premise.
   required(record, 'premise', await step('premise', async () => {
     const state = await evaluate(`${PREVIEW}
-      return { enabled: !!preview?.enabled, source: app.workspace.hoverLinkSources?.mappy ?? null, overrides: preview?.instance?.overrides ?? null };`);
+      return { enabled: !!preview?.enabled, source: app.workspace.hoverLinkSources?.mappy ?? null, option: preview?.instance?.options && Object.hasOwn(preview.instance.options, 'mappy') ? preview.instance.options.mappy : null };`);
     if (!state.enabled) throw new Error(`Page preview is off in this vault: ${JSON.stringify(state)}. Turn it on (Settings → Core plugins) and retry.`);
     check(state.source?.display === 'Mappy' && state.source?.defaultMod === true, `the source mappy is ${JSON.stringify(state.source)}, not { display: Mappy, defaultMod: true }`);
-    await setMod(true);
+    original = state.option;
+    // The default (no option of our own): ⌘ needed, as `defaultMod` says.
+    await setMod(undefined);
     // The control: a link in a Markdown note's reading view, hovered with ⌘, shows Obsidian's popover in this window.
     await evaluate(`const leaf = app.workspace.getLeaf('tab');
       await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(READING)}, mode: 'preview' }, active: true });
@@ -271,7 +278,7 @@ try {
     const setting = await setMod(false);
     const without = await hover(linkTarget('E2E-link-preview-target', { text: 'E2E-link-preview-target' }));
     shows('setting off, no ⌘', without, 'E2E-TOP');
-    await setMod(true);
+    await setMod(undefined);
     const back = await hover(linkTarget('E2E-link-preview-target', { text: 'E2E-link-preview-target' }), { expect: false });
     absent('setting back on, no ⌘', back);
     return { setting, without: without.popovers, back: back.popovers };

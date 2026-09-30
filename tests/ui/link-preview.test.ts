@@ -140,7 +140,7 @@ describe('link hover preview (LEV-265)', () => {
     over(anchor, { relatedTarget: canvas });
     const parent = seen[0]?.hoverParent;
     expect(parent).toBeDefined();
-    const popover = (): { unload: ReturnType<typeof vi.fn> } => ({ unload: vi.fn() });
+    const popover = (): { hide: ReturnType<typeof vi.fn> } => ({ hide: vi.fn() });
     for (const end of [
       () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); },
       () => { canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 10 })); },
@@ -149,18 +149,18 @@ describe('link hover preview (LEV-265)', () => {
       const shown = popover();
       if (parent) parent.hoverPopover = shown;
       end();
-      expect(shown.unload).toHaveBeenCalledTimes(1);
+      expect(shown.hide).toHaveBeenCalledTimes(1);
       expect(parent?.hoverPopover).toBeNull();
     }
     // ⌘ alone is Page preview's cue to show the hovered link; it does not close it.
     const held = popover();
     if (parent) parent.hoverPopover = held;
     canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', metaKey: true, bubbles: true }));
-    expect(held.unload).not.toHaveBeenCalled();
+    expect(held.hide).not.toHaveBeenCalled();
     anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: `Target（${HOST_PATH} から）` });
     await close();
-    expect(held.unload).toHaveBeenCalledTimes(1);
+    expect(held.hide).toHaveBeenCalledTimes(1);
   });
 
   it('asks from a read-only embed too, from the map\'s note, and the reading view around it does not ask again', async () => {
@@ -193,10 +193,10 @@ describe('link hover preview (LEV-265)', () => {
     expect(seen[0]).toMatchObject({ source: 'mappy', linktext: 'Inner', sourcePath: 'Sub/Map.md' });
     expect(reading).not.toHaveBeenCalled();
     const parent = seen[0]?.hoverParent;
-    const shown = { unload: vi.fn() };
+    const shown = { hide: vi.fn() };
     if (parent) parent.hoverPopover = shown;
     renderer.unload();
-    expect(shown.unload).toHaveBeenCalledTimes(1);
+    expect(shown.hide).toHaveBeenCalledTimes(1);
     embeds.dispose();
   });
 });

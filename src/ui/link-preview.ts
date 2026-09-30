@@ -58,7 +58,11 @@ export class LinkPreview extends Component implements HoverParent {
   private hide(): void {
     const popover = this.hoverPopover;
     this.hoverPopover = null;
-    // `unload` is the public way to close it (a popover is a Component); `hide` is not in the API.
-    popover?.unload();
+    if (!popover) return;
+    // `hide` closes it (detaches `hoverEl`, stops the show timer, then unloads). It is not in the typings (1.8.7), but
+    // every Obsidian since HoverPopover exists has it; `unload` alone leaves the element on screen (1.14.3's app.js).
+    const hideable = popover as HoverPopover & { hide?: () => void };
+    if (typeof hideable.hide === "function") hideable.hide();
+    else { popover.hoverEl.detach(); popover.unload(); }
   }
 }
