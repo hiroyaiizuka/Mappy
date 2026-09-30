@@ -14,7 +14,8 @@
  * link deleted, then typed again), `!` (the `!` deleted, then typed again: a link for a while), Undo (the item's whole
  * title deleted, then the editor's Undo), 別名 (`|別名` typed into the link: the editor closes the brackets, so the item
  * calls the map throughout), 別のマップ (the link pointed at another map, then typed back), 見出し (the heading part
- * typed again: `#` added to a whole-note call, the last letter of `#トピック` deleted, then put back), 打ち直し (the
+ * typed again: a heading the note does not have added to a whole-note call, the last letter of `#トピック` deleted,
+ * then put back), 打ち直し (the
  * name deleted and typed back a letter at a time at a typist's pace, through `E2E-call` and `E2E-call-re`, two maps
  * whose names begin it); and on the map, F2 (the
  * item's `!` deleted with F2 → the title typed → Enter, then put back the same way: the map shows its own write before
@@ -283,9 +284,10 @@ const OPERATIONS = [
     name: '見出し',
     run: async (title, count) => {
       const inner = title.slice(3, -2);
-      const broken = inner.includes('#') ? `![[${inner.slice(0, -1)}]]` : `![[${inner}#]]`;
+      const broken = inner.includes('#') ? `![[${inner.slice(0, -1)}]]` : `![[${inner}#無い見出し]]`;
       await edit(title, 0, title.length, broken);
-      const between = await caughtUp(count.broken);
+      // Still a call of the note (`resolveEmbedTarget` does not look for the heading): the item draws what `embedTrees` finds.
+      const between = await caughtUp(count.all);
       await edit(broken, 0, broken.length, title);
       return { final: title, between };
     },

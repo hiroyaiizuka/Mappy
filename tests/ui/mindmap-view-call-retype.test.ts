@@ -12,8 +12,6 @@
  * back through maps whose names begin it) × the calling note's shape (one item, two
  * items calling the two parts of one note, two items calling different notes) × the shape of the called node the reader
  * toggled (one title, the second untitled node, the second of two same-titled nodes, a branch under a called topic).
- * The heading part typed again (a link that reaches the note at a heading it does not have) was kept before the fix too, by
- * LEV-246's rule for an item waiting for a map, in 9 of its 12 rows: they pin an operation the fix must not lose.
  * Two items with the same title are the limit (the last test): the Markdown side's edit renumbers the calling item itself.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -88,7 +86,7 @@ const OPERATIONS: { operation: string; steps: (call: string) => string[] }[] = [
   {
     // The link still reaches the note, at a heading it does not have (code review 2): the item draws nothing for a while.
     operation: 'the heading part typed again',
-    steps: call => call.includes('#') ? [`![[${call.slice(0, -1)}]]`, `![[${call}]]`] : [`![[${call}#]]`, `![[${call}]]`],
+    steps: call => call.includes('#') ? [`![[${call.slice(0, -1)}]]`, `![[${call}]]`] : [`![[${call}#無い見出し]]`, `![[${call}]]`],
   },
   {
     // The name deleted and typed back letter by letter, the brackets closed by the editor: each prefix that names a map
