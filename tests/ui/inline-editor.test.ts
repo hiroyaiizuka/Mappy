@@ -297,7 +297,7 @@ describe('InlineEditor DOM interactions', () => {
     const { options, input } = fixture();
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     input.value = '変換中';
-    expect(key(input, 'Enter').defaultPrevented).toBe(false);
+    expect(key(input, 'Enter').defaultPrevented).toBe(true); // no line break into the reading (LEV-223)
     expect(options.save).not.toHaveBeenCalled();
     input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
     input.value = '日本語';
@@ -319,6 +319,21 @@ describe('InlineEditor DOM interactions', () => {
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     input.value = 'にほんご';
     expect(key(input, 'Tab', { isComposing: true, keyCode }).defaultPrevented).toBe(true);
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
+  // E01 A1 (LEV-223, review 1): an Enter the IME lets through types its line break into the reading, which the save
+  // writes as `<br>` in the title (LEV-202). Shift+Enter too: mid-composition it is the IME's key, not a line break.
+  it.each([
+    { name: 'Enter let through', keyCode: 13, shiftKey: false },
+    { name: 'Shift+Enter let through', keyCode: 13, shiftKey: true },
+    { name: 'Enter taken by the IME', keyCode: 229, shiftKey: false },
+  ])('types no line break for an $name mid-composition', ({ keyCode, shiftKey }) => {
+    const { options, input } = fixture();
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = 'にほんご';
+    expect(key(input, 'Enter', { isComposing: true, keyCode, shiftKey }).defaultPrevented).toBe(true);
     expect(options.save).not.toHaveBeenCalled();
     expect(options.finish).not.toHaveBeenCalled();
   });
@@ -359,10 +374,11 @@ describe('InlineEditor DOM interactions', () => {
     expect(options.finish).not.toHaveBeenCalled();
   });
 
-  it.each([{ key: 'Enter', isComposing: true }, { key: 'Process', isComposing: false }])(
+  // A composing Enter is prevented so that one the IME lets through types no line break (LEV-223); Process has no default.
+  it.each([{ key: 'Enter', isComposing: true, prevented: true }, { key: 'Process', isComposing: false, prevented: false }])(
     'does not commit an IME keyboard event %j', (event) => {
       const { options, input } = fixture();
-      expect(key(input, event.key, { isComposing: event.isComposing }).defaultPrevented).toBe(false);
+      expect(key(input, event.key, { isComposing: event.isComposing }).defaultPrevented).toBe(event.prevented);
       expect(options.save).not.toHaveBeenCalled();
       expect(options.finish).not.toHaveBeenCalled();
     },

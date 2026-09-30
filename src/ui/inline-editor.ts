@@ -77,9 +77,10 @@ export class InlineEditor {
     this.input.addEventListener("keydown", event => {
       event.stopPropagation();
       if (event.isComposing || this.composing || event.key === "Process") {
-        // A Tab the IME lets through would move the focus off the draft, which confirms the reading and closes the draft
-        // mid-composition (E01 A3, LEV-223). The composition goes on in place; one the IME took has no default to stop.
-        if (event.key === "Tab") event.preventDefault();
+        // A key the IME lets through keeps its default: Tab moves the focus off the draft, which confirms the reading and
+        // closes the draft (E01 A3), and Enter types a line break into the reading (A1). Both are the IME's keys while it
+        // composes (LEV-223); one the IME took has no default left to stop.
+        if (event.key === "Tab" || event.key === "Enter") event.preventDefault();
         return;
       }
       if (this.suggestion?.handleKey(event)) return;

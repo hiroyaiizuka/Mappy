@@ -285,7 +285,7 @@ try {
           } else {
             // Empty canvas near its lower left, clear of the nodes, the floating controls and a Notice (`makePress`).
             const point = await press(`const node = el.querySelector('.mappy-canvas');
-              const rect = node.getBoundingClientRect(); at = { x: rect.left + 24, y: rect.bottom - 120 };`,
+              const canvas = node.getBoundingClientRect(); at = { x: canvas.left + 24, y: canvas.bottom - 120 };`,
             { avoid: '.mappy-node, .mappy-floating, button', click: false });
             for (const clickCount of [1, 2]) {
               for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount });
