@@ -16,9 +16,9 @@
  *      期待（E01）: (A1) 変換中の Enter で題名を確定しない・ノードは増えない、(A2) 確定後の Enter で題名が確定、
  *      (A3) 変換中の Tab で子が増えず、変換中の文字が残り編集が続く、(A4) 変換中の Escape で編集を閉じない。
  *   A5. Enter（兄弟）・Tab（子）・空白のダブルクリック（トピック）で開いた新しいノードの入力欄で、全選択の仮の名前の上で
- *      変換して、変換中に Enter（ime）・Tab（pass）→ 確定 → Enter。ノードは 1 つだけ増え、題名は確定した文字。
+ *      変換して、変換中に Enter・Tab・Escape × ime・pass。Enter・Tab は確定 → Enter でノードが 1 つだけ増え、題名は確定した文字。Escape は変換の取り消しで入力欄もノードも残る。
  *   B. 分割で並べた Markdown 側で、リスト項目・見出しを変換しながら入力する（変換の途中でノートを保存させ〔読みが
- *      ディスクに書かれたことを確かめる〕、マップに変換途中の原文を読ませる）。確定後、マップのノードが 1 つだけ増え、題名は確定した文字で、変換途中の読みが残らない。
+ *      ディスクに書かれたことを確かめる〕、マップが変換途中の原文を読んだ〔読みのノードが出た〕ことを確かめる）。確定後、マップのノードが 1 つだけ増え、題名は確定した文字で、変換途中の読みが残らない。
  *
  * 実行されていない行を PASS にしない（PR #76 の教訓）:
  *   - 行の一覧（`ROWS`）を先に決め、最後に全行が結果を持つことを確かめる。例外で飛んだ行は「実行されていない」で FAIL。
@@ -66,7 +66,7 @@ const NEW_WAYS = [
   { id: 'Enter', from: '予約', name: 'サブトピック', written: SOURCE.replace('  - 予約\n', `  - 予約\n  - ${WORD}\n`) },
   { id: 'dblclick', from: null, name: 'トピック', written: `${SOURCE}\n## ${WORD}\n` },
 ];
-const NEW_KEYS = [{ key: 'Enter', delivery: 'ime' }, { key: 'Tab', delivery: 'pass' }];
+const NEW_KEYS = Object.keys(KEYS).flatMap(key => DELIVERIES.map(delivery => ({ key, delivery })));
 const MARKDOWN = [
   { id: 'list', reading: ['に', 'にほ', 'にほん', READING], word: WORD, lead: [], written: SOURCE.replace('- 野菜\n', `- 野菜\n- ${WORD}\n`) },
   { id: 'heading', reading: ['み', 'みだ', 'みだし'], word: '見出し', lead: ['## '], written: `${SOURCE}\n## 見出し` },
@@ -129,29 +129,27 @@ const waitEditing = (wanted = true) => until(async () => (await look()).editing 
  * character the key's default runs wherever nothing prevents it: the textarea's line break for Enter.
  */
 const TEXTS = { Enter: '\r', Tab: '\t' };
-async function imeKey(key, delivery) {
-  const keyCode = delivery === 'ime' ? 229 : KEYS[key];
-  const base = { key, code: key, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
-  const text = delivery === 'pass' ? TEXTS[key] : undefined;
-  await cdp.send('Input.dispatchKeyEvent', text ? { type: 'keyDown', ...base, text, unmodifiedText: text } : { type: 'rawKeyDown', ...base });
-  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
-}
+const imeKey = (key, delivery) => delivery === 'ime' ? cdp.realKey(key, 0, undefined, 229) : cdp.realKey(key, 0, TEXTS[key]);
 const compose = text => cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
 
 /** The note back to SOURCE, re-read by the map and fitted to the pane; a composition or draft left open is ended first. */
 async function restore() {
+  // A composition left by a row that stopped halfway, in the draft or in the Markdown editor: ended first.
+  await compose('');
   if ((await look()).editing) {
-    await compose('');
     await cdp.realKey('Escape');
     await waitEditing(false);
   }
   // A draft closed just now may still be writing (Escape on a new node takes it back): the note must hold still first.
+  await evaluate(`await window.__mappyE2EMarkdown?.view?.save?.(); return true;`);
   let last = await source();
   await until(async () => { await wait(300); const now = await source(); const still = now === last; last = now; return still; }, 5000,
     'the note did not settle before the row');
   await evaluate(`${VIEW}
-    if (await source() !== ${JSON.stringify(SOURCE)}) await app.vault.modify(view.file, ${JSON.stringify(SOURCE)});
-    await new Promise(resolve => setTimeout(resolve, 700));
+    if (await source() !== ${JSON.stringify(SOURCE)}) {
+      await app.vault.modify(view.file, ${JSON.stringify(SOURCE)});
+      await new Promise(resolve => setTimeout(resolve, 700));
+    }
     app.workspace.leftSplit?.collapse?.();
     el.querySelector('.mappy-button[aria-label="全体表示"]')?.click();
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -314,6 +312,16 @@ try {
           expect(during.editing && during.draft === READING && during.active === 'TEXTAREA',
             `the new node's draft did not stay open with the reading after ${key}: ${JSON.stringify(during)}`);
           expect(during.labels.length === LABELS.length + 1, `${key} while composing left ${during.labels.length} nodes: ${JSON.stringify(during.labels)}`);
+          if (key === 'Escape') {
+            // A4 on a new node: the conversion is taken back, the draft stays open and the node stays (an Escape that
+            // reached the draft would take the new node back, LEV-203). What the next Escape does is E43's, not this row's.
+            await compose('');
+            await wait(400);
+            const ended = await look();
+            expect(ended.editing && ended.draft === '' && ended.labels.length === LABELS.length + 1,
+              `after the conversion was taken back: ${JSON.stringify(ended)}`);
+            return { opened: opened.draft, during, ended };
+          }
           await cdp.insertText(WORD);
           await wait(400);
           await cdp.realKey('Enter');
@@ -368,7 +376,8 @@ try {
           return await app.vault.read(window.__mappyE2EMarkdown.view.file);`);
         const reading = item.reading.at(-1);
         expect(saved.includes(reading), `the save mid-composition did not write the reading: ${JSON.stringify(saved)}`);
-        const during = await look();
+        const during = await until(async () => { const shown = await look(); return shown.labels.includes(reading) ? shown : null; }, 3000,
+          'the map did not read the note mid-composition').catch(async error => { expect(false, error.message); return look(); });
         await cdp.insertText(item.word);
         const log = await take();
         for (const reason of unexercised(log, 'markdown')) expect(false, `not exercised: ${reason}`);
