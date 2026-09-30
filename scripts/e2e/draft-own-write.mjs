@@ -6,9 +6,11 @@
  *    system pasteboard), and the paste is the one ⌘V runs through Obsidian's Edit menu (`webContents.paste()`): the
  *    event starts in the draft's textarea, carries what the pasteboard gives, and reaches the canvas by bubbling.
  *    Shapes: an image only, text only, and an image with text (what a spreadsheet's cells put on the pasteboard).
- * 3. ⌘Z／⌘⇧Z over an open draft: right click on the empty canvas → 元に戻す, with the draft still open. The step
- *    records whether the right click leaves the draft open at all (a real pointer press may take the focus from it).
- * 2. A command the note refuses over an open draft: the draft on one sixth-level heading, a right click on another → 子を追加
+ * A real right press closes a plain draft (its blur saves it), so on the real Obsidian the menu's commands and Undo run
+ * over an open draft only when it is held with a reason on its error line. Steps 3 and 2 hold it first (`holdDraft`),
+ * and `right-click-closes-plain-draft` pins the premise.
+ * 3. Undo over a held draft: an image pasted onto its node, then right click on the empty canvas → 元に戻す, then Enter.
+ * 2. A command the note refuses over a held draft: the draft on one sixth-level heading, a right click on another → 子を追加
  *    (the draft's own node cannot be right clicked: its textarea covers it and keeps the browser's menu).
  *
  * The clipboard is the user's: what it held is read before the case and written back after it (text, HTML, RTF and an
@@ -24,7 +26,9 @@ import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeState, makeMarkSeen
 const { flag, value } = parseArgs();
 
 const NOTE = 'Fixtures/E2E-draft-own-write.md';
+// `mappy: true`: a note the router takes as a map (without it the leaf opens as Markdown).
 const SOURCE = [
+  '---', 'mappy: true', '---',
   '# 計画', '',
   '## 学ぶこと', '',
   '## 記録する', '',
@@ -56,6 +60,12 @@ const pasteKey = async () => {
 };
 /** F2 on the selected node opens its draft with the text selected; `text` replaces it as typing would. */
 const openDraft = async (title, text) => {
+  // A draft a failed step left open (held) is given up first, so one step's failure does not type into the next's.
+  if (await evaluate(`${VIEW} return !!input();`)) {
+    await focusDraft();
+    await cdp.realKey('Escape');
+    await wait(500);
+  }
   await select(title);
   await cdp.realKey('F2');
   await wait(500);
@@ -65,15 +75,45 @@ const openDraft = async (title, text) => {
   await wait(300);
 };
 const draftValue = () => evaluate(`${VIEW} return input()?.value ?? null;`);
-/** A real right click at the canvas's empty top-left corner, or on a node (`locate` for makePress). */
-const rightClick = async locate => {
+/** A real right press and release where `locate` (makePress) says: what it does to the focus is the real pointer's. */
+const rightPress = async locate => {
   const at = await press(locate, { click: false });
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await cdp.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'right', clickCount: 1 });
-  }
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'right', buttons: 2, clickCount: 1 });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'right', buttons: 0, clickCount: 1 });
   await wait(500);
+  return at;
 };
-const CANVAS_CORNER = `const node = el.querySelector('.mappy-canvas'); const r = node.getBoundingClientRect(); at = { x: r.left + 12, y: r.top + 12 };`;
+/**
+ * The context menu at the same point. CDP's right button does not raise `contextmenu` in Obsidian's window (probe
+ * 2026-09-30, with and without `buttons`), so the event is dispatched there, as E76 does. True when the menu opened.
+ */
+const openMenu = async locate => {
+  const at = await press(locate, { click: false });
+  return evaluate(`const target = document.elementFromPoint(${at.x}, ${at.y});
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: ${at.x}, clientY: ${at.y} }));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    return !!document.querySelector('.menu');`);
+};
+const closeMenu = () => evaluate(`document.querySelectorAll('.menu').forEach(menu => menu.remove()); return true;`);
+/**
+ * Hold the open draft: ` #` typed after its text makes the heading's rename one the note refuses (the closing sequence
+ * of an ATX heading), so Enter keeps it with the reason on its error line; Backspace ×2 then takes the ` #` back. A
+ * held draft is not saved by a blur. Returns the reason shown.
+ */
+const holdDraft = async () => {
+  await cdp.insertText(' #');
+  await wait(200);
+  await cdp.realKey('Enter');
+  await wait(1200);
+  const reason = await evaluate(`${VIEW} return el.querySelector('.mappy-inline-error')?.textContent?.trim() ?? '';`);
+  await cdp.realKey('Backspace');
+  await cdp.realKey('Backspace');
+  await wait(300);
+  return reason;
+};
+/** A real click into the open draft's textarea, so the next key is the draft's. */
+const focusDraft = () => press(`const node = input();`);
+const CANVAS_CORNER = `const node = el.querySelector('.mappy-canvas'); const r = node.getBoundingClientRect(); at = { x: r.left + 40, y: r.top + 80 };`;
 /** A real click on the open menu's item titled `title`. */
 const menuItem = title => press(`const node = Array.from(document.querySelectorAll('.menu .menu-item'))
   .find(item => item.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});`, { view: VIEW });
@@ -82,6 +122,9 @@ try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   // What the pasteboard held before the case, written back in `finally`.
+  // Obsidian's own menus (not the OS's) for the run, as E76 does: the case reads and clicks the menu in the page. Put back
+  // in `finally`.
+  await evaluate(`window.__mappyE2ENativeMenus = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false); return true;`);
   required(record, 'clipboard-saved', await step('clipboard-saved', () => evaluate(`const { clipboard } = require('electron');
     const image = clipboard.readImage();
     window.__mappyE2EClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(),
@@ -142,61 +185,91 @@ try {
     return { formats, draft: typed, imageAttached: after.source !== before && /## 記録する\n\n!\[\[/u.test(after.source) };
   });
 
-  // 3. Undo over an open draft, from the canvas's context menu.
-  await step('undo-over-draft', async () => {
+  // A plain draft on a real right click: the press takes the focus from the textarea, and its blur saves and closes the
+  // draft before any menu (probe 2026-09-30: on the empty canvas and on another node alike). So Undo or a command from
+  // the context menu never runs over a plain draft on the real Obsidian; the drafts that stay open are those held with a
+  // reason on their error line, which a blur does not save. Pinned here, since steps 3 and 2 rest on it.
+  await step('right-click-closes-plain-draft', async () => {
+    await openDraft('記録する', '記録（右クリック）');
+    await rightPress(CANVAS_CORNER);
+    const after = await state();
+    await closeMenu();
+    check(!after.editing, 'a real right press left a plain draft open: steps 3 and 2 no longer cover the open-draft case alone');
+    check(after.source.includes('## 記録（右クリック）\n'), 'the right press did not save the plain draft');
+    return { editing: after.editing, saved: after.source.includes('## 記録（右クリック）\n') };
+  });
+
+  // 3. Undo over a held draft, from the canvas's context menu. The image pasted onto the node being edited is taken back;
+  // Enter then writes the draft (before LEV-141: 「編集中の内容が Markdown 側で変わりました…」).
+  await step('undo-over-held-draft', async () => {
     await openDraft('三', '三（編集）');
     await clip({ image: true });
     await pasteKey();
     const pasted = await state();
+    const reason = await holdDraft();
     await markSeen();
-    await rightClick(CANVAS_CORNER);
-    const menu = await evaluate(`${VIEW} return { menu: !!document.querySelector('.menu'), editing: !!input(), draft: input()?.value ?? null };`);
-    check(menu.menu, 'the right click did not open the menu');
-    // Where the draft closed on the right click (its blur saved it), Undo would take that save back instead: the case has
-    // not reached what it is for, and says so as a failure rather than a PASS that ran nothing (PR #76).
-    check(menu.editing, 'the right click closed the draft: Undo over an open draft was not reached');
-    if (!menu.menu || !menu.editing) {
-      await cdp.realKey('Escape');
-      return { pasted: pasted.source, menu, reachable: false };
+    await rightPress(CANVAS_CORNER);
+    const held = await evaluate(`${VIEW} return { editing: !!input(), draft: input()?.value ?? null };`);
+    const opened = await openMenu(CANVAS_CORNER);
+    if (!held.editing || !opened) {
+      check(held.editing, 'the right press closed the held draft');
+      check(opened, 'the context menu did not open');
+      await closeMenu();
+      return { pasted: pasted.source, reason, held, opened };
     }
     await menuItem('元に戻す');
     await wait(1500);
     const undone = await state();
     const typed = await draftValue();
+    await focusDraft();
     await cdp.realKey('Enter');
     await wait(1500);
     const settled = await state();
-    check(/### 三\n\n!\[\[/u.test(pasted.source), 'the image was not pasted under 三');
+    check(/### 三\n\n!\[\[[^\]]+\.png\]\]/u.test(pasted.source), 'the image was not pasted under 三');
+    check(reason.length > 0, 'the draft was not held (no error line)');
     check(undone.editing && typed === '三（編集）', `Undo did not leave the draft open with the typed text: ${JSON.stringify(typed)}`);
     check(!/### 三\n\n!\[\[/u.test(undone.source), 'Undo did not take the image back');
     check(settled.messages.length === 0, `Enter after Undo showed ${JSON.stringify(settled.messages)}`);
     check(!settled.editing && settled.source.includes('### 三（編集）\n'), 'Enter after Undo did not write the draft');
-    return { menu, reachable: true, undone: { ...undone, draft: typed }, settled };
+    return { reason, held, undone: { ...undone, draft: typed }, settled };
   });
 
-  // 2. A command the note refuses, over an open draft: nothing is written, the draft stays with what was typed.
-  await step('refused-command', async () => {
-    const before = (await state()).source;
+  // 2. A command the note refuses, over a held draft: 子を追加 on another sixth-level heading. Nothing is written, the draft
+  // stays with what was typed (before LEV-141: the draft was written, then the command refused).
+  await step('refused-command-over-held-draft', async () => {
+    // The whole map in view: the sixth-level headings sit far right of the body root.
+    await evaluate(`${VIEW} if (view.layout) view.viewport.fit(view.layout.bounds); await new Promise(resolve => setTimeout(resolve, 500)); return true;`);
     await openDraft('六', '六（編集）');
+    const reason = await holdDraft();
+    const before = (await state()).source;
     await markSeen();
-    await rightClick(`const node = nth('七', 0);`);
-    const menu = await evaluate(`${VIEW} return { menu: !!document.querySelector('.menu'), editing: !!input() };`);
-    if (!menu.menu || !menu.editing) {
-      await cdp.realKey('Escape');
-      check(menu.menu, 'the right click on 七 did not open the menu');
-      check(menu.editing, 'the right click closed the draft: the refused command over an open draft was not reached');
-      return { menu, reachable: false };
+    const on七 = `const node = nth('七', 0);`;
+    // Fit again: the held draft's error line can widen the map.
+    await evaluate(`${VIEW} if (view.layout) view.viewport.fit(view.layout.bounds); await new Promise(resolve => setTimeout(resolve, 500)); return true;`);
+    await rightPress(on七);
+    const held = await evaluate(`${VIEW} return { editing: !!input() };`);
+    const opened = await openMenu(on七);
+    if (!held.editing || !opened) {
+      check(held.editing, 'the right press on 七 closed the held draft');
+      check(opened, 'the context menu on 七 did not open');
+      await closeMenu();
+      return { reason, held, opened };
     }
     await menuItem('子を追加');
     await wait(1500);
     const after = await state();
     const typed = await draftValue();
-    await cdp.realKey('Escape');
-    await wait(800);
+    // Before LEV-141 the draft was written and closed by then: nothing left to give up.
+    if (after.editing) {
+      await focusDraft();
+      await cdp.realKey('Escape');
+      await wait(800);
+    }
+    check(reason.length > 0, 'the draft was not held (no error line)');
     check(after.messages.includes('見出しは 6 階層までです。'), `the refusal was not shown: ${JSON.stringify(after.messages)}`);
     check(after.source === before, 'the refused command left a write behind');
     check(after.editing && typed === '六（編集）', `the draft did not stay open with the typed text: ${JSON.stringify(typed)}`);
-    return { menu, reachable: true, after: { ...after, draft: typed } };
+    return { reason, held, after: { ...after, draft: typed } };
   });
 
 } catch (error) {
@@ -216,6 +289,7 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: attachments.map(file => file.path) };`)).catch(() => undefined);
   }
+  await evaluate(`if ('__mappyE2ENativeMenus' in window) { app.vault.setConfig('nativeMenus', window.__mappyE2ENativeMenus); delete window.__mappyE2ENativeMenus; } return true;`).catch(() => undefined);
   // The user's clipboard back as it was, whatever the steps did.
   await step('clipboard-restored', () => evaluate(`const saved = window.__mappyE2EClipboard;
     if (!saved) return { restored: false };
