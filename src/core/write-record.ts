@@ -50,9 +50,9 @@ export interface Replayed {
  *
  * Kept by a map embedded in another note (`MapEmbed`, LEV-217), by the maps an item calls (`CallReader`, LEV-221) and by
  * the map tab (`MindmapView`, LEV-150; here since LEV-247). The embed and the called maps read with `take` and `spend`.
- * The view composes the same steps itself (`replay`, `keep`, `drop`): it parses a text the record does not lead to from
- * the map it shows rather than from the last text the writes reached, spends a read's writes only after the maps the
- * note calls are read (`version`), and shows its own write before the re-read does. It also hears its own writes twice,
+ * The view composes the same steps itself (`replay`, `keep`, `drop`, and `take` for a text the record does not lead to,
+ * since LEV-238; until then it parsed that text from the map it shows, by titles alone), spends a read's writes only
+ * after the maps the note calls are read (`version`), and shows its own write before the re-read does. It also hears its own writes twice,
  * the store's word (`record`) and the store's answer (`confirm`, `carry`).
  */
 export class WriteRecord {
@@ -68,14 +68,18 @@ export class WriteRecord {
    * `shown`, when it is empty) was made on someone else's change the reader has not read yet, and is kept all the same
    * (LEV-238): the store tells a write before any read can find it (`DocumentStore.tell`), so its start is the note as
    * it was then, and the read matches the change by titles and carries the ids through the write. Left out, the
-   * nodes the write renamed or moved would be matched by titles too, from a text two changes away. A write that
-   * changed nothing (the store tells no such write) takes nothing back and carries no id.
+   * nodes the write renamed or moved would be matched by titles too, from a text two changes away. Not for a reader
+   * that has parsed nothing yet (`shown` undefined): only the writes that lead on from the record's end, as before, so
+   * its record does not take every write while its reads fail. A write that changed nothing (the store tells no such
+   * write) takes nothing back and carries no id.
    */
   record(write: RecordedWrite, shown: string | undefined): void {
     if (write.before === write.after) return;
     const last = this.writes[this.writes.length - 1];
-    if (write.before !== (last?.write.after ?? shown) && write.before === shown) this.restart(write);
-    else this.push(write);
+    const end = last?.write.after ?? shown;
+    if (write.before === end) this.push(write);
+    else if (write.before === shown) this.restart(write);
+    else if (shown !== undefined) this.push(write);
   }
 
   /**
@@ -83,8 +87,8 @@ export class WriteRecord {
    * word told before (`record`) unless the record was cleared since. A write already there is the last one and
    * is not added again; nor one a read has spent in between (its start is behind `shown`). Unlike the store's word, the
    * answer comes after reads may have spent the write, so one that starts elsewhere than the record's end or `shown` is
-   * not added. Not matched against
-   * earlier writes to be added, as `carry` does: ⌘Z, ⌘⇧Z, ⌘Z before one re-read write the same texts twice. A write
+   * not added. Not matched against earlier writes to be added, as `carry` does: ⌘Z, ⌘⇧Z, ⌘Z before one re-read write
+   * the same texts twice. A write
    * made on `shown` while the record ends elsewhere starts the record again, as in `record`, unless the record holds it
    * already: it was told before its caller got the answer, and others were recorded after it. "Already" is the same
    * texts and the same edits (`sameWrite`): another edit that writes the same texts is a write of its own (LEV-237).
@@ -153,9 +157,11 @@ export class WriteRecord {
   /**
    * `text` parsed from `from`, by a read begun at `mark`: through the recorded writes up to the last one that wrote
    * exactly `text` (those are spent — ⌘Z then ⌘⇧Z behind it included — and of the rest only those recorded while the
-   * read was under way kept for a later read: one recorded before it was put back). When they do not lead there, a parse matched by titles: from `from` for its own text (the note renamed, or put back), keeping
-   * the writes recorded while the read was under way; else from the text the writes the read passed reached, keeping
-   * the rest (`passed`). The writes are parsed only once the texts show where they lead.
+   * read was under way kept for a later read: one recorded before it was put back). When they do not lead there, a
+   * parse matched by titles: from `from` for its own text (the note renamed, or put back), keeping the writes recorded
+   * while the read was under way; else from the text the writes the read passed reached (`passed`), keeping the rest.
+   * The writes are parsed only once the texts show where they lead. The view takes a text the record does not lead to
+   * here too (LEV-238), and keeps the text on screen itself.
    */
   take(text: string, from: MindDocument | undefined, basename: string, mark: number): MindDocument {
     const replayed = this.replayed(from, this.reaches(text), basename, false);

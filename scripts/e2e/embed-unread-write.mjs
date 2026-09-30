@@ -67,10 +67,14 @@ const step = (name, body) => {
 };
 const check = makeCheck(record);
 
-/** Each row's node, where its title is written (`at`, `offset` into it), and a change in the other section. */
+/**
+ * Each row's node, where its title is written (`at`, `offset` into it), and a change in the other section, on a node the
+ * embed shows before any click (a second-level one: deeper branches start folded, and a change the embed does not draw
+ * would leave its observer blind — code review 1).
+ */
 const SHAPES = [
   { name: '通常', label: '親', at: '- 親\n', offset: 2, elsewhere: ['- 枝\n', `- ${CHANGED}\n`] },
-  { name: 'トピック', label: 'トピック', at: '## トピック\n', offset: 3, elsewhere: ['  - 子2\n', `  - ${CHANGED}\n`] },
+  { name: 'トピック', label: 'トピック', at: '## トピック\n', offset: 3, elsewhere: ['- 親\n', `- ${CHANGED}\n`] },
 ];
 
 const detach = `for (const key of ['__mappyE2EHost', '__mappyE2E']) { window[key]?.detach(); delete window[key]; }`;
@@ -168,11 +172,13 @@ try {
         app.vault.offref(listener);
         await new Promise(resolve => setTimeout(resolve, 1200));
         for (const observer of observers) observer.disconnect();
-        return { wrote, drew, unread, source: await app.vault.read(file), messages: messages() };`);
+        return { wrote, drew, unread, source: await app.vault.read(file), messages: messages(),
+          shows: { embed: embedNodes().map(label).includes(${JSON.stringify(CHANGED)}), tab: nodes().map(label).includes(${JSON.stringify(CHANGED)}) } };`);
       let expected = SOURCE.replace(shape.at, shape.at.slice(0, shape.offset) + RENAMED + shape.at.slice(shape.offset + shape.label.length));
       if (changes) {
         expected = expected.replace(shape.elsewhere[0], shape.elsewhere[1]);
-        if (landed.drew.embed || landed.drew.tab || !landed.unread.tab || landed.wrote >= 45) {
+        // Both views draw the change in the end: had either not, its observer could not have seen it drawn early.
+        if (landed.drew.embed || landed.drew.tab || !landed.unread.tab || landed.wrote >= 45 || !landed.shows.embed || !landed.shows.tab) {
           throw new Error(`the premise did not hold: a re-read drew the change before the rename (${JSON.stringify(landed)})`);
         }
       }

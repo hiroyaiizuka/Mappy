@@ -836,10 +836,11 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
     expect(calls).toEqual([{ after: renamed, shown: true }, { after: mounted.source(), shown: true }]);
   });
 
-  it('an external change the record does not lead to is matched by titles from the text the view shows', async () => {
-    // Pin, not a regression test: it passes before and after LEV-247. The record [W: S→T] (子1 renamed) and the
-    // note holds T with 子2 changed by someone else. The view parses that from S by titles, as it always has — the
-    // renamed node takes a new id — where the embed parses it from T (`WriteRecord.take`), and it would keep it.
+  it('an external change the record does not lead to is matched by titles from the text the writes reached', async () => {
+    // The record [W: S→T] (子1 renamed) and the note holds T with 子2 changed by someone else. Until LEV-238 the view
+    // parsed that from S by titles — the renamed node took a new id — where the embed parsed it from T
+    // (`WriteRecord.take`) and kept it; this row pinned the difference. Now the view takes it as the embed does (code
+    // review 1 of LEV-238: a write, then a change before the re-read, lost the node in the tab alone).
     const mounted = await mount();
     const view = state(mounted);
     const internals = mounted.view as unknown as Internals;
@@ -851,7 +852,7 @@ describe('the view on the record the embed and the called maps keep (LEV-247)', 
     await internals.refresh();
     await settled(mounted);
     expect(view.document?.source).toContain('  - 外から\n');
-    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).not.toBe(before);
+    expect(nodeNamed(mounted, 'ずっと長い題名').dataset.nodeId).toBe(before);
     expect(recorded(mounted)).toEqual([]);
   });
 });

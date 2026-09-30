@@ -1215,21 +1215,24 @@ export class MindmapView extends FileView {
     const changed = !onScreen || this.document?.root.title !== file.basename;
     // The view's own writes answer for this read while they lead from the text this view last parsed to
     // exactly the text found; their edits then carry the ids across (LEV-146), and a change someone else made
-    // between them is matched by titles (LEV-238). Another text means someone else has written: the writes the
-    // read passed are of no use to any later read (`WriteRecord.passed`). A write recorded while this read was
-    // under way, on the text found or on the text on screen found again, is the next read's to replay (LEV-218,
-    // LEV-238). Not those recorded before it began: the read would have found them, so someone put the note
+    // between them is matched by titles (LEV-238). Another text means someone else has written after them: it is
+    // matched by titles from the text the writes the read passed reached (`WriteRecord.take`, as the embed reads;
+    // until LEV-238 from the map on screen, so a node the writes renamed got a new id). A write recorded while this
+    // read was under way, on the text found or on the text on screen found again, is the next read's to replay
+    // (LEV-218, LEV-238). Not those recorded before it began: the read would have found them, so someone put the note
     // back (Undo in the Markdown pane, a sync), and kept they would be replayed over the put-back (LEV-224).
     // Either replaces the record (a new `version`), so another read that replayed it before does not spend it.
     const replayed = this.writes.replay(source, this.document, file.basename);
+    let unled: MindDocument | undefined;
     if (!replayed) {
-      this.writes.keep(mark, onScreen ? 0 : this.writes.passed(source, mark));
+      if (onScreen) this.writes.keep(mark, 0);
+      else unled = this.writes.take(source, this.document, file.basename, mark);
     }
     // The record this read replayed, to tell whether it is still the one below (the writes recorded meanwhile are added
     // to it; a restart, `showOwnWrite` and another read replace it).
     const replaying = this.writes.version;
     const document = changed || !this.document
-      ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
+      ? replayed?.document ?? unled ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
     const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path, () => !stale()) : new Map();
@@ -1283,9 +1286,10 @@ export class MindmapView extends FileView {
    * watcher of its own, whose re-read draws it. The caller re-reads right after (`refresh`, in the same task), which
    * drops the reads begun before the write (the epoch): they may have read the note from before it. The maps the
    * items call are kept for the items that embed the same note as before; an item the write made a call or pointed
-   * elsewhere waits for that read, so no caller shows the map another text called. Nothing is shown when the record
-   * does not lead from the note shown to the text written (a re-read published another text meanwhile): the re-read
-   * decides then. Nor for a note being left (`unloading`), which is neither re-read nor drawn again: the next note
+   * elsewhere waits for that read, so no caller shows the map another text called. A change someone else made that
+   * this view has not read yet, before the write or between its writes, is matched by titles on the way (LEV-238), as
+   * its re-read would. Nothing is shown when no write recorded wrote the text written (a re-read spent them
+   * meanwhile): the re-read decides then. Nor for a note being left (`unloading`), which is neither re-read nor drawn again: the next note
    * follows. True when it drew.
    */
   private showOwnWrite(file: TFile, written: string): boolean {

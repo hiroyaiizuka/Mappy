@@ -381,12 +381,23 @@ describe('WriteRecord', () => {
     expect(record.recorded).toEqual([write]);
   });
 
-  it('leaves out a write that does not start where the record leads, so it does not block the ones that do', () => {
+  // Until LEV-238 this row pinned that a write on another text was left out. It is now recorded (the rows above), and
+  // this pins what stays of the old rule: a write on the text on screen after it starts the record again, so the write
+  // on the other text — the note was put back over it — does not stand before it.
+  it('starts the record again with a write on the text on screen after a write on a change the reader had not read', () => {
     const shown = parseMarkdown(A, 'n');
     const record = new WriteRecord();
     record.record(rename(A.replace('子1', '外'), '外', 'ずっと長い題名'), A);
     const write = rename(A, '子1', 'ずっと長い題名');
     record.record(write, A);
+    expect(record.recorded).toEqual([write]);
     expect(second(record.take(write.after, shown, 'n', record.mark()))).toBe(second(shown));
+  });
+
+  it('record: a reader that has parsed nothing keeps only the writes that lead on from the record (code review 1)', () => {
+    // Its reads may be failing: kept, every write on the note would wait for a read that does not come.
+    const record = new WriteRecord();
+    record.record(rename(H, '子1', 'ずっと長い題名'), undefined);
+    expect(record.size).toBe(0);
   });
 });

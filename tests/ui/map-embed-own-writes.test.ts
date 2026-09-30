@@ -399,16 +399,24 @@ describe('a write on a change the embed had not re-read yet (LEV-238)', () => {
   // the map renames a node. The write was made on a text the embed had not read, and was left out: the re-read matched
   // every node by titles from the text on screen, where the renamed node's new title is not, and two changes are no
   // single title edit either — a new id, and the branch the reader had folded came back as new. The tab's record had
-  // the same rule (`recordWrite`). Matrix: the tab's rename × the shape of the node renamed (a list item, a topic); the
-  // change is made in the other section. Untitled and same-titled twins are not in it: titles cannot tell them apart, so
-  // a change the reader did not see renumbers them whatever the write does (E05, pinned in tests/core/write-record.test.ts).
+  // the same rule (`recordWrite`). The other order — the rename, then the change — the embed carried already (it parsed
+  // the text found from the text the writes reached), while the tab parsed it from the map on screen by titles and lost
+  // the renamed node all the same (code review 1). Matrix: the order × the shape of the node renamed (a list item, a
+  // topic); the change is made in the other section. Untitled and same-titled twins are not in it: titles cannot tell
+  // them apart, so a change the reader did not see renumbers them whatever the write does (E05, pinned in
+  // tests/core/write-record.test.ts).
   const SHAPES = [
     { shape: '通常', label: '親', at: '- 親\n', offset: 2, change: ['- 枝\n', '- 外から\n'] },
     { shape: 'トピック', label: 'トピック', at: '## トピック\n', offset: 3, change: ['- 子2\n', '- 外から\n'] },
   ] as const;
 
-  for (const { shape, label, at, offset, change } of SHAPES) {
-    it(`the ${shape} node the tab renames on an external change neither the embed nor the tab has re-read keeps its id and fold`, async () => {
+  const ORDERS = [
+    { order: 'the change, then the rename', renameFirst: false },
+    { order: 'the rename, then the change', renameFirst: true },
+  ] as const;
+
+  for (const { shape, label, at, offset, change } of SHAPES) for (const { order, renameFirst } of ORDERS) {
+    it(`${order}, before the embed and the tab re-read: the ${shape} node keeps its id and fold`, async () => {
       const opened = await open();
       const { section, map } = opened;
       const store = (map.view as unknown as { store: DocumentStore }).store;
@@ -422,11 +430,13 @@ describe('a write on a change the embed had not re-read yet (LEV-238)', () => {
       // The row's premise: neither re-read runs between the change and the write (the debounces held until both are in).
       const held = holdDebounces();
       try {
-        await map.app.asApp<App>().vault.process(map.file, text => text.replace(change[0], change[1]));
+        const external = (): Promise<unknown> => map.app.asApp<App>().vault.process(map.file, text => text.replace(change[0], change[1]));
+        if (!renameFirst) await external();
         await store.applyLatest(map.file, source => {
           const from = source.indexOf(at) + offset;
           return [{ from, to: from + label.length, text: '命名' }];
         });
+        if (renameFirst) await external();
         expect(embed?.drawnSource).toBe(SOURCE);
         expect((map.view as unknown as ViewState).document?.source).toBe(SOURCE);
       } finally {
