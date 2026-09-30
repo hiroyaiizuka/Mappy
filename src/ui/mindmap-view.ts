@@ -1233,12 +1233,13 @@ export class MindmapView extends FileView {
       ? replayed?.document ?? parseMarkdown(source, file.basename, this.document) : this.document;
     // The maps the items call are read with the note (the items may have changed), and the note is published together
     // with them: nothing between here and the draw sees a document whose trees are not on screen.
-    const targets: CallTargets = this.callsMaps(document) ? await this.reader.read(document, file.path, () => !stale()) : new Map();
+    // A note that calls nothing for now is read too while the reader holds a called note: an item whose link is broken
+    // for a while keeps the note's parse, and the reader lets go of the rest, their records included (LEV-221, LEV-260).
+    const reads = this.callsMaps(document) || this.reader.holding;
+    const targets: CallTargets = reads ? await this.reader.read(document, file.path, () => !stale()) : new Map();
     if (stale()) return;
     // The items this very read found waiting for a map (the reader's reads run one after another).
-    const waiting = this.callsMaps(document) ? this.reader.waiting : new Set<string>();
-    // A note that calls nothing lets go of the called notes read before (LEV-221: their records would grow unread).
-    if (!this.callsMaps(document) && this.reader.holding) void this.reader.clear(() => !stale());
+    const waiting = reads ? this.reader.waiting : new Set<string>();
     // Spent only now: a read superseded above leaves the writes for the read that wins, which finds the same
     // text on the same note and carries the ids after all. A write made while this read was under way is
     // kept for the next one. So is a record started again or spent meanwhile (`WriteRecord.record`, `showOwnWrite`,
@@ -1380,9 +1381,10 @@ export class MindmapView extends FileView {
     this.projected = { document, targets: this.targets, trees, positions: readTopicPositions(document.source), keys: topicKeys(document) };
     // An item that still calls a map whose read fails for now (the note unreadable, not a map by its text, renamed
     // before the link to it is) keeps the folds of the branches it drew, as an embed keeps the reader's: the reader
-    // gives the note back with the same ids once it reads again (LEV-246).
+    // gives the note back with the same ids once it reads again (LEV-246). So does an item whose link is broken for a
+    // while or points at another map: the branches of the map it called are not drawn now (LEV-260).
     this.waitingCalls = waiting;
-    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller) && !this.targets.has(caller); };
+    const kept = (id: string): boolean => { const caller = callerOfCalledNode(id); return caller !== undefined && waiting.has(caller); };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
     for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id)) collapsed.add(id);
     this.collapsed = collapsed;

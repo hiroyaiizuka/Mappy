@@ -249,13 +249,24 @@ describe('CallReader: the note renamed, moved or unread for a while (LEV-246)', 
     // Deleted: its last parse goes at once, and that it was read stays for the host's next read.
     app.remove('Map.md');
     expect(lasts()).toEqual([]);
-    // Per note (code review 3): an item waiting for another note keeps nothing of a note its own item left.
+    // Per note (code review 3): an item waiting for another note keeps nothing of a note another item left.
     app.put('A.md', TWINS);
     app.put('B.md', TWINS);
     await reader.read(host(['![[A]]', '![[Missing]]']), 'Host.md');
     expect(lasts()).toEqual(['A.md']);
-    await reader.read(host(['![[B]]', '![[Missing]]']), 'Host.md');
-    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 1, lasts: ['B.md'] });
+    await reader.read(host(['![[Missing]]']), 'Host.md');
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 1, lasts: [] });
+    // Per item (LEV-260): an item pointed at another map keeps the one it called, and waits, for as long as it is in the
+    // host; the note before that goes (two notes an item).
+    const pointed = host(['![[A]]']);
+    await reader.read(pointed, 'Host.md');
+    await reader.read(host(['![[B]]']), 'Host.md');
+    expect({ waiting: Array.from(reader.waiting), lasts: lasts().sort() }).toEqual({ waiting: [pointed.nodes[1]?.id], lasts: ['A.md', 'B.md'] });
+    app.put('C.md', TWINS);
+    await reader.read(host(['![[C]]']), 'Host.md');
+    expect(lasts().sort()).toEqual(['B.md', 'C.md']);
+    await reader.read(host([]), 'Host.md');
+    expect({ waiting: reader.waiting.size, lasts: lasts() }).toEqual({ waiting: 0, lasts: [] });
     stop();
   });
 
