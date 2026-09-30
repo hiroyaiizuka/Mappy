@@ -59,6 +59,20 @@ export async function finish(record, jsonPath) {
 }
 
 /**
+ * Polls `test` every 100 ms and hands back its first truthy result; after `timeout` ms it throws `what`, so a wait that
+ * never came fails its step instead of letting the next one read a state that was never reached.
+ */
+export async function until(test, timeout, what) {
+  const started = Date.now();
+  for (;;) {
+    const result = await test();
+    if (result) return result;
+    if (Date.now() - started > timeout) throw new Error(`${what} (waited ${timeout} ms)`);
+    await new Promise(resolve => { setTimeout(resolve, 100); });
+  }
+}
+
+/**
  * Thrown by `required` to end a case at a failed precondition: the steps after it would only drive the map
  * through a state the case was not written for and bury the one real failure under a cascade of others. The
  * case catches it around its steps, so `finish` still writes the record (with `stopped`) and reports FAIL.

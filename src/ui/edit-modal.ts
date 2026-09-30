@@ -43,7 +43,12 @@ export class EditModal extends Modal {
     input.addEventListener("compositionend", () => { composing = false; });
     const keyboardTarget: HTMLElement = input;
     keyboardTarget.addEventListener("keydown", event => {
-      if (event.isComposing || composing) return;
+      if (event.isComposing || composing) {
+        // As in InlineEditor (LEV-223): Enter and Tab are the IME's keys while it composes, so one it lets through
+        // types no line break into the reading and does not move the focus off the editor.
+        if (event.key === "Enter" || event.key === "Tab") event.preventDefault();
+        return;
+      }
       if (event.key === "Enter" && (!this.multiline || event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         void save();
