@@ -318,29 +318,29 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 
 **決定前の記述（2026-09-18〜09-27）:** 用途の候補はノードへの質問、ノードをタスクとして子ノードへブレイクダウン、ノードから画像を生成して添付。課金方式は未定（参考: TaskChute for Obsidian の AI 機能は買い切りで計画）。着手前に課金・ライセンス確認の方式、ネットワーク利用の開示、外部へ送るデータの範囲とオプトイン、API キー等の設定の保存先とモバイル互換を決め、最初の用途を 1 つに絞って生成結果は通常のノード編集と同じ経路で Markdown に書く、としていた。2026-09-27 の本人決定で当面保留（LEV-136）。
 
-**受入条件（この段階）:** 上の「LEV-269 で詰める」と「残る」の決定（開示、送信範囲とオプトイン、ライセンスとの両立、最初の用途の絞り方）と Node 解禁の範囲が本書に書かれ、無料状態で AI 関連のコードが外部（Workers・CLI）に触れない（本人の登録操作を除く）ことをテストで示せる。**2026-10-01 時点で未達**（決まったのは構成・UI・課金方式と鍵の確認方式・コードの公開・優先順・開発の進め方まで。鍵の仕組みも Mappy 側の受け口もまだ無く、テストは未作成）。機能そのものの受入条件は下の 3 つ（LEV-269 で確定。設計は architecture.md §11、分割と順番は §11.8）。
+**受入条件（この段階）:** 上の「LEV-269 で詰める」と「残る」の決定（開示、送信範囲とオプトイン、ライセンスとの両立、最初の用途の絞り方）と Node 解禁の範囲が本書に書かれ、無料状態で AI 関連のコードが外部（Workers・CLI）に触れない（本人の登録操作を除く）ことをテストで示せる。**2026-10-01 時点で未達。** 達した部分: Node 解禁の範囲・送信範囲とオプトイン・CLI に与える権限・ライセンスの受け口の形・テストの形は LEV-269 で決め、architecture.md §11 と本節に書いた（開示の中身は community-submission §5 の一覧に、設計で決まった値を足した）。残る部分: ライセンスとの両立と最初に見せる用途（本人の判断）、鍵の仕組み本体（エンジニア）と Mappy 側の受け口の実装（LEV-273）、無料状態のテスト（形は §11.7、未作成）。機能そのものの受入条件は下の 3 つ（LEV-269 で確定。設計は architecture.md §11、分割と順番は §11.8）。
 
 **段階 0 の結果（LEV-268、2026-10-01。証跡はプライマリーの `artifacts/lev-268/README.md`、メモリは `investigations/ai-cli-headless-spike`）:** 本人の `claude -p`（2.1.280）と `codex exec`（0.156.1）で、YouTube・PDF・質問 × 2 エンジンを試した（モデルを呼んだ実行 22 本、各 1 回）。字幕（yt-dlp で取得して `[mm:ss]` の段落に整形）を標準入力で渡せば両方とも要約を返した（Claude 18 秒・Codex 34 秒）が、CLI だけでは字幕を安定して取れなかった。Markdown の箇条書きの契約は 11/11 で守られた。Claude は禁止リストだけではサブエージェントなどのツールが残り、許可リスト＋`--restricted --strict-mcp-config` で絞れる。Codex は `--sandbox read-only` でも本人設定の plugins・Computer Use が動き（Finder を操作しようとした）、`--ignore-user-config` で外れるが plugin のキャッシュ由来の MCP は残り、cwd から上の AGENTS.md に従った。取り消しは両方ともシグナルで止まるが、Codex のラッパーは SIGTERM でも rc=0。GUI の環境では PATH が無く、`USER` が無いと Claude は未ログイン扱い。未確認: Electron からの起動、安定性、日本語・長尺・字幕の無い動画。
 
 **LEV-270（CLI ランナー）の受入条件:**
 
 - 設定でエンジン（claude・codex）とモデルを選び、実行ファイル（claude・codex・yt-dlp）の絶対パスを指定できる。空なら architecture.md §11.3 の既知の場所から見つける。ログインシェルを使うのは設定の「探す」ボタンを押したときの 1 回だけ。見つからないときは導入方法を示して止まり、CLI も yt-dlp も自動でインストールしない（`uvx` も使わない）。パスは端末ごとの保存先（§11.6）。
-- 読み取り専用で起動する: Claude は `--tools`／`--allowedTools` の許可リスト（Web 検索なしは空、ありは `WebSearch,WebFetch`）と `--restricted --strict-mcp-config --no-session-persistence`、Codex は `--ignore-user-config --sandbox read-only --skip-git-repo-check --ephemeral`（Web 検索ありは `--search`）。cwd は実行ごとの空の一時ディレクトリで、終わったら消す。環境は `process.env` を引き継いで PATH だけ補い、CLI の認証情報を読まない。引数と環境の組み立てを単体テストで固定する。plugin 由来の MCP を `-c` で外せるかを確かめ、結果を PR 本文に書く。
+- 読み取り専用で起動する: Claude は `--tools`／`--allowedTools` の許可リスト（Web 検索なしは空、ありは `WebSearch,WebFetch`）と `--restricted --strict-mcp-config --no-session-persistence --include-partial-messages`（`--safe-mode` はサブスクのログインのまま動くと確かめられたら足す。`~/.claude/CLAUDE.md` が読まれるかの実測とあわせて PR 本文に書く。architecture.md §11.3）、Codex は `--ignore-user-config --sandbox read-only --skip-git-repo-check --ephemeral`（Web 検索ありは `--search`）。cwd は実行ごとの空の一時ディレクトリで、終わったら消す。環境は `process.env` を引き継いで PATH だけ補い、CLI の認証情報を読まない。引数と環境の組み立てを単体テストで固定する。plugin 由来の MCP を `-c` で外せるかを確かめ、結果を PR 本文に書く。
 - 素材を用意して標準入力で渡す: YouTube の字幕（yt-dlp、`[mm:ss]` の 30 秒段落）、Vault の PDF（`loadPdfJs()`）、添付したノート。合計 200,000 文字を超えたら切り詰めずに止める。
 - 途中経過を `AiProgress` で、結果を `AiResult` で返す（`src/ai/contract.ts`、§11.4）。出力は §11.4 の寛容な受け取りで読み、段階 0 の生の出力（`artifacts/lev-268/runs/`）から作った fixture で単体テストする。
-- 取り消すとプロセスグループごと止まり（SIGTERM、3 秒で SIGKILL）、取り消しは自分のフラグで判定する。無出力 90 秒・全体 5 分・出力 5 MB で打ち切る。view を閉じる・ノートを切り替える・プラグインの unload・`pagehide` でも止まる。単体テスト（プロセスはモック）。
-- Node に触れるのは `src/ai/host/node-host.ts` の `loadNode()` だけ。lint は §11.1 のとおりで、`tests/tooling/mobile-lint.test.mjs` が他のファイルの `window.require` を落とす。
+- 取り消すとプロセスグループごと止まり（SIGTERM、3 秒で SIGKILL）、取り消しは自分のフラグで判定する。無出力 90 秒・全体 5 分（素材の大きさで最大 15 分まで延ばす）・出力 5 MB で打ち切り、失敗は `AiFailure` の種類で返す（§11.4）。view を閉じる・ノートを切り替える・プラグインの unload・`pagehide` でも止まる。単体テスト（プロセスはモック）。
+- Node に触れるのは `src/ai/host/node-host.ts` の `loadNode()` だけで、`src/ai/host/` の他のファイルは `NodeHost` を引数で受け取る。`loadNode()` を呼ぶのは `runnerFactory` だけ。lint は §11.1 のとおり（`no-restricted-syntax`。`no-restricted-globals` は使わない）で、`tests/tooling/mobile-lint.test.mjs` が他のファイルの `window.require`・`window.process` を落とし、`node-host.ts` でも `fetch` の禁止が残ることを確かめる。設定のエンジン・パス・「探す」の行は `active` のときだけ描く。
 - ライセンスの判定が偽なら `runnerFactory.create()` は `null` を返し、`loadNode()` を呼ばない（テスト。判定を外すと落ちることを記録する）。
 - Windows では AI の入口を出さず「未対応」と表示する（対象は macOS）。
 - test-vault の実機（macOS、開発用の解放のビルド）で、Obsidian から claude・codex・yt-dlp を起動できること、pdf.js でテキストが取れること、取り消したあと子プロセスが残らないこと（`ps`）、同じ素材で 5 回ずつ回したときの形の崩れの回数を記録する（§11.9 の未確認を埋める）。CLI のログインが要るので `needs-human` の手順を含む。
 
 **LEV-271（案 A の UI）の受入条件:**
 
-- 選んだノードの横に AI ボタン。出るのはライセンスが `active` か `expired` のときだけで、呼び出したマップのノード（M12）と埋め込み（M10）には出さない。押すとその場の入力欄（頼みごと、テンプレート〔要約・ブレスト・イシューツリー・自由〕、深さ 1〜3、エンジン、Web 検索、添付〔Vault のノート・PDF〕、⌘↵ で実行。日本語 IME の変換中は実行しない）。
+- 選んだノードの横に AI ボタン。出るのはライセンスが `active`・`expired`・`unreachable` のときだけで（入力欄を開く前のリフレッシュは architecture.md §11.6）、呼び出したマップのノード（M12）と埋め込み（M10）には出さない。押すとその場の入力欄（頼みごと、テンプレート〔要約・ブレスト・イシューツリー・自由〕、深さ 1〜3、エンジン、Web 検索、添付〔Vault のノート・PDF〕、⌘↵ で実行。日本語 IME の変換中は実行しない）。
 - URL・YouTube・PDF のノードでは「要約」が既定で、頼みごとが入っている。
 - 実行中は進み具合（`AiProgress` の段階）と「取り消す」を表示する。同時に走るのは 1 本。
 - 結果は点線の下書きの子ノードで並び（ノートにも `localStorage` にも書かない）、残す／やり直す／捨てる。`refused`・`failed` は理由と、生の出力を見る手段を出す。
-- 残すと `add-children` の 1 回の書き込み（`DocumentStore.applyOver`）で書かれ、⌘Z 1 回で全部戻り、Redo で全部戻る。リスト形式・見出し形式（H6 を超える段は本文の箇条書き）・仮想ルートの子・フリートピックの子で、書いた範囲の外の原文がバイト単位で変わらないことを単体テストで示す。
+- 残すと `add-children` が view の `execute`（`writeOwn` を通る。同名・空の題名のノードの id も引き継がれる）から 1 回の書き込み（`DocumentStore.applyOver`）で書かれ、⌘Z 1 回で全部戻り、Redo で全部戻る。リスト形式・見出し形式（H6 を超える段は本文の箇条書き）・仮想ルートの子・フリートピックの子で、書いた範囲の外の原文がバイト単位で変わらないことを単体テストで示す。
 - 下書き中の外部変更（選んだノードが残る・消える〔消えたら結果を写せる Notice〕）、ノードの移動、別の view、インライン入力中の「残す」、「残す」の衝突（`ConflictError` で下書きを残す）、view を閉じる（実行の取り消しと下書きの破棄）を扱い、日本語 IME・Undo/Redo・外部変更・複数ビューの必須ケースを壊さない。
 - `FakeRunner` で vitest とブラウザ検証ページを回す。開発用の解放のビルドでだけ選べる偽のエンジンを用意し、CLI なしで実機の E2E を回せるようにする。
 - 文言は i18n の表（ja / en）に入れ、英語は sentence case の lint を通す。機能名に「Claude Code」を使わない（community-submission #48）。
@@ -348,8 +348,8 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 
 **LEV-273（ライセンスの受け口）の受入条件:**
 
-- 設定タブに「AI」節を作り、ライセンスコードの入力欄・登録ボタン・状態（未登録・有効〔期限〕・期限切れ・無効〔理由〕）を出す。登録でコード＋デバイス ID（`crypto.randomUUID()`）を `requestUrl` で送り、アクセストークン＋リフレッシュシークレットを `window.localStorage` の `mappy-ai-license` に保存する（`LicenseStore` の後ろ。architecture.md §11.6）。
-- 同梱の公開鍵でアクセストークンの署名元と期限を検証し（WebCrypto）、`active` のときだけ AI の入口（AI ボタン・ランナー）を有効にする。`expired` は AI ボタンを押したときにリフレッシュし、失敗したら AI を無効にして理由を表示する。起動時と裏では通信しない。
+- 設定タブに「AI」節を作り、ライセンスコードの入力欄・登録ボタン・状態（未登録・有効〔期限〕・期限切れ・接続できない〔理由〕・無効〔理由〕）を出す。登録でコード＋デバイス ID（`crypto.randomUUID()`）を `requestUrl` で送り、アクセストークン＋リフレッシュシークレットを `window.localStorage` の `mappy-ai-license` に保存する（`LicenseStore` の後ろ。architecture.md §11.6）。
+- 同梱の公開鍵でアクセストークンの署名元と期限を検証し（WebCrypto）、ランナーを作るのは `active` のときだけ、AI ボタンを出すのは `active`・`expired`・`unreachable` のとき。`expired`・`unreachable` は AI ボタンを押したときにリフレッシュし、通信の失敗は `unreachable`（次に押せば再試行）、サーバーの拒否は `invalid`（AI ボタンを消して理由を出す）に分ける。起動時と裏では通信しない。同じ端末の複数の Vault のウィンドウでリフレッシュが奪い合わない（送る直前の読み直し・`navigator.locks` の排他・`storage` イベント。architecture.md §11.6）ことを、2 つの Vault を同時に開いて確かめる。
 - ライセンスサーバーへの通信は `src/ai/license/client.ts` の登録とリフレッシュの 2 つだけで、送るのはライセンスコード・デバイス ID・リフレッシュシークレットだけ。
 - エンジニアの API の契約（エンドポイント・トークン形式・公開鍵）が届くまでは、受け口の形だけを作り、通信はモックで試す。仮に置いた契約の形を PR 本文に書く。
 - 無料状態（未登録）では、`onload`・マップの操作・設定タブ・コマンドを通して `loadNode()` と `requestUrl` が 0 回（architecture.md §11.7 の 1・2。守りを外すと落ちることを記録する）。

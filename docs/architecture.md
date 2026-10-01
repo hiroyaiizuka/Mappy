@@ -363,11 +363,11 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
 
 **設計:**
 
-- Node の API に触れてよいのは **`src/ai/host/` だけ**。中でも Node のモジュールを取りに行くのは 1 ファイル `src/ai/host/node-host.ts` の 1 関数（`loadNode()`）に限り、`Platform.isDesktopApp`（Electron のデスクトップアプリ）が偽なら呼ばずに「使えない」を返す。取り方は実行時の `window.require('child_process')` など（使うのは `child_process`・`fs`・`os`・`path` の 4 つ）で、**静的な `import` をしない**。理由は 3 つ: (1) esbuild は `platform: "browser"` で Node の組み込みを解決しないので、静的 import はビルド設定（`external`）の変更を要する。(2) 静的 import はモジュールの読み込み時に評価されるので、モバイルや `window.require` の無い環境でプラグイン全体の読み込みが落ちる。実行時の取得なら AI の入口が無効になるだけで、他の機能は動く。(3) Node に触れる場所が 1 か所になり、無料状態で触れないことのテスト（§11.7）が 1 つの関数の呼び出し回数で書ける。
-- Node の型は `@types/node` を `src/` の tsconfig に足さず、`node-host.ts` に使う部分だけの構造型（`spawn` の戻りの `pid`・`stdin`・`stdout`・`stderr`・`on('exit')` など）を書く。`tsconfig.json` の `types: []` はそのまま。
-- `src/ai/host/` の外（`src/ai/core/`・`src/ai/license/`・`src/ui/ai/` など）は今の規則のまま（ブラウザ互換、Node の import 禁止）。`src/ai/host/` は Obsidian の `Platform` と `node-host.ts` 以外に依存させず、プロンプトの組み立て・出力の読み取り・イベントの解釈などは `src/ai/core/`（純粋 TypeScript。Obsidian にも Node にも依存しない。core・layout・interaction と同じ扱い）に置いて vitest で試す。
-- **lint の切り方**（`eslint.config.mjs`。LEV-270 が直す）: 今の `src/**/*.ts` の塊（`obsidianmd/no-nodejs-modules: error`・`node:*`/`electron` の import 禁止・Node のグローバルを未定義にする）は**そのまま残し、緩めない**。`window.require` は今の規則では捕まらない（`require` のメンバーアクセスで、import ではない）ので、逆に `src/**/*.ts` 全体に `no-restricted-properties`（`window.require`）と `no-restricted-globals`（`require`）を **error で足し**、`src/ai/host/node-host.ts` だけでその 2 つを `off` にする塊を後ろに置く。Node の import 禁止は `node-host.ts` でも残す（import しない設計なので外す必要がない）。`tests/tooling/mobile-lint.test.mjs` に「`src/` の他のファイルの `window.require` が落ちる」「`node-host.ts` では通る」の 2 ケースを足し、例外が 1 ファイルから広がったら落ちるようにする。
-- **`Platform.isDesktopApp` の内側**: `loadNode()` の先頭で判定し、偽なら Node に触れない。呼び出し側（ランナー）はさらにライセンスの判定の内側にある（§11.6）。
+- **Node の API に触れてよいのは 1 ファイル `src/ai/host/node-host.ts` だけ**で、Node のものを取りに行くのはその 1 関数 `loadNode()` に限る。`Platform.isDesktopApp`（Electron のデスクトップアプリ）が偽なら何も取らずに「使えない」を返す。取り方は実行時の `window.require('child_process')` など（使うのは `child_process`・`fs`・`os`・`path` の 4 モジュールと、`window.process` の `env`・`kill`・`platform`）で、**静的な `import` をしない**。`loadNode()` はこれらを包んだ小さな面 `NodeHost`（`spawn`・`killGroup(pid, signal)`・`env()`・`homedir()`・`tmpdir()`・`mkdtemp`・`rm`・`exists`・`platform`）を返す。`src/ai/host/` の他のファイル（`cli-process.ts`・`locate.ts`・`yt-dlp.ts`）は `NodeHost` を引数で受け取って使うだけで、`process`・`require`・Node のグローバルを直接書かない（`process` を未定義として落とす今の lint がそのまま効く）。理由は 3 つ: (1) esbuild は `platform: "browser"` で Node の組み込みを解決しないので、静的 import はビルド設定（`external`）の変更を要する。(2) 静的 import はモジュールの読み込み時に評価されるので、モバイルや `window.require` の無い環境でプラグイン全体の読み込みが落ちる。実行時の取得なら AI の入口が無効になるだけで、他の機能は動く。(3) Node に触れる場所が 1 か所になり、無料状態で触れないことのテスト（§11.7）が 1 つの関数の呼び出し回数で書ける。
+- Node の型は `@types/node` を `src/` の tsconfig に足さず、`node-host.ts` に使う部分だけの構造型（`NodeHost` と、`spawn` の戻りの `pid`・`stdin`・`stdout`・`stderr`・`on('exit')` など）を書く。`tsconfig.json` の `types: []` はそのまま。
+- `src/ai/host/` の外（`src/ai/core/`・`src/ai/license/`・`src/ui/ai/` など）は今の規則のまま（ブラウザ互換、Node の import 禁止）。`src/ai/host/` の `node-host.ts` 以外は Node のものに直接触れず（`NodeHost` 経由）、Obsidian にも依存させず、プロンプトの組み立て・出力の読み取り・イベントの解釈などは `src/ai/core/`（純粋 TypeScript。Obsidian にも Node にも依存しない。core・layout・interaction と同じ扱い）に置いて vitest で試す。
+- **lint の切り方**（`eslint.config.mjs`。LEV-270 が直す）: 今の `src/**/*.ts` の塊（`obsidianmd/no-nodejs-modules: error`・`node:*`/`electron` の import 禁止・Node のグローバルを未定義にする）は**そのまま残し、緩めない**。`window.require`・`window.process` と、Obsidian が渡すモジュールの `require` は今の規則では捕まらない（import ではない）ので、`src/**/*.ts` 全体に **`no-restricted-syntax`** を error で足す（セレクタは `MemberExpression[object.name='window'][property.name=/^(require|process)$/]` と `CallExpression[callee.name='require']`）。**`no-restricted-globals` は使わない**: `recommended` が同じ規則に `app`・`fetch`・`localStorage` の禁止を入れており（`eslint-plugin-obsidianmd` 0.4.2 で確認）、後ろの塊で options を書くと丸ごと置き換わってそれらの禁止が消える。`no-restricted-syntax` は `recommended` が使っていない（同じく確認）ので消えるものが無い。後ろに `src/ai/host/node-host.ts` だけで `no-restricted-syntax` を `off` にする塊を置く（このファイルでも `fetch`・`localStorage` の禁止は残る）。Node の import 禁止は `node-host.ts` でも残す（import しない設計なので外す必要がない）。`tests/tooling/mobile-lint.test.mjs` に「`src/` の他のファイル（`src/ai/host/cli-process.ts` を含む）の `window.require`・`window.process` が落ちる」「`node-host.ts` では通る」「`node-host.ts` でも素の `fetch` は報告される」の 3 ケースを足し、例外が 1 ファイルから広がったり他の禁止を消したりしたら落ちるようにする。
+- **`Platform.isDesktopApp` の内側**: `loadNode()` の先頭で判定し、偽なら Node に触れない。`loadNode()` を呼ぶのは `src/ai/runner-factory.ts` だけで、ランナー・素材の取得（`material.ts` の yt-dlp）・設定の「探す」はどれも `runnerFactory` が作った `NodeHost` を受け取る。`runnerFactory` はライセンスの判定（§11.6）が偽なら `loadNode()` を呼ばない。
 - core・layout・interaction を Obsidian・Node に依存させない原則は変えない。AI のための編集の計画（下書きを子として書く差分）は `src/core/` の通常の編集コマンドとして足す（§11.5）。
 
 **`isDesktopOnly` とモバイル（community-submission #46・§4.4）の扱い:** Submission requirements は「Node・Electron の API を使うなら `isDesktopOnly: true`」で、実行時に無効にするだけでは字面を満たさない。したがって **M9 が main に入った版からは `true` を保つ**。§4.4 の「LEV-25 でモバイルを確かめたら `false` に戻す」は、M9 が main に入ったあとは今の形では実行できない。
@@ -406,11 +406,11 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
 - **保存先**: エンジンの選択とモデル名は `data.json`（`loadData`／`saveData`、端末をまたいで同期してよい好み）。**実行ファイルのパスは端末ごと**（同期した先の端末にそのパスがあるとは限らない）なので、ライセンスと同じ端末ごとの保存先（§11.6）に置く。
 - **環境**: `process.env` をそのまま引き継ぎ（`USER`・`HOME`・API キーの環境変数を含む。API キーで認証した CLI でも動くようにする、product-plan §5 M9）、`PATH` の先頭に解決した実行ファイルのディレクトリ（codex を node で起動するなら node のディレクトリも）を足す。Mappy は CLI の認証情報（`~/.claude`・Keychain・`~/.codex/auth.json`）を読まない（#42）。
 - **cwd**: 実行ごとに `os.tmpdir()` の下に空の一時ディレクトリ（`mappy-ai-XXXXXX`）を作り、終わったら（成功・失敗・取り消しのどれでも）消す。Vault を cwd にしない。
-- **Claude の引数**: `claude -p --restricted --strict-mcp-config --no-session-persistence --output-format stream-json --verbose --tools <T> --allowedTools <T> [--model <M>]`、指示文は標準入力。`<T>` は Web 検索なしなら空文字列（ツールなし。段階 0 の 03・10b・20）、ありなら `WebSearch,WebFetch`（12b。`--restricted` と同時に指定して動いた）。`--disallowedTools` には頼らない（許可リストで絞る）。`--bare` は API キー専用なので使わない。**未確認**: 将来 `-p` の既定が bare になったとき（product-plan §5 M9 の技術上の注意）、サブスクのログインでは「未ログイン」になる。stream-json の初めのイベントか終了時のメッセージで未ログインを見分けて「CLI にログインしていないか、API キーが要る」と出す（LEV-270 が文言の形を実測で決める）。
+- **Claude の引数**: `claude -p --restricted --strict-mcp-config --no-session-persistence --output-format stream-json --verbose --include-partial-messages --tools <T> --allowedTools <T> [--model <M>]`、指示文は標準入力。`<T>` は Web 検索なしなら空文字列（ツールなし。段階 0 の 03・10b・20）、ありなら `WebSearch,WebFetch`（12b。`--restricted` と同時に指定して動いた）。`--disallowedTools` には頼らない（許可リストで絞る）。`--bare` は API キー専用なので使わない。**本人の `~/.claude` の扱い**: `--restricted` は user・project・local の設定ファイル（hooks を含む）を読まない（2.1.280 の `--help`）。ただし `~/.claude/CLAUDE.md`（ユーザーのメモリ）を読まないとは書いていない。段階 0 の 11/11 は本人の `~/.claude` が効いたままの結果で、CLAUDE.md の指示（見出しを付けるなど）で契約が崩れうる。`--help` には CLAUDE.md・skills・plugins・hooks を外す `--safe-mode` がある。LEV-270 は (1) `--restricted` のもとで `~/.claude/CLAUDE.md` が読まれるか、(2) `--safe-mode` を足してもサブスクのログインのまま動くかを実測し、(2) が動けば `--safe-mode` を足す。動かなければ、CLAUDE.md が効きうることを #44 に書き、契約の崩れは §11.4 の寛容な受け取りで受ける。**未確認**: 将来 `-p` の既定が bare になったとき（product-plan §5 M9 の技術上の注意）、サブスクのログインでは「未ログイン」になる。stream-json の初めのイベントか終了時のメッセージで未ログインを見分けて「CLI にログインしていないか、API キーが要る」と出す（LEV-270 が文言の形を実測で決める）。
 - **Codex の引数**: `<native codex> exec --ignore-user-config --sandbox read-only --skip-git-repo-check --ephemeral --json -c model_reasoning_effort="medium" [-m <M>] -C <一時ディレクトリ> -`、Web 検索ありは `exec` の前に `--search`。`--output-schema` は使わない（15）。`--ignore-user-config` は本人の Codex 設定（Ollama 経由・plugins・hooks）を外す代わりに本人が選んだモデルも外すので、モデルは Mappy の設定で渡す（空なら Codex の既定）。**残る MCP**: plugin のキャッシュ由来の MCP は `--ignore-user-config` でも起動した。LEV-270 が `-c` での無効化（例: `mcp_servers={}`・plugins の無効化）を試し、外せればその引数を足す。外せなければ、読み取り専用の sandbox の中で起動しうることを README の #44 に書く。**未確認**: `--ignore-user-config` のとき `~/.codex/AGENTS.md`（全体の指示）を読むか。
 - **権限の違いの開示**（#44）: Claude は Web 検索なしならツールを 1 つも持たず、ありでも WebSearch と WebFetch だけ。Codex は読み取り専用の sandbox で、読み取りのコマンドは実行できる（Vault の外のファイルも読みうる）。どちらも cwd は空の一時ディレクトリ。
 - **起動と取り消し**（`src/ai/host/cli-process.ts`）: `spawn(file, args, { cwd, env, detached: true, stdio: ['pipe','pipe','pipe'] })`。標準入力に指示文を書いて閉じる。取り消しは `process.kill(-pid, 'SIGTERM')`（プロセスグループごと）、3 秒で残れば `SIGKILL`。**取り消したかどうかは終了コードではなく Mappy 側のフラグで決める**（Codex のラッパーは SIGTERM でも rc=0）。view を閉じる・ノートを切り替える・プラグインの unload・`pagehide`（Obsidian の終了）でも同じく止める（`detached` の子は親が死んでも残るので、明示的に止める。Obsidian が落ちた場合は止められないが、標準出力の先が閉じるので CLI は書き込みで終わる見込み。**未確認**）。
-- **タイムアウト**: 標準出力に 1 行も来ない時間が 90 秒で打ち切る（15 の無言の停止。どちらのエンジンも途中のイベントを出すので、行が来るかで見る）。全体は 5 分（段階 0 の最長は Web 検索ありの 82 秒）。標準出力が 5 MB を超えたら打ち切る。どれも「時間切れ」「出力が大きすぎる」として止め、ノートは変わらない。値は定数で持ち、LEV-270 の実機で Codex の effort `medium` の長い素材が 90 秒の無出力に当たらないかを確かめる（Codex は思考の途中経過を出さない。**未確認**）。
+- **タイムアウト**: 標準出力に 1 行も来ない時間が 90 秒続いたら打ち切る（15 の無言の停止）。Claude は `--include-partial-messages` で生成中の断片を行として出させる（付けない stream-json は `system:init` のあと、assistant のメッセージが完成するまで行を出さないので、長い素材の要約が無出力の判定に当たる）。Codex は思考の途中経過を出さず、`item` が来るまで黙る（**未確認**: 長い素材で最初の `item` が来るまでの時間）。全体は 5 分を基本にし、素材の文字数に応じて延ばす（50,000 文字ごとに 2 分、上限 15 分。段階 0 の最長は 12 KB の素材で Web 検索ありの 82 秒で、200,000 文字の素材は試していない）。標準出力が 5 MB を超えたら打ち切る。どれも「時間切れ」「出力が大きすぎる」として止め、ノートは変わらない。値は定数で持つ。LEV-270 の実機で 1 時間超の動画の字幕と大きな PDF を両エンジンに渡し、最初の行までの時間・行の間隔の最大・全体の時間を測って直す。
 - **1 度に 1 本**: Mappy 全体で同時に走る実行は 1 本。走っている間は他の AI ボタンを無効にする。自動の再試行・裏での繰り返しはしない（規約。「やり直す」は本人の操作）。
 - **プラットフォーム**: 段階 0 は macOS だけ。プロセスグループの扱い（`process.kill(-pid)`）は POSIX のもので、Windows では使えない。**LEV-270 の対象は macOS**。Linux は同じ形で動く見込みだが未確認、Windows は入口を出さず「未対応」と表示する（対応するなら `taskkill /T` など別の止め方を設計し直す）。
 - **未確認**: Electron（Obsidian）の `child_process` からの起動そのもの（段階 0 は `env -i` でターミナルから近似しただけ）。`window.require` が Obsidian 1.8.7〜1.14.2 のデスクトップで使えるか。どれも LEV-270 の最初の実機確認で見る。
@@ -446,8 +446,21 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
   type AiResult =
     | { kind: 'outline'; items: OutlineItem[]; dropped: number; raw: string }  // dropped: 捨てた行の数
     | { kind: 'refused'; reason: string; raw: string }       // 「取得できませんでした: …」
-    | { kind: 'failed'; reason: 'not-found' | 'not-logged-in' | 'timeout' | 'too-large' | 'unparsable' | 'exited'; detail: string }
+    | { kind: 'failed'; reason: AiFailure; detail: string }
     | { kind: 'cancelled' };
+  type AiFailure =
+    | 'engine-missing'        // CLI が見つからない（導入の案内を出す）
+    | 'ytdlp-missing'         // yt-dlp が見つからない（導入の案内を出す）
+    | 'unsupported-platform'  // Windows など（§11.3）
+    | 'not-logged-in'         // CLI が未ログイン・API キーが無い
+    | 'no-subtitles'          // 字幕の無い動画
+    | 'no-pdf-text'           // テキストの無い PDF（スキャン）
+    | 'material-too-large'    // 素材が 200,000 文字超・PDF が 50 MB 超（detail に大きさと上限）
+    | 'material-failed'       // yt-dlp・pdf.js・ノートの読み取りの失敗
+    | 'timeout'               // 無出力・全体の時間切れ
+    | 'output-too-large'      // 標準出力が 5 MB 超
+    | 'unparsable'            // 箇条書きが 1 つも残らない
+    | 'exited';               // CLI が 0 以外で終わった（detail に stderr の末尾）
   interface AiRunner {
     run(request: AiRequest, onProgress: (progress: AiProgress) => void, signal: AbortSignal): Promise<AiResult>;
   }
@@ -467,7 +480,7 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
 **設計:**
 
 - **下書きはノートに書かない。** 結果は view が持つ一時の状態（`AiDraft { file; anchorId; items; request }`）で、ノートにも `localStorage` にも置かない。レイアウトにはドロップのプレビュー（`src/layout/drop-preview.ts` の `previewTree`）と同じやり方で、選んだノードの最後の子として仮のノード（id は `ai-draft:<n>`、点線の枠）を差し込んだ木を渡す。仮のノードは選べるが、編集・ドラッグ・削除・リンクのクリックは受けない。
-- **「残す」**: そのときの view の文書（最新の revision）で、新しい編集コマンド `{ type: 'add-children'; nodeId; items: OutlineItem[] }` を `planEdit`（`src/core/commands.ts`）で計画し、`DocumentStore.applyOver(file, doc.source, plan.edits)` を 1 回呼ぶ。通常のノード編集と同じ経路（開いている文書は `Editor.transaction`、閉じていれば `Vault.process` の原文照合。§4）で、保存経路を増やさない。履歴の 1 段なので **⌘Z 1 回で全部戻り**、Redo で全部戻る。`add-children` の差分は既存の `add-child` と同じ規則（`list-commands.ts`・`commands.ts` の `add`）で位置を決め、複数の項目と入れ子を 1 つの差分の文にする:
+- **「残す」**: そのときの view の文書（最新の revision）で、新しい編集コマンド `{ type: 'add-children'; nodeId; items: OutlineItem[] }` を view の `execute`（`src/ui/mindmap-view.ts`）に渡す。`execute` は `assertEditable` と `writeOwn` を通るので、保存中と別のファイルへの書き込みを拒み、自分の書き込みとして記録して、再解析でノードの id を引き継ぐ（LEV-150）。その中で `planEdit`（`src/core/commands.ts`）の計画を `DocumentStore.applyOver` で 1 回書く。view の外から store を直接呼ばない。通常のノード編集と同じ経路（開いている文書は `Editor.transaction`、閉じていれば `Vault.process` の原文照合。§4）で、保存経路を増やさない。履歴の 1 段なので **⌘Z 1 回で全部戻り**、Redo で全部戻る。`add-children` の差分は既存の `add-child` と同じ規則（`list-commands.ts`・`commands.ts` の `add`）で位置を決め、複数の項目と入れ子を 1 つの差分の文にする:
   - リスト形式: 選んだノードの最後の子として、ノードの子の字下げで入れ子の箇条書きを書く。
   - 見出し形式: 最上位の項目を選んだノードの子の見出し（深さ＋1）にし、その子も深さを 1 つずつ下げた見出しにする。H6 を超える段は、最後の H6 の本文に箇条書きとして書く（見出し形式では箇条書きはノードにならず本文として見える）。仮想ルートの子や最上位区画になる場合は、既存の `add-child` と同じく `withTopicKeys` を通す。
   - 項目の文は `assertSingleLine` を通す（§11.4 で 1 行に整えてある）。
@@ -493,7 +506,8 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
     | { kind: 'unregistered' }                         // 無料状態。リフレッシュシークレットが無い
     | { kind: 'active'; expiresAt: number }            // 公開鍵で検証が通り、期限内
     | { kind: 'expired' }                              // 登録済みで期限切れ（リフレッシュできる）
-    | { kind: 'invalid'; reason: string };             // 検証できない・リフレッシュが拒まれた
+    | { kind: 'unreachable'; reason: string }          // 登録済みで期限切れ、リフレッシュの通信に失敗した（再試行できる）
+    | { kind: 'invalid'; reason: string };             // 検証できない・サーバーがリフレッシュを拒んだ
   interface Entitlement {
     state(): EntitlementState;                         // 同期・オフライン（保存されたトークンを公開鍵で検証するだけ）
     onChange(listener: (state: EntitlementState) => void): () => void;
@@ -502,7 +516,8 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
   }
   ```
 
-  AI の入口（AI ボタン・ランナーの生成）が見るのは `state().kind === 'active'` の 1 つだけ。`expired` では AI ボタンを出し、押したときに `refresh()` してから入力欄を開く（裏で定期的にリフレッシュしない。起動時にも通信しない）。`unregistered` と `invalid` では AI ボタンを出さず、ランナーを作らない。
+  AI の入口は 2 段で判定する。**AI ボタンを出す**のは `active`・`expired`・`unreachable`（登録済みで、リフレッシュで戻れる状態）のとき。**ランナーを作る**（`runnerFactory.create()` が `loadNode()` を呼ぶ）のは `active` のときだけ。`expired`・`unreachable` で AI ボタンを押すと `refresh()` し、`active` になれば入力欄を開く。通信に失敗したら `unreachable` のまま理由（オフラインなど）を出して閉じ、次に押したときにまた試す。サーバーが拒んだときだけ `invalid` にして AI ボタンを消し、設定タブに理由とコードの入れ直しの案内を出す。裏で定期的にリフレッシュしない。起動時にも通信しない。`unregistered` と `invalid` では AI ボタンを出さず、ランナーを作らない。
+- **リフレッシュの排他**（同じ端末で複数の Vault のウィンドウを開いたとき）: 保存先は全 Vault で 1 つ（下の保存先）。2 つのウィンドウが同じリフレッシュシークレットで同時にリフレッシュすると、片方は古いシークレットとして拒まれ、遅れて書き戻した側が新しいシークレットを上書きしうる。そこで次のようにする。(1) `refresh()` は送る直前に保存先を読み直し、保存されたトークンが既に有効なら送らずにそれを使う。(2) Web Locks API（`navigator.locks.request('mappy-ai-license', …)`。同じオリジンのウィンドウの間で効く）でリフレッシュを排他にし、ロックを取ったあとで (1) をもう一度行う。(3) 書き戻すのは受け取ったトークンとシークレットだけで、読み直した値の上に書く。(4) 他のウィンドウの書き込みは `storage` イベントで受け取り、`state()` を更新する。**未確認**: Obsidian の別の Vault のウィンドウが同じオリジンで `navigator.locks` を共有するか（LEV-273 が 2 つの Vault を同時に開いて確かめる。共有しなければ、`localStorage` に期限付きの印を置く排他に替える）。
 - **検証**: アクセストークンの署名を、プラグインに同梱した公開鍵で WebCrypto（`crypto.subtle.verify`）で確かめ、期限を端末の時計で見る。トークンの形式（JWT か独自か）と署名の方式は契約が届いてから決める。Obsidian 1.8.7 の Electron の Chromium で WebCrypto が持たない方式（例: Ed25519 は Chromium の版による。**未確認**）なら、小さな検証ライブラリを足す前に AGENTS.md の手順（必要性・バンドル増分・モバイル互換の記録）を踏む。鍵の確認のコードは難読化しない（#47）。端末の時計を戻せば期限を延ばせるが、リフレッシュで入れ替わる方式なので抑止にとどまる（MIT の公開コードは誰でも確認を外せる。product-plan §5 M9 の「ライセンスとの両立」）。
 - **通信**: `requestUrl` だけ（#43。`fetch` を使わない）。`register` と `refresh` の 2 か所だけで、`src/ai/license/client.ts` の外から呼ばない。送るのはライセンスコード・デバイス ID・リフレッシュシークレットだけで、利用状況・回数・バージョンを送らない。
 - **デバイス ID**: 初回の `register` の直前に `crypto.randomUUID()` で作る（ハードウェア由来の値にしない。#45）。
@@ -514,8 +529,8 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
 
 product-plan §5 M9 の受入条件「無料状態で AI 関連のコードが外部（Workers・CLI）に触れない（本人の登録操作を除く）」を、次の 3 段で示す。**どれも、守りを外した状態で実際に落ちることを確かめて記録する**（AGENTS.md）。
 
-1. **入口の一本化（静的）**: Node に触れるのは `src/ai/host/node-host.ts` の `loadNode()` だけ（§11.1 の lint）、ライセンスサーバーへの `requestUrl` は `src/ai/license/client.ts` だけ。`tests/tooling/` に、`src/` のうち `src/ai/host/` を import してよいのは `src/ai/runner-factory.ts` だけ、`client.ts` を import してよいのは `entitlement.ts` だけ、を esbuild の metafile（`build-meta.json`）か import の走査で確かめるテストを足す。
-2. **無料状態の振る舞い（vitest、jsdom）**: `loadNode` と `requestUrl` を数えるモックに替え、ライセンスを `unregistered` にした状態で、プラグインの `onload`、マップを開く、ノードを選ぶ・編集する、設定タブを開く、コマンドを一通り実行する、を通して**両方とも 0 回**であることを確かめる。AI ボタンが DOM に無いことと、`runnerFactory.create()` が `null` を返すことも見る。登録の操作（`register`）だけは `requestUrl` が 1 回で、`loadNode` は 0 回。守りを外す（`runnerFactory` が `state()` を見ない、AI ボタンを常に出す）とこのテストが落ちることを確かめ、その出力を PR に残す。
+1. **入口の一本化（静的）**: Node に触れるのは `src/ai/host/node-host.ts` の `loadNode()` だけ（§11.1 の lint）、ライセンスサーバーへの `requestUrl` は `src/ai/license/client.ts` だけ。`tests/tooling/` に、`src/` のうち `node-host.ts` の値を import してよいのは `src/ai/runner-factory.ts` だけ（`src/ai/host/` の他のファイル・素材の取得 `material.ts`・設定の「探す」は `runnerFactory` が作った `NodeHost` を引数で受け取り、`node-host.ts` からは `import type` だけをする）、`client.ts` を import してよいのは `entitlement.ts` だけ、を esbuild の metafile（`build-meta.json`）か import の走査で確かめるテストを足す。
+2. **無料状態の振る舞い（vitest、jsdom）**: `loadNode` と `requestUrl` を数えるモックに替え、ライセンスを `unregistered` にした状態で、プラグインの `onload`、マップを開く、ノードを選ぶ・編集する、設定タブを開く（無料状態の AI 節はライセンスの行だけを描く。エンジン・パス・「探す」の行は `active` のときだけ描き、パスの自動検出も走らない）、コマンドを一通り実行する、を通して**両方とも 0 回**であることを確かめる。AI ボタンが DOM に無いことと、`runnerFactory.create()` が `null` を返すことも見る。登録の操作（`register`）だけは `requestUrl` が 1 回で、`loadNode` は 0 回。守りを外す（`runnerFactory` が `state()` を見ない、AI ボタンを常に出す）とこのテストが落ちることを確かめ、その出力を PR に残す。
 3. **実機（E2E）**: `scripts/e2e/ai-free-state.mjs`（`npm run harness:e2e:ai-free-state`）。専用 test-vault の Obsidian（リリースビルド。開発用の解放なし）を CDP で動かし、ページに入る前に `window.require` を包んで `child_process` の取得を数え、CDP の Network ドメインでライセンスサーバーのドメインへの要求を数える。マップを開いて操作し、両方 0 を確かめる。
 
 ### 11.8 実装の分割と順番
@@ -529,11 +544,11 @@ product-plan §5 M9 の受入条件「無料状態で AI 関連のコードが�
 | LEV-273 ライセンスの受け口 | `Entitlement`・検証・`requestUrl` の通信（モック）・保存・開発用の解放とリリースビルドの検査・設定の「AI」節とライセンスの行・無料状態のテスト（§11.7 の 1・2）・`main.ts` の結線 | `src/ai/license/*`、`src/obsidian/settings-tab.ts`、`src/main.ts`、`esbuild.config.mjs`、`scripts/validate-release.mjs`、`tests/tooling/` | なし |
 
 - `src/main.ts` を触るのは LEV-273 だけ（入口の結線: `Entitlement` を作り、`runnerFactory` と view に渡す）。LEV-270・LEV-271 は `main.ts` を触らず、結線は LEV-273 の merge のあとに小さな追従で入れる（3 つ目に merge したチケットが行う）。
-- 設定タブの「AI」節は LEV-273 が作る。LEV-270 の行（エンジン・パス・「探す」）は `renderRunnerSettings(containerEl)` として LEV-270 が書き、LEV-273 の節から呼ぶ形で後から merge したほうがつなぐ。
+- 設定タブの「AI」節は LEV-273 が作る。LEV-270 の行（エンジン・パス・「探す」）は `renderRunnerSettings(containerEl, host)` として LEV-270 が書き（`host` は `runnerFactory` が作った `NodeHost`。`active` のときだけ描く）、LEV-273 の節から呼ぶ形で後から merge したほうがつなぐ。
 - 実機を使う確認は Obsidian が 1 台なので 1 本ずつ。順番の推奨: LEV-270 の最初の実機確認（Electron からの起動・`window.require`・pdf.js。§11.3 と §11.2 の未確認）を最初に行う。ここで起動できなければ設計を直す必要があり、UI の作り込みより先に分かるほうが安い。
 - §11.7 の 3 段目（E2E）と README の開示（#41〜#48）は、3 つがそろったあと LEV-272（main へのマージ）の前に行う。
 
 ### 11.9 未確認と、このあと本人が決めること
 
-- **未確認**（実装チケットが最初に確かめる）: Electron からの `child_process` の起動と `window.require`（LEV-270）、pdf.js の `getTextContent`（LEV-270）、日本語・長尺・字幕の無い動画（LEV-270）、Codex の plugin 由来の MCP の無効化と `~/.codex/AGENTS.md` の読み込み（LEV-270）、Codex の長い無出力（LEV-270）、同じ指示での形の安定性（LEV-270 が同じ素材で 5 回ずつ回して数える）、Claude が cwd の CLAUDE.md を読むか（cwd を空にしたので影響しない）、WebCrypto の署名方式（LEV-273、契約の後）。
+- **未確認**（実装チケットが最初に確かめる）: Electron からの `child_process` の起動と `window.require`（LEV-270）、pdf.js の `getTextContent`（LEV-270）、日本語・長尺・字幕の無い動画（LEV-270）、Codex の plugin 由来の MCP の無効化と `~/.codex/AGENTS.md` の読み込み（LEV-270）、Claude・Codex の長い素材での行の間隔（§11.3 のタイムアウト。LEV-270）、Claude が `--restricted` のもとで `~/.claude/CLAUDE.md` を読むかと `--safe-mode` がサブスクのログインで動くか（§11.3。LEV-270）、同じ端末の 2 つの Vault のウィンドウが `navigator.locks` を共有するか（§11.6。LEV-273）、同じ指示での形の安定性（LEV-270 が同じ素材で 5 回ずつ回して数える）、Claude が cwd の CLAUDE.md を読むか（cwd を空にしたので影響しない。`~/.claude/CLAUDE.md` は上の別の項）、WebCrypto の署名方式（LEV-273、契約の後）。
 - **本人の判断**: `isDesktopOnly` とモバイル（§11.1。LEV-25 のときに決める）、ライセンスの保存先を TaskChute に揃えるか（§11.6）、最初の用途（URL の要約・PDF の要約・質問からマップのどれから見せるか。この設計は 3 つとも同じ経路で扱えるので、作る順番ではなく見せる順番の判断）。
