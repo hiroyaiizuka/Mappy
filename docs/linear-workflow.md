@@ -17,7 +17,7 @@ Linear を読み書きするのはエージェントだけである。本人は 
 
 ## チケットの構造
 
-- 親 issue はフェーズ（H0b / M1 / M2 / M3 / M4 / M6 / M7 / M8 / M9 / M5）と「Ideas: 将来候補」。説明に受入条件の所在を書き、子の進捗で追う。親自体は誰にも渡さない。
+- 親 issue はフェーズ（H0b / M1 / M2 / M3 / M4 / M6 / M7 / M8 / M9 / M5）と「Ideas: 将来候補」。M9 の子は 2026-10-01 から LEV-266 の下に切る（LEV-28 は決定の記録）。説明に受入条件の所在を書き、子の進捗で追う。親自体は誰にも渡さない。
 - 子 issue は `product-plan.md` の「残る検証・機能」1項目、または受入条件の未達1件。Orca に渡すのは子だけ。
 - 作業中に見つけた範囲外の不具合は `orca linear create --parent-current` で子として戻す。チャットや PR 本文に埋めない。
 
@@ -111,7 +111,7 @@ orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番�
 
 同時に走らせる worktree は層（core / layout / interaction / docs）で分け、`src/main.ts` を複数が触らないようにする。Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする。並走する PR は `docs/`・`README.md`・`src/ui/mindmap-view.ts` で衝突しやすいので、merge は 1 本ずつ行い、次の PR はワーカーが origin/main へ rebase してから merge する（2026-09-19 の wave 1 で 3 本が同時に衝突した）。
 
-**M9（AI 機能）の子チケットは `feature/ai` を base にする**（2026-10-01 の本人決定。product-plan §5 M9）。worktree は `orca worktree create --base-branch feature/ai`、PR の base は `feature/ai`、レビューは `/code-review high origin/feature/ai...HEAD`、上の「origin/main へ rebase」は「origin/feature/ai へ rebase」に読み替える。`feature/ai` 自体には main を `git merge origin/main` で取り込み、rebase しない。`feature/ai` を main へマージするのは最後で、本人の指示があったときだけ（LEV-272）。M9 の子ブランチを main へ rebase したり、main 宛ての PR にしたりしない。
+**M9（AI 機能）の子チケットは `feature/ai` を base にする**（2026-10-01 の本人決定。product-plan §5 M9）。worktree は上の `orca worktree create`（`--name`・`--linear-issue` などはそのまま）に `--base-branch feature/ai` を足して作り、PR の base は `feature/ai`、レビューは `/code-review high origin/feature/ai...HEAD`、上の「origin/main へ rebase」は「origin/feature/ai へ rebase」に読み替える。`feature/ai` 自体には main を `git merge origin/main` で取り込み、rebase しない。`feature/ai` を main へマージするのは最後で、本人の指示があったときだけ（LEV-272）。M9 の子ブランチを main へ rebase したり、main 宛ての PR にしたりしない。規約と M9 の決定は main の docs が正本で、`feature/ai` の木の docs は main を取り込むまで古い。古ければ作業の前に `feature/ai` へ main を取り込む。
 
 ## アイデアの置き場
 

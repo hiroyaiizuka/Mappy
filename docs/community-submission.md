@@ -68,8 +68,8 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | # | 要件（出典） | Mappy の現状 | 結果 | 担当 |
 | --- | --- | --- | --- | --- |
 | 26 | 難読化・動的広告・クライアント側テレメトリ・自己更新をしない（Policies） | どれも無い。本番は esbuild の標準 minify（難読化ではない） | PASS | — |
-| 27 | ネットワーク利用は使う先と理由を明示する（Policies） | 自前の通信は SVG／PNG 書き出しでノートが参照する外部画像を `requestUrl` で取る 1 経路だけ（`image-export.ts`）。表示はノートの外部画像を Obsidian と同じく読む。README「Network use」（英語）と `README.ja.md`「ネットワーク利用」に同じ内容で開示（LEV-227） | PASS | —（LEV-227 で完了） |
-| 28 | 支払い・アカウント・Vault 外のファイル（Policies） | どれも無い。**M9（有料の AI 機能）を入れる時点でこの行が変わる**（2026-10-01 に保留を解き `feature/ai` で開発する。main へのマージは最後〔LEV-272〕で、それまで main の配布物は変わらない） | PASS | — |
+| 27 | ネットワーク利用は使う先と理由を明示する（Policies） | 自前の通信は SVG／PNG 書き出しでノートが参照する外部画像を `requestUrl` で取る 1 経路だけ（`image-export.ts`）。表示はノートの外部画像を Obsidian と同じく読む。README「Network use」（英語）と `README.ja.md`「ネットワーク利用」に同じ内容で開示（LEV-227）。**M9（AI 機能）を main へ入れる時点で、CLI の起動とライセンスの登録・リフレッシュの通信をこの行と README に足す**（`feature/ai` で開発中。§5 M9） | PASS | —（LEV-227 で完了） |
+| 28 | 支払い・アカウント・Vault 外のファイル（Policies） | どれも無い。**M9（有料の AI 機能）を入れる時点でこの行が変わる**（2026-10-01 に保留を解き `feature/ai` で開発する。アカウント・支払い〔Optional payment〕・デバイス ID の送信が加わる。main へのマージは最後〔LEV-272〕で、それまで main の配布物は変わらない） | PASS | — |
 | 29 | LICENSE と同梱物の表示（Policies） | MIT。同梱の `@lezer/markdown`（MIT）を README（英語）と `README.ja.md` の「License／ライセンス」に表示（LEV-227） | PASS | —（LEV-227 で完了） |
 
 ### 1.7 公開の前に済ませたい品質（要件ではない）
