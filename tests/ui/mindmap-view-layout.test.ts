@@ -62,6 +62,7 @@ vi.mock("../../src/ui/node-drag", () => ({ NodeDrag: class {} }));
 vi.mock("../../src/ui/edit-modal", () => ({ EditModal: class {} }));
 vi.mock("../../src/ui/inline-editor", () => ({ InlineEditor: class {} }));
 vi.mock("../../src/ui/link-suggest", () => ({ LinkSuggest: class {} }));
+vi.mock("../../src/ui/link-preview", () => ({ LinkPreview: class {} }));
 
 afterEach(async () => { await closeOpenViews(); });
 

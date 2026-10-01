@@ -27,6 +27,7 @@ import { exportMap, type ExportFormat } from "../obsidian/image-export";
 import type { ViewRouter } from "../obsidian/view-routing";
 import { EditModal } from "./edit-modal";
 import { EdgeLayer } from "./edge-layer";
+import { LinkPreview } from "./link-preview";
 import { NodeRenderer } from "./node-renderer";
 import { MapViewport } from "./map-viewport";
 import { MapEvents, nodeOf } from "./map-events";
@@ -204,6 +205,8 @@ export class MindmapView extends FileView {
   private nodeDrag!: NodeDrag;
   /** The canvas listeners, which also answer the view's scope; set with the DOM in `onOpen`. */
   private events: MapEvents | undefined;
+  /** Page preview for the map's links (LEV-265); set with the DOM in `onOpen`. */
+  private linkPreview: LinkPreview | undefined;
   private modeButtons = new Map<LayoutMode, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
   /**
@@ -691,15 +694,17 @@ export class MindmapView extends FileView {
       fold: id => { this.fold(id); }, edit: () => { this.editTitle(); },
       command: command => { this.run(() => this.execute(command)); },
       history: direction => { this.history(direction); }, attach: file => { this.run(() => this.attachImage(file)); },
-      // A link is resolved from the note it is written in: the called note for a called map's node (§5 M12), this
-      // one for the host's own nodes and for the calling item, whose attachments are its own item's.
+      // A link is resolved from the note it is written in (`linkBase`).
       link: (link, newLeaf, nodeId) => {
-        const source = nodeId === null ? undefined : this.calledSource(nodeId);
-        const base = source && !source.root ? source.path : this.file?.path;
-        if (base !== undefined) this.run(() => this.app.workspace.openLinkText(link, base, newLeaf));
+        const base = this.linkBase(nodeId);
+        if (base !== null) this.run(() => this.app.workspace.openLinkText(link, base, newLeaf));
       },
       addTopic: point => { this.run(() => this.addTopic(point)); },
       open: (id, newLeaf) => this.openCalled(id, newLeaf),
+    }));
+    // Page preview for a hovered link (LEV-265), from the note the link is written in, as a click opens it.
+    this.linkPreview = this.addChild(new LinkPreview(this.app, this.canvas, nodeId => this.linkBase(nodeId), {
+      editing: () => this.inlineEditor !== undefined,
     }));
     this.nodeDrag = this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
@@ -1409,6 +1414,15 @@ export class MindmapView extends FileView {
   /** Where a node drawn from a called map comes from (§5 M12); undefined for the host's own nodes. */
   private calledSource(id: string): CallSource | undefined {
     return this.projection()?.calls.sources.get(id);
+  }
+
+  /**
+   * The note a link in this node is resolved from: the called note for a called map's node (§5 M12), this one for the
+   * host's own nodes and for the calling item, whose attachments are its own item's. Null with no note open.
+   */
+  private linkBase(nodeId: string | null): string | null {
+    const source = nodeId === null ? undefined : this.calledSource(nodeId);
+    return source && !source.root ? source.path : this.file?.path ?? null;
   }
 
   /** True for a node of a called map other than the calling item: read-only on this map. */
@@ -2253,6 +2267,8 @@ export class MindmapView extends FileView {
     // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
     // draft is open appears at once instead of when the draft is confirmed (報告: 2026-09-22).
     this.renderer.editing(node.id, true);
+    // A popover showing over the node would cover the input (F2 is the view scope's, so the canvas never hears it).
+    this.linkPreview?.close();
     let renamedOffset: number | null = null;
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;

@@ -193,6 +193,8 @@ export class HarnessApp {
   readonly workspace = {
     on: (name: string, callback: (...data: unknown[]) => unknown) => this.workspaceEvents.on(name, callback),
     offref: (ref: unknown) => { this.workspaceEvents.offref(ref as never); },
+    /** What a view asks of the workspace, `hover-link` (Page preview) among them; a test listens with `on`. */
+    trigger: (name: string, ...data: unknown[]): void => { this.workspaceEvents.trigger(name, ...data); },
     /** The sidebars, as identities a leaf's `getRoot()` can be compared with; this page has no leaf in either. */
     leftSplit: { side: "left" },
     rightSplit: { side: "right" },
