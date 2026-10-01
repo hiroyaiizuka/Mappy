@@ -142,7 +142,7 @@ describe('link hover preview (LEV-265)', () => {
     expect(parent).toBeDefined();
     const popover = (): { hide: ReturnType<typeof vi.fn> } => ({ hide: vi.fn() });
     for (const end of [
-      () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); },
+      () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); window.dispatchEvent(new PointerEvent('pointerup')); },
       () => { canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 10 })); },
       () => { canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); },
     ]) {
@@ -161,6 +161,31 @@ describe('link hover preview (LEV-265)', () => {
     expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: `Target（${HOST_PATH} から）` });
     await close();
     expect(held.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes at once a popover that shows (after Page preview\'s delay) while a button is held or a node is being written', async () => {
+    const { app, canvas, select, key, editor } = await mount();
+    const seen = listen(app);
+    over(link(canvas, 'Target'), { relatedTarget: canvas });
+    const parent = seen[0]?.hoverParent;
+    expect(parent).toBeDefined();
+    // A drag that began on the link during the delay: the canvas holds the pointer, the link never hears it leave.
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const duringPress = { hide: vi.fn() };
+    if (parent) parent.hoverPopover = duringPress;
+    expect(duringPress.hide).toHaveBeenCalledTimes(1);
+    expect(parent?.hoverPopover).toBeNull();
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    const afterRelease = { hide: vi.fn() };
+    if (parent) parent.hoverPopover = afterRelease;
+    expect(afterRelease.hide).not.toHaveBeenCalled();
+    expect(parent?.hoverPopover).toBe(afterRelease);
+    if (parent) parent.hoverPopover = null;
+    key(select('本文を持つ'), 'F2');
+    expect(editor()).not.toBeNull();
+    const whileWriting = { hide: vi.fn() };
+    if (parent) parent.hoverPopover = whileWriting;
+    expect(whileWriting.hide).toHaveBeenCalledTimes(1);
   });
 
   it('asks from a read-only embed too, from the map\'s note, and the reading view around it does not ask again', async () => {

@@ -22,7 +22,11 @@
  *   7. 寿命: 小窓が出たままタブを閉じると消え、プラグインを無効にすると消えてソースの登録も消える（有効に戻す）。
  *
  * 修正を戻しても通る行: 1 の Markdown の対照、2 の ⌘ なし・外部リンク、6 の出さない行とクリック（出ないことを見る行は
- * 修正前のビルドでも出ない）。出る行（2・3・4・5 の ⌘ あり、7）は修正前のビルドで落ちる。
+ * 修正前のビルドでも出ない。ドラッグ・パンはキャンバスがポインターを捕まえるので、修正の有無にかかわらずリンクの
+ * mouseover が起きない）。出る行（2・3・4・5 の ⌘ あり、7）は修正前のビルドで落ちる。6 のホイールと 7 のタブを閉じる
+ * 行は、修正全体を戻すと「出る」の段で落ちるだけなので、LinkPreview の `wheel` と `onunload` だけを外したビルドでも
+ * 落ちることを確かめる（ホイールは ⌘ 付きの小さな拡大でリンクをポインターの下に残し、その後もポインターがリンクの
+ * 上にあることを見る。Page preview 自身が離れたと判断して閉じたのでないことの確認）。
  *
  * Usage: npm run harness:e2e:link-preview -- [--reload] [--json <out.json>] [--shot <file.png>] [--keep]
  */
@@ -139,11 +143,13 @@ function absent(label, shown) {
  */
 const PREVIEW = `const preview = app.internalPlugins.getPluginById('page-preview');`;
 let original = null;
-const setMod = needed => evaluate(`${PREVIEW}
+/** Whether this run wrote the setting at all: a run stopped before that leaves what the vault had untouched. */
+let touched = false;
+const setMod = needed => { touched = true; return evaluate(`${PREVIEW}
   const options = preview.instance.options;
   if (${needed === undefined ? 'true' : 'false'}) delete options.mappy; else options.mappy = ${Boolean(needed)};
   await preview.saveData?.(options);
-  return { options: { ...options } };`);
+  return { options: { ...options } };`); };
 
 /** The map's leaves this run opened; `window.__mappyE2E` is the tab under test (VIEW). */
 const openMap = (key, direction) => evaluate(`
@@ -165,7 +171,7 @@ const EMBED_VIEW = viewScript(`(() => {
 const HOST_VIEW = viewScript('window.__mappyE2EHost.view.contentEl');
 
 const clean = () => made.size === 0 ? [] : evaluate(`
-  for (const key of ['__mappyE2E', '__mappyE2ESplit', '__mappyE2EHost', '__mappyE2EOpened']) { try { window[key]?.detach(); } catch {} delete window[key]; }
+  for (const key of ['__mappyE2E', '__mappyE2ESplit', '__mappyE2EHost', '__mappyE2EOpened', '__mappyE2EDisabled']) { try { window[key]?.detach(); } catch {} delete window[key]; }
   for (const path of ${JSON.stringify([...NOTES, IMAGE])}) {
     if (!${JSON.stringify([...made])}.includes(path)) continue;
     app.workspace.getLeavesOfType('markdown').concat(app.workspace.getLeavesOfType('mappy-map'))
@@ -178,7 +184,7 @@ const clean = () => made.size === 0 ? [] : evaluate(`
     if (item && item.children?.length === 0) await app.vault.delete(item, true);
   }
   ${PREVIEW} const options = preview?.instance?.options;
-  if (options) { if (${JSON.stringify(original)} === null) delete options.mappy; else options.mappy = ${JSON.stringify(original)}; await preview.saveData?.(options); }
+  if (options && ${touched}) { if (${JSON.stringify(original)} === null) delete options.mappy; else options.mappy = ${JSON.stringify(original)}; await preview.saveData?.(options); }
   return ${JSON.stringify([...made])};`);
 
 try {
@@ -328,11 +334,15 @@ try {
     }
     const source = await evaluate(`${VIEW} return await source();`);
     check(source === SOURCE, 'the drag or pan changed the note (the ⌘Z did not take it back)');
-    // A wheel closes the popover that shows.
+    // A wheel closes the popover that shows. ⌘-wheel, a small zoom around the pointer: the link stays under the pointer,
+    // so Page preview has no leave of its own to close it on (a plain wheel pans the link away and would pass without
+    // LinkPreview's listener). Whether the pointer is still on the link after it is checked.
     const shown = await hover(link, { mod: true, stay: true });
     shows('before the wheel', { ...shown, lingers: [] }, 'E2E-HEADING');
-    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: shown.point.x, y: shown.point.y, deltaX: 0, deltaY: 40 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: shown.point.x, y: shown.point.y, deltaX: 0, deltaY: -4, modifiers: META });
     results.wheel = await until(popovers, now => now.length === 0, 1500);
+    const stillOn = await evaluate(`${VIEW} ${link} const top = document.elementFromPoint(${shown.point.x}, ${shown.point.y}); return !!node && !!top && node.contains(top);`);
+    check(stillOn, 'after the ⌘-wheel the pointer is no longer on the link, so the popover closing proves nothing of the wheel listener');
     check(results.wheel.length === 0, `a wheel left the popover: ${JSON.stringify(results.wheel)}`);
     await leave();
     // A click opens the link in this tab's place? No: Mappy opens it (openLinkText) in the active leaf; ⌘-click in a new tab.
@@ -361,13 +371,15 @@ try {
     await openMap('__mappyE2E');
     const again = await hover(linkTarget('E2E-link-preview-target#見出し'), { mod: true, stay: true });
     check(again.popovers.length === 1, `no popover before the plugin was disabled: ${JSON.stringify(again.popovers)}`);
-    await evaluate(`await app.plugins.disablePlugin('mappy'); await new Promise(r => setTimeout(r, 400)); return true;`);
+    // The leaf is kept (`__mappyE2EDisabled`) to be closed after the plugin is back: a disabled plugin's view loses its file, so `clean` would not find it by path.
+    await evaluate(`window.__mappyE2EDisabled = window.__mappyE2E; await app.plugins.disablePlugin('mappy'); await new Promise(r => setTimeout(r, 400)); return true;`);
     const afterDisable = await until(popovers, now => now.length === 0, 1500);
     const source = await evaluate(`return app.workspace.hoverLinkSources?.mappy ?? null;`);
     check(afterDisable.length === 0, `the popover stays after the plugin was disabled: ${JSON.stringify(afterDisable)}`);
     check(source === null, `the source stays registered after the plugin was disabled: ${JSON.stringify(source)}`);
     await move(2, 2);
-    await evaluate(`await app.plugins.enablePlugin('mappy'); await new Promise(r => setTimeout(r, 800)); delete window.__mappyE2E; return true;`);
+    await evaluate(`await app.plugins.enablePlugin('mappy'); await new Promise(r => setTimeout(r, 800));
+      window.__mappyE2EDisabled?.detach(); delete window.__mappyE2EDisabled; delete window.__mappyE2E; return true;`);
     return { shown: shown.popovers, afterClose, again: again.popovers, afterDisable, source };
   });
 } catch (error) {

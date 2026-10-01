@@ -115,9 +115,9 @@ export class MapEmbed extends MarkdownRenderChild {
     this.renderer = this.addChild(new NodeRenderer(this.app, this.nodes, () => { this.scheduleLayout(); }));
     this.registerDomEvent(this.nodes, "load", () => { this.scheduleLayout(); }, true);
     this.registerDomEvent(this.canvas, "click", event => { this.click(event); });
-    // Page preview for a hovered link (LEV-265), from the map's note as a click opens it.
-    this.addChild(new LinkPreview(this.app, this.canvas, () => this.source.file.path));
     const path = (): string => this.source.file.path;
+    // Page preview for a hovered link (LEV-265), from the map's note as a click opens it.
+    this.addChild(new LinkPreview(this.app, this.canvas, path));
     this.registerEvent(this.app.workspace.on("editor-change", (_editor, info) => {
       if (info.file?.path === path()) this.scheduleRefresh();
     }));
