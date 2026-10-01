@@ -17,7 +17,7 @@ Linear を読み書きするのはエージェントだけである。本人は 
 
 ## チケットの構造
 
-- 親 issue はフェーズ（H0b / M1 / M2 / M3 / M4 / M6 / M7 / M8 / M9 / M5）と「Ideas: 将来候補」。説明に受入条件の所在を書き、子の進捗で追う。親自体は誰にも渡さない。
+- 親 issue はフェーズ（H0b / M1 / M2 / M3 / M4 / M6 / M7 / M8 / M9 / M5）と「Ideas: 将来候補」。M9 の子は 2026-10-01 から LEV-266 の下に切る（LEV-28 は決定の記録）。説明に受入条件の所在を書き、子の進捗で追う。親自体は誰にも渡さない。
 - 子 issue は `product-plan.md` の「残る検証・機能」1項目、または受入条件の未達1件。Orca に渡すのは子だけ。
 - 作業中に見つけた範囲外の不具合は `orca linear create --parent-current` で子として戻す。チャットや PR 本文に埋めない。
 
@@ -38,7 +38,7 @@ Linear を読み書きするのはエージェントだけである。本人は 
 1. Urgent: データ喪失に関わる未検証（M2 の IME・複数ビュー・外部変更・Undo／Redo）
 2. High: 他のチケットの検証を可能にする基盤（H0b）と、本人が日常操作で困っている基本操作の欠け（例: M2 のドラッグ並べ替え。Markdown のリアルタイム反映は本人確認で問題なしとなり Medium に下げた）
 3. Medium: 各 M の残る検証・機能、M7 付箋メモ、M8 イシューツリー
-4. Low: M5 の公開準備、モバイル、M9 AI 機能（着手前の決定事項が先）
+4. Low: M5 の公開準備、モバイル、M9 AI 機能（2026-10-01 に本人が保留を解いた。`feature/ai` で開発し、残る決定は product-plan §5 M9）
 
 ## 区分
 
@@ -110,6 +110,8 @@ orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番�
 8. 途中経過のコメントは書かない。範囲外は `--parent-current` で子 issue にする。
 
 同時に走らせる worktree は層（core / layout / interaction / docs）で分け、`src/main.ts` を複数が触らないようにする。Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする。並走する PR は `docs/`・`README.md`・`src/ui/mindmap-view.ts` で衝突しやすいので、merge は 1 本ずつ行い、次の PR はワーカーが origin/main へ rebase してから merge する（2026-09-19 の wave 1 で 3 本が同時に衝突した）。
+
+**M9（AI 機能）の子チケットは `feature/ai` を base にする**（2026-10-01 の本人決定。product-plan §5 M9）。worktree は上の `orca worktree create`（`--name`・`--linear-issue` などはそのまま）に `--base-branch feature/ai` を足して作り、PR の base は `feature/ai`、レビューは `/code-review high origin/feature/ai...HEAD`、上の「origin/main へ rebase」は「origin/feature/ai へ rebase」に読み替える。`feature/ai` 自体には main を `git merge origin/main` で取り込み、rebase しない。`feature/ai` を main へマージするのは最後で、本人の指示があったときだけ（LEV-272）。M9 の子ブランチを main へ rebase したり、main 宛ての PR にしたりしない。規約と M9 の決定は main の docs が正本で、`feature/ai` の木の docs は main を取り込むまで古い。`feature/ai` への main の取り込みは、main の merge のあとでオーケストレーターが行い、子チケットの PR に混ぜない（混ぜると `origin/feature/ai...HEAD` のレビューに main のコミットが入る）。**docs（product-plan など）の更新先は常に main。** `feature/ai` の子の PR では手順 4 の「product-plan の該当行を更新」をせず、更新すべきことを PR 本文に書く。docs は main 宛ての docs のチケットでまとめて追いつかせる。M9 の子の Done は「PR を `feature/ai` へ merge し、docs の更新事項を PR 本文に書いた」で満たす（上の状態表の「product-plan の該当行を更新した」は、追いつかせる main 宛ての docs チケットが担う）。**M9 の子の worktree は、オーケストレーターが main を `feature/ai` へ取り込んだあとに切る**（取り込む前の木ではこの段落が無く、古い手順が読まれる）。
 
 ## アイデアの置き場
 
