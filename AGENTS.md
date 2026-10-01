@@ -16,7 +16,7 @@
 - 開いた文書の変更は Editor 経由。閉じた文書は Vault.process 内で原文を照合。保存経路を二重に作らない。
 - 内部・相対リンクの基準は元ファイル。MarkdownRenderer の Component は描画対象の寿命に合わせて解放する。
 - 日本語 IME、Undo/Redo、同名見出し、外部変更、複数ビューは双方向編集の必須ケース。
-- runtime はブラウザ互換。Node/Electron や個人パスを持ち込まない。公開 API と scoped CSS を使う。
+- runtime はブラウザ互換。Node/Electron や個人パスを持ち込まない。公開 API と scoped CSS を使う。例外は M9 の AI 機能の `src/ai/host/node-host.ts` だけで、`Platform.isDesktopApp` の内側で実行時に Node のモジュールを取りに行く（静的 import はしない。範囲と lint は `docs/architecture.md` §11.1）。
 - ランタイム依存を追加する前に、必要性・バンドル増分・モバイル互換性を記録する。
 - 他プラグインは仕様の参考。MarkMind の非公開コードを流用しない。
 - 本番 Vault をテスト対象にしない。自動準備はプロジェクト配下の `test-vault/` のみ。
