@@ -141,7 +141,6 @@ describe('link hover preview (LEV-265)', () => {
     const { app, canvas, close } = await mount();
     const seen = listen(app);
     const anchor = link(canvas, 'Target');
-    const popover = (): { hide: ReturnType<typeof vi.fn> } => ({ hide: vi.fn() });
     for (const end of [
       () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); },
       () => { canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 10 })); },
@@ -210,6 +209,40 @@ describe('link hover preview (LEV-265)', () => {
     if (parent) parent.hoverPopover = whileWriting;
     await Promise.resolve();
     expect(whileWriting.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the popover when the inline editor opens without the canvas hearing the key (F2 is the view scope\'s)', async () => {
+    const { app, canvas, view, select, editor } = await mount();
+    const seen = listen(app);
+    select('本文を持つ');
+    over(link(canvas, 'Target'), { relatedTarget: canvas });
+    const parent = seen.at(-1)?.hoverParent;
+    const shown = popover();
+    if (parent) parent.hoverPopover = shown;
+    await Promise.resolve();
+    expect(shown.hide).not.toHaveBeenCalled();
+    // What Obsidian's keymap does with F2: the view's scope runs the edit, and the key never reaches the canvas.
+    (view as unknown as { editTitle(): void }).editTitle();
+    expect(editor()).not.toBeNull();
+    expect(shown.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the popover asked for with ⌘ pressed over a link after a key closed the last one', async () => {
+    const { app, canvas } = await mount();
+    const seen = listen(app);
+    over(link(canvas, 'Target'), { relatedTarget: canvas });
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    // The pointer stays on the link; ⌘ is pressed, and Page preview makes its popover now.
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', metaKey: true, bubbles: true }));
+    const parent = seen.at(-1)?.hoverParent;
+    const wanted = popover();
+    if (parent) parent.hoverPopover = wanted;
+    await Promise.resolve();
+    expect(wanted.hide).not.toHaveBeenCalled();
+    // A modifier other than ⌘／Ctrl neither closes one nor asks for one.
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'CapsLock', bubbles: true }));
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'AltGraph', bubbles: true }));
+    expect(wanted.hide).not.toHaveBeenCalled();
   });
 
   it('keeps a link\'s mouseover going on in a map tab, for whoever else listens around the map', async () => {

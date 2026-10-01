@@ -18,7 +18,15 @@ export interface LinkPreviewOptions {
    * in a map tab nothing around the canvas previews links, and other listeners may want to hear them.
    */
   isolate?: boolean;
+  /** Whether a node's text is being written (the view's inline editor); an embed never writes. */
+  editing?: () => boolean;
 }
+
+/**
+ * Keys that only modify another: ⌘／Ctrl among them asks Page preview to show the link already hovered, so none of
+ * them closes a popover (`KeyboardEvent.key` values of the UI Events spec).
+ */
+const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt", "AltGraph", "CapsLock", "Fn", "FnLock", "Hyper", "Super", "Symbol", "SymbolLock", "OS", "NumLock", "ScrollLock"]);
 
 /**
  * Asks Obsidian's Page preview for the internal link under the pointer (`hover-link`), as a note's reading view
@@ -63,19 +71,27 @@ export class LinkPreview extends Component implements HoverParent {
     this.registerDomEvent(this.canvas, "pointerdown", () => { this.cancel(); }, true);
     this.registerDomEvent(this.canvas, "wheel", () => { this.cancel(); }, { capture: true, passive: true });
     this.registerDomEvent(this.canvas, "keydown", event => {
-      // ⌘／Ctrl alone is what asks Page preview to show the link already hovered; it must not close it.
-      if (!["Meta", "Control", "Shift", "Alt"].includes(event.key)) this.cancel();
+      if (!MODIFIER_KEYS.has(event.key)) { this.cancel(); return; }
+      // ⌘／Ctrl pressed over a link hovered without it: Page preview makes the popover now, and it is wanted, even
+      // after a key or a wheel since the hover (the pointer did not move, so no new `hover-link` came).
+      if (event.key === "Meta" || event.key === "Control") this.live = true;
     }, true);
   }
 
   onunload(): void { this.cancel(); }
 
+  /**
+   * Closes the popover showing and the one waiting. For what the canvas never hears: a key Obsidian's keymap consumes
+   * before it (the view's scope takes F2, which opens the inline editor), so the view calls this as the editor opens.
+   */
+  close(): void { this.cancel(); }
+
   private editing(): boolean {
-    return this.canvas.querySelector(".mappy-node.is-editing") !== null;
+    return this.options.editing?.() ?? false;
   }
 
   private over(event: MouseEvent): void {
-    const found = linkAt(event.targetNode, this.canvas);
+    const found = linkAt(this.canvas, event.targetNode);
     if (!found) return;
     // Whatever happens below, the reading view around an embed does not preview this link a second time.
     if (this.options.isolate) event.stopPropagation();

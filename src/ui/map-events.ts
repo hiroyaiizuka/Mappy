@@ -38,7 +38,7 @@ export function nodeOf(canvas: Element, target: Node | null): HTMLElement | null
  * The internal link of this canvas that holds `target`, its link text, and the node it sits in: what a click opens
  * (`mapClick`) and a hover previews (`LinkPreview`), so the two never name different targets.
  */
-export function linkAt(target: Node | null, canvas: Element): { anchor: HTMLAnchorElement; link: string; nodeId: string | null } | null {
+export function linkAt(canvas: Element, target: Node | null): { anchor: HTMLAnchorElement; link: string; nodeId: string | null } | null {
   if (!target?.instanceOf(Element)) return null;
   const anchor = target.closest<HTMLAnchorElement>("a.internal-link");
   if (!anchor || !canvas.contains(anchor)) return null;
@@ -49,7 +49,7 @@ export function linkAt(target: Node | null, canvas: Element): { anchor: HTMLAnch
 export function mapClick(event: MouseEvent, canvas: Element): MapClick | null {
   const target = event.targetNode;
   if (!target?.instanceOf(Element)) return null;
-  const found = linkAt(target, canvas);
+  const found = linkAt(canvas, target);
   if (found) return { link: found.link, newLeaf: event.metaKey || event.ctrlKey, nodeId: found.nodeId };
   if (target.closest("a")) return null;
   const node = nodeOf(canvas, target);

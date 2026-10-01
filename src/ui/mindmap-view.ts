@@ -205,6 +205,8 @@ export class MindmapView extends FileView {
   private nodeDrag!: NodeDrag;
   /** The canvas listeners, which also answer the view's scope; set with the DOM in `onOpen`. */
   private events: MapEvents | undefined;
+  /** Page preview for the map's links (LEV-265); set with the DOM in `onOpen`. */
+  private linkPreview: LinkPreview | undefined;
   private modeButtons = new Map<LayoutMode, HTMLButtonElement>();
   private layout: LayoutResult | undefined;
   /**
@@ -701,7 +703,9 @@ export class MindmapView extends FileView {
       open: (id, newLeaf) => this.openCalled(id, newLeaf),
     }));
     // Page preview for a hovered link (LEV-265), from the note the link is written in, as a click opens it.
-    this.addChild(new LinkPreview(this.app, this.canvas, nodeId => this.linkBase(nodeId)));
+    this.linkPreview = this.addChild(new LinkPreview(this.app, this.canvas, nodeId => this.linkBase(nodeId), {
+      editing: () => this.inlineEditor !== undefined,
+    }));
     this.nodeDrag = this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
       readOnly: id => this.isCalled(id),
@@ -2263,6 +2267,8 @@ export class MindmapView extends FileView {
     // The editor stands in for the node's text; the node keeps showing its images, so one pasted while the
     // draft is open appears at once instead of when the draft is confirmed (報告: 2026-09-22).
     this.renderer.editing(node.id, true);
+    // A popover showing over the node would cover the input (F2 is the view scope's, so the canvas never hears it).
+    this.linkPreview?.close();
     let renamedOffset: number | null = null;
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
