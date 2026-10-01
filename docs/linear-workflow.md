@@ -38,7 +38,7 @@ Linear を読み書きするのはエージェントだけである。本人は 
 1. Urgent: データ喪失に関わる未検証（M2 の IME・複数ビュー・外部変更・Undo／Redo）
 2. High: 他のチケットの検証を可能にする基盤（H0b）と、本人が日常操作で困っている基本操作の欠け（例: M2 のドラッグ並べ替え。Markdown のリアルタイム反映は本人確認で問題なしとなり Medium に下げた）
 3. Medium: 各 M の残る検証・機能、M7 付箋メモ、M8 イシューツリー
-4. Low: M5 の公開準備、モバイル、M9 AI 機能（着手前の決定事項が先）
+4. Low: M5 の公開準備、モバイル、M9 AI 機能（2026-10-01 に本人が保留を解いた。`feature/ai` で開発し、残る決定は product-plan §5 M9）
 
 ## 区分
 
@@ -110,6 +110,8 @@ orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番�
 8. 途中経過のコメントは書かない。範囲外は `--parent-current` で子 issue にする。
 
 同時に走らせる worktree は層（core / layout / interaction / docs）で分け、`src/main.ts` を複数が触らないようにする。Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする。並走する PR は `docs/`・`README.md`・`src/ui/mindmap-view.ts` で衝突しやすいので、merge は 1 本ずつ行い、次の PR はワーカーが origin/main へ rebase してから merge する（2026-09-19 の wave 1 で 3 本が同時に衝突した）。
+
+**M9（AI 機能）の子チケットは `feature/ai` を base にする**（2026-10-01 の本人決定。product-plan §5 M9）。worktree は `orca worktree create --base-branch feature/ai`、PR の base は `feature/ai`、レビューは `/code-review high origin/feature/ai...HEAD`、上の「origin/main へ rebase」は「origin/feature/ai へ rebase」に読み替える。`feature/ai` 自体には main を `git merge origin/main` で取り込み、rebase しない。`feature/ai` を main へマージするのは最後で、本人の指示があったときだけ（LEV-272）。M9 の子ブランチを main へ rebase したり、main 宛ての PR にしたりしない。
 
 ## アイデアの置き場
 
