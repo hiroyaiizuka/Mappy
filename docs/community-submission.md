@@ -239,3 +239,27 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 
 - Build verification の Pass は、スキャナーのビルドが tag の木と一致したことしか言えない（HEAD も同じ木だった。§4.6 の 2）
 - 直した結果は、版を上げた Release を出して Request review で再走査するまで一覧の結果に出ない（§4.6 の 5）。LEV-253 は版を切らない。対応は 0.4.2 に入った（LEV-254 の merge のあとに tag を打ち、2026-09-28T14:27:09Z に公開。再走査の結果はこの節に版の小見出しを足して書き、0.4.1 の表は書き換えない。LEV-264 の時点で 0.4.2〜0.4.4 とも記録は無い）。merge すると `main` の HEAD が 0.4.1 の tag から離れるので、スキャナーが HEAD をビルドする場合は次の Release まで Build verification が合わなくなりうる（§4.6 の 2 の論点がそのまま効く）。
+
+## 5. M9（AI 機能）を入れる版の開示（LEV-267、2026-10-01）
+
+M9（`product-plan.md` §5 M9）を main へ入れて出す版で、README（英語）と `README.ja.md` に書く項目。規約の結論（白・グレー・黒）は `product-plan.md` §5 M9「規約の確認の結論」が正本で、本節は実装のときに使う一覧を持つ。M9 が main へ入るまで、§1.6 の #27・#28 と §1.8 の #36 は変えない。
+
+- 参照した一次資料（2026-10-01 に取得）: `obsidianmd/obsidian-developer-docs` の commit `c56c7e77`（2026-08-10）の `en/Community directory/` 配下の Developer policies・Submission requirements for plugins・Frequently asked questions（公開ページは [Developer policies](https://docs.obsidian.md/community-directory/developer-policies) など。2026-09-27 の §1 と同じ文書で、置き場所が `en/Community directory/` に移っている）、`obsidianmd/eslint-plugin` の commit `d7e22396` と手元の `eslint-plugin-obsidianmd` 0.4.2（`node_modules`）。
+- Developer policies の README 開示（原文 "The following are only allowed if clearly indicated in your README"）のうち M9 で該当するのは、Payment is required for full access・An account is required for full access・Network use（"Clearly explain which remote services are used and why they're needed"）・Accessing files outside of Obsidian vaults（"Clearly explain why this is needed"）の 4 つ。Server-side telemetry（"Link to a privacy policy..."）は、デバイス ID をサーバーに残す点が近いので、該当しない前提でもプライバシーポリシーを置く（下の 5）。
+
+| # | 項目（根拠） | 書くこと | 実装で守ること |
+| --- | --- | --- | --- |
+| 41 | 支払い（Payment is required for full access。一覧の区分は FAQ の "Optional payment: ... if you lock certain features behind payment"） | 有料なのは AI 機能だけで、マップの表示・編集・書き出しなど他の機能は無料のまま使えること。購入先（UTAGE のページ）と価格の案内先。返金の扱い（決めたら） | 一覧の支払いの区分を Optional payment に変える（#36）。購入先は `fundingUrl` に入れない（Submission requirements "Only use `fundingUrl` to link to services for financial support"） |
+| 42 | アカウント（An account is required for full access） | AI 機能は、本人が自分で入れてログインした Claude Code CLI または Codex CLI を使い、その利用は本人の Anthropic・OpenAI のアカウントと規約・プランの上限に従うこと。Mappy はログインも API キーも扱わないこと。ライセンスの購入に UTAGE での登録（メールアドレス）が要ること | Mappy は CLI の認証情報（`~/.claude`・キーチェーン・`~/.codex/auth.json`）を読まない |
+| 43 | ネットワーク（Network use） | Mappy 自身の通信先はライセンスサーバー（Cloudflare Workers のドメインを書く）だけで、通信するのはライセンスコードの登録とトークンのリフレッシュのときだけ。送るのはライセンスコード・デバイス ID（ランダムな ID）・リフレッシュシークレット、受け取るのは署名付きのトークン。無料状態ではどこにも通信しないこと。AI 機能の実行中は、起動した CLI がプロンプトとノートの内容を Anthropic・OpenAI へ送ること（Mappy 自身は送らない）。既存の「Network use」（#27）に足す | 通信は `requestUrl` で行う（公式 lint の `no-restricted-globals` が `fetch` を warn にする）。利用状況・起動回数・バージョンなどを送らない（client-side telemetry の禁止） |
+| 44 | Vault の外のファイル（Accessing files outside of Obsidian vaults） | Mappy が外部プログラム（CLI）を子プロセスで起動すること、CLI の場所を探すこと、起動した CLI は端末で使うときと同じ権限で動き Vault の外のファイルを読みうること。Mappy が渡す作業ディレクトリと、CLI に与える権限（読み取り専用にするなら、その方法）。設計 LEV-269 で決めた内容を書く | CLI を自動でインストール・更新しない（Developer policies "Install or update themselves or their dependencies" の禁止。Copilot は Codex のアダプタを本人の操作で入れる形を取っているが、Mappy は入れない） |
+| 45 | デバイス ID とプライバシーポリシー（client-side telemetry の禁止と Server-side telemetry の開示。telemetry の定義は公式文書に無い） | デバイス ID はランダムに作った ID で、ライセンスの台数管理と不正利用の防止だけに使い、追跡・分析に使わないこと。サーバーに残るもの（ライセンスコード・デバイス ID・トークン）と保持期間。プライバシーポリシーへのリンク | デバイス ID はハードウェア由来の値にしない。前例: Copilot の README "Hosted feature requests include a randomly generated UUID for service delivery, license abuse prevention, and rate limiting. It is not used for tracking, profiling, or analytics." |
+| 46 | デスクトップ専用 | AI 機能は Node の `child_process` で CLI を起動するので、デスクトップでしか動かないこと（manifest は既に `isDesktopOnly: true`。#9・§4.4） | Submission requirements "If your plugin uses any of these APIs, you **must** set `isDesktopOnly` to `true`"。`isDesktopOnly` を外す判断をするときは AI 機能をモバイルで無効にする |
+| 47 | ソースの公開と鍵の確認 | プラグインのコードは鍵の確認を含めてすべて公開（MIT）で、ライセンスサーバーのコードは非公開であること（Close sourced code の開示は "case by case"。前例: Copilot の README "The Copilot plugin frontend is fully open source. The backend services that support hosted features are closed source and proprietary."） | 鍵の確認を難読化しない（Developer policies "Obfuscate code to hide its purpose" の禁止） |
+| 48 | 名称（Anthropic の Claude Code 法務文書） | "runs Claude Code" のように平文で説明するのはよいが、機能名・ロゴに「Claude Code」を使わず、Anthropic・OpenAI の提携や推奨を示唆しない | 機能名は Mappy 側の名前にする |
+
+審査 bot（公式 lint の `recommended`）で M9 に関係するもの（`eslint-plugin-obsidianmd` 0.4.2 の `dist/lib/index.js` と、上流 `d7e22396` の `lib/index.ts` で確かめた）:
+
+- `obsidianmd/no-nodejs-modules` は `manifest && manifest.isDesktopOnly ? "off" : "warn"` で、Mappy（`isDesktopOnly: true`）では無効。`child_process` を名指しする規則は無い。ただし Mappy 自身の規約（AGENTS.md「runtime はブラウザ互換」）と `eslint.config.mjs` の扱いは設計 LEV-269 で決める。
+- `no-restricted-globals` は `fetch`（`requestUrl` を使え）と `localStorage`（"Prefer `App#saveLocalStorage` / `App#loadLocalStorage`"）を warn にし、`eslint-comments/no-restricted-disable` がこれらの規則のコメントでの無効化を error にする。トークンの保存先を `window.localStorage` にすると Warning が残るので、`app.saveLocalStorage`（Vault ごと）か `app.secretStorage`（公式 API 文書の `SecretStorage` は 1.11.4 から。Mappy の `minAppVersion` は 1.8.7 で、手元の型定義 `obsidian` 1.8.7 には無い）を設計 LEV-269 で選ぶ。
+- 規則で検出されないもの（ネットワークの先・テレメトリ・外部プログラムの実行）は README の開示と人のレビューで見られる。
