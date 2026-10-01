@@ -262,9 +262,9 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 - 構成: **マップから手元の CLI（Claude Code / Codex）を起動する**。Claude Code / Codex は本人のサブスクの範囲で使い、Mappy はログインや API キーを持たない。
 - UI: **案 A「ノードで頼む」**。ノードを選ぶと出る AI ボタン → その場の入力欄（質問・URL・Vault のファイル）→ 結果を点線の下書きで子ノードに並べる → 残す／やり直す／捨てる → ⌘Z 1 回で戻る。
 - 課金: **アクティベーションコード**で AI 機能を解放する。**コードは公開のままでよく、アクティベーションコードで守る**（有料部分を別リポジトリ・別プラグインに分けない）。
-- 鍵の仕組み: **TaskChute for Obsidian と同じ方式を、エンジニアが Mappy 用にもう 1 つ作る**（まだ無い）。Mappy 側は受け口だけを作る。方式の要点: UTAGE で決済 → Cloudflare Workers → D1 にライセンスコードを登録し、メールでコードを送る。設定でライセンスコードを入れるとコードとデバイス ID を Workers へ送り、Workers の秘密鍵で署名したアクセストークンとリフレッシュシークレットを受け取る。プラグイン同梱の公開鍵で署名元と期限を検証する。リフレッシュのたびにトークンを入れ替えて古いものを無効にする。
+- 鍵の仕組み: **TaskChute for Obsidian と同じ方式を、エンジニアが Mappy 用にもう 1 つ作る**（まだ無い）。Mappy 側は受け口だけを作る。方式の要点: UTAGE で決済 → Cloudflare Workers → D1 にライセンスコードを登録し、メールでコードを送る。設定でライセンスコードを入れるとコードとデバイス ID を Workers へ送り、Workers の秘密鍵で署名したアクセストークンとリフレッシュシークレットを受け取り、Obsidian の Local Storage に保存する。プラグイン同梱の公開鍵で署名元と期限を検証する（オフラインで検証できる）。リフレッシュのたびにトークンを入れ替えて古いものを無効にする。1 つのライセンスに複数のデバイスを紐づける。Mappy 側は API の契約（エンドポイント・トークンの形式・公開鍵）を受け取って実装する（mappy-memory `designs/ai-license-activation`）。
 - 優先順: 入口（URL・PDF の要約、質問からマップ）→ 広げる・組み替える（ブレスト・イシューツリー・リサーチのまとめ。案 B のパネルはここで検討）→ 画像生成。
-- 開発: `feature/ai` ブランチで開発し、**main へのマージは最後**（鍵の仕組みとそろってから、本人の指示で。LEV-272）。本人が `feature/ai` のビルドを実機で確認する。子チケットの worktree は `orca worktree create` に `--base-branch feature/ai` を足して切り（docs/linear-workflow.md）、PR の base とレビューの範囲（`/code-review high origin/feature/ai...HEAD`）を `feature/ai` に読み替える。`feature/ai` には main を `git merge origin/main` で取り込む（rebase しない）。リポジトリは公開なので、`feature/ai` に push したコードは公開される（上の本人決定のとおり、それでよい）。
+- 開発: `feature/ai` ブランチで開発し、**main へのマージは最後**（鍵の仕組みとそろってから、本人の指示で。LEV-272）。本人が `feature/ai` のビルドを実機で確認する。子チケットの worktree は `orca worktree create` に `--base-branch feature/ai` を足して切り（docs/linear-workflow.md）、PR の base とレビューの範囲（`/code-review high origin/feature/ai...HEAD`）を `feature/ai` に読み替える。`feature/ai` には main を `git merge origin/main` で取り込む（rebase しない。取り込むのは main の merge のあとでオーケストレーター）。**product-plan など docs の更新先は常に main**（docs のチケットとして main 宛てに出す）。`feature/ai` の子の PR では product-plan を直さず、更新すべきことを PR 本文に書き、docs は main 側でまとめて追いつかせる。リポジトリは公開なので、`feature/ai` に push したコードは公開される（上の本人決定のとおり、それでよい）。
 
 **3 案共通の決まりごと（案。設計 LEV-269 で確定する）:** 3 案は UI 試作の案 A「ノードで頼む」・案 B「AI パネル」・案 C「AI ノード」。
 
@@ -277,7 +277,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 **着手前に決めることのうち、決まったものと残るもの:**
 
 - 決まった: 課金・ライセンスの方式（アクティベーションコード。コードは公開のまま）、鍵の確認方式（TaskChute for Obsidian と同じ方式。上記）、最初に取り組む領域（入口）、AI のログインと API キー（Mappy は持たない。CLI のログインは本人の手元にある）。
-- 設計 LEV-269 で詰める（方向は本人が示した）: AI の入口は検証の通ったトークンがあるときだけ有効にする。無料状態では Workers にも CLI にも触れない（例外は、本人がライセンスコードを入れて登録する操作の 1 回の通信だけ）。Mappy 自身のネットワーク利用は登録とリフレッシュのときだけ。README で開示する（アカウント・支払い・ネットワーク・デバイス ID の送信目的、Optional payment）。起動した CLI がノートの内容を Anthropic・OpenAI へ送ることと、Vault の外のファイルを読みうることも開示の対象になる。トークン等の保存先もここで決める。
+- 設計 LEV-269 で詰める（方向は本人が示した）: AI の入口は検証の通ったトークンがあるときだけ有効にする。無料状態では Workers にも CLI にも触れない（例外は、本人がライセンスコードを入れて登録する操作の 1 回の通信だけ）。Mappy 自身のネットワーク利用は登録とリフレッシュのときだけ。README で開示する（アカウント・支払い・ネットワーク・デバイス ID の送信目的〔テレメトリではなくライセンス管理のため〕、Optional payment）。起動した CLI がノートの内容を Anthropic・OpenAI へ送ることと、Vault の外のファイルを読みうることも開示の対象になる。
 - 残る: 外部へ送るデータの範囲とオプトイン（上の「渡す文脈」は案）、ライセンスとの両立（MIT の公開コードは誰でも鍵の確認を外せるので、鍵は抑止にとどまる。§7「公開用ライセンス」の再検討条件「ライセンスと両立しない場合」に当たるかは本人の判断が要る）、最初の用途の絞り方（旧記述は「最初の用途を 1 つに絞る」だったが、入口は URL の要約・PDF の要約・質問からマップの 3 つを含む。どれから作るかは未決定）、無料状態で AI 関連のコードが外部（CLI の起動・ネットワーク）に触れないことを示すテスト。
 - **Node/Electron の扱いは未決定。** CLI の起動には Node の API が要るが、AGENTS.md の「runtime はブラウザ互換。Node/Electron を持ち込まない」の例外（AI モジュールに限って解禁する範囲）は設計 LEV-269 で決める。決まるまで AGENTS.md は変えない。CLI の起動に Node が要る以上、AI 機能はデスクトップでしか動かない（manifest は現在 `isDesktopOnly: true`。これを外す判断をするときは AI 機能をモバイルで無効にする必要がある）。
 
