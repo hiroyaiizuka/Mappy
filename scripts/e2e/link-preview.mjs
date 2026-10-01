@@ -24,10 +24,13 @@
  *
  * 修正を戻しても通る行: 1 の Markdown の対照、2 の ⌘ なし・外部リンク、6 の出さない行とクリック（出ないことを見る行は
  * 修正前のビルドでも出ない。ドラッグ・パンはキャンバスがポインターを捕まえるので、修正の有無にかかわらずリンクの
- * mouseover が起きない）。出る行（2・3・4・5 の ⌘ あり、7）は修正前のビルドで落ちる。6 のホイールと 7 のタブを閉じる
- * 行は、修正全体を戻すと「出る」の段で落ちるだけなので、LinkPreview の `wheel` と `onunload` だけを外したビルドでも
- * 落ちることを確かめる（ホイールは ⌘ 付きの小さな拡大でリンクをポインターの下に残し、その後もポインターがリンクの
- * 上にあることを見る。Page preview 自身が離れたと判断して閉じたのでないことの確認）。
+ * mouseover が起きない）。4 の埋め込みの ⌘ ありは、修正前のビルドでも周りの閲覧モードが自分のソース（`preview`）で
+ * 出すので通る（修正前は ⌘ なしでも出ていて、そちらが落ちる）。出る行（2・3・5・並べた表示の ⌘ あり、7 の前提）は
+ * 修正前のビルドで落ちる。6 のホイールは LinkPreview の `wheel` だけを外したビルドでも落ちる（⌘ 付きの小さな拡大で
+ * リンクをポインターの下に残し、その後もポインターがリンクの上にあることを見る。Page preview 自身が閉じたのでない
+ * ことの確認）。7 のタブを閉じる・無効化で消える行は、`onunload` を外したビルドでも通る（リンクの要素が消えると
+ * Obsidian 自身が小窓を閉じる。1.14.2 で確認）ので、LinkPreview の `onunload` は固定していない。jsdom の
+ * `tests/ui/link-preview.test.ts` が固定する。
  *
  * Usage: npm run harness:e2e:link-preview -- [--reload] [--json <out.json>] [--shot <file.png>] [--keep]
  */
@@ -167,7 +170,8 @@ const openMap = (key, direction) => evaluate(`
 
 const SPLIT_VIEW = viewScript('window.__mappyE2ESplit.view.contentEl');
 const EMBED_VIEW = viewScript(`(() => {
-  const frame = window.__mappyE2EHost?.view.contentEl.querySelector('.mappy-embed');
+  // The one on screen: a Markdown tab keeps its reading view's DOM (hidden) when it switches to Live Preview.
+  const frame = Array.from(window.__mappyE2EHost?.view.contentEl.querySelectorAll('.mappy-embed') ?? []).find(item => item.offsetParent !== null);
   if (!frame) throw new Error('no embedded map');
   return frame;
 })()`);
@@ -218,7 +222,8 @@ try {
     // The control: a link in a Markdown note's reading view, hovered with ⌘, shows Obsidian's popover in this window.
     await evaluate(`const leaf = app.workspace.getLeaf('tab');
       await leaf.setViewState({ type: 'markdown', state: { file: ${JSON.stringify(READING)}, mode: 'preview' }, active: true });
-      window.__mappyE2EHost = leaf;
+      // viewScript reads \`window.__mappyE2E\` first; the Markdown tab stands in for it until the map opens (\`open\`).
+      window.__mappyE2EHost = leaf; window.__mappyE2E = leaf;
       for (let i = 0; i < 40 && !leaf.view.contentEl.querySelector('.mappy-embed a.internal-link'); i += 1) await new Promise(r => setTimeout(r, 150));
       await new Promise(r => setTimeout(r, 600)); return true;`);
     const control = await hover(`const node = Array.from(el.querySelectorAll('a.internal-link')).find(a => !a.closest('.mappy-embed'));`, { view: HOST_VIEW, mod: true });
@@ -247,7 +252,7 @@ try {
     shows('embed live ⌘', withMod, 'E2E-TOP');
     const without = await hover(linkTarget('E2E-link-preview-target'), { view: EMBED_VIEW, expect: false });
     absent('embed live no ⌘', without);
-    await evaluate(`window.__mappyE2EHost?.detach(); delete window.__mappyE2EHost; return true;`);
+    await evaluate(`window.__mappyE2EHost?.detach(); delete window.__mappyE2EHost; delete window.__mappyE2E; return true;`);
     return { withMod: withMod.popovers, without: without.popovers };
   });
 
