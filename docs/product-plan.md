@@ -329,7 +329,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 - 素材を用意して標準入力で渡す: YouTube の字幕（yt-dlp を `--ignore-config --no-playlist` で起動し、手動字幕・元の言語を優先して機械翻訳の自動字幕を選ばない。`[mm:ss]` の 30 秒段落。architecture.md §11.2）、Vault の PDF（`loadPdfJs()`）、添付したノート。合計 200,000 文字を超えたら切り詰めずに止める。
 - 途中経過を `AiProgress` で、結果を `AiResult` で返す（`src/ai/contract.ts`、§11.4）。出力は §11.4 の寛容な受け取りで読み、段階 0 の生の出力（`artifacts/lev-268/runs/`）から作った fixture で単体テストする。
 - 取り消すとプロセスグループごと止まり（SIGTERM、3 秒で SIGKILL）、取り消しは自分のフラグで判定する。無出力 90 秒・全体 5 分（素材の大きさで最大 15 分まで延ばす）・出力 5 MB で打ち切り、失敗は `AiFailure` の種類で返す（§11.4）。view を閉じる・ノートを切り替える・プラグインの unload・`pagehide` でも止まる。単体テスト（プロセスはモック）。
-- Node に触れるのは `src/ai/host/node-host.ts` の `loadNode()` だけで、`src/ai/host/` の他のファイルは `NodeHost` を引数で受け取る。`loadNode()` を呼ぶのは `runnerFactory` だけ。lint は §11.1 のとおり（`no-restricted-syntax`。`no-restricted-globals` は使わない）で、`tests/tooling/mobile-lint.test.mjs` が他のファイルの `window.require`・`window.process`（型変換・`['require']`・`globalThis`・`activeWindow` を挟んだ形と、文字列 `'child_process'` を含む）を落とし、`node-host.ts` でも `fetch` の禁止が残ることを確かめる。設定のエンジン・パス・「探す」の行は `active` のときだけ描く。
+- Node に触れるのは `src/ai/host/node-host.ts` の `loadNode()` だけで、`src/ai/host/` の他のファイルは `NodeHost` を引数で受け取る。`loadNode()` を呼ぶのは `runnerFactory` だけ。lint は §11.1 のとおり（`no-restricted-syntax`。`no-restricted-globals` は使わない）で、`tests/tooling/mobile-lint.test.mjs` が他のファイルの `window.require`・`window.process`（型変換・`['require']`・テンプレート・`globalThis`・`activeWindow` を挟んだ形と、文字列 `'child_process'` を含む）を落とし、既存の `vault.process(…)`・`createSvg("path")` は通し、`node-host.ts` でも `fetch` の禁止が残ることを確かめる。設定のエンジン・パス・「探す」の行は `active` のときだけ描く。
 - ライセンスの判定が偽なら `runnerFactory.create()` は `null` を返し、`loadNode()` を呼ばない（テスト。判定を外すと落ちることを記録する）。
 - Windows では AI の入口を出さず「未対応」と表示する（対象は macOS）。
 - test-vault の実機（macOS、開発用の解放のビルド）で、Obsidian から claude・codex・yt-dlp を起動できること、pdf.js でテキストが取れること、取り消したあと子プロセスが残らないこと（`ps`）、同じ素材で 5 回ずつ回したときの形の崩れの回数を記録する（§11.9 の未確認を埋める）。CLI のログインが要るので `needs-human` の手順を含む。
@@ -340,7 +340,7 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 - URL・YouTube・PDF のノードでは「要約」が既定で、頼みごとが入っている。
 - 実行中は進み具合（`AiProgress` の段階）と「取り消す」を表示する。同時に走るのは 1 本。
 - 結果は点線の下書きの子ノードで並び（ノートにも `localStorage` にも書かない）、残す／やり直す／捨てる。`refused`・`failed` は理由と、生の出力を見る手段を出す。
-- 残すと `add-children` が view の `execute`（`writeOwn` を通る。同名・空の題名のノードの id も引き継がれる）から 1 回の書き込み（`DocumentStore.applyOver`）で書かれ、⌘Z 1 回で全部戻り、Redo で全部戻る。リスト形式・見出し形式（H6 を超える段は本文の箇条書き）・フリートピックの子で、書いた範囲の外の原文がバイト単位で変わらないことを単体テストで示す。保存中の「残す」は `savingWait` で拒んで下書きを残し、下書きを捨てるのは書き込みが終わったと分かった後だけ。モデルが返した項目の文がリストの印・区切り線・末尾の `#` などブロックの記法に読まれる場合は無効化して書き、再解析で同じ題名・同じノード数になることを単体テストで示す（それでも拒まれたら下書きを残し、結果の Markdown を写せる。architecture.md §11.4・§11.5）。
+- 残すと `add-children` が view の `execute`（`writeOwn` を通る。同名・空の題名のノードの id も引き継がれる）から 1 回の書き込み（`DocumentStore.applyOver`）で書かれ、⌘Z 1 回で全部戻り、Redo で全部戻る。リスト形式・見出し形式（H6 を超える段は書かない。深さを H6 までに絞り、H6 のノードには AI ボタンを出さない）・フリートピックの子で、書いた範囲の外の原文がバイト単位で変わらないことを単体テストで示す。`execute` は書いたかどうかを返す形にし、「残す」は書いたと返ってきたときだけ下書きを捨てる（保存中・入力欄の確定の拒否・ファイルの切り替えなど、書かなかった道では下書きと理由を残す）。モデルが返した項目の文がリストの印・区切り線・フェンス・リンク参照の定義・末尾の `#`・`%%`・`<!--` などの記法に読まれる場合は無効化して書き、再解析で同じ題名・同じノード数になることを単体テストで示す（それでも拒まれたら下書きを残し、結果の Markdown を写せる。architecture.md §11.4・§11.5）。
 - 下書き中の外部変更（選んだノードが残る・消える〔消えたら結果を写せる Notice〕）、ノードの移動、別の view、インライン入力中の「残す」、「残す」の衝突（`ConflictError` で下書きを残す）、view を閉じる（実行の取り消しと下書きの破棄）を扱い、日本語 IME・Undo/Redo・外部変更・複数ビューの必須ケースを壊さない。
 - `FakeRunner` で vitest とブラウザ検証ページを回す。開発用の解放のビルドでだけ選べる偽のエンジンを用意し、CLI なしで実機の E2E を回せるようにする。
 - 文言は i18n の表（ja / en）に入れ、英語は sentence case の lint を通す。機能名に「Claude Code」を使わない（community-submission #48）。
@@ -349,11 +349,11 @@ API、更新処理、責務の分割は [architecture.md](./architecture.md) で
 **LEV-273（ライセンスの受け口）の受入条件:**
 
 - 設定タブに「AI」節を作り、ライセンスコードの入力欄・登録ボタン・状態（未登録・有効〔期限〕・期限切れ・接続できない〔理由〕・無効〔理由〕）を出す。登録でコード＋デバイス ID（`crypto.randomUUID()`）を `requestUrl` で送り、アクセストークン＋リフレッシュシークレットを `window.localStorage` の `mappy-ai-license` に保存する（`LicenseStore` の後ろ。architecture.md §11.6）。
-- 同梱の公開鍵でアクセストークンの署名元と期限を検証し（WebCrypto は非同期なので `load()` で検証して結果を持ち、検証が終わるまでは `checking` として AI の入口を出さない）、ランナーを作るのは `active` のときだけ、AI ボタンを出すのは `active`・`expired`・`unreachable` のとき。`expired`・`unreachable` は AI ボタンを押したときにリフレッシュし、通信の失敗は `unreachable`（次に押せば再試行）、サーバーの拒否は `invalid`（AI ボタンを消して理由を出す）に分ける。起動時と裏では通信しない。同じ端末の複数の Vault のウィンドウでリフレッシュが奪い合わない（送る直前の読み直し・`navigator.locks` の排他・`storage` イベント。architecture.md §11.6）ことを、2 つの Vault を同時に開いて確かめる。
+- 同梱の公開鍵でアクセストークンの署名元と期限を検証し（WebCrypto は非同期なので `load()` で検証して結果を持ち、起動直後の検証が終わるまでは `checking` として AI の入口を出さない。他のウィンドウの書き込みでの検証のし直しでは前の状態を保つ。期限は `state()` が呼ばれるたびに見直し、過ぎていれば `expired`）、ランナーを作るのは `active` のときだけ、AI ボタンを出すのは `active`・`expired`・`unreachable` のとき。`expired`・`unreachable` は AI ボタンを押したときにリフレッシュし、通信の失敗は `unreachable`（次に押せば再試行）、サーバーの拒否は `invalid`（AI ボタンを消して理由を出す）に分ける。起動時と裏では通信しない。同じ端末の複数の Vault のウィンドウでリフレッシュが奪い合わない（送る直前の読み直し・`navigator.locks` の排他・`storage` イベント。architecture.md §11.6）ことを、2 つの Vault を同時に開いて確かめる。
 - ライセンスサーバーへの通信は `src/ai/license/client.ts` の登録とリフレッシュの 2 つだけで、送るのはライセンスコード・デバイス ID・リフレッシュシークレットだけ。
 - エンジニアの API の契約（エンドポイント・トークン形式・公開鍵）が届くまでは、受け口の形だけを作り、通信はモックで試す。仮に置いた契約の形を PR 本文に書く。
 - 無料状態（未登録）では、`onload`・マップの操作・設定タブ・コマンドを通して `loadNode()` と `requestUrl` が 0 回（architecture.md §11.7 の 1・2。守りを外すと落ちることを記録する）。
-- 開発用の解放は `MAPPY_AI_DEV_UNLOCK=1` のビルドだけで有効。`scripts/validate-release.mjs --artifacts` がリリースのビルドにその印があれば落ち、テストが両方向（印なし・印あり）を確かめる。開発用のビルドを test-vault に入れる入口 `npm run harness:prepare:ai-dev`（`dist/mappy-ai-dev/`。リリースの経路は通らない）を足す。実機の E2E `harness:e2e:ai-free-state` は Mappy から来た Node の取得とライセンスサーバー宛ての通信だけを数え、開発用のビルドで AI を実行すると 1 以上に数えられることも記録する（architecture.md §11.7）。
+- 開発用の解放は `MAPPY_AI_DEV_UNLOCK=1` のビルドだけで有効。`scripts/validate-release.mjs --artifacts` がリリースのビルドにその印があれば落ち、テストが両方向（印なし・印あり）を確かめる。開発用のビルドを test-vault に入れる入口 `npm run harness:prepare:ai-dev` を足す（出力は直下の `main.js` ではなく `dist/mappy-ai-dev/`、preflight は入っているビルドの印で比べる先を切り替え、既存の `harness:e2e:*` が今の比較のまま通る。リリースの経路は通らない）。実機の E2E `harness:e2e:ai-free-state` は Mappy から来た Node の取得とライセンスサーバー宛ての通信だけを数え、開発用のビルドで AI を実行すると 1 以上に数えられることも記録する（architecture.md §11.7）。
 - `src/main.ts` の結線（`Entitlement` → ランナーの生成・view）はこのチケットが行う。
 
 ### M10: 埋め込み表示
