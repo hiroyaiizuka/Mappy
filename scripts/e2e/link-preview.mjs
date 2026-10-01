@@ -18,6 +18,7 @@
  *   5. 設定: このソースの「⌘ が要る」を切ると ⌘ なしで出る。戻すと出ない。
  *   6. 出さないもの・閉じるもの: F2 で入力欄を開いている間（別のノードのリンクに ⌘ で乗せても出ない）、ノードの
  *      ドラッグ中・空のキャンバスのパン中（ボタンを押したまま ⌘ でリンクの上を通る）、出ている小窓はホイールで閉じる。
+ *      Page preview の待ち時間（300 ms）の間に ↓ を押す・リンクの上で押したままにすると、待ち時間が明けても出ない。
  *      クリックはリンクを開き、⌘ クリックは新しいタブで開く。
  *   7. 寿命: 小窓が出たままタブを閉じると消え、プラグインを無効にすると消えてソースの登録も消える（有効に戻す）。
  *
@@ -76,6 +77,8 @@ const step = makeStep(record);
 const check = makeCheck(record);
 const press = makePress(cdp, evaluate);
 const made = new Set();
+/** Set while this run has Mappy disabled (the lifecycle step): `clean` turns it back on whatever stopped the run. */
+let disabled = false;
 
 /** Script: the popovers on screen (attached and drawn) with their text and whether they hold an image. */
 const POPOVERS = `Array.from(document.querySelectorAll('.hover-popover')).filter(p => p.isConnected && p.getBoundingClientRect().width > 0)
@@ -171,6 +174,7 @@ const EMBED_VIEW = viewScript(`(() => {
 const HOST_VIEW = viewScript('window.__mappyE2EHost.view.contentEl');
 
 const clean = () => made.size === 0 ? [] : evaluate(`
+  if (${disabled} && !app.plugins.plugins.mappy) { await app.plugins.enablePlugin('mappy'); await new Promise(r => setTimeout(r, 800)); }
   for (const key of ['__mappyE2E', '__mappyE2ESplit', '__mappyE2EHost', '__mappyE2EOpened', '__mappyE2EDisabled']) { try { window[key]?.detach(); } catch {} delete window[key]; }
   for (const path of ${JSON.stringify([...NOTES, IMAGE])}) {
     if (!${JSON.stringify([...made])}.includes(path)) continue;
@@ -334,6 +338,29 @@ try {
     }
     const source = await evaluate(`${VIEW} return await source();`);
     check(source === SOURCE, 'the drag or pan changed the note (the ⌘Z did not take it back)');
+    // During Page preview's delay (300 ms): ⌘ over the link, then at once a key (↓, the selection moves) or a press held
+    // on the link (a drag about to start). Neither may let the popover show when the delay ends.
+    await press(`const node = nth('プレビューの確認', 0);`);
+    for (const kind of ['key', 'press']) {
+      await leave();
+      const point = await press(link, { click: false });
+      await move(point.x - 2, point.y, META);
+      await move(point.x, point.y, META);
+      if (kind === 'key') await cdp.realKey('ArrowDown');
+      else await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1, modifiers: META });
+      await wait(DWELL);
+      const shown = await popovers();
+      if (kind === 'press') {
+        // Let go away from the link (a drag, not a click that would open it), then take the move back.
+        for (let i = 1; i <= 6; i += 1) await move(point.x, point.y + i * 12, META, 1);
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y + 72, button: 'left', buttons: 0, clickCount: 1 });
+        await wait(600);
+        if (await evaluate(`${VIEW} return await source();`) !== SOURCE) { await cdp.realKey('z', META); await wait(800); }
+      }
+      check(shown.length === 0, `${kind} during the delay: popover ${JSON.stringify(shown)}`);
+      results[`${kind}-during-delay`] = shown;
+    }
+    check(await evaluate(`${VIEW} return await source();`) === SOURCE, 'the press during the delay changed the note (the ⌘Z did not take it back)');
     // A wheel closes the popover that shows. ⌘-wheel, a small zoom around the pointer: the link stays under the pointer,
     // so Page preview has no leave of its own to close it on (a plain wheel pans the link away and would pass without
     // LinkPreview's listener). Whether the pointer is still on the link after it is checked.
@@ -372,6 +399,7 @@ try {
     const again = await hover(linkTarget('E2E-link-preview-target#見出し'), { mod: true, stay: true });
     check(again.popovers.length === 1, `no popover before the plugin was disabled: ${JSON.stringify(again.popovers)}`);
     // The leaf is kept (`__mappyE2EDisabled`) to be closed after the plugin is back: a disabled plugin's view loses its file, so `clean` would not find it by path.
+    disabled = true;
     await evaluate(`window.__mappyE2EDisabled = window.__mappyE2E; await app.plugins.disablePlugin('mappy'); await new Promise(r => setTimeout(r, 400)); return true;`);
     const afterDisable = await until(popovers, now => now.length === 0, 1500);
     const source = await evaluate(`return app.workspace.hoverLinkSources?.mappy ?? null;`);
@@ -380,6 +408,7 @@ try {
     await move(2, 2);
     await evaluate(`await app.plugins.enablePlugin('mappy'); await new Promise(r => setTimeout(r, 800));
       window.__mappyE2EDisabled?.detach(); delete window.__mappyE2EDisabled; delete window.__mappyE2E; return true;`);
+    disabled = false;
     return { shown: shown.popovers, afterClose, again: again.popovers, afterDisable, source };
   });
 } catch (error) {

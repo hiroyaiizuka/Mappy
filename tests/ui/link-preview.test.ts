@@ -47,6 +47,10 @@ function over(target: Element, init: MouseEventInit = {}): MouseEvent {
   return event;
 }
 
+function popover(): { hide: ReturnType<typeof vi.fn> } {
+  return { hide: vi.fn() };
+}
+
 function link(root: ParentNode, href: string): HTMLAnchorElement {
   const found = Array.from(root.querySelectorAll<HTMLAnchorElement>('a.internal-link')).find(anchor => anchor.dataset.href === href);
   if (!found) throw new Error(`No link ${href}`);
@@ -137,25 +141,29 @@ describe('link hover preview (LEV-265)', () => {
     const { app, canvas, close } = await mount();
     const seen = listen(app);
     const anchor = link(canvas, 'Target');
-    over(anchor, { relatedTarget: canvas });
-    const parent = seen[0]?.hoverParent;
-    expect(parent).toBeDefined();
     const popover = (): { hide: ReturnType<typeof vi.fn> } => ({ hide: vi.fn() });
     for (const end of [
-      () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); window.dispatchEvent(new PointerEvent('pointerup')); },
+      () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); },
       () => { canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 10 })); },
       () => { canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); },
     ]) {
+      over(anchor, { relatedTarget: canvas });
+      const parent = seen.at(-1)?.hoverParent;
       const shown = popover();
       if (parent) parent.hoverPopover = shown;
+      await Promise.resolve();
+      expect(shown.hide).not.toHaveBeenCalled();
       end();
       expect(shown.hide).toHaveBeenCalledTimes(1);
       expect(parent?.hoverPopover).toBeNull();
     }
     // ⌘ alone is Page preview's cue to show the hovered link; it does not close it.
+    over(anchor, { relatedTarget: canvas });
+    const parent = seen.at(-1)?.hoverParent;
     const held = popover();
     if (parent) parent.hoverPopover = held;
     canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'Meta', metaKey: true, bubbles: true }));
+    await Promise.resolve();
     expect(held.hide).not.toHaveBeenCalled();
     anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: `Target（${HOST_PATH} から）` });
@@ -163,29 +171,53 @@ describe('link hover preview (LEV-265)', () => {
     expect(held.hide).toHaveBeenCalledTimes(1);
   });
 
-  it('closes at once a popover that shows (after Page preview\'s delay) while a button is held or a node is being written', async () => {
+  it('closes a popover that shows after Page preview\'s delay when a press, a wheel, a key or a draft came in the meantime, once its show has returned', async () => {
     const { app, canvas, select, key, editor } = await mount();
     const seen = listen(app);
-    over(link(canvas, 'Target'), { relatedTarget: canvas });
-    const parent = seen[0]?.hoverParent;
-    expect(parent).toBeDefined();
-    // A drag that began on the link during the delay: the canvas holds the pointer, the link never hears it leave.
-    canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    const duringPress = { hide: vi.fn() };
-    if (parent) parent.hoverPopover = duringPress;
-    expect(duringPress.hide).toHaveBeenCalledTimes(1);
-    expect(parent?.hoverPopover).toBeNull();
-    window.dispatchEvent(new PointerEvent('pointerup'));
-    const afterRelease = { hide: vi.fn() };
-    if (parent) parent.hoverPopover = afterRelease;
-    expect(afterRelease.hide).not.toHaveBeenCalled();
-    expect(parent?.hoverPopover).toBe(afterRelease);
+    const anchor = link(canvas, 'Target');
+    for (const [what, meanwhile] of [
+      // A drag that began on the link: the canvas holds the pointer, the link never hears it leave.
+      ['press', () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); }],
+      ['wheel', () => { canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 10 })); }],
+      ['key', () => { canvas.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); }],
+    ] as const) {
+      over(anchor, { relatedTarget: canvas });
+      const parent = seen.at(-1)?.hoverParent;
+      meanwhile();
+      // As Obsidian's `show` does: the popover is handed over, then `show` goes on with it; closing it in between
+      // would have `show` list and load a hidden popover again.
+      const late = popover();
+      if (parent) parent.hoverPopover = late;
+      expect(late.hide, what).not.toHaveBeenCalled();
+      await Promise.resolve();
+      expect(late.hide, what).toHaveBeenCalledTimes(1);
+      expect(parent?.hoverPopover, what).toBeNull();
+    }
+    // The next hover may show again.
+    over(anchor, { relatedTarget: canvas });
+    const parent = seen.at(-1)?.hoverParent;
+    const again = popover();
+    if (parent) parent.hoverPopover = again;
+    await Promise.resolve();
+    expect(again.hide).not.toHaveBeenCalled();
+    expect(parent?.hoverPopover).toBe(again);
+    // A draft opened while it waited (F2 on another node: the key closes it as well, the draft on its own too).
     if (parent) parent.hoverPopover = null;
+    over(anchor, { relatedTarget: canvas });
     key(select('本文を持つ'), 'F2');
     expect(editor()).not.toBeNull();
-    const whileWriting = { hide: vi.fn() };
+    const whileWriting = popover();
     if (parent) parent.hoverPopover = whileWriting;
+    await Promise.resolve();
     expect(whileWriting.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a link\'s mouseover going on in a map tab, for whoever else listens around the map', async () => {
+    const { canvas, view } = await mount();
+    const around = vi.fn();
+    view.containerEl.addEventListener('mouseover', around);
+    over(link(canvas, 'Target'), { relatedTarget: canvas });
+    expect(around).toHaveBeenCalledTimes(1);
   });
 
   it('asks from a read-only embed too, from the map\'s note, and the reading view around it does not ask again', async () => {
@@ -217,8 +249,16 @@ describe('link hover preview (LEV-265)', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ source: 'mappy', linktext: 'Inner', sourcePath: 'Sub/Map.md' });
     expect(reading).not.toHaveBeenCalled();
+    // Nor when the embed itself asks nothing: a move between the parts of one link, a button held (a selection dragged).
+    const inner = link(section, 'Inner');
+    const part = inner.ownerDocument.createElement('span');
+    inner.append(part);
+    over(part, { relatedTarget: inner });
+    over(inner, { relatedTarget: canvas, buttons: 1 });
+    expect(seen).toHaveLength(1);
+    expect(reading).not.toHaveBeenCalled();
     const parent = seen[0]?.hoverParent;
-    const shown = { hide: vi.fn() };
+    const shown = popover();
     if (parent) parent.hoverPopover = shown;
     renderer.unload();
     expect(shown.hide).toHaveBeenCalledTimes(1);
