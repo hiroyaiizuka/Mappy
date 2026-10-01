@@ -15,6 +15,7 @@ import { ViewRouter } from "./obsidian/view-routing";
 import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
 import { installExitDrafts } from "./ui/exit-drafts";
+import { HOVER_SOURCE } from "./ui/link-preview";
 import { MapEmbeds } from "./ui/map-embed";
 import { MindmapView, VIEW_TYPE, type MapMenuAction } from "./ui/mindmap-view";
 import { paintMap } from "./ui/offscreen-map";
@@ -58,6 +59,9 @@ export default class MappyPlugin extends Plugin {
       { title: t().popExport, description: t().popExportDesc, icon: "image-down",
         check: map => map.file !== null && canSaveAttachments(this.app), run: map => { this.exportMapImage(map); } },
     ];
+    // Page preview's switch for the map's links (LEV-265): ⌘／Ctrl by default, as in the Markdown editor, so moving
+    // the pointer across a map does not open a popover at every link it passes.
+    this.registerHoverLinkSource(HOVER_SOURCE, { display: "Mappy", defaultMod: true });
     this.registerView(VIEW_TYPE, leaf => {
       const view = new MindmapView(leaf, store, this.router, menuActions);
       view.setTheme(this.settings.theme);
