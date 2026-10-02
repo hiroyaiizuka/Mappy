@@ -65,3 +65,11 @@ export class Component {
     this.cleanups.push(() => { element.removeEventListener(type, callback, options); });
   }
 }
+
+/** The desktop app on macOS; the AI tests pass their own platform where it matters. */
+export const Platform = { isDesktopApp: true, isMobile: false, isWin: false, isMacOS: true };
+
+/** No pdf.js in Node: a test that reads a PDF mocks this. */
+export function loadPdfJs(): Promise<never> {
+  return Promise.reject(new Error('pdf.js is not available in tests'));
+}

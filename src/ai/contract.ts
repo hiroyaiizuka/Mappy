@@ -41,7 +41,8 @@ export type AiFailure =
   | 'timeout'               // 無出力・全体の時間切れ
   | 'output-too-large'      // 標準出力が 5 MB 超
   | 'unparsable'            // 箇条書きが 1 つも残らない
-  | 'exited';               // CLI が 0 以外で終わった（detail に stderr の末尾）
+  | 'exited'                // CLI が 0 以外で終わった（detail に stderr の末尾）
+  | 'not-entitled';         // ライセンスが有効でない（ランナーを作ったあとに失効した。§11.6。設定の「AI」へ案内する）
 
 export interface AiRunner {
   run(request: AiRequest, onProgress: (progress: AiProgress) => void, signal: AbortSignal): Promise<AiResult>;

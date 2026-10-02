@@ -56,12 +56,29 @@ export class AiSettingsSection {
    * A row that was in the document and has left it (a search result dropped without its cleanup, the tab hidden)
    * is let go here. One drawn but not attached yet (1.13 renders a row before inserting it) is kept up to date.
    */
-  constructor(private readonly entitlement: Entitlement) {
+  constructor(
+    private readonly entitlement: Entitlement,
+    /**
+     * LEV-270's rows (engine, models, where the CLIs are): the runner factory gives none unless the license is active,
+     * and touches no Node to say so (§11.7). Read each time the tab is drawn.
+     */
+    private readonly runnerRows: () => MapSettingDefinition[] = () => [],
+    /** Draws the tab again: the runner rows come and go when the license becomes active or stops being so. */
+    private readonly redraw: () => void = () => undefined,
+  ) {
+    let active = entitlement.state().kind === 'active';
     entitlement.onChange(() => {
       for (const [sync, row] of this.rows) {
         if (row.element.isConnected) row.shown = true;
         else if (row.shown) { this.rows.delete(sync); continue; }
         sync();
+      }
+      // The license rows first (they are up to date even where no redraw happens, the tab hidden), then the tab again
+      // when the license crossed `active`: LEV-270's rows come or go with it.
+      const now = entitlement.state().kind === 'active';
+      if (now !== active) {
+        active = now;
+        this.redraw();
       }
     });
   }
@@ -79,6 +96,7 @@ export class AiSettingsSection {
         desc: '',
         render: setting => this.renderLicenseRow(setting),
       },
+      ...this.runnerRows(),
     ];
   }
 

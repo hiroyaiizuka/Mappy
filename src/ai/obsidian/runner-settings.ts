@@ -1,0 +1,128 @@
+import { Notice, Setting } from 'obsidian';
+import { t } from '../../i18n';
+import type { MapSettingDefinition } from '../../obsidian/settings-tab';
+import { INSTALL_URLS, type Tool } from '../core/launch';
+import { findWithLoginShell, locate, locateClaude, locateCodex } from '../host/locate';
+import type { NodeHost } from '../host/node-host';
+import type { RunnerFactory } from '../runner-factory';
+import type { AiPrefs, AiPrefsStore, RunnerPathsStore } from '../settings';
+
+/**
+ * The runner's rows in the settings tab's AI section (docs/architecture.md §11.3, §11.8): the engine, each engine's
+ * model, and where claude, codex and yt-dlp are, with 「探す」. They are definitions like the tab's own (each row drawn
+ * by its `render`), so Obsidian 1.13+ draws and searches them, and `display()` builds them by hand before 1.13. None,
+ * and nothing looked for, unless the license is active: the factory hands out its Node surface only then (§11.7).
+ */
+
+const TOOLS: readonly Tool[] = ['claude', 'codex', 'yt-dlp'];
+
+/**
+ * What a run would find: the engines through the same lookup a run uses, so an npm install whose script needs a node
+ * that is nowhere says so here, and not only when a run fails.
+ */
+async function describeFound(host: NodeHost, tool: Tool, configured: string): Promise<string> {
+  const text = t();
+  if (tool === 'yt-dlp') {
+    const found = await locate(host, tool, configured);
+    return found === null ? text.aiPathMissing(INSTALL_URLS[tool]) : configured ? '' : text.aiPathFound(found);
+  }
+  const located = tool === 'claude' ? await locateClaude(host, configured) : await locateCodex(host, configured);
+  const path = configured || await locate(host, tool);
+  if (located === null || path === null) return text.aiPathMissing(INSTALL_URLS[tool]);
+  if (located === 'no-node') return text.aiPathNeedsNode(path);
+  return configured ? '' : text.aiPathFound(path);
+}
+
+export interface RunnerSettingsDeps {
+  factory: RunnerFactory;
+  prefs: AiPrefsStore;
+  paths: RunnerPathsStore;
+}
+
+export function runnerSettingDefinitions(deps: RunnerSettingsDeps): MapSettingDefinition[] {
+  const text = t();
+  const availability = deps.factory.availability();
+  if (availability === 'not-entitled') return [];
+  if (availability === 'unsupported-platform' || availability === 'no-node') {
+    return [{ name: text.aiSetEngine, desc: availability === 'no-node' ? text.aiNoNode : text.aiUnsupported, render: () => undefined }];
+  }
+  const host = deps.factory.host();
+  if (host === null) return [];
+
+  const savePrefs = (change: Partial<AiPrefs>): void => {
+    deps.prefs.save({ ...deps.prefs.current(), ...change }).catch(() => { new Notice(text.setSaveFailed); });
+  };
+  const engine: MapSettingDefinition = {
+    name: text.aiSetEngine,
+    desc: text.aiEngineDesc,
+    render: setting => {
+      setting.addDropdown(dropdown => {
+        dropdown.addOptions({ claude: text.aiEngineClaude, codex: text.aiEngineCodex })
+          .setValue(deps.prefs.current().engine)
+          .onChange(value => { savePrefs({ engine: value === 'codex' ? 'codex' : 'claude' }); });
+      });
+    },
+  };
+  const models = (['claude', 'codex'] as const).map((name): MapSettingDefinition => {
+    const key = name === 'claude' ? 'claudeModel' : 'codexModel';
+    return {
+      name: text.aiModel(name),
+      desc: text.aiModelDesc,
+      render: setting => {
+        setting.addText(input => {
+          input.setValue(deps.prefs.current()[key]).onChange(value => { savePrefs({ [key]: value.trim() }); });
+        });
+      },
+    };
+  });
+  const paths = TOOLS.map((tool): MapSettingDefinition => ({
+    name: text.aiPath(tool),
+    desc: '',
+    render: setting => {
+      // What the empty field stands for: the first known place that has the tool (files are only checked, nothing
+      // runs). Each edit asks again; only the latest answer is shown (an earlier check can finish after a later one).
+      let asked = 0;
+      const describe = async (): Promise<void> => {
+        const ask = ++asked;
+        const configured = deps.paths.current()[tool];
+        const desc = configured && !(configured.startsWith('/') && await host.isExecutable(configured))
+          ? text.aiPathInvalid
+          : await describeFound(host, tool, configured);
+        if (ask === asked) setting.setDesc(desc);
+      };
+      const save = (value: string): void => {
+        if (!deps.paths.save({ ...deps.paths.current(), [tool]: value.trim() })) new Notice(text.setSaveFailed);
+        void describe();
+      };
+      let field: { setValue(value: string): unknown } | null = null;
+      setting.addText(input => {
+        field = input;
+        input.setPlaceholder('/…/' + tool).setValue(deps.paths.current()[tool]).onChange(save);
+      });
+      setting.addButton(button => {
+        button.setButtonText(text.aiFind).setTooltip(text.aiFindDesc).onClick(async () => {
+          button.setDisabled(true);
+          try {
+            // A temporary directory that cannot be made is "not found" too, not an unhandled rejection.
+            const found = await findWithLoginShell(host, tool, deps.factory.stopSignal()).catch(() => null);
+            if (found === null) { new Notice(text.aiFindNotFound(tool)); return; }
+            field?.setValue(found);
+            save(found);
+          } finally {
+            button.setDisabled(false);
+          }
+        });
+      });
+      void describe();
+    },
+  }));
+  return [engine, ...models, ...paths];
+}
+
+/** The rows drawn by hand into `containerEl`, as `display()` draws every definition (and the tests do). */
+export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSettingsDeps): void {
+  for (const definition of runnerSettingDefinitions(deps)) {
+    const setting = new Setting(containerEl).setName(definition.name).setDesc(definition.desc);
+    definition.render?.(setting);
+  }
+}

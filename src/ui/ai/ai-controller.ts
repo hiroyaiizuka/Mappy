@@ -1,4 +1,5 @@
 import { FuzzySuggestModal, Notice, Platform, setIcon, type App, type TFile } from "obsidian";
+import { webSearchAfterAttach, webSearchCaution } from "../../ai/core/web-search";
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner, AiTemplate, OutlineItem } from "../../ai/contract";
 import { nodeBody } from "../../core/body";
 import type { MindDocument, MindNode } from "../../core/markdown";
@@ -8,7 +9,7 @@ import type { Viewport } from "../../interaction/viewport";
 import { AI_DRAFT_PREFIX, withDraft } from "../../layout/ai-draft";
 import type { LayoutMode, LayoutNode, LayoutResult, PositionedNode } from "../../layout/layout";
 import { t, type Messages } from "../../i18n";
-import { AiAttachmentError, aiRunLock, type AiServices } from "./services";
+import { AiAttachmentError, aiRunLock, type AiEntitlementView, type AiServices } from "./services";
 import { AI_TEMPLATES, ancestorTitles, maxDepth, outlineMarkdown } from "./request";
 
 /** Whether `add-children` wrote (the view's `execute`, §11.5), or why it did not: then the draft stays. */
@@ -64,6 +65,14 @@ interface Run { anchorId: string; values: FormValues; abort: AbortController; pr
 /** The line under the card's content: a refusal or failure (with what to show under 詳細), a keep that did not write. */
 interface Message { text: string; detail?: string; copy?: boolean }
 
+/** Why the AI cannot be used, in words: an app that cannot run it says so, never as an internal code. */
+function unavailableText(state: AiEntitlementView): string {
+  const text = t();
+  if (state.reason === "unsupported-platform") return text.aiUnsupported;
+  if (state.reason === "no-node") return text.aiNoNode;
+  return text.aiUnavailable(state.reason ?? state.kind);
+}
+
 const FAILURE_TEXT: Record<AiFailure, (text: Messages) => string> = {
   "engine-missing": text => text.aiFailureEngineMissing,
   "ytdlp-missing": text => text.aiFailureYtDlpMissing,
@@ -77,6 +86,7 @@ const FAILURE_TEXT: Record<AiFailure, (text: Messages) => string> = {
   "output-too-large": text => text.aiFailureOutputTooLarge,
   unparsable: text => text.aiFailureUnparsable,
   exited: text => text.aiFailureExited,
+  "not-entitled": text => text.aiFailureNotEntitled,
 };
 
 function templateLabel(template: AiTemplate): string {
@@ -391,7 +401,7 @@ export class AiController {
       try { state = await services.refresh(); } finally { this.opening = false; }
     }
     if (state.kind === "active") return true;
-    new Notice(t().aiUnavailable(state.reason ?? state.kind));
+    new Notice(unavailableText(state));
     this.sync();
     return false;
   }
@@ -464,6 +474,8 @@ export class AiController {
    * is an outline; a refusal, a failure or a cancel leaves the draft there was (やり直す keeps it until a run succeeds).
    */
   private async start(anchorId: string, values: FormValues): Promise<void> {
+    // The license can expire while the input is open: a run refreshes it first, as the button and やり直す do.
+    if (values.engine !== "fake" && !(await this.ensureActive())) return;
     const services = this.services;
     const document = this.host.document();
     const node = document ? findNode(document, anchorId) : undefined;
@@ -472,8 +484,7 @@ export class AiController {
     if (maxDepth(document, node) === 0) { new Notice(t().headingDepth); this.sync(); return; }
     const runner: AiRunner | null = values.engine === "fake" ? services.fakeRunner ?? null : services.createRunner();
     if (!runner) {
-      const state = services.state();
-      new Notice(t().aiUnavailable(state.reason ?? state.kind));
+      new Notice(unavailableText(services.state()));
       this.sync();
       return;
     }
@@ -810,7 +821,7 @@ export class AiController {
     // it says, in one line, that the answer will no longer come from the material alone.
     const caution = card.createDiv({ cls: "mappy-ai-caution", attr: { "aria-live": "polite" } });
     const drawCaution = (): void => {
-      caution.setText(box.checked && values.attachments.length > 0 ? text.aiWebSearchWithMaterial : "");
+      caution.setText(webSearchCaution(values.attachments.length, box.checked) ? text.aiWebSearchWithMaterial : "");
     };
     box.addEventListener("change", drawCaution);
     const attachments = card.createDiv({ cls: "mappy-ai-attachments" });
@@ -836,7 +847,8 @@ export class AiController {
         new AttachModal(this.host.app, this.host.file(), file => {
           if (!values.attachments.includes(file)) {
             // The first material turns the web search off; the user may turn it on again (then the caution shows).
-            if (values.attachments.length === 0) { box.checked = false; values.webSearch = false; }
+            values.webSearch = webSearchAfterAttach(box.checked, values.attachments.length);
+            box.checked = values.webSearch;
             values.attachments = [...values.attachments, file];
           }
           drawAttachments();

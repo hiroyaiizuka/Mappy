@@ -1,6 +1,13 @@
 import { MarkdownView, Notice, Plugin, TFile, getLanguage, type WorkspaceLeaf } from "obsidian";
 import { createEntitlement, type Entitlement } from "./ai/license/entitlement";
-import { setLanguage, t } from "./i18n";
+import { createDeviceStorage } from "./ai/license/store";
+import { vaultMaterials } from "./ai/obsidian/material";
+import { runnerSettingDefinitions } from "./ai/obsidian/runner-settings";
+import { createAiServices } from "./ai/obsidian/services";
+import { createRunnerFactory, type RunnerFactory } from "./ai/runner-factory";
+import { localPathsStore, readAiPrefs, type AiPrefs, type AiPrefsStore } from "./ai/settings";
+import type { AiServices } from "./ui/ai/services";
+import { setLanguage, t, textLanguage } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
 import {
@@ -30,21 +37,40 @@ export default class MappyPlugin extends Plugin {
    * read it once they are wired here (§11.8: whichever of the three merges last).
    */
   private entitlement!: Entitlement;
+  /** The AI's engine and models (docs/architecture.md §11.3): kept in data.json under `ai`, beside the settings. */
+  private aiPrefs: AiPrefs = readAiPrefs(null);
+  private runnerFactory!: RunnerFactory;
+  private aiServices!: AiServices;
 
   async onload(): Promise<void> {
     // Before anything shows text: Japanese when Obsidian runs in Japanese, English otherwise (src/i18n).
     setLanguage(getLanguage());
     // Missing or old data falls back field by field, so an unset option behaves as before the settings existed.
-    this.settings = normalizeSettings(await this.loadData());
+    const data: unknown = await this.loadData();
+    this.settings = normalizeSettings(data);
+    this.aiPrefs = readAiPrefs(data && typeof data === "object" ? (data as Record<string, unknown>).ai : null);
     // Starts as `checking`, which shows no AI entry; the stored token is verified offline, with no request at startup.
     this.entitlement = createEntitlement();
     this.register(() => { this.entitlement.dispose(); });
     void this.entitlement.load();
+    const store = new DocumentStore(this.app);
+    // The AI (§11.8): the factory loads Node only while the license is active (§11.1, §11.7), and stops every run on
+    // unload and on pagehide. The view's AI reaches it only through `aiServices`.
+    const aiPrefsStore: AiPrefsStore = { current: () => this.aiPrefs, save: next => this.saveAiPrefs(next) };
+    const materials = vaultMaterials(this.app, file => store.read(file));
+    const paths = localPathsStore(createDeviceStorage());
+    this.runnerFactory = createRunnerFactory({
+      isEntitled: () => this.entitlement.state().kind === "active",
+      prefs: () => this.aiPrefs,
+      paths,
+      language: textLanguage,
+    });
+    this.register(() => { this.runnerFactory.dispose(); });
+    this.aiServices = createAiServices({ entitlement: this.entitlement, factory: this.runnerFactory, prefs: aiPrefsStore, vault: materials });
     this.addSettingTab(new MappySettingTab(this.app, this, {
       current: () => this.settings,
       save: next => this.saveSettings(next),
-    }, this.entitlement));
-    const store = new DocumentStore(this.app);
+    }, this.entitlement, () => runnerSettingDefinitions({ factory: this.runnerFactory, prefs: aiPrefsStore, paths })));
     this.router = new ViewRouter({
       mapViewType: VIEW_TYPE,
       isMapFile: path => {
@@ -76,6 +102,7 @@ export default class MappyPlugin extends Plugin {
       const view = new MindmapView(leaf, store, this.router, menuActions);
       view.setTheme(this.settings.theme);
       view.setVisibleLayouts(this.settings.visibleLayouts);
+      view.setAi(this.aiServices);
       return view;
     });
     // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230).
@@ -269,7 +296,7 @@ export default class MappyPlugin extends Plugin {
     const layoutsChanged = next.visibleLayouts.join() !== previous.visibleLayouts.join();
     this.settings = next;
     try {
-      await this.saveData(next);
+      await this.saveData({ ...next, ai: this.aiPrefs });
     } catch (error) {
       if (this.settings === next) this.settings = previous;
       throw error;
@@ -279,6 +306,18 @@ export default class MappyPlugin extends Plugin {
       if (!(leaf.view instanceof MindmapView)) continue;
       if (themeChanged) leaf.view.setTheme(next.theme);
       if (layoutsChanged) leaf.view.setVisibleLayouts(next.visibleLayouts);
+    }
+  }
+
+  /** The AI's engine and models, saved with the settings in one data.json; current at once, put back if the write fails. */
+  private async saveAiPrefs(next: AiPrefs): Promise<void> {
+    const previous = this.aiPrefs;
+    this.aiPrefs = next;
+    try {
+      await this.saveData({ ...this.settings, ai: next });
+    } catch (error) {
+      if (this.aiPrefs === next) this.aiPrefs = previous;
+      throw error;
     }
   }
 

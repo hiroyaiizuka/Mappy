@@ -68,6 +68,14 @@ export function parseStoredLicense(text: string | null): StoredLicense | null {
   return license;
 }
 
+/**
+ * The device's storage for what belongs to this device and not to the vault: the executables' paths of the AI runner
+ * (`mappy-ai-paths`, §11.3, §11.6). Picked here beside the license's, so both move together when the storage does.
+ */
+export function createDeviceStorage(win: Window = window): Pick<Storage, 'getItem' | 'setItem'> {
+  return win.localStorage;
+}
+
 /** The storage the plugin keeps its license in: the one place to change when it moves (see the top of this file). */
 export function createLicenseStore(): LicenseStore {
   return createWindowLicenseStore();

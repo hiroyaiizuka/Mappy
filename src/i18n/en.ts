@@ -95,6 +95,21 @@ export const en = {
   setLockedDefault: (layout: string) => `${layout} is the default layout for new maps, so it can't be hidden.`,
   setSaveFailed: "Couldn't save the settings.",
 
+  // The AI runner's rows in the settings (src/ai/obsidian/runner-settings.ts, docs/architecture.md §11.3).
+  aiUnsupported: "AI features run only in the desktop app, and not on Windows yet.",
+  aiNoNode: "This app can't start other programs, so AI features are off.",
+  aiSetEngine: "AI engine",
+  aiEngineDesc: "The command line tool that answers. It runs with your own login, read only, in an empty temporary folder.",
+  aiModel: (engine: string) => `Model for ${engine}`,
+  aiModelDesc: "Passed to the tool as its model name. Leave empty to use the tool's default.",
+  aiPath: (tool: string) => `Location of ${tool}`,
+  aiPathFound: (path: string) => `Leave empty to use the one found at ${path}. This setting stays on this device.`,
+  aiPathMissing: (url: string) => `Not found in the usual places. Install it (${url}) or enter its full path. Mappy never installs it.`,
+  aiPathInvalid: "No program at this path.",
+  aiPathNeedsNode: (path: string) => `Found at ${path}, but it needs Node.js, which wasn't found in the usual places. Install Node.js there (Homebrew, for example), or enter the full path of an install that doesn't need Node.js.`,
+  aiFind: "Find",
+  aiFindDesc: "Ask your login shell once.",
+  aiFindNotFound: (tool: string) => `Your login shell didn't find ${tool}.`,
   // The AI section of the settings (src/obsidian/ai-settings.ts, docs/architecture.md §11.6).
   setAi: "AI",
   setAiDesc: "AI features are unlocked with a license code. Mappy contacts the license server only when you register a code and when an expired token is refreshed, and sends only the code, a random device ID and the refresh secret.",
@@ -269,8 +284,8 @@ export const en = {
   aiDepth: "Depth",
   aiDepthLevels: (depth: number) => (depth === 1 ? "1 level" : `${depth} levels`),
   aiEngine: "Engine",
-  aiEngineClaude: "Claude (`claude` CLI)",
-  aiEngineCodex: "Codex (`codex` CLI)",
+  aiEngineClaude: "Claude (CLI)",
+  aiEngineCodex: "Codex (CLI)",
   aiEngineFake: "Fake engine (development)",
   aiWebSearch: "Web search",
   aiWebSearchWithMaterial: "Material is attached. With web search on, the answer also draws on pages outside it.",
@@ -319,6 +334,7 @@ export const en = {
   aiFailureOutputTooLarge: "The output was too large.",
   aiFailureUnparsable: "The result had no list items.",
   aiFailureExited: "The CLI stopped with an error.",
+  aiFailureNotEntitled: "The AI license isn't active. Check it in the AI section of the settings.",
   exportAiDraft: "Keep or discard the AI draft before exporting.",
 };
 

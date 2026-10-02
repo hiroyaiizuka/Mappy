@@ -103,6 +103,48 @@ export default defineConfig(
       // The guidelines want only errors in the default console; `recommended` also lets warn and debug through.
       // Narrowed where `recommended` wraps `no-console`, so a call is reported once, with the guideline's link.
       "obsidianmd/rule-custom-message": consoleErrorsOnly(),
+      "no-restricted-syntax": ["error", ...nodeAccessSelectors()],
     },
   },
+  {
+    // The one exception (docs/architecture.md §11.1): `loadNode()` takes Node's modules at run time here, and only
+    // here. The Node import rules above stay on (this file imports nothing), and so does `recommended`'s
+    // `no-restricted-globals` (fetch, localStorage).
+    files: ["src/ai/host/node-host.ts"],
+    rules: { "no-restricted-syntax": "off" },
+  },
 );
+
+/**
+ * Reaching Node without an import (docs/architecture.md §11.1), which the import rules don't see: `window.require`
+ * however it is spelled (`window['require']`, `` window[`require`] ``, `globalThis.require`, through a type cast), the
+ * renderer's `process` through a global or a cast, and the module names that only Node or Electron give. A bare
+ * `process` is already undefined (`nodeOnlyGlobalsOff`). `vault.process(…)` and `this.process(…)` are Obsidian's and
+ * Mappy's own and stay allowed, and so do `fs`/`os`/`path` as strings (`createSvg("path")`): without `require` the name
+ * alone reaches nothing. This deters; the proof that the free state stays away from Node is the tests (§11.7). What
+ * it cannot see without types: an alias taken first (`const w = window as …; w.process`) and a name built at run
+ * time (`Reflect.get(window, 'req' + 'uire')`).
+ * `no-restricted-globals` is not used: `recommended` sets it (app, fetch, localStorage), and options given again in a
+ * later block would replace that list.
+ */
+function nodeAccessSelectors() {
+  const message = "Node is reached only through loadNode() in src/ai/host/node-host.ts (docs/architecture.md §11.1).";
+  const globalObject = "[object.name=/^(window|globalThis|activeWindow|self)$/]";
+  const castObject = "[object.type=/^TS(As|NonNull|TypeAssertion|Satisfies)Expression$/]";
+  return [
+    "MemberExpression[property.name='require'][computed=false]",
+    "MemberExpression[computed=true][property.value='require']",
+    "MemberExpression[computed=true] > TemplateLiteral.property[expressions.length=0][quasis.0.value.cooked='require']",
+    "CallExpression[callee.name='require']",
+    `MemberExpression[property.name='process'][computed=false]:matches(${globalObject}, ${castObject})`,
+    `MemberExpression[computed=true][property.value='process']:matches(${globalObject}, ${castObject})`,
+    `MemberExpression[computed=true]:matches(${globalObject}, ${castObject}) > TemplateLiteral.property[expressions.length=0][quasis.0.value.cooked='process']`,
+    // Destructuring takes the name without a member expression: `const { require: r } = window as …`, from anything.
+    "ObjectPattern > Property[key.name='require']",
+    "ObjectPattern > Property[key.value='require']",
+    // `const { process } = window` (or a cast): only from a global name or a cast, as for the member form above.
+    `VariableDeclarator:matches([init.name=/^(window|globalThis|activeWindow|self)$/], [init.type=/^TS(As|NonNull|TypeAssertion|Satisfies)Expression$/]) > ObjectPattern > Property[key.name='process']`,
+    "Literal[value=/^(child_process|electron|node:.*)$/]",
+    "TemplateLiteral[expressions.length=0][quasis.0.value.cooked=/^(child_process|electron|node:.*)$/]",
+  ].map(selector => ({ selector, message }));
+}

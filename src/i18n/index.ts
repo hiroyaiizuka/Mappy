@@ -29,6 +29,11 @@ export function textLocale(): string | undefined {
   return current === ja ? "ja-JP" : undefined;
 }
 
+/** The language the text is in, `ja` or `en`: the AI is asked to answer in it (docs/architecture.md §11.4). */
+export function textLanguage(): "ja" | "en" {
+  return current === ja ? "ja" : "en";
+}
+
 /**
  * The current table. Read it where the text is used, never into a module-level constant: modules load before
  * `onload` sets the language, so a copy taken then stays English (tests/i18n/load-time.test.ts checks this).

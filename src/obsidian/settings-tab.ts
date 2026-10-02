@@ -94,9 +94,12 @@ export class MappySettingTab extends PluginSettingTab {
   /** The AI section (src/obsidian/ai-settings.ts): its license rows follow the entitlement while drawn. */
   private readonly aiSection: AiSettingsSection;
 
-  constructor(app: App, plugin: Plugin, private readonly store: SettingsStore, entitlement: Entitlement) {
+  constructor(
+    app: App, plugin: Plugin, private readonly store: SettingsStore, entitlement: Entitlement,
+    aiRunnerRows?: () => MapSettingDefinition[],
+  ) {
     super(app, plugin);
-    this.aiSection = new AiSettingsSection(entitlement);
+    this.aiSection = new AiSettingsSection(entitlement, aiRunnerRows, () => { this.redrawShown(); });
   }
 
   /** Obsidian 1.13+: the declarative path (rendering and settings search). The map's four settings, then the AI section. */
@@ -128,6 +131,23 @@ export class MappySettingTab extends PluginSettingTab {
       }
     };
     return saved.then(sync, (error: unknown) => { sync(); throw error; });
+  }
+
+  /**
+   * The tab drawn again while it is shown (the AI rows changed with the license). Obsidian 1.13+ rebuilds the
+   * declarative rows on its `update()`; before 1.13 `display()` builds them. Not shown, nothing to do: the next
+   * opening draws them from the current state.
+   */
+  private redrawShown(): void {
+    if (!this.containerEl.isConnected) return;
+    // Obsidian 1.14.4's `update()` takes the definitions again and redraws the page itself (its asar, read in the
+    // review of PR #159): a `renderTab()` after it would draw every row, and run each row's checks, twice.
+    const declarative = this as unknown as { update?: () => void };
+    if (typeof declarative.update === 'function') {
+      declarative.update();
+    } else {
+      this.display();
+    }
   }
 
   /** Obsidian before 1.13: the same settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
