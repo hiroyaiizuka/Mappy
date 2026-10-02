@@ -374,7 +374,7 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
 - **`Platform.isDesktopApp` の内側**: `loadNode()` の先頭で判定し、偽なら Node に触れない。`loadNode()` を呼ぶのは `src/ai/runner-factory.ts` だけで、ランナー・素材の取得（`material.ts` の yt-dlp）・設定の「探す」はどれも `runnerFactory` が作った `NodeHost` を受け取る。`runnerFactory` はライセンスの判定（§11.6）が偽なら `loadNode()` を呼ばない。
 - core・layout・interaction を Obsidian・Node に依存させない原則は変えない。AI のための編集の計画（下書きを子として書く差分）は `src/core/` の通常の編集コマンドとして足す（§11.5）。
 
-**`isDesktopOnly` とモバイル（community-submission #46・§4.4）の扱い:** Submission requirements は「Node・Electron の API を使うなら `isDesktopOnly: true`」で、実行時に無効にするだけでは字面を満たさない。したがって **M9 が main に入った版からは `true` を保つ**。§4.4 の「LEV-25 でモバイルを確かめたら `false` に戻す」は、M9 が main に入ったあとは今の形では実行できなかった（この計画は 2026-10-02 に取りやめた。下の本人の決定）。
+**`isDesktopOnly` とモバイル（community-submission #46・§4.4）の扱い:** Submission requirements は「Node・Electron の API を使うなら `isDesktopOnly: true`」で、実行時に無効にするだけでは字面を満たさない。したがって **M9 が main に入った版からは `true` を保つ**（2026-10-02 の本人の決定で、M9 によらず Mappy 全体を `true` のままにする。下の本人の決定）。§4.4 の「LEV-25 でモバイルを確かめたら `false` に戻す」は、M9 が main に入ったあとは今の形では実行できなかった（この計画は 2026-10-02 に取りやめた。下の本人の決定）。
 
 - 設計が残す道: 上の実行時の取得なら、`false` にしてもモバイルで読み込みは落ちず、AI の入口が出ないだけになる。審査 bot の `no-nodejs-modules` も `window.require` は対象外。技術的には `false` に戻せる形にしておく。
 - 設計のときに挙げた選択肢: (a) デスクトップ専用のまま、(b) Obsidian の審査に「デスクトップで実行時に `window.require` するだけで、モバイルでは AI を無効にする」形で `false` が許されるかを問う、(c) AI を別プラグインに分ける（2026-10-01 の本人決定「別プラグインに分けない」を覆すことになる）。設計の推奨は (a)、問い合わせの答え次第で (b)。
