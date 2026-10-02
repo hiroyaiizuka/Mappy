@@ -282,6 +282,7 @@ export const en = {
   aiDetails: "Details",
   aiCancelled: "Cancelled. The note wasn't changed.",
   aiAnchorGone: "The node the AI draft was under is gone, so the draft was closed.",
+  aiAnchorGoneBeforeRun: "The node AI was asked about is gone, so nothing was run.",
   aiDraftNode: (text: string) => `AI draft: ${text}`,
   aiFailureEngineMissing: "The AI CLI (`claude` or `codex`) wasn't found. Install it, then check its path in the settings.",
   aiFailureYtDlpMissing: "YouTube subtitles need yt-dlp. Install it, then try again.",

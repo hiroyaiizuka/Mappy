@@ -885,3 +885,104 @@ describe('the web search with a material attached', () => {
     expect(runner.last().request.materials.map(material => material.label)).toEqual(['資料/メモ.md']);
   });
 });
+
+/** The third code review (3ee5206), one row each. */
+describe('the AI after the third code review', () => {
+  it('opens the folds up to the root of the node\'s own tree only: a topic\'s draft leaves the folded body as it is', async () => {
+    // A list before the first H2: the body is the virtual root ('root'); the H2 is a free topic.
+    const source = ['- 本体の項目', '  - 本体の子', '', '## トピック', '', '- 枝', '  - 葉', ''].join('\n');
+    const runner = new HandRunner();
+    const mounted = await mount(source, services(runner));
+    const fold = (title: string): void => { mounted.node(title).querySelector<HTMLElement>('.mappy-node-toggle')?.click(); };
+    fold('ai');
+    fold('枝');
+    await mounted.settle();
+    expect(() => mounted.node('本体の項目')).toThrow();
+    expect(() => mounted.node('葉')).toThrow();
+    mounted.select('枝');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    expect(mounted.node('葉')).toBeTruthy();
+    expect(() => mounted.node('本体の項目')).toThrow();
+  });
+
+  it('stops waiting for an attachment on 取り消す, though the reader does not heed the signal, and lets go of the lock', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    ai.readAttachment = () => new Promise(() => undefined);
+    const app = new HarnessApp();
+    const pdf = app.put('資料/大きい.pdf', '');
+    const mounted = await mount(LIST, ai, { app });
+    mounted.select('持ち物');
+    await mounted.open();
+    (mounted.view as unknown as { ai: { form: { values: { attachments: unknown[] } } } }).ai.form.values.attachments = [pdf];
+    await mounted.run();
+    expect(mounted.card().textContent).toContain(t().aiStageMaterial('大きい'));
+    expect(aiRunLock.busy()).toBe(true);
+    await mounted.press(t().aiCancel);
+    expect(aiRunLock.busy()).toBe(false);
+    expect(runner.calls).toHaveLength(0);
+    expect(mounted.card().hidden).toBe(true);
+  });
+
+  it('asks about the node as it is once the attachments are read, not as it was when the run began', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    let release: () => void = () => undefined;
+    ai.readAttachment = file => new Promise(resolve => { release = () => { resolve({ kind: 'note', label: file.path, text: '本文' }); }; });
+    const app = new HarnessApp();
+    const note = app.put('資料/メモ.md', '# メモ\n');
+    const mounted = await mount(LIST, ai, { app });
+    mounted.select('持ち物');
+    await mounted.open();
+    (mounted.view as unknown as { ai: { form: { values: { attachments: unknown[] } } } }).ai.form.values.attachments = [note];
+    await mounted.run();
+    mounted.app.put(PATH, LIST.replace('- 持ち物\n', '- 持ち物リスト\n'));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await mounted.settle();
+    release();
+    await mounted.settle();
+    expect(runner.last().request.context.title).toBe('持ち物リスト');
+  });
+
+  it('keeps a failure (and やり直す) when the run that retries it is cancelled', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount(LIST, services(runner));
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish({ kind: 'failed', reason: 'timeout', detail: '' });
+    await mounted.settle();
+    await mounted.press(t().aiRetry);
+    await mounted.press(t().aiCancel);
+    expect(mounted.card().textContent).toContain(t().aiFailureTimeout);
+    await mounted.press(t().aiRetry);
+    expect(runner.calls).toHaveLength(3);
+    expect(runner.last().request.instruction).toBe(runner.calls[0]?.request.instruction);
+  });
+
+  it('hides the AI button while a title is being typed', async () => {
+    const mounted = await mount(LIST, services(new HandRunner()));
+    mounted.select('持ち物');
+    expect(mounted.aiButton().hidden).toBe(false);
+    mounted.node('持ち物').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    await mounted.settle();
+    expect(mounted.editor()).not.toBeNull();
+    expect(mounted.aiButton().hidden).toBe(true);
+  });
+
+  it('writes the input\'s alert line only when its text changes', async () => {
+    const mounted = await mount(LIST, services(new HandRunner()));
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run({}, null);
+    const line = mounted.card().querySelector('.mappy-ai-message');
+    const text = line?.firstChild;
+    expect(line?.textContent).toBe(t().aiInstructionNeeded);
+    (mounted.view as unknown as { scheduleLayout: () => void }).scheduleLayout();
+    await mounted.settle();
+    expect(line?.firstChild).toBe(text);
+  });
+});

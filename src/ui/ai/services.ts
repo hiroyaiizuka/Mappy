@@ -29,9 +29,10 @@ export interface AiServices {
   /**
    * An attachment of the input read as a material (§11.2: a note through `DocumentStore.read`, a PDF through pdf.js;
    * LEV-270's `material.ts`). Rejects with an `AiAttachmentError` naming the failure to show (`no-pdf-text`,
-   * `material-too-large`); anything else it rejects with is shown as `material-failed`.
+   * `material-too-large`); anything else it rejects with is shown as `material-failed`. `signal` aborts on 取り消す; the
+   * input stops waiting then either way.
    */
-  readAttachment(file: TFile): Promise<AiMaterial>;
+  readAttachment(file: TFile, signal: AbortSignal): Promise<AiMaterial>;
   /**
    * A runner that answers without any CLI, offered in the input as one more engine: given only by a build with the
    * development unlock (`MAPPY_AI_DEV_UNLOCK`, §11.6), so the real E2E can run the whole UI on the test vault.

@@ -256,6 +256,7 @@ export const ja: Messages = {
   aiDetails: "詳細",
   aiCancelled: "取り消しました。ノートは変わっていません。",
   aiAnchorGone: "AI の下書きの親ノードが無くなったので、下書きを閉じました。",
+  aiAnchorGoneBeforeRun: "AI に頼んだノードが無くなったので、実行しませんでした。",
   aiDraftNode: (text: string) => `AI の下書き: ${text}`,
   aiFailureEngineMissing: "AI の CLI（claude か codex）が見つかりません。導入してから、設定でパスを確かめてください。",
   aiFailureYtDlpMissing: "YouTube の字幕には yt-dlp が要ります。導入してから、もう一度お試しください。",

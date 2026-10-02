@@ -270,6 +270,14 @@ export function swapSections(doc: MindDocument, node: MindNode, neighbor: MindNo
   }
 }
 
+/** The branches as `add-children` writes them in either format (`writtenBranches`), refused when there is none or a title spans lines. */
+export function branchesToWrite(items: readonly NewBranch[], form: 'heading' | 'item'): WrittenBranch[] {
+  const written = writtenBranches(items, form);
+  if (written.length === 0) throw new Error(t().nothingToAdd);
+  for (const item of written) assertSingleLine(item.title);
+  return written;
+}
+
 /** A node's text is one line: a break would start another block and change the tree. */
 export function assertSingleLine(title: string): void {
   if (/[\r\n\u2028\u2029]/u.test(title)) {
@@ -324,9 +332,7 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
  * branches the depth the node can take (`fitBranches`) before it asks. Separated by blank lines, as `add` writes one.
  */
 function addBranches(doc: MindDocument, node: MindNode, items: readonly NewBranch[]): EditPlan {
-  const written = writtenBranches(items, 'heading');
-  if (written.length === 0) throw new Error(t().nothingToAdd);
-  for (const item of written) assertSingleLine(item.title);
+  const written = branchesToWrite(items, 'heading');
   if (written.some(item => node.level + item.depth > 6)) throw new Error(t().headingDepth);
   const offset = node.to;
   const prefix = paragraphGap(doc.source.slice(0, offset), doc.eol);

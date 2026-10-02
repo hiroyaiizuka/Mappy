@@ -736,7 +736,8 @@ export class MindmapView extends FileView {
     this.ai = new AiController({
       app: this.app, pane: this.contentEl, world,
       document: () => this.document, file: () => this.file, selectedId: () => this.selectedId,
-      readOnly: id => this.calledSource(id) !== undefined, mode: () => this.mode, viewport: () => this.viewport.value,
+      readOnly: id => this.calledSource(id) !== undefined, editing: () => this.inlineEditor !== undefined,
+      mode: () => this.mode, viewport: () => this.viewport.value,
       keep: async (nodeId, items) => {
         const outcome = await this.execute({ type: "add-children", nodeId, items });
         if (outcome.write) return { written: true };
@@ -1757,13 +1758,17 @@ export class MindmapView extends FileView {
     this.draw();
   }
 
-  /** Open the folds over `id` and on it: the AI draft under it shows (§11.5). */
+  /**
+   * Open the folds over `id` and on it: the AI draft under it shows (§11.5). Up to the root of its tree on the map: a
+   * free topic's parent in the parse is the note's root, which is another tree (the body), left as it is.
+   */
   private expand(id: string): void {
     const document = this.document;
     let node = document ? findNode(document, id) : undefined;
     let changed = false;
     while (node && document) {
       changed = this.collapsed.delete(node.id) || changed;
+      if (this.isFree(node.id)) break;
       node = node.parentId === null ? undefined : findNode(document, node.parentId);
     }
     if (changed) this.draw();

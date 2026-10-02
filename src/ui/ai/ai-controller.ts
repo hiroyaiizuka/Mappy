@@ -25,6 +25,8 @@ export interface AiHost {
   selectedId(): string | null;
   /** A node of a called map, or the item calling it (§5 M12): read-only for the AI. */
   readOnly(id: string): boolean;
+  /** Whether a title is being typed on the map (the inline editor): the badge would sit on its corner. */
+  editing(): boolean;
   mode(): LayoutMode;
   viewport(): Viewport;
   /** `add-children` through the view's `execute`, one write (§11.5). */
@@ -45,7 +47,6 @@ interface Draft {
   /** The layout id of each item, in preorder (`ai-draft:<generation>-<n>`). */
   ids: Map<OutlineItem, string>;
   values: FormValues;
-  dropped: number;
 }
 
 /** What the input holds: kept for やり直す, which runs it again. */
@@ -327,7 +328,8 @@ export class AiController {
     if (!shown && quiet && this.button.hidden && this.card.hidden) return;
     const eligible = document && node ? this.eligible(document, node) : "no";
     const placed = node ? this.placed(node.id) : undefined;
-    this.button.hidden = !shown || !quiet || eligible === "no" || !placed;
+    // Not over a title being typed: a press meant for the draft's corner would confirm it and open the input instead.
+    this.button.hidden = !shown || !quiet || eligible === "no" || !placed || this.host.editing();
     if (!this.button.hidden && placed) {
       const busy = aiRunLock.busy();
       const virtual = eligible === "virtual-root";
@@ -470,7 +472,7 @@ export class AiController {
     if (!aiRunLock.take(run)) { new Notice(t().aiBusy); this.sync(); return; }
     this.form = null;
     this.run = run;
-    this.failed = null;
+    // A failure being run again stays until the run ends: cancelled, its card (and やり直す) comes back.
     this.message = null;
     this.sync();
     let result: AiResult;
@@ -478,25 +480,40 @@ export class AiController {
       const materials: AiMaterial[] = [];
       for (const file of values.attachments) {
         this.progress(run, { stage: "material", label: file.basename });
-        try { materials.push(await services.readAttachment(file)); }
-        catch (error) {
+        try {
+          // 取り消す ends the wait at once, whether or not the reader heeds the signal: the lock goes with the run.
+          const read = services.readAttachment(file, run.abort.signal);
+          read.catch(() => undefined);
+          const material = await Promise.race([read, whenAborted(run.abort.signal)]);
+          if (!material) break;
+          materials.push(material);
+        } catch (error) {
           // The reason the reader gave (a PDF without text, too large) is the one shown; any other failure is material-failed.
           if (error instanceof AiAttachmentError) throw new MaterialError(error.message, error.reason);
           throw new MaterialError(error instanceof Error ? error.message : String(error), "material-failed");
         }
         if (run.abort.signal.aborted) break;
       }
-      const request: AiRequest = {
-        engine: values.engine === "codex" ? "codex" : "claude",
-        template: values.template,
-        instruction: values.instruction.trim(),
-        depth: Math.min(values.depth, maxDepth(document, node)) as 1 | 2 | 3,
-        webSearch: values.webSearch,
-        context: { ancestors: ancestorTitles(document, node), title: node.title, body: node.kind === "root" ? "" : nodeBody(document, node) },
-        materials,
-      };
-      result = run.abort.signal.aborted ? { kind: "cancelled" }
-        : await runner.run(request, progress => { this.progress(run, progress); }, run.abort.signal);
+      // The context is the note as it is once the materials are read: it may have changed while they were.
+      const now = this.host.document();
+      const current = now ? findNode(now, anchorId) : undefined;
+      const limit = now && current ? maxDepth(now, current) : 0;
+      if (run.abort.signal.aborted) result = { kind: "cancelled" };
+      else if (!now || !current || limit === 0) {
+        new Notice(current ? t().headingDepth : t().aiAnchorGoneBeforeRun);
+        result = { kind: "cancelled" };
+      } else {
+        const request: AiRequest = {
+          engine: values.engine === "codex" ? "codex" : "claude",
+          template: values.template,
+          instruction: values.instruction.trim(),
+          depth: Math.min(values.depth, limit) as 1 | 2 | 3,
+          webSearch: values.webSearch,
+          context: { ancestors: ancestorTitles(now, current), title: current.title, body: current.kind === "root" ? "" : nodeBody(now, current) },
+          materials,
+        };
+        result = await runner.run(request, progress => { this.progress(run, progress); }, run.abort.signal);
+      }
     } catch (error) {
       result = error instanceof MaterialError
         ? { kind: "failed", reason: error.reason, detail: error.message }
@@ -522,7 +539,7 @@ export class AiController {
     // 詳細 opens on the message it was pressed for, not on the next one.
     this.detailOpen = false;
     if (result.kind === "cancelled") {
-      if (!this.draft) new Notice(text.aiCancelled);
+      if (!this.draft && !this.failed) new Notice(text.aiCancelled);
       return;
     }
     if (result.kind === "refused" || result.kind === "failed") {
@@ -541,7 +558,8 @@ export class AiController {
       this.fail(run, { text: FAILURE_TEXT.unparsable(text), detail: result.raw });
       return;
     }
-    this.setDraft({ anchorId: run.anchorId, items, ids: new Map(), values: run.values, dropped: result.dropped });
+    this.failed = null;
+    this.setDraft({ anchorId: run.anchorId, items, ids: new Map(), values: run.values });
     this.message = result.dropped > 0 ? { text: text.aiDropped(result.dropped) } : null;
     this.host.expand(run.anchorId);
   }
@@ -675,7 +693,8 @@ export class AiController {
       // The input is built once per opening: typing must not be interrupted by a redraw.
       if (card.dataset.phase !== "input") this.buildInput(form.values, form.anchorId);
       const line = card.querySelector<HTMLElement>(".mappy-ai-message");
-      if (line) line.setText(form.message ?? "");
+      // Written only when it changes: a live region read again on every frame repeats its alert.
+      if (line && line.textContent !== (form.message ?? "")) line.setText(form.message ?? "");
     } else if (this.run) {
       this.resetCard("running");
       card.createDiv({ cls: "mappy-ai-progress", text: progressLabel(this.run.progress), attr: { role: "status", "aria-live": "polite" } });
@@ -840,6 +859,14 @@ export class AiController {
     const y = Math.max(CARD_MARGIN, Math.min(bottom, pane.clientHeight - height - CARD_MARGIN));
     this.card.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }
+}
+
+/** Resolves to null once `signal` aborts (never, otherwise): what a wait on something that takes no signal races. */
+function whenAborted(signal: AbortSignal): Promise<null> {
+  return new Promise(resolve => {
+    if (signal.aborted) resolve(null);
+    else signal.addEventListener("abort", () => { resolve(null); }, { once: true });
+  });
 }
 
 /** A material that could not be read: the run ends as a failure of `reason`, with the message as its detail. */
