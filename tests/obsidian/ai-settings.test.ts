@@ -78,7 +78,7 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
   it.each<[EntitlementState, string]>([
     [{ kind: 'checking' }, 'ライセンスを確認しています…'],
     [{ kind: 'unregistered' }, '未登録です。'],
-    [{ kind: 'active', expiresAt: Date.UTC(2026, 9, 31) }, `有効です（${new Date(Date.UTC(2026, 9, 31)).toLocaleString()} まで）。`],
+    [{ kind: 'active', expiresAt: Date.UTC(2026, 9, 31) }, `有効です（${new Date(Date.UTC(2026, 9, 31)).toLocaleString('ja-JP')} まで）。`],
     [{ kind: 'expired' }, '期限が切れています。次に AI を使うときに更新します。'],
     [{ kind: 'unreachable', reason: 'offline' }, 'ライセンスサーバーに接続できませんでした（offline）。次に AI を使うときにもう一度試します。'],
     [{ kind: 'invalid', reason: 'license cancelled' }, '無効です（license cancelled）。ライセンスコードを入れ直してください。'],
@@ -137,6 +137,17 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
     // The first row was dropped by the next display(): it is no longer brought up to date.
     expect(status.textContent).toBe('未登録です。');
     expect(row(tab.containerEl).status.textContent).toBe('期限が切れています。次に AI を使うときに更新します。');
+  });
+
+  it('keeps a row drawn before it is in the document up to date (1.13 renders before it inserts)', () => {
+    const { tab, move } = mount({ kind: 'checking' });
+    const runtime = tab as unknown as HarnessSettingTab;
+    tab.containerEl.remove();
+    runtime.update();
+    runtime.renderTab();
+    const drawn = row(tab.containerEl).status;
+    move({ kind: 'unregistered' });
+    expect(drawn.textContent).toBe('未登録です。');
   });
 
   it('lets go of a row taken out of the document without its cleanup (a settings search result dropped)', () => {

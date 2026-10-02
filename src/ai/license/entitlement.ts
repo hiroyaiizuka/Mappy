@@ -82,6 +82,13 @@ export class LicenseEntitlement implements Entitlement {
   private readonly listeners = new Set<(state: EntitlementState) => void>();
   private timer: number | null = null;
   private refreshing: Promise<EntitlementState> | null = null;
+  /**
+   * Tokens the server issued that this device could not store (storage full or blocked): used in place of the store
+   * until a write succeeds, another window writes, or the plugin unloads, so a rotated secret is not lost at once.
+   */
+  private unsaved: StoredLicense | null = null;
+  /** A request given up on after the timeout and still on its way; no other is sent with the same secret meanwhile. */
+  private late: Promise<unknown> | null = null;
   private disposed = false;
   private readonly client: LicenseClient;
   private readonly now: () => number;
@@ -97,12 +104,37 @@ export class LicenseEntitlement implements Entitlement {
     this.newDeviceId = deps.newDeviceId ?? (() => crypto.randomUUID());
     this.lock = deps.lock ?? webLock();
     this.timers = deps.timers ?? windowTimers;
-    this.unwatch = deps.store.subscribe(() => { void this.load(); });
+    this.unwatch = deps.store.subscribe(() => {
+      this.unsaved = null;
+      void this.load();
+    });
+  }
+
+  private read(): StoredLicense | null {
+    return this.unsaved ?? this.deps.store.read();
+  }
+
+  /** Store `next`, or keep it in memory when the store refuses (and throw, for the caller to say so). */
+  private save(next: StoredLicense): void {
+    try {
+      this.deps.store.write(next);
+      this.unsaved = null;
+    } catch (error) {
+      this.unsaved = next;
+      throw error;
+    }
+  }
+
+  /** Watch a request given up on: `keep` runs under the lock with what the server answered in the end. */
+  private watchLate(late: Promise<IssuedTokens>, keep: (tokens: IssuedTokens) => Promise<EntitlementState>): void {
+    const settled = late.then(tokens => this.lock(() => keep(tokens)), () => undefined)
+      .finally(() => { if (this.late === settled) this.late = null; });
+    this.late = settled;
   }
 
   /** Before its first verification ends this stays `checking`; later ones keep the previous state until they end. */
   load(): Promise<EntitlementState> {
-    return this.adopt(this.deps.store.read());
+    return this.adopt(this.read());
   }
 
   state(): EntitlementState {
@@ -125,15 +157,30 @@ export class LicenseEntitlement implements Entitlement {
     const licenseCode = code.trim();
     if (licenseCode === '') return Promise.resolve(this.state());
     return this.lock(async () => {
-      let stored = this.deps.store.read();
+      let stored = this.read();
       if (!stored) {
         stored = { deviceId: this.newDeviceId() };
         this.deps.store.write(stored);
       }
-      const tokens = await this.client.register(licenseCode, stored.deviceId);
-      const next: StoredLicense = { deviceId: stored.deviceId, licenseCode, ...tokens };
+      const { deviceId } = stored;
+      const registered = (tokens: IssuedTokens): StoredLicense => ({ deviceId, licenseCode, ...tokens });
+      let tokens: IssuedTokens;
       try {
-        this.deps.store.write(next);
+        tokens = await this.client.register(licenseCode, deviceId);
+      } catch (error) {
+        // Given up on, the registration may still go through: keep its tokens if the device is still unregistered.
+        if (error instanceof LicenseRequestError && error.late) {
+          this.watchLate(error.late, late => {
+            const latest = this.read();
+            if (latest?.deviceId !== deviceId || latest.refreshSecret) return Promise.resolve(this.state());
+            return this.keepIssued(registered(late));
+          });
+        }
+        throw error;
+      }
+      const next = registered(tokens);
+      try {
+        this.save(next);
       } catch (error) {
         await this.adopt(next, true);
         throw error;
@@ -163,11 +210,13 @@ export class LicenseEntitlement implements Entitlement {
   private async refreshOnce(): Promise<EntitlementState> {
     const before = this.state();
     if (before.kind !== 'expired' && before.kind !== 'unreachable') return before;
+    // The secret of a request still on its way may already be rotated: sending it again would be refused.
+    if (this.late) return this.settle({ kind: 'unreachable', reason: 'waiting for the previous request' });
     // (1) Another window may have refreshed: use its token without sending anything.
-    if ((await this.check(this.deps.store.read())).kind !== 'expired') return this.load();
+    if ((await this.check(this.read())).kind !== 'expired') return this.load();
     return this.lock(async () => {
       // (2) Again under the lock, for a window that refreshed while this one waited.
-      const stored = this.deps.store.read();
+      const stored = this.read();
       if ((await this.check(stored)).kind !== 'expired' || !stored?.refreshSecret) return this.adopt(stored);
       const sent = stored.refreshSecret;
       let tokens: IssuedTokens;
@@ -177,7 +226,7 @@ export class LicenseEntitlement implements Entitlement {
         if (error instanceof LicenseRequestError && error.kind === 'rejected') return this.refused(stored, sent, error.reason);
         // Given up on, the request may still rotate the secret on the server: keep what it answers in the end.
         if (error instanceof LicenseRequestError && error.late) {
-          void error.late.then(late => this.lock(() => this.storeLate(stored, sent, late)), () => undefined);
+          this.watchLate(error.late, late => this.storeLate(stored, sent, late));
         }
         return this.settle({ kind: 'unreachable', reason: error instanceof Error ? error.message : String(error) });
       }
@@ -198,25 +247,32 @@ export class LicenseEntitlement implements Entitlement {
    * another refresh has stored a newer pair, this one is older than it.
    */
   private storeLate(stored: StoredLicense, sent: string, tokens: IssuedTokens): Promise<EntitlementState> {
-    const latest = this.deps.store.read() ?? stored;
+    const latest = this.read() ?? stored;
     if (latest.refreshSecret !== sent) return this.adopt(latest);
     return this.storeRotated(stored, tokens);
   }
 
   /** The server refused `sent`. Only that secret is dropped: a newer one another window stored meanwhile is kept. */
   private refused(stored: StoredLicense, sent: string, reason: string): Promise<EntitlementState> {
-    const latest = this.deps.store.read() ?? stored;
+    const latest = this.read() ?? stored;
     if (latest.refreshSecret !== sent) return this.adopt(latest);
     return this.writeAndAdopt(stored, ({ deviceId, licenseCode }) => ({ deviceId, ...(licenseCode ? { licenseCode } : {}), rejected: reason }));
   }
 
-  /** Write `change(latest)` and verify it as just issued; a store that cannot be written leaves the device `unreachable`. */
+  /** Write `change(latest)` and verify it as just issued. */
   private writeAndAdopt(stored: StoredLicense, change: (latest: StoredLicense) => StoredLicense): Promise<EntitlementState> {
-    const next = change(this.deps.store.read() ?? stored);
+    return this.keepIssued(change(this.read() ?? stored));
+  }
+
+  /**
+   * Keep what the server has just issued and verify it. A store that cannot be written keeps it in memory instead:
+   * the server has already retired the previous secret, so dropping the new pair would lose the license.
+   */
+  private keepIssued(next: StoredLicense): Promise<EntitlementState> {
     try {
-      this.deps.store.write(next);
-    } catch (error) {
-      return Promise.resolve(this.settle({ kind: 'unreachable', reason: error instanceof Error ? error.message : String(error) }));
+      this.save(next);
+    } catch {
+      return this.adopt(next, true);
     }
     return this.adoptIssued(next);
   }
@@ -226,7 +282,7 @@ export class LicenseEntitlement implements Entitlement {
     const state = await this.adopt(next, true);
     if (state.kind === 'invalid' && !next.rejected && next.accessToken) {
       try {
-        this.deps.store.write({ ...next, unverified: state.reason });
+        this.save({ ...next, unverified: state.reason });
       } catch {
         // Not kept: a reload reads the token as one to refresh, which asks the server again.
       }

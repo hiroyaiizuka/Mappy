@@ -17,7 +17,9 @@
  * in this window: Mappy's own read of `mappy-ai-license` during the reload (wrapped `Storage.prototype.getItem`)
  * must carry a frame the Mappy pattern matches, so the frame name is checked on Mappy's real stack; a probe call to
  * `window.require` from a script named like Mappy's (a CDP evaluation with a `sourceURL`) must be counted; and the
- * license probe below must be seen.
+ * license probe below must be seen. The Node count covers `window.require`, the one way §11.1 lets Mappy reach Node
+ * (`loadNode()`); any other way is for the lint LEV-270 adds (`no-restricted-syntax` on `require`, §11.1) and the import test
+ * (tests/tooling/ai-boundaries.test.mjs), not by this case.
  *
  * `--detect` (the check that the counting works; a 0 from a broken counter shows nothing): the vault must hold the
  * development unlock (`npm run harness:prepare:ai-dev`), AI is run once, and the Node count must be 1 or more. Running
@@ -132,8 +134,9 @@ try {
     const license = plugin.entitlement?.state?.() ?? null;
     if (${JSON.stringify(!detect)} && license?.kind !== 'unregistered') throw new Error('Mappy is not in the free state: ' + JSON.stringify(license));
     return { version: plugin.manifest.version, license };`)));
-  // The frame pattern, checked on Mappy's own stack: its read of the license entry while it loaded.
-  required(record, 'frames', await step('frames', () => evaluate(`
+  // The frame pattern, checked on Mappy's own stack: its read of the license entry while it loaded. The development
+  // unlock reads no store, so --detect shows the pattern on the Node calls it counts instead.
+  if (!detect) required(record, 'frames', await step('frames', () => evaluate(`
     const reads = window.__mappyAiFreeState.licenseReads.slice();
     if (reads.length === 0) throw new Error('Mappy did not read mappy-ai-license while it loaded; the frames cannot be checked');
     const unmatched = reads.filter(stack => !/plugin:mappy/u.test(stack));
@@ -158,7 +161,7 @@ try {
     await new Promise(resolve => setTimeout(resolve, 500));
     const names = Array.from(document.querySelectorAll('.vertical-tab-content .setting-item-name'), el => el.textContent);
     app.setting.close();
-    if (!names.includes('ライセンスコード')) throw new Error('the settings tab with the AI section was not shown: ' + JSON.stringify(names));
+    if (!names.includes('ライセンスコード') && !names.includes('License code')) throw new Error('the settings tab with the AI section was not shown: ' + JSON.stringify(names));
     return names;`)));
   if (detect) await step('run AI once', runAiOnce);
   const seen = await step('counts', () => evaluate(`

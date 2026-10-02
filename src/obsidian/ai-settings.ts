@@ -1,6 +1,6 @@
 import type { ButtonComponent, Setting, TextComponent } from 'obsidian';
 import { LicenseRequestError, type Entitlement, type EntitlementState } from '../ai/license/entitlement';
-import { t } from '../i18n';
+import { t, textLocale } from '../i18n';
 import type { MapSettingDefinition } from './settings-tab';
 
 /** The license line of the AI section, for each state of §11.6. */
@@ -9,7 +9,7 @@ export function licenseStatusText(state: EntitlementState): string {
   switch (state.kind) {
     case 'checking': return text.aiChecking;
     case 'unregistered': return text.aiUnregistered;
-    case 'active': return text.aiActive(new Date(state.expiresAt).toLocaleString());
+    case 'active': return text.aiActive(new Date(state.expiresAt).toLocaleString(textLocale()));
     case 'expired': return text.aiExpired;
     case 'unreachable': return text.aiUnreachable(state.reason);
     case 'invalid': return text.aiInvalid(state.reason);
@@ -34,15 +34,19 @@ function registerFailure(error: unknown): string {
  * (`forgetRows`), so a tab opened and closed many times does not pile up listeners.
  */
 export class AiSettingsSection {
-  /** Each drawn license row's update, by its element. */
-  private readonly rows = new Map<() => void, HTMLElement>();
+  /** Each drawn license row's update, its element, and whether it has been seen in the document. */
+  private readonly rows = new Map<() => void, { element: HTMLElement; shown: boolean }>();
 
-  /** A row out of the document (a search result dropped without its cleanup, the tab hidden) is let go here. */
+  /**
+   * A row that was in the document and has left it (a search result dropped without its cleanup, the tab hidden)
+   * is let go here. One drawn but not attached yet (1.13 renders a row before inserting it) is kept up to date.
+   */
   constructor(private readonly entitlement: Entitlement) {
     entitlement.onChange(() => {
-      for (const [sync, element] of this.rows) {
-        if (element.isConnected) sync();
-        else this.rows.delete(sync);
+      for (const [sync, row] of this.rows) {
+        if (row.element.isConnected) row.shown = true;
+        else if (row.shown) { this.rows.delete(sync); continue; }
+        sync();
       }
     });
   }
@@ -108,7 +112,7 @@ export class AiSettingsSection {
       button = control;
       control.setButtonText(t().setAiRegister).setCta().onClick(() => { void submit(); });
     });
-    this.rows.set(sync, setting.settingEl);
+    this.rows.set(sync, { element: setting.settingEl, shown: setting.settingEl.isConnected });
     sync();
     return () => { this.rows.delete(sync); };
   }

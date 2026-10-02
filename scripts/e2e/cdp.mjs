@@ -14,6 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { prepareCommand } from '../preflight.mjs';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -74,7 +75,7 @@ const KEYS = {
  */
 export async function connect({ popout, appless = false, language: expected = LANGUAGE, build = 'release' } = {}) {
   if (build !== HARNESS_BUILD) {
-    throw new Error(`${VAULT} holds the ${HARNESS_BUILD} build, not ${build}; run npm run ${build === 'release' ? 'harness:prepare' : 'harness:prepare:ai-dev'} and restart Obsidian. No action taken.`);
+    throw new Error(`${VAULT} holds the ${HARNESS_BUILD} build, not ${build}; run ${prepareCommand[build]} and reload the plugin. No action taken.`);
   }
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and

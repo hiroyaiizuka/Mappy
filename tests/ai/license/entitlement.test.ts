@@ -328,6 +328,29 @@ describe('LicenseEntitlement.register', () => {
     expect(entitlement.state()).toEqual({ kind: 'unregistered' });
   });
 
+  it('keeps the tokens of a registration given up on that went through after all', async () => {
+    const { open, server, storage } = await setup();
+    let release!: () => void;
+    server.gate = new Promise<void>(resolve => { release = resolve; });
+    const sent: { answer?: Promise<IssuedTokens> } = {};
+    const slow: LicenseClient = {
+      register: (code, deviceId) => {
+        sent.answer = server.register(code, deviceId);
+        return Promise.reject(new LicenseRequestError('unreachable', 'timeout', sent.answer));
+      },
+      refresh: () => Promise.reject(new Error('unused')),
+    };
+    const entitlement = open({ client: slow });
+    await entitlement.load();
+    await expect(entitlement.register('GOOD-CODE')).rejects.toMatchObject({ reason: 'timeout' });
+    expect(entitlement.state()).toEqual({ kind: 'unregistered' });
+    release();
+    await sent.answer;
+    await settle();
+    expect(storage.value).toMatchObject({ deviceId: 'device-1', licenseCode: 'GOOD-CODE', refreshSecret: 'secret-1' });
+    expect(entitlement.state().kind).toBe('active');
+  });
+
   it('sends nothing for an empty code', async () => {
     const { open, server } = await setup();
     const entitlement = open();
@@ -401,12 +424,42 @@ describe('LicenseEntitlement.refresh', () => {
     expect(server.calls).toEqual([]);
   });
 
-  it('is unreachable when the rotated pair cannot be stored', async () => {
-    const { open, clock, storage } = await registered();
+  it('keeps a rotated pair it cannot store in memory, and refreshes with it next time instead of the retired secret', async () => {
+    const { open, clock, storage, server } = await registered();
     clock.advance(2 * HOUR);
     const entitlement = open({ store: storage.window({ failWrites: true }) });
     await entitlement.load();
-    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'storage is full' });
+    expect((await entitlement.refresh()).kind).toBe('active');
+    expect(storage.value?.refreshSecret).toBe('secret-1');
+    clock.advance(2 * HOUR);
+    expect((await entitlement.refresh()).kind).toBe('active');
+    expect(server.calls.map(call => call.body.refreshSecret)).toEqual(['secret-1', 'secret-2']);
+  });
+
+  it('sends no second refresh while one given up on is still on its way, and keeps its answer', async () => {
+    const { open, server, clock, storage } = await registered();
+    clock.advance(2 * HOUR);
+    let release!: () => void;
+    server.gate = new Promise<void>(resolve => { release = resolve; });
+    const sent: { answer?: Promise<IssuedTokens> } = {};
+    const slow: LicenseClient = {
+      register: () => Promise.reject(new Error('unused')),
+      refresh: (deviceId, secret) => {
+        sent.answer = server.refresh(deviceId, secret);
+        return Promise.reject(new LicenseRequestError('unreachable', 'timeout', sent.answer));
+      },
+    };
+    const entitlement = open({ client: slow });
+    await entitlement.load();
+    await entitlement.refresh();
+    // The user presses AI again before the first answer arrives: nothing is sent with the same secret.
+    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'waiting for the previous request' });
+    expect(server.calls).toHaveLength(1);
+    release();
+    await sent.answer;
+    await settle();
+    expect(storage.value?.refreshSecret).toBe('secret-2');
+    expect(entitlement.state().kind).toBe('active');
   });
 
   it('keeps a secret the server rotated after the request was given up on, so the next refresh is not refused', async () => {

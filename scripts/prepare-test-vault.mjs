@@ -4,6 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import {
   allowedCommunityPlugins,
   assertGeneratedVault,
+  buildFromArgs,
   assertSafePath,
   getHarnessPaths,
   markerContents,
@@ -38,13 +39,9 @@ function writeGeneratedFile(paths, filename, contents) {
 }
 
 try {
-  const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length === 1 && args[0] !== '--ai-dev')) {
-    throw new Error('Usage: node scripts/prepare-test-vault.mjs [--ai-dev].');
-  }
   // `--ai-dev` installs dist/mappy-ai-dev, the AI development unlock (npm run harness:prepare:ai-dev); the vault
   // records which build it holds, and preflight compares against that one.
-  const buildKind = args[0] === '--ai-dev' ? 'ai-dev' : 'release';
+  const buildKind = buildFromArgs(process.argv.slice(2), 'Usage: node scripts/prepare-test-vault.mjs [--ai-dev].');
   const paths = getHarnessPaths();
   const build = readHarnessBuild(paths, buildKind);
   assertSafePath(paths.root, paths.fixtureSource, 'directory');
