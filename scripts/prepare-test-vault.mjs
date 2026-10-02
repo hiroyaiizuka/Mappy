@@ -4,6 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import {
   allowedCommunityPlugins,
   assertGeneratedVault,
+  buildFromArgs,
   assertSafePath,
   getHarnessPaths,
   markerContents,
@@ -38,11 +39,11 @@ function writeGeneratedFile(paths, filename, contents) {
 }
 
 try {
-  if (process.argv.length !== 2) {
-    throw new Error('Usage: node scripts/prepare-test-vault.mjs (no arguments).');
-  }
+  // `--ai-dev` installs dist/mappy-ai-dev, the AI development unlock (npm run harness:prepare:ai-dev); the vault
+  // records which build it holds, and preflight compares against that one.
+  const buildKind = buildFromArgs(process.argv.slice(2), 'Usage: node scripts/prepare-test-vault.mjs [--ai-dev].');
   const paths = getHarnessPaths();
-  const build = readHarnessBuild(paths);
+  const build = readHarnessBuild(paths, buildKind);
   assertSafePath(paths.root, paths.fixtureSource, 'directory');
   const fixtures = readdirSync(paths.fixtureSource)
     .filter((filename) => filename.endsWith('.md') || filename.endsWith('.svg'))
@@ -71,6 +72,7 @@ try {
     ...fixtures.map(([filename, contents]) => [join(paths.fixtureTarget, filename), contents]),
     ...performanceFixtures.map(([filename, contents]) => [join(paths.fixtureTarget, filename), contents]),
     [paths.communityPlugins, `${JSON.stringify(enabledPlugins, null, 2)}\n`],
+    [paths.buildMark, `${buildKind}\n`],
   ];
   // Check all existing destination parents and files before changing any content.
   for (const [filename] of outputs) {
@@ -88,8 +90,8 @@ try {
   for (const [filename, contents] of outputs) {
     writeGeneratedFile(paths, filename, contents);
   }
-  const result = runPreflight(paths);
-  console.info(`Prepared ${relative(paths.root, paths.vault)} with ${result.id} ${result.version}.`);
+  const result = runPreflight(paths, { build: buildKind });
+  console.info(`Prepared ${relative(paths.root, paths.vault)} with ${result.id} ${result.version}${buildKind === 'release' ? '' : ` (${buildKind})`}.`);
   console.info(`Copied ${fixtures.length} fixtures and generated ${performanceFixtures.length} performance documents in test-vault/Fixtures.`);
   console.info(`Enabled community plugins: ${result.enabledPlugins.join(', ')}.`);
   console.info('Obsidian was not started. Open test-vault as a separate vault for manual checks.');

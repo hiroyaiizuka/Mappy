@@ -66,6 +66,25 @@ export const knownLimitationReadmes = [
     example: '「（0.3.5 まで）」',
   },
 ];
+/**
+ * The development unlock's marker (src/ai/license/dev-unlock.ts `DEV_UNLOCK_MARKER`). Only a
+ * `MAPPY_AI_DEV_UNLOCK=1` bundle has it (docs/architecture.md §11.6); a packaged main.js that does
+ * would ship AI unlocked, so `--artifacts` fails it.
+ */
+export const devUnlockMarker = 'mappy-ai-dev-unlock';
+
+/** Errors for a bundle (`label` names it) that has the development unlock, or, with `expected`, that lacks it. */
+export function devUnlockErrors(bundle, label, { expected = false } = {}) {
+  const found = bundle.includes(devUnlockMarker);
+  if (found && !expected) {
+    return [`${label}: contains the AI development unlock ("${devUnlockMarker}"); build it without MAPPY_AI_DEV_UNLOCK.`];
+  }
+  if (!found && expected) {
+    return [`${label}: lacks the AI development unlock ("${devUnlockMarker}"); build it with MAPPY_AI_DEV_UNLOCK=1.`];
+  }
+  return [];
+}
+
 const manifestKeys = new Set([
   'id', 'name', 'version', 'minAppVersion', 'description', 'author',
   'isDesktopOnly', 'authorUrl', 'fundingUrl',
@@ -344,6 +363,7 @@ export function validateRelease(rootDir, { artifacts = false, knownLimitations =
       if (source && distribution && !source.equals(distribution)) {
         errors.push(`${relativePath}: contents must match the root ${filename}.`);
       }
+      if (filename === 'main.js' && distribution) errors.push(...devUnlockErrors(distribution.toString('utf8'), relativePath));
     }
   }
 

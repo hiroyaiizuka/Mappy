@@ -18,6 +18,7 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
 import { FakeRunner } from '../../src/ui/ai/fake-runner';
 import { AiAttachmentError, aiRunLock, type AiEntitlementView, type AiServices } from '../../src/ui/ai/services';
+import { showsAiButton, type EntitlementState } from '../../src/ai/license/entitlement';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -985,4 +986,24 @@ describe('the AI after the third code review', () => {
     await mounted.settle();
     expect(line?.firstChild).toBe(text);
   });
+});
+
+/**
+ * The license gate (LEV-273, merged into feature/ai) as the AI's entrance reads it: `Entitlement.state()` passes as
+ * `AiServices.state()` with no conversion (the wiring in src/main.ts, #159), and the button shows exactly where the
+ * gate's own `showsAiButton` says it does. The UI does not import the license module (§11.8); this file holds the two together.
+ */
+describe('the license gate and the AI button agree', () => {
+  const STATES: EntitlementState[] = [
+    { kind: 'checking' }, { kind: 'unregistered' }, { kind: 'active', expiresAt: Date.now() + 60_000 },
+    { kind: 'expired' }, { kind: 'unreachable', reason: 'offline' }, { kind: 'invalid', reason: 'bad' },
+  ];
+  for (const state of STATES) {
+    it(`${state.kind}: the button shows as showsAiButton says`, async () => {
+      const view: AiEntitlementView = state;
+      const mounted = await mount(LIST, services(new HandRunner(), view));
+      mounted.select('持ち物');
+      expect(mounted.aiButton().hidden).toBe(!showsAiButton(state));
+    });
+  }
 });

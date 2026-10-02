@@ -1,4 +1,6 @@
+// docs/architecture.md §11.4 の型（LEV-270・LEV-271・LEV-273 が共有する。形を変えるときは §11.4 を先に直す）。
 export type AiTemplate = 'summary' | 'brainstorm' | 'issue-tree' | 'free';
+
 export interface AiRequest {
   engine: 'claude' | 'codex';
   template: AiTemplate;
@@ -8,7 +10,9 @@ export interface AiRequest {
   context: { ancestors: string[]; title: string; body: string };  // 祖先の題名（根から）と、選んだノードの題名・本文
   materials: AiMaterial[];      // §11.2 で用意したもの（無ければ空）
 }
+
 export type AiMaterial = { kind: 'youtube' | 'pdf' | 'note'; label: string; text: string };
+
 export type AiProgress =
   | { stage: 'material'; label: string }                      // 字幕を取得中・PDF を読み取り中
   | { stage: 'starting' }
@@ -16,12 +20,15 @@ export type AiProgress =
   | { stage: 'fetching'; url: string }
   | { stage: 'thinking' }
   | { stage: 'writing' };
+
 export interface OutlineItem { text: string; children: OutlineItem[] }
+
 export type AiResult =
   | { kind: 'outline'; items: OutlineItem[]; dropped: number; raw: string }  // dropped: 捨てた行の数
   | { kind: 'refused'; reason: string; raw: string }       // 「取得できませんでした: …」
   | { kind: 'failed'; reason: AiFailure; detail: string }
   | { kind: 'cancelled' };
+
 export type AiFailure =
   | 'engine-missing'        // CLI が見つからない（導入の案内を出す）
   | 'ytdlp-missing'         // yt-dlp が見つからない（導入の案内を出す）
@@ -35,6 +42,7 @@ export type AiFailure =
   | 'output-too-large'      // 標準出力が 5 MB 超
   | 'unparsable'            // 箇条書きが 1 つも残らない
   | 'exited';               // CLI が 0 以外で終わった（detail に stderr の末尾）
+
 export interface AiRunner {
   run(request: AiRequest, onProgress: (progress: AiProgress) => void, signal: AbortSignal): Promise<AiResult>;
 }

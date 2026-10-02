@@ -17,6 +17,15 @@ const ROWS = [
   ['README.ja.md', '| iOS・Android |'],
 ];
 
+describe('Mappy stays desktop only (the person\'s decision, 2026-10-02)', () => {
+  // The AI feature (M9) reaches Node at run time (docs/architecture.md §11.1), and Submission requirements want
+  // `isDesktopOnly: true` for that; on 2026-10-02 the person decided that all of Mappy stays desktop only, rather
+  // than asking the review about mobile or splitting AI into another plugin.
+  it('manifest.json keeps isDesktopOnly: true', () => {
+    expect(manifest.isDesktopOnly).toBe(true);
+  });
+});
+
 describe("isDesktopOnly and the READMEs' mobile row", () => {
   it.each(ROWS)("%s's mobile row matches isDesktopOnly", async (file, rowStart) => {
     const readme = await readFile(new URL(`../../${file}`, import.meta.url), 'utf8');

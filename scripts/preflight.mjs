@@ -2,9 +2,25 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { sourcesSha256 } from './build-sources.mjs';
+import { devUnlockErrors } from './validate-release.mjs';
 
 export const pluginFiles = ['main.js', 'manifest.json', 'styles.css'];
 export const markerContents = 'Mappy generated test vault v1\n';
+/**
+ * The builds a generated vault can hold, named in its `.mappy-harness-build`: `release` (`npm run harness:prepare`,
+ * the packaged dist/mappy) and `ai-dev` (`npm run harness:prepare:ai-dev`, dist/mappy-ai-dev with the AI
+ * development unlock, docs/architecture.md §11.6). A vault without the file predates it and holds `release`.
+ */
+export const harnessBuilds = ['release', 'ai-dev'];
+/** The command that prepares a vault with each build. */
+export const prepareCommand = { release: 'npm run harness:prepare', 'ai-dev': 'npm run harness:prepare:ai-dev' };
+
+/** The build a harness script was asked for: none, or `--ai-dev`; anything else is refused with `usage`. */
+export function buildFromArgs(args, usage) {
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--ai-dev')) throw new Error(usage);
+  return args[0] === '--ai-dev' ? 'ai-dev' : 'release';
+}
 /** Community plugins a generated vault may enable: mappy, and Excalidraw for the M6 cases (E23–E27, E30, E33). */
 export const allowedCommunityPlugins = ['mappy', 'obsidian-excalidraw-plugin'];
 
@@ -15,6 +31,8 @@ export function harnessPaths(root) {
     vault,
     marker: join(vault, '.mappy-generated'),
     distribution: join(root, 'dist', 'mappy'),
+    devDistribution: join(root, 'dist', 'mappy-ai-dev'),
+    buildMark: join(vault, '.mappy-harness-build'),
     installed: join(vault, '.obsidian', 'plugins', 'mappy'),
     communityPlugins: join(vault, '.obsidian', 'community-plugins.json'),
     fixtureSource: join(root, 'tests', 'fixtures'),
@@ -118,30 +136,91 @@ function sha256(contents) {
   return createHash('sha256').update(contents).digest('hex');
 }
 
-/** Verify the packaged build before preparing or checking a generated vault. */
-export function readHarnessBuild(paths) {
+function assertHarnessBuild(build) {
+  if (!harnessBuilds.includes(build)) {
+    throw new Error(`Unknown harness build "${build}"; expected ${harnessBuilds.join(' or ')}.`);
+  }
+}
+
+/** The build the generated vault was prepared with (its `.mappy-harness-build`). */
+export function readInstalledBuild(paths) {
+  if (!assertSafePath(paths.root, paths.buildMark, 'file', { optional: true })) return 'release';
+  const build = readFileSync(paths.buildMark).toString('utf8').trim();
+  assertHarnessBuild(build);
+  return build;
+}
+
+/**
+ * Verify a packaged build before preparing or checking a generated vault. `release`: the root files and dist/mappy
+ * are the same bytes (`npm run package`). `ai-dev`: dist/mappy-ai-dev has the root manifest and styles, its main.js
+ * carries the development unlock (the inverse of `validate-release --artifacts`), and the sources it records
+ * (`sources.json`, over its metafile's inputs) are the ones on disk; the root main.js is the release build, so it is
+ * not compared.
+ */
+export function readHarnessBuild(paths, build = 'release') {
+  assertHarnessBuild(build);
   const files = new Map();
+  const directory = build === 'release' ? paths.distribution : paths.devDistribution;
+  const label = build === 'release' ? 'dist/mappy' : 'dist/mappy-ai-dev';
   for (const filename of pluginFiles) {
-    const source = readSafeFile(paths.root, join(paths.root, filename));
-    const distribution = readSafeFile(paths.root, join(paths.distribution, filename));
-    if (sha256(source) !== sha256(distribution)) {
-      throw new Error(`${filename}: source and dist/mappy differ; run npm run package.`);
+    const distribution = readSafeFile(paths.root, join(directory, filename));
+    if (build === 'release' || filename !== 'main.js') {
+      const source = readSafeFile(paths.root, join(paths.root, filename));
+      if (sha256(source) !== sha256(distribution)) {
+        throw new Error(`${filename}: source and ${label} differ; run ${build === 'release' ? 'npm run package' : prepareCommand[build]}.`);
+      }
     }
     files.set(filename, distribution);
   }
-  const manifest = parseManifest(files.get('manifest.json'), 'dist/mappy/manifest.json');
+  if (build === 'ai-dev') {
+    const errors = devUnlockErrors(files.get('main.js').toString('utf8'), `${label}/main.js`, { expected: true });
+    if (errors.length > 0) throw new Error(errors[0]);
+    // Built from the sources on disk now (esbuild.config.mjs records them), not left from an earlier tree.
+    let current;
+    let recorded;
+    try {
+      const { inputs } = JSON.parse(readSafeFile(paths.root, join(directory, 'build-meta.json')).toString('utf8'));
+      // Inside the project and through no symbolic link, as every other file preflight reads. Dependencies are read
+      // where the package manager put them (node_modules may be a link, pnpm hard-links its files); only kept inside.
+      for (const input of Object.keys(inputs)) {
+        if (input.startsWith('node_modules/')) {
+          const inside = relative(paths.root, resolve(paths.root, input));
+          if (inside.startsWith('..') || isAbsolute(inside)) throw new Error(`Expected a path inside the project: ${input}`);
+        } else {
+          assertSafePath(paths.root, join(paths.root, input), 'file');
+        }
+      }
+      recorded = JSON.parse(readSafeFile(paths.root, join(directory, 'sources.json')).toString('utf8')).sha256;
+      current = sourcesSha256(paths.root, inputs);
+    } catch (error) {
+      throw new Error(`${label}: cannot tell which sources it was built from (${error.message}); run ${prepareCommand['ai-dev']}.`);
+    }
+    if (current !== recorded) {
+      throw new Error(`${label}/main.js was built from other sources than the ones on disk; run ${prepareCommand['ai-dev']}.`);
+    }
+  }
+  const manifest = parseManifest(files.get('manifest.json'), `${label}/manifest.json`);
   return { files, manifest };
 }
 
-export function runPreflight(paths) {
+/**
+ * `build`: the build the caller needs (a case of the AI development unlock asks for `ai-dev`). A vault holding the
+ * other one is refused, so a case never runs on a build it was not written for.
+ */
+export function runPreflight(paths, { build: wanted = 'release' } = {}) {
   assertGeneratedVault(paths);
-  const build = readHarnessBuild(paths);
+  assertHarnessBuild(wanted);
+  const installedBuild = readInstalledBuild(paths);
+  if (installedBuild !== wanted) {
+    throw new Error(`test-vault holds the ${installedBuild} build, not ${wanted}; run ${prepareCommand[wanted]}.`);
+  }
+  const build = readHarnessBuild(paths, wanted);
   const hashes = {};
   for (const filename of pluginFiles) {
     const installed = readSafeFile(paths.root, join(paths.installed, filename));
     const expected = sha256(build.files.get(filename));
     if (sha256(installed) !== expected) {
-      throw new Error(`${filename}: installed bytes differ; run npm run harness:prepare.`);
+      throw new Error(`${filename}: installed bytes differ; run ${prepareCommand[wanted]}.`);
     }
     hashes[filename] = expected;
   }
@@ -154,7 +233,7 @@ export function runPreflight(paths) {
   }
   const enabledPlugins = readCommunityPlugins(paths);
   assertCommunityPlugins(enabledPlugins);
-  return { id: build.manifest.id, version: build.manifest.version, sha256: hashes, enabledPlugins };
+  return { id: build.manifest.id, version: build.manifest.version, build: wanted, sha256: hashes, enabledPlugins };
 }
 
 const invokedAsScript = process.argv[1]
@@ -162,13 +241,11 @@ const invokedAsScript = process.argv[1]
 
 if (invokedAsScript) {
   try {
-    if (process.argv.length !== 2) {
-      throw new Error('Usage: node scripts/preflight.mjs (no arguments).');
-    }
-    const result = runPreflight(getHarnessPaths());
-    console.info(`Preflight passed: ${result.id} ${result.version}.`);
+    const build = buildFromArgs(process.argv.slice(2), 'Usage: node scripts/preflight.mjs [--ai-dev].');
+    const result = runPreflight(getHarnessPaths(), { build });
+    console.info(`Preflight passed: ${result.id} ${result.version}${result.build === 'release' ? '' : ` (${result.build})`}.`);
     for (const [filename, hash] of Object.entries(result.sha256)) {
-      console.info(`${filename}: ${hash} (source = dist = test-vault)`);
+      console.info(`${filename}: ${hash} (${result.build === 'release' ? 'source = dist' : 'dist/mappy-ai-dev'} = test-vault)`);
     }
     console.info(`Enabled community plugins: ${result.enabledPlugins.join(', ')}.`);
   } catch (error) {
