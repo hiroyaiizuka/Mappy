@@ -6,7 +6,7 @@ English | [日本語](README.ja.md) | [Documentation](https://obsidian.levers.co
 
 Mappy lets you read and edit an Obsidian note as a mind map, without turning it into anything else. A plain note written with H2 headings and bullet lists is shown in one of four layouts (mind map, timeline, hierarchy, balanced), and adding, editing and moving nodes writes back to that note's Markdown. There is no special file format: without Mappy, the note is still headings and bullet lists.
 
-**0.x is a beta.** It has been checked only with Obsidian on macOS desktop. Real typing with a Japanese IME, Windows and Linux have not been checked yet, and it doesn't run on mobile (see [Compatibility](#compatibility) and [Known limitations](#known-limitations)). Before using it in your everyday vault, make sure you have a backup such as git or Obsidian Sync.
+**0.x is a beta.** It has been checked only with Obsidian on macOS desktop. Real typing with a Japanese IME, Windows and Linux have not been checked yet (see [Compatibility](#compatibility) and [Known limitations](#known-limitations)). Mappy is desktop only and doesn't run on mobile. Before using it in your everyday vault, make sure you have a backup such as git or Obsidian Sync.
 
 ## What it does
 
@@ -172,7 +172,7 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 - The SVG holds the nodes as HTML (`foreignObject`). Browsers and Obsidian show it, but some SVG editors and previews, such as Inkscape and Illustrator, may not show its content. Images from the vault are embedded in the SVG file (it doesn't refer to separate files). An image that can't be read becomes alternative text, keeping the node
 - The PNG draws the same SVG on your device at twice the resolution. A large map is scaled down to fit the device's canvas limit
 - **Fonts are not embedded.** Text widths and wrapping depend on the fonts where the file is opened, while node boxes keep the size they had when exported
-- Where this SVG can't be redrawn as an image (such as iOS, where Mappy doesn't run), PNG isn't offered and only SVG can be exported
+- Where this SVG can't be redrawn as an image, PNG isn't offered and only SVG can be exported
 
 ## Compatibility
 
