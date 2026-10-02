@@ -9,6 +9,7 @@ import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type 
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
+import { standsForFileName } from "../core/list-commands";
 import { locateSubpath } from "../core/subpath";
 import { planTopicMoves, readTopicPositions, storedTopicPosition, topicKeys, type TopicPosition, type TopicPositionMap } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
@@ -1404,6 +1405,13 @@ export class MindmapView extends FileView {
   }
 
   /** The trees on the map as `adopt` made them: the body root (`root`) and the free topics with the calls grafted in, and the projection. */
+  /** The heading a save of the file-name root's draft wrote at `offset`, or the file name the map still shows (LEV-301). */
+  private renamedFileRoot(offset: number | null): MindNode | undefined {
+    const document = this.document;
+    if (!document) return undefined;
+    return nodeAt(document, offset) ?? (standsForFileName(document) ? document.root : undefined);
+  }
+
   private projection(): { root: MindNode; topics: MindNode[]; calls: ShownTrees["calls"] } | undefined {
     const projected = this.projected;
     if (!projected || projected.document !== this.document) return undefined;
@@ -1788,9 +1796,9 @@ export class MindmapView extends FileView {
 
   /**
    * The provisional name of the node `plan` adds, by where it stands on the map of the note it leaves: a node that is a
-   * root there (a free topic: Enter on a topic's root, Tab on the note's own root; or the body root of a note that had
-   * none) is named as the empty canvas names one, 「トピック」; one right under a root (the body's, which may be the note's
-   * own, or a topic's) 「メイントピック」 (LEV-250); one further down 「サブトピック」.
+   * root there (a free topic: Enter on a topic's root) is named as the empty canvas names one, 「トピック」; one right under
+   * a root (the body's, which may be the file name or the heading Tab on the file name writes for it — LEV-301 —, or a
+   * topic's) 「メイントピック」 (LEV-250); one further down 「サブトピック」.
    */
   private provisionalName(document: MindDocument, plan: { edits: TextEdit[]; selectionOffset: number | null }): string {
     const after = parseMarkdown(applyEdits(document.source, plan.edits), document.root.title, undefined, document.format);
@@ -1814,8 +1822,9 @@ export class MindmapView extends FileView {
    * (the empty canvas was clicked) it becomes a free topic instead: `## ![[map]]` at the end of
    * the note by one `add-topic` edit, with no position written, so the topic takes the default
    * place beside the body until it is dragged (§5 M7), and Undo removes the section. The virtual
-   * root of a note without a heading section takes the same route: add-child there would write
-   * the same heading. The called map's note is not touched. The link is always the wiki form the
+   * root of a note without a heading section (the file name) takes Tab's route: the file name is
+   * written as the body root's heading and the link hangs under it, in one edit (LEV-301). The
+   * called map's note is not touched. The link is always the wiki form the
    * map and the embed display read (`![[…]]`), its path following the vault's link-path setting
    * (`fileToLinktext`: shortest, relative or absolute).
    */
@@ -1827,7 +1836,7 @@ export class MindmapView extends FileView {
     if (this.saving) throw new Error(t().savingWait);
     const link = `![[${this.app.metadataCache.fileToLinktext(target, file.path, true)}]]`;
     const parent = this.selected();
-    if (!parent || parent.kind === "root") { await this.execute({ type: "add-topic", title: link }); return; }
+    if (!parent) { await this.execute({ type: "add-topic", title: link }); return; }
     this.assertEditable(parent.id);
     await this.execute({ type: "add-child", nodeId: parent.id, title: link });
   }
@@ -2260,7 +2269,6 @@ export class MindmapView extends FileView {
     const document = this.document;
     const file = this.file;
     if (!node || !document || !file) return;
-    if (node.kind === "root") { new Notice(t().rootIsFileName); return; }
     if (this.isCalled(node.id)) { new Notice(t().calledReadOnly); return; }
     const entry = this.renderer.entries.get(node.id);
     if (!entry) return;
@@ -2278,7 +2286,8 @@ export class MindmapView extends FileView {
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
         const { current, plan, pending } = this.planTitle(file, draft, text);
-        await this.commit(current.source, plan.edits, file);
+        // The file-name root left as the file name (or emptied) is not an edit: the note is not written (LEV-301).
+        if (plan.edits.length > 0) await this.commit(current.source, plan.edits, file);
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
@@ -2298,9 +2307,11 @@ export class MindmapView extends FileView {
         }
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
-        const current = this.document?.nodes.find(item => item.id === node.id)
-          ?? (!cancelled && this.document ? nodeAt(this.document, renamedOffset) : undefined)
-          ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
+        // The file-name root, once named, is the heading the save wrote (LEV-301); left unnamed, it is the file name still.
+        const current = node.kind === "root" ? this.renamedFileRoot(cancelled ? null : renamedOffset)
+          : this.document?.nodes.find(item => item.id === node.id)
+            ?? (!cancelled && this.document ? nodeAt(this.document, renamedOffset) : undefined)
+            ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
         // A click on the empty canvas that ended the edit (the blur saved it) leaves nothing selected; the node is not taken back.
         if (current && !this.deselected) this.select(current.id, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));

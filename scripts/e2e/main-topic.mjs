@@ -1,9 +1,9 @@
 /**
  * E69 (docs/harness.md, LEV-250): the provisional name of a new node by the depth it lands at, on the real Obsidian, in
  * Japanese and in English. A node added right under a root of the map (Tab on the body root, Enter on a node of the
- * first level) is written as 「メイントピック」／`Main topic`; one further down (Tab on a first-level node, Enter on a
- * deeper one) as 「サブトピック」／`Subtopic`, as before; one that is a root itself (the first section of an empty note, a
- * section after a list with no heading) as 「トピック」／`Topic`, as the empty canvas names one. The person's report was the timeline: the row of stages right of
+ * first level, Tab on the file-name root of a note with no heading — which writes the file name as the body root's heading
+ * first, LEV-301) is written as 「メイントピック」／`Main topic`; one further down (Tab on a first-level node, Enter on a
+ * deeper one) as 「サブトピック」／`Subtopic`, as before. The person's report was the timeline: the row of stages right of
  * the root read `Subtopic` where MarkMind reads `Main topic`.
  *
  * Rows: the operation (real keys on a real click's selection) × the note (a list under an H2 body root, headings under
@@ -35,7 +35,7 @@ const TOPIC = `${LIST}\n## 別の話\n\n- 項目\n`;
 const NO_HEADING = ['---', 'mappy: true', '---', '- 温泉旅行', '  - 予約', ''].join('\n');
 const EMPTY = ['---', 'mappy: true', '---', ''].join('\n');
 const ROOT = 'E2E-main-topic';
-const NAMES = { ja: { main: 'メイントピック', sub: 'サブトピック', topic: 'トピック' }, en: { main: 'Main topic', sub: 'Subtopic', topic: 'Topic' } };
+const NAMES = { ja: { main: 'メイントピック', sub: 'サブトピック' }, en: { main: 'Main topic', sub: 'Subtopic' } };
 const LAYOUTS = ['timeline', 'mindmap'];
 
 /** Each row: the note, the node selected, the key, the depth it lands at and the note it leaves (given the names). */
@@ -50,9 +50,9 @@ const ROWS = [
   { id: 'topic-first-tab', note: LIST_NOTE, source: TOPIC, target: '項目', key: 'Tab', depth: 'sub', written: n => `${TOPIC}  - ${n}\n` },
   { id: 'no-heading-first-enter', note: LIST_NOTE, source: NO_HEADING, target: '温泉旅行', key: 'Enter', depth: 'main', written: n => `${NO_HEADING}- ${n}\n` },
   { id: 'no-heading-first-tab', note: LIST_NOTE, source: NO_HEADING, target: '温泉旅行', key: 'Tab', depth: 'sub', written: n => NO_HEADING.replace('  - 予約\n', `  - 予約\n  - ${n}\n`) },
-  // A node that is a root itself is named as the empty canvas names one: the first section of an empty note, a section after a list.
-  { id: 'empty-root-tab', note: LIST_NOTE, source: EMPTY, target: ROOT, key: 'Tab', depth: 'topic', written: n => `${EMPTY}\n## ${n}\n` },
-  { id: 'no-heading-root-tab', note: LIST_NOTE, source: NO_HEADING, target: ROOT, key: 'Tab', depth: 'topic', written: n => `${NO_HEADING}\n## ${n}\n` },
+  // Tab on the file-name root writes the file name as the body root's heading and the item under it (LEV-301, E83): a main topic.
+  { id: 'empty-root-tab', note: LIST_NOTE, source: EMPTY, target: ROOT, key: 'Tab', depth: 'main', written: n => `${EMPTY}\n## ${ROOT}\n\n- ${n}\n` },
+  { id: 'no-heading-root-tab', note: LIST_NOTE, source: NO_HEADING, target: ROOT, key: 'Tab', depth: 'main', written: n => `${NO_HEADING.replace('---\n- ', `---\n\n## ${ROOT}\n\n- `)}- ${n}\n` },
   { id: 'headings-h2-tab', note: HEADINGS_NOTE, source: HEADINGS, target: '温泉旅行', key: 'Tab', depth: 'sub', written: n => HEADINGS.replace('本文\n', `本文\n\n### ${n}\n`) },
 ];
 

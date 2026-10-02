@@ -180,32 +180,32 @@ describe('the provisional name follows the depth the node is added at (LEV-250)'
     expect([t().mainTopicTitle, t().newNodeTitle, t().newTopicTitle, t().centralTopicTitle]).toEqual(['Main topic', 'Subtopic', 'Topic', 'Central topic']);
   });
 
-  // Review 2: a node that becomes the map's own root (the first heading written into a note with nothing else) is
-  // neither under a root nor further down; it is named as the empty canvas names the node it makes (addTopic).
+  // LEV-301 (本人の報告 2026-10-02): Tab on the file-name root keeps the file name in the middle — written as the body
+  // root's heading — and joins 「メイントピック」 to its right, as on a new map. Before, it wrote 「トピック」 as a heading
+  // that took the file name's place (an empty note) or stood apart as a free topic (a note with items but no heading).
   for (const layout of LAYOUTS) {
-    it(`${layout}: Tab on the file-name root of an empty note makes the body root, named「トピック」`, async () => {
+    it(`${layout}: Tab on the file-name root of an empty note names the root after the file and adds「メイントピック」under it`, async () => {
       const mounted = await mount(EMPTY, layout);
       mounted.key(mounted.select(ROOT_TITLE), 'Tab');
       await mounted.settle();
-      expect(draftName(mounted)).toBe(t().newTopicTitle);
+      expect(draftName(mounted)).toBe(t().mainTopicTitle);
+      expect(parentOf(mounted, t().mainTopicTitle)).toBe(ROOT_TITLE);
       mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
       await mounted.settle();
-      expect(mounted.source()).toBe(`${EMPTY}\n## ${t().newTopicTitle}\n`);
+      expect(mounted.source()).toBe(`${EMPTY}\n## ${ROOT_TITLE}\n\n- ${t().mainTopicTitle}\n`);
     });
   }
 
-  // Review 3: Tab on the file-name root of a note with list items but no heading writes a section after the list, which
-  // becomes a free topic (「トピック」) while Enter on its first-level item gives 「メイントピック」 (the rows above). It was
-  // 「トピック」 before LEV-250 too: a control that the depth rule does not turn a topic into a main topic.
   for (const layout of LAYOUTS) {
-    it(`${layout}: Tab on the file-name root of a note with no heading makes a free topic, named「トピック」`, async () => {
+    it(`${layout}: Tab on the file-name root of a note with no heading adds「メイントピック」after its items, under the root`, async () => {
       const mounted = await mount(NO_HEADING, layout);
       mounted.key(mounted.select(ROOT_TITLE), 'Tab');
       await mounted.settle();
-      expect(draftName(mounted)).toBe(t().newTopicTitle);
+      expect(draftName(mounted)).toBe(t().mainTopicTitle);
       mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
       await mounted.settle();
-      expect(mounted.source()).toBe(`${NO_HEADING}\n## ${t().newTopicTitle}\n`);
+      expect(mounted.source()).toBe(NO_HEADING.replace('---\n- ', `---\n\n## ${ROOT_TITLE}\n\n- `) + `- ${t().mainTopicTitle}\n`);
+      expect(parentOf(mounted, t().mainTopicTitle)).toBe(ROOT_TITLE);
     });
   }
 });

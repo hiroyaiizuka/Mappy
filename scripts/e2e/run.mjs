@@ -59,6 +59,7 @@ export const CASES = [
   { name: 'reread-own-writes', file: 'reread-own-writes.mjs', description: 'E58 変わらない原文の再読込の最中に記録された書き込み（このマップのボタン・⌥↑・⌘Z、別のマップのボタン・移動・⌘Z）× Markdown エディタの有無 × ウォッチャーが遅れて届く場合で、空題名・同名の折りたたみが保たれること', shot: false },
   { name: 'english-ui', file: 'english-ui.mjs', description: 'E63 英語の Obsidian での表示（コマンド・ボタン・ポップオーバー・右クリック・設定・拒否の行）と Markdown に書く仮の名前、日本語へ戻したあと', shot: true },
   { name: 'main-topic', file: 'main-topic.mjs', description: 'E69 新しいノードの仮の名前が追加先の深さで決まる（ルートの直下はメイントピック、その下はサブトピック）× リスト・見出し × タイムライン・通常マップ × 日本語・英語', shot: true },
+  { name: 'file-root', file: 'file-root.mjs', description: 'E83 見出しの無いノートのファイル名の根: ダブルクリック・F2 で名前を変えると `## <名前>` が根になり、Tab で `## <ファイル名>` と右のメイントピックが 1 回で書かれる。⌘Z 1 回で戻る・Enter は書かない・変換中の Enter は確定しない × 4 つの形', shot: true },
   { name: 'central-topic', file: 'central-topic.mjs', description: 'E71 新しいマップのルートが中心トピック（ファイル名は無題のマインドマップのまま）、そこで Tab → メイントピック → サブトピック × 既定レイアウト 4 種 × 日本語・英語', shot: true },
   { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語', shot: true },
   { name: 'view-padding', file: 'view-padding.mjs', description: 'E70 マップの容器にペインの余白が付かない（!important なし）× 本体・別ウィンドウ・埋め込み × 明色・暗色', shot: true },

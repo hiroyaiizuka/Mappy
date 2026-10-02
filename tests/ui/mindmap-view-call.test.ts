@@ -339,21 +339,25 @@ describe('MindmapView.callMap (§5 M12, the input side)', () => {
     expect(current()).toBe(source.replace('- 習慣化する\n', `- 習慣化する\n- ${LINK}\n`));
   });
 
-  it('adds the call as a topic to a note whose body is the virtual root, whether the root is selected or nothing is (no "先に H2 を")', async () => {
+  // LEV-301: with the file-name root selected the call hangs under it, as Tab's item does: the file name is written as
+  // the body root's heading in the same edit. With nothing selected it is still a topic of its own.
+  it('adds the call under the file-name root of a note with no heading, and as a topic with nothing selected (no "先に H2 を")', async () => {
     const headless = '---\nmappy: true\n---\n- 見出しより前の項目\n';
     const bare = await mount(headless);
     expect(bare.selected()).toBe('root');
+    const title = documentOf(bare.view).root.title;
     await bare.view.callMap(bare.other);
     await bare.settle();
-    expect(bare.source()).toBe(`${headless}\n## ${LINK}\n`);
-    expect(projectMap(documentOf(bare.view)).root.kind).toBe('root');
-    expect(projectMap(documentOf(bare.view)).topics.map(topic => topic.title)).toEqual([LINK]);
-    expect(bare.node('別のマップ').hasClass('is-topic')).toBe(true);
+    const named = `---\nmappy: true\n---\n\n## ${title}\n\n- 見出しより前の項目\n- ${LINK}\n`;
+    expect(bare.source()).toBe(named);
+    expect(projectMap(documentOf(bare.view)).root.title).toBe(title);
+    expect(projectMap(documentOf(bare.view)).root.children.map(child => child.title)).toEqual(['見出しより前の項目', LINK]);
     expect(bare.selected()).toBe(bare.parsed(LINK).id);
     bare.clickBlank();
     await bare.view.callMap(bare.other);
     await bare.settle();
-    expect(bare.source()).toBe(`${headless}\n## ${LINK}\n\n## ${LINK}\n`);
+    expect(bare.source()).toBe(`${named}\n## ${LINK}\n`);
+    expect(projectMap(documentOf(bare.view)).topics.map(topic => topic.title)).toEqual([LINK]);
     expect(Notice.log).toEqual([]);
   });
 });
