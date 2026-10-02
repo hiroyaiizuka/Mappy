@@ -6,7 +6,8 @@
  *
  * Rows: the user's action (a real click on the ribbon icon) × what is active: the map note in the Markdown editor, the
  * same note as a map, a plain note (clicked once, and double-clicked), an empty note (what Ctrl+N makes), a note with
- * `mappy: false`, a canvas, an empty tab. On Obsidian 1.14.2 the double click's second click lands ~95 ms after the
+ * `mappy: false`, an old-format note (`mappy-layout` alone: pointed to the conversion, nothing made), a canvas, an
+ * empty tab. On Obsidian 1.14.2 the double click's second click lands ~95 ms after the
  * first, when the first map is already open and indexed, so it opens that map (artifacts/lev-300/record.md); there is
  * no guard in the code for a second click that lands earlier. Each row reads what opened, the
  * files the vault gained, and the active file's text before and after. The settings get a folder of this case's own
@@ -32,6 +33,7 @@ const FILES = {
   plain: { path: `${FOLDER}/Plain.md`, source: '# ふつうのノート\n\n- 項目\n' },
   off: { path: `${FOLDER}/Off.md`, source: '---\nmappy: false\n---\n\n## 消したマップ\n' },
   empty: { path: `${FOLDER}/Empty.md`, source: '' },
+  legacy: { path: `${FOLDER}/Old.md`, source: '---\nmappy-layout: timeline\n---\n\n## 古いマップ\n\n- 枝\n' },
   // In the format Obsidian's canvas view saves it in when it opens it, so that save changes nothing.
   canvas: { path: `${FOLDER}/Board.canvas`, source: '{\n\t"nodes":[],\n\t"edges":[]\n}' },
 };
@@ -96,8 +98,8 @@ async function clickRibbon(times = 1) {
  * row whose map is active before the click the ribbon changes nothing that can be waited for (it opens the same map in
  * the same leaf), so that row reads after the 1.5 s alone: a note made, or a layout changed, later than that is missed.
  */
-async function settled() {
-  for (let tries = 0; tries < 50; tries += 1) {
+async function settled(mapExpected = true) {
+  for (let tries = 0; mapExpected && tries < 50; tries += 1) {
     await wait(200);
     if ((await state()).type === 'mappy-map') break;
   }
@@ -106,7 +108,7 @@ async function settled() {
 }
 
 /** Puts `open` (a script that leaves one leaf active) in front, then clicks the ribbon; the state before and after. */
-async function row(label, open, clicks = 1) {
+async function row(label, open, clicks = 1, mapExpected = true) {
   return step(label, async () => {
     await detach();
     await clearNew();
@@ -114,7 +116,7 @@ async function row(label, open, clicks = 1) {
       await new Promise(resolve => setTimeout(resolve, 1200)); return true;`);
     const before = await state();
     await clickRibbon(clicks);
-    return { before, after: await settled() };
+    return { before, after: await settled(mapExpected) };
   });
 }
 
@@ -135,13 +137,22 @@ const emptyTab = `const leaf = app.workspace.getLeaf('tab');
   app.workspace.setActiveLeaf(leaf, { focus: true });`;
 
 /** The click wrote none of the fixtures: each reads after the click as the case wrote it. */
-const untouched = (label, result) => {
+const untouched = (label, result, notices = []) => {
   for (const file of Object.values(FILES)) {
     const after = result?.after?.texts?.[file.path];
     check(after === file.source, `${label}: ${file.path} is ${JSON.stringify(after)}, not as written`);
   }
-  check(result?.after?.notices?.length === 0, `${label}: notices ${JSON.stringify(result?.after?.notices)}`);
+  check(JSON.stringify(result?.after?.notices) === JSON.stringify(notices), `${label}: notices ${JSON.stringify(result?.after?.notices)}, not ${JSON.stringify(notices)}`);
 };
+
+/** The old format (`mappy-layout` alone): the ribbon points to the conversion, as through 0.4.5, and makes nothing. */
+function pointed(label, result) {
+  const path = FILES.legacy.path;
+  check(result?.before?.type === 'markdown' && result.before.file === path, `${label}: before the click the active view is ${result?.before?.type} on ${result?.before?.file}, not markdown on ${path}`);
+  check(result?.after?.type === 'markdown' && result.after.file === path, `${label}: after the click ${result?.after?.type} on ${result?.after?.file}, not still markdown on ${path}`);
+  check(!result?.after?.files?.some(file => file.startsWith(`${NEW_FOLDER}/`)), `${label}: a note was made: ${JSON.stringify(result?.after?.files)}`);
+  untouched(label, result, ['先に「このノートをマインドマップ化」を実行してください。']);
+}
 
 /** The ribbon opened the map note itself and made nothing. */
 function opened(label, result, from) {
@@ -195,6 +206,9 @@ try {
   created('plain-note-double-click', twice, before => before?.type === 'markdown' && before.file === FILES.plain.path);
   const blank = await row('empty-note', openAs(FILES.empty.path, 'markdown'));
   created('empty-note', blank, before => before?.type === 'markdown' && before.file === FILES.empty.path);
+  // No map is expected, and Obsidian's notice goes after a few seconds: read after the 1.5 s alone.
+  const old = await row('old-format', openAs(FILES.legacy.path, 'markdown'), 1, false);
+  pointed('old-format', old);
   const off = await row('mappy-false', openAs(FILES.off.path, 'markdown'));
   created('mappy-false', off, before => before?.type === 'markdown' && before.file === FILES.off.path);
   const canvas = await row('canvas', openFile(FILES.canvas.path));

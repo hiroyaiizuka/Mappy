@@ -50,6 +50,7 @@ export const ja: Messages = {
 
   cmdCreateMap: "新しいマインドマップを作成",
   cmdConvertNote: "このノートをマインドマップ化",
+  convertFirst: (command: string) => `先に「${command}」を実行してください。`,
 
   untitled: "無題のマインドマップ",
   centralTopicTitle: "中心トピック",

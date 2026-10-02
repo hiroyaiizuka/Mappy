@@ -27,6 +27,15 @@ export function readMapLayout(app: App, file: TFile): LayoutMode | null {
 }
 
 /**
+ * A map note of the old format: `mappy-layout` without `mappy` (architecture.md). It is not a map until it is converted
+ * explicitly, which keeps its layout (`readPreferredMapLayout`).
+ */
+export function isLegacyMapNote(app: App, file: TFile): boolean {
+  const properties = frontmatter(app, file);
+  return isMappyCandidate(app, file) && properties?.[MAPPY_KEY] === undefined && properties?.[LAYOUT_KEY] !== undefined;
+}
+
+/**
  * The layout an explicit conversion writes: a legacy note keeps its own `mappy-layout`,
  * any other note gets the fallback (the settings' default layout, M14).
  */

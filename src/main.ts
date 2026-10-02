@@ -176,6 +176,7 @@ export default class MappyPlugin extends Plugin {
         open: (file, layout) => { this.run(() => this.open(file, false, layout), t().openFailed); },
         create: () => { this.createMap(); },
         notReady: () => { new Notice(t().noteNotIndexed); },
+        convertFirst: () => { new Notice(t().convertFirst(t().cmdConvertNote)); },
       });
     });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {

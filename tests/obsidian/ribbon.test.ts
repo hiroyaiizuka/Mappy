@@ -5,8 +5,11 @@
  * 書き換えない（マップ化しない）。
  *
  * 行列は本人の操作（リボンを押す）× アクティブなものの形（マップのノート 4 レイアウト・マップでないノート・`mappy:
- * false`・frontmatter の無いノート・Excalidraw の図面・何も開いていない・まだ索引されていないノート）。修正を戻す
- * （`runRibbon` を元の src/main.ts の分岐にする）と、作る行が `create` を呼ばずに落ちる（`artifacts/lev-300/before-fix.txt`）。
+ * false`・frontmatter の無いノート・Excalidraw の図面・何も開いていない・まだ索引されていないノート・旧形式の
+ * `mappy-layout` だけのノート）。修正を戻す（`runRibbon` を元の src/main.ts の分岐にする）と、作る行が `create` を
+ * 呼ばずに落ちる（`artifacts/lev-300/before-fix.txt`）。旧形式の 2 行は独立レビューの指摘で足した（その分岐を外すと
+ * create に流れて落ちる: `artifacts/lev-300/legacy-before.txt`）。マップのノートを開く 4 行は 0.4.5 からの挙動の保持で、
+ * 修正を戻しても通る（回帰テストではない）。
  *
  * ここで見るのは `runRibbon` の振り分けまで（旧版の通知は main.ts の中で出していたのでここには届かない）。
  * `runRibbon` は vault に触れないので、作る経路（`createMap` → `createMindmapFile` → `open`）が開いていたノートを
@@ -26,7 +29,7 @@ function file(path: string): TFile {
 /** Presses the button with `cache` as the active note's metadata (null while Obsidian has not indexed it yet). */
 function press(active: TFile | null, cache: { frontmatter?: Record<string, unknown> } | null) {
   const app = { metadataCache: { getFileCache: () => cache } } as unknown as App;
-  const routes = { open: vi.fn(), create: vi.fn(), notReady: vi.fn() };
+  const routes = { open: vi.fn(), create: vi.fn(), notReady: vi.fn(), convertFirst: vi.fn() };
   runRibbon(app, active, routes);
   return routes;
 }
@@ -55,6 +58,18 @@ describe('the ribbon button (LEV-300)', () => {
     it(`routes to a new map for ${shape}`, () => {
       const routes = press(active, cache);
       expect(routes.create).toHaveBeenCalledOnce();
+      expect(routes.open).not.toHaveBeenCalled();
+      expect(routes.notReady).not.toHaveBeenCalled();
+    });
+  }
+
+  // The old format (architecture.md: `mappy-layout` without `mappy: true`) is the user's map from before `mappy: true`:
+  // the button points them to the conversion, which keeps that layout, as through 0.4.5, and makes no new map.
+  for (const layout of ['timeline', 'mindmap']) {
+    it(`points an old-format note (mappy-layout: ${layout} alone) to the conversion, making nothing`, () => {
+      const routes = press(file('Maps/Old.md'), { frontmatter: { 'mappy-layout': layout } });
+      expect(routes.convertFirst).toHaveBeenCalledOnce();
+      expect(routes.create).not.toHaveBeenCalled();
       expect(routes.open).not.toHaveBeenCalled();
       expect(routes.notReady).not.toHaveBeenCalled();
     });
