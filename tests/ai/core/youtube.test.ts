@@ -56,9 +56,18 @@ describe('pickSubtitle', () => {
     expect(pickSubtitle({ language: 'en', subtitles: {}, automatic_captions: { ja: [], fr: [] } }, 'ja')).toBeNull();
   });
 
-  it('without the video language, takes only an -orig track', () => {
+  it('finds the automatic captions of a language given with a region (en-US, artifacts/lev-270 114i2Kz-LZA)', () => {
+    const lecture = { language: 'en-US', subtitles: {}, automatic_captions: { 'ar-orig': [], en: [], 'en-orig': [], 'ja-orig': [], ja: [] } };
+    expect(pickSubtitle(lecture, 'ja')).toEqual({ language: 'en-orig', automatic: true });
+    expect(pickSubtitle({ ...lecture, automatic_captions: { en: [], ja: [] } }, 'ja')).toEqual({ language: 'en', automatic: true });
+    // The uploaded track of that video is matched by its language too.
+    expect(pickSubtitle({ ...lecture, subtitles: { 'en-j3PyPqV-e1s': [] } }, 'ja')).toEqual({ language: 'en-j3PyPqV-e1s', automatic: false });
+  });
+
+  it('without the video language, takes an -orig track only when it is the only one', () => {
     expect(pickSubtitle({ language: null, automatic_captions: { ja: [], 'en-orig': [] } }, 'ja')).toEqual({ language: 'en-orig', automatic: true });
     expect(pickSubtitle({ language: null, automatic_captions: { ja: [], en: [] } }, 'ja')).toBeNull();
+    expect(pickSubtitle({ language: null, automatic_captions: { 'ar-orig': [], 'en-orig': [] } }, 'ja')).toBeNull();
   });
 
   it('ignores a stream chat replay and reports nothing when nothing is left', () => {

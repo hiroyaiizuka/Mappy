@@ -63,9 +63,16 @@ export function pickSubtitle(info: VideoInfo, uiLanguage: string): SubtitleChoic
   const uploaded = prefer(original) ?? prefer(uiLanguage) ?? manual[0];
   if (uploaded !== undefined) return { language: uploaded, automatic: false };
   const automatic = keys(info.automatic_captions);
-  const orig = original !== null
-    ? automatic.find(key => key === `${original}-orig`) ?? automatic.find(key => key === original)
-    // Without the video's language there is no telling the original track from the translations, except by `-orig`.
-    : automatic.find(key => key.endsWith('-orig'));
+  let orig: string | undefined;
+  if (original !== null) {
+    // `language` can carry a region (`en-US`) the caption keys do not (`en-orig`, `en`).
+    const wanted = [`${original}-orig`, `${base(original)}-orig`, original, base(original)];
+    orig = wanted.map(want => automatic.find(key => key === want)).find(key => key !== undefined);
+  } else {
+    // Without the video's language only an `-orig` track tells itself apart, and only when it is the one: a video
+    // with dubbed audio lists one per language (artifacts/lev-270: `ar-orig`, `en-orig`, `ja-orig`, … on one video).
+    const origs = automatic.filter(key => key.endsWith('-orig'));
+    orig = origs.length === 1 ? origs[0] : undefined;
+  }
   return orig !== undefined ? { language: orig, automatic: true } : null;
 }

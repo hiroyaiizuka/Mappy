@@ -66,6 +66,7 @@
     "harness:e2e:main-topic": "node scripts/e2e/main-topic.mjs",
     "harness:e2e:central-topic": "node scripts/e2e/central-topic.mjs",
     "harness:e2e:visible-layouts": "node scripts/e2e/visible-layouts.mjs",
+    "harness:e2e:ai-runner": "node scripts/e2e/ai-runner.mjs",
     "harness:e2e:view-padding": "node scripts/e2e/view-padding.mjs",
     "harness:e2e:reread-conflict-line": "node scripts/e2e/reread-conflict-line.mjs",
     "harness:e2e:draft-own-write": "node scripts/e2e/draft-own-write.mjs",
