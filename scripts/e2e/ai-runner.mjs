@@ -20,6 +20,9 @@
  *   --long <url>           a long video (an hour or more) once per engine: time to the first output, longest silence, total
  *   --only <claude|codex>  one engine
  *   --no-default           leave out the whole default set, the question runs included
+ *   --mappy                the question to map through Mappy itself, as main.ts wires it (§11.8): the plugin installed
+ *                          by `npm run harness:prepare:ai-dev` (the development unlock makes the license active), its
+ *                          `aiServices.createRunner()`, no probe plugin. Only the question runs; nothing else combines
  *
  * Usage: npm run harness:e2e:ai-runner -- [--question-only] [--ytdlp <path>] [--youtube <url>] [--repeat 5] [--long <url>]
  *          [--only claude|codex] [--no-default] [--json <out.json>]
@@ -143,8 +146,66 @@ const materialFor = kind => kind === 'youtube'
   ? [{ kind: 'youtube', label: youtube, text: '' }]
   : [{ kind: 'pdf', label: PDF_JA, text: '' }];
 
-try {
-  await step('install the probe plugin', async () => {
+/**
+ * `--mappy`: the wired plugin, not the probe. The run goes Mappy's entitlement → runner factory → runner, as a press of
+ * the AI button does; the processes are not observed from inside, so what is left is looked for by the command lines
+ * only the runner makes (claude's `--restricted --safe-mode`, codex's `exec --ignore-user-config`).
+ */
+async function runThroughMappy() {
+  if (flag('--question-only') || flag('--no-default') || youtube || long || repeat > 0) {
+    throw new Error('--mappy runs the question to map alone: leave out the other flags');
+  }
+  connection = await connect();
+  const ready = await step('Mappy, wired, with the license active', () => connection.evaluate(`(async () => {
+    await app.plugins.setEnable(true);
+    if (app.plugins.enabledPlugins.has(${JSON.stringify(PLUGIN)})) await app.plugins.disablePlugin(${JSON.stringify(PLUGIN)});
+    const mappy = app.plugins.plugins.mappy;
+    return {
+      version: mappy?.manifest?.version ?? null,
+      license: mappy?.entitlement?.state()?.kind ?? null,
+      availability: mappy?.runnerFactory?.availability() ?? null,
+      probe: !!globalThis.__mappyAiProbe,
+    };
+  })()`));
+  check(ready?.license === 'active' && ready?.availability === 'available' && !ready?.probe,
+    `Mappy is not wired with an active license in the test Obsidian (${JSON.stringify(ready)}); run npm run harness:prepare:ai-dev`);
+  for (const engine of engines) {
+    const request = {
+      ...base, engine, template: 'free', instruction: 'リモートワークで生産性を上げるには？',
+      context: { ancestors: [], title: 'リモートワークで生産性を上げるには？', body: '' },
+    };
+    const id = `mappy-${engine}-${++serial}`;
+    const outcome = await step(`${engine}: question to map through Mappy`, async () => {
+      await connection.evaluate(`(() => {
+        const results = (globalThis.__mappyE2eRuns ??= {});
+        const runner = app.plugins.plugins.mappy.aiServices.createRunner();
+        if (!runner) { results[${JSON.stringify(id)}] = { error: 'no runner' }; return; }
+        const stages = [];
+        const started = Date.now();
+        results[${JSON.stringify(id)}] = { running: true };
+        runner.run(${JSON.stringify(request)}, step => { stages.push(step.stage); }, new AbortController().signal)
+          .then(result => { results[${JSON.stringify(id)}] = { result, stages, ms: Date.now() - started }; },
+            error => { results[${JSON.stringify(id)}] = { error: String(error) }; });
+      })()`);
+      const done = await until(async () => {
+        const state = await connection.evaluate(`globalThis.__mappyE2eRuns?.[${JSON.stringify(id)}]`);
+        return state && !state.running ? state : null;
+      }, 5 * 60_000, `${engine} did not finish`);
+      if (done.error) throw new Error(done.error);
+      await new Promise(resolve => { setTimeout(resolve, 1500); });
+      const marker = engine === 'claude' ? '--restricted --safe-mode' : 'exec --ignore-user-config';
+      const left = execFileSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' }).split('\n').filter(line => line.includes(marker));
+      return { ms: done.ms, shape: shape(done.result), stages: [...new Set(done.stages)], left, text: done.result.kind === 'outline' ? done.result.raw : JSON.stringify(done.result).slice(0, 600) };
+    });
+    check(outcome?.shape?.kind === 'outline', `${engine}: the question through Mappy did not give an outline (${outcome?.text ?? outcome?.error})`);
+    check(!outcome?.stages?.some(stage => stage === 'searching' || stage === 'fetching'), `${engine}: the question through Mappy reported a web search or fetch`);
+    check((outcome?.left ?? ['?']).length === 0, `${engine}: a CLI of the run is still there (${JSON.stringify(outcome?.left)})`);
+  }
+}
+
+/** The probe plugin's runs (everything but `--mappy`). */
+async function probeRuns() {
+await step('install the probe plugin', async () => {
     await install();
     connection = await connect();
     const ytdlp = value('--ytdlp') ?? '';
@@ -234,6 +295,11 @@ try {
       check(read?.shape?.kind === 'outline', `${engine}: the long video did not give an outline (${read?.text ?? read?.error})`);
     }
   }
+}
+
+try {
+  if (flag('--mappy')) await runThroughMappy();
+  else await probeRuns();
 } catch (error) {
   record.failures.push(String(error));
 } finally {
