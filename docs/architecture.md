@@ -388,7 +388,7 @@ M9（`product-plan.md` §5 M9）の案 A「ノードで頼む」の設計。前�
 
 **設計: 素材は Mappy が用意し、指示文の末尾に連結して標準入力で渡す。** CLI にファイルや Web を取りに行かせるのは、本人が入力欄で「Web 検索」を入れたときだけ（§11.3 のツール）。こうするとエンジン差（PDF を読む手段）と、cwd の AGENTS.md・CLAUDE.md に従う問題が消える。素材の取得は `src/ai/obsidian/material.ts`（Obsidian の API）と `src/ai/host/`（外部プログラム）が行い、整形は `src/ai/core/`。
 
-**素材（PDF・ノート・字幕）を渡すときは Web 検索を既定で切る**（2026-10-02 の本人の決定、LEV-266 のコメント）: 本人は入れ直せる。入れ直したら入力欄に注意を出し、README の #44（community-submission §5）で開示する。理由は、素材は外部の文章で、Web のツールがあると素材の中の指示でノードや素材の中身を URL に載せて外へ出しうること（LEV-270 の独立レビュー）。`feature/ai` では規則は `src/ai/core/web-search.ts` の `webSearchAfterAttach`・`webSearchCaution` の 1 か所にあり、入力欄（`src/ui/ai/ai-controller.ts`）はそれに添付（ノート・PDF）の数だけを渡す。今の UI で素材になるのは添付だけなので（§11.8 の「実装の状態」）それで決定どおりになるが、ノードの字幕やリンク先の PDF を素材にする入口を足すときは、同じ規則をその素材にも効かせる。
+**素材（PDF・ノート・字幕）を渡すときは Web 検索を既定で切る**（2026-10-02 の本人の決定、LEV-266 のコメント）: 本人は入れ直せる。入れ直したら入力欄に注意を出し、README の #44（community-submission §5）で開示する。理由は、素材は外部の文章で、Web のツールがあると素材の中の指示でノードや素材の中身を URL に載せて外へ出しうること（LEV-270 の独立レビュー）。`feature/ai` では規則は `src/ai/core/web-search.ts` の `webSearchAfterAttach`・`webSearchCaution` の 1 か所にあり、入力欄（`src/ui/ai/ai-controller.ts`）はそれに Web 検索の選択と添付（ノート・PDF）の数を渡す（最初の添付で切り、以後は本人の選択を保つ）。今の UI で素材になるのは添付だけなので（§11.8 の「実装の状態」）それで決定どおりになるが、ノードの字幕やリンク先の PDF を素材にする入口を足すときは、同じ規則をその素材にも効かせる。
 
 | 素材 | 取得 | 整形・上限 |
 | --- | --- | --- |
