@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, TFolder, type App } from 'obsidian';
 import { setLanguage } from '../../src/i18n';
-import { createMindmapFile, newMindmapSource, resolveNewMapFolder } from '../../src/obsidian/map-files';
+import { createMindmapFile, newMapSourcePath, newMindmapSource, resolveNewMapFolder } from '../../src/obsidian/map-files';
 
 describe('newMindmapSource', () => {
   it('creates the canonical marker and an H2 root without a redundant layout property', () => {
@@ -221,5 +221,16 @@ describe('createMindmapFile', () => {
     const { app, create } = vault({ files: ['Maps'] });
     await expect(createMindmapFile(app, '', { folder: 'Maps' })).rejects.toThrow('フォルダではありません');
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('newMapSourcePath (LEV-300)', () => {
+  const file = (path: string): TFile => { const result = new TFile(); result.path = path; return result; };
+  const app = (active: TFile | null) => ({ workspace: { getActiveFile: () => active } }) as unknown as App;
+
+  it('counts from the active note, else from the active file that is not a note (a canvas the ribbon was pressed on)', () => {
+    expect(newMapSourcePath(app(file('Other/Note.md')), file('Maps/Plan.md'))).toBe('Maps/Plan.md');
+    expect(newMapSourcePath(app(file('Projects/X/Board.canvas')), null)).toBe('Projects/X/Board.canvas');
+    expect(newMapSourcePath(app(null), null)).toBe('');
   });
 });

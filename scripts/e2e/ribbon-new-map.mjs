@@ -5,10 +5,10 @@
  * as the command 「新しいマインドマップを作成」 does. The active file is never written (no conversion).
  *
  * Rows: the user's action (a real click on the ribbon icon) × what is active: the map note in the Markdown editor, the
- * same note as a map, a plain note (clicked once, and double-clicked), a note with `mappy: false`, a canvas, an empty tab.
- * The double click checks that one map comes out, not the guard against a second one (`singleFlight`, fixed by the unit
- * test): on Obsidian 1.14.2 the second click lands ~95 ms later, when the first map is already open and indexed, so a
- * build without the guard passes this row too (artifacts/lev-300/e82-noguard.txt). Each row reads what opened, the
+ * same note as a map, a plain note (clicked once, and double-clicked), an empty note (what Ctrl+N makes), a note with
+ * `mappy: false`, a canvas, an empty tab. On Obsidian 1.14.2 the double click's second click lands ~95 ms after the
+ * first, when the first map is already open and indexed, so it opens that map (artifacts/lev-300/record.md); there is
+ * no guard in the code for a second click that lands earlier. Each row reads what opened, the
  * files the vault gained, and the active file's text before and after. The settings get a folder of this case's own
  * and the hierarchy layout (not the map note's timeline, so the two routes cannot pass for each other), and are put
  * back at the end; the folder is removed.
@@ -31,6 +31,7 @@ const FILES = {
   map: { path: `${FOLDER}/Map.md`, source: '---\nmappy: true\nmappy-layout: timeline\n---\n\n## 地図\n\n- 枝\n' },
   plain: { path: `${FOLDER}/Plain.md`, source: '# ふつうのノート\n\n- 項目\n' },
   off: { path: `${FOLDER}/Off.md`, source: '---\nmappy: false\n---\n\n## 消したマップ\n' },
+  empty: { path: `${FOLDER}/Empty.md`, source: '' },
   // In the format Obsidian's canvas view saves it in when it opens it, so that save changes nothing.
   canvas: { path: `${FOLDER}/Board.canvas`, source: '{\n\t"nodes":[],\n\t"edges":[]\n}' },
 };
@@ -90,7 +91,11 @@ async function clickRibbon(times = 1) {
   }
 }
 
-/** The state once a map is active (or 10 s have passed), then 1.5 s more, so a second note made late is seen too. */
+/**
+ * The state once a map is active (or 10 s have passed), then 1.5 s more, so a second note made late is seen too. In the
+ * row whose map is active before the click the ribbon changes nothing that can be waited for (it opens the same map in
+ * the same leaf), so that row reads after the 1.5 s alone: a note made, or a layout changed, later than that is missed.
+ */
 async function settled() {
   for (let tries = 0; tries < 50; tries += 1) {
     await wait(200);
@@ -188,6 +193,8 @@ try {
   created('plain-note', plain, before => before?.type === 'markdown' && before.file === FILES.plain.path);
   const twice = await row('plain-note-double-click', openAs(FILES.plain.path, 'markdown'), 2);
   created('plain-note-double-click', twice, before => before?.type === 'markdown' && before.file === FILES.plain.path);
+  const blank = await row('empty-note', openAs(FILES.empty.path, 'markdown'));
+  created('empty-note', blank, before => before?.type === 'markdown' && before.file === FILES.empty.path);
   const off = await row('mappy-false', openAs(FILES.off.path, 'markdown'));
   created('mappy-false', off, before => before?.type === 'markdown' && before.file === FILES.off.path);
   const canvas = await row('canvas', openFile(FILES.canvas.path));

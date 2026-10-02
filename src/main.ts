@@ -6,9 +6,9 @@ import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
 import { canSaveAttachments } from "./obsidian/image-export";
-import { createMindmapFile } from "./obsidian/map-files";
+import { createMindmapFile, newMapSourcePath } from "./obsidian/map-files";
 import { MapSearchModal } from "./obsidian/map-search";
-import { runRibbon, singleFlight } from "./obsidian/ribbon";
+import { runRibbon } from "./obsidian/ribbon";
 import { DEFAULT_SETTINGS, normalizeSettings, showDefaultLayout, type MappySettings } from "./obsidian/settings";
 import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
@@ -79,7 +79,7 @@ export default class MappyPlugin extends Plugin {
     this.registerMarkdownPostProcessor(embeds.processor);
     this.addCommand({
       id: "create-mindmap", name: t().cmdCreateMap,
-      callback: () => { this.createMap(); },
+      callback: () => { this.createMap(this.activeFile()); },
     });
     this.addCommand({
       id: "convert-note-to-mindmap", name: t().cmdConvertNote,
@@ -193,20 +193,18 @@ export default class MappyPlugin extends Plugin {
     }));
   }
 
-  /** The command's and the ribbon's route (LEV-300): an untitled map in the settings' folder, with their layout. */
-  // "Same folder as current file" counts from the map's own note when a map is active (`activeFile()` asks the map
-  // first; `getActiveFile()` finds it too now that the map is a FileView — LEV-89 — except for a map in a sidebar,
-  // which is not a navigation view). The ribbon passes the note it decided on, so both read the same one.
-  private createMap(from: TFile | null = this.activeFile()): void {
-    this.run(() => this.createMapOnce(from?.path ?? ""), t().createFailed);
+  /**
+   * The command's and the ribbon's route (LEV-300): an untitled map in the settings' folder, with their layout.
+   * `from` is the active note (`activeFile()` asks the map first, so a map in a sidebar counts too — LEV-89); the
+   * ribbon passes the one it decided on. "Same folder as current file" counts from it (`newMapSourcePath`).
+   */
+  private createMap(from: TFile | null): void {
+    this.run(async () => {
+      const { defaultLayout: layout, newMapFolder: folder } = this.settings;
+      const file = await createMindmapFile(this.app, newMapSourcePath(this.app, from), { layout, folder });
+      await this.open(file, false, layout);
+    }, t().createFailed);
   }
-
-  /** One untitled map at a time: a second click before the first map opens makes no second note (LEV-300). */
-  private readonly createMapOnce = singleFlight(async (sourcePath: string) => {
-    const { defaultLayout: layout, newMapFolder: folder } = this.settings;
-    const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
-    await this.open(file, false, layout);
-  });
 
   private activeFile(): TFile | null {
     const map = this.app.workspace.getActiveViewOfType(MindmapView);

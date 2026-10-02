@@ -8,14 +8,14 @@
  * false`・frontmatter の無いノート・Excalidraw の図面・何も開いていない・まだ索引されていないノート）。修正を戻す
  * （`runRibbon` を元の src/main.ts の分岐にする）と、作る行が通知を出すだけで落ちる（`artifacts/lev-300/before-fix.txt`）。
  *
- * ここで見るのは `runRibbon` の振り分けと、振り分けがノートに何も書かないことまで。作る経路（`createMap` →
- * `createMindmapFile` → `open`）が開いていたノートを書かないことは実機 E82 が見る（main.ts はここで起動できない）。
+ * ここで見るのは `runRibbon` の振り分け（と、旧版の通知が出ないこと）まで。`runRibbon` は vault に触れないので、
+ * 作る経路（`createMap` → `createMindmapFile` → `open`）が開いていたノートを書かないことは実機 E82 が見る。
  */
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import { Notice } from '../mocks/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
-import { runRibbon, singleFlight } from '../../src/obsidian/ribbon';
+import { runRibbon } from '../../src/obsidian/ribbon';
 
 function file(path: string): TFile {
   const result = new TFile();
@@ -23,28 +23,13 @@ function file(path: string): TFile {
   return result;
 }
 
-/** `cache`: the note's metadata as Obsidian indexed it, or null while it is not indexed yet. */
-function app(cache: { frontmatter?: Record<string, unknown> } | null) {
-  const writes = {
-    processFrontMatter: vi.fn(() => Promise.resolve()),
-    modify: vi.fn(() => Promise.resolve()),
-    process: vi.fn(() => Promise.resolve('')),
-    create: vi.fn(() => Promise.resolve(null)),
-  };
-  const instance = {
-    metadataCache: { getFileCache: () => cache },
-    fileManager: { processFrontMatter: writes.processFrontMatter },
-    vault: { modify: writes.modify, process: writes.process, create: writes.create },
-  } as unknown as App;
-  return { instance, writes };
-}
-
+/** Presses the button with `cache` as the active note's metadata (null while Obsidian has not indexed it yet). */
 function press(active: TFile | null, cache: { frontmatter?: Record<string, unknown> } | null) {
-  const { instance, writes } = app(cache);
+  const app = { metadataCache: { getFileCache: () => cache } } as unknown as App;
   const routes = { open: vi.fn(), create: vi.fn(), notReady: vi.fn() };
   Notice.messages = [];
-  runRibbon(instance, active, routes);
-  for (const write of Object.values(writes)) expect(write).not.toHaveBeenCalled();
+  runRibbon(app, active, routes);
+  // Through 0.4.5 the button said 「先に…を実行してください。」 or 「Markdown ノートを開いてください。」 here.
   expect(Notice.messages).toEqual([]);
   return routes;
 }
@@ -65,12 +50,12 @@ describe('the ribbon button (LEV-300)', () => {
   const OTHERS: readonly [string, TFile | null, { frontmatter?: Record<string, unknown> } | null][] = [
     ['a note that is not a map', file('Notes/Plain.md'), { frontmatter: { tags: ['x'] } }],
     ['a note with mappy: false', file('Notes/Off.md'), { frontmatter: { mappy: false } }],
-    ['a note without frontmatter', file('Notes/Bare.md'), {}],
+    ['a note without frontmatter (an empty new note once indexed)', file('Notes/Bare.md'), {}],
     ['an Excalidraw drawing', file('Drawings/Sketch.md'), { frontmatter: { mappy: true, 'excalidraw-plugin': 'parsed' } }],
     ['nothing open', null, null],
   ];
   for (const [shape, active, cache] of OTHERS) {
-    it(`routes to a new map, writing nothing itself, for ${shape}`, () => {
+    it(`routes to a new map for ${shape}`, () => {
       const routes = press(active, cache);
       expect(routes.create).toHaveBeenCalledExactlyOnceWith(active);
       expect(routes.open).not.toHaveBeenCalled();
@@ -79,38 +64,11 @@ describe('the ribbon button (LEV-300)', () => {
   }
 
   it('neither opens nor creates for a note the metadata cache has not read yet', () => {
-    // Obsidian still indexing at startup, or the map a first click just made: a new map here would be a note the
-    // user did not ask for.
+    // Obsidian still indexing at startup, or a note made a moment ago (Obsidian 1.14.2 indexes an empty new note within
+    // ~50 ms: artifacts/lev-300/probe-empty-note.txt): a new map here would be a note the user did not ask for.
     const routes = press(file('Maps/Plan.md'), null);
     expect(routes.notReady).toHaveBeenCalledOnce();
     expect(routes.open).not.toHaveBeenCalled();
     expect(routes.create).not.toHaveBeenCalled();
-  });
-});
-
-describe('singleFlight (LEV-300: a double click makes one map)', () => {
-  it('drops a call while the previous one is pending, and runs again once it has settled', async () => {
-    let finish!: () => void;
-    const calls: string[] = [];
-    const run = vi.fn((path: string) => { calls.push(path); return new Promise<void>(resolve => { finish = resolve; }); });
-    const once = singleFlight(run);
-    const first = once('a');
-    await once('b');
-    expect(run).toHaveBeenCalledExactlyOnceWith('a');
-    finish();
-    await first;
-    const third = once('c');
-    finish();
-    await third;
-    expect(run).toHaveBeenCalledTimes(2);
-    expect(calls).toEqual(['a', 'c']);
-  });
-
-  it('runs again after a failure, and leaves the failure to the first caller', async () => {
-    const run = vi.fn().mockRejectedValueOnce(new Error('no folder')).mockResolvedValue(undefined);
-    const once = singleFlight(run as () => Promise<void>);
-    await expect(once()).rejects.toThrow('no folder');
-    await expect(once()).resolves.toBeUndefined();
-    expect(run).toHaveBeenCalledTimes(2);
   });
 });
