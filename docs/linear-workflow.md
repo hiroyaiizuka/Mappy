@@ -108,6 +108,7 @@ orca worktree create --name lev-<番号>-<短い名前> --linear-issue LEV-<番�
 6. レビューを通してから PR を作る。PR 本文は `/visual-pr` スキル（`.claude/skills/visual-pr`）の形式で書く: 「なぜ」1文、「注意点」1〜3点、「変更の形」を diff 形式の木（ファイル・呼び出し・原文の前後）で示す。長い散文の changelog にしない。末尾に「コードレビュー: 指摘 N 件、対応 M 件、見送り K 件（理由）」を 1 行入れる。**見送った指摘は、理由を PR 本文に全文で書く。** レビューの中身が他所から読める場所は PR 本文だけで、`artifacts/` も `memory/` も git 管理外、素の `/code-review` は（PR 番号を渡しても）PR に何も残さない（残すのは `--comment` を付けたときだけ）。memory の `reviews/` にも残すが、それは知識として残すためで、追跡の代わりにはならない。この順序では **PR 本文そのものはレビューを受けない**（レビューが必ず PR より前に走るため。旧形式の `/code-review <PR番号> high` は本文も対象に入っていた）。本文にしか無い記述 ―― 見送りの理由、N/M/K、AGENTS.md が要求する「回避策が成り立つ前提と崩れる条件」「別チケットへ回す指摘が再現条件に関係しない理由」―― は誰とも突き合わされないので、書いた本人が最後に読み返す。レビュー前の PR を本人に見せない。先に作ってしまった場合は draft に戻し（非 draft なら `gh pr ready --undo`）、draft のままレビューを通して指摘を直してから `gh pr ready` する。範囲を明示しているので、PR の有無でコマンドは変わらない。
 7. `orca linear attach --current --url <PR>`、完了コメント1本、`orca linear status set --current --to "In Review"`。
 8. 途中経過のコメントは書かない。範囲外は `--parent-current` で子 issue にする。
+9. 本人の判断が要ることは本人に直接聞かず、PR 本文と完了報告に「本人の判断」として仮の答え（推奨）と一緒に書いて進める（正本は AGENTS.md）。
 
 同時に走らせる worktree は層（core / layout / interaction / docs）で分け、`src/main.ts` を複数が触らないようにする。Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする。並走する PR は `docs/`・`README.md`・`src/ui/mindmap-view.ts` で衝突しやすいので、merge は 1 本ずつ行い、次の PR はワーカーが origin/main へ rebase してから merge する（2026-09-19 の wave 1 で 3 本が同時に衝突した）。
 
