@@ -442,6 +442,48 @@ function moveTo(doc: MindDocument, node: MindNode, parentId: string, index: numb
   return checkedMove(doc, edits, node, parent, index, offset + insert.prefix.length);
 }
 
+/** Whether the map shows the note's parse root as its body root: the file name, in a note with no H2 before its items (or none at all). */
+export function standsForFileName(doc: MindDocument): boolean {
+  return doc.format === 'list' && projectMap(doc).root.kind === 'root';
+}
+
+/**
+ * Name the file-name root (LEV-301): `## <title>` written where the body starts (past the frontmatter and the blank
+ * lines after it; a last line of only spaces, with no break after it, stays after the heading as it is), so the items and the text before the first H2 become its own, as a new map's `## 中心トピック` holds
+ * them. With `child`, a last item under it is written in the same edit set, as Tab on a new map's root writes one:
+ * the root stays in the middle and the item joins it on the right, and one Undo takes both back. Every node keeps its
+ * title and only the items that hung on the file name change hands, or the edit is refused with `refusal`: a title the
+ * heading would read otherwise (`名前 #` reads `名前`; a lone `%%` hides the rest of the note) is one.
+ */
+export function planFileRoot(doc: MindDocument, title: string, refusal: string, child?: string): EditPlan {
+  assertSingleLine(title);
+  const body = doc.source.slice(doc.root.bodyFrom);
+  const offset = doc.root.bodyFrom + body.length - body.replace(/^(?:[ \t]*\r?\n)*/u, '').length;
+  // Trimmed, as the heading reads it: a file name made outside Obsidian can end in a space.
+  const insert = insertion(doc.source, offset, `## ${title.trim()}`, doc.eol, true);
+  const heading: TextEdit = { from: offset, to: offset, text: insert.text };
+  const after = parseMarkdown(applyEdits(doc.source, [heading]), doc.root.title, doc, 'list', [heading]);
+  const root = projectMap(after).root;
+  const owned = doc.root.children.filter(node => node.kind === 'list').map(node => node.id);
+  if (after.nodes.length !== doc.nodes.length + 1 || root.kind !== 'atx' || root.level !== 2 || root.title !== title.trim()
+    || root.from !== offset + insert.prefix.length || root.children.map(node => node.id).join() !== owned.join()
+    || doc.nodes.some(node => after.nodes.find(candidate => candidate.id === node.id)?.title !== node.title)) {
+    throw new Error(refusal);
+  }
+  if (child === undefined) return { edits: [heading], selectionOffset: root.titleFrom };
+  const added = add(after, root, false, child);
+  // The item's edits are planned on the note with the heading in it: carried back over the heading, one that starts where it does joins it.
+  const edits = [heading];
+  for (const edit of added.edits) {
+    if (edit.from < offset + heading.text.length) throw new Error(t().listUnsafe);
+    const from = edit.from - heading.text.length;
+    const to = edit.to - heading.text.length;
+    if (from === offset) edits[0] = { from: offset, to, text: heading.text + edit.text };
+    else edits.push({ from, to, text: edit.text });
+  }
+  return { edits, selectionOffset: added.selectionOffset };
+}
+
 export function planListEdit(doc: MindDocument, node: MindNode, command: StructureCommand): EditPlan {
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);

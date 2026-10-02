@@ -17,10 +17,11 @@ function execute(doc: MindDocument, command: EditCommand): MindDocument {
 }
 
 describe('source-preserving list commands', () => {
-  it('creates an H2 root in an empty list document', () => {
+  // LEV-301: the file name is written as the H2 root and the new item hangs on it, as on a new map (tests/core/file-root.test.ts).
+  it('names the H2 root after the file in an empty list document and adds the item under it', () => {
     const result = execute(parse(''), { type: 'add-child', nodeId: 'root' });
-    expect(result.source).toBe('## ');
-    expect(result.nodes[0]?.level).toBe(2);
+    expect(result.source).toBe('## Note\n\n- ');
+    expect(result.nodes.map(node => [node.title, node.level])).toEqual([['Note', 2], ['', 3]]);
   });
 
   it('adds a blank bullet beneath H2 and a separate H2 sibling', () => {
@@ -106,9 +107,9 @@ describe('source-preserving list commands', () => {
         .toBe(`## Root\n- A\n  - a\n\n## Topic\n\nprose\n\n- ${LINK}\n`);
     });
 
-    it('makes an H2 section for the virtual root, as an empty add-child does', () => {
+    it('names the file-name root and adds the item under it, as an empty add-child does (LEV-301)', () => {
       const doc = parse('- before any heading\n');
-      expect(execute(doc, { type: 'add-child', nodeId: 'root', title: LINK }).source).toBe(`- before any heading\n\n## ${LINK}\n`);
+      expect(execute(doc, { type: 'add-child', nodeId: 'root', title: LINK }).source).toBe(`## Note\n\n- before any heading\n- ${LINK}\n`);
     });
 
     it('keeps the file ending at the very end of the note, with or without a final line break, as Tab now does too', () => {
