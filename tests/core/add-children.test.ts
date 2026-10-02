@@ -174,6 +174,9 @@ const MARKUP: readonly { name: string; text: string; written: string; heading?: 
   { name: '番号付きの印', text: '1. 背景', written: '1\\. 背景' },
   { name: '番号付きの印（括弧）', text: '2) 背景', written: '2\\) 背景' },
   { name: '区切り線', text: '---', written: '\\---' },
+  // Two marks are enough in a list: the item's own marker makes the third (`- --` is a rule). Independent review of aef0bbb.
+  { name: '区切り線（2 つ、- の印と合わせて 3 つ）', text: '--', written: '\\--' },
+  { name: '区切り線（2 つ、* の印と合わせて 3 つ）', text: '**', written: '\\**' },
   { name: '区切り線（空白入り）', text: '* * *', written: '\\* * *' },
   { name: '区切り線（_）', text: '___', written: '\\___' },
   { name: 'Setext の下線', text: '===', written: '\\===' },
@@ -207,6 +210,22 @@ describe('item texts that Markdown would read as markup are written inert (§11.
         expect(after.nodes.at(-1)?.title).toBe('後');
       });
     }
+  }
+
+  it('writes ** under a list whose marker is *, where the line would be a rule (* **)', () => {
+    const doc = parse('## 企画\n\n* 子\n* 後\n', 'list');
+    const { source, after } = addChildren(doc, '子', [leaf('**'), leaf('次')]);
+    expect(source).toBe('## 企画\n\n* 子\n  * \\**\n  * 次\n* 後\n');
+    expect(childShape(after, '子')).toEqual(['1:\\**', '1:次']);
+  });
+
+  // A link stays a link and a tag stays a tag (§11.4: links are kept): an autolink and `#tag` start no block.
+  for (const [format, source] of [['headings', '# 企画\n\n## 子\n\n## 後\n'], ['list', '## 企画\n\n- 子\n- 後\n']] as const) {
+    it(`${format}: keeps an autolink and a tag as they are, and they read back as written`, () => {
+      const doc = parse(source, format);
+      const { after } = addChildren(doc, '子', [leaf('<https://example.com> 参照'), leaf('#重要 の項目')]);
+      expect(childShape(after, '子')).toEqual(['1:<https://example.com> 参照', '1:#重要 の項目']);
+    });
   }
 
   it('is idempotent, and leaves links and plain text alone', () => {

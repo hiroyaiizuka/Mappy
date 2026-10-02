@@ -1,4 +1,4 @@
-import { FuzzySuggestModal, Notice, setIcon, type App, type TFile } from "obsidian";
+import { FuzzySuggestModal, Notice, Platform, setIcon, type App, type TFile } from "obsidian";
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner, AiTemplate, OutlineItem } from "../../ai/contract";
 import { nodeBody } from "../../core/body";
 import type { MindDocument, MindNode } from "../../core/markdown";
@@ -8,7 +8,7 @@ import type { Viewport } from "../../interaction/viewport";
 import { AI_DRAFT_PREFIX, withDraft } from "../../layout/ai-draft";
 import type { LayoutMode, LayoutNode, LayoutResult, PositionedNode } from "../../layout/layout";
 import { t, type Messages } from "../../i18n";
-import { aiRunLock, type AiServices } from "./services";
+import { AiAttachmentError, aiRunLock, type AiServices } from "./services";
 import { AI_TEMPLATES, ancestorTitles, maxDepth, outlineMarkdown } from "./request";
 
 /** Whether `add-children` wrote (the view's `execute`, §11.5), or why it did not: then the draft stays. */
@@ -154,6 +154,8 @@ export class AiController {
   private readonly draftElements = new Map<string, HTMLDivElement>();
   private lastLayout: LayoutResult | undefined;
   private opening = false;
+  /** An IME composition is under way in the request (`compositionstart`／`compositionend`), as the inline editor keeps it (LEV-223). */
+  private composing = false;
   /** Where the node the button is on was laid out. */
   private buttonFor: PositionedNode | undefined;
   /** `lastLayout`'s nodes by id, made on the first lookup of a frame (a frame of a large map is not walked per lookup). */
@@ -396,8 +398,13 @@ export class AiController {
   private cardKey(event: KeyboardEvent): void {
     // Nothing on the card is the map's: its keys stay here.
     event.stopPropagation();
-    // A key the IME is composing with is the IME's (E01): ⌘↵ confirms the reading, not the run.
-    if (event.isComposing || event.key === "Process") return;
+    // A key the IME is composing with is the IME's (E01), as in the inline editor (LEV-223): ⌘↵ confirms the reading,
+    // not the run. The Enter and Tab the IME lets through are stopped too: Enter would type a line break into the
+    // reading (A1) and Tab would move the focus off the request mid-composition (A3).
+    if (event.isComposing || this.composing || event.key === "Process") {
+      if (event.key === "Enter" || event.key === "Tab") event.preventDefault();
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       // The input and a failure close; a run and a draft stay (取り消す and 捨てる are their own buttons) and the keys go back to the map.
@@ -472,7 +479,11 @@ export class AiController {
       for (const file of values.attachments) {
         this.progress(run, { stage: "material", label: file.basename });
         try { materials.push(await services.readAttachment(file)); }
-        catch (error) { throw new MaterialError(error instanceof Error ? error.message : String(error)); }
+        catch (error) {
+          // The reason the reader gave (a PDF without text, too large) is the one shown; any other failure is material-failed.
+          if (error instanceof AiAttachmentError) throw new MaterialError(error.message, error.reason);
+          throw new MaterialError(error instanceof Error ? error.message : String(error), "material-failed");
+        }
         if (run.abort.signal.aborted) break;
       }
       const request: AiRequest = {
@@ -488,7 +499,7 @@ export class AiController {
         : await runner.run(request, progress => { this.progress(run, progress); }, run.abort.signal);
     } catch (error) {
       result = error instanceof MaterialError
-        ? { kind: "failed", reason: "material-failed", detail: error.message }
+        ? { kind: "failed", reason: error.reason, detail: error.message }
         : { kind: "failed", reason: "exited", detail: error instanceof Error ? error.message : String(error) };
     } finally {
       aiRunLock.release(run);
@@ -588,8 +599,10 @@ export class AiController {
     // Fitted again to the node as it is now: a move or an external edit may have made it a deeper heading since the run.
     const document = this.host.document();
     const node = document ? findNode(document, draft.anchorId) : undefined;
-    const items = document && node ? fitBranches(draft.items, maxDepth(document, node)) : draft.items;
-    try { outcome = await this.host.keep(draft.anchorId, items); }
+    const limit = document && node ? maxDepth(document, node) : 3;
+    const items = fitBranches(draft.items, limit);
+    // The node became a sixth-level heading: nothing can go under it, and the reason is the depth, not an empty result.
+    try { outcome = limit === 0 ? { written: false, reason: t().headingDepth } : await this.host.keep(draft.anchorId, items); }
     catch (error) {
       outcome = { written: false, reason: error instanceof Error ? error.message : String(error) };
     } finally { this.keeping = false; }
@@ -737,6 +750,9 @@ export class AiController {
       attr: { "data-ai-field": "instruction", rows: "3", placeholder: text.aiInstructionPlaceholder, "aria-label": text.aiInstruction },
     });
     instruction.value = values.instruction;
+    this.composing = false;
+    instruction.addEventListener("compositionstart", () => { this.composing = true; });
+    instruction.addEventListener("compositionend", () => { this.composing = false; });
     const options = card.createDiv({ cls: "mappy-ai-options" });
     const select = (name: string, label: string, entries: readonly [string, string][], value: string): HTMLSelectElement => {
       const wrap = options.createEl("label", { cls: "mappy-ai-option" });
@@ -756,8 +772,16 @@ export class AiController {
     const box = web.createEl("input", { attr: { type: "checkbox", "data-ai-field": "web-search" } });
     box.checked = values.webSearch;
     web.createSpan({ text: text.aiWebSearch });
+    // 本人の決定 2026-10-02 (with LEV-270): with a material attached the web search is off by default, and turned on
+    // it says, in one line, that the answer will no longer come from the material alone.
+    const caution = card.createDiv({ cls: "mappy-ai-caution", attr: { "aria-live": "polite" } });
+    const drawCaution = (): void => {
+      caution.setText(box.checked && values.attachments.length > 0 ? text.aiWebSearchWithMaterial : "");
+    };
+    box.addEventListener("change", drawCaution);
     const attachments = card.createDiv({ cls: "mappy-ai-attachments" });
     const drawAttachments = (): void => {
+      drawCaution();
       attachments.empty();
       for (const file of values.attachments) {
         const chip = attachments.createSpan({ cls: "mappy-ai-attachment", text: file.basename });
@@ -776,7 +800,11 @@ export class AiController {
         event.stopPropagation();
         this.readForm(values);
         new AttachModal(this.host.app, this.host.file(), file => {
-          if (!values.attachments.includes(file)) values.attachments = [...values.attachments, file];
+          if (!values.attachments.includes(file)) {
+            // The first material turns the web search off; the user may turn it on again (then the caution shows).
+            if (values.attachments.length === 0) { box.checked = false; values.webSearch = false; }
+            values.attachments = [...values.attachments, file];
+          }
           drawAttachments();
         }).open();
       });
@@ -784,7 +812,8 @@ export class AiController {
     drawAttachments();
     card.createDiv({ cls: "mappy-ai-message", attr: { role: "alert" } });
     const footer = card.createDiv({ cls: "mappy-ai-actions" });
-    footer.createSpan({ cls: "mappy-ai-keys", text: text.aiRunKeys });
+    // ⌘↵ on macOS, Ctrl+Enter elsewhere (`cardKey` takes either).
+    footer.createSpan({ cls: "mappy-ai-keys", text: text.aiRunKeys(Platform.isMacOS ? "⌘↵" : "Ctrl+Enter") });
     this.action(footer, text.aiRun, () => { this.submit(); }, "mod-cta");
     this.action(footer, text.aiClose, () => { this.form = null; this.sync(); });
   }
@@ -813,5 +842,7 @@ export class AiController {
   }
 }
 
-/** A material that could not be read: the run ends as `material-failed` with this reason. */
-class MaterialError extends Error {}
+/** A material that could not be read: the run ends as a failure of `reason`, with the message as its detail. */
+class MaterialError extends Error {
+  constructor(message: string, readonly reason: AiFailure) { super(message); }
+}

@@ -545,5 +545,7 @@
 .mappy-view .mappy-ai-note { color: var(--text-faint); font-size: var(--font-ui-smaller); }
 .mappy-view .mappy-ai-message { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--text-error); overflow-wrap: anywhere; }
 .mappy-view .mappy-ai-message:empty { display: none; }
+.mappy-view .mappy-ai-caution { color: var(--text-warning); font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-ai-caution:empty { display: none; }
 .mappy-view .mappy-ai-message button { height: auto; padding: 1px 6px; font-size: var(--font-ui-smaller); }
 .mappy-view .mappy-ai-raw { max-height: 160px; margin: 0; overflow: auto; padding: 6px; border-radius: var(--radius-s); background: var(--background-primary); font-size: var(--font-ui-smaller); white-space: pre-wrap; }

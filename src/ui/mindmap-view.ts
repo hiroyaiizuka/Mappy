@@ -87,7 +87,7 @@ interface Created {
  * drops the AI draft only on a write, so a command skipped while a save runs, a draft that could not be confirmed or a
  * note that left the view keeps the draft and says why.
  */
-export type ExecuteOutcome = { write: CarriedWrite } | { write: null; reason: string };
+export type ExecuteOutcome = { write: CarriedWrite } | { write: null; skipped: "saving" | "draft-refused" | "no-document" };
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
 interface SnapIndex {
@@ -739,7 +739,9 @@ export class MindmapView extends FileView {
       readOnly: id => this.calledSource(id) !== undefined, mode: () => this.mode, viewport: () => this.viewport.value,
       keep: async (nodeId, items) => {
         const outcome = await this.execute({ type: "add-children", nodeId, items });
-        return outcome.write ? { written: true } : { written: false, reason: outcome.reason };
+        if (outcome.write) return { written: true };
+        const reason = outcome.skipped === "saving" ? t().savingWait : outcome.skipped === "draft-refused" ? t().aiKeepDraftOpen : t().aiKeepNoteChanged;
+        return { written: false, reason };
       },
       expand: id => { this.expand(id); },
       layout: () => { this.scheduleLayout(); },
@@ -750,8 +752,9 @@ export class MindmapView extends FileView {
       },
     });
     this.ai.setServices(this.aiServices);
-    // The page going (a reload, Obsidian quitting) sends no `onClose`: the run is cancelled all the same (§11.3).
-    this.registerDomEvent(this.contentEl.win, "pagehide", () => { this.ai?.reset(); });
+    // The page going (a reload, Obsidian quitting) sends no `onClose`: the run is cancelled all the same (§11.3). The main
+    // window's: quitting sends it there whichever window the map is in, and a popout closing closes the view itself.
+    this.registerDomEvent(window, "pagehide", () => { this.ai?.reset(); });
     this.nodeDrag = this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
       readOnly: id => this.isCalled(id),
@@ -1773,7 +1776,7 @@ export class MindmapView extends FileView {
   }
 
   private async execute(command: EditCommand): Promise<ExecuteOutcome> {
-    if (this.saving) return { write: null, reason: t().savingWait };
+    if (this.saving) return { write: null, skipped: "saving" };
     if ("nodeId" in command) this.assertEditable(command.nodeId);
     if ("parentId" in command) this.assertEditable(command.parentId);
     // A kept draft (E05) still addresses its node and a structural edit under it would move what the draft
@@ -1788,7 +1791,7 @@ export class MindmapView extends FileView {
     const draftOpen = draft !== undefined;
     if (draft) {
       this.refusalOverDraft(command);
-      if (!await draft.confirm()) return { write: null, reason: t().aiKeepDraftOpen };
+      if (!await draft.confirm()) return { write: null, skipped: "draft-refused" };
     }
     // Refused once the draft was written (the note changed under it meanwhile, so the node is gone or the edit no
     // longer applies; another write of the map's own began meanwhile): the draft's save stays, and the message says
@@ -1799,10 +1802,10 @@ export class MindmapView extends FileView {
     };
     const document = this.document;
     const file = this.file;
-    if (!document) return { write: null, reason: t().aiKeepNoteChanged };
+    if (!document) return { write: null, skipped: "no-document" };
     if (this.saving) {
       if (draftOpen) throw refused(new Error(t().savingWait));
-      return { write: null, reason: t().savingWait };
+      return { write: null, skipped: "saving" };
     }
     const before = this.shownState();
     let planned: ReturnType<MindmapView["planCommand"]>;

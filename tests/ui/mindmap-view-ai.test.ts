@@ -17,7 +17,7 @@ import type { AiProgress, AiRequest, AiResult, AiRunner } from '../../src/ai/con
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
 import { FakeRunner } from '../../src/ui/ai/fake-runner';
-import { aiRunLock, type AiEntitlementView, type AiServices } from '../../src/ui/ai/services';
+import { AiAttachmentError, aiRunLock, type AiEntitlementView, type AiServices } from '../../src/ui/ai/services';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -788,5 +788,100 @@ describe('the AI after the second code review', () => {
     expect(index.byId.has('ai-draft:1-1')).toBe(false);
     expect(index.children.get('a')?.map(child => child.id)).toEqual(['b']);
     expect(index.places.has('ai-draft:1-1')).toBe(false);
+  });
+});
+
+/** The independent review of aef0bbb (artifacts/review/pr157-aef0bbb.md), one row each. */
+describe('the AI after the independent review', () => {
+  it('holds ⌘↵, Enter and Tab while a composition is under way, though the key says nothing of it (LEV-223)', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount(LIST, services(runner));
+    mounted.select('持ち物');
+    const input = await mounted.open();
+    input.value = 'へんかん';
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    const enter = mounted.key(input, 'Enter');
+    const tab = mounted.key(input, 'Tab');
+    await mounted.run();
+    expect(enter.defaultPrevented).toBe(true);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(runner.calls).toHaveLength(0);
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    await mounted.run();
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it('names the reason the attachment reader gave (a PDF without text), not that the material failed', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    ai.readAttachment = () => Promise.reject(new AiAttachmentError('no-pdf-text', 'スキャン.pdf: 0 文字'));
+    const app = new HarnessApp();
+    const pdf = app.put('資料/スキャン.pdf', '');
+    const mounted = await mount(LIST, ai, { app });
+    mounted.select('持ち物');
+    await mounted.open();
+    (mounted.view as unknown as { ai: { form: { values: { attachments: unknown[] } } } }).ai.form.values.attachments = [pdf];
+    await mounted.run();
+    await mounted.settle();
+    expect(runner.calls).toHaveLength(0);
+    expect(mounted.card().textContent).toContain(t().aiFailureNoPdfText);
+    expect(mounted.card().textContent).not.toContain(t().aiFailureMaterialFailed);
+  });
+
+  it('says it is the heading depth when 残す meets a node that became a sixth-level heading since the run', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount('# A\n\n## B\n\n### C\n\n#### D\n\n##### X\n', services(runner));
+    mounted.select('X');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    expect(mounted.draftLabels()).toEqual(['案 A', '詳細', '案 B']);
+    mounted.app.put(PATH, '# A\n\n## B\n\n### C\n\n#### D\n\n##### E\n\n###### X\n');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await mounted.settle();
+    await mounted.press(t().aiKeep);
+    expect(mounted.card().textContent).toContain(t().aiKeepFailed(t().headingDepth));
+    expect(mounted.card().textContent).not.toContain(t().nothingToAdd);
+    expect(mounted.draftLabels()).toEqual(['案 A', '詳細', '案 B']);
+  });
+
+  it('shows the run keys of this platform: Ctrl+Enter off macOS', async () => {
+    const mounted = await mount(LIST, services(new HandRunner()));
+    mounted.select('持ち物');
+    await mounted.open();
+    expect(mounted.card().querySelector('.mappy-ai-keys')?.textContent).toBe(t().aiRunKeys('Ctrl+Enter'));
+  });
+});
+
+/** 本人の決定 2026-10-02 (with LEV-270): a material attached turns the web search off by default; turned on, a caution. */
+describe('the web search with a material attached', () => {
+  it('turns the web search off on the first attachment, and cautions in one line when it is turned on again', async () => {
+    const runner = new HandRunner();
+    const app = new HarnessApp();
+    app.put('資料/メモ.md', '# メモ\n');
+    const mounted = await mount(LIST, services(runner), { app });
+    mounted.select('持ち物');
+    await mounted.open();
+    const box = field<HTMLInputElement>(mounted, 'web-search');
+    const caution = (): string => mounted.card().querySelector('.mappy-ai-caution')?.textContent ?? '';
+    // On without a material: no caution.
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(caution()).toBe('');
+    mounted.card().querySelector<HTMLButtonElement>('.mappy-ai-attach')?.click();
+    await mounted.settle();
+    const item = Array.from(document.querySelectorAll<HTMLElement>('.suggestion-item')).find(element => element.textContent?.includes('資料/メモ.md'));
+    if (!item) throw new Error('The note is not offered to attach');
+    item.click();
+    await mounted.settle();
+    expect(box.checked).toBe(false);
+    expect(caution()).toBe('');
+    box.checked = true;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(caution()).toBe(t().aiWebSearchWithMaterial);
+    await mounted.run();
+    expect(runner.last().request.webSearch).toBe(true);
+    expect(runner.last().request.materials.map(material => material.label)).toEqual(['資料/メモ.md']);
   });
 });

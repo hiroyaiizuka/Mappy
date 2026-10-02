@@ -49,8 +49,10 @@ export function branchCount(branches: readonly NewBranch[]): number {
  * `text` (one line) as the title of a written heading or list item that reads back as that same text and nothing
  * else (§11.4). What a block would start with is escaped by a backslash before it: a heading's `#`, a quote's `>`,
  * a list's marker (`-`/`*`/`+` and a space; `1.`/`1)` and a space, escaped at the delimiter so it still reads
- * `1.`), a task's `[ ]`, a line that is all a thematic break or a Setext underline (`---`, `* * *`, `===`), a fence,
- * a math block, HTML, a link reference definition (`[03:15]: …`). Two things act wherever they stand and would hide
+ * `1.`), a task's `[ ]`, a line that is all a thematic break or a Setext underline (`---`, `* * *`, `===`; from two
+ * marks, `--` and `**`, since a list item's own marker makes the third: `- --` is a rule), a fence, a math block, HTML
+ * (not an autolink `<https://…>`), a link reference definition (`[03:15]: …`). A heading's `#` only as a heading's
+ * mark (`#` and a space, or alone): a tag `#重要` is no heading and stays a tag. Two things act wherever they stand and would hide
  * the nodes after the item until they close: Obsidian's comment `%%` (each `%` of a run escaped) and an HTML comment
  * (`<!--` written `&lt;!--`). A heading's closing `#`s are escaped too, so they are not dropped as its closing
  * sequence. Links stay as they are. Idempotent: an escaped title is returned unchanged.
@@ -59,9 +61,10 @@ export function inertTitle(text: string, form: 'heading' | 'item'): string {
   let title = text.trim()
     .replace(/%{2,}/gu, run => '\\%'.repeat(run.length))
     .replace(/<!--/gu, '&lt;!--');
-  if (/^([-*_])(?:[ \t]*\1){2,}[ \t]*$/u.test(title) || /^=+[ \t]*$/u.test(title)) title = `\\${title}`;
+  if (/^([-*_])(?:[ \t]*\1)+[ \t]*$/u.test(title) || /^=+[ \t]*$/u.test(title)) title = `\\${title}`;
   else if (/^\d{1,9}[.)](?:[ \t]|$)/u.test(title)) title = title.replace(/^(\d{1,9})/u, '$1\\');
-  else if (/^(?:[#>]|[-*+](?:[ \t]|$)|```|~~~|\$\$|<|\[[ xX]\](?:[ \t]|$)|\[[^\]]+\]:)/u.test(title)) title = `\\${title}`;
+  else if (/^<[a-z][a-z\d+.-]{1,31}:[^\s<>]*>/iu.test(title)) { /* An autolink: a link, which stays (§11.4). */ }
+  else if (/^(?:#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|```|~~~|\$\$|<|\[[ xX]\](?:[ \t]|$)|\[[^\]]+\]:)/u.test(title)) title = `\\${title}`;
   if (form === 'heading') title = title.replace(/([ \t])(#+)$/u, (_whole, space: string, marks: string) => space + '\\#'.repeat(marks.length));
   return title;
 }
