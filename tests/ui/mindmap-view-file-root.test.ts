@@ -6,6 +6,8 @@
  *
  * 行列は本人の操作（ダブルクリック・F2・Tab・Enter・画像の貼り付け）× 対象の形（本文が空・frontmatter だけ・見出しの
  * 無い段落・見出しの無い項目・項目の後に H2 のトピック・既存の H1）。期待は「書かれた原文」と「地図の根」の両方で見る。
+ * 見出し形式の行が「既存の H1」の対照だけなのは、H2 以外の見出しがあれば形式が見出し形式になり、最初の見出しが根になるため:
+ * 見出し形式ではファイル名の根そのものが生じない（src/core/markdown.ts の parseMarkdown・projectMap）。
  * 必須ケースから: ⌘Z 1 回で書く前に戻る・日本語変換中の Enter は確定しない・下書き中の外部変更・同じノートの 2 枚目のビュー。
  *
  * 修正を戻すと落ちるのはダブルクリック・F2・Tab の行と、日本語変換・外部変更・複数ビューの行（artifacts/lev-301/
@@ -274,6 +276,11 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
       const { mounted, input, windowFocus } = await leave();
       expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n`);
       expect(mounted.editor()).toBe(input);
+      // Code review of LEV-301 (3rd): one root on the map, the draft in it — not the file name's element beside the heading's.
+      const roots = Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node.is-root'));
+      expect(roots).toHaveLength(1);
+      expect(roots[0]?.contains(input)).toBe(true);
+      expect(roots[0]?.dataset.nodeId).toBe(projectMap(documentOf(mounted)).root.id);
       windowFocus.mockReturnValue(true);
       mounted.key(input, 'Enter');
       await mounted.settle();
@@ -321,6 +328,49 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
     await mounted.settle();
     expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n- ${t().mainTopicTitle}\n`);
+  });
+
+  // Code review of LEV-301 (3rd): only the addition goes to the heading the draft's save wrote. Delete and Enter on the
+  // file-name root stay refused, and refused before the draft is written (LEV-141), as they were before the fix.
+  it.each(['Delete', 'Enter'] as const)('下書き中の %s: refused, and nothing is written', async (key) => {
+    const source = `${FM}- a\n`;
+    const mounted = await mountMapView(PATH, source);
+    mounted.key(mounted.select(FILE), 'F2');
+    await mounted.settle();
+    type(mounted, '新しい名前');
+    const command = { type: key === 'Delete' ? 'delete' : 'add-sibling', nodeId: 'root' };
+    await expect((mounted.view as unknown as { execute(command: unknown): Promise<void> }).execute(command)).rejects.toThrow(t().rootAddsChildOnly);
+    await mounted.settle();
+    expect(mounted.source()).toBe(source);
+  });
+
+  // Code review of LEV-301 (3rd): a file name the heading cannot hold does not stop a call; it is a topic of its own, as before.
+  it('マップの呼び出し: a file name that cannot be a heading still takes the call, as a free topic', async () => {
+    const app = new HarnessApp();
+    app.put('Fixtures/Other.md', `${FM}## 別のマップ\n`);
+    const mounted = await mountMapView('Fixtures/Draft #.md', `${FM}- a\n`, 'mindmap', app);
+    mounted.select('Draft #');
+    const other = app.asApp<App>().vault.getAbstractFileByPath('Fixtures/Other.md');
+    await mounted.view.callMap(other as never);
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${FM}- a\n\n## ![[Other]]\n`);
+    expect(bodyRoot(mounted).kind).toBe('root');
+  });
+
+  // Independent review of PR #161 (Minor 2): the draft follows the heading its save wrote only when the node at the plan's
+  // offset is the map's body root. An offset another write moved onto another node (here, the item) leaves the draft on the
+  // file name, whose next save is then refused as gone, instead of renaming that node.
+  it('下書きが追うのは本体の根になった見出しだけ: a node the offset lands on otherwise is not taken', async () => {
+    const mounted = await mountMapView(PATH, `${FM}\n## 外の見出し\n\n- a\n`);
+    const view = mounted.view as unknown as { followNamedRoot(draft: { nodeId: string; value: string }, offset: number | null): void };
+    const document = documentOf(mounted);
+    const item = document.nodes.find(node => node.title === 'a');
+    const heading = projectMap(document).root;
+    const draft = { nodeId: 'root', value: '' };
+    view.followNamedRoot(draft, item?.titleFrom ?? null);
+    expect(draft.nodeId).toBe('root');
+    view.followNamedRoot(draft, heading.titleFrom);
+    expect(draft.nodeId).toBe(heading.id);
   });
 
   it('複数ビュー: the other view of the note shows the file name as the written root, with the new item under it', async () => {

@@ -469,10 +469,10 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
  * A name left as the file name, or emptied, writes nothing: the map still shows the file name, and a draft opened on
  * it and left is not an edit of the note.
  */
-function planFileRootCommand(doc: MindDocument, command: { type: 'rename'; title: string } | { type: 'add-child'; title?: string }): EditPlan {
+function planFileRootCommand(doc: MindDocument, type: 'rename' | 'add-child', text = ''): EditPlan {
   // A file name the heading would read otherwise is named first: the draft on the root is open to it.
-  if (command.type === 'add-child') return planFileRoot(doc, doc.root.title, t().fileNameNotHeading, command.title ?? '');
-  const title = storedTitle(command.title, doc.root.title).trim();
+  if (type === 'add-child') return planFileRoot(doc, doc.root.title, t().fileNameNotHeading, text);
+  const title = storedTitle(text, doc.root.title).trim();
   if (title === '' || title === doc.root.title.trim()) return { edits: [], selectionOffset: null };
   return planFileRoot(doc, title, t().nameChangesHeading);
 }
@@ -483,8 +483,7 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   const node = getNode(doc, command.nodeId);
   // The file name the map shows for a note without a heading section is named by a heading, never written over (LEV-301).
   if (node.kind === 'root' && standsForFileName(doc) && (command.type === 'rename' || command.type === 'add-child')) {
-    const named = command.type === 'rename' ? command : { type: 'add-child' as const, ...(command.title === undefined ? {} : { title: command.title }) };
-    return withTopicKeys(doc, planFileRootCommand(doc, named), undefined, 'adds');
+    return withTopicKeys(doc, planFileRootCommand(doc, command.type, command.title), undefined, 'adds');
   }
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error(t().rootAddsChildOnly);
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);

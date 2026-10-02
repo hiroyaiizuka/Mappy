@@ -102,6 +102,13 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
   });
 
   // Code review of LEV-301 (3rd): a file name made outside Obsidian can end in a space; the heading line does not keep it.
+  // Independent review of PR #161 (Nit 2, left as it is): with no frontmatter, the heading goes before a byte order mark. The
+  // map's parse reads no heading or item right after one (the item here is not drawn either), so the heading written after
+  // it could not be read back and the name would be refused; written before it, the note keeps the mark's bytes unchanged.
+  it('writes the heading before a byte order mark, which the parse would not read a heading after', () => {
+    expect(run(parse('\uFEFF- a\n'), { type: 'rename', nodeId: 'root', title: '新しい名前' }).source).toBe('## 新しい名前\n\n\uFEFF- a\n');
+  });
+
   it('writes the file name trimmed', () => {
     expect(run(parse('', 'foo '), { type: 'add-child', nodeId: 'root', title: 'メイントピック' }).source).toBe('## foo\n\n- メイントピック');
   });

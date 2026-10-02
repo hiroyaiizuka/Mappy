@@ -55,18 +55,28 @@ function isProvisional(command: EditCommand): command is Extract<EditCommand, { 
   return (command.type === "add-child" || command.type === "add-sibling") && command.title === undefined;
 }
 
-/** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 /**
- * `command` as the map meant it on `document`: the file-name root it was given for, once a heading has taken that root's
- * place (the root's own draft, saved before the command — LEV-301), is that heading, the map's body root now. Elsewhere the
- * parse root behind a heading is not on the map, and a command there would write a free topic of its own.
+ * `command` as the map meant it on `document`: an addition to the file-name root, once a heading has taken that root's
+ * place (the root's own draft, saved before the command — LEV-301), is an addition to that heading, the map's body root
+ * now; the parse root behind a heading is not on the map, and an addition there would write a free topic of its own. Only
+ * the addition: Enter, Delete and moves on the file-name root stay refused, before the draft is written (LEV-141).
  */
 function onShownRoot(document: MindDocument, command: EditCommand): EditCommand {
-  if (!("nodeId" in command) || command.nodeId !== "root" || standsForFileName(document)) return command;
+  if (command.type !== "add-child" || command.nodeId !== "root" || standsForFileName(document)) return command;
   const body = projectMap(document).root;
   return body.kind === "root" ? command : { ...command, nodeId: body.id };
 }
 
+/**
+ * Whether the file-name root can take `link` under it, its name written as a heading (LEV-301). A file name the heading
+ * would read otherwise (` #` at its end, a `%%`) cannot: a call there is a topic of its own, as every call on the file
+ * name was before.
+ */
+function fileNameHolds(document: MindDocument, link: string): boolean {
+  try { planEdit(document, { type: "add-child", nodeId: "root", title: link }); return true; } catch { return false; }
+}
+
+/** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
 function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
 }
@@ -1851,7 +1861,10 @@ export class MindmapView extends FileView {
     if (this.saving) throw new Error(t().savingWait);
     const link = `![[${this.app.metadataCache.fileToLinktext(target, file.path, true)}]]`;
     const parent = this.selected();
-    if (!parent) { await this.execute({ type: "add-topic", title: link }); return; }
+    if (!parent || (parent.kind === "root" && !fileNameHolds(this.document, link))) {
+      await this.execute({ type: "add-topic", title: link });
+      return;
+    }
     this.assertEditable(parent.id);
     await this.execute({ type: "add-child", nodeId: parent.id, title: link });
   }
@@ -2310,7 +2323,7 @@ export class MindmapView extends FileView {
       finish: (next, cancelled, text) => {
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
-        this.renderer.editing(node.id, false);
+        this.renderer.editing(draft.nodeId, false);
         if (this.closed || this.unloading || file !== this.file) return;
         // Dismissed right after the addition — the provisional name untouched, the note still as the addition left
         // it — the node goes too. Once the user has typed, or something else has been written or is on its way (an
@@ -2333,7 +2346,7 @@ export class MindmapView extends FileView {
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
-      restore: () => { this.renderer.editing(node.id, false); },
+      restore: () => { this.renderer.editing(draft.nodeId, false); },
     });
   }
 
@@ -2403,25 +2416,31 @@ export class MindmapView extends FileView {
   }
 
   /**
+   * The draft on the file-name root goes on with the heading its save wrote (LEV-301): a save in place keeps the draft open
+   * (LEV-216), and its next save renames that heading, as a draft on any node does. The heading is new, so no id carries
+   * over to it: it is the node where the plan put the selection, and only when that node is the map's body root now. An
+   * offset another write moved meanwhile (a change from outside before the body) finds another node or none; the draft then
+   * stays on the file name and its next save is refused as gone, rather than renaming a node it was not opened on.
+   * The element the draft is open in becomes that heading's, so the map draws one root with the draft in it.
+   */
+  private followNamedRoot(draft: DraftBase, offset: number | null): void {
+    const document = this.document;
+    const named = document ? nodeAt(document, offset) : undefined;
+    if (!document || !named || projectMap(document).root.id !== named.id) return;
+    this.renderer.rekey(draft.nodeId, named.id);
+    draft.nodeId = named.id;
+    draft.value = draftFingerprint(document, named);
+    this.draw();
+  }
+
+
+  /**
    * The note a kept draft applies to once the map has refreshed under it (E05): the view's current parse,
    * provided the node is still there with the title and body the user saw when the draft opened. A write
    * of this view's own carries the node's id over (LEV-146); an external change carries it only where the
    * title is unique, so a node that vanished under one is refused here, and an external edit to the node
    * being drafted is refused rather than overwritten. A node that only moved takes the draft.
    */
-  /**
-   * The draft on the file-name root goes on with the heading its save wrote (LEV-301): a save in place keeps the draft open
-   * (LEV-216), and its next save renames that heading, as a draft on any node does. The heading is new, so no id carries
-   * over to it; it is found where the plan put the selection.
-   */
-  private followNamedRoot(draft: DraftBase, offset: number | null): void {
-    const document = this.document;
-    const named = document ? nodeAt(document, offset) : undefined;
-    if (!document || !named) return;
-    draft.nodeId = named.id;
-    draft.value = draftFingerprint(document, named);
-  }
-
   private draftTarget(file: TFile, draft: DraftBase): { document: MindDocument; node: MindNode } {
     const document = this.document;
     if (file !== this.file || !document) throw new Error(t().noteChanged);
