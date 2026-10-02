@@ -88,8 +88,10 @@ export default defineConfig(
   },
   {
     // `recommended` reads manifest.json and, when `isDesktopOnly` is true, turns off no-nodejs-modules, stops
-    // regex-lookbehind reporting and adds Node's globals. Mappy is desktop only for now only because mobile hasn't
-    // been tried (LEV-249), not because it may use Node, so these stay on whatever the manifest says
+    // regex-lookbehind reporting and adds Node's globals. LEV-249 marked Mappy desktop only because mobile hadn't
+    // been tried, and on 2026-10-02 the owner decided it stays desktop only (docs/community-submission.md §4.4).
+    // Neither is a licence to use Node: the runtime stays browser-compatible (AGENTS.md; the one exception,
+    // src/ai/host/node-host.ts on feature/ai, is architecture.md §11.1), so these stay on whatever the manifest says
     // (tests/tooling/mobile-lint.test.mjs).
     files: ["src/**/*.ts"],
     languageOptions: { globals: nodeOnlyGlobalsOff() },
@@ -97,7 +99,7 @@ export default defineConfig(
       "obsidianmd/no-nodejs-modules": "error",
       "obsidianmd/regex-lookbehind": ["error", { isDesktopOnly: false }],
       "no-restricted-imports": ["error", {
-        patterns: [{ group: ["node:*", "electron"], message: "Runtime must work on mobile." }],
+        patterns: [{ group: ["node:*", "electron"], message: "Runtime must stay browser-compatible." }],
       }],
       // The guidelines want only errors in the default console; `recommended` also lets warn and debug through.
       // Narrowed where `recommended` wraps `no-console`, so a call is reported once, with the guideline's link.
