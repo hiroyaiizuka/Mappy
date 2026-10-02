@@ -1,7 +1,21 @@
 import type { ButtonComponent, Setting, TextComponent } from 'obsidian';
-import { LicenseRequestError, type Entitlement, type EntitlementState } from '../ai/license/entitlement';
+import { LicenseRequestError, NETWORK_REASONS, TOKEN_REASONS, type Entitlement, type EntitlementState } from '../ai/license/entitlement';
 import { t, textLocale } from '../i18n';
 import type { MapSettingDefinition } from './settings-tab';
+
+const TOKEN_CODES: readonly string[] = Object.values(TOKEN_REASONS);
+
+/** A reason code in the UI's language; the server's own refusal text (no code) is shown as it is. */
+export function reasonText(reason: string): string {
+  const text = t();
+  if (reason === NETWORK_REASONS.timeout) return text.aiReasonTimeout;
+  if (reason === NETWORK_REASONS.error) return text.aiReasonNetwork;
+  if (reason === NETWORK_REASONS.unexpected) return text.aiReasonUnexpected;
+  if (reason === NETWORK_REASONS.waiting) return text.aiReasonWaiting;
+  const status = reason.match(/^net:http-(\d+)$/u)?.[1];
+  if (status !== undefined) return text.aiReasonHttp(status);
+  return reason;
+}
 
 /** The license line of the AI section, for each state of §11.6. */
 export function licenseStatusText(state: EntitlementState): string {
@@ -11,15 +25,16 @@ export function licenseStatusText(state: EntitlementState): string {
     case 'unregistered': return text.aiUnregistered;
     case 'active': return text.aiActive(new Date(state.expiresAt).toLocaleString(textLocale()));
     case 'expired': return text.aiExpired;
-    case 'unreachable': return text.aiUnreachable(state.reason);
-    case 'invalid': return text.aiInvalid(state.reason);
+    case 'unreachable': return text.aiUnreachable(reasonText(state.reason));
+    // The bundled key could not confirm the token: entering the code again gives the same token, updating Mappy may not.
+    case 'invalid': return TOKEN_CODES.includes(state.reason) ? text.aiInvalidToken : text.aiInvalid(reasonText(state.reason));
   }
 }
 
 function registerFailure(error: unknown): string {
   const text = t();
   if (error instanceof LicenseRequestError) {
-    return error.kind === 'rejected' ? text.aiRegisterRejected(error.reason) : text.aiRegisterUnreachable(error.reason);
+    return error.kind === 'rejected' ? text.aiRegisterRejected(reasonText(error.reason)) : text.aiRegisterUnreachable(reasonText(error.reason));
   }
   return text.aiRegisterFailed(error instanceof Error ? error.message : String(error));
 }
@@ -83,6 +98,8 @@ export class AiSettingsSection {
     let input: TextComponent | null = null;
     let button: ButtonComponent | null = null;
     const sync = (): void => {
+      // A registration given up on that went through after all: the failure line no longer holds.
+      if (entitlement.state().kind === 'active') failure.hidden = true;
       status.setText(MAPPY_AI_DEV_UNLOCK ? t().setAiDevUnlock : licenseStatusText(entitlement.state()));
       button?.setDisabled(busy || code.trim() === '');
       input?.setDisabled(busy);

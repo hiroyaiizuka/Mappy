@@ -24,6 +24,8 @@ export interface StoredLicense {
   refreshSecret?: string;
   rejected?: string;
   unverified?: string;
+  /** A refresh sent with `secret` and given up on: until `until` (ms), no window sends that secret again. */
+  pending?: { secret: string; until: number };
 }
 
 export interface LicenseStore {
@@ -59,6 +61,10 @@ export function parseStoredLicense(text: string | null): StoredLicense | null {
   if (refreshSecret) license.refreshSecret = refreshSecret;
   if (rejected) license.rejected = rejected;
   if (unverified) license.unverified = unverified;
+  const pending = record.pending as Record<string, unknown> | null | undefined;
+  if (pending && typeof pending === 'object' && optionalString(pending.secret) && typeof pending.until === 'number') {
+    license.pending = { secret: pending.secret as string, until: pending.until };
+  }
   return license;
 }
 

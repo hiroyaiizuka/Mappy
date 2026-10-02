@@ -61,7 +61,7 @@ describe('the license client (provisional contract, src/ai/license/client.ts)', 
       const license = createLicenseClient(() => new Promise(() => undefined), LICENSE_SERVER, 1000);
       const failing = license.refresh('device', 'secret').catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(await failing).toMatchObject({ kind: 'unreachable', reason: 'timeout' });
+      expect(await failing).toMatchObject({ kind: 'unreachable', reason: 'net:timeout' });
     } finally {
       vi.useRealTimers();
     }
@@ -69,6 +69,6 @@ describe('the license client (provisional contract, src/ai/license/client.ts)', 
 
   it('reads a request that throws (offline, DNS) as not reached', async () => {
     const { client: license } = client(new Error('net::ERR_NAME_NOT_RESOLVED'));
-    await expect(license.register('CODE', 'device')).rejects.toMatchObject({ kind: 'unreachable', reason: 'net::ERR_NAME_NOT_RESOLVED' });
+    await expect(license.register('CODE', 'device')).rejects.toMatchObject({ kind: 'unreachable', reason: 'net:error' });
   });
 });

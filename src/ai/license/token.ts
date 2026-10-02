@@ -23,6 +23,18 @@ export const LICENSE_PUBLIC_KEY: JsonWebKey = {
   y: 'v34cnGXM6rrp50oJIapReNW0wpCGVRE6DWPG6e37_rk',
 };
 
+/**
+ * Why a token did not verify, as codes the settings word in the UI's language (src/obsidian/ai-settings.ts). All of
+ * them mean the bundled key could not confirm the token, so the advice is the same: update Mappy.
+ */
+export const TOKEN_REASONS = {
+  malformed: 'token:malformed',
+  unsupported: 'token:unsupported',
+  signatureMalformed: 'token:signature-malformed',
+  noKey: 'token:no-key',
+  badSignature: 'token:bad-signature',
+} as const;
+
 export type TokenCheck =
   /** Signed by the key; `expiresAt` in milliseconds since the epoch. */
   | { kind: 'signed'; expiresAt: number }
@@ -70,23 +82,23 @@ export function createTokenVerifier(publicKey: JsonWebKey = LICENSE_PUBLIC_KEY):
   return {
     async verify(token) {
       const parts = token.split('.');
-      if (parts.length !== 3) return { kind: 'unsigned', reason: 'malformed token' };
+      if (parts.length !== 3) return { kind: 'unsigned', reason: TOKEN_REASONS.malformed };
       const [headerText = '', payloadText = '', signatureText = ''] = parts;
       const header = base64UrlJson(headerText);
-      if (!isRecord(header) || header.alg !== 'ES256') return { kind: 'unsigned', reason: 'unsupported token' };
+      if (!isRecord(header) || header.alg !== 'ES256') return { kind: 'unsigned', reason: TOKEN_REASONS.unsupported };
       const payload = base64UrlJson(payloadText);
       if (!isRecord(payload) || typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
-        return { kind: 'unsigned', reason: 'malformed token' };
+        return { kind: 'unsigned', reason: TOKEN_REASONS.malformed };
       }
       const signature = base64UrlBytes(signatureText);
-      if (!signature || signature.length !== 64) return { kind: 'unsigned', reason: 'malformed signature' };
+      if (!signature || signature.length !== 64) return { kind: 'unsigned', reason: TOKEN_REASONS.signatureMalformed };
       const verifyKey = await key();
-      if (!verifyKey) return { kind: 'unsigned', reason: 'no usable public key' };
+      if (!verifyKey) return { kind: 'unsigned', reason: TOKEN_REASONS.noKey };
       const signed = new TextEncoder().encode(`${headerText}.${payloadText}`);
       const valid = await Promise.resolve()
         .then(() => crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, signature, signed))
         .catch(() => false);
-      return valid ? { kind: 'signed', expiresAt: payload.exp * 1000 } : { kind: 'unsigned', reason: 'bad signature' };
+      return valid ? { kind: 'signed', expiresAt: payload.exp * 1000 } : { kind: 'unsigned', reason: TOKEN_REASONS.badSignature };
     },
   };
 }

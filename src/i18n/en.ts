@@ -110,6 +110,12 @@ export const en = {
   aiRegisterUnreachable: (reason: string) => `Couldn't reach the license server (${reason}).`,
   aiRegisterRejected: (reason: string) => `The code wasn't accepted (${reason}).`,
   aiRegisterFailed: (reason: string) => `Couldn't register the code (${reason}).`,
+  aiInvalidToken: "This version can't verify the license. Update the plugin to the latest version.",
+  aiReasonTimeout: "No answer in time",
+  aiReasonNetwork: "Network error",
+  aiReasonUnexpected: "Unexpected answer",
+  aiReasonWaiting: "Still waiting for the previous request",
+  aiReasonHttp: (status: string) => `HTTP ${status}`,
 
   // Excalidraw (src/obsidian/excalidraw-bridge.ts).
   dropStalled: "Some nodes haven't finished drawing, so the embed fits the map as far as it was drawn.",

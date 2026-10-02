@@ -27,6 +27,18 @@ export interface LicenseClient {
 }
 
 /**
+ * Why a request could not get an answer, as codes the settings word in the UI's language. `http-<status>` carries
+ * the status. A refusal's reason is the server's own text and is shown as it is.
+ */
+export const NETWORK_REASONS = {
+  timeout: 'net:timeout',
+  error: 'net:error',
+  unexpected: 'net:unexpected-response',
+  waiting: 'net:waiting',
+  http: (status: number) => `net:http-${status}`,
+} as const;
+
+/**
  * Why a request did not return tokens: `unreachable` may be retried, `rejected` is the server's answer. A request
  * given up on after the timeout is still on its way: `late` settles with what the server answered in the end, so a
  * refresh secret the server rotated meanwhile is not lost.
@@ -71,8 +83,8 @@ export function createLicenseClient(request: Request = requestUrl, server: strin
         body: JSON.stringify(body),
         throw: false,
       });
-    } catch (error) {
-      throw new LicenseRequestError('unreachable', error instanceof Error && error.message ? error.message : 'network error');
+    } catch {
+      throw new LicenseRequestError('unreachable', NETWORK_REASONS.error);
     }
     const { status } = response;
     const json = readJson(response);
@@ -80,17 +92,17 @@ export function createLicenseClient(request: Request = requestUrl, server: strin
     if (status >= 400 && status < 500 && status !== 408 && status !== 429 && refusal) {
       throw new LicenseRequestError('rejected', refusal);
     }
-    if (status !== 200) throw new LicenseRequestError('unreachable', `HTTP ${status}`);
+    if (status !== 200) throw new LicenseRequestError('unreachable', NETWORK_REASONS.http(status));
     const accessToken = field(json, 'accessToken');
     const refreshSecret = field(json, 'refreshSecret');
-    if (!accessToken || !refreshSecret) throw new LicenseRequestError('unreachable', 'unexpected response');
+    if (!accessToken || !refreshSecret) throw new LicenseRequestError('unreachable', NETWORK_REASONS.unexpected);
     return { accessToken, refreshSecret };
   };
   const post = async (path: string, body: Record<string, string>): Promise<IssuedTokens> => {
     const sent = send(path, body);
     let timer: number | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
-      timer = window.setTimeout(() => { reject(new LicenseRequestError('unreachable', 'timeout', sent)); }, timeoutMs);
+      timer = window.setTimeout(() => { reject(new LicenseRequestError('unreachable', NETWORK_REASONS.timeout, sent)); }, timeoutMs);
     });
     // The late answer is handed over with the timeout; nobody else waits on it, so its failure is not unhandled.
     sent.catch(() => undefined);

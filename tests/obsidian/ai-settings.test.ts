@@ -5,7 +5,7 @@ import { installObsidianDom } from '../browser-harness/dom';
 import type { PluginSettingTab as HarnessSettingTab } from '../browser-harness/obsidian';
 import { LicenseRequestError } from '../../src/ai/license/client';
 import type { Entitlement, EntitlementState } from '../../src/ai/license/entitlement';
-import { licenseStatusText } from '../../src/obsidian/ai-settings';
+import { licenseStatusText, reasonText } from '../../src/obsidian/ai-settings';
 import { DEFAULT_SETTINGS } from '../../src/obsidian/settings';
 import { MappySettingTab } from '../../src/obsidian/settings-tab';
 
@@ -85,6 +85,33 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
   ])('names the state %j', (state, text) => {
     expect(licenseStatusText(state)).toBe(text);
     expect(mount(state).status.textContent).toBe(text);
+  });
+
+  it.each<[string, string]>([
+    ['net:timeout', '時間内に応答がありません'],
+    ['net:error', '通信できません'],
+    ['net:unexpected-response', '想定外の応答です'],
+    ['net:waiting', '前の要求の応答を待っています'],
+    ['net:http-503', 'HTTP 503 の応答です'],
+    ['license cancelled', 'license cancelled'],
+  ])('words the reason %s in the UI language, and shows the server\'s own text as it is', (reason, text) => {
+    expect(reasonText(reason)).toBe(text);
+  });
+
+  it('tells a device whose token the bundled key cannot confirm to update Mappy, not to enter the code again', () => {
+    expect(licenseStatusText({ kind: 'invalid', reason: 'token:bad-signature' })).toBe('この版の Mappy ではライセンスを確かめられませんでした。Mappy を最新の版に更新してください。');
+    expect(licenseStatusText({ kind: 'unreachable', reason: 'net:waiting' })).toBe('ライセンスサーバーに接続できませんでした（前の要求の応答を待っています）。次に AI を使うときにもう一度試します。');
+  });
+
+  it('clears the failure line when a registration given up on goes through after all', async () => {
+    const { input, button, failure, answer, move } = mount();
+    type(input, 'CODE');
+    answer(() => Promise.reject(new LicenseRequestError('unreachable', 'net:timeout')));
+    button.click();
+    await flush();
+    expect(failure.hidden).toBe(false);
+    move({ kind: 'active', expiresAt: Date.UTC(2026, 9, 31) });
+    expect(failure.hidden).toBe(true);
   });
 
   it('keeps the button off until a code is typed, and registers the trimmed field only when pressed', async () => {

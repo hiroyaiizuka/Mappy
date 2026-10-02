@@ -94,6 +94,12 @@ export const ja: Messages = {
   aiRegisterUnreachable: (reason: string) => `ライセンスサーバーに接続できませんでした（${reason}）。`,
   aiRegisterRejected: (reason: string) => `コードが受け付けられませんでした（${reason}）。`,
   aiRegisterFailed: (reason: string) => `コードを登録できませんでした（${reason}）。`,
+  aiInvalidToken: "この版の Mappy ではライセンスを確かめられませんでした。Mappy を最新の版に更新してください。",
+  aiReasonTimeout: "時間内に応答がありません",
+  aiReasonNetwork: "通信できません",
+  aiReasonUnexpected: "想定外の応答です",
+  aiReasonWaiting: "前の要求の応答を待っています",
+  aiReasonHttp: (status: string) => `HTTP ${status} の応答です`,
 
   dropStalled: "描画が終わらないノードがあるため、描けたところまでのマップに合わせます。",
   excalidrawInsertFailed: "Excalidraw への挿入に失敗しました。",

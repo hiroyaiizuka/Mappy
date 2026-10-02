@@ -80,7 +80,9 @@ function importersOf(target, predicate = () => true) {
 
 // Parsing every file under src/ takes seconds on a loaded machine.
 describe('the AI feature\'s doors to the outside (§11.7 step 1)', { timeout: 60_000 }, () => {
-  it('only src/ai/runner-factory.ts imports a value of src/ai/host/node-host.ts', () => {
+  // SET AHEAD, FIXES NOTHING YET: node-host.ts and runner-factory.ts arrive with LEV-270, so on this branch nothing
+  // imports node-host.ts and this passes whatever is changed. It starts to hold once LEV-270 is merged.
+  it('(set ahead for LEV-270) only src/ai/runner-factory.ts imports a value of src/ai/host/node-host.ts', () => {
     const importers = importersOf('ai/host/node-host');
     expect(importers.filter(file => file !== 'src/ai/runner-factory.ts')).toEqual([]);
   });
@@ -100,9 +102,16 @@ describe('the AI feature\'s doors to the outside (§11.7 step 1)', { timeout: 60
     expect(importersOf('ai/license/store')).toEqual(['src/ai/license/entitlement.ts']);
   });
 
-  it('imports Obsidian\'s requestUrl in the license client and the export\'s remote images only', () => {
-    expect(importersOf('obsidian', entry => entry.names.includes('requestUrl') || entry.names.includes('*')))
+  it('imports Obsidian\'s requestUrl or request in the license client and the export\'s remote images only', () => {
+    expect(importersOf('obsidian', entry => entry.names.includes('requestUrl') || entry.names.includes('request') || entry.names.includes('*')))
       .toEqual(['src/ai/license/client.ts', 'src/obsidian/image-export.ts']);
+  });
+
+  it('opens no other way to the network in src/: no fetch, XMLHttpRequest, WebSocket, EventSource or sendBeacon', () => {
+    const others = sourceFiles(src)
+      .filter(file => /\bfetch\s*\(|\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b|\bsendBeacon\b/u.test(stripComments(readFileSync(file, 'utf8'))))
+      .map(file => posix(relative(project, file)));
+    expect(others).toEqual([]);
   });
 
   it('reads type-only imports as no import, and named value imports, re-exports and import() as imports', () => {

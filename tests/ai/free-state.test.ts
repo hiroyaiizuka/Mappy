@@ -7,7 +7,8 @@
  * the settings' register button is the one request, and it reaches no Node either.
  *
  * `loadNode()` (LEV-270) and the AI button (LEV-271) are not on this branch yet: the counter stands on the
- * `window.require` it will read, and the gates they will ask (`allowsAiRunner`, `showsAiButton`) are checked here on
+ * `window.require` it will read. SET AHEAD: on this branch no code reads `window.require`, so `nodeReads` is 0 whatever
+ * is changed and fixes nothing until LEV-270 is merged; the `requestUrl` count is what this file holds today, and the gates they will ask (`allowsAiRunner`, `showsAiButton`) are checked here on
  * the plugin's own entitlement. Whichever ticket merges third wires them and adds `runnerFactory.create()` returning
  * null and no AI button in the DOM to this file (§11.8).
  */
@@ -209,7 +210,7 @@ describe('the free state reaches nothing outside (§11.7 step 2)', { timeout: 60
     expect(nodeReads).toBe(0);
     // Offline: still unregistered, and the row says why.
     expect(plugin.entitlement.state()).toEqual({ kind: 'unregistered' });
-    expect(license.querySelector('.mappy-setting-ai-failure')?.textContent).toContain('offline');
+    expect(license.querySelector('.mappy-setting-ai-failure')?.textContent).toContain('通信できません');
     plugin.unload();
   });
 });

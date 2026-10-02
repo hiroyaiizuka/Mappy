@@ -182,11 +182,11 @@ describe('LicenseEntitlement.load', () => {
     const other = await signingKey();
     const entitlement = env.open({ verifier: createTokenVerifier(other.publicKey) });
     await entitlement.load();
-    expect(await entitlement.register('GOOD-CODE')).toEqual({ kind: 'invalid', reason: 'bad signature' });
+    expect(await entitlement.register('GOOD-CODE')).toEqual({ kind: 'invalid', reason: 'token:bad-signature' });
     env.server.calls.length = 0;
     await entitlement.refresh();
     const reloaded = env.open({ verifier: createTokenVerifier(other.publicKey) });
-    expect(await reloaded.load()).toEqual({ kind: 'invalid', reason: 'bad signature' });
+    expect(await reloaded.load()).toEqual({ kind: 'invalid', reason: 'token:bad-signature' });
     await reloaded.refresh();
     expect(env.server.calls).toEqual([]);
     // An update whose bundled key verifies the token clears the mark by verifying.
@@ -351,6 +351,37 @@ describe('LicenseEntitlement.register', () => {
     expect(entitlement.state().kind).toBe('active');
   });
 
+  it('keeps a late registration on a device refused earlier, which still holds its old secret', async () => {
+    const { open, server, clock, storage } = await registered();
+    clock.advance(2 * HOUR);
+    const entitlement = open();
+    await entitlement.load();
+    server.failure = new LicenseRequestError('rejected', 'license cancelled');
+    await entitlement.refresh();
+    expect(entitlement.state().kind).toBe('invalid');
+    server.failure = null;
+    // The person enters the code again; the request times out, and the server registers the device all the same.
+    let release!: () => void;
+    server.gate = new Promise<void>(resolve => { release = resolve; });
+    const sent: { answer?: Promise<IssuedTokens> } = {};
+    const slow: LicenseClient = {
+      register: (code, deviceId) => {
+        sent.answer = server.register(code, deviceId);
+        return Promise.reject(new LicenseRequestError('unreachable', 'net:timeout', sent.answer));
+      },
+      refresh: () => Promise.reject(new Error('unused')),
+    };
+    const again = open({ client: slow });
+    await again.load();
+    await expect(again.register('GOOD-CODE')).rejects.toMatchObject({ reason: 'net:timeout' });
+    release();
+    await sent.answer;
+    await settle();
+    expect(storage.value).toMatchObject({ refreshSecret: 'secret-2' });
+    expect(storage.value?.rejected).toBeUndefined();
+    expect(again.state().kind).toBe('active');
+  });
+
   it('sends nothing for an empty code', async () => {
     const { open, server } = await setup();
     const entitlement = open();
@@ -454,6 +485,27 @@ describe('LicenseEntitlement.refresh', () => {
     expect(a.state().kind).toBe('active');
   });
 
+  it('holds back another window, or a reloaded plugin, from sending a secret whose refresh is still on its way', async () => {
+    const { open, clock, server, storage } = await registered();
+    clock.advance(2 * HOUR);
+    const hanging: LicenseClient = {
+      register: () => Promise.reject(new Error('unused')),
+      refresh: () => Promise.reject(new LicenseRequestError('unreachable', 'net:timeout', new Promise<IssuedTokens>(() => undefined))),
+    };
+    const first = open({ client: hanging });
+    await first.load();
+    await first.refresh();
+    expect(storage.value?.pending).toMatchObject({ secret: 'secret-1' });
+    // Another window, or the same plugin loaded again: it knows nothing of the first one's request but the store's mark.
+    const other = open();
+    await other.load();
+    expect(await other.refresh()).toEqual({ kind: 'unreachable', reason: 'net:waiting' });
+    expect(server.calls).toEqual([]);
+    clock.advance(LATE_WAIT_MS);
+    expect((await other.refresh()).kind).toBe('active');
+    expect(storage.value?.pending).toBeUndefined();
+  });
+
   it('stops holding back refreshes once a request given up on has not answered for LATE_WAIT_MS', async () => {
     const { open, clock, server } = await registered();
     clock.advance(2 * HOUR);
@@ -464,7 +516,7 @@ describe('LicenseEntitlement.refresh', () => {
     const entitlement = open({ client: hanging });
     await entitlement.load();
     await entitlement.refresh();
-    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'waiting for the previous request' });
+    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'net:waiting' });
     clock.advance(LATE_WAIT_MS);
     // The window that waited sends again after the wait (and is answered as the server answers it).
     expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'timeout' });
@@ -508,7 +560,7 @@ describe('LicenseEntitlement.refresh', () => {
     await entitlement.load();
     await entitlement.refresh();
     // The user presses AI again before the first answer arrives: nothing is sent with the same secret.
-    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'waiting for the previous request' });
+    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'net:waiting' });
     expect(server.calls).toHaveLength(1);
     release();
     await sent.answer;
@@ -633,7 +685,7 @@ describe('the token check without WebCrypto', () => {
     const token = await key.sign({ exp: Math.floor(START / 1000) + 3600 });
     vi.stubGlobal('crypto', {});
     try {
-      await expect(createTokenVerifier(key.publicKey).verify(token)).resolves.toEqual({ kind: 'unsigned', reason: 'no usable public key' });
+      await expect(createTokenVerifier(key.publicKey).verify(token)).resolves.toEqual({ kind: 'unsigned', reason: 'token:no-key' });
     } finally {
       vi.unstubAllGlobals();
     }
