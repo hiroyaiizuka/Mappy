@@ -38,8 +38,9 @@ describe("mobile-safety lint in src/ does not follow isDesktopOnly", () => {
  * The one way to Node (docs/architecture.md §11.1): `loadNode()` in src/ai/host/node-host.ts. Elsewhere in `src/`,
  * including the rest of src/ai/host/, every spelling of `window.require`, the renderer's `process` through a global or
  * a cast, and Node's and Electron's module names are refused by `no-restricted-syntax`; Obsidian's `vault.process`,
- * Mappy's own `process` method and `createSvg("path")` are not. The exception covers that one file and drops nothing
- * `recommended` forbids there (`fetch`). Without the block in eslint.config.mjs every "refuses" case fails.
+ * Mappy's own `process` method and `createSvg("path")` are not. What the lint cannot see (an alias taken first, a name
+ * built at run time) is left to the tests of §11.7, as eslint.config.mjs says. The exception covers that one file and
+ * drops nothing `recommended` forbids there (`fetch`). Without the block in eslint.config.mjs every "refuses" case fails.
  */
 describe("Node is reached only from src/ai/host/node-host.ts", () => {
   const eslint = new ESLint({ cwd: fileURLToPath(new URL("../../", import.meta.url)) });
@@ -63,6 +64,8 @@ describe("Node is reached only from src/ai/host/node-host.ts", () => {
     "window.process": "export const env: unknown = (window as unknown as { process: { env: unknown } }).process.env;\n",
     "(window as …).process": "type W = { process: { pid: number } };\nexport const pid = (window as unknown as W).process.pid;\n",
     "window['process']": "export const p: unknown = (window as unknown as Record<string, unknown>)['process'];\n",
+    "a destructured require": "const { require: take } = window as unknown as { require(id: string): unknown };\nexport const os = take('os');\n",
+    "a destructured process": "const { process: p } = window as unknown as { process: { env: unknown } };\nexport const env = p.env;\n",
     "the string 'child_process'": "export const name = 'child_process';\n",
     "the template `child_process`": `export const name = ${tick}child_process${tick};\n`,
     "the string 'electron'": "export const name = 'electron';\n",

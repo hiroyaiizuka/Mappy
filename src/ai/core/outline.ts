@@ -34,6 +34,8 @@ export function neutralizeItemText(text: string): string {
   const ordered = result.match(/^(\d{1,9})([.)])(?=[ \t]|$)/u);
   if (ordered) result = `${ordered[1] ?? ''}\\${result.slice((ordered[1] ?? '').length)}`;
   else if (/^[-*+](?=[ \t]|$)/u.test(result)) result = `\\${result}`;
+  // A task marker (`[ ] plan`, `[x] done`) would make the item a task, and its title would change.
+  else if (/^\[[ xX]\](?=[ \t]|$)/u.test(result)) result = `\\${result}`;
   // Headings, quotes, fences, math blocks, HTML, and link reference definitions (`[03:15]: intro`).
   else if (/^(?:#|>|```|~~~|\$\$|<)/u.test(result) || /^\[[^\]]*\]:/u.test(result)) result = `\\${result}`;
   // An ATX heading drops a trailing run of # after a space as its closing sequence.

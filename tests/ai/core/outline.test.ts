@@ -105,6 +105,8 @@ describe('neutralizeItemText', () => {
     ['a %% comment', 'a \\%\\% comment'],
     ['a <!-- comment', 'a &lt;!-- comment'],
     ['ends with ##', 'ends with \\#\\#'],
+    ['[ ] plan', '\\[ ] plan'],
+    ['[x] done', '\\[x] done'],
     ['C# and F#', 'C# and F#'],
     ['plain text [03:15]', 'plain text [03:15]'],
     ['1.5 times', '1.5 times'],
@@ -117,6 +119,7 @@ describe('neutralizeItemText', () => {
   const shapes = [
     '# heading', '> quote', '- nested marker', '* nested', '+ nested', '-', '1. background', '2) next', '---', '* * *', '___',
     '===', '```js', '~~~', '$$x$$', '<div>', '[03:15]: intro', 'a %% comment', 'a <!-- comment', 'ends with ##',
+    '[ ] plan', '[x] done',
   ];
   it.each(['list', 'headings'] as const)('keeps every shape one node with the same title when written as %s and parsed again', form => {
     const raw = shapes.map(shape => `- ${shape}\n  - child of ${shape}`).join('\n');

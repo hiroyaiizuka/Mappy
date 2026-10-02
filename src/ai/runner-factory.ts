@@ -2,6 +2,7 @@ import { Platform } from 'obsidian';
 import type { AiRunner } from './contract';
 import type { PromptLanguage } from './core/prompt';
 import { loadNode, type NodeHost } from './host/node-host';
+import { sweepStaleRuns } from './host/temp';
 import type { VaultMaterials } from './obsidian/material';
 import { createCliRunner } from './runner';
 import type { AiPrefs, RunnerPathsStore } from './settings';
@@ -49,6 +50,8 @@ export interface RunnerFactory {
   /** Whether a run is going (Mappy runs one at a time, §11.3: the UI disables the other AI buttons meanwhile). */
   isRunning(): boolean;
   onRunningChange(listener: (running: boolean) => void): () => void;
+  /** Fires when every run is stopped (`dispose`, `pagehide`): for work that is not a run, such as 「探す」. */
+  stopSignal(): AbortSignal;
   /** Stops every run and lets go of the window. */
   dispose(): void;
 }
@@ -75,7 +78,11 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
   const unsupported = (): boolean => platform.isWin || !platform.isDesktopApp;
   const host = (): NodeHost | null => {
     if (!options.isEntitled() || unsupported()) return null;
-    if (loaded === undefined) loaded = load(platform.isDesktopApp);
+    if (loaded === undefined) {
+      loaded = load(platform.isDesktopApp);
+      // Directories a run could not remove (Obsidian quit before the cleanup ran): swept once, when they are old.
+      if (loaded !== null) void sweepStaleRuns(loaded, Date.now()).catch(() => undefined);
+    }
     return loaded;
   };
   const setRunning = (delta: number): void => {
@@ -98,6 +105,8 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       const runner = createCliRunner({ host: node, prefs: options.prefs, paths: () => options.paths.current(), vault: options.vault, language: options.language, killNow: () => killNow.signal });
       return {
         async run(request, onProgress, signal) {
+          // The license is asked again: a runner made while it was active must not start a CLI after it ended.
+          if (!options.isEntitled()) return { kind: 'failed', reason: 'engine-missing', detail: 'license' };
           // The caller's signal (the view closing, the note changing, the cancel button) or the plugin going away.
           const controller = new AbortController();
           const all = stopAll.signal;
@@ -119,6 +128,7 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       };
     },
     isRunning: () => running > 0,
+    stopSignal: () => stopAll.signal,
     onRunningChange(listener) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };

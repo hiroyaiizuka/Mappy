@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AiRequest } from '../../../src/ai/contract';
 import {
   LIMITS, candidateDirs, idleTimeoutMs, claudeInvocation, codexInvocation, codexNativeCandidates, launchEnv, loginShellArgs, needsNode,
-  pathFromShellOutput, sortNodeVersions, totalTimeoutMs, ytdlpInfoArgs, ytdlpSubtitleArgs,
+  pathFromShellOutput, sortNodeVersions, totalTimeoutMs, webSearchCaution, webSearchDefault, ytdlpInfoArgs, ytdlpSubtitleArgs,
 } from '../../../src/ai/core/launch';
 import { buildPrompt } from '../../../src/ai/core/prompt';
 
@@ -57,6 +57,16 @@ describe('codexInvocation', () => {
   });
 });
 
+describe('web search with material (decision A, 2026-10-02)', () => {
+  it('starts off when material is attached, and cautions when the person turns it back on', () => {
+    expect(webSearchDefault(0)).toBe(true);
+    expect(webSearchDefault(1)).toBe(false);
+    expect(webSearchCaution(1, true)).toBe(true);
+    expect(webSearchCaution(1, false)).toBe(false);
+    expect(webSearchCaution(0, true)).toBe(false);
+  });
+});
+
 describe('yt-dlp arguments (§11.2)', () => {
   it('ignores the person’s config and playlists', () => {
     expect(ytdlpInfoArgs('https://www.youtube.com/watch?v=UF8uR6Z6KLc')).toEqual([
@@ -67,6 +77,8 @@ describe('yt-dlp arguments (§11.2)', () => {
       '-o', '/tmp/d/%(id)s.%(ext)s', '--', 'U',
     ]);
     expect(ytdlpSubtitleArgs('U', { language: 'en', automatic: false }, '/tmp/d')).toContain('--write-subs');
+    // A % in the directory is not read as part of yt-dlp's output template.
+    expect(ytdlpSubtitleArgs('U', { language: 'en', automatic: false }, '/tmp/100%/d')).toContain('/tmp/100%%/d/%(id)s.%(ext)s');
   });
 });
 

@@ -16,6 +16,13 @@ describe('locate (architecture.md §11.3)', () => {
     await expect(locate(host, 'yt-dlp')).resolves.toBeNull();
   });
 
+  it('takes only an absolute path from the settings (a relative one would resolve elsewhere when spawned)', async () => {
+    const host = new FakeHost({ executables: ['bin/claude', '/opt/claude'] });
+    await expect(locate(host, 'claude', 'bin/claude')).resolves.toBeNull();
+    await expect(locate(host, 'claude', '~/bin/claude')).resolves.toBeNull();
+    await expect(locate(host, 'claude', '/opt/claude')).resolves.toBe('/opt/claude');
+  });
+
   it('starts nothing to look (no login shell on its own)', async () => {
     const host = new FakeHost({ executables: [] });
     await locate(host, 'codex');

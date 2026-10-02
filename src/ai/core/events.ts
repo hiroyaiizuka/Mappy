@@ -45,7 +45,7 @@ function string(value: unknown): string {
 /** Claude's way of saying so: the synthetic answer「Not logged in · Please run /login」, `authentication_failed`, a bad key. */
 const CLAUDE_NOT_LOGGED_IN = /not logged in|please run \/login|invalid api key|authentication_failed|oauth token (?:has )?expired/iu;
 /** Codex retries a missing or rejected login and then fails the turn with the HTTP status. */
-const CODEX_NOT_LOGGED_IN = /\b401\b|unauthorized|not logged in|please (?:log ?in|run `?codex login)/iu;
+const CODEX_NOT_LOGGED_IN = /\b401 Unauthorized\b|not logged in|please (?:log ?in|run `?codex login)/iu;
 
 function toolProgress(name: string, input: Json | null): AiProgress | null {
   if (name === 'WebSearch') return { stage: 'searching', query: string(input?.query) };

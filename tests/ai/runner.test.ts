@@ -112,6 +112,18 @@ describe('the real runner with Claude', () => {
     await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'exited', detail: 'Error: ENOSPC' });
   });
 
+  it('keeps reading when the progress handler throws (a view already gone), so the answer is not lost', async () => {
+    const host = new FakeHost({ executables: [`${SHIMS}/claude`], onSpawn: replaying('claude-partial.jsonl') });
+    const run = createCliRunner({ host, prefs: () => DEFAULT_AI_PREFS, paths: () => EMPTY_PATHS, vault: null, language: () => 'ja' });
+    const result = await run.run(request, () => { throw new Error('detached view'); }, new AbortController().signal);
+    expect(result.kind).toBe('outline');
+  });
+
+  it('tells a file that cannot be run from one that is not there', async () => {
+    const { run } = runner({ executables: [`${SHIMS}/claude`], onSpawn: child => { queueMicrotask(() => { child.fail(new Error('spawn EACCES')); }); } });
+    await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'exited', detail: 'spawn EACCES' });
+  });
+
   it('reads the refusal line as refused', async () => {
     const { run } = runner({ executables: [`${SHIMS}/claude`], onSpawn: replaying('claude-refused.jsonl') });
     await expect(run(request)).resolves.toMatchObject({ kind: 'refused' });

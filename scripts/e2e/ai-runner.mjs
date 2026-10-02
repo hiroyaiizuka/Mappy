@@ -90,13 +90,17 @@ async function ensurePdfs() {
   return { made };
 }
 
-/** What `ps` still shows of a run: its process groups, or anything naming its temporary directories. */
+/**
+ * What `ps` still shows of a run: the processes it started (by pid: if the child was not made a group leader, its
+ * group would not carry its pid, and claude's command line does not name its directory), their process groups, or
+ * anything naming its temporary directories.
+ */
 function leftovers(processes) {
-  const groups = new Set(processes.map(process => process.pid));
+  const pids = new Set(processes.map(process => process.pid));
   const dirs = processes.map(process => process.cwd);
   return execFileSync('/bin/ps', ['-axo', 'pid=,pgid=,command='], { encoding: 'utf8' }).split('\n').filter(Boolean)
     .map(line => line.trim().split(/\s+/u))
-    .filter(([, pgid, ...command]) => groups.has(Number(pgid)) || dirs.some(dir => command.join(' ').includes(dir)))
+    .filter(([pid, pgid, ...command]) => pids.has(Number(pid)) || pids.has(Number(pgid)) || dirs.some(dir => command.join(' ').includes(dir)))
     .map(fields => fields.join(' ').slice(0, 200));
 }
 
@@ -194,6 +198,8 @@ try {
     check(cancel?.shape?.kind === 'cancelled', `${engine}: the cancelled run reported ${cancel?.shape?.kind}`);
     // The point is stopping a running CLI and its group: a cancel that came before the spawn would pass trivially.
     check((cancel?.started?.length ?? 0) > 0, `${engine}: the cancelled run started no process`);
+    // And the CLI really ended (the probe saw its 'close'), not only the run reporting "cancelled".
+    check((cancel?.gaps ?? []).length > 0 && cancel.gaps.every(gap => gap.closed !== null), `${engine}: a process of the cancelled run did not end (${JSON.stringify(cancel?.gaps)})`);
   }
   if (runRest) for (const [engine, pdf] of [[engines[0], PDF_JA], [engines[engines.length - 1], PDF_EN]]) {
     const read = await step(`${engine}: summary of ${pdf}`, () => run(`${engine}-pdf`, { ...base, engine, materials: [{ kind: 'pdf', label: pdf, text: '' }] }));

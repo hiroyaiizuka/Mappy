@@ -109,6 +109,21 @@ export function codexInvocation(launch: CodexLaunch, options: { model: string; w
   }
 }
 
+/**
+ * Web search and material (the person's decision of 2026-10-02, A): when material (a PDF, a note, subtitles) is
+ * attached, the request form starts with web search off, and the person can turn it back on. Material is outside
+ * text: with web tools, an instruction written in it could send what the run holds (the node, the material) to a URL.
+ * Turning it back on shows a caution on screen (the UI, LEV-271) and README #44 discloses it.
+ */
+export function webSearchDefault(materialCount: number): boolean {
+  return materialCount === 0;
+}
+
+/** Whether the form shows the caution: web search is on while material is attached (A, above). */
+export function webSearchCaution(materialCount: number, webSearch: boolean): boolean {
+  return webSearch && materialCount > 0;
+}
+
 /** `yt-dlp` without the person's config (`--ignore-config`) and only the video that was open (`--no-playlist`). */
 export function ytdlpInfoArgs(url: string): string[] {
   return ['--ignore-config', '--no-playlist', '--skip-download', '--dump-single-json', '--', url];
@@ -117,7 +132,8 @@ export function ytdlpInfoArgs(url: string): string[] {
 export function ytdlpSubtitleArgs(url: string, choice: { language: string; automatic: boolean }, outputDir: string): string[] {
   return [
     '--ignore-config', '--no-playlist', '--skip-download', choice.automatic ? '--write-auto-subs' : '--write-subs',
-    '--sub-langs', choice.language, '--sub-format', 'vtt', '-o', `${outputDir}/%(id)s.%(ext)s`, '--', url,
+    // `%` in the directory would read as part of the output template.
+    '--sub-langs', choice.language, '--sub-format', 'vtt', '-o', `${outputDir.replace(/%/gu, '%%')}/%(id)s.%(ext)s`, '--', url,
   ];
 }
 

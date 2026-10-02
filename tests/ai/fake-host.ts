@@ -65,6 +65,8 @@ export interface FakeHostOptions {
   platform?: string;
   arch?: string;
   spawnThrows?: Error;
+  /** Modification times (ms) by path, for sweeping old temporary directories. */
+  mtimes?: Record<string, number>;
 }
 
 export class FakeHost implements NodeHost {
@@ -122,4 +124,5 @@ export class FakeHost implements NodeHost {
     const text = this.files.get(path);
     return text === undefined ? Promise.reject(new Error(`ENOENT ${path}`)) : Promise.resolve(text);
   }
+  modifiedAt(path: string): Promise<number | null> { return Promise.resolve(this.options.mtimes?.[path] ?? null); }
 }

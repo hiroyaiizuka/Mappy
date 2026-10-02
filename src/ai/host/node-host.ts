@@ -50,6 +50,8 @@ export interface NodeHost {
   /** The names in a directory, or an empty list when it cannot be read. */
   readdir(path: string): Promise<string[]>;
   readText(path: string): Promise<string>;
+  /** When the path was last modified (ms since the epoch), or null when it does not exist. */
+  modifiedAt(path: string): Promise<number | null>;
 }
 
 interface NodeModules {
@@ -62,7 +64,7 @@ interface NodeModules {
       mkdtemp(prefix: string): Promise<string>;
       rm(path: string, options: { recursive: boolean; force: boolean }): Promise<void>;
       access(path: string, mode: number): Promise<void>;
-      stat(path: string): Promise<{ isFile(): boolean }>;
+      stat(path: string): Promise<{ isFile(): boolean; mtimeMs: number }>;
       realpath(path: string): Promise<string>;
       readdir(path: string): Promise<string[]>;
       readFile(path: string, encoding: 'utf8'): Promise<string>;
@@ -131,6 +133,9 @@ function wrap(node: NodeModules): NodeHost {
       try { return await fs.promises.readdir(target); } catch { return []; }
     },
     readText: target => fs.promises.readFile(target, 'utf8'),
+    modifiedAt: async target => {
+      try { return (await fs.promises.stat(target)).mtimeMs; } catch { return null; }
+    },
   };
 }
 

@@ -24,7 +24,8 @@ async function inKnownPlaces(host: NodeHost, name: string): Promise<string | nul
 /** The executable for `tool`: the configured path when it is set (and nothing else then), else a known place. */
 export async function locate(host: NodeHost, tool: Tool | 'node', configured = ''): Promise<string | null> {
   const path = configured.trim();
-  if (path) return await host.isExecutable(path) ? path : null;
+  // Only an absolute path: a relative one (or `~/…`) would resolve against another directory when spawned.
+  if (path) return path.startsWith('/') && await host.isExecutable(path) ? path : null;
   return inKnownPlaces(host, EXECUTABLES[tool]);
 }
 
@@ -94,6 +95,6 @@ export async function findWithLoginShell(host: NodeHost, tool: Tool, signal: Abo
     const path = pathFromShellOutput(lines.join('\n'));
     return path !== null && await host.isExecutable(path) ? path : null;
   } finally {
-    await host.rm(cwd);
+    await host.rm(cwd).catch(() => undefined);
   }
 }

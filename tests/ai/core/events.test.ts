@@ -97,6 +97,16 @@ describe('codexReader', () => {
     expect(reader.outcome().text).toBe('- 素材を読みます');
   });
 
+  it('takes only an HTTP 401 Unauthorized as not logged in, not any 401 in the text', () => {
+    const failed = (message: string) => {
+      const reader = codexReader();
+      reader.line(JSON.stringify({ type: 'turn.failed', error: { message } }));
+      return reader.outcome().notLoggedIn;
+    };
+    expect(failed('unexpected status 401 Unauthorized: Missing bearer')).toBe(true);
+    expect(failed('stream error after 401 tokens')).toBe(false);
+  });
+
   it('keeps no answer when the turn failed after a message', () => {
     const reader = codexReader();
     reader.line(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '- partial' } }));

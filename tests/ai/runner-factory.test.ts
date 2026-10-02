@@ -133,6 +133,36 @@ describe('createRunnerFactory', () => {
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
   });
 
+  it('asks the license again for every run: a runner made while it was active starts nothing after it ended', async () => {
+    let entitled = true;
+    const host = new FakeHost({ executables: ['/Users/user/.local/share/mise/shims/claude'] });
+    const { made } = factory(() => entitled, {}, host);
+    const runner = made.create();
+    entitled = false;
+    await expect(runner?.run(request, () => undefined, new AbortController().signal)).resolves.toEqual({ kind: 'failed', reason: 'engine-missing', detail: 'license' });
+    expect(host.children).toEqual([]);
+  });
+
+  it('sweeps temporary directories older than a day once, when Node is loaded', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const host = new FakeHost({
+      dirs: { '/tmp': ['mappy-ai-old', 'mappy-ai-fresh', 'other-old'] },
+      mtimes: { '/tmp/mappy-ai-old': now - 2 * day, '/tmp/mappy-ai-fresh': now - 60_000, '/tmp/other-old': now - 2 * day },
+    });
+    const { made } = factory(() => true, {}, host);
+    made.host();
+    for (let i = 0; i < 10 && host.removed.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(host.removed).toEqual(['/tmp/mappy-ai-old']);
+  });
+
+  it('gives work that is not a run (「探す」) a signal that fires on dispose', () => {
+    const { made } = factory(() => true);
+    const signal = made.stopSignal();
+    made.dispose();
+    expect(signal.aborted).toBe(true);
+  });
+
   it('lets go of pagehide on dispose', () => {
     const { made, target } = factory(() => true);
     const remove = vi.spyOn(target, 'removeEventListener');

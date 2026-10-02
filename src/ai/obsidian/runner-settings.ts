@@ -53,7 +53,7 @@ export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSetti
       const ask = ++asked;
       const configured = deps.paths.current()[tool];
       const desc = configured
-        ? (await host.isExecutable(configured) ? '' : text.aiPathInvalid)
+        ? (configured.startsWith('/') && await host.isExecutable(configured) ? '' : text.aiPathInvalid)
         : await locate(host, tool).then(found => found === null ? text.aiPathMissing(INSTALL_URLS[tool]) : text.aiPathFound(found));
       if (ask === asked) setting.setDesc(desc);
     };
@@ -71,7 +71,7 @@ export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSetti
         button.setDisabled(true);
         try {
           // A temporary directory that cannot be made is "not found" too, not an unhandled rejection.
-          const found = await findWithLoginShell(host, tool, new AbortController().signal).catch(() => null);
+          const found = await findWithLoginShell(host, tool, deps.factory.stopSignal()).catch(() => null);
           if (found === null) { new Notice(text.aiFindNotFound(tool)); return; }
           field?.setValue(found);
           save(found);

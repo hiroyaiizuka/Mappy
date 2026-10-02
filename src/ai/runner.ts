@@ -103,7 +103,8 @@ function endResult(end: CliEnd, outcome: StreamOutcome, depth: number): AiResult
     case 'cancelled': return { kind: 'cancelled' };
     case 'timeout': return failed('timeout', end.which);
     case 'output-too-large': return failed('output-too-large', `${LIMITS.outputMaxBytes} bytes`);
-    case 'spawn-failed': return failed('engine-missing', end.error);
+    // Only a missing file is "not installed"; a file that cannot be run (EACCES, E2BIG…) is another failure.
+    case 'spawn-failed': return failed(/ENOENT/u.test(end.error) ? 'engine-missing' : 'exited', end.error);
     case 'exited':
       if (outcome.notLoggedIn) return failed('not-logged-in', outcome.error ?? end.stderr.trim().slice(-600));
       // An answer counts only from a CLI that ended well: a message before a crash is not the answer.
@@ -117,8 +118,12 @@ export function createCliRunner(deps: CliRunnerDeps): AiRunner {
     async run(request, onProgress, signal) {
       // The contract is a result, never a rejection: what the host throws (a temporary directory that cannot be made,
       // a file that cannot be read) comes back as a failure the UI can show.
+      // A progress handler that throws (a view already gone) must not lose the lines after it, or the answer.
+      const report = (progress: AiProgress): void => {
+        try { onProgress(progress); } catch { /* the display failed; the run goes on */ }
+      };
       try {
-        return await runOnce(deps, request, onProgress, signal);
+        return await runOnce(deps, request, report, signal);
       } catch (error) {
         // §11.4 has no kind for "the host failed"; `exited` with the error as detail is the nearest. A run the
         // person had already cancelled stays cancelled.
