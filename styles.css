@@ -510,6 +510,7 @@
   background: var(--background-primary);
   color: var(--text-muted);
 }
+.mappy-view .mappy-node.mappy-ai-draft.is-unplaced { visibility: hidden; }
 .mappy-view .mappy-edges path.is-ai-draft { stroke: var(--mappy-accent); stroke-dasharray: 4 4; }
 .mappy-view .mappy-ai-card {
   left: 0;

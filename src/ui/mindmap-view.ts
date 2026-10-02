@@ -743,6 +743,7 @@ export class MindmapView extends FileView {
       },
       expand: id => { this.expand(id); },
       layout: () => { this.scheduleLayout(); },
+      isTreeRoot: id => this.isFree(id),
       focusMap: () => {
         if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
         else this.canvas.focus({ preventScroll: true });
@@ -1653,8 +1654,8 @@ export class MindmapView extends FileView {
    */
   private drawEdges(edges: LayoutResult["edges"]): void {
     this.edges.update(edges);
-    // The AI draft's connectors are dotted, as its nodes are (§11.5).
-    for (const edge of edges) if (isDraftId(edge.to)) this.edges.path(edge.id)?.addClass("is-ai-draft");
+    // The AI draft's connectors are dotted, as its nodes are (§11.5); without a draft no edge is looked at.
+    if (this.ai?.hasDraft()) for (const edge of edges) if (isDraftId(edge.to)) this.edges.path(edge.id)?.addClass("is-ai-draft");
     const preview = edges.find(edge => edge.to === PLACEHOLDER_ID);
     const path = preview ? this.edges.path(preview.id) : undefined;
     // Unmarked when it stops being the preview's, whatever `EdgeLayer` does with its paths (today it goes with the preview).
@@ -2179,7 +2180,8 @@ export class MindmapView extends FileView {
    * only.
    */
   private snapIndex(layout: LayoutResult, moving: ReadonlySet<string>): SnapIndex {
-    const byId = new Map(layout.nodes.map(node => [node.id, node]));
+    // The AI draft's provisional nodes are no slot to drop on (§11.5): the snap reads the map without them.
+    const byId = new Map(layout.nodes.filter(node => !isDraftId(node.id)).map(node => [node.id, node]));
     const children = new Map<string, PositionedNode[]>();
     const parents = new Set<string>();
     for (const edge of layout.edges) {
@@ -2193,7 +2195,7 @@ export class MindmapView extends FileView {
     const places = new Map<string, NodePlace>();
     if (this.mode !== "hierarchy") {
       for (const node of layout.nodes) {
-        if (parents.has(node.id)) continue;
+        if (parents.has(node.id) || isDraftId(node.id)) continue;
         places.set(node.id, "root");
         const kids = children.get(node.id) ?? [];
         if (this.mode === "timeline") { const band = axisBand(node, kids); kids.forEach((stage, index) => { places.set(stage.id, { side: index % 2 === 0 ? "upper" : "lower", band }); }); }

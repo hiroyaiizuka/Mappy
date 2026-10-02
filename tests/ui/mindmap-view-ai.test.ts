@@ -580,7 +580,7 @@ describe('the draft and the card after the code review', () => {
     return { ...mounted, runner };
   }
   const visibleDraft = (mounted: Mounted): string[] => Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-ai-draft'))
-    .filter(element => !element.hidden).map(element => element.textContent ?? '');
+    .filter(element => !element.classList.contains('is-unplaced')).map(element => element.textContent ?? '');
 
   it('hides the draft with its node when a fold above the node closes, and shows it again when it opens', async () => {
     const source = ['## R', '', '- 親', '  - 子', ''].join('\n');
@@ -690,5 +690,103 @@ describe('the draft and the card after the code review', () => {
     await mounted.settle();
     expect(mounted.card().hidden).toBe(true);
     expect(mounted.canvas.contains(document.activeElement)).toBe(true);
+  });
+});
+
+/** The second code review's findings (2026-10-02), one row each; the sizes after a fold reopens are the browser page's (`ai-fold`). */
+describe('the AI after the second code review', () => {
+  it('refreshes an expired license before やり直す runs again', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    const mounted = await mount(LIST, ai);
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish({ kind: 'failed', reason: 'timeout', detail: '' });
+    await mounted.settle();
+    ai.set({ kind: 'expired' });
+    ai.refreshTo = { kind: 'active' };
+    await mounted.press(t().aiRetry);
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it('lets go of the lock as the view resets, even when the runner is slow to stop', async () => {
+    const stubborn: AiRunner = { run: () => new Promise<AiResult>(() => undefined) };
+    const runner = new HandRunner();
+    let first = true;
+    const ai = services(runner);
+    ai.createRunner = () => { if (first) { first = false; return stubborn; } return runner; };
+    const mounted = await mount(LIST, ai);
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    expect(aiRunLock.busy()).toBe(true);
+    (mounted.view as unknown as { ai: { reset: () => void } }).ai.reset();
+    await mounted.settle();
+    expect(aiRunLock.busy()).toBe(false);
+    mounted.select('温泉旅行');
+    expect(mounted.aiButton().getAttribute('aria-disabled')).toBe('false');
+    await mounted.open();
+    await mounted.run();
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it('gives the keys back to the map when 捨てる closes the card it was pressed on', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount(LIST, services(runner));
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    const discard = Array.from(mounted.card().querySelectorAll('button')).find(button => button.textContent === t().aiDiscard);
+    discard?.focus();
+    discard?.click();
+    await mounted.settle();
+    expect(mounted.card().hidden).toBe(true);
+    expect(mounted.canvas.contains(document.activeElement)).toBe(true);
+  });
+
+  it('runs nothing when the node became a sixth-level heading since the failure it would run again', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount('# A\n\n## B\n\n### X\n', services(runner));
+    mounted.select('X');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish({ kind: 'failed', reason: 'timeout', detail: '' });
+    await mounted.settle();
+    mounted.app.put(PATH, '# A\n\n## B\n\n### C\n\n#### D\n\n##### E\n\n###### X\n');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await mounted.settle();
+    await mounted.press(t().aiRetry);
+    expect(runner.calls).toHaveLength(1);
+    expect(Notice.log).toContain(t().headingDepth);
+  });
+
+  it('draws the draft under a tree root as stages, as the map draws its own', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount(LIST, services(runner));
+    mounted.select('旅の計画');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    const stage = Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-ai-draft'), element => [element.textContent, element.classList.contains('is-stage')]);
+    expect(stage).toEqual([['案 A', true], ['詳細', false], ['案 B', true]]);
+  });
+
+  it('leaves the draft\'s nodes out of what a topic drag snaps to', async () => {
+    const mounted = await mount(LIST, null);
+    const node = (id: string, x: number): { id: string; x: number; y: number; width: number; height: number } => ({ id, x, y: 0, width: 10, height: 10 });
+    const layout = {
+      nodes: [node('a', 0), node('b', 20), node('ai-draft:1-1', 40)],
+      edges: [{ id: 'a-b', from: 'a', to: 'b', path: '' }, { id: 'a-d', from: 'a', to: 'ai-draft:1-1', path: '' }],
+      folds: [], bounds: { x: 0, y: 0, width: 50, height: 10 }, origin: { x: 0, y: 0 },
+    };
+    const index = (mounted.view as unknown as { snapIndex: (layout: unknown, moving: ReadonlySet<string>) => { byId: Map<string, unknown>; children: Map<string, { id: string }[]>; places: Map<string, unknown> } })
+      .snapIndex(layout, new Set());
+    expect(index.byId.has('ai-draft:1-1')).toBe(false);
+    expect(index.children.get('a')?.map(child => child.id)).toEqual(['b']);
+    expect(index.places.has('ai-draft:1-1')).toBe(false);
   });
 });

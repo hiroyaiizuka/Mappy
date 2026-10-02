@@ -3508,6 +3508,35 @@ export async function captureAi(recorder, page) {
     return `${added} 行を追加、⌘Z で原文へ`;
   });
 
+  await recorder.run('ai-fold', `mindmap: 「${TARGET}」の下書きの上の「多数の兄弟」の開閉ボタンを押す → もう一度押す`,
+    '畳むと下書きとカードが見えなくなり（visibility）、開くと下書きが元の大きさで既存のノード・互いと重ならずに並ぶ。固定しているのは前半: 要素に hidden を足して 0×0 で測られる形に戻しても、headless Chrome では次のフレームが測り直して後半は通る（artifacts/lev-271/revert-review2-fixes.md）', async () => {
+      await loadFreshFixture(page, FIXTURE);
+      await runOnce();
+      const before = await page.harness('h.ai.draft()');
+      const press = async () => {
+        const parent = await nodeInfo(page, '多数の兄弟');
+        expect(parent.toggle, 'no fold control on 多数の兄弟');
+        await page.click(center(parent.toggle).x, center(parent.toggle).y);
+        await page.settle();
+      };
+      await press();
+      const hidden = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-ai-draft')).every(el => getComputedStyle(el).visibility === 'hidden')`);
+      expect(hidden, 'the draft stayed visible under a folded parent');
+      expect(await page.evaluate(`getComputedStyle(document.querySelector('.mappy-ai-card')).visibility`) === 'hidden', 'the card stayed visible while its node was folded away');
+      await press();
+      const after = await page.harness('h.ai.draft()');
+      expect(after.length === before.length, `the draft has ${after.length} nodes after unfolding, ${before.length} before`);
+      for (const [index, item] of after.entries()) {
+        expect(item.rect.height > 0 && Math.abs(item.rect.height - before[index].rect.height) < 1, `${item.text} is ${item.rect.height}px high after unfolding, ${before[index].rect.height} before`);
+        const other = after.slice(index + 1).find(candidate => overlaps(candidate.rect, item.rect));
+        expect(!other, `${item.text} overlaps ${other?.text}`);
+      }
+      const nodes = await page.harness('h.nodes()');
+      const hit = after.flatMap(item => nodes.filter(node => overlaps(node.rect, item.rect)).map(node => `${item.text}/${node.title}`));
+      expect(hit.length === 0, `the draft overlaps ${hit.join(', ')}`);
+      return `下書き ${after.length} 項目、畳む前後で高さが同じ`;
+    });
+
   await recorder.run('ai-discard', 'mindmap: 下書きの「捨てる」', '下書きとカードが消え、原文は変わらない', async () => {
     await loadFreshFixture(page, FIXTURE);
     await runOnce();

@@ -35,6 +35,8 @@ export interface AiHost {
   layout(): void;
   /** Give the keys back to the map (the selected node, else the canvas): Escape on the card. */
   focusMap(): void;
+  /** Whether `id` is the root of a tree on the map (the body root, a free topic): its children are drawn as stages. */
+  isTreeRoot(id: string): boolean;
 }
 
 interface Draft {
@@ -117,12 +119,12 @@ class AttachModal extends FuzzySuggestModal<TFile> {
 }
 
 /**
- * The button is a badge on the selected node's top-right corner, its centre on the corner (`placeButton`): right of the
- * node is where the map draws the fold control and the connectors. The gap between what the card hangs under and the
- * card, and the card's margin in the pane, in pixels.
+ * The AI button is a badge on the selected node's top-right corner, its centre on the corner (`placeButton`): right of
+ * the node is where the map draws the fold control and the connectors. Below this zoom it keeps its size on screen:
+ * 22px × 0.64 ≈ 14px.
  */
-/** Below this zoom the AI button keeps its size on screen (`placeButton`): 22px × 0.64 ≈ 14px. */
 const BUTTON_MIN_ZOOM = 0.64;
+/** The gap between what the card hangs under and the card, and the card's margin in the pane, in pixels. */
 const CARD_GAP = 10;
 const CARD_MARGIN = 8;
 
@@ -194,7 +196,9 @@ export class AiController {
 
   /** Everything goes without a word: the view closes, the note leaves it, the page goes (§11.5). A run is cancelled. */
   reset(): void {
-    this.run?.abort.abort();
+    // The run is cancelled and its lock let go now: a CLI slow to exit, or an attachment still being read, must not keep
+    // this view's next run (on the next note) waiting, or show it free here while `take` refuses.
+    if (this.run) { this.run.abort.abort(); aiRunLock.release(this.run); }
     this.run = null;
     this.form = null;
     this.failed = null;
@@ -261,7 +265,8 @@ export class AiController {
     for (const [id, element] of this.draftElements) {
       const node = this.placed(id);
       // A fold above the anchor hides the draft with it: an element the frame did not place is not left where it was.
-      element.hidden = !node;
+      // Hidden by `visibility`, not `display`: it keeps its size for the frame that shows it again (`sizes`).
+      element.toggleClass("is-unplaced", !node);
       if (!node) continue;
       element.style.transform = `translate(${node.x}px, ${node.y}px)`;
       // The layout's classes, as NodeRenderer gives the map's own nodes: they set the box the layout measures.
@@ -316,11 +321,13 @@ export class AiController {
     const kind = this.services?.state().kind;
     const shown = kind === "active" || kind === "expired" || kind === "unreachable";
     const quiet = this.form === null && this.run === null && this.draft === null && this.failed === null;
+    // Nothing to show and nothing shown (no services, no license, no phase): a frame costs nothing more here.
+    if (!shown && quiet && this.button.hidden && this.card.hidden) return;
     const eligible = document && node ? this.eligible(document, node) : "no";
     const placed = node ? this.placed(node.id) : undefined;
     this.button.hidden = !shown || !quiet || eligible === "no" || !placed;
     if (!this.button.hidden && placed) {
-      const busy = aiRunLock.busy(this);
+      const busy = aiRunLock.busy();
       const virtual = eligible === "virtual-root";
       const label = virtual ? t().aiAddH2First : busy ? t().aiBusy : t().aiButton;
       this.button.toggleClass("is-disabled", busy || virtual);
@@ -345,26 +352,35 @@ export class AiController {
     const eligible = this.eligible(document, node);
     if (eligible === "virtual-root") { new Notice(t().aiAddH2First); return; }
     if (eligible === "no" || this.run || this.draft) return;
-    if (aiRunLock.busy(this)) { new Notice(t().aiBusy); return; }
-    let state = services.state();
-    if (state.kind === "expired" || state.kind === "unreachable") {
-      this.opening = true;
-      try { state = await services.refresh(); } finally { this.opening = false; }
-    }
-    if (state.kind !== "active") {
-      if (state.reason) new Notice(t().aiUnavailable(state.reason));
-      this.sync();
-      return;
-    }
+    if (aiRunLock.busy()) { new Notice(t().aiBusy); return; }
+    if (!await this.ensureActive()) return;
     // The note, the selection or another run may have moved on while the license was refreshed: open nothing then.
     const current = this.host.document();
     if (!current || !findNode(current, node.id) || this.host.selectedId() !== node.id || this.run || this.draft || this.form) { this.sync(); return; }
-    if (aiRunLock.busy(this)) { new Notice(t().aiBusy); this.sync(); return; }
+    if (aiRunLock.busy()) { new Notice(t().aiBusy); this.sync(); return; }
     this.failed = null;
     this.message = null;
     this.form = { anchorId: node.id, values: this.defaults(current, node), message: null };
     this.sync();
     this.card.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
+  }
+
+  /**
+   * The license active for a run (§11.6): `expired` and `unreachable` are refreshed first, which the AI button and
+   * やり直す both do. False, with the reason on a Notice, when it does not become active.
+   */
+  private async ensureActive(): Promise<boolean> {
+    const services = this.services;
+    if (!services || this.opening) return false;
+    let state = services.state();
+    if (state.kind === "expired" || state.kind === "unreachable") {
+      this.opening = true;
+      try { state = await services.refresh(); } finally { this.opening = false; }
+    }
+    if (state.kind === "active") return true;
+    new Notice(t().aiUnavailable(state.reason ?? state.kind));
+    this.sync();
+    return false;
   }
 
   /**
@@ -434,6 +450,8 @@ export class AiController {
     const document = this.host.document();
     const node = document ? findNode(document, anchorId) : undefined;
     if (!services || !document || !node) return;
+    // The node became a sixth-level heading since the input was filled: nothing could be written under it, so no run.
+    if (maxDepth(document, node) === 0) { new Notice(t().headingDepth); this.sync(); return; }
     const runner: AiRunner | null = values.engine === "fake" ? services.fakeRunner ?? null : services.createRunner();
     if (!runner) {
       const state = services.state();
@@ -441,8 +459,8 @@ export class AiController {
       this.sync();
       return;
     }
-    if (!aiRunLock.take(this)) { new Notice(t().aiBusy); this.sync(); return; }
     const run: Run = { anchorId, values, abort: new AbortController(), progress: null };
+    if (!aiRunLock.take(run)) { new Notice(t().aiBusy); this.sync(); return; }
     this.form = null;
     this.run = run;
     this.failed = null;
@@ -473,7 +491,7 @@ export class AiController {
         ? { kind: "failed", reason: "material-failed", detail: error.message }
         : { kind: "failed", reason: "exited", detail: error instanceof Error ? error.message : String(error) };
     } finally {
-      aiRunLock.release(this);
+      aiRunLock.release(run);
     }
     // Reset meanwhile (the view closed, the note left it): the result is nobody's.
     if (this.run !== run) return;
@@ -500,8 +518,7 @@ export class AiController {
       const message: Message = result.kind === "refused"
         ? { text: text.aiRefused(result.reason), detail: result.raw }
         : { text: FAILURE_TEXT[result.reason](text), detail: result.detail };
-      if (this.draft) this.message = message;
-      else this.failed = { anchorId: run.anchorId, values: run.values, message };
+      this.fail(run, message);
       return;
     }
     const document = this.host.document();
@@ -510,14 +527,18 @@ export class AiController {
     // Deeper than asked is lifted to the depth asked for (§11.4), and never past what the node can take (§11.5).
     const items = fitBranches(result.items, Math.min(run.values.depth, maxDepth(document, node)));
     if (items.length === 0) {
-      const message = { text: FAILURE_TEXT.unparsable(text), detail: result.raw };
-      if (this.draft) this.message = message;
-      else this.failed = { anchorId: run.anchorId, values: run.values, message };
+      this.fail(run, { text: FAILURE_TEXT.unparsable(text), detail: result.raw });
       return;
     }
     this.setDraft({ anchorId: run.anchorId, items, ids: new Map(), values: run.values, dropped: result.dropped });
     this.message = result.dropped > 0 ? { text: text.aiDropped(result.dropped) } : null;
     this.host.expand(run.anchorId);
+  }
+
+  /** A run that left no draft: on the draft there was (やり直す keeps it), else as a failure of its own to run again. */
+  private fail(run: Run, message: Message): void {
+    if (this.draft) this.message = message;
+    else this.failed = { anchorId: run.anchorId, values: run.values, message };
   }
 
   /** The draft as the map shows it: its elements made (or removed) now, laid out on the next frame. */
@@ -529,7 +550,8 @@ export class AiController {
     if (draft) {
       this.generation += 1;
       let count = 0;
-      const walk = (items: readonly OutlineItem[]): void => {
+      const stages = this.host.isTreeRoot(draft.anchorId);
+      const walk = (items: readonly OutlineItem[], top: boolean): void => {
         for (const item of items) {
           const id = `${AI_DRAFT_PREFIX}${this.generation}-${++count}`;
           draft.ids.set(item, id);
@@ -537,13 +559,15 @@ export class AiController {
             cls: "mappy-node mappy-ai-draft", attr: { "data-ai-draft": id, "aria-label": t().aiDraftNode(item.text) },
           });
           if (element) {
+            // A root's children are stages, as NodeRenderer draws the map's own: the same box, so the same layout.
+            element.toggleClass("is-stage", top && stages);
             element.createDiv({ cls: "mappy-node-content" }).createDiv({ cls: "mappy-node-label", text: item.text });
             this.draftElements.set(id, element);
           }
-          walk(item.children);
+          walk(item.children, false);
         }
       };
-      walk(draft.items);
+      walk(draft.items, true);
     }
     this.host.layout();
   }
@@ -579,7 +603,7 @@ export class AiController {
   private retry(): void {
     const source = this.draft ?? this.failed;
     if (!source || this.run) return;
-    void this.start(source.anchorId, source.values);
+    void this.ensureActive().then(active => active && !this.run ? this.start(source.anchorId, source.values) : undefined);
   }
 
   /** 捨てる: the draft goes; the note is not touched. */
@@ -610,7 +634,6 @@ export class AiController {
     new Notice(fragment, 0);
   }
 
-  /** The card for the phase: the input, the run, the draft, or a failure. Hidden when there is none of them. */
   /** What the card would show, as a string: equal strings draw the same card. */
   private cardState(): string {
     const message = (value: Message | null | undefined): unknown => value ? [value.text, value.detail ?? null, value.copy ?? false] : null;
@@ -620,6 +643,7 @@ export class AiController {
     return "";
   }
 
+  /** The card for the phase: the input, the run, the draft, or a failure. Hidden when there is none of them. */
   private renderCard(): void {
     const card = this.card;
     const active = card.doc.activeElement;
@@ -663,6 +687,8 @@ export class AiController {
       card.dataset.phase = "";
       card.empty();
       card.hidden = true;
+      // 捨てる, 閉じる: the card goes with the focus on it, which goes back to the map instead of to the page.
+      if (focused) this.host.focusMap();
       return;
     }
     card.hidden = false;
@@ -771,6 +797,8 @@ export class AiController {
     if (this.card.hidden) return;
     const anchorId = this.form?.anchorId ?? this.run?.anchorId ?? this.draft?.anchorId ?? this.failed?.anchorId;
     const anchor = anchorId === undefined ? undefined : this.placed(anchorId);
+    // Its node folded away, the card waits out of sight instead of where the node last was.
+    this.card.style.visibility = anchor ? "" : "hidden";
     if (!anchor) return;
     const box = this.draftBox;
     const view = this.host.viewport();

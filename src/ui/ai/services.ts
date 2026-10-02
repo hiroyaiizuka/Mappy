@@ -47,9 +47,9 @@ export class AiRunLock {
   private owner: object | null = null;
   private readonly listeners = new Set<() => void>();
 
-  /** Whether a run is under way, and not `owner`'s. */
-  busy(owner?: object): boolean {
-    return this.owner !== null && this.owner !== owner;
+  /** Whether a run holds the lock. The owner is the run itself, so a view's next run is not its last one. */
+  busy(): boolean {
+    return this.owner !== null;
   }
 
   take(owner: object): boolean {
