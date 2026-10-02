@@ -1,4 +1,5 @@
 import { FuzzySuggestModal, Notice, Platform, setIcon, type App, type TFile } from "obsidian";
+import { webSearchAfterAttach, webSearchCaution } from "../../ai/core/web-search";
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner, AiTemplate, OutlineItem } from "../../ai/contract";
 import { nodeBody } from "../../core/body";
 import type { MindDocument, MindNode } from "../../core/markdown";
@@ -77,6 +78,7 @@ const FAILURE_TEXT: Record<AiFailure, (text: Messages) => string> = {
   "output-too-large": text => text.aiFailureOutputTooLarge,
   unparsable: text => text.aiFailureUnparsable,
   exited: text => text.aiFailureExited,
+  "not-entitled": text => text.aiFailureNotEntitled,
 };
 
 function templateLabel(template: AiTemplate): string {
@@ -810,7 +812,7 @@ export class AiController {
     // it says, in one line, that the answer will no longer come from the material alone.
     const caution = card.createDiv({ cls: "mappy-ai-caution", attr: { "aria-live": "polite" } });
     const drawCaution = (): void => {
-      caution.setText(box.checked && values.attachments.length > 0 ? text.aiWebSearchWithMaterial : "");
+      caution.setText(webSearchCaution(values.attachments.length, box.checked) ? text.aiWebSearchWithMaterial : "");
     };
     box.addEventListener("change", drawCaution);
     const attachments = card.createDiv({ cls: "mappy-ai-attachments" });
@@ -836,7 +838,8 @@ export class AiController {
         new AttachModal(this.host.app, this.host.file(), file => {
           if (!values.attachments.includes(file)) {
             // The first material turns the web search off; the user may turn it on again (then the caution shows).
-            if (values.attachments.length === 0) { box.checked = false; values.webSearch = false; }
+            values.webSearch = webSearchAfterAttach(box.checked, values.attachments.length);
+            box.checked = values.webSearch;
             values.attachments = [...values.attachments, file];
           }
           drawAttachments();

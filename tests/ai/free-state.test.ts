@@ -6,11 +6,11 @@
  * license server (`requestUrl`) nor Node (`window.require`, the one way `loadNode()` takes Node, §11.1). Pressing
  * the settings' register button is the one request, and it reaches no Node either.
  *
- * `loadNode()` (LEV-270) and the AI button (LEV-271) are not on this branch yet: the counter stands on the
- * `window.require` it will read. SET AHEAD: on this branch no code reads `window.require`, so `nodeReads` is 0 whatever
- * is changed and fixes nothing until LEV-270 is merged; the `requestUrl` count is what this file holds today, and the gates they will ask (`allowsAiRunner`, `showsAiButton`) are checked here on
- * the plugin's own entitlement. Whichever ticket merges third wires them and adds `runnerFactory.create()` returning
- * null and no AI button in the DOM to this file (§11.8).
+ * The counter stands on the `window.require` that `loadNode()` (LEV-270) reads. Since the wiring (§11.8, LEV-270
+ * merged third) the plugin's runner factory, its settings rows and the map's AI button (LEV-271) are all in this
+ * path: with the license unregistered, `runnerFactory.create()` and the services' `createRunner()` give null, no AI
+ * button is shown, and Node is never read. Making the factory ignore the license (`isEntitled: () => true` in
+ * main.ts) reads Node at once (artifacts/lev-270/reverts.log, X1).
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { App, Command, PluginManifest, ViewCreator, WorkspaceLeaf as ObsidianLeaf } from 'obsidian';
@@ -61,7 +61,10 @@ interface TestPlugin {
   ribbon: (() => unknown)[];
   views: Map<string, ViewCreator>;
   settingTabs: unknown[];
+  data: unknown;
   entitlement: Entitlement;
+  runnerFactory: { create(): unknown; availability(): string };
+  aiServices: { createRunner(): unknown; defaultEngine(): string };
   load(): void;
   unload(): void;
   onload(): Promise<void>;
@@ -100,13 +103,14 @@ function appWith(harness: HarnessApp, active: () => MindmapView | null): App {
   return harness.asApp<App>();
 }
 
-async function freePlugin() {
+async function freePlugin(data: unknown = null) {
   const harness = new HarnessApp();
   harness.put('Map.md', '---\nmappy-layout: mindmap\n---\n# Map\n\n## Topic\n\n- First\n- Second\n');
   let map: MindmapView | null = null;
   const app = appWith(harness, () => map);
   const { default: MappyPlugin } = await import('../../src/main');
   const plugin = new MappyPlugin(app, { id: 'mappy', name: 'Mappy', version: '0.0.0', minAppVersion: '1.8.7', author: '', description: '' }) as unknown as TestPlugin;
+  plugin.data = data;
   plugin.load();
   await plugin.onload();
   await settle();
@@ -185,8 +189,27 @@ describe('the free state reaches nothing outside (§11.7 step 2)', { timeout: 60
     expect(entitlement.state()).toEqual({ kind: 'unregistered' });
     expect(allowsAiRunner(entitlement.state())).toBe(false);
     expect(showsAiButton(entitlement.state())).toBe(false);
+    // The wiring (§11.8): no runner, no shown AI button, and the asking itself reached no Node.
+    expect(plugin.runnerFactory.availability()).toBe('not-entitled');
+    expect(plugin.runnerFactory.create()).toBeNull();
+    expect(plugin.aiServices.createRunner()).toBeNull();
+    // The view was given the plugin's services (so a license would show the button), and shows none now.
+    expect((view as unknown as { aiServices: unknown }).aiServices).toBe(plugin.aiServices);
+    const buttons = Array.from(view.containerEl.querySelectorAll<HTMLElement>('.mappy-ai-button'));
+    expect(buttons.every(button => button.hidden)).toBe(true);
+    expect(nodeReads).toBe(0);
     expect(window.localStorage.getItem(LICENSE_STORAGE_KEY)).toBeNull();
 
+    plugin.unload();
+  });
+
+  it('keeps the AI engine and models in data.json beside the settings, through a settings save', async () => {
+    const { plugin } = await freePlugin({ theme: 'follow', ai: { engine: 'codex', claudeModel: 'opus', codexModel: '' } });
+    expect(plugin.aiServices.defaultEngine()).toBe('codex');
+    const tab = plugin.settingTabs[0] as { setControlValue(key: string, value: unknown): Promise<void> };
+    await tab.setControlValue('theme', 'dark');
+    expect(plugin.data).toMatchObject({ theme: 'dark', ai: { engine: 'codex', claudeModel: 'opus', codexModel: '' } });
+    expect(nodeReads).toBe(0);
     plugin.unload();
   });
 

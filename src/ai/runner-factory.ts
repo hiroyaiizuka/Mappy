@@ -111,7 +111,8 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       return {
         async run(request, onProgress, signal) {
           // The license is asked again: a runner made while it was active must not start a CLI after it ended.
-          if (!options.isEntitled()) return { kind: 'failed', reason: 'engine-missing', detail: 'license' };
+          // Its own kind, so the input points to the license and not to installing the CLI.
+          if (!options.isEntitled()) return { kind: 'failed', reason: 'not-entitled', detail: 'license' };
           // A runner kept past the plugin's unload starts nothing: no dispose or pagehide would stop it any more.
           if (disposed) return { kind: 'cancelled' };
           // The caller's signal (the view closing, the note changing, the cancel button) or the plugin going away.

@@ -80,9 +80,8 @@ function importersOf(target, predicate = () => true) {
 
 // Parsing every file under src/ takes seconds on a loaded machine.
 describe('the AI feature\'s doors to the outside (§11.7 step 1)', { timeout: 60_000 }, () => {
-  // SET AHEAD, FIXES NOTHING YET: node-host.ts and runner-factory.ts arrive with LEV-270, so on this branch nothing
-  // imports node-host.ts and this passes whatever is changed. It starts to hold once LEV-270 is merged.
-  it('(set ahead for LEV-270) only src/ai/runner-factory.ts imports a value of src/ai/host/node-host.ts', () => {
+  // Holds since LEV-270 is in (tests/tooling/ai-node-boundary.test.mjs pins the same with its own scan).
+  it('only src/ai/runner-factory.ts imports a value of src/ai/host/node-host.ts', () => {
     const importers = importersOf('ai/host/node-host');
     expect(importers.filter(file => file !== 'src/ai/runner-factory.ts')).toEqual([]);
   });
@@ -98,8 +97,10 @@ describe('the AI feature\'s doors to the outside (§11.7 step 1)', { timeout: 60
       return /\blocalStorage\b|LICENSE_STORAGE_KEY|['"`]mappy-ai-license['"`]|\bcreateWindowLicenseStore\b/u.test(stripComments(text));
     }).map(file => posix(relative(project, file)));
     expect(touching).toEqual(['src/ai/license/store.ts']);
-    expect(importersOf('ai/license/store', entry => entry.names.some(name => name !== 'createLicenseStore'))).toEqual([]);
-    expect(importersOf('ai/license/store')).toEqual(['src/ai/license/entitlement.ts']);
+    // The device storage for the runner's paths (LEV-270's wiring) comes from the same file, so it moves with the license.
+    expect(importersOf('ai/license/store', entry => entry.names.some(name => name !== 'createLicenseStore' && name !== 'createDeviceStorage'))).toEqual([]);
+    expect(importersOf('ai/license/store', entry => entry.names.includes('createLicenseStore'))).toEqual(['src/ai/license/entitlement.ts']);
+    expect(importersOf('ai/license/store', entry => entry.names.includes('createDeviceStorage'))).toEqual(['src/main.ts']);
   });
 
   it('imports Obsidian\'s requestUrl or request in the license client and the export\'s remote images only', () => {

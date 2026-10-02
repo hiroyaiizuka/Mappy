@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AiRequest } from '../../../src/ai/contract';
 import {
   LIMITS, candidateDirs, idleTimeoutMs, claudeInvocation, codexInvocation, codexNativeCandidates, launchEnv, loginShellArgs, needsNode,
-  pathFromShellOutput, sortNodeVersions, totalTimeoutMs, webSearchCaution, webSearchDefault, ytdlpInfoArgs, ytdlpSubtitleArgs,
+  pathFromShellOutput, sortNodeVersions, totalTimeoutMs, ytdlpInfoArgs, ytdlpSubtitleArgs,
 } from '../../../src/ai/core/launch';
 import { buildPrompt } from '../../../src/ai/core/prompt';
 
@@ -54,16 +54,6 @@ describe('codexInvocation', () => {
     expect(codexInvocation({ kind: 'native', binary: '/p/vendor/t/bin/codex', packageRoot: '/p' }, options)).toMatchObject({
       file: '/p/vendor/t/bin/codex', env: { CODEX_MANAGED_PACKAGE_ROOT: '/p', CODEX_MANAGED_BY_NPM: '1' }, pathDirs: ['/p/vendor/t/bin'],
     });
-  });
-});
-
-describe('web search with material (decision A, 2026-10-02)', () => {
-  it('starts off when material is attached, and cautions when the person turns it back on', () => {
-    expect(webSearchDefault(0)).toBe(true);
-    expect(webSearchDefault(1)).toBe(false);
-    expect(webSearchCaution(1, true)).toBe(true);
-    expect(webSearchCaution(1, false)).toBe(false);
-    expect(webSearchCaution(0, true)).toBe(false);
   });
 });
 

@@ -305,5 +305,6 @@ export const ja: Messages = {
   aiFailureOutputTooLarge: "出力が大きすぎます。",
   aiFailureUnparsable: "結果に箇条書きがありませんでした。",
   aiFailureExited: "CLI がエラーで終わりました。",
+  aiFailureNotEntitled: "AI のライセンスが有効ではありません。設定の「AI」で確認してください。",
   exportAiDraft: "AI の下書きを残すか捨ててから書き出してください。",
 };

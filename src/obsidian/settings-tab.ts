@@ -94,9 +94,12 @@ export class MappySettingTab extends PluginSettingTab {
   /** The AI section (src/obsidian/ai-settings.ts): its license rows follow the entitlement while drawn. */
   private readonly aiSection: AiSettingsSection;
 
-  constructor(app: App, plugin: Plugin, private readonly store: SettingsStore, entitlement: Entitlement) {
+  constructor(
+    app: App, plugin: Plugin, private readonly store: SettingsStore, entitlement: Entitlement,
+    aiRunnerRows?: () => MapSettingDefinition[],
+  ) {
     super(app, plugin);
-    this.aiSection = new AiSettingsSection(entitlement);
+    this.aiSection = new AiSettingsSection(entitlement, aiRunnerRows);
   }
 
   /** Obsidian 1.13+: the declarative path (rendering and settings search). The map's four settings, then the AI section. */

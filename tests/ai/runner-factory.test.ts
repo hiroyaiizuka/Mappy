@@ -139,7 +139,7 @@ describe('createRunnerFactory', () => {
     const { made } = factory(() => entitled, {}, host);
     const runner = made.create();
     entitled = false;
-    await expect(runner?.run(request, () => undefined, new AbortController().signal)).resolves.toEqual({ kind: 'failed', reason: 'engine-missing', detail: 'license' });
+    await expect(runner?.run(request, () => undefined, new AbortController().signal)).resolves.toEqual({ kind: 'failed', reason: 'not-entitled', detail: 'license' });
     expect(host.children).toEqual([]);
   });
 

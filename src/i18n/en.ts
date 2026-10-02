@@ -333,6 +333,7 @@ export const en = {
   aiFailureOutputTooLarge: "The output was too large.",
   aiFailureUnparsable: "The result had no list items.",
   aiFailureExited: "The CLI stopped with an error.",
+  aiFailureNotEntitled: "The AI license isn't active. Check it in the AI section of the settings.",
   exportAiDraft: "Keep or discard the AI draft before exporting.",
 };
 
