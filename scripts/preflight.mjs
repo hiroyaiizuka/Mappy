@@ -180,6 +180,8 @@ export function readHarnessBuild(paths, build = 'release') {
     let recorded;
     try {
       const { inputs } = JSON.parse(readSafeFile(paths.root, join(directory, 'build-meta.json')).toString('utf8'));
+      // Inside the project and through no symbolic link, as every other file preflight reads.
+      for (const input of Object.keys(inputs)) assertSafePath(paths.root, join(paths.root, input), 'file');
       recorded = JSON.parse(readSafeFile(paths.root, join(directory, 'sources.json')).toString('utf8')).sha256;
       current = sourcesSha256(paths.root, inputs);
     } catch (error) {

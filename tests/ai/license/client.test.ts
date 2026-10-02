@@ -40,7 +40,7 @@ describe('the license client (provisional contract, src/ai/license/client.ts)', 
   it.each([
     [400, { error: 'unknown code' }, 'unknown code'],
     [403, { error: 'too many devices' }, 'too many devices'],
-    [410, 'gone', 'HTTP 410'],
+    [410, { error: 'license gone' }, 'license gone'],
   ])('reads %i as the server refusing', async (status, body, reason) => {
     const { client: license } = client(answer(status, body));
     const failure = await license.register('CODE', 'device').catch((error: unknown) => error);
@@ -49,7 +49,7 @@ describe('the license client (provisional contract, src/ai/license/client.ts)', 
   });
 
   it.each([
-    [408, {}], [429, { error: 'slow down' }], [500, { error: 'boom' }], [503, ''], [200, { accessToken: 'only' }], [200, 'not json'], [204, ''],
+    [408, {}], [429, { error: 'slow down' }], [404, 'Not Found'], [407, ''], [403, '<html>blocked</html>'], [410, 'gone'], [500, { error: 'boom' }], [503, ''], [200, { accessToken: 'only' }], [200, 'not json'], [204, ''],
   ])('reads %i %j as not reached, to try again', async (status, body) => {
     const { client: license } = client(answer(status, body));
     await expect(license.refresh('device', 'secret')).rejects.toMatchObject({ kind: 'unreachable' });

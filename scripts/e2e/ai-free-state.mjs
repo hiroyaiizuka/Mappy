@@ -75,7 +75,7 @@ const WRAP = `
     window.require = function (name, ...rest) {
       if (modules.includes(name)) {
         const stack = new Error().stack ?? '';
-        (/plugin:mappy/u.test(stack) ? seen.mappy : seen.others).push({ name, stack: stack.split('\\n').slice(0, 8).join('\\n') });
+        (/plugin:mappy(?![\\w-])/u.test(stack) ? seen.mappy : seen.others).push({ name, stack: stack.split('\\n').slice(0, 8).join('\\n') });
       }
       return original.call(this, name, ...rest);
     };
@@ -139,8 +139,8 @@ try {
   if (!detect) required(record, 'frames', await step('frames', () => evaluate(`
     const reads = window.__mappyAiFreeState.licenseReads.slice();
     if (reads.length === 0) throw new Error('Mappy did not read mappy-ai-license while it loaded; the frames cannot be checked');
-    const unmatched = reads.filter(stack => !/plugin:mappy/u.test(stack));
-    if (unmatched.length > 0) throw new Error('frames of Mappy that do not match /plugin:mappy/: ' + unmatched[0]);
+    const unmatched = reads.filter(stack => !/plugin:mappy(?![\\w-])/u.test(stack));
+    if (unmatched.length > 0) throw new Error('frames of Mappy that do not match plugin:mappy: ' + unmatched[0]);
     return { reads: reads.length, sample: reads[0] };`)));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   required(record, 'edit', await step('edit', () => evaluate(`${VIEW}
@@ -177,7 +177,7 @@ try {
   // The Node counter's own check: a window.require call from a script named like Mappy's must be counted.
   const nodeProbe = await step('counter sees window.require', async () => {
     const before = await evaluate(`return window.__mappyAiFreeState.seen.mappy.length;`);
-    await cdp.evaluate("window.require('os'); 0\n//# sourceURL=plugin:mappy-e2e-counter-probe");
+    await cdp.evaluate("window.require('os'); 0\n//# sourceURL=plugin:mappy");
     const after = await evaluate(`return window.__mappyAiFreeState.seen.mappy.length;`);
     if (after - before !== 1) throw new Error('a window.require call from a Mappy-named script was not counted');
     return true;

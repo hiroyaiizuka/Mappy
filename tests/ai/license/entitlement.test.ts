@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LicenseRequestError, type IssuedTokens, type LicenseClient } from '../../../src/ai/license/client';
 import { DevUnlockEntitlement } from '../../../src/ai/license/dev-unlock';
 import {
-  allowsAiRunner, LicenseEntitlement, showsAiButton, type EntitlementDeps, type EntitlementState, type LicenseTimers,
+  allowsAiRunner, LATE_WAIT_MS, LicenseEntitlement, showsAiButton, type EntitlementDeps, type EntitlementState, type LicenseTimers,
 } from '../../../src/ai/license/entitlement';
 import { createTokenVerifier } from '../../../src/ai/license/token';
 import { SharedLicenseStorage, settle, sharedLock, signingKey, type SigningKey } from './fixtures';
@@ -410,18 +410,73 @@ describe('LicenseEntitlement.refresh', () => {
     expect(server.calls.map(call => call.kind)).toEqual(['refresh', 'refresh']);
   });
 
-  it('is invalid when the server refuses, drops the secret, and stays invalid after a reload', async () => {
+  it('is invalid when the server refuses, keeps the refusal, and stays invalid after a reload', async () => {
     const { open, server, clock, storage } = await registered();
     clock.advance(2 * HOUR);
     const entitlement = open();
     await entitlement.load();
     server.failure = new LicenseRequestError('rejected', 'license cancelled');
     expect(await entitlement.refresh()).toEqual({ kind: 'invalid', reason: 'license cancelled' });
-    expect(storage.value).toEqual({ deviceId: 'device-1', licenseCode: 'GOOD-CODE', rejected: 'license cancelled' });
+    expect(storage.value).toMatchObject({ deviceId: 'device-1', licenseCode: 'GOOD-CODE', refreshSecret: 'secret-1', rejected: 'license cancelled' });
     expect(await open().load()).toEqual({ kind: 'invalid', reason: 'license cancelled' });
     server.calls.length = 0;
     await entitlement.refresh();
     expect(server.calls).toEqual([]);
+  });
+
+  it('keeps the pair a refresh given up on in one window brings, after another window was refused with the same secret', async () => {
+    const { open, server, clock, storage } = await registered();
+    clock.advance(2 * HOUR);
+    let release!: () => void;
+    server.gate = new Promise<void>(resolve => { release = resolve; });
+    const sent: { answer?: Promise<IssuedTokens> } = {};
+    const slow: LicenseClient = {
+      register: () => Promise.reject(new Error('unused')),
+      refresh: (deviceId, secret) => {
+        sent.answer = server.refresh(deviceId, secret);
+        return Promise.reject(new LicenseRequestError('unreachable', 'timeout', sent.answer));
+      },
+    };
+    const a = open({ client: slow });
+    await a.load();
+    await a.refresh();
+    // Window B sends the same secret while A's request is still on its way; the server rotates it for A first and
+    // refuses B's.
+    const b = open();
+    await b.load();
+    const refused = b.refresh();
+    release();
+    await sent.answer;
+    await refused;
+    await settle();
+    expect(storage.value).toMatchObject({ refreshSecret: 'secret-2' });
+    expect(storage.value?.rejected).toBeUndefined();
+    expect(a.state().kind).toBe('active');
+  });
+
+  it('stops holding back refreshes once a request given up on has not answered for LATE_WAIT_MS', async () => {
+    const { open, clock, server } = await registered();
+    clock.advance(2 * HOUR);
+    const hanging: LicenseClient = {
+      register: () => Promise.reject(new Error('unused')),
+      refresh: () => Promise.reject(new LicenseRequestError('unreachable', 'timeout', new Promise<IssuedTokens>(() => undefined))),
+    };
+    const entitlement = open({ client: hanging });
+    await entitlement.load();
+    await entitlement.refresh();
+    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'waiting for the previous request' });
+    clock.advance(LATE_WAIT_MS);
+    // The window that waited sends again after the wait (and is answered as the server answers it).
+    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'timeout' });
+    expect(server.calls).toEqual([]);
+  });
+
+  it('registers a code when the device ID cannot be stored first', async () => {
+    const { open, storage } = await setup();
+    const entitlement = open({ store: storage.window({ failWrites: true }) });
+    await entitlement.load();
+    await expect(entitlement.register('GOOD-CODE')).rejects.toThrow('storage is full');
+    expect(entitlement.state().kind).toBe('active');
   });
 
   it('keeps a rotated pair it cannot store in memory, and refreshes with it next time instead of the retired secret', async () => {

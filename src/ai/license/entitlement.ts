@@ -69,6 +69,12 @@ const windowTimers: LicenseTimers = {
   clear: id => { window.clearTimeout(id); },
 };
 
+/**
+ * How long a refresh given up on holds back the next one. Its answer is still kept when it arrives later (the
+ * refused path keeps the secret it was sent with), but a request that never settles must not block refreshing for good.
+ */
+export const LATE_WAIT_MS = 2 * 60 * 1000;
+
 /** setTimeout's longest delay; a later expiry re-arms on the way. */
 const MAX_TIMER = 2 ** 31 - 1;
 
@@ -125,11 +131,16 @@ export class LicenseEntitlement implements Entitlement {
     }
   }
 
-  /** Watch a request given up on: `keep` runs under the lock with what the server answered in the end. */
+  /**
+   * Watch a request given up on: `keep` runs under the lock with what the server answered in the end. The next
+   * refresh waits for it, at most `LATE_WAIT_MS`.
+   */
   private watchLate(late: Promise<IssuedTokens>, keep: (tokens: IssuedTokens) => Promise<EntitlementState>): void {
-    const settled = late.then(tokens => this.lock(() => keep(tokens)), () => undefined)
+    const settled: Promise<unknown> = late.then(tokens => this.lock(() => keep(tokens)), () => undefined)
+      .catch(() => undefined)
       .finally(() => { if (this.late === settled) this.late = null; });
     this.late = settled;
+    this.timers.set(() => { if (this.late === settled) this.late = null; }, LATE_WAIT_MS);
   }
 
   /** Before its first verification ends this stays `checking`; later ones keep the previous state until they end. */
@@ -160,7 +171,11 @@ export class LicenseEntitlement implements Entitlement {
       let stored = this.read();
       if (!stored) {
         stored = { deviceId: this.newDeviceId() };
-        this.deps.store.write(stored);
+        try {
+          this.save(stored);
+        } catch {
+          // Kept in memory (`save`): the code can still be registered; the tokens follow the same way.
+        }
       }
       const { deviceId } = stored;
       const registered = (tokens: IssuedTokens): StoredLicense => ({ deviceId, licenseCode, ...tokens });
@@ -213,11 +228,13 @@ export class LicenseEntitlement implements Entitlement {
     // The secret of a request still on its way may already be rotated: sending it again would be refused.
     if (this.late) return this.settle({ kind: 'unreachable', reason: 'waiting for the previous request' });
     // (1) Another window may have refreshed: use its token without sending anything.
-    if ((await this.check(this.read())).kind !== 'expired') return this.load();
+    const first = await this.check(this.read());
+    if (first.kind !== 'expired') return this.settle(first);
     return this.lock(async () => {
       // (2) Again under the lock, for a window that refreshed while this one waited.
       const stored = this.read();
-      if ((await this.check(stored)).kind !== 'expired' || !stored?.refreshSecret) return this.adopt(stored);
+      const again = await this.check(stored);
+      if (again.kind !== 'expired' || !stored?.refreshSecret) return this.settle(again);
       const sent = stored.refreshSecret;
       let tokens: IssuedTokens;
       try {
@@ -252,11 +269,15 @@ export class LicenseEntitlement implements Entitlement {
     return this.storeRotated(stored, tokens);
   }
 
-  /** The server refused `sent`. Only that secret is dropped: a newer one another window stored meanwhile is kept. */
+  /**
+   * The server refused `sent`: the device is `invalid` (`rejected` is kept, so a reload says so too). The secret and
+   * token stay stored: a refresh with the same secret given up on in another window may still bring the rotated
+   * pair, which `storeLate` then keeps (and drops `rejected`). A newer secret another window stored meanwhile is kept.
+   */
   private refused(stored: StoredLicense, sent: string, reason: string): Promise<EntitlementState> {
     const latest = this.read() ?? stored;
     if (latest.refreshSecret !== sent) return this.adopt(latest);
-    return this.writeAndAdopt(stored, ({ deviceId, licenseCode }) => ({ deviceId, ...(licenseCode ? { licenseCode } : {}), rejected: reason }));
+    return this.writeAndAdopt(stored, current => ({ ...current, rejected: reason }));
   }
 
   /** Write `change(latest)` and verify it as just issued. */

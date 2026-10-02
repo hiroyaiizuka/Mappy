@@ -10,8 +10,10 @@ import { requestUrl, type RequestUrlParam, type RequestUrlResponse } from 'obsid
  * - register: `POST {base}/v1/register`, body `{"licenseCode","deviceId"}`
  * - refresh:  `POST {base}/v1/refresh`,  body `{"deviceId","refreshSecret"}`
  * - success: 200 with `{"accessToken","refreshSecret"}` (the refresh secret rotates on every call)
- * - refusal: 400–499 except 408 and 429, with `{"error": "<reason>"}`; anything else (no answer, 408, 429, 5xx,
- *   a body that is not the success shape) is "could not reach" and may be retried.
+ * - refusal: 400–499 except 408 and 429, with the server's own body `{"error": "<reason>"}`; anything else (no
+ *   answer, 408, 429, 5xx, a 4xx without that body — a proxy's 407, a firewall's 403, a moved endpoint's 404 —, a
+ *   body that is not the success shape) is "could not reach" and may be retried. A refusal makes the device
+ *   `invalid`, so only the license server's own answer counts as one.
  * The base is a `.invalid` host (RFC 2606), which never resolves, so a build carrying this contract cannot send a
  * code anywhere until the real endpoint replaces it.
  */
@@ -74,8 +76,9 @@ export function createLicenseClient(request: Request = requestUrl, server: strin
     }
     const { status } = response;
     const json = readJson(response);
-    if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
-      throw new LicenseRequestError('rejected', field(json, 'error') ?? `HTTP ${status}`);
+    const refusal = field(json, 'error');
+    if (status >= 400 && status < 500 && status !== 408 && status !== 429 && refusal) {
+      throw new LicenseRequestError('rejected', refusal);
     }
     if (status !== 200) throw new LicenseRequestError('unreachable', `HTTP ${status}`);
     const accessToken = field(json, 'accessToken');
