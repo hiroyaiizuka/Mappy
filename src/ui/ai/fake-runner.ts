@@ -1,4 +1,5 @@
 import type { AiProgress, AiRequest, AiResult, AiRunner, OutlineItem } from "../../ai/contract";
+import { outlineMarkdown } from "./request";
 
 /** One step of a scripted run: the progress shown, `after` ms after the step before. */
 export interface FakeStep { progress: AiProgress; after: number }
@@ -35,8 +36,7 @@ export function fakeOutline(request: AiRequest): AiResult {
     children: depth >= request.depth ? [] : [1, 2].map(index => branch(`${label}.${index}`, depth + 1)),
   });
   const items = [1, 2, 3].map(index => branch(`${title} ${request.template} ${index}`, 1));
-  const raw = (list: OutlineItem[], depth: number): string[] => list.flatMap(item => [`${"  ".repeat(depth)}- ${item.text}`, ...raw(item.children, depth + 1)]);
-  return { kind: "outline", items, dropped: 0, raw: raw(items, 0).join("\n") };
+  return { kind: "outline", items, dropped: 0, raw: outlineMarkdown(items) };
 }
 
 /**

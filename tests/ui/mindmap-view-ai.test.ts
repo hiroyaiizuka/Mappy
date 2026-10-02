@@ -560,3 +560,130 @@ describe('the draft', () => {
     expect(mounted.source()).toBe(LIST);
   });
 });
+
+/** The findings of the code review (`/code-review high origin/feature/ai...HEAD`, 2026-10-02), one row each. */
+describe('the draft and the card after the code review', () => {
+  async function drafted(source: string, title: string, result: AiResult = OUTLINE, depth?: string): Promise<Mounted & { runner: HandRunner }> {
+    const runner = new HandRunner();
+    const mounted = await mount(source, services(runner));
+    mounted.select(title);
+    await mounted.open();
+    if (depth) field<HTMLSelectElement>(mounted, 'depth').value = depth;
+    await mounted.run();
+    runner.last().finish(result);
+    await mounted.settle();
+    return { ...mounted, runner };
+  }
+  const visibleDraft = (mounted: Mounted): string[] => Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-ai-draft'))
+    .filter(element => !element.hidden).map(element => element.textContent ?? '');
+
+  it('hides the draft with its node when a fold above the node closes, and shows it again when it opens', async () => {
+    const source = ['## R', '', '- 親', '  - 子', ''].join('\n');
+    const mounted = await drafted(source, '子');
+    expect(visibleDraft(mounted)).toEqual(['案 A', '詳細', '案 B']);
+    const toggle = (): void => { mounted.node('親').querySelector<HTMLElement>('.mappy-node-toggle')?.click(); };
+    toggle();
+    await mounted.settle();
+    expect(visibleDraft(mounted)).toEqual([]);
+    toggle();
+    await mounted.settle();
+    expect(visibleDraft(mounted)).toEqual(['案 A', '詳細', '案 B']);
+  });
+
+  it('leaves the focus on 捨てる (and the button itself) through a redraw that changes nothing on the card', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    const mounted = await mount(LIST, ai);
+    mounted.select('温泉旅行');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    const discard = Array.from(mounted.card().querySelectorAll('button')).find(button => button.textContent === t().aiDiscard);
+    discard?.focus();
+    // A license change, another view's run starting and ending, and a layout frame: none of them changes the card.
+    ai.set({ kind: 'active' });
+    const elsewhere = {};
+    aiRunLock.take(elsewhere);
+    aiRunLock.release(elsewhere);
+    (mounted.view as unknown as { scheduleLayout: () => void }).scheduleLayout();
+    await mounted.settle();
+    expect(document.activeElement).toBe(discard);
+    expect(discard?.isConnected).toBe(true);
+  });
+
+  it('keeps what was typed when the run is refused (another view\'s run holds the lock)', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    const mounted = await mount(LIST, ai);
+    const other = await mount(LIST, ai, { app: mounted.app, store: mounted.store });
+    mounted.select('温泉旅行');
+    const input = await mounted.open();
+    input.value = '長い頼みごと';
+    other.select('持ち物');
+    await other.open();
+    await other.run();
+    await mounted.run();
+    expect(Notice.log).toContain(t().aiBusy);
+    expect(runner.calls).toHaveLength(1);
+    expect(mounted.card().hidden).toBe(false);
+    expect(field<HTMLTextAreaElement>(mounted, 'instruction').value).toBe('長い頼みごと');
+    runner.last().finish({ kind: 'cancelled' });
+    await other.settle();
+  });
+
+  it('closes a failure whose node is gone', async () => {
+    const mounted = await drafted(LIST, '持ち物', { kind: 'failed', reason: 'timeout', detail: '' });
+    expect(mounted.card().textContent).toContain(t().aiFailureTimeout);
+    mounted.app.put(PATH, LIST.replace('- 持ち物\n', ''));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await mounted.settle();
+    expect(mounted.card().hidden).toBe(true);
+  });
+
+  it('opens nothing when the selection moved while an expired license was refreshed', async () => {
+    let release: (state: AiEntitlementView) => void = () => undefined;
+    const ai = services(new HandRunner(), { kind: 'expired' });
+    ai.refresh = () => new Promise(resolve => { release = resolve; });
+    const mounted = await mount(LIST, ai);
+    mounted.select('温泉旅行');
+    mounted.aiButton().click();
+    await mounted.settle();
+    mounted.select('持ち物');
+    ai.state = () => ({ kind: 'active' });
+    release({ kind: 'active' });
+    await mounted.settle();
+    expect(mounted.card().hidden).toBe(true);
+  });
+
+  it('lifts a result deeper than the depth asked for to that depth', async () => {
+    const deep: AiResult = { kind: 'outline', dropped: 0, raw: '', items: [{ text: 'a', children: [{ text: 'b', children: [{ text: 'c', children: [] }] }] }] };
+    const mounted = await drafted(LIST, '持ち物', deep, '1');
+    expect(mounted.draftLabels()).toEqual(['a', 'b', 'c']);
+    await mounted.press(t().aiKeep);
+    expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - a\n  - b\n  - c\n'));
+  });
+
+  it('fits the draft again to the node as it is when 残す is pressed (an H3 that became an H5)', async () => {
+    const source = '# A\n\n## B\n\n### X\n';
+    const deep: AiResult = { kind: 'outline', dropped: 0, raw: '', items: [{ text: 'a', children: [{ text: 'b', children: [{ text: 'c', children: [] }] }] }] };
+    const mounted = await drafted(source, 'X', deep, '3');
+    expect(mounted.draftLabels()).toEqual(['a', 'b', 'c']);
+    mounted.app.put(PATH, '# A\n\n## B\n\n### C\n\n#### D\n\n##### X\n');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await mounted.settle();
+    expect(mounted.draftLabels()).toEqual(['a', 'b', 'c']);
+    await mounted.press(t().aiKeep);
+    expect(mounted.source()).toBe('# A\n\n## B\n\n### C\n\n#### D\n\n##### X\n\n###### a\n\n###### b\n\n###### c\n');
+  });
+
+  it('closes a failure on Escape and gives the keys back to the map', async () => {
+    const mounted = await drafted(LIST, '持ち物', { kind: 'failed', reason: 'timeout', detail: '' });
+    const retry = Array.from(mounted.card().querySelectorAll('button')).find(button => button.textContent === t().aiRetry);
+    retry?.focus();
+    mounted.key(retry ?? mounted.card(), 'Escape');
+    await mounted.settle();
+    expect(mounted.card().hidden).toBe(true);
+    expect(mounted.canvas.contains(document.activeElement)).toBe(true);
+  });
+});

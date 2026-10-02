@@ -743,6 +743,10 @@ export class MindmapView extends FileView {
       },
       expand: id => { this.expand(id); },
       layout: () => { this.scheduleLayout(); },
+      focusMap: () => {
+        if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
+        else this.canvas.focus({ preventScroll: true });
+      },
     });
     this.ai.setServices(this.aiServices);
     // The page going (a reload, Obsidian quitting) sends no `onClose`: the run is cancelled all the same (§11.3).

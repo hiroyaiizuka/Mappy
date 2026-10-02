@@ -2,7 +2,7 @@ import { FuzzySuggestModal, Notice, setIcon, type App, type TFile } from "obsidi
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner, AiTemplate, OutlineItem } from "../../ai/contract";
 import { nodeBody } from "../../core/body";
 import type { MindDocument, MindNode } from "../../core/markdown";
-import { fitBranches } from "../../core/new-branches";
+import { branchCount, fitBranches } from "../../core/new-branches";
 import { findNode } from "../../core/text-edits";
 import type { Viewport } from "../../interaction/viewport";
 import { AI_DRAFT_PREFIX, withDraft } from "../../layout/ai-draft";
@@ -33,6 +33,8 @@ export interface AiHost {
   expand(id: string): void;
   /** Ask for a layout frame. */
   layout(): void;
+  /** Give the keys back to the map (the selected node, else the canvas): Escape on the card. */
+  focusMap(): void;
 }
 
 interface Draft {
@@ -152,6 +154,12 @@ export class AiController {
   private opening = false;
   /** Where the node the button is on was laid out. */
   private buttonFor: PositionedNode | undefined;
+  /** `lastLayout`'s nodes by id, made on the first lookup of a frame (a frame of a large map is not walked per lookup). */
+  private placedIndex: Map<string, PositionedNode> | undefined;
+  /** The draft's nodes as the last frame placed them: their left edge and their bottom, in the world. */
+  private draftBox: { left: number; bottom: number } | null = null;
+  /** What the card shows now (`cardState`): a frame or a lock change that changes nothing leaves its DOM, and the focus in it, alone. */
+  private shown = "";
 
   constructor(private readonly host: AiHost) {
     this.button = host.world.createEl("button", { cls: "mappy-ai-button", attr: { type: "button", "aria-label": t().aiButton } });
@@ -183,9 +191,6 @@ export class AiController {
 
   /** Whether a draft is on the map: the export waits for it to be kept or discarded. */
   hasDraft(): boolean { return this.draft !== null; }
-
-  /** Whether a run is under way in this view. */
-  running(): boolean { return this.run !== null; }
 
   /** Everything goes without a word: the view closes, the note leaves it, the page goes (§11.5). A run is cancelled. */
   reset(): void {
@@ -219,6 +224,8 @@ export class AiController {
       this.lostNotice(draft.items);
     }
     if (this.form && !findNode(document, this.form.anchorId)) this.form = null;
+    // A failure on a node that is gone has nothing left to run again.
+    if (this.failed && !findNode(document, this.failed.anchorId)) this.failed = null;
     this.sync();
   }
 
@@ -247,17 +254,32 @@ export class AiController {
   /** The frame the view laid out: the draft's nodes, the button and the card go where it put the nodes. */
   place(layout: LayoutResult): void {
     this.lastLayout = layout;
+    this.placedIndex = undefined;
     const mode = this.host.mode();
-    for (const node of layout.nodes) {
-      const element = this.draftElements.get(node.id);
-      if (!element) continue;
+    let left = Infinity;
+    let bottom = -Infinity;
+    for (const [id, element] of this.draftElements) {
+      const node = this.placed(id);
+      // A fold above the anchor hides the draft with it: an element the frame did not place is not left where it was.
+      element.hidden = !node;
+      if (!node) continue;
       element.style.transform = `translate(${node.x}px, ${node.y}px)`;
       // The layout's classes, as NodeRenderer gives the map's own nodes: they set the box the layout measures.
       element.toggleClass("is-timeline", mode === "timeline");
       element.toggleClass("is-hierarchy", mode === "hierarchy");
       element.toggleClass("is-balanced", mode === "balanced");
+      left = Math.min(left, node.x);
+      bottom = Math.max(bottom, node.y + node.height);
     }
+    this.draftBox = Number.isFinite(left) ? { left, bottom } : null;
     this.sync();
+  }
+
+  /** Where the last frame put `id`, if it did. */
+  private placed(id: string): PositionedNode | undefined {
+    if (!this.lastLayout) return undefined;
+    this.placedIndex ??= new Map(this.lastLayout.nodes.map(node => [node.id, node]));
+    return this.placedIndex.get(id);
   }
 
   /** The view panned or zoomed: the card follows its node on screen. */
@@ -295,7 +317,7 @@ export class AiController {
     const shown = kind === "active" || kind === "expired" || kind === "unreachable";
     const quiet = this.form === null && this.run === null && this.draft === null && this.failed === null;
     const eligible = document && node ? this.eligible(document, node) : "no";
-    const placed = node ? this.lastLayout?.nodes.find(item => item.id === node.id) : undefined;
+    const placed = node ? this.placed(node.id) : undefined;
     this.button.hidden = !shown || !quiet || eligible === "no" || !placed;
     if (!this.button.hidden && placed) {
       const busy = aiRunLock.busy(this);
@@ -334,9 +356,10 @@ export class AiController {
       this.sync();
       return;
     }
-    // The note or the selection may have moved on while the license was refreshed.
+    // The note, the selection or another run may have moved on while the license was refreshed: open nothing then.
     const current = this.host.document();
-    if (!current || !findNode(current, node.id)) return;
+    if (!current || !findNode(current, node.id) || this.host.selectedId() !== node.id || this.run || this.draft || this.form) { this.sync(); return; }
+    if (aiRunLock.busy(this)) { new Notice(t().aiBusy); this.sync(); return; }
     this.failed = null;
     this.message = null;
     this.form = { anchorId: node.id, values: this.defaults(current, node), message: null };
@@ -366,7 +389,11 @@ export class AiController {
     if (event.isComposing || event.key === "Process") return;
     if (event.key === "Escape") {
       event.preventDefault();
-      if (this.form) { this.form = null; this.sync(); }
+      // The input and a failure close; a run and a draft stay (取り消す and 捨てる are their own buttons) and the keys go back to the map.
+      if (this.form) this.form = null;
+      else if (this.failed) this.failed = null;
+      this.sync();
+      this.host.focusMap();
       return;
     }
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && this.form) {
@@ -385,7 +412,7 @@ export class AiController {
       this.renderCard();
       return;
     }
-    this.form = null;
+    // The input stays until the run has started: a run refused (another run, no runner) keeps what was typed.
     void this.start(form.anchorId, form.values);
   }
 
@@ -420,6 +447,7 @@ export class AiController {
     }
     if (!aiRunLock.take(this)) { new Notice(t().aiBusy); this.sync(); return; }
     const run: Run = { anchorId, values, abort: new AbortController(), progress: null };
+    this.form = null;
     this.run = run;
     this.failed = null;
     this.message = null;
@@ -483,7 +511,8 @@ export class AiController {
     const document = this.host.document();
     const node = document ? findNode(document, run.anchorId) : undefined;
     if (!document || !node) { this.lostNotice(result.items); return; }
-    const items = fitBranches(result.items, maxDepth(document, node));
+    // Deeper than asked is lifted to the depth asked for (§11.4), and never past what the node can take (§11.5).
+    const items = fitBranches(result.items, Math.min(run.values.depth, maxDepth(document, node)));
     if (items.length === 0) {
       const message = { text: FAILURE_TEXT.unparsable(text), detail: result.raw };
       if (this.draft) this.message = message;
@@ -536,7 +565,11 @@ export class AiController {
     this.message = null;
     this.renderCard();
     let outcome: KeepOutcome;
-    try { outcome = await this.host.keep(draft.anchorId, draft.items); }
+    // Fitted again to the node as it is now: a move or an external edit may have made it a deeper heading since the run.
+    const document = this.host.document();
+    const node = document ? findNode(document, draft.anchorId) : undefined;
+    const items = document && node ? fitBranches(draft.items, maxDepth(document, node)) : draft.items;
+    try { outcome = await this.host.keep(draft.anchorId, items); }
     catch (error) {
       outcome = { written: false, reason: error instanceof Error ? error.message : String(error) };
     } finally { this.keeping = false; }
@@ -582,10 +615,29 @@ export class AiController {
   }
 
   /** The card for the phase: the input, the run, the draft, or a failure. Hidden when there is none of them. */
+  /** What the card would show, as a string: equal strings draw the same card. */
+  private cardState(): string {
+    const message = (value: Message | null | undefined): unknown => value ? [value.text, value.detail ?? null, value.copy ?? false] : null;
+    if (this.run) return JSON.stringify(["running", progressLabel(this.run.progress), this.draft ? branchCount(this.draft.items) : null]);
+    if (this.draft) return JSON.stringify(["draft", this.generation, message(this.message), this.keeping, this.detailOpen]);
+    if (this.failed) return JSON.stringify(["failed", message(this.failed.message), this.detailOpen]);
+    return "";
+  }
+
   private renderCard(): void {
     const card = this.card;
-    const focused = card.contains(card.doc.activeElement);
+    const active = card.doc.activeElement;
+    const focused = card.contains(active);
+    // The button the keys are on, by its text: the redrawn card gives them back to the same one (never 捨てる → 残す).
+    const focusedLabel = focused && active?.instanceOf(HTMLButtonElement) ? active.textContent : null;
     const form = this.form;
+    if (!form) {
+      // A frame, a selection or a lock change that changes nothing on the card leaves its DOM alone: a press in
+      // progress and the focus stay where they are.
+      const state = this.cardState();
+      if (state !== "" && state === this.shown && card.dataset.phase !== "input" && !card.hidden) { this.placeCard(); return; }
+      this.shown = state;
+    } else this.shown = "";
     if (form) {
       // The input is built once per opening: typing must not be interrupted by a redraw.
       if (card.dataset.phase !== "input") this.buildInput(form.values, form.anchorId);
@@ -596,10 +648,10 @@ export class AiController {
       card.createDiv({ cls: "mappy-ai-progress", text: progressLabel(this.run.progress), attr: { role: "status", "aria-live": "polite" } });
       const actions = card.createDiv({ cls: "mappy-ai-actions" });
       this.action(actions, t().aiCancel, () => { this.run?.abort.abort(); });
-      if (this.draft) card.createDiv({ cls: "mappy-ai-note", text: t().aiDraftCount(this.count(this.draft.items)) });
+      if (this.draft) card.createDiv({ cls: "mappy-ai-note", text: t().aiDraftCount(branchCount(this.draft.items)) });
     } else if (this.draft) {
       this.resetCard("draft");
-      card.createDiv({ cls: "mappy-ai-title", text: t().aiDraftCount(this.count(this.draft.items)) });
+      card.createDiv({ cls: "mappy-ai-title", text: t().aiDraftCount(branchCount(this.draft.items)) });
       this.messageLine(this.message, this.draft.items);
       const actions = card.createDiv({ cls: "mappy-ai-actions" });
       this.action(actions, t().aiKeep, () => { void this.keep(); }, "mod-cta", this.keeping);
@@ -619,17 +671,17 @@ export class AiController {
     }
     card.hidden = false;
     this.placeCard();
-    // A redraw under the focus (a button replaced) keeps the keys on the card.
-    if (focused && !card.contains(card.doc.activeElement)) card.querySelector<HTMLElement>("button:not([disabled]), textarea")?.focus({ preventScroll: true });
+    // A redraw under the focus (a button replaced) keeps the keys on the card, on the button of the same name when there is one.
+    if (focused && !card.contains(card.doc.activeElement)) {
+      const buttons = Array.from(card.querySelectorAll<HTMLButtonElement>("button:not([disabled])"));
+      const same = focusedLabel === null ? undefined : buttons.find(button => button.textContent === focusedLabel);
+      (same ?? card.querySelector<HTMLElement>("textarea") ?? buttons[0])?.focus({ preventScroll: true });
+    }
   }
 
   private resetCard(phase: string): void {
     this.card.empty();
     this.card.dataset.phase = phase;
-  }
-
-  private count(items: readonly OutlineItem[]): number {
-    return items.reduce((total, item) => total + 1 + this.count(item.children), 0);
   }
 
   private action(parent: HTMLElement, label: string, run: () => void, cls = "", disabled = false): HTMLButtonElement {
@@ -722,14 +774,12 @@ export class AiController {
   private placeCard(): void {
     if (this.card.hidden) return;
     const anchorId = this.form?.anchorId ?? this.run?.anchorId ?? this.draft?.anchorId ?? this.failed?.anchorId;
-    const layout = this.lastLayout;
-    const anchor = anchorId === undefined ? undefined : layout?.nodes.find(node => node.id === anchorId);
-    if (!anchor || !layout) return;
-    const draftIds = new Set(this.draftElements.keys());
-    const covered: PositionedNode[] = [anchor, ...layout.nodes.filter(node => draftIds.has(node.id))];
+    const anchor = anchorId === undefined ? undefined : this.placed(anchorId);
+    if (!anchor) return;
+    const box = this.draftBox;
     const view = this.host.viewport();
-    const left = Math.min(...covered.map(node => node.x)) * view.scale + view.x;
-    const bottom = Math.max(...covered.map(node => node.y + node.height)) * view.scale + view.y + CARD_GAP;
+    const left = Math.min(anchor.x, box?.left ?? anchor.x) * view.scale + view.x;
+    const bottom = Math.max(anchor.y + anchor.height, box?.bottom ?? 0) * view.scale + view.y + CARD_GAP;
     const pane = this.host.pane;
     const width = this.card.offsetWidth;
     const height = this.card.offsetHeight;
