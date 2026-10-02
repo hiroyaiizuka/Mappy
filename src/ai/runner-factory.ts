@@ -1,6 +1,7 @@
 import { Platform } from 'obsidian';
 import type { AiRunner } from './contract';
 import type { PromptLanguage } from './core/prompt';
+import { KILL_NOW } from './host/cli-process';
 import { loadNode, type NodeHost } from './host/node-host';
 import type { VaultMaterials } from './obsidian/material';
 import { createCliRunner } from './runner';
@@ -61,7 +62,8 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
   let stopAll = new AbortController();
   let running = 0;
   const listeners = new Set<(running: boolean) => void>();
-  const onPageHide = (): void => { stopAll.abort(); stopAll = new AbortController(); };
+  // The page is going away: kill at once (KILL_NOW), since no timer survives to send the later SIGKILL.
+  const onPageHide = (): void => { stopAll.abort(KILL_NOW); stopAll = new AbortController(); };
   let listening = false;
 
   const unsupported = (): boolean => platform.isWin || !platform.isDesktopApp;
@@ -92,17 +94,19 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
         async run(request, onProgress, signal) {
           // The caller's signal (the view closing, the note changing, the cancel button) or the plugin going away.
           const controller = new AbortController();
-          const stop = (): void => { controller.abort(); };
           const all = stopAll.signal;
-          if (signal.aborted || all.aborted) controller.abort();
-          signal.addEventListener('abort', stop);
-          all.addEventListener('abort', stop);
+          const stopOwn = (): void => { controller.abort(signal.reason); };
+          const stopAllRuns = (): void => { controller.abort(all.reason); };
+          if (signal.aborted) stopOwn();
+          if (all.aborted) stopAllRuns();
+          signal.addEventListener('abort', stopOwn);
+          all.addEventListener('abort', stopAllRuns);
           setRunning(1);
           try {
             return await runner.run(request, onProgress, controller.signal);
           } finally {
-            signal.removeEventListener('abort', stop);
-            all.removeEventListener('abort', stop);
+            signal.removeEventListener('abort', stopOwn);
+            all.removeEventListener('abort', stopAllRuns);
             setRunning(-1);
           }
         },

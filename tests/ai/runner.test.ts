@@ -99,6 +99,13 @@ describe('the real runner with Claude', () => {
     await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'engine-missing', detail: 'claude: node' });
   });
 
+  it('stays cancelled when the host throws after the cancel', async () => {
+    const controller = new AbortController();
+    const { host, run } = runner({ executables: [`${SHIMS}/claude`] });
+    host.mkdtemp = () => { controller.abort(); return Promise.reject(new Error('EINTR')); };
+    await expect(run(request, controller.signal)).resolves.toEqual({ kind: 'cancelled' });
+  });
+
   it('returns a failure, never a rejection, when the host throws', async () => {
     const { host, run } = runner({ executables: [`${SHIMS}/claude`] });
     host.mkdtemp = () => Promise.reject(new Error('ENOSPC'));
@@ -224,6 +231,10 @@ describe('materials', () => {
     const { host, run } = runner({ executables: [`${SHIMS}/claude`] }, {}, vault);
     const result = await run({ ...request, materials: [{ kind: 'pdf', label: 'a.pdf', text: '' }, { kind: 'note', label: 'b.md', text: '' }] });
     expect(result).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '210000 / 200000' });
+    // Over the limit after the first: the rest is not fetched.
+    const first = await run({ ...request, materials: [{ kind: 'note', label: 'b.md', text: 'x'.repeat(200_001) }, { kind: 'pdf', label: 'c.pdf', text: '' }] });
+    expect(first).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '200001 / 200000' });
+    expect(pdf).toHaveBeenCalledTimes(1);
     expect(pdf).toHaveBeenCalledWith('a.pdf', expect.anything());
     expect(note).toHaveBeenCalledWith('b.md');
     expect(host.children).toEqual([]);

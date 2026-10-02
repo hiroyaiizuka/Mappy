@@ -44,9 +44,12 @@ interface Line { indent: number; text: string }
 
 function build(lines: readonly Line[], depth: number): OutlineItem[] {
   // Indentation counts from the shallowest item (a list indented as a whole is still a list of siblings).
-  const shallowest = lines.length > 0 ? Math.min(...lines.map(line => line.indent)) : 0;
-  const positive = lines.map(line => line.indent - shallowest).filter(indent => indent > 0);
-  const unit = positive.length > 0 ? Math.min(...positive) : 1;
+  // A loop, not Math.min(...lines): a runaway answer can have more items than a call takes arguments.
+  let shallowest = Infinity;
+  for (const line of lines) shallowest = Math.min(shallowest, line.indent);
+  let unit = Infinity;
+  for (const line of lines) if (line.indent > shallowest) unit = Math.min(unit, line.indent - shallowest);
+  if (unit === Infinity) unit = 1;
   const roots: OutlineItem[] = [];
   const stack: OutlineItem[] = [];
   for (const line of lines) {

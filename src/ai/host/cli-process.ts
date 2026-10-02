@@ -27,6 +27,15 @@ export type CliEnd =
   | { kind: 'output-too-large' }
   | { kind: 'spawn-failed'; error: string };
 
+/**
+ * The abort reason that also kills at once: the page is going away (Obsidian quitting or reloading), so the timer that
+ * would send SIGKILL 3 seconds later dies with it, and a CLI that ignored SIGTERM would be left running.
+ */
+export const KILL_NOW = 'mappy-ai-kill-now';
+
+/** How long standard output may stay open after the CLI exited (a descendant holding it): then the run settles. */
+const AFTER_EXIT_MS = 2_000;
+
 /** How much of standard error is kept for the message: its end, where the reason usually is. */
 const STDERR_KEEP = 4_000;
 
@@ -67,7 +76,10 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
         timers.push(window.setTimeout(() => { finish(end); }, LIMITS.killGraceMs));
       }, LIMITS.killGraceMs));
     };
-    onAbort = (): void => { halt({ kind: 'cancelled' }); };
+    onAbort = (): void => {
+      halt({ kind: 'cancelled' });
+      if (signal.reason === KILL_NOW && pid !== undefined) host.killGroup(pid, 'SIGKILL');
+    };
     signal.addEventListener('abort', onAbort);
 
     const armIdle = (): void => {
@@ -103,11 +115,17 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
       // ENOENT and EACCES arrive here, after spawn() returned.
       finish(stop ?? { kind: 'spawn-failed', error: error.message });
     });
-    child.on('close', (code, exitSignal) => {
+    const closed = (code: number | null, exitSignal: string | null): void => {
+      if (settled) return;
       const rest = (pending + decoder.decode()).replace(/\r$/u, '');
+      pending = '';
       if (stop === null && rest) onLine(rest);
       finish(stop ?? { kind: 'exited', code, signal: exitSignal, stderr: stderr + stderrDecoder.decode() });
-    });
+    };
+    child.on('close', closed);
+    // 'close' waits for every pipe; a descendant that kept standard output open would hold a finished CLI's answer
+    // until the idle timeout. After the exit, the rest of the output gets a short while, then the run settles.
+    child.on('exit', (code, exitSignal) => { timers.push(window.setTimeout(() => { closed(code, exitSignal); }, AFTER_EXIT_MS)); });
 
     // A CLI that exits before reading its input closes the pipe (EPIPE); the exit reports what happened.
     child.stdin?.on('error', () => undefined);

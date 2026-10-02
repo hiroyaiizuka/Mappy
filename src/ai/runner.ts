@@ -1,6 +1,7 @@
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner } from './contract';
 import { claudeReader, codexReader, type StreamOutcome } from './core/events';
 import { LIMITS, claudeInvocation, codexInvocation, dirname, launchEnv, totalTimeoutMs, type Invocation } from './core/launch';
+import type { MaterialText } from './core/material-text';
 import { outlineResult } from './core/outline';
 import { buildPrompt, type PromptLanguage } from './core/prompt';
 import { youtubeVideoUrl } from './core/youtube';
@@ -34,34 +35,40 @@ function failed(reason: AiFailure, detail: string): AiResult {
 
 type Prepared = { kind: 'ok'; materials: AiMaterial[] } | { kind: 'stop'; result: AiResult };
 
+/** A material's text from its source: yt-dlp for a video, the vault for a PDF or a note. */
+async function fetchMaterial(
+  deps: CliRunnerDeps, material: AiMaterial, onProgress: (progress: AiProgress) => void, signal: AbortSignal,
+): Promise<MaterialText> {
+  onProgress({ stage: 'material', label: material.label });
+  if (material.kind === 'youtube') {
+    const url = youtubeVideoUrl(material.label);
+    if (url === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
+    const ytdlp = await locate(deps.host, 'yt-dlp', deps.paths()['yt-dlp']);
+    if (ytdlp === null) return { kind: 'failed', reason: 'ytdlp-missing', detail: '' };
+    return fetchTranscript(deps.host, ytdlp, url, deps.language(), signal);
+  }
+  if (deps.vault === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
+  return material.kind === 'pdf' ? deps.vault.pdf(material.label, signal) : deps.vault.note(material.label);
+}
+
 async function prepareMaterials(
   deps: CliRunnerDeps, materials: readonly AiMaterial[], onProgress: (progress: AiProgress) => void, signal: AbortSignal,
 ): Promise<Prepared> {
   const ready: AiMaterial[] = [];
   for (const material of materials) {
     if (signal.aborted) return { kind: 'stop', result: { kind: 'cancelled' } };
-    if (material.text !== '') { ready.push(material); continue; }
-    onProgress({ stage: 'material', label: material.label });
-    let fetched;
-    if (material.kind === 'youtube') {
-      const url = youtubeVideoUrl(material.label);
-      if (url === null) return { kind: 'stop', result: failed('material-failed', material.label) };
-      const ytdlp = await locate(deps.host, 'yt-dlp', deps.paths()['yt-dlp']);
-      if (ytdlp === null) return { kind: 'stop', result: failed('ytdlp-missing', '') };
-      fetched = await fetchTranscript(deps.host, ytdlp, url, deps.language(), signal);
-    } else if (deps.vault === null) {
-      return { kind: 'stop', result: failed('material-failed', material.label) };
-    } else {
-      fetched = material.kind === 'pdf' ? await deps.vault.pdf(material.label, signal) : await deps.vault.note(material.label);
+    if (material.text !== '') ready.push(material);
+    else {
+      const fetched = await fetchMaterial(deps, material, onProgress, signal);
+      if (fetched.kind !== 'ok') return { kind: 'stop', result: fetched.kind === 'cancelled' ? { kind: 'cancelled' } : failed(fetched.reason, fetched.detail) };
+      ready.push({ ...material, text: fetched.text });
     }
-    if (fetched.kind === 'cancelled') return { kind: 'stop', result: { kind: 'cancelled' } };
-    if (fetched.kind === 'failed') return { kind: 'stop', result: failed(fetched.reason, fetched.detail) };
-    ready.push({ ...material, text: fetched.text });
-  }
-  const size = ready.reduce((sum, material) => sum + material.text.length, 0);
-  if (size > LIMITS.materialMaxChars) {
-    // Cutting the text would make "a summary of the whole" untrue: stop and say how large it is.
-    return { kind: 'stop', result: failed('material-too-large', `${size} / ${LIMITS.materialMaxChars}`) };
+    // Checked after each one, so a run already over the limit does not go on to fetch the rest.
+    const size = ready.reduce((sum, item) => sum + item.text.length, 0);
+    if (size > LIMITS.materialMaxChars) {
+      // Cutting the text would make "a summary of the whole" untrue: stop and say how large it is.
+      return { kind: 'stop', result: failed('material-too-large', `${size} / ${LIMITS.materialMaxChars}`) };
+    }
   }
   return { kind: 'ok', materials: ready };
 }
@@ -111,7 +118,9 @@ export function createCliRunner(deps: CliRunnerDeps): AiRunner {
       try {
         return await runOnce(deps, request, onProgress, signal);
       } catch (error) {
-        return failed('exited', String(error));
+        // §11.4 has no kind for "the host failed"; `exited` with the error as detail is the nearest. A run the
+        // person had already cancelled stays cancelled.
+        return signal.aborted ? { kind: 'cancelled' } : failed('exited', String(error));
       }
     },
   };

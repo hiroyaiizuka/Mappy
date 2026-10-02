@@ -60,6 +60,11 @@ describe('parseOutline', () => {
     expect(texts(parseOutline('  - A\n  - B\n    - B1\n  - C', 2).items)).toEqual(['A', ['B', ['B1']], 'C']);
   });
 
+  it('reads a runaway answer of 300,000 items without running out of stack', () => {
+    const raw = Array.from({ length: 300_000 }, (_, i) => `${i % 2 ? '  ' : ''}- item`).join('\n');
+    expect(parseOutline(raw, 2).items).toHaveLength(150_000);
+  });
+
   it('counts a tab as four columns', () => {
     expect(texts(parseOutline('- A\n\t- A1\n\t\t- A1a', 3).items)).toEqual([['A', [['A1', ['A1a']]]]]);
   });

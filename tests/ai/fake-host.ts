@@ -32,7 +32,7 @@ export class FakeChild implements ChildProcess {
   };
   constructor(readonly pid: number | undefined, readonly file: string, readonly args: readonly string[], readonly options: { cwd: string; env: Record<string, string> }) {}
 
-  on(event: 'error' | 'close', listener: Listener): this {
+  on(event: 'error' | 'close' | 'exit', listener: Listener): this {
     this.events.on(event, listener);
     return this;
   }
@@ -40,11 +40,15 @@ export class FakeChild implements ChildProcess {
   out(text: string | Uint8Array): void { this.stdout.emit('data', typeof text === 'string' ? new TextEncoder().encode(text) : text); }
   err(text: string): void { this.stderr.emit('data', new TextEncoder().encode(text)); }
   lines(lines: readonly string[]): void { for (const line of lines) this.out(`${line}\n`); }
+  /** The process ends and its pipes close, as Node reports it: 'exit', then 'close'. */
   close(code: number | null, signal: string | null = null): void {
     if (this.closed) return;
     this.closed = true;
+    this.events.emit('exit', code, signal);
     this.events.emit('close', code, signal);
   }
+  /** The process ends but something still holds its standard output: 'exit' and no 'close'. */
+  exitHoldingPipes(code: number | null): void { this.closed = true; this.events.emit('exit', code, null); }
   fail(error: Error): void { this.events.emit('error', error); }
 }
 

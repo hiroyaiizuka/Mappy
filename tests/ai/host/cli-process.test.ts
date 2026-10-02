@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runCli, type CliSpec } from '../../../src/ai/host/cli-process';
+import { KILL_NOW, runCli, type CliSpec } from '../../../src/ai/host/cli-process';
 import { FakeHost, type FakeChild } from '../fake-host';
 
 /**
@@ -78,6 +78,26 @@ describe('runCli', () => {
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
+  });
+
+  it('settles 2 seconds after the exit when a descendant keeps standard output open, with the output so far', async () => {
+    const host = new FakeHost();
+    const { done, child, lines } = start(host);
+    child.out('{"type":"turn.completed"}\n');
+    child.exitHoldingPipes(0);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(host.kills).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toEqual({ kind: 'exited', code: 0, signal: null, stderr: '' });
+    expect(lines).toEqual(['{"type":"turn.completed"}']);
+  });
+
+  it('kills at once when the page is going away (no timer survives to send the later SIGKILL)', () => {
+    const host = new FakeHost({ onKill: () => true });
+    const controller = new AbortController();
+    start(host, {}, controller.signal);
+    controller.abort(KILL_NOW);
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
   it('does not start at all when already cancelled', async () => {

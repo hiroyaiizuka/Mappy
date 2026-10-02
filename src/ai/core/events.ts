@@ -117,7 +117,8 @@ export function codexReader(): StreamReader {
       const item = record(event.item);
       switch (event.type) {
         case 'item.started':
-          if (item?.type === 'web_search') return [{ stage: 'searching', query: string(item.query) }];
+          // Codex starts a search before it has the words (`query: ""`); they come with item.completed.
+          if (item?.type === 'web_search') return string(item.query) ? [{ stage: 'searching', query: string(item.query) }] : [{ stage: 'thinking' }];
           // The command itself is not shown: it may name files outside the vault.
           if (item?.type === 'command_execution') return [{ stage: 'thinking' }];
           if (item?.type === 'reasoning') return [{ stage: 'thinking' }];

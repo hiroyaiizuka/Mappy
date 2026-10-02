@@ -100,6 +100,8 @@ describe('createRunnerFactory', () => {
     const done = runner.run(request, () => undefined, new AbortController().signal);
     await started(host);
     target.dispatchEvent(new Event('pagehide'));
+    // SIGKILL right away: the page and its timers are going.
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
   });
 
@@ -110,6 +112,8 @@ describe('createRunnerFactory', () => {
     await started(host);
     controller.abort();
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
+    // An ordinary cancel waits 3 seconds before SIGKILL.
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM']);
   });
 
   it('lets go of pagehide on dispose', () => {

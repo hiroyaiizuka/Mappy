@@ -61,7 +61,9 @@ describe('claudeReader', () => {
 describe('codexReader', () => {
   it('takes the last agent message: a preamble can come as a message of its own (stage 0 #13)', () => {
     const { progress, outcome } = replay('codex-search.jsonl', codexReader());
-    expect(progress).toContainEqual({ stage: 'searching', query: '' });
+    // A search starts before Codex has its words: thinking, not an empty 「検索中」.
+    expect(progress).not.toContainEqual({ stage: 'searching', query: '' });
+    expect(progress).toContainEqual({ stage: 'thinking' });
     expect(progress).toContainEqual({ stage: 'searching', query: 'site.obsidian.md/changelog latest desktop 2026 Obsidian' });
     expect(progress).toContainEqual({ stage: 'fetching', url: 'https://obsidian.md/changelog/2026-08-20-mobile-v1.13.8/' });
     expect(outcome.text).not.toContain('Web で調べ');

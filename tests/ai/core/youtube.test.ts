@@ -11,6 +11,10 @@ describe('youtubeVideoUrl', () => {
     ['https://m.youtube.com/watch?v=UF8uR6Z6KLc', 'UF8uR6Z6KLc'],
     ['https://youtu.be/UF8uR6Z6KLc?si=abc', 'UF8uR6Z6KLc'],
     ['https://www.youtube.com/shorts/M-cd7Q-Onhk', 'M-cd7Q-Onhk'],
+    ['https://www.youtube.com/live/M-cd7Q-Onhk?si=x', 'M-cd7Q-Onhk'],
+    ['https://www.youtube.com/embed/M-cd7Q-Onhk', 'M-cd7Q-Onhk'],
+    ['https://www.youtube-nocookie.com/embed/M-cd7Q-Onhk', 'M-cd7Q-Onhk'],
+    ['https://music.youtube.com/watch?v=M-cd7Q-Onhk', 'M-cd7Q-Onhk'],
   ])('reads %s', (url, id) => {
     expect(youtubeVideoUrl(url)).toBe(`https://www.youtube.com/watch?v=${id}`);
   });

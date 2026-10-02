@@ -6,19 +6,20 @@
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/u;
 
 /**
- * The video a URL names, as `https://www.youtube.com/watch?v=<id>`, or null. `watch?v=`, `youtu.be/` and `/shorts/`
- * are recognized; a playlist parameter is dropped (the run takes only the video that was open, with `--no-playlist`).
+ * The video a URL names, as `https://www.youtube.com/watch?v=<id>`, or null. `watch?v=`, `youtu.be/`, `/shorts/`,
+ * `/live/` and `/embed/` (also on `m.`, `music.` and `youtube-nocookie.com`) are recognized; a playlist parameter is dropped (the run takes only the video that was open, with `--no-playlist`).
  */
 export function youtubeVideoUrl(text: string): string | null {
   let url: URL;
   try { url = new URL(text.trim()); } catch { return null; }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-  const host = url.hostname.toLowerCase().replace(/^(?:www|m)\./u, '');
+  const host = url.hostname.toLowerCase().replace(/^(?:www|m|music)\./u, '');
   let id: string | null = null;
   if (host === 'youtu.be') id = url.pathname.split('/')[1] ?? null;
-  else if (host === 'youtube.com') {
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
     if (url.pathname === '/watch') id = url.searchParams.get('v');
-    else if (url.pathname.startsWith('/shorts/')) id = url.pathname.split('/')[2] ?? null;
+    // Shorts, a stream's archive, and an embedded player name the video in the path.
+    else if (/^\/(?:shorts|live|embed)\//u.test(url.pathname)) id = url.pathname.split('/')[2] ?? null;
   }
   return id !== null && VIDEO_ID.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
 }

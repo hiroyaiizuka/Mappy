@@ -30,7 +30,11 @@ export function readAiPrefs(value: unknown): AiPrefs {
   };
 }
 
-/** The plugin owns `data.json`; the AI settings only read and ask for a save (as `SettingsStore` does). */
+/**
+ * The plugin owns `data.json`; the AI settings only read and ask for a save (as `SettingsStore` does). `current()` must
+ * give the new value as soon as `save` is called (and put the old one back if the write fails), as the plugin's
+ * `saveSettings` does: the settings rows save on every keystroke, each on top of `current()`.
+ */
 export interface AiPrefsStore {
   current(): AiPrefs;
   save(next: AiPrefs): Promise<void>;

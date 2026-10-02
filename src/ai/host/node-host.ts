@@ -24,7 +24,7 @@ export interface ChildProcess {
   readonly stdout: ByteStream | null;
   readonly stderr: ByteStream | null;
   on(event: 'error', listener: (error: Error) => void): unknown;
-  on(event: 'close', listener: (code: number | null, signal: string | null) => void): unknown;
+  on(event: 'close' | 'exit', listener: (code: number | null, signal: string | null) => void): unknown;
 }
 
 export interface NodeHost {
