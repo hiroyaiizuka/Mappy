@@ -26,7 +26,7 @@ const NOTE = 'Fixtures/E2E-ai-fake-engine.md';
 const SOURCE = ['---', 'mappy: true', '---', '## AI', '', '- 旅の計画', '  - 予約', '- 持ち物', ''].join('\n');
 
 const record = createRecord(VAULT, NOTE);
-const cdp = await connect();
+const cdp = await connect({ build: 'ai-dev' });
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
