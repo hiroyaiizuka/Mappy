@@ -54,8 +54,8 @@ const markSeen = makeMarkSeen(evaluate);
 
 /** The draft's text and whether all of it is selected, or null with no draft open. */
 const draft = () => evaluate(`${VIEW} const box = input(); return box ? { value: box.value, all: box.selectionStart === 0 && box.selectionEnd === box.value.length } : null;`);
-/** The map's body root as drawn: the root node's label (the file name, or the heading that took its place). */
-const root = () => evaluate(`${VIEW} const node = el.querySelector('.mappy-node.is-root'); return node ? label(node) : null;`);
+/** The map's body root as drawn (a free topic's root is `is-root` too): the file name, or the heading that took its place. */
+const root = () => evaluate(`${VIEW} const node = el.querySelector('.mappy-node.is-root:not(.is-topic)'); return node ? label(node) : null;`);
 
 async function open(source) {
   await evaluate('app.workspace.getLeavesOfType("mappy-map").forEach(leaf => leaf.detach()); await new Promise(resolve => setTimeout(resolve, 300)); return true;');
