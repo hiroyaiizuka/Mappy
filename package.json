@@ -64,6 +64,7 @@
     "harness:e2e:indent-unit": "node scripts/e2e/indent-unit.mjs",
     "harness:e2e:english-ui": "node scripts/e2e/english-ui.mjs",
     "harness:e2e:main-topic": "node scripts/e2e/main-topic.mjs",
+    "harness:e2e:file-root": "node scripts/e2e/file-root.mjs",
     "harness:e2e:central-topic": "node scripts/e2e/central-topic.mjs",
     "harness:e2e:visible-layouts": "node scripts/e2e/visible-layouts.mjs",
     "harness:e2e:view-padding": "node scripts/e2e/view-padding.mjs",

@@ -1,5 +1,5 @@
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './markdown';
-import { planListEdit } from './list-commands';
+import { planFileRoot, planListEdit, standsForFileName } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
 import { storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
@@ -464,10 +464,27 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
   }
 }
 
+/**
+ * Tab on the file-name root names it after the file and adds the item to its right; a rename names it as typed (LEV-301).
+ * A name left as the file name, or emptied, writes nothing: the map still shows the file name, and a draft opened on
+ * it and left is not an edit of the note.
+ */
+function planFileRootCommand(doc: MindDocument, type: 'rename' | 'add-child', text = ''): EditPlan {
+  // A file name the heading would read otherwise is named first: the draft on the root is open to it.
+  if (type === 'add-child') return planFileRoot(doc, doc.root.title, t().fileNameNotHeading, text);
+  const title = storedTitle(text, doc.root.title).trim();
+  if (title === '' || title === doc.root.title.trim()) return { edits: [], selectionOffset: null };
+  return planFileRoot(doc, title, t().nameChangesHeading);
+}
+
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   // A new section whose text is an ordinal key (`A (2)`) renumbers the topics of that heading: their entries follow.
   if (command.type === 'add-topic') return withTopicKeys(doc, addTopic(doc, command.title), undefined, 'adds');
   const node = getNode(doc, command.nodeId);
+  // The file name the map shows for a note without a heading section is named by a heading, never written over (LEV-301).
+  if (node.kind === 'root' && standsForFileName(doc) && (command.type === 'rename' || command.type === 'add-child')) {
+    return withTopicKeys(doc, planFileRootCommand(doc, command.type, command.title), undefined, 'adds');
+  }
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error(t().rootAddsChildOnly);
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);
   const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
