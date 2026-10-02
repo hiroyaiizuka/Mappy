@@ -9,7 +9,7 @@ import type { AiResult, OutlineItem } from '../contract';
  */
 
 const FENCE = /^\s*(?:```|~~~)/u;
-const ITEM = /^([ \t]*)(?:[-*+]|\d+\.)(?:[ \t]+(.*))?$/u;
+const ITEM = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])(?:[ \t]+(.*))?$/u;
 const REFUSAL = /^(?:取得できませんでした|Could not retrieve)\s*[:：]\s*(.*)$/iu;
 
 /** Columns of leading whitespace, a tab advancing to the next multiple of 4 (CommonMark's tab stop). */
@@ -64,8 +64,12 @@ function build(lines: readonly Line[], depth: number): OutlineItem[] {
   return roots;
 }
 
-/** The list items of `raw` (the model's final text) and how many other non-blank lines were left out. */
-export function parseOutline(raw: string, depth: number): { items: OutlineItem[]; dropped: number } {
+function neutralizeTree(items: readonly OutlineItem[]): OutlineItem[] {
+  return items.map(item => ({ text: neutralizeItemText(item.text), children: neutralizeTree(item.children) }));
+}
+
+/** The items as the model wrote them (not yet made safe to write) and how many other non-blank lines were left out. */
+function readItems(raw: string, depth: number): { items: OutlineItem[]; dropped: number } {
   let dropped = 0;
   const lines: Line[] = [];
   for (const line of raw.split(/\r?\n/u)) {
@@ -76,18 +80,24 @@ export function parseOutline(raw: string, depth: number): { items: OutlineItem[]
     if (!text) continue;
     lines.push({ indent: columns(item[1] ?? ''), text });
   }
-  return { items: build(lines.map(line => ({ ...line, text: neutralizeItemText(line.text) })), Math.max(1, depth)), dropped };
+  return { items: build(lines, Math.max(1, depth)), dropped };
+}
+
+/** The list items of `raw` (the model's final text), safe to write, and how many other non-blank lines were left out. */
+export function parseOutline(raw: string, depth: number): { items: OutlineItem[]; dropped: number } {
+  const { items, dropped } = readItems(raw, depth);
+  return { items: neutralizeTree(items), dropped };
 }
 
 /** The runner's result for a final text: an outline, a refusal (the one-line 「取得できませんでした: …」), or unparsable. */
 export function outlineResult(raw: string, depth: number): AiResult {
-  const { items, dropped } = parseOutline(raw, depth);
+  const { items, dropped } = readItems(raw, depth);
   const [only] = items;
   if (items.length === 1 && only) {
-    // The refusal is matched on the text before it was escaped (neutralizing leaves this shape alone anyway).
+    // Matched on the text as the model wrote it: the reason is shown to the person, not written to the note.
     const refusal = only.text.match(REFUSAL);
     if (refusal) return { kind: 'refused', reason: (refusal[1] ?? '').trim(), raw };
   }
   if (items.length === 0) return { kind: 'failed', reason: 'unparsable', detail: raw };
-  return { kind: 'outline', items, dropped, raw };
+  return { kind: 'outline', items: neutralizeTree(items), dropped, raw };
 }

@@ -24,6 +24,7 @@ export type CodexLaunch =
 export const LIMITS = {
   /** No line on standard output for this long ends the run (Codex once stopped silently for 10 minutes, stage 0 #15). */
   idleMs: 90_000,
+  idleMaxMs: 5 * 60_000,
   /** The whole run: 5 minutes, 2 more per 50,000 characters of material, at most 15 minutes. */
   totalBaseMs: 5 * 60_000,
   totalStepMs: 2 * 60_000,
@@ -41,6 +42,16 @@ export const LIMITS = {
   /** One yt-dlp step (the video's metadata, then the subtitle file). */
   ytdlpMs: 2 * 60_000,
 } as const;
+
+/**
+ * Silence allowed before the run is stopped: 90 seconds, a minute more per 50,000 characters of material, at most 5
+ * minutes. Codex prints nothing while it writes its answer (one `agent_message` at the end), and that wait grows with
+ * the material: 27 seconds for about 40,000 characters and 23 seconds for 75,000 (artifacts/lev-270).
+ */
+export function idleTimeoutMs(materialChars: number): number {
+  const steps = Math.ceil(Math.max(0, materialChars) / LIMITS.totalStepChars);
+  return Math.min(LIMITS.idleMs + steps * 60_000, LIMITS.idleMaxMs);
+}
 
 export function totalTimeoutMs(materialChars: number): number {
   const steps = Math.ceil(Math.max(0, materialChars) / LIMITS.totalStepChars);

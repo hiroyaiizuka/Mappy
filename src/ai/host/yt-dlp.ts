@@ -25,13 +25,13 @@ function failure(end: CliEnd, step: string): MaterialText {
 }
 
 export async function fetchTranscript(
-  host: NodeHost, ytdlp: string, url: string, uiLanguage: string, signal: AbortSignal,
+  host: NodeHost, ytdlp: string, url: string, uiLanguage: string, signal: AbortSignal, killNow?: AbortSignal,
 ): Promise<MaterialText> {
   let cwd: string | null = null;
   try {
     cwd = await host.mkdtemp('mappy-ai-');
     const env = launchEnv(host.env(), { pathDirs: [dirname(ytdlp)], env: {} });
-    const spec = { file: ytdlp, cwd, env, stdin: '', idleMs: LIMITS.ytdlpMs, totalMs: LIMITS.ytdlpMs };
+    const spec = { file: ytdlp, cwd, env, stdin: '', idleMs: LIMITS.ytdlpMs, totalMs: LIMITS.ytdlpMs, ...(killNow ? { killNow } : {}) };
     let json = '';
     const info = await runCli(host, { ...spec, args: ytdlpInfoArgs(url), maxOutputBytes: INFO_MAX_BYTES }, line => { json += line; }, signal);
     if (info.kind !== 'exited' || info.code !== 0) return failure(info, 'info');

@@ -64,16 +64,16 @@ export function pickSubtitle(info: VideoInfo, uiLanguage: string): SubtitleChoic
   const uploaded = prefer(original) ?? prefer(uiLanguage) ?? manual[0];
   if (uploaded !== undefined) return { language: uploaded, automatic: false };
   const automatic = keys(info.automatic_captions);
-  let orig: string | undefined;
-  if (original !== null) {
-    // `language` can carry a region (`en-US`) the caption keys do not (`en-orig`, `en`).
-    const wanted = [`${original}-orig`, `${base(original)}-orig`, original, base(original)];
-    orig = wanted.map(want => automatic.find(key => key === want)).find(key => key !== undefined);
-  } else {
-    // Without the video's language only an `-orig` track tells itself apart, and only when it is the one: a video
-    // with dubbed audio lists one per language (artifacts/lev-270: `ar-orig`, `en-orig`, `ja-orig`, … on one video).
-    const origs = automatic.filter(key => key.endsWith('-orig'));
-    orig = origs.length === 1 ? origs[0] : undefined;
-  }
+  const find = (want: string): string | undefined => automatic.find(key => key === want);
+  // An `-orig` track is the spoken language; when there is exactly one it is the original whatever `language` says
+  // (a video with dubbed audio lists one per language, artifacts/lev-270: `ar-orig`, `en-orig`, `ja-orig`, …).
+  const origs = automatic.filter(key => key.endsWith('-orig'));
+  const onlyOrig = origs.length === 1 ? origs[0] : undefined;
+  // `language` can carry a region (`en-US`) the caption keys do not (`en-orig`, `en`). A key equal to the language
+  // without `-orig` is taken only when no `-orig` track says otherwise: next to one it is a translation.
+  const orig = original === null
+    ? onlyOrig
+    : find(`${original}-orig`) ?? find(`${base(original)}-orig`) ?? onlyOrig
+      ?? (origs.length === 0 ? find(original) ?? find(base(original)) : undefined);
   return orig !== undefined ? { language: orig, automatic: true } : null;
 }

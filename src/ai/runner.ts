@@ -1,6 +1,6 @@
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner } from './contract';
 import { claudeReader, codexReader, type StreamOutcome } from './core/events';
-import { LIMITS, claudeInvocation, codexInvocation, dirname, launchEnv, totalTimeoutMs, type Invocation } from './core/launch';
+import { LIMITS, claudeInvocation, codexInvocation, dirname, idleTimeoutMs, launchEnv, totalTimeoutMs, type Invocation } from './core/launch';
 import type { MaterialText } from './core/material-text';
 import { outlineResult } from './core/outline';
 import { buildPrompt, type PromptLanguage } from './core/prompt';
@@ -27,6 +27,8 @@ export interface CliRunnerDeps {
   vault: VaultMaterials | null;
   /** The UI's language: the instruction's, the answer's, and the one a subtitle track is preferred in. */
   language: () => PromptLanguage;
+  /** Fires when Mappy is going away: every process is killed at once (see `CliSpec.killNow`). */
+  killNow?: () => AbortSignal;
 }
 
 function failed(reason: AiFailure, detail: string): AiResult {
@@ -45,7 +47,7 @@ async function fetchMaterial(
     if (url === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
     const ytdlp = await locate(deps.host, 'yt-dlp', deps.paths()['yt-dlp']);
     if (ytdlp === null) return { kind: 'failed', reason: 'ytdlp-missing', detail: '' };
-    return fetchTranscript(deps.host, ytdlp, url, deps.language(), signal);
+    return fetchTranscript(deps.host, ytdlp, url, deps.language(), signal, deps.killNow?.());
   }
   if (deps.vault === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
   return material.kind === 'pdf' ? deps.vault.pdf(material.label, signal) : deps.vault.note(material.label);
@@ -143,7 +145,8 @@ async function runOnce(deps: CliRunnerDeps, request: AiRequest, onProgress: (pro
     const materialChars = prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
     const end = await runCli(deps.host, {
       file: invocation.file, args: invocation.args, cwd, env: launchEnv(deps.host.env(), invocation), stdin: prompt,
-      idleMs: LIMITS.idleMs, totalMs: totalTimeoutMs(materialChars),
+      idleMs: idleTimeoutMs(materialChars), totalMs: totalTimeoutMs(materialChars),
+      ...(deps.killNow ? { killNow: deps.killNow() } : {}),
     }, line => { for (const progress of reader.line(line)) onProgress(progress); }, signal);
     return endResult(end, reader.outcome(), request.depth);
   } finally {

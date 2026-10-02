@@ -65,6 +65,10 @@ describe('parseOutline', () => {
     expect(parseOutline(raw, 2).items).toHaveLength(150_000);
   });
 
+  it('takes a 1) list too', () => {
+    expect(texts(parseOutline('1) 背景\n2) 課題\n   1) 小さな課題\n3) 対策', 2).items)).toEqual(['背景', ['課題', ['小さな課題']], '対策']);
+  });
+
   it('counts a tab as four columns', () => {
     expect(texts(parseOutline('- A\n\t- A1\n\t\t- A1a', 3).items)).toEqual([['A', [['A1', ['A1a']]]]]);
   });
@@ -132,6 +136,10 @@ describe('outlineResult', () => {
   it('is a refusal for the single line the contract asks for, in either language', () => {
     expect(outlineResult('- 取得できませんでした: 字幕を読めません', 2)).toEqual({ kind: 'refused', reason: '字幕を読めません', raw: '- 取得できませんでした: 字幕を読めません' });
     expect(outlineResult('- Could not retrieve: no access', 2)).toMatchObject({ kind: 'refused', reason: 'no access' });
+  });
+
+  it('gives the refusal reason as the model wrote it, not escaped', () => {
+    expect(outlineResult('- 取得できませんでした: 字幕が %%非公開%% です #', 2)).toMatchObject({ kind: 'refused', reason: '字幕が %%非公開%% です #' });
   });
 
   it('is not a refusal when the line is one item among others', () => {

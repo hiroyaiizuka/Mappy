@@ -18,6 +18,11 @@ export interface CliSpec {
   idleMs: number;
   totalMs: number;
   maxOutputBytes?: number;
+  /**
+   * Kills the group at once when it fires, even after a cancel already sent SIGTERM: the page is going away (Obsidian
+   * quitting or reloading, the plugin unloading), and the timer that would send SIGKILL 3 seconds later goes with it.
+   */
+  killNow?: AbortSignal;
 }
 
 export type CliEnd =
@@ -26,12 +31,6 @@ export type CliEnd =
   | { kind: 'timeout'; which: 'idle' | 'total' }
   | { kind: 'output-too-large' }
   | { kind: 'spawn-failed'; error: string };
-
-/**
- * The abort reason that also kills at once: the page is going away (Obsidian quitting or reloading), so the timer that
- * would send SIGKILL 3 seconds later dies with it, and a CLI that ignored SIGTERM would be left running.
- */
-export const KILL_NOW = 'mappy-ai-kill-now';
 
 /** How long standard output may stay open after the CLI exited (a descendant holding it): then the run settles. */
 const AFTER_EXIT_MS = 2_000;
@@ -47,12 +46,14 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
     let idle: number | null = null;
     let onAbort = (): void => undefined;
     const timers: number[] = [];
+    const cleanups: (() => void)[] = [];
     const finish = (end: CliEnd): void => {
       if (settled) return;
       settled = true;
       for (const timer of timers) window.clearTimeout(timer);
       if (idle !== null) window.clearTimeout(idle);
       signal.removeEventListener('abort', onAbort);
+      for (const cleanup of cleanups) cleanup();
       resolve(end);
     };
 
@@ -76,11 +77,15 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
         timers.push(window.setTimeout(() => { finish(end); }, LIMITS.killGraceMs));
       }, LIMITS.killGraceMs));
     };
-    onAbort = (): void => {
-      halt({ kind: 'cancelled' });
-      if (signal.reason === KILL_NOW && pid !== undefined) host.killGroup(pid, 'SIGKILL');
-    };
+    onAbort = (): void => { halt({ kind: 'cancelled' }); };
     signal.addEventListener('abort', onAbort);
+    const onKillNow = (): void => {
+      halt({ kind: 'cancelled' });
+      if (pid !== undefined) host.killGroup(pid, 'SIGKILL');
+    };
+    if (spec.killNow?.aborted) onKillNow();
+    spec.killNow?.addEventListener('abort', onKillNow);
+    cleanups.push(() => { spec.killNow?.removeEventListener('abort', onKillNow); });
 
     const armIdle = (): void => {
       if (idle !== null) window.clearTimeout(idle);
@@ -90,20 +95,27 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
     timers.push(window.setTimeout(() => { halt({ kind: 'timeout', which: 'total' }); }, spec.totalMs));
 
     const decoder = new TextDecoder();
-    let pending = '';
+    // The unfinished line, in pieces: only each new chunk is searched for a line break, so one long line (yt-dlp's
+    // JSON for a video) costs its length once, not once per chunk.
+    let pending: string[] = [];
     let bytes = 0;
     child.stdout?.on('data', chunk => {
-      if (stop !== null) return;
+      if (stop !== null || settled) return;
       bytes += chunk.byteLength;
       if (bytes > (spec.maxOutputBytes ?? LIMITS.outputMaxBytes)) { halt({ kind: 'output-too-large' }); return; }
-      pending += decoder.decode(chunk, { stream: true });
+      const text = decoder.decode(chunk, { stream: true });
+      let start = 0;
       let index: number;
-      while ((index = pending.indexOf('\n')) >= 0) {
-        const line = pending.slice(0, index).replace(/\r$/u, '');
-        pending = pending.slice(index + 1);
+      while ((index = text.indexOf('\n', start)) >= 0) {
+        pending.push(text.slice(start, index));
+        const line = pending.join('').replace(/\r$/u, '');
+        pending = [];
+        start = index + 1;
         armIdle();
         if (line) onLine(line);
+        if (stop !== null || settled) return;
       }
+      if (start < text.length) pending.push(text.slice(start));
     });
     const stderrDecoder = new TextDecoder();
     let stderr = '';
@@ -117,15 +129,22 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
     });
     const closed = (code: number | null, exitSignal: string | null): void => {
       if (settled) return;
-      const rest = (pending + decoder.decode()).replace(/\r$/u, '');
-      pending = '';
+      const rest = (pending.join('') + decoder.decode()).replace(/\r$/u, '');
+      pending = [];
       if (stop === null && rest) onLine(rest);
       finish(stop ?? { kind: 'exited', code, signal: exitSignal, stderr: stderr + stderrDecoder.decode() });
     };
     child.on('close', closed);
     // 'close' waits for every pipe; a descendant that kept standard output open would hold a finished CLI's answer
     // until the idle timeout. After the exit, the rest of the output gets a short while, then the run settles.
-    child.on('exit', (code, exitSignal) => { timers.push(window.setTimeout(() => { closed(code, exitSignal); }, AFTER_EXIT_MS)); });
+    // What still holds the pipe outlived the CLI in its group: it goes too.
+    child.on('exit', (code, exitSignal) => {
+      timers.push(window.setTimeout(() => {
+        if (settled) return;
+        if (pid !== undefined) host.killGroup(pid, 'SIGKILL');
+        closed(code, exitSignal);
+      }, AFTER_EXIT_MS));
+    });
 
     // A CLI that exits before reading its input closes the pipe (EPIPE); the exit reports what happened.
     child.stdin?.on('error', () => undefined);

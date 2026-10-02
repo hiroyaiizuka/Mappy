@@ -31,6 +31,15 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 const names = (container: HTMLElement) => Array.from(container.querySelectorAll('.setting-item-name')).map(name => name.textContent);
 
 describe('renderRunnerSettings (architecture.md §11.3, §11.7)', () => {
+  it('says 「見つかりません」 when the search itself fails (the temporary directory cannot be made)', async () => {
+    const host = new FakeHost({ env: { SHELL: '/bin/zsh' } });
+    host.mkdtemp = () => Promise.reject(new Error('ENOSPC'));
+    const { container } = mount(true, host);
+    Array.from(container.querySelectorAll('button')).find(button => button.textContent === '探す')?.click();
+    for (let i = 0; i < 20 && Notice.log.length === 0; i++) await flush();
+    expect(Notice.log.map(entry => String(entry))).toEqual(['ログインシェルでも claude が見つかりませんでした。']);
+  });
+
   it('draws nothing and touches no Node while the license is off', () => {
     const { container, load } = mount(false);
     expect(container.childElementCount).toBe(0);

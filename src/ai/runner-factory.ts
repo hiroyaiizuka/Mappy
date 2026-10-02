@@ -1,7 +1,6 @@
 import { Platform } from 'obsidian';
 import type { AiRunner } from './contract';
 import type { PromptLanguage } from './core/prompt';
-import { KILL_NOW } from './host/cli-process';
 import { loadNode, type NodeHost } from './host/node-host';
 import type { VaultMaterials } from './obsidian/material';
 import { createCliRunner } from './runner';
@@ -60,10 +59,17 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
   const target = options.target ?? window;
   let loaded: NodeHost | null | undefined;
   let stopAll = new AbortController();
+  // Fired when Mappy goes away (pagehide, unload): kill at once, since no timer survives to send the later SIGKILL.
+  let killNow = new AbortController();
+  const stopEverything = (): void => {
+    killNow.abort();
+    stopAll.abort();
+    killNow = new AbortController();
+    stopAll = new AbortController();
+  };
   let running = 0;
   const listeners = new Set<(running: boolean) => void>();
-  // The page is going away: kill at once (KILL_NOW), since no timer survives to send the later SIGKILL.
-  const onPageHide = (): void => { stopAll.abort(KILL_NOW); stopAll = new AbortController(); };
+  const onPageHide = (): void => { stopEverything(); };
   let listening = false;
 
   const unsupported = (): boolean => platform.isWin || !platform.isDesktopApp;
@@ -89,7 +95,7 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       const node = host();
       if (node === null) return null;
       if (!listening) { target.addEventListener('pagehide', onPageHide); listening = true; }
-      const runner = createCliRunner({ host: node, prefs: options.prefs, paths: () => options.paths.current(), vault: options.vault, language: options.language });
+      const runner = createCliRunner({ host: node, prefs: options.prefs, paths: () => options.paths.current(), vault: options.vault, language: options.language, killNow: () => killNow.signal });
       return {
         async run(request, onProgress, signal) {
           // The caller's signal (the view closing, the note changing, the cancel button) or the plugin going away.
@@ -118,8 +124,8 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       return () => { listeners.delete(listener); };
     },
     dispose() {
-      stopAll.abort();
-      stopAll = new AbortController();
+      // The plugin unloading can be the first step of Obsidian quitting or reloading: no SIGKILL timer may be left to.
+      stopEverything();
       if (listening) { target.removeEventListener('pagehide', onPageHide); listening = false; }
       listeners.clear();
     },

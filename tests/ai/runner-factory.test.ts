@@ -90,7 +90,8 @@ describe('createRunnerFactory', () => {
     expect(made.isRunning()).toBe(true);
     made.dispose();
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
-    expect(host.kills[0]).toEqual({ pid: 1000, signal: 'SIGTERM' });
+    // The unload can be the start of quitting: killed at once, not after a timer that may not survive.
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
     expect(made.isRunning()).toBe(false);
     expect(running.mock.calls).toEqual([[true]]);
   });
@@ -114,6 +115,22 @@ describe('createRunnerFactory', () => {
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
     // An ordinary cancel waits 3 seconds before SIGKILL.
     expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM']);
+  });
+
+  it('still kills at once on pagehide when the run was cancelled a moment before', async () => {
+    const { host, target, runner } = hanging();
+    host.kills.length = 0;
+    const controller = new AbortController();
+    const done = runner.run(request, () => undefined, controller.signal);
+    await started(host);
+    const child = host.children[0];
+    if (!child) throw new Error('no child');
+    // The CLI ignores SIGTERM.
+    Object.assign(host, { killGroup: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => { host.kills.push({ pid, signal }); if (signal === 'SIGKILL') queueMicrotask(() => { child.close(null, 'SIGKILL'); }); return true; } });
+    controller.abort();
+    target.dispatchEvent(new Event('pagehide'));
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+    await expect(done).resolves.toEqual({ kind: 'cancelled' });
   });
 
   it('lets go of pagehide on dispose', () => {

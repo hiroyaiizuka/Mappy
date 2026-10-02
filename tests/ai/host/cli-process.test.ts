@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { KILL_NOW, runCli, type CliSpec } from '../../../src/ai/host/cli-process';
+import { runCli, type CliSpec } from '../../../src/ai/host/cli-process';
 import { FakeHost, type FakeChild } from '../fake-host';
 
 /**
@@ -80,8 +80,8 @@ describe('runCli', () => {
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
   });
 
-  it('settles 2 seconds after the exit when a descendant keeps standard output open, with the output so far', async () => {
-    const host = new FakeHost();
+  it('settles 2 seconds after the exit when a descendant keeps standard output open, with the output so far, and kills what held it', async () => {
+    const host = new FakeHost({ onKill: () => true });
     const { done, child, lines } = start(host);
     child.out('{"type":"turn.completed"}\n');
     child.exitHoldingPipes(0);
@@ -89,15 +89,41 @@ describe('runCli', () => {
     expect(host.kills).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await expect(done).resolves.toEqual({ kind: 'exited', code: 0, signal: null, stderr: '' });
+    expect(host.kills).toEqual([{ pid: 1000, signal: 'SIGKILL' }]);
+    // What the descendant writes after the run settled reaches nobody.
+    child.out('{"late":true}\n');
     expect(lines).toEqual(['{"type":"turn.completed"}']);
   });
 
-  it('kills at once when the page is going away (no timer survives to send the later SIGKILL)', () => {
+  it('kills at once when Mappy is going away (no timer survives to send the later SIGKILL)', () => {
+    const host = new FakeHost({ onKill: () => true });
+    const killNow = new AbortController();
+    start(host, { killNow: killNow.signal });
+    killNow.abort();
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('kills at once when Mappy goes away within the 3 seconds after a cancel', async () => {
     const host = new FakeHost({ onKill: () => true });
     const controller = new AbortController();
-    start(host, {}, controller.signal);
-    controller.abort(KILL_NOW);
+    const killNow = new AbortController();
+    start(host, { killNow: killNow.signal }, controller.signal);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM']);
+    killNow.abort();
     expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('reads one long line delivered in many chunks', async () => {
+    const host = new FakeHost();
+    const { done, child, lines } = start(host, { maxOutputBytes: 10_000_000 });
+    const long = 'x'.repeat(1_000_000);
+    for (let at = 0; at < long.length; at += 65_536) child.out(long.slice(at, at + 65_536));
+    child.out('\nnext\n');
+    child.close(0);
+    await done;
+    expect(lines.map(line => line.length)).toEqual([1_000_000, 4]);
   });
 
   it('does not start at all when already cancelled', async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AiRequest } from '../../../src/ai/contract';
 import {
-  LIMITS, candidateDirs, claudeInvocation, codexInvocation, codexNativeCandidates, launchEnv, loginShellArgs, needsNode,
+  LIMITS, candidateDirs, idleTimeoutMs, claudeInvocation, codexInvocation, codexNativeCandidates, launchEnv, loginShellArgs, needsNode,
   pathFromShellOutput, sortNodeVersions, totalTimeoutMs, ytdlpInfoArgs, ytdlpSubtitleArgs,
 } from '../../../src/ai/core/launch';
 import { buildPrompt } from '../../../src/ai/core/prompt';
@@ -91,6 +91,13 @@ describe('limits', () => {
     expect(totalTimeoutMs(100_000)).toBe(9 * 60_000);
     expect(totalTimeoutMs(200_000)).toBe(13 * 60_000);
     expect(totalTimeoutMs(10_000_000)).toBe(15 * 60_000);
+  });
+
+  it('allows longer silence for more material: 90 seconds, a minute more per 50,000 characters, at most 5 minutes', () => {
+    expect(idleTimeoutMs(0)).toBe(90_000);
+    expect(idleTimeoutMs(40_000)).toBe(150_000);
+    expect(idleTimeoutMs(200_000)).toBe(5 * 60_000);
+    expect(idleTimeoutMs(10_000_000)).toBe(5 * 60_000);
   });
 
   it('keeps the values §11.3 names', () => {

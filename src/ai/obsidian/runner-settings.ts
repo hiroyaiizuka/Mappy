@@ -70,7 +70,8 @@ export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSetti
       button.setButtonText(text.aiFind).setTooltip(text.aiFindDesc).onClick(async () => {
         button.setDisabled(true);
         try {
-          const found = await findWithLoginShell(host, tool, new AbortController().signal);
+          // A temporary directory that cannot be made is "not found" too, not an unhandled rejection.
+          const found = await findWithLoginShell(host, tool, new AbortController().signal).catch(() => null);
           if (found === null) { new Notice(text.aiFindNotFound(tool)); return; }
           field?.setValue(found);
           save(found);

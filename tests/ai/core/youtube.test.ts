@@ -68,6 +68,11 @@ describe('pickSubtitle', () => {
     expect(pickSubtitle({ ...lecture, subtitles: { 'en-j3PyPqV-e1s': [] } }, 'ja')).toEqual({ language: 'en-j3PyPqV-e1s', automatic: false });
   });
 
+  it('takes the one -orig track when the stated language matches none (and not a translation that happens to match)', () => {
+    expect(pickSubtitle({ language: 'en', subtitles: {}, automatic_captions: { 'ja-orig': [], ja: [], en: [] } }, 'ja')).toEqual({ language: 'ja-orig', automatic: true });
+    expect(pickSubtitle({ language: 'en', subtitles: {}, automatic_captions: { 'ja-orig': [], 'ko-orig': [], en: [] } }, 'ja')).toBeNull();
+  });
+
   it('without the video language, takes an -orig track only when it is the only one', () => {
     expect(pickSubtitle({ language: null, automatic_captions: { ja: [], 'en-orig': [] } }, 'ja')).toEqual({ language: 'en-orig', automatic: true });
     expect(pickSubtitle({ language: null, automatic_captions: { ja: [], en: [] } }, 'ja')).toBeNull();
