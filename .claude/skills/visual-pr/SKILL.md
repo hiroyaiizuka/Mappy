@@ -32,7 +32,7 @@ Create or update the pull request for the current task with a concise descriptio
    - Keep **Special things to note** to 1-3 bullets. Prioritize reviewer warnings, migrations, compatibility constraints, deliberate omissions, or surprising decisions. Write `- None.` when there are no special considerations.
    - Make **Change outline** a compact, `/show-me`-inspired structural view rather than prose or a file-by-file changelog.
    - Always include **コードレビュー**, the last section before the footer. Every PR is reviewed before it is opened (`docs/linear-workflow.md` step 5), so this section is required even when nothing was waived: the `指摘 N 件、対応 M 件、見送り K 件（理由）` line with the totals across every review round, plus the full text and reason for each waived finding. The PR body is the only place a reader outside this machine can see them — `artifacts/` and `memory/` are both gitignored.
-   - When the work needed a decision from the user, add **本人の判断（未決）** before **コードレビュー**, written as the AGENTS.md rule of the same name says (the worker does not ask the user directly; the orchestrator collects this section into the decision board). Omit it otherwise.
+   - When the work needed a decision from the user, add **本人の判断（未決）** before **コードレビュー**, written as the AGENTS.md rule of the same name says. Omit it otherwise.
    - Include only the views that help explain this PR:
      - SQL table and endpoint contract changes, plus pseudocode for business logic.
      - key data structure / type changes
