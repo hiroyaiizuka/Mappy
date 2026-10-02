@@ -3502,7 +3502,7 @@ export async function captureAi(recorder, page) {
     await waitFor('h.ai.draft().length === 0 && h.ai.card() === null', 'the draft to go');
     const written = await page.harness('h.source()');
     const added = written.split('\n').length - original.split('\n').length;
-    expect(added === 9 && written.includes('  - 兄弟 3\n    - 兄弟 3 brainstorm 1\n      - 兄弟 3 brainstorm 1.1\n'), `unexpected text: ${added} lines added`);
+    expect(added === 9 && written.includes('  - 兄弟 3\n    - 兄弟 3 free 1\n      - 兄弟 3 free 1.1\n'), `unexpected text: ${added} lines added`);
     await page.key('z', 'KeyZ', 90, 4);
     await waitFor(`h.source() === ${JSON.stringify(original)}`, 'Undo to restore the note');
     return `${added} 行を追加、⌘Z で原文へ`;

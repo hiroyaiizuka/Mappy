@@ -85,8 +85,11 @@ interface Mounted extends MountedMapView {
   card: () => HTMLElement;
   /** Press the AI button on the selected node and wait for the input. */
   open: () => Promise<HTMLTextAreaElement>;
-  /** ⌘↵ in the input. */
-  run: (init?: KeyboardEventInit) => Promise<void>;
+  /**
+   * ⌘↵ in the input. An empty request is first given `question` (質問, the default template, refuses an empty one:
+   * 本人の決定 2026-10-02); `null` leaves it empty.
+   */
+  run: (init?: KeyboardEventInit, question?: string | null) => Promise<void>;
   draftLabels: () => string[];
   press: (label: string) => Promise<void>;
 }
@@ -121,9 +124,10 @@ async function mount(source: string, ai: AiServices | null, options: { app?: Har
       if (!input) throw new Error('The input did not open');
       return input;
     },
-    run: async (init = {}) => {
+    run: async (init = {}, question = 'この旅行で決めることは？') => {
       const input = card().querySelector<HTMLTextAreaElement>('textarea.mappy-ai-instruction');
       if (!input) throw new Error('No input');
+      if (question !== null && input.value === '') input.value = question;
       mounted.key(input, 'Enter', { metaKey: true, ...init });
       await mounted.settle();
     },
@@ -212,21 +216,22 @@ describe('the AI button (LEV-271)', () => {
 });
 
 describe('the input', () => {
-  it('asks for a summary on a node pointing at a video, a PDF or a page, and brainstorms otherwise', async () => {
+  // 本人の決定 2026-10-02: the first entrance shown is 質問からマップ (no material, no tool), on every node, a URL's,
+  // a PDF's and a video's included; their summary is chosen on the list.
+  it('opens on a question on every node: 質問 first on the list, the request empty and focused, no web search, no attachment', async () => {
     const source = ['## 資料', '', '- https://www.youtube.com/watch?v=abc123', '- [[資料.pdf]]', '- [記事](https://example.com/a)', '- 普通の項目', ''].join('\n');
     const mounted = await mount(source, services(new HandRunner()));
-    const cases: [string, string, string, boolean][] = [
-      ['https://www.youtube.com/watch?v=abc123', 'summary', t().aiDefaultSummaryVideo, false],
-      ['[[資料.pdf]]', 'summary', t().aiDefaultSummaryPdf, false],
-      ['[記事](https://example.com/a)', 'summary', t().aiDefaultSummaryLink, true],
-      ['普通の項目', 'brainstorm', '', false],
-    ];
-    for (const [title, template, instruction, web] of cases) {
+    for (const title of ['https://www.youtube.com/watch?v=abc123', '[[資料.pdf]]', '[記事](https://example.com/a)', '普通の項目']) {
       mounted.select(title);
       const input = await mounted.open();
-      expect(field<HTMLSelectElement>(mounted, 'template').value, title).toBe(template);
-      expect(input.value, title).toBe(instruction);
-      expect(field<HTMLInputElement>(mounted, 'web-search').checked, title).toBe(web);
+      const templates = field<HTMLSelectElement>(mounted, 'template');
+      expect(templates.value, title).toBe('free');
+      expect(templates.options[0]?.textContent, title).toBe(t().aiTemplateFree);
+      expect(input.value, title).toBe('');
+      expect(input.placeholder, title).toBe(t().aiInstructionPlaceholder);
+      expect(document.activeElement, title).toBe(input);
+      expect(field<HTMLInputElement>(mounted, 'web-search').checked, title).toBe(false);
+      expect(mounted.card().querySelector('.mappy-ai-attachment'), title).toBeNull();
       mounted.key(input, 'Escape');
       await mounted.settle();
       expect(mounted.card().hidden).toBe(true);
@@ -247,20 +252,20 @@ describe('the input', () => {
     await mounted.run();
     expect(runner.calls).toHaveLength(1);
     expect(runner.last().request).toMatchObject({
-      engine: 'claude', template: 'brainstorm', instruction: 'へんかん', depth: 2, webSearch: false,
+      engine: 'claude', template: 'free', instruction: 'へんかん', depth: 2, webSearch: false,
       context: { ancestors: ['ai', '旅の計画'], title: '温泉旅行', body: '' }, materials: [],
     });
   });
 
-  it('refuses an empty request under 自由, and sends the chosen template, depth, engine, web search and attachments', async () => {
+  it('refuses an empty question under 質問, and sends the chosen template, depth, engine, web search and attachments', async () => {
     const runner = new HandRunner();
     const app = new HarnessApp();
     app.put('資料/メモ.md', '# メモ\n');
     const mounted = await mount(LIST, services(runner), { app });
     mounted.select('持ち物');
     await mounted.open();
-    field<HTMLSelectElement>(mounted, 'template').value = 'free';
-    await mounted.run();
+    expect(field<HTMLSelectElement>(mounted, 'template').value).toBe('free');
+    await mounted.run({}, null);
     expect(runner.calls).toHaveLength(0);
     expect(mounted.card().textContent).toContain(t().aiInstructionNeeded);
     field<HTMLTextAreaElement>(mounted, 'instruction').value = '比べて';

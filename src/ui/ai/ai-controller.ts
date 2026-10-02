@@ -9,7 +9,7 @@ import { AI_DRAFT_PREFIX, withDraft } from "../../layout/ai-draft";
 import type { LayoutMode, LayoutNode, LayoutResult, PositionedNode } from "../../layout/layout";
 import { t, type Messages } from "../../i18n";
 import { aiRunLock, type AiServices } from "./services";
-import { AI_TEMPLATES, ancestorTitles, maxDepth, nodeMaterial, outlineMarkdown } from "./request";
+import { AI_TEMPLATES, ancestorTitles, maxDepth, outlineMarkdown } from "./request";
 
 /** Whether `add-children` wrote (the view's `execute`, §11.5), or why it did not: then the draft stays. */
 export type KeepOutcome = { written: true } | { written: false; reason: string };
@@ -367,19 +367,14 @@ export class AiController {
     this.card.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
   }
 
-  /** The input's starting values (§5 M9): a node pointing at a video, a PDF or a page asks for its summary. */
+  /**
+   * The input's starting values: a question on every node (本人の決定 2026-10-02: the first entrance shown is 質問から
+   * マップ, which needs no material and no tool), so the empty request, no web search and no attachment. The summary of
+   * a URL, a PDF or a video is chosen on the template list.
+   */
   private defaults(document: MindDocument, node: MindNode): FormValues {
-    const text = t();
-    const material = nodeMaterial(document, node);
     const depth = Math.min(2, maxDepth(document, node)) as 1 | 2;
-    const base = { depth, engine: this.services?.defaultEngine() ?? "claude", attachments: [] } as const;
-    switch (material) {
-      case "youtube": return { ...base, attachments: [], template: "summary", instruction: text.aiDefaultSummaryVideo, webSearch: false };
-      case "pdf": return { ...base, attachments: [], template: "summary", instruction: text.aiDefaultSummaryPdf, webSearch: false };
-      // Mappy does not fetch a web page itself: the CLI does, with the web search on (§11.2).
-      case "url": return { ...base, attachments: [], template: "summary", instruction: text.aiDefaultSummaryLink, webSearch: true };
-      case null: return { ...base, attachments: [], template: "brainstorm", instruction: "", webSearch: false };
-    }
+    return { template: "free", instruction: "", depth, engine: this.services?.defaultEngine() ?? "claude", webSearch: false, attachments: [] };
   }
 
   private cardKey(event: KeyboardEvent): void {
@@ -407,6 +402,7 @@ export class AiController {
     const form = this.form;
     if (!form) return;
     this.readForm(form.values);
+    // 質問 is the question alone: without one there is nothing to ask.
     if (form.values.template === "free" && form.values.instruction.trim() === "") {
       form.message = t().aiInstructionNeeded;
       this.renderCard();
