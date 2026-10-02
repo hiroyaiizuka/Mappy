@@ -91,8 +91,9 @@ export default defineConfig(
     // regex-lookbehind reporting and adds Node's globals. LEV-249 marked Mappy desktop only because mobile hadn't
     // been tried, and on 2026-10-02 the owner decided it stays desktop only (docs/community-submission.md §4.4).
     // Neither is a licence to use Node: the runtime stays browser-compatible (AGENTS.md; the one exception,
-    // src/ai/host/node-host.ts on feature/ai, is architecture.md §11.1), so these stay on whatever the manifest says
-    // (tests/tooling/mobile-lint.test.mjs).
+    // src/ai/host/node-host.ts on feature/ai, is architecture.md §11.1), so the Node module and global checks stay
+    // on whatever the manifest says. regex-lookbehind guards old iOS WebKit, which a desktop-only plugin no longer
+    // meets; it stays on as it was, and turning it off is a separate change (tests/tooling/mobile-lint.test.mjs).
     files: ["src/**/*.ts"],
     languageOptions: { globals: nodeOnlyGlobalsOff() },
     rules: {

@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
  * submitted to the community directory (mobile hadn't been tried; docs/community-submission.md §4.4 (B)), and on
  * 2026-10-02 the owner decided Mappy stays desktop only (same section). This keeps the mobile row of
  * both READMEs tied to the manifest: the row names the manifest key exactly when it is `true`. Only that token is
- * checked, not the words around it, and other passages that mention mobile (the beta banner, export, the synced
+ * checked, not the words around it, and other passages that mention mobile (the beta banner, the synced
  * `.obsidian` note) are not pinned, so changing the value would still mean reading every mention of mobile in both READMEs. That the
  * value is a boolean is checked by scripts/validate-release.mjs.
  */
