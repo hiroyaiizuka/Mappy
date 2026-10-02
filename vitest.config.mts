@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // As esbuild.config.mjs defines it for every build but the AI development one (src/build-flags.d.ts).
+  define: { MAPPY_AI_DEV_UNLOCK: "false" },
   resolve: {
     alias: { obsidian: fileURLToPath(new URL("./tests/mocks/obsidian.ts", import.meta.url)) },
   },

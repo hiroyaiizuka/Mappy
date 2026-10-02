@@ -22,6 +22,14 @@ export function setLanguage(language: string): void {
 }
 
 /**
+ * The locale to format dates and numbers in: Japanese with the Japanese table, the OS's otherwise (English is the
+ * table for every other language, so the OS's locale is the closer guess there).
+ */
+export function textLocale(): string | undefined {
+  return current === ja ? "ja-JP" : undefined;
+}
+
+/**
  * The current table. Read it where the text is used, never into a module-level constant: modules load before
  * `onload` sets the language, so a copy taken then stays English (tests/i18n/load-time.test.ts checks this).
  */

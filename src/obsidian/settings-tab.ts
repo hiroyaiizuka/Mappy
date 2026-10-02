@@ -3,7 +3,9 @@ import { LAYOUT_MODES, layoutLabel, type LayoutMode } from '../core/layout-mode'
 import {
   DEFAULT_SETTINGS, MAP_THEMES, isSettingKey, readSettingField, showDefaultLayout, type MapTheme, type MappySettings, type SettingKey,
 } from './settings';
+import type { Entitlement } from '../ai/license/entitlement';
 import { t } from '../i18n';
+import { AiSettingsSection } from './ai-settings';
 
 /** The text key of each theme's name; the Record type turns a new theme into a compile error until it is named. */
 const THEME_LABEL_KEYS: Record<MapTheme, `theme${Capitalize<MapTheme>}`> = { follow: 'themeFollow', light: 'themeLight', dark: 'themeDark' };
@@ -89,11 +91,17 @@ export class MappySettingTab extends PluginSettingTab {
    */
   private readonly layoutRows = new Set<LayoutRow>();
 
-  constructor(app: App, plugin: Plugin, private readonly store: SettingsStore) { super(app, plugin); }
+  /** The AI section (src/obsidian/ai-settings.ts): its license rows follow the entitlement while drawn. */
+  private readonly aiSection: AiSettingsSection;
 
-  /** Obsidian 1.13+: the declarative path (rendering and settings search). */
+  constructor(app: App, plugin: Plugin, private readonly store: SettingsStore, entitlement: Entitlement) {
+    super(app, plugin);
+    this.aiSection = new AiSettingsSection(entitlement);
+  }
+
+  /** Obsidian 1.13+: the declarative path (rendering and settings search). The map's four settings, then the AI section. */
   getSettingDefinitions(): MapSettingDefinition[] {
-    return mapSettingDefinitions(setting => this.renderLayoutToggles(setting));
+    return [...mapSettingDefinitions(setting => this.renderLayoutToggles(setting)), ...this.aiSection.definitions()];
   }
 
   getControlValue(key: string): unknown {
@@ -122,11 +130,12 @@ export class MappySettingTab extends PluginSettingTab {
     return saved.then(sync, (error: unknown) => { sync(); throw error; });
   }
 
-  /** Obsidian before 1.13: the same four settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
+  /** Obsidian before 1.13: the same settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
     this.layoutRows.clear();
+    this.aiSection.forgetRows();
     const settings = this.store.current();
     for (const definition of this.getSettingDefinitions()) {
       const setting = new Setting(containerEl).setName(definition.name).setDesc(definition.desc);
