@@ -5,7 +5,10 @@
  * as the command 「新しいマインドマップを作成」 does. The active file is never written (no conversion).
  *
  * Rows: the user's action (a real click on the ribbon icon) × what is active: the map note in the Markdown editor, the
- * same note as a map, a plain note, a note with `mappy: false`, a canvas, an empty tab. Each row reads what opened, the
+ * same note as a map, a plain note (clicked once, and double-clicked), a note with `mappy: false`, a canvas, an empty tab.
+ * The double click checks that one map comes out, not the guard against a second one (`singleFlight`, fixed by the unit
+ * test): on Obsidian 1.14.2 the second click lands ~95 ms later, when the first map is already open and indexed, so a
+ * build without the guard passes this row too (artifacts/lev-300/e82-noguard.txt). Each row reads what opened, the
  * files the vault gained, and the active file's text before and after. The settings get a folder of this case's own
  * and the hierarchy layout (not the map note's timeline, so the two routes cannot pass for each other), and are put
  * back at the end; the folder is removed.
@@ -32,9 +35,12 @@ const FILES = {
   canvas: { path: `${FOLDER}/Board.canvas`, source: '{\n\t"nodes":[],\n\t"edges":[]\n}' },
 };
 
-if (LANGUAGE !== 'ja') throw new Error('E82 finds the ribbon icon by its Japanese name: run it on the Japanese test Obsidian.');
-
 const record = createRecord(VAULT, FOLDER);
+if (LANGUAGE !== 'ja') {
+  // Recorded, not thrown: a run with --json leaves its FAIL and the reason like every other stop.
+  record.failures.push('E82 finds the ribbon icon by its Japanese name: run it on the Japanese test Obsidian.');
+  process.exit(await finish(record, value('--json')));
+}
 const cdp = await connect();
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
@@ -66,8 +72,8 @@ const state = () => evaluate(`const leaf = app.workspace.getMostRecentLeaf();
     layout: view?.getViewType?.() === 'mappy-map' ? view.getState().layout : null, files, texts,
     notices: [...document.querySelectorAll('.notice')].map(notice => notice.textContent) };`);
 
-/** A real click on the ribbon icon, refused if something else is at its centre. */
-async function clickRibbon() {
+/** Real clicks on the ribbon icon (`times` of them, 80 ms apart, as a double click), refused if something else is at its centre. */
+async function clickRibbon(times = 1) {
   const box = await evaluate(`document.querySelectorAll('.notice').forEach(notice => notice.remove());
     const icon = [...document.querySelectorAll('.side-dock-ribbon-action')].find(item => item.getAttribute('aria-label') === ${JSON.stringify(RIBBON)});
     if (!icon) throw new Error('no ribbon icon named ' + ${JSON.stringify(RIBBON)});
@@ -76,22 +82,34 @@ async function clickRibbon() {
     const hit = document.elementFromPoint(x, y);
     if (!hit || !icon.contains(hit)) throw new Error('the ribbon icon is covered by ' + (hit?.className ?? 'nothing'));
     return { x, y };`);
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  for (let click = 1; click <= times; click += 1) {
+    if (click > 1) await wait(80);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: click });
+    }
   }
-  await wait(2000);
+}
+
+/** The state once a map is active (or 10 s have passed), then 1.5 s more, so a second note made late is seen too. */
+async function settled() {
+  for (let tries = 0; tries < 50; tries += 1) {
+    await wait(200);
+    if ((await state()).type === 'mappy-map') break;
+  }
+  await wait(1500);
+  return state();
 }
 
 /** Puts `open` (a script that leaves one leaf active) in front, then clicks the ribbon; the state before and after. */
-async function row(label, open) {
+async function row(label, open, clicks = 1) {
   return step(label, async () => {
     await detach();
     await clearNew();
     await evaluate(`${open}
       await new Promise(resolve => setTimeout(resolve, 1200)); return true;`);
     const before = await state();
-    await clickRibbon();
-    return { before, after: await state() };
+    await clickRibbon(clicks);
+    return { before, after: await settled() };
   });
 }
 
@@ -168,6 +186,8 @@ try {
   const shot = value('--shot');
   if (shot) await cdp.screenshot(shot);
   created('plain-note', plain, before => before?.type === 'markdown' && before.file === FILES.plain.path);
+  const twice = await row('plain-note-double-click', openAs(FILES.plain.path, 'markdown'), 2);
+  created('plain-note-double-click', twice, before => before?.type === 'markdown' && before.file === FILES.plain.path);
   const off = await row('mappy-false', openAs(FILES.off.path, 'markdown'));
   created('mappy-false', off, before => before?.type === 'markdown' && before.file === FILES.off.path);
   const canvas = await row('canvas', openFile(FILES.canvas.path));

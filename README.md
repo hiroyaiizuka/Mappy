@@ -76,7 +76,7 @@ Use the command palette, the ribbon icon on the left, or a file's context menu. 
 | --- | --- |
 | Create new mind map | Creates a note with `mappy: true` and an H2 root in the folder from the settings, and opens it. The file is named "Untitled mind map" and the root "Central topic" (written into the note as `## Central topic`). Tab there adds a "Main topic", and Tab on that a "Subtopic" |
 | Turn this note into a mind map | Writes `mappy: true` into the open note's frontmatter and opens it as a map (also in the file's context menu) |
-| Open mind map | Opens a `mappy: true` note as a map. The ribbon icon on the left does the same, but when the open note is not a map (or no note is open) it creates and opens a new map, as "Create new mind map" does (the open note is left unchanged) |
+| Open mind map | Opens a `mappy: true` note as a map. The ribbon icon on the left does the same, but when the open note is not a map (or no note is open) it creates and opens a new map, as "Create new mind map" does (the open note's content is not changed; the new map opens in its tab) |
 | Open mind map beside Markdown | Puts the map and the standard editor side by side. Run from a Markdown note, the map is on the left and the editor on the right. Run from a map, the Markdown opens on the left |
 | Switch between map and Markdown | Flips the same pane between the two. The Markdown side scrolls to the selected node's line |
 | Turn off mind map for this note | Removes `mappy`, `mappy-layout` and `mappy-topics` and goes back to Markdown, keeping the body |

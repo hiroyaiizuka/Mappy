@@ -111,6 +111,7 @@ export const ja: Messages = {
   menuRemove: "マインドマップ化を解除",
   createFailed: "マインドマップを作成できませんでした。",
   openFailed: "マップを開けませんでした。",
+  noteNotIndexed: "ノートを読み込み中です。少し待ってからもう一度押してください。",
   markdownOpenFailed: "Markdown を開けませんでした。",
   removeFailed: "マインドマップ化を解除できませんでした。",
   convertNoteFailed: "ノートをマインドマップ化できませんでした。",

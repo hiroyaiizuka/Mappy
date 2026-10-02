@@ -8,7 +8,7 @@ import {
 import { canSaveAttachments } from "./obsidian/image-export";
 import { createMindmapFile } from "./obsidian/map-files";
 import { MapSearchModal } from "./obsidian/map-search";
-import { runRibbon } from "./obsidian/ribbon";
+import { runRibbon, singleFlight } from "./obsidian/ribbon";
 import { DEFAULT_SETTINGS, normalizeSettings, showDefaultLayout, type MappySettings } from "./obsidian/settings";
 import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
@@ -174,7 +174,8 @@ export default class MappyPlugin extends Plugin {
     this.addRibbonIcon("git-fork", t().cmdOpen, () => {
       runRibbon(this.app, this.activeFile(), {
         open: (file, layout) => { this.run(() => this.open(file, false, layout), t().openFailed); },
-        create: () => { this.createMap(); },
+        create: from => { this.createMap(from); },
+        notReady: () => { new Notice(t().noteNotIndexed); },
       });
     });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
@@ -193,17 +194,19 @@ export default class MappyPlugin extends Plugin {
   }
 
   /** The command's and the ribbon's route (LEV-300): an untitled map in the settings' folder, with their layout. */
-  private createMap(): void {
-    this.run(async () => {
-      // "Same folder as current file" counts from the map's own note when a map is active (`activeFile()` asks
-      // the map first; `getActiveFile()` finds it too now that the map is a FileView — LEV-89 — except for a map
-      // in a sidebar, which is not a navigation view).
-      const sourcePath = this.activeFile()?.path ?? "";
-      const { defaultLayout: layout, newMapFolder: folder } = this.settings;
-      const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
-      await this.open(file, false, layout);
-    }, t().createFailed);
+  // "Same folder as current file" counts from the map's own note when a map is active (`activeFile()` asks the map
+  // first; `getActiveFile()` finds it too now that the map is a FileView — LEV-89 — except for a map in a sidebar,
+  // which is not a navigation view). The ribbon passes the note it decided on, so both read the same one.
+  private createMap(from: TFile | null = this.activeFile()): void {
+    this.run(() => this.createMapOnce(from?.path ?? ""), t().createFailed);
   }
+
+  /** One untitled map at a time: a second click before the first map opens makes no second note (LEV-300). */
+  private readonly createMapOnce = singleFlight(async (sourcePath: string) => {
+    const { defaultLayout: layout, newMapFolder: folder } = this.settings;
+    const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
+    await this.open(file, false, layout);
+  });
 
   private activeFile(): TFile | null {
     const map = this.app.workspace.getActiveViewOfType(MindmapView);

@@ -129,6 +129,7 @@ export const en = {
   menuRemove: "Turn off mind map",
   createFailed: "Couldn't create the mind map.",
   openFailed: "Couldn't open the map.",
+  noteNotIndexed: "The note is still loading. Try again in a moment.",
   markdownOpenFailed: "Couldn't open Markdown.",
   removeFailed: "Couldn't turn off the mind map.",
   convertNoteFailed: "Couldn't turn the note into a mind map.",
