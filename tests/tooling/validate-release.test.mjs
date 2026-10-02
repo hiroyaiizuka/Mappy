@@ -507,6 +507,28 @@ describe('distribution artifact validation', () => {
     }
   });
 
+  it('rejects a packaged main.js that carries the AI development unlock (LEV-273), from the API and the CLI', () => {
+    addArtifacts();
+    const unlocked = 'module.exports = {};\nconst marker = "mappy-ai-dev-unlock";\n';
+    writeFileSync(join(root, 'main.js'), unlocked);
+    writeFileSync(join(root, 'dist', 'mappy', 'main.js'), unlocked);
+    expect(validateRelease(root, { artifacts: true })).toEqual([
+      'dist/mappy/main.js: contains the AI development unlock ("mappy-ai-dev-unlock"); build it without MAPPY_AI_DEV_UNLOCK.',
+    ]);
+    const packaging = spawnSync(process.execPath, [cliPath, '--artifacts'], { cwd: root, encoding: 'utf8' });
+    expect(packaging.status).toBe(1);
+    expect(packaging.stderr).toContain('contains the AI development unlock');
+  });
+
+  it('refuses to package the release while MAPPY_AI_DEV_UNLOCK=1 is set, which left main.js unbuilt (LEV-273)', () => {
+    addArtifacts();
+    const packaging = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/package-plugin.mjs', import.meta.url))], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, MAPPY_AI_DEV_UNLOCK: '1' },
+    });
+    expect(packaging.status).not.toBe(0);
+    expect(packaging.stderr).toContain('MAPPY_AI_DEV_UNLOCK=1 is set');
+  });
+
   it('rejects missing and empty distribution artifacts', () => {
     addArtifacts();
     rmSync(join(root, 'dist', 'mappy', 'main.js'));

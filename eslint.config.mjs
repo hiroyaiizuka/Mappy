@@ -92,7 +92,8 @@ export default defineConfig(
     // been tried (LEV-249), not because it may use Node, so these stay on whatever the manifest says
     // (tests/tooling/mobile-lint.test.mjs).
     files: ["src/**/*.ts"],
-    languageOptions: { globals: nodeOnlyGlobalsOff() },
+    // MAPPY_AI_DEV_UNLOCK is esbuild's `define` (src/build-flags.d.ts), replaced by a literal in every bundle.
+    languageOptions: { globals: { ...nodeOnlyGlobalsOff(), MAPPY_AI_DEV_UNLOCK: "readonly" } },
     rules: {
       "obsidianmd/no-nodejs-modules": "error",
       "obsidianmd/regex-lookbehind": ["error", { isDesktopOnly: false }],

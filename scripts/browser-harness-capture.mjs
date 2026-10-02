@@ -3409,9 +3409,182 @@ async function captureSameTitledTopics(recorder, page) {
   await page.settle();
 }
 
+/**
+ * The map's AI with the fake engine (LEV-271, docs/architecture.md §11.5): the button on the selected node, the input
+ * card, a run, the draft's dotted nodes in each layout, 残す and ⌘Z. The page's license is always active and its
+ * engines are `FakeRunner`s (`h.ai.enable`); the real runner, the license and a real IME are not on this page.
+ */
+export async function captureAi(recorder, page) {
+  const FIXTURE = OPERATION_FIXTURE;
+  const TARGET = '兄弟 3';
+  const path = `Fixtures/${FIXTURE}.md`;
+  await loadFreshFixture(page, FIXTURE);
+  await page.harness('h.ai.enable(60)');
+  const original = await page.harness('h.source()');
+  const waitFor = async (expression, what, limit = 80) => {
+    for (let round = 0; round < limit; round += 1) {
+      if (await page.harness(expression)) return;
+      await page.settle();
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  };
+  const select = async name => {
+    const node = await nodeInfo(page, name);
+    await page.click(center(node.rect).x, center(node.rect).y);
+    await page.settle();
+    return node;
+  };
+  /** Select the target, press the AI button, type a request, ⌘↵, and wait for the draft. */
+  const runOnce = async () => {
+    await select(TARGET);
+    const button = await page.harness('h.ai.button()');
+    expect(button, 'no AI button on the selected node');
+    await page.click(center(button).x, center(button).y);
+    await page.settle();
+    await waitFor('h.ai.card()?.phase === "input"', 'the input');
+    await page.type('広げて');
+    await page.key('Enter', 'Enter', 13, 4);
+    await waitFor('h.ai.card()?.phase === "draft"', 'the draft');
+  };
+
+  await recorder.run('ai-button', `h.ai.enable() → 「${TARGET}」をクリック（全体表示の倍率）→ 倍率の表示を押して 100%`, 'AI ボタンが選んだノードの右上の角に中心を置いて出る。全体表示の倍率では画面上 14 px 以上、100% では 22 px で、開閉ボタン・他のノードと重ならない', async () => {
+    await select(TARGET);
+    const small = await page.harness('h.ai.button()');
+    expect(small && small.width >= 13.5, `the button is ${small?.width} px on screen when zoomed out`);
+    const reset = await page.harness('h.button("100%")');
+    expect(reset, 'zoom label missing');
+    await page.click(center(reset).x, center(reset).y);
+    await page.settle();
+    const node = await nodeInfo(page, TARGET);
+    const button = await page.harness('h.ai.button()');
+    expect(button, 'no AI button');
+    const corner = { x: node.rect.x + node.rect.width, y: node.rect.y };
+    expect(Math.abs(center(button).x - corner.x) <= 2 && Math.abs(center(button).y - corner.y) <= 2,
+      `the button's centre ${JSON.stringify(center(button))} is not on the top-right corner ${JSON.stringify(corner)}`);
+    const others = (await page.harness('h.nodes()')).filter(item => item.title !== TARGET);
+    const hit = others.find(item => overlaps(item.rect, button));
+    expect(!hit, `the button overlaps ${hit?.title}`);
+    expect(Math.abs(button.width - 22) <= 1, `the button is ${button.width} px wide at 100%`);
+    return `全体表示で ${small.width.toFixed(1)} px、100% で ${Math.round(button.width)} px`;
+  });
+
+  for (const mode of ['mindmap', 'timeline', 'hierarchy', 'balanced']) {
+    await recorder.run(`ai-draft-${mode}`, `${mode}: 「${TARGET}」で AI ボタン → 「広げて」→ ⌘↵（偽のエンジン）`,
+      '進み具合のあと、点線の下書き 9 項目（3 × 深さ 2）と点線の線 9 本が「兄弟 3」の子として並び、既存のノード・互いと重ならない。カードはペインの中。原文は変わらない', async () => {
+        await loadFreshFixture(page, FIXTURE, mode);
+        await runOnce();
+        const draft = await page.harness('h.ai.draft()');
+        expect(draft.length === 9, `expected 9 draft nodes, got ${draft.length}`);
+        expect(await page.harness('h.ai.draftEdges()') === 9, 'the draft edges are not dotted');
+        const nodes = await page.harness('h.nodes()');
+        for (const item of draft) {
+          const hit = nodes.find(node => overlaps(node.rect, item.rect));
+          expect(!hit, `${item.text} overlaps ${hit?.title}`);
+        }
+        for (const [index, item] of draft.entries()) {
+          const other = draft.slice(index + 1).find(candidate => overlaps(candidate.rect, item.rect));
+          expect(!other, `${item.text} overlaps ${other?.text}`);
+        }
+        const card = await page.harness('h.ai.card()');
+        const canvas = await page.harness('h.canvasRect()');
+        expect(card && inside(card.rect, canvas, 1), `the card ${JSON.stringify(card?.rect)} leaves the pane ${JSON.stringify(canvas)}`);
+        expect(await page.harness('h.source()') === original, 'the note changed while the draft was shown');
+        return `下書き ${draft.length} 項目: ${draft.slice(0, 3).map(item => item.text).join('・')}…`;
+      });
+  }
+
+  await recorder.run('ai-keep-undo', `mindmap: 下書きの「残す」→ ⌘Z`, '下書きが「兄弟 3」の子のリストとして 1 回で書かれ（9 行）、点線が消える。⌘Z 1 回で原文に戻る', async () => {
+    await loadFreshFixture(page, FIXTURE);
+    await runOnce();
+    const keep = await page.evaluate(`JSON.parse(JSON.stringify(Array.from(document.querySelectorAll('.mappy-ai-card button')).find(b => b.textContent === '残す')?.getBoundingClientRect() ?? null))`);
+    expect(keep, 'no 残す button');
+    await page.click(center(keep).x, center(keep).y);
+    await waitFor('h.ai.draft().length === 0 && h.ai.card() === null', 'the draft to go');
+    const written = await page.harness('h.source()');
+    const added = written.split('\n').length - original.split('\n').length;
+    expect(added === 9 && written.includes('  - 兄弟 3\n    - 兄弟 3 free 1\n      - 兄弟 3 free 1.1\n'), `unexpected text: ${added} lines added`);
+    await page.key('z', 'KeyZ', 90, 4);
+    await waitFor(`h.source() === ${JSON.stringify(original)}`, 'Undo to restore the note');
+    return `${added} 行を追加、⌘Z で原文へ`;
+  });
+
+  await recorder.run('ai-fold', `mindmap: 「${TARGET}」の下書きの上の「多数の兄弟」の開閉ボタンを押す → もう一度押す`,
+    '畳むと下書きとカードが見えなくなり（visibility）、開くと下書きが元の大きさで既存のノード・互いと重ならずに並ぶ。固定しているのは前半: 要素に hidden を足して 0×0 で測られる形に戻しても、headless Chrome では次のフレームが測り直して後半は通る（artifacts/lev-271/revert-review2-fixes.md）', async () => {
+      await loadFreshFixture(page, FIXTURE);
+      await runOnce();
+      const before = await page.harness('h.ai.draft()');
+      const press = async () => {
+        const parent = await nodeInfo(page, '多数の兄弟');
+        expect(parent.toggle, 'no fold control on 多数の兄弟');
+        await page.click(center(parent.toggle).x, center(parent.toggle).y);
+        await page.settle();
+      };
+      await press();
+      const hidden = await page.evaluate(`Array.from(document.querySelectorAll('.mappy-ai-draft')).every(el => getComputedStyle(el).visibility === 'hidden')`);
+      expect(hidden, 'the draft stayed visible under a folded parent');
+      expect(await page.evaluate(`getComputedStyle(document.querySelector('.mappy-ai-card')).visibility`) === 'hidden', 'the card stayed visible while its node was folded away');
+      await press();
+      const after = await page.harness('h.ai.draft()');
+      expect(after.length === before.length, `the draft has ${after.length} nodes after unfolding, ${before.length} before`);
+      for (const [index, item] of after.entries()) {
+        expect(item.rect.height > 0 && Math.abs(item.rect.height - before[index].rect.height) < 1, `${item.text} is ${item.rect.height}px high after unfolding, ${before[index].rect.height} before`);
+        const other = after.slice(index + 1).find(candidate => overlaps(candidate.rect, item.rect));
+        expect(!other, `${item.text} overlaps ${other?.text}`);
+      }
+      const nodes = await page.harness('h.nodes()');
+      const hit = after.flatMap(item => nodes.filter(node => overlaps(node.rect, item.rect)).map(node => `${item.text}/${node.title}`));
+      expect(hit.length === 0, `the draft overlaps ${hit.join(', ')}`);
+      return `下書き ${after.length} 項目、畳む前後で高さが同じ`;
+    });
+
+  await recorder.run('ai-card-upper-stage', 'timeline: 上側のステージの森の「二段目」で AI ボタン（世界の原点より上のノード）',
+    '入力欄のカードがそのノードのすぐ下に出る（コードレビュー 4 回目: 下書きの無いときは原点の線まで下がっていた）', async () => {
+      await loadFreshFixture(page, FIXTURE, 'timeline');
+      const node = await select('二段目');
+      const button = await page.harness('h.ai.button()');
+      expect(button, 'no AI button on 二段目');
+      await page.click(center(button).x, center(button).y);
+      await waitFor('h.ai.card()?.phase === "input"', 'the input');
+      const card = await page.harness('h.ai.card()');
+      const bottom = node.rect.y + node.rect.height;
+      expect(card.rect.y >= bottom && card.rect.y - bottom < 30, `the card's top ${Math.round(card.rect.y)} is not right under the node's bottom ${Math.round(bottom)}`);
+      await page.key('Escape', 'Escape', 27);
+      await page.settle();
+      return `ノードの下端から ${Math.round(card.rect.y - bottom)} px`;
+    });
+
+  await recorder.run('ai-draft-pan', `mindmap: 「${TARGET}」の下書きの点線のノードを押して右下へ 80×40 px ドラッグ`,
+    'マップがパンする（下書きのノードは押しを地図へ通す。コードレビュー 4 回目: 押しても何も起きなかった）', async () => {
+      await loadFreshFixture(page, FIXTURE);
+      await runOnce();
+      const [item] = await page.harness('h.ai.draft()');
+      const before = await page.harness('h.viewport()');
+      const from = center(item.rect);
+      await page.drag(from.x, from.y, from.x + 80, from.y + 40);
+      await page.settle();
+      const after = await page.harness('h.viewport()');
+      expect(Math.abs(after.x - before.x - 80) < 2 && Math.abs(after.y - before.y - 40) < 2, `the viewport moved by ${after.x - before.x}, ${after.y - before.y}`);
+      return `viewport ${Math.round(after.x - before.x)}×${Math.round(after.y - before.y)}`;
+    });
+
+  await recorder.run('ai-discard', 'mindmap: 下書きの「捨てる」', '下書きとカードが消え、原文は変わらない', async () => {
+    await loadFreshFixture(page, FIXTURE);
+    await runOnce();
+    const discard = await page.evaluate(`JSON.parse(JSON.stringify(Array.from(document.querySelectorAll('.mappy-ai-card button')).find(b => b.textContent === '捨てる')?.getBoundingClientRect() ?? null))`);
+    await page.click(center(discard).x, center(discard).y);
+    await waitFor('h.ai.draft().length === 0 && h.ai.card() === null', 'the draft to go');
+    expect(await page.harness('h.source()') === original, 'the note changed');
+  });
+  await page.harness('h.ai.disable()');
+  await page.harness(`h.putNote(${JSON.stringify(path)}, ${JSON.stringify(original)})`);
+  await loadFreshFixture(page, FIXTURE);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const option = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
+  // `--only ai,new-node`: just these groups (named after their capture function, without `capture`), for one feature's evidence.
+  const only = option('--only')?.split(',').map(name => name.trim().toLowerCase());
   const outRoot = resolve(root, option('--out') ?? join('artifacts', 'browser-harness'));
   const startedAt = new Date();
   const stamp = startedAt.toISOString().replace(/[:.]/gu, '-');
@@ -3446,22 +3619,20 @@ async function main() {
     // Chrome, its profile and the SIGKILL on a wedged browser live in withHarnessPage.
     await withHarnessPage(chrome, { output, window: WINDOW, fixture: OPERATION_FIXTURE, pane: PANE }, async page => {
       recorder = new Recorder(page, directory);
-      await captureFixtures(recorder, page, timings);
-      await captureViewPadding(recorder, page);
-      await captureOperations(recorder, page);
-      await captureHierarchyRows(recorder, page);
-      await captureTimelineStageGap(recorder, page);
-      await captureInlineWidth(recorder, page);
-      await captureLineBreak(recorder, page);
-      await captureNewNode(recorder, page);
-      await captureThemes(recorder, page);
-      await captureVisibleLayouts(recorder, page);
-      await captureTopicOperations(recorder, page);
-      await captureCallAsTopic(recorder, page);
-      await captureSameTitledTopics(recorder, page);
-      await captureExport(recorder, page);
-      await captureEmbeds(recorder, page);
-      await captureEmbedNodes(recorder, page);
+      const groups = {
+        fixtures: () => captureFixtures(recorder, page, timings), 'view-padding': () => captureViewPadding(recorder, page),
+        operations: () => captureOperations(recorder, page), 'hierarchy-rows': () => captureHierarchyRows(recorder, page),
+        'timeline-stage-gap': () => captureTimelineStageGap(recorder, page), 'inline-width': () => captureInlineWidth(recorder, page),
+        'line-break': () => captureLineBreak(recorder, page), 'new-node': () => captureNewNode(recorder, page),
+        themes: () => captureThemes(recorder, page), 'visible-layouts': () => captureVisibleLayouts(recorder, page),
+        'topic-operations': () => captureTopicOperations(recorder, page), 'call-as-topic': () => captureCallAsTopic(recorder, page),
+        'same-titled-topics': () => captureSameTitledTopics(recorder, page), export: () => captureExport(recorder, page),
+        embeds: () => captureEmbeds(recorder, page), 'embed-nodes': () => captureEmbedNodes(recorder, page),
+        ai: () => captureAi(recorder, page),
+      };
+      const unknown = only?.filter(name => !(name in groups)) ?? [];
+      if (unknown.length > 0) throw new Error(`Unknown --only group: ${unknown.join(', ')}`);
+      for (const [name, run] of Object.entries(groups)) if (!only || only.includes(name)) await run();
       await writeFile(join(directory, 'timings.json'), `${JSON.stringify({ commit, chrome: chromeVersion(chrome), timings }, null, 2)}\n`);
     });
   } catch (error) {
@@ -3469,6 +3640,7 @@ async function main() {
     aborted = error instanceof Error ? error.message : String(error);
   }
   const cases = recorder?.cases ?? [];
+  if (only) notExecuted.unshift(`--only ${only.join(',')} で実行したため、他のグループは未実施。`);
   if (aborted) notExecuted.unshift(`途中で中断したため、残りのケースは未実施（${aborted}）。再実行する。`);
   const record = recordMarkdown({ startedAt: startedAt.toISOString(), chrome, version: chromeVersion(chrome), commit, cases, timings, notExecuted });
   await writeFile(join(directory, 'record.md'), record);

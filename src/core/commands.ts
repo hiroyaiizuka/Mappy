@@ -3,6 +3,7 @@ import { planListEdit } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
 import { storedTitle } from './title-breaks';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
+import { writtenBranches, type NewBranch, type WrittenBranch } from './new-branches';
 import { t } from '../i18n';
 
 export interface TextEdit { from: number; to: number; text: string }
@@ -34,6 +35,12 @@ export type EditCommand =
   | { type: 'add-topic'; title?: string }
   /** Detach a branch into a new top-level section at the end: a free topic placed at `position` (§5 M7 切り離し). */
   | { type: 'detach'; nodeId: string; position?: TopicPlacement }
+  /**
+   * New last children of the node, with their own children, in one edit: the AI's result kept (§11.5). The items are
+   * written as `add-child` would write each (a heading one level down, a list item at the children's indent) and must
+   * read back as exactly these branches; `fitBranches` gives them a depth the node can take first.
+   */
+  | { type: 'add-children'; nodeId: string; items: readonly NewBranch[] }
   | MoveCommand;
 
 export type DropPosition = 'before' | 'after' | 'inside';
@@ -163,6 +170,35 @@ export function checkedMove(
   return { edits, selectionOffset: moved.titleFrom };
 }
 
+/** The preorder of `root` as `treeShape` writes it, with `added` (depths below `parent`) after `parent`'s last descendant. */
+function shapeWithAdded(root: MindNode, parent: MindNode, added: readonly WrittenBranch[]): string[] {
+  const shape: string[] = [];
+  const walk = (node: MindNode, depth: number): void => {
+    shape.push(`${depth}:${node.title}`);
+    for (const child of node.children) walk(child, depth + 1);
+    if (node.id === parent.id) for (const item of added) shape.push(`${depth + item.depth}:${item.title}`);
+  };
+  walk(root, 0);
+  return shape;
+}
+
+/**
+ * Accept an addition of branches (`add-children`) only when the reparsed tree is exactly the current tree with
+ * `added` as the last children of `parent`: the same titles and the same number of nodes everywhere, nothing
+ * before or after them read differently. The selection is the first added node, which starts at `insertedFrom`.
+ */
+export function checkedAddition(doc: MindDocument, edits: TextEdit[], parent: MindNode, added: readonly WrittenBranch[], insertedFrom: number): EditPlan {
+  const parsed = parseMarkdown(applyEdits(doc.source, edits), doc.root.title, undefined, doc.format);
+  const expected = shapeWithAdded(doc.root, parent, added);
+  const actual = treeShape(parsed.root);
+  const first = parsed.nodes.find(candidate => candidate.from === insertedFrom);
+  if (!first || first.title !== added[0]?.title || expected.length !== actual.length
+    || expected.some((entry, position) => entry !== actual[position])) {
+    throw new Error(doc.format === 'list' ? t().listUnsafe : t().headingsUnsafe);
+  }
+  return { edits, selectionOffset: first.titleFrom };
+}
+
 function branchNodes(doc: MindDocument, node: MindNode): MindNode[] {
   return doc.nodes.filter((candidate) => candidate.from >= node.from && candidate.from < node.to);
 }
@@ -234,6 +270,14 @@ export function swapSections(doc: MindDocument, node: MindNode, neighbor: MindNo
   }
 }
 
+/** The branches as `add-children` writes them in either format (`writtenBranches`), refused when there is none or a title spans lines. */
+export function branchesToWrite(items: readonly NewBranch[], form: 'heading' | 'item'): WrittenBranch[] {
+  const written = writtenBranches(items, form);
+  if (written.length === 0) throw new Error(t().nothingToAdd);
+  for (const item of written) assertSingleLine(item.title);
+  return written;
+}
+
 /** A node's text is one line: a break would start another block and change the tree. */
 export function assertSingleLine(title: string): void {
   if (/[\r\n\u2028\u2029]/u.test(title)) {
@@ -280,6 +324,21 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
     throw new Error(t().headingsUnsafe);
   }
   return { edits, selectionOffset: added.titleFrom };
+}
+
+/**
+ * The branches as headings after the node's section, each one level below its parent (§11.5): the top level a level
+ * below the node. A level past H6 is refused, as `add-child` refuses a sixth-level heading's child; the view gives the
+ * branches the depth the node can take (`fitBranches`) before it asks. Separated by blank lines, as `add` writes one.
+ */
+function addBranches(doc: MindDocument, node: MindNode, items: readonly NewBranch[]): EditPlan {
+  const written = branchesToWrite(items, 'heading');
+  if (written.some(item => node.level + item.depth > 6)) throw new Error(t().headingDepth);
+  const offset = node.to;
+  const prefix = paragraphGap(doc.source.slice(0, offset), doc.eol);
+  const suffix = offset < doc.source.length ? doc.eol + doc.eol : doc.source.endsWith('\n') ? doc.eol : '';
+  const body = written.map(item => `${'#'.repeat(node.level + item.depth)} ${item.title}`).join(doc.eol + doc.eol);
+  return checkedAddition(doc, [{ from: offset, to: offset, text: `${prefix}${body}${suffix}` }], node, written, offset + prefix.length);
 }
 
 /** Swap the node with its neighbour; the moved section adopts the neighbour's depth, so skipped depths stay siblings. */
@@ -443,6 +502,8 @@ function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<Edi
   const section = node.kind !== 'list' && node.parentId === 'root';
   switch (command.type) {
     case 'add-child': return node.kind === 'root';
+    // The root is refused (`planEdit`): the branches go under a section, never to the top level.
+    case 'add-children': return false;
     case 'add-sibling': case 'delete': case 'move-up': case 'move-down': return section;
     case 'move': case 'reparent': return section || (node.kind !== 'list' && getNode(doc, command.parentId).kind === 'root');
     case 'detach': return true;
@@ -453,6 +514,7 @@ function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<Edi
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true, command.title);
+    case 'add-children': return addBranches(doc, node, command.items);
     case 'delete': return deleteHeadingBranch(doc, node);
     case 'move-up': return move(doc, node, -1);
     case 'move-down': return move(doc, node, 1);

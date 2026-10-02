@@ -24,7 +24,7 @@ export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSetti
   const availability = deps.factory.availability();
   if (availability === 'not-entitled') return;
   if (availability === 'unsupported-platform' || availability === 'no-node') {
-    new Setting(containerEl).setName(text.aiEngine).setDesc(availability === 'no-node' ? text.aiNoNode : text.aiUnsupported);
+    new Setting(containerEl).setName(text.aiSetEngine).setDesc(availability === 'no-node' ? text.aiNoNode : text.aiUnsupported);
     return;
   }
   const host = deps.factory.host();
@@ -33,7 +33,7 @@ export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSetti
   const savePrefs = (change: Partial<AiPrefs>): void => {
     deps.prefs.save({ ...deps.prefs.current(), ...change }).catch(() => { new Notice(text.setSaveFailed); });
   };
-  new Setting(containerEl).setName(text.aiEngine).setDesc(text.aiEngineDesc).addDropdown(dropdown => {
+  new Setting(containerEl).setName(text.aiSetEngine).setDesc(text.aiEngineDesc).addDropdown(dropdown => {
     dropdown.addOptions({ claude: text.aiEngineClaude, codex: text.aiEngineCodex })
       .setValue(deps.prefs.current().engine)
       .onChange(value => { savePrefs({ engine: value === 'codex' ? 'codex' : 'claude' }); });

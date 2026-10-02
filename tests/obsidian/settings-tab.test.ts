@@ -6,6 +6,7 @@ import { Notice, PluginSettingTab as MockSettingTab, Setting, type PluginSetting
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, themeLabel } from '../../src/obsidian/settings-tab';
+import type { Entitlement } from '../../src/ai/license/entitlement';
 
 // The browser-harness stand-in for `obsidian`: Setting, DropdownComponent, TextComponent, ToggleComponent and PluginSettingTab on a real DOM.
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -14,6 +15,17 @@ beforeAll(() => { installObsidianDom(); });
 afterEach(() => { document.body.replaceChildren(); Notice.log.length = 0; });
 
 const NAMES = ['テーマ', '新規マップの既定レイアウト', '新規マップの作成先フォルダ', '左下に表示するレイアウト'];
+/** The map's four, then the AI section (src/obsidian/ai-settings.ts; tests/obsidian/ai-settings.test.ts covers it). */
+const ALL_NAMES = [...NAMES, 'AI 機能', 'ライセンスコード'];
+/** A device with no license: the AI section draws its heading and the license row only. */
+const FREE: Entitlement = {
+  load: () => Promise.resolve({ kind: 'unregistered' }),
+  state: () => ({ kind: 'unregistered' }),
+  onChange: () => () => undefined,
+  register: () => Promise.reject(new Error('not in these tests')),
+  refresh: () => Promise.resolve({ kind: 'unregistered' }),
+  dispose: () => undefined,
+};
 const ALL_LAYOUTS = [...LAYOUT_MODES];
 /** DEFAULT_SETTINGS.visibleLayouts: everything but the balanced map (LEV-257). */
 const DEFAULT_LAYOUTS = ['mindmap', 'timeline', 'hierarchy'];
@@ -31,7 +43,7 @@ function mount(initial: MappySettings = DEFAULT_SETTINGS, saving: (next: MappySe
     vault: { process: vi.fn(), modify: vi.fn(), create: vi.fn(), createFolder: vi.fn() },
     fileManager: { processFrontMatter: vi.fn() },
   };
-  const tab = new MappySettingTab(app as unknown as App, {} as Plugin, { current: () => settings, save });
+  const tab = new MappySettingTab(app as unknown as App, {} as Plugin, { current: () => settings, save }, FREE);
   document.body.append(tab.containerEl);
   tab.display();
   return { app, tab, save, settings: () => settings, ...controls(tab.containerEl) };
@@ -77,10 +89,10 @@ function locked(toggle: HTMLElement): boolean { return toggle.classList.contains
 function flush(): Promise<void> { return new Promise(resolve => setTimeout(resolve, 0)); }
 
 describe('MappySettingTab', () => {
-  it('renders exactly four settings, showing the stored values', () => {
+  it('renders the four map settings and the AI section, showing the stored values', () => {
     const { items, theme, layout, folder, toggles } = mount({ theme: 'dark', defaultLayout: 'timeline', newMapFolder: 'Maps', visibleLayouts: ['mindmap', 'balanced'] });
-    expect(items).toHaveLength(4);
-    expect(items.map(item => item.querySelector('.setting-item-name')?.textContent)).toEqual(NAMES);
+    expect(items).toHaveLength(6);
+    expect(items.map(item => item.querySelector('.setting-item-name')?.textContent)).toEqual(ALL_NAMES);
     expect(theme.value).toBe('dark');
     expect(layout.value).toBe('timeline');
     expect(folder.value).toBe('Maps');
@@ -132,12 +144,12 @@ describe('MappySettingTab', () => {
     expect(app.fileManager.processFrontMatter).not.toHaveBeenCalled();
   });
 
-  it('describes the same four settings declaratively for Obsidian 1.13+, layouts in LAYOUT_MODES order, the last row rendering itself', () => {
+  it('describes the same settings declaratively for Obsidian 1.13+, layouts in LAYOUT_MODES order, the last row rendering itself', () => {
     const { tab } = mount();
     const definitions = tab.getSettingDefinitions();
-    expect(definitions.map(definition => definition.name)).toEqual(NAMES);
-    expect(definitions.map(definition => definition.control?.key)).toEqual(['theme', 'defaultLayout', 'newMapFolder', undefined]);
-    expect(definitions.map(definition => definition.control?.type)).toEqual(['dropdown', 'dropdown', 'text', undefined]);
+    expect(definitions.map(definition => definition.name)).toEqual(ALL_NAMES);
+    expect(definitions.map(definition => definition.control?.key)).toEqual(['theme', 'defaultLayout', 'newMapFolder', undefined, undefined, undefined]);
+    expect(definitions.map(definition => definition.control?.type)).toEqual(['dropdown', 'dropdown', 'text', undefined, undefined, undefined]);
     const [theme, layout, folder, layouts] = definitions;
     expect(theme?.control?.type === 'dropdown' && Object.keys(theme.control.options)).toEqual([...MAP_THEMES]);
     expect(layout?.control?.type === 'dropdown' && Object.entries(layout.control.options)).toEqual(LAYOUT_MODES.map(mode => [mode, layoutLabel(mode)]));
@@ -148,21 +160,21 @@ describe('MappySettingTab', () => {
     expect(Array.from(tab.containerEl.querySelectorAll('.setting-item-name'), item => item.textContent)).toEqual(definitions.map(definition => definition.name));
   });
 
-  it('survives Obsidian 1.13+\'s addSettingTab → update() → render flow: four items stored, no save, no fallback to display()', () => {
+  it('survives Obsidian 1.13+\'s addSettingTab → update() → render flow: six items stored, no save, no fallback to display()', () => {
     const { tab, save } = mount();
     // The 1.8.7 types know nothing of the 1.13 members; the mock models them (tests/browser-harness/obsidian.ts).
     const runtime = tab as unknown as HarnessSettingTab;
     // update() is the base class's own method (app.js 1.14.2); a subclass member of that name would shadow it.
     runtime.update();
-    expect(runtime.settingItems).toHaveLength(4);
+    expect(runtime.settingItems).toHaveLength(6);
     expect(save).not.toHaveBeenCalled();
     // The declarative renderer replaces what display() drew: dropdowns and text through the bindings, the last row through its render().
     runtime.renderTab();
-    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(4);
+    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(6);
     // update() while the tab is open renders again; Obsidian tears the rows down first, and so does the mock.
     runtime.update();
     runtime.renderTab();
-    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(4);
+    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(6);
     expect(tab.containerEl.querySelectorAll('.mappy-setting-note')).toHaveLength(1);
     expect(tab.containerEl.querySelectorAll('.mappy-setting-layouts .checkbox-container')).toHaveLength(4);
     // Every other name SettingTab / PluginSettingTab own in app.js 1.14.2 (fields set in their constructors and the
@@ -231,7 +243,7 @@ describe('MappySettingTab', () => {
   it('re-renders from the current settings without duplicating items, and ignores a value the dropdown cannot hold', () => {
     const { tab, save } = mount({ theme: 'follow', defaultLayout: 'timeline', newMapFolder: '', visibleLayouts: ALL_LAYOUTS });
     tab.display();
-    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(4);
+    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(6);
     expect(tab.containerEl.querySelectorAll('.mappy-setting-layouts .checkbox-container')).toHaveLength(4);
     const [theme, layout] = Array.from(tab.containerEl.querySelectorAll<HTMLSelectElement>('select'));
     if (!theme || !layout) throw new Error('The re-rendered tab has no dropdowns');
@@ -373,7 +385,7 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
   });
 
   it('starts a row drawn before it is in the document with the stored values and locks', () => {
-    const tab = new MappySettingTab({} as App, {} as Plugin, { current: () => ({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' }), save: vi.fn() });
+    const tab = new MappySettingTab({} as App, {} as Plugin, { current: () => ({ ...DEFAULT_SETTINGS, defaultLayout: 'hierarchy' }), save: vi.fn() }, FREE);
     tab.display();
     expect(tab.containerEl.isConnected).toBe(false);
     const { toggles, note } = controls(tab.containerEl);

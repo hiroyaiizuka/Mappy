@@ -1,4 +1,5 @@
 import { MarkdownView, Notice, Plugin, TFile, getLanguage, type WorkspaceLeaf } from "obsidian";
+import { createEntitlement, type Entitlement } from "./ai/license/entitlement";
 import { setLanguage, t } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
@@ -24,16 +25,25 @@ export default class MappyPlugin extends Plugin {
   private router!: ViewRouter;
   private bridge!: ExcalidrawBridge;
   private settings: MappySettings = DEFAULT_SETTINGS;
+  /**
+   * The AI license (docs/architecture.md §11.6). The runner factory (LEV-270) and the view's AI button (LEV-271)
+   * read it once they are wired here (§11.8: whichever of the three merges last).
+   */
+  private entitlement!: Entitlement;
 
   async onload(): Promise<void> {
     // Before anything shows text: Japanese when Obsidian runs in Japanese, English otherwise (src/i18n).
     setLanguage(getLanguage());
     // Missing or old data falls back field by field, so an unset option behaves as before the settings existed.
     this.settings = normalizeSettings(await this.loadData());
+    // Starts as `checking`, which shows no AI entry; the stored token is verified offline, with no request at startup.
+    this.entitlement = createEntitlement();
+    this.register(() => { this.entitlement.dispose(); });
+    void this.entitlement.load();
     this.addSettingTab(new MappySettingTab(this.app, this, {
       current: () => this.settings,
       save: next => this.saveSettings(next),
-    }));
+    }, this.entitlement));
     const store = new DocumentStore(this.app);
     this.router = new ViewRouter({
       mapViewType: VIEW_TYPE,
