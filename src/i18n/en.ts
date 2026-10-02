@@ -106,6 +106,7 @@ export const en = {
   aiPathFound: (path: string) => `Leave empty to use the one found at ${path}. This setting stays on this device.`,
   aiPathMissing: (url: string) => `Not found in the usual places. Install it (${url}) or enter its full path. Mappy never installs it.`,
   aiPathInvalid: "No program at this path.",
+  aiPathNeedsNode: (path: string) => `Found at ${path}, but it needs Node.js, which wasn't found. Install Node.js or enter the tool's full path.`,
   aiFind: "Find",
   aiFindDesc: "Ask your login shell once.",
   aiFindNotFound: (tool: string) => `Your login shell didn't find ${tool}.`,

@@ -3,9 +3,10 @@
  * Electron (docs/architecture.md §11.3). Each run uses the person's own CLI login and so their subscription's usage:
  * the default set is small, and the larger sets run only when asked for.
  *
- * The runner is loaded as a plugin of its own (ai-runner-plugin.mjs, built here into the test vault) because Mappy's
- * `main.ts` does not wire it yet (§11.8); the code it runs is src/ai as it is. After every run the case looks with `ps`
- * for anything left in the run's process groups or naming its temporary directory, and checks the directory is gone.
+ * By default the runner is loaded as a plugin of its own (ai-runner-plugin.mjs, built here into the test vault), which
+ * observes the processes from inside; `--mappy` goes through Mappy itself as main.ts wires it (§11.8). The code is
+ * src/ai as it is either way. After every run the case looks with `ps` for anything left in the run's processes,
+ * their groups or naming its temporary directory, and checks the directory is gone.
  *
  * Runs (each a check; a run that fails its check fails the case):
  *   default   question to map first (the first entry point, 2026-10-02): claude and codex each answer a question with
@@ -24,8 +25,8 @@
  *                          by `npm run harness:prepare:ai-dev` (the development unlock makes the license active), its
  *                          `aiServices.createRunner()`, no probe plugin. Only the question runs; nothing else combines
  *
- * Usage: npm run harness:e2e:ai-runner -- [--question-only] [--ytdlp <path>] [--youtube <url>] [--repeat 5] [--long <url>]
- *          [--only claude|codex] [--no-default] [--json <out.json>]
+ * Usage: npm run harness:e2e:ai-runner -- [--mappy | --question-only] [--ytdlp <path>] [--youtube <url>] [--repeat 5]
+ *          [--long <url>] [--only claude|codex] [--no-default] [--json <out.json>]
  * A case in which no AI run was made fails (it would show nothing).
  * Needs MAPPY_E2E_PORT pointing at the test Obsidian (docs/harness.md 実機検証), macOS, and both CLIs logged in.
  */

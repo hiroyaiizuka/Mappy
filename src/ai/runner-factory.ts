@@ -3,18 +3,18 @@ import type { AiRunner } from './contract';
 import type { PromptLanguage } from './core/prompt';
 import { loadNode, type NodeHost } from './host/node-host';
 import { sweepStaleRuns } from './host/temp';
-import type { VaultMaterials } from './obsidian/material';
 import { createCliRunner } from './runner';
 import type { AiPrefs, RunnerPathsStore } from './settings';
 
 /**
  * The only caller of `loadNode()` (docs/architecture.md §11.1, §11.7). Nothing reaches Node until the license says
  * yes: `create()` and `host()` ask `isEntitled()` first and return null without loading anything when it is false
- * (the free state touches neither the CLI nor Node). The license is a plain `() => boolean` here; LEV-273's
- * `Entitlement` supplies it (`state().kind === 'active'`) when the pieces are wired in `main.ts`.
+ * (the free state touches neither the CLI nor Node). The license is a plain `() => boolean` here; `main.ts` passes
+ * LEV-273's `Entitlement` as `state().kind === 'active'`.
  *
- * Every run it made stops on `dispose()` (the plugin's unload) and on `pagehide` (Obsidian quitting or reloading):
- * a detached CLI outlives its parent unless it is stopped.
+ * Everything started through it stops on `dispose()` (the plugin's unload) and on `pagehide` (Obsidian quitting or
+ * reloading), the runs and the settings' 「探す」 alike: a detached process outlives its parent unless it is stopped.
+ * One run at a time (§11.3) is the input's `aiRunLock` (src/ui/ai/services.ts), shared by every view.
  */
 
 export type AiAvailability =
@@ -31,7 +31,6 @@ export interface RunnerFactoryOptions {
   isEntitled: () => boolean;
   prefs: () => AiPrefs;
   paths: RunnerPathsStore;
-  vault: VaultMaterials | null;
   language: () => PromptLanguage;
   /** Obsidian's `Platform` unless a test passes its own. */
   platform?: { isDesktopApp: boolean; isWin: boolean };
@@ -47,12 +46,9 @@ export interface RunnerFactory {
   create(): AiRunner | null;
   /** The Node surface for the settings' rows and 「探す」, under the same condition. */
   host(): NodeHost | null;
-  /** Whether a run is going (Mappy runs one at a time, §11.3: the UI disables the other AI buttons meanwhile). */
-  isRunning(): boolean;
-  onRunningChange(listener: (running: boolean) => void): () => void;
-  /** Fires when every run is stopped (`dispose`, `pagehide`): for work that is not a run, such as 「探す」. */
+  /** Fires when everything is stopped (`dispose`, `pagehide`): for work that is not a run, such as 「探す」. */
   stopSignal(): AbortSignal;
-  /** Stops every run and lets go of the window. */
+  /** Stops everything and lets go of the window. */
   dispose(): void;
 }
 
@@ -70,9 +66,7 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
     killNow = new AbortController();
     stopAll = new AbortController();
   };
-  let running = 0;
   let disposed = false;
-  const listeners = new Set<(running: boolean) => void>();
   const onPageHide = (): void => { stopEverything(); };
   let listening = false;
 
@@ -81,19 +75,15 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
     if (disposed || !options.isEntitled() || unsupported()) return null;
     if (loaded === undefined) {
       loaded = load(platform.isDesktopApp);
-      // Directories a run could not remove (Obsidian quit before the cleanup ran): swept once, when they are old.
-      if (loaded !== null) void sweepStaleRuns(loaded, Date.now()).catch(() => undefined);
+      if (loaded !== null) {
+        // From the moment Node can start anything (a run, or 「探す」 in the settings), quitting stops it.
+        target.addEventListener('pagehide', onPageHide);
+        listening = true;
+        // Directories a run could not remove (Obsidian quit before the cleanup ran): swept once, when they are old.
+        void sweepStaleRuns(loaded, Date.now()).catch(() => undefined);
+      }
     }
     return loaded;
-  };
-  const setRunning = (delta: number): void => {
-    const before = running > 0;
-    running += delta;
-    if (before === running > 0) return;
-    // A listener that throws (a button already gone) must not break the count or the run's result.
-    for (const listener of listeners) {
-      try { listener(running > 0); } catch { /* the display failed; the count stays right */ }
-    }
   };
 
   return {
@@ -106,8 +96,7 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
     create() {
       const node = host();
       if (node === null) return null;
-      if (!listening) { target.addEventListener('pagehide', onPageHide); listening = true; }
-      const runner = createCliRunner({ host: node, prefs: options.prefs, paths: () => options.paths.current(), vault: options.vault, language: options.language, killNow: () => killNow.signal });
+      const runner = createCliRunner({ host: node, prefs: options.prefs, paths: () => options.paths.current(), language: options.language, killNow: () => killNow.signal });
       return {
         async run(request, onProgress, signal) {
           // The license is asked again: a runner made while it was active must not start a CLI after it ended.
@@ -124,29 +113,21 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
           if (all.aborted) stopAllRuns();
           signal.addEventListener('abort', stopOwn);
           all.addEventListener('abort', stopAllRuns);
-          setRunning(1);
           try {
             return await runner.run(request, onProgress, controller.signal);
           } finally {
             signal.removeEventListener('abort', stopOwn);
             all.removeEventListener('abort', stopAllRuns);
-            setRunning(-1);
           }
         },
       };
     },
-    isRunning: () => running > 0,
     stopSignal: () => stopAll.signal,
-    onRunningChange(listener) {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
-    },
     dispose() {
       disposed = true;
       // The plugin unloading can be the first step of Obsidian quitting or reloading: no SIGKILL timer may be left to.
       stopEverything();
       if (listening) { target.removeEventListener('pagehide', onPageHide); listening = false; }
-      listeners.clear();
     },
   };
 }

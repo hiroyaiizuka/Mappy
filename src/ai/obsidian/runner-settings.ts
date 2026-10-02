@@ -2,7 +2,8 @@ import { Notice, Setting } from 'obsidian';
 import { t } from '../../i18n';
 import type { MapSettingDefinition } from '../../obsidian/settings-tab';
 import { INSTALL_URLS, type Tool } from '../core/launch';
-import { findWithLoginShell, locate } from '../host/locate';
+import { findWithLoginShell, locate, locateClaude, locateCodex } from '../host/locate';
+import type { NodeHost } from '../host/node-host';
 import type { RunnerFactory } from '../runner-factory';
 import type { AiPrefs, AiPrefsStore, RunnerPathsStore } from '../settings';
 
@@ -14,6 +15,23 @@ import type { AiPrefs, AiPrefsStore, RunnerPathsStore } from '../settings';
  */
 
 const TOOLS: readonly Tool[] = ['claude', 'codex', 'yt-dlp'];
+
+/**
+ * What a run would find: the engines through the same lookup a run uses, so an npm install whose script needs a node
+ * that is nowhere says so here, and not only when a run fails.
+ */
+async function describeFound(host: NodeHost, tool: Tool, configured: string): Promise<string> {
+  const text = t();
+  if (tool === 'yt-dlp') {
+    const found = await locate(host, tool, configured);
+    return found === null ? text.aiPathMissing(INSTALL_URLS[tool]) : configured ? '' : text.aiPathFound(found);
+  }
+  const located = tool === 'claude' ? await locateClaude(host, configured) : await locateCodex(host, configured);
+  const path = configured || await locate(host, tool);
+  if (located === null || path === null) return text.aiPathMissing(INSTALL_URLS[tool]);
+  if (located === 'no-node') return text.aiPathNeedsNode(path);
+  return configured ? '' : text.aiPathFound(path);
+}
 
 export interface RunnerSettingsDeps {
   factory: RunnerFactory;
@@ -67,9 +85,9 @@ export function runnerSettingDefinitions(deps: RunnerSettingsDeps): MapSettingDe
       const describe = async (): Promise<void> => {
         const ask = ++asked;
         const configured = deps.paths.current()[tool];
-        const desc = configured
-          ? (configured.startsWith('/') && await host.isExecutable(configured) ? '' : text.aiPathInvalid)
-          : await locate(host, tool).then(found => found === null ? text.aiPathMissing(INSTALL_URLS[tool]) : text.aiPathFound(found));
+        const desc = configured && !(configured.startsWith('/') && await host.isExecutable(configured))
+          ? text.aiPathInvalid
+          : await describeFound(host, tool, configured);
         if (ask === asked) setting.setDesc(desc);
       };
       const save = (value: string): void => {

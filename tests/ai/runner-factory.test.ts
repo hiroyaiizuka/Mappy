@@ -22,7 +22,7 @@ function factory(entitled: () => boolean, overrides: Partial<RunnerFactoryOption
   const target = new EventTarget();
   const made = createRunnerFactory({
     isEntitled: entitled, prefs: () => DEFAULT_AI_PREFS, paths: { current: () => EMPTY_PATHS, save: () => true },
-    vault: null, language: () => 'ja', platform: { isDesktopApp: true, isWin: false }, load, target, ...overrides,
+    language: () => 'ja', platform: { isDesktopApp: true, isWin: false }, load, target, ...overrides,
   });
   return { made, load, target };
 }
@@ -83,17 +83,12 @@ describe('createRunnerFactory', () => {
 
   it('stops every run on dispose (the plugin unloading)', async () => {
     const { host, made, runner } = hanging();
-    const running = vi.fn();
-    made.onRunningChange(running);
     const done = runner.run(request, () => undefined, new AbortController().signal);
     await started(host);
-    expect(made.isRunning()).toBe(true);
     made.dispose();
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
     // The unload can be the start of quitting: killed at once, not after a timer that may not survive.
     expect(host.kills.map(kill => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
-    expect(made.isRunning()).toBe(false);
-    expect(running.mock.calls).toEqual([[true]]);
   });
 
   it('stops every run on pagehide (Obsidian quitting or reloading)', async () => {
@@ -173,16 +168,12 @@ describe('createRunnerFactory', () => {
     expect(made.create()).toBeNull();
   });
 
-  it('keeps the count and the result when a running-state listener throws', async () => {
-    const host = new FakeHost({
-      executables: ['/Users/user/.local/share/mise/shims/claude'],
-      onSpawn: child => { queueMicrotask(() => { child.close(1); }); },
-    });
-    const { made } = factory(() => true, {}, host);
-    made.onRunningChange(() => { throw new Error('button gone'); });
-    const result = await made.create()?.run(request, () => undefined, new AbortController().signal);
-    expect(result?.kind).toBe('failed');
-    expect(made.isRunning()).toBe(false);
+  it('listens for pagehide as soon as Node is loaded, so 「探す」 stops on quit even before any run', () => {
+    const { made, target } = factory(() => true);
+    made.host();
+    const signal = made.stopSignal();
+    target.dispatchEvent(new Event('pagehide'));
+    expect(signal.aborted).toBe(true);
   });
 
   it('lets go of pagehide on dispose', () => {

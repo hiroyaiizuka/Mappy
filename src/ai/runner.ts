@@ -8,23 +8,22 @@ import { youtubeVideoUrl } from './core/youtube';
 import { runCli, type CliEnd } from './host/cli-process';
 import { locate, locateClaude, locateCodex } from './host/locate';
 import type { NodeHost } from './host/node-host';
+import { RUN_DIR_PREFIX } from './host/temp';
 import { fetchTranscript } from './host/yt-dlp';
-import type { VaultMaterials } from './obsidian/material';
 import type { AiPrefs, RunnerPaths } from './settings';
 
 /**
  * The real `AiRunner` (docs/architecture.md §11.3, §11.4): it prepares the materials, starts the chosen CLI read-only
  * in an empty temporary directory with the instruction on standard input, turns its event stream into progress, and
- * reads the final answer leniently. A material whose `text` is empty is fetched here from its `label` (a YouTube URL,
- * or a vault path for a PDF or a note); one with text is used as it is.
+ * reads the final answer leniently. A YouTube material whose `text` is empty is fetched here from its `label` (the
+ * URL) through yt-dlp. PDFs and notes come read: the input reads an attachment through the plugin's
+ * `readAttachment` (LEV-271), so their text is used as it is, an empty note included.
  */
 
 export interface CliRunnerDeps {
   host: NodeHost;
   prefs: () => AiPrefs;
   paths: () => RunnerPaths;
-  /** Null where there is no vault to read (the materials then have to come with their text). */
-  vault: VaultMaterials | null;
   /** The UI's language: the instruction's, the answer's, and the one a subtitle track is preferred in. */
   language: () => PromptLanguage;
   /** Fires when Mappy is going away: every process is killed at once (see `CliSpec.killNow`). */
@@ -35,50 +34,53 @@ function failed(reason: AiFailure, detail: string): AiResult {
   return { kind: 'failed', reason, detail };
 }
 
-type Prepared = { kind: 'ok'; materials: AiMaterial[] } | { kind: 'stop'; result: AiResult };
+/** The materials ready to send and how many characters the prompt carries (its own text and theirs). */
+type Prepared = { kind: 'ok'; materials: AiMaterial[]; chars: number } | { kind: 'stop'; result: AiResult };
 
-/** A material's text from its source: yt-dlp for a video, the vault for a PDF or a note. */
-async function fetchMaterial(
+/** A video's subtitles through yt-dlp. */
+async function fetchVideo(
   deps: CliRunnerDeps, material: AiMaterial, onProgress: (progress: AiProgress) => void, signal: AbortSignal,
 ): Promise<MaterialText> {
   onProgress({ stage: 'material', label: material.label });
-  if (material.kind === 'youtube') {
-    const url = youtubeVideoUrl(material.label);
-    if (url === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
-    const ytdlp = await locate(deps.host, 'yt-dlp', deps.paths()['yt-dlp']);
-    if (ytdlp === null) return { kind: 'failed', reason: 'ytdlp-missing', detail: '' };
-    return fetchTranscript(deps.host, ytdlp, url, deps.language(), signal, deps.killNow?.());
-  }
-  if (deps.vault === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
-  return material.kind === 'pdf' ? deps.vault.pdf(material.label, signal) : deps.vault.note(material.label);
+  const url = youtubeVideoUrl(material.label);
+  if (url === null) return { kind: 'failed', reason: 'material-failed', detail: material.label };
+  const ytdlp = await locate(deps.host, 'yt-dlp', deps.paths()['yt-dlp']);
+  if (ytdlp === null) return { kind: 'failed', reason: 'ytdlp-missing', detail: '' };
+  return fetchTranscript(deps.host, ytdlp, url, deps.language(), signal, deps.killNow?.());
 }
 
+/**
+ * One running total, from the selected node's body and the request (they go into the same prompt) and each material
+ * as it comes: the limit and the timeouts measure the same thing, and a run over the limit fetches nothing more.
+ */
 async function prepareMaterials(
   deps: CliRunnerDeps, materials: readonly AiMaterial[], onProgress: (progress: AiProgress) => void, signal: AbortSignal,
   ownText: number,
 ): Promise<Prepared> {
   const ready: AiMaterial[] = [];
+  let chars = ownText;
+  const over = (): Prepared | null => chars > LIMITS.materialMaxChars
+    // Cutting the text would make "a summary of the whole" untrue: stop and say how large it is.
+    ? { kind: 'stop', result: failed('material-too-large', `${chars} / ${LIMITS.materialMaxChars}`) }
+    : null;
+  const early = over();
+  if (early) return early;
   for (const material of materials) {
     if (signal.aborted) return { kind: 'stop', result: { kind: 'cancelled' } };
-    if (material.text !== '') ready.push(material);
-    else {
-      const fetched = await fetchMaterial(deps, material, onProgress, signal);
+    let text = material.text;
+    if (material.kind === 'youtube' && text === '') {
+      const fetched = await fetchVideo(deps, material, onProgress, signal);
       if (fetched.kind !== 'ok') return { kind: 'stop', result: fetched.kind === 'cancelled' ? { kind: 'cancelled' } : failed(fetched.reason, fetched.detail) };
-      ready.push({ ...material, text: fetched.text });
+      text = fetched.text;
     }
-    // Checked after each one, so a run already over the limit does not go on to fetch the rest.
-    // The selected node's body and the request go into the same prompt: they count too.
-    const size = ownText + ready.reduce((sum, item) => sum + item.text.length, 0);
-    if (size > LIMITS.materialMaxChars) {
-      // Cutting the text would make "a summary of the whole" untrue: stop and say how large it is.
-      return { kind: 'stop', result: failed('material-too-large', `${size} / ${LIMITS.materialMaxChars}`) };
-    }
+    ready.push({ ...material, text });
+    chars += text.length;
+    const stop = over();
+    if (stop) return stop;
   }
-  if (ownText > LIMITS.materialMaxChars) return { kind: 'stop', result: failed('material-too-large', `${ownText} / ${LIMITS.materialMaxChars}`) };
-  return { kind: 'ok', materials: ready };
+  return { kind: 'ok', materials: ready, chars };
 }
 
-/** The invocation, or why there is none: the engine is not found, or it needs a node that is not found. */
 async function invocationFor(deps: CliRunnerDeps, request: AiRequest, cwd: string): Promise<Invocation | 'missing' | 'no-node'> {
   const prefs = deps.prefs();
   const paths = deps.paths();
@@ -138,11 +140,10 @@ export function createCliRunner(deps: CliRunnerDeps): AiRunner {
 
 async function runOnce(deps: CliRunnerDeps, request: AiRequest, onProgress: (progress: AiProgress) => void, signal: AbortSignal): Promise<AiResult> {
   if (signal.aborted) return { kind: 'cancelled' };
-  const ownText = request.context.body.length + request.instruction.length;
-  const prepared = await prepareMaterials(deps, request.materials, onProgress, signal, ownText);
+  const prepared = await prepareMaterials(deps, request.materials, onProgress, signal, request.context.body.length + request.instruction.length);
   if (prepared.kind === 'stop') return prepared.result;
   const prompt = buildPrompt({ ...request, materials: prepared.materials }, deps.language());
-  const cwd = await deps.host.mkdtemp('mappy-ai-');
+  const cwd = await deps.host.mkdtemp(RUN_DIR_PREFIX);
   try {
     const invocation = await invocationFor(deps, request, cwd);
     if (invocation === 'missing') return failed('engine-missing', request.engine);
@@ -151,7 +152,7 @@ async function runOnce(deps: CliRunnerDeps, request: AiRequest, onProgress: (pro
     if (signal.aborted) return { kind: 'cancelled' };
     onProgress({ stage: 'starting' });
     const reader = request.engine === 'claude' ? claudeReader() : codexReader();
-    const materialChars = ownText + prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
+    const materialChars = prepared.chars;
     const end = await runCli(deps.host, {
       file: invocation.file, args: invocation.args, cwd, env: launchEnv(deps.host.env(), invocation), stdin: prompt,
       idleMs: idleTimeoutMs(materialChars), totalMs: totalTimeoutMs(materialChars),

@@ -18,7 +18,7 @@ function mount(entitled: boolean, host = new FakeHost({ executables: ['/opt/home
   const load = vi.fn(() => host);
   const factory = createRunnerFactory({
     isEntitled: () => entitled, prefs: () => prefs, paths: { current: () => paths, save: next => { paths = next; return true; } },
-    vault: null, language: () => 'ja', platform, load, target: new EventTarget(),
+    language: () => 'ja', platform, load, target: new EventTarget(),
   });
   const prefsSave = vi.fn((next: AiPrefs) => { prefs = next; return Promise.resolve(); });
   const container = document.createElement('div');
@@ -60,6 +60,14 @@ describe('renderRunnerSettings (architecture.md §11.3, §11.7)', () => {
     expect(container.textContent).toContain('https://github.com/yt-dlp/yt-dlp#installation');
     // Describing is checking files only: nothing was started.
     expect(host.children).toEqual([]);
+  });
+
+  it('says when an npm install is found but the node it needs is not', async () => {
+    const host = new FakeHost({ executables: ['/opt/homebrew/bin/claude'], links: { '/opt/homebrew/bin/claude': '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js' } });
+    const { container } = mount(true, host);
+    await flush();
+    await flush();
+    expect(container.textContent).toContain('/opt/homebrew/bin/claude にありますが、動かすのに要る Node.js が見つかりません。');
   });
 
   it('saves the engine and a model to data.json and a path to this device', async () => {

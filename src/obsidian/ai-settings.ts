@@ -63,12 +63,22 @@ export class AiSettingsSection {
      * and touches no Node to say so (§11.7). Read each time the tab is drawn.
      */
     private readonly runnerRows: () => MapSettingDefinition[] = () => [],
+    /** Draws the tab again: the runner rows come and go when the license becomes active or stops being so. */
+    private readonly redraw: () => void = () => undefined,
   ) {
+    let active = entitlement.state().kind === 'active';
     entitlement.onChange(() => {
       for (const [sync, row] of this.rows) {
         if (row.element.isConnected) row.shown = true;
         else if (row.shown) { this.rows.delete(sync); continue; }
         sync();
+      }
+      // The license rows first (they are up to date even where no redraw happens, the tab hidden), then the tab again
+      // when the license crossed `active`: LEV-270's rows come or go with it.
+      const now = entitlement.state().kind === 'active';
+      if (now !== active) {
+        active = now;
+        this.redraw();
       }
     });
   }

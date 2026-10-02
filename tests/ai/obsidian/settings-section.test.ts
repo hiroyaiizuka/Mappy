@@ -17,6 +17,23 @@ describe('AiSettingsSection with the runner rows', () => {
     expect(rows).toHaveBeenCalledTimes(2);
   });
 
+  it('draws the tab again when the license becomes active or stops being so, and only then', () => {
+    let kind = 'unregistered';
+    let notify = (): void => undefined;
+    const changing = { state: () => ({ kind }), onChange: (listener: () => void) => { notify = listener; return () => undefined; } } as unknown as Entitlement;
+    const redraw = vi.fn();
+    new AiSettingsSection(changing, () => [], redraw);
+    kind = 'checking';
+    notify();
+    expect(redraw).not.toHaveBeenCalled();
+    kind = 'active';
+    notify();
+    expect(redraw).toHaveBeenCalledTimes(1);
+    kind = 'expired';
+    notify();
+    expect(redraw).toHaveBeenCalledTimes(2);
+  });
+
   it('has no runner rows when none are given (the license section alone)', () => {
     expect(new AiSettingsSection(entitlement).definitions().map(definition => definition.name)).toEqual(['AI 機能', 'ライセンスコード']);
   });

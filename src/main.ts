@@ -7,7 +7,7 @@ import { createAiServices } from "./ai/obsidian/services";
 import { createRunnerFactory, type RunnerFactory } from "./ai/runner-factory";
 import { localPathsStore, readAiPrefs, type AiPrefs, type AiPrefsStore } from "./ai/settings";
 import type { AiServices } from "./ui/ai/services";
-import { setLanguage, t } from "./i18n";
+import { setLanguage, t, textLanguage } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
 import {
@@ -63,8 +63,7 @@ export default class MappyPlugin extends Plugin {
       isEntitled: () => this.entitlement.state().kind === "active",
       prefs: () => this.aiPrefs,
       paths,
-      vault: materials,
-      language: () => getLanguage() === "ja" ? "ja" : "en",
+      language: textLanguage,
     });
     this.register(() => { this.runnerFactory.dispose(); });
     this.aiServices = createAiServices({ entitlement: this.entitlement, factory: this.runnerFactory, prefs: aiPrefsStore, vault: materials });

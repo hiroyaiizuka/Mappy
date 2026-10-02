@@ -25,6 +25,11 @@ export function setLanguage(language: string): void {
  * The locale to format dates and numbers in: Japanese with the Japanese table, the OS's otherwise (English is the
  * table for every other language, so the OS's locale is the closer guess there).
  */
+/** The language the text is in, `ja` or `en`: the AI is asked to answer in it (docs/architecture.md §11.4). */
+export function textLanguage(): "ja" | "en" {
+  return current === ja ? "ja" : "en";
+}
+
 export function textLocale(): string | undefined {
   return current === ja ? "ja-JP" : undefined;
 }

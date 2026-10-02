@@ -4,6 +4,7 @@ import {
 } from '../core/launch';
 import { runCli } from './cli-process';
 import type { NodeHost } from './node-host';
+import { RUN_DIR_PREFIX } from './temp';
 
 /**
  * Finding the executables (docs/architecture.md §11.3). A GUI app does not inherit the shell's PATH (a name alone is
@@ -84,7 +85,7 @@ export async function locateCodex(host: NodeHost, configured: string): Promise<L
 export async function findWithLoginShell(host: NodeHost, tool: Tool, signal: AbortSignal): Promise<string | null> {
   const env = host.env();
   const shell = env.SHELL && env.SHELL.startsWith('/') ? env.SHELL : '/bin/zsh';
-  const cwd = await host.mkdtemp('mappy-ai-');
+  const cwd = await host.mkdtemp(RUN_DIR_PREFIX);
   try {
     const lines: string[] = [];
     const end = await runCli(host, {

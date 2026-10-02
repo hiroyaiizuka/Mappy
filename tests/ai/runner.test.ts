@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiMaterial, AiProgress, AiRequest } from '../../src/ai/contract';
-import type { VaultMaterials } from '../../src/ai/obsidian/material';
 import { createCliRunner } from '../../src/ai/runner';
 import { DEFAULT_AI_PREFS, EMPTY_PATHS, type RunnerPaths } from '../../src/ai/settings';
 import { FakeHost, type FakeChild, type FakeHostOptions } from './fake-host';
@@ -32,10 +31,10 @@ function replaying(name: string, code = 0, ytdlp?: (child: FakeChild) => void): 
   };
 }
 
-function runner(options: FakeHostOptions, paths: Partial<RunnerPaths> = {}, vault: VaultMaterials | null = null) {
+function runner(options: FakeHostOptions, paths: Partial<RunnerPaths> = {}) {
   const host = new FakeHost(options);
   const run = createCliRunner({
-    host, prefs: () => DEFAULT_AI_PREFS, paths: () => ({ ...EMPTY_PATHS, ...paths }), vault, language: () => 'ja',
+    host, prefs: () => DEFAULT_AI_PREFS, paths: () => ({ ...EMPTY_PATHS, ...paths }), language: () => 'ja',
   });
   const progress: AiProgress[] = [];
   return { host, progress, run: (input: AiRequest, signal = new AbortController().signal) => run.run(input, step => { progress.push(step); }, signal) };
@@ -114,7 +113,7 @@ describe('the real runner with Claude', () => {
 
   it('keeps reading when the progress handler throws (a view already gone), so the answer is not lost', async () => {
     const host = new FakeHost({ executables: [`${SHIMS}/claude`], onSpawn: replaying('claude-partial.jsonl') });
-    const run = createCliRunner({ host, prefs: () => DEFAULT_AI_PREFS, paths: () => EMPTY_PATHS, vault: null, language: () => 'ja' });
+    const run = createCliRunner({ host, prefs: () => DEFAULT_AI_PREFS, paths: () => EMPTY_PATHS, language: () => 'ja' });
     const result = await run.run(request, () => { throw new Error('detached view'); }, new AbortController().signal);
     expect(result.kind).toBe('outline');
   });
@@ -245,19 +244,15 @@ describe('materials', () => {
     await expect(run({ ...request, materials: [{ kind: 'youtube', label: VIDEO, text: '' }] })).resolves.toMatchObject({ kind: 'failed', reason: 'no-subtitles' });
   });
 
-  it('reads PDFs and notes through the vault, and stops before starting anything over 200,000 characters', async () => {
-    const pdf = vi.fn<VaultMaterials["pdf"]>(() => Promise.resolve({ kind: 'ok' as const, text: 'p'.repeat(150_000) }));
-    const note = vi.fn<VaultMaterials["note"]>(() => Promise.resolve({ kind: 'ok' as const, text: 'n'.repeat(60_000) }));
-    const vault: VaultMaterials = { pdf, note };
-    const { host, run } = runner({ executables: [`${SHIMS}/claude`] }, {}, vault);
-    const result = await run({ ...request, materials: [{ kind: 'pdf', label: 'a.pdf', text: '' }, { kind: 'note', label: 'b.md', text: '' }] });
+  it('stops before starting anything over 200,000 characters, fetching nothing after the limit is passed', async () => {
+    let fetched = 0;
+    const { host, run } = runner({ executables: [`${SHIMS}/claude`, '/opt/homebrew/bin/yt-dlp'], onSpawn: () => { fetched += 1; } });
+    const result = await run({ ...request, materials: [{ kind: 'pdf', label: 'a.pdf', text: 'p'.repeat(150_000) }, { kind: 'note', label: 'b.md', text: 'n'.repeat(60_000) }] });
     expect(result).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '210006 / 200000' });
-    // Over the limit after the first: the rest is not fetched.
-    const first = await run({ ...request, materials: [{ kind: 'note', label: 'b.md', text: 'x'.repeat(200_001) }, { kind: 'pdf', label: 'c.pdf', text: '' }] });
+    // Over the limit after the first: the video after it is not fetched (yt-dlp is not started).
+    const first = await run({ ...request, materials: [{ kind: 'note', label: 'b.md', text: 'x'.repeat(200_001) }, { kind: 'youtube', label: VIDEO, text: '' }] });
     expect(first).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '200007 / 200000' });
-    expect(pdf).toHaveBeenCalledTimes(1);
-    expect(pdf).toHaveBeenCalledWith('a.pdf', expect.anything());
-    expect(note).toHaveBeenCalledWith('b.md');
+    expect(fetched).toBe(0);
     expect(host.children).toEqual([]);
   });
 
@@ -267,15 +262,13 @@ describe('materials', () => {
     expect(host.children).toEqual([]);
   });
 
-  it('passes a material that already has its text as it is, and reports the vault’s failure', async () => {
-    const vault: VaultMaterials = {
-      pdf: () => Promise.resolve({ kind: 'failed' as const, reason: 'no-pdf-text' as const, detail: 'scan.pdf' }),
-      note: () => Promise.resolve({ kind: 'ok' as const, text: '' }),
-    };
-    const ready = runner({ executables: [`${SHIMS}/claude`], onSpawn: replaying('claude-partial.jsonl') }, {}, vault);
-    await ready.run({ ...request, materials: [{ kind: 'note', label: 'given.md', text: 'given text' }] });
-    expect(ready.host.children[0]?.stdinText.join('')).toContain('## 添付: given.md\n\ngiven text');
-    const scanned = runner({ executables: [`${SHIMS}/claude`] }, {}, vault);
-    await expect(scanned.run({ ...request, materials: [{ kind: 'pdf', label: 'scan.pdf', text: '' }] })).resolves.toEqual({ kind: 'failed', reason: 'no-pdf-text', detail: 'scan.pdf' });
+  it('uses a PDF or a note as the input read it, an empty note included (it is not read a second time)', async () => {
+    const ready = runner({ executables: [`${SHIMS}/claude`], onSpawn: replaying('claude-partial.jsonl') });
+    await ready.run({ ...request, materials: [{ kind: 'note', label: 'given.md', text: 'given text' }, { kind: 'note', label: 'empty.md', text: '' }] });
+    const prompt = ready.host.children[0]?.stdinText.join('') ?? '';
+    expect(prompt).toContain('## 添付: given.md\n\ngiven text');
+    expect(prompt).toContain('## 添付: empty.md\n\n');
+    expect(ready.progress.some(step => step.stage === 'material')).toBe(false);
+    expect(ready.host.children).toHaveLength(1);
   });
 });

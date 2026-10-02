@@ -21,7 +21,14 @@ export function createAiServices(options: {
 }): AiServices {
   const { entitlement, factory, prefs, vault } = options;
   return {
-    state: () => entitlement.state(),
+    // The view shows the AI for an active license. Where nothing could run (Windows, no Node) that would open an input
+    // whose run is refused for no reason it could name: the view is told it is not available instead.
+    state: () => {
+      const state = entitlement.state();
+      if (state.kind !== 'active') return state;
+      const availability = factory.availability();
+      return availability === 'available' ? state : { kind: 'invalid', reason: availability };
+    },
     onChange: listener => entitlement.onChange(() => { listener(); }),
     refresh: () => entitlement.refresh(),
     createRunner: () => factory.create(),

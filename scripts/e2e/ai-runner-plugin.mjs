@@ -1,8 +1,9 @@
 /**
  * The AI runner (src/ai, LEV-270) alone as a small plugin for the test vault, built by ai-runner.mjs. It is not Mappy:
- * `main.ts` does not wire the runner yet (LEV-273 brings the license, the third ticket to merge connects them,
- * docs/architecture.md §11.8), so this plugin stands in for that wiring with the license taken as granted. Everything
- * it runs is the real code: `loadNode()`, the factory, the CLI runner, yt-dlp, pdf.js through `loadPdfJs()`.
+ * Mappy wires the runner in `main.ts` (§11.8) and ai-runner.mjs `--mappy` drives that. This plugin takes the license as
+ * granted and observes the processes from inside (pids, process groups, output gaps), which the wired plugin does not
+ * expose, so the cancel, leftover and timing checks run here. Everything it runs is the real code: `loadNode()`, the
+ * factory, the CLI runner, yt-dlp, pdf.js through `loadPdfJs()`.
  *
  * What it adds is only observation: the host is wrapped to note each spawned process (its pid, which leads its
  * process group, and its temporary directory) and when its standard output arrives, so the case can look for
@@ -37,10 +38,17 @@ export default class AiRunnerProbe extends Plugin {
       isEntitled: () => true,
       prefs: () => prefs,
       paths: localPathsStore(globalThis.localStorage),
-      vault: vaultMaterials(this.app, file => this.app.vault.cachedRead(file)),
       language: () => 'ja',
       load: watch,
     });
+    // A PDF or a note is read before the run, as the input reads an attachment (`readAttachment`, LEV-271).
+    const vault = vaultMaterials(this.app, file => this.app.vault.cachedRead(file));
+    const readFirst = async (materials, signal) => Promise.all(materials.map(async material => {
+      if (material.text !== '' || material.kind === 'youtube') return material;
+      const read = material.kind === 'pdf' ? await vault.pdf(material.label, signal) : await vault.note(material.label);
+      if (read.kind !== 'ok') throw new Error(`${material.label}: ${read.kind === 'failed' ? `${read.reason} ${read.detail}` : 'cancelled'}`);
+      return { ...material, text: read.text };
+    }));
     const results = {};
     globalThis.__mappyAiProbe = {
       availability: () => factory.availability(),
@@ -64,7 +72,7 @@ export default class AiRunnerProbe extends Plugin {
           progress.push({ ms: Date.now() - started, ...step });
           if (cancelAfterStartMs && step.stage === 'starting' && !armed) { armed = true; setTimeout(() => { controller.abort(); }, cancelAfterStartMs); }
         };
-        runner.run(request, onProgress, controller.signal).then(result => {
+        readFirst(request.materials, controller.signal).then(materials => runner.run({ ...request, materials }, onProgress, controller.signal)).then(result => {
           const mine = spawned.slice(from);
           const gaps = mine.map(entry => {
             const times = [entry.at, ...entry.chunks.map(([time]) => time)];

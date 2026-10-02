@@ -4,6 +4,7 @@ import { vttToTranscript } from '../core/vtt';
 import { pickSubtitle, type VideoInfo } from '../core/youtube';
 import { runCli, type CliEnd } from './cli-process';
 import type { NodeHost } from './node-host';
+import { RUN_DIR_PREFIX } from './temp';
 
 /**
  * A YouTube video's subtitles through the yt-dlp the person installed (docs/architecture.md §11.2). Mappy never
@@ -29,7 +30,7 @@ export async function fetchTranscript(
 ): Promise<MaterialText> {
   let cwd: string | null = null;
   try {
-    cwd = await host.mkdtemp('mappy-ai-');
+    cwd = await host.mkdtemp(RUN_DIR_PREFIX);
     // yt-dlp looks for helpers on PATH (a JS runtime such as deno for YouTube), which a GUI app's PATH lacks.
     const env = launchEnv(host.env(), { pathDirs: [dirname(ytdlp), ...helperDirs(host.homedir())], env: {} });
     const spec = { file: ytdlp, cwd, env, stdin: '', idleMs: LIMITS.ytdlpMs, totalMs: LIMITS.ytdlpMs, ...(killNow ? { killNow } : {}) };

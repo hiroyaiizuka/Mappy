@@ -99,7 +99,7 @@ export class MappySettingTab extends PluginSettingTab {
     aiRunnerRows?: () => MapSettingDefinition[],
   ) {
     super(app, plugin);
-    this.aiSection = new AiSettingsSection(entitlement, aiRunnerRows);
+    this.aiSection = new AiSettingsSection(entitlement, aiRunnerRows, () => { this.redrawShown(); });
   }
 
   /** Obsidian 1.13+: the declarative path (rendering and settings search). The map's four settings, then the AI section. */
@@ -131,6 +131,22 @@ export class MappySettingTab extends PluginSettingTab {
       }
     };
     return saved.then(sync, (error: unknown) => { sync(); throw error; });
+  }
+
+  /**
+   * The tab drawn again while it is shown (the AI rows changed with the license). Obsidian 1.13+ rebuilds the
+   * declarative rows on its `update()`; before 1.13 `display()` builds them. Not shown, nothing to do: the next
+   * opening draws them from the current state.
+   */
+  private redrawShown(): void {
+    if (!this.containerEl.isConnected) return;
+    const declarative = this as unknown as { update?: () => void; renderTab?: () => void };
+    if (typeof declarative.update === 'function' && typeof declarative.renderTab === 'function') {
+      declarative.update();
+      declarative.renderTab();
+    } else {
+      this.display();
+    }
   }
 
   /** Obsidian before 1.13: the same settings, built by hand. `hide` is a base name, so the previous row's note is let go here. */
