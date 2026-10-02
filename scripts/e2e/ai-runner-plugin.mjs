@@ -74,7 +74,7 @@ export default class AiRunnerProbe extends Plugin {
               ms: (entry.closed?.at ?? Date.now()) - entry.at, closed: entry.closed ?? null,
             };
           });
-          results[id] = { result, progress, ms: Date.now() - started, processes: mine.map(entry => ({ pid: entry.pid, cwd: entry.cwd, file: entry.file })), gaps };
+          results[id] = { result, progress, ms: Date.now() - started, processes: mine.map(entry => ({ pid: entry.pid, cwd: entry.cwd, file: entry.file, args: entry.args })), gaps };
         }, error => { results[id] = { error: String(error) }; });
       },
     };

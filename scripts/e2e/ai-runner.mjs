@@ -12,15 +12,18 @@
  *             no material and no web search (an outline, no material step, only the CLI started); then each is
  *             cancelled mid-run (cancelled, nothing left); a Japanese and an English PDF of the vault are read through
  *             pdf.js and summarized
- *   --question-only        only the question-to-map runs (no yt-dlp, no pdf.js)
+ *   --question-only        only the question-to-map runs (no yt-dlp, no pdf.js); refused with --no-default, --repeat,
+ *                          --long or --youtube, which would start material runs or no run at all
  *   --youtube <url>        one summary of a video through yt-dlp (needs --ytdlp or yt-dlp in a known place)
  *   --repeat <n>           the same material n times per engine; counts the shapes that break the contract
  *   --material <youtube|pdf>  what --repeat uses (default pdf; youtube needs --youtube)
  *   --long <url>           a long video (an hour or more) once per engine: time to the first output, longest silence, total
  *   --only <claude|codex>  one engine
- *   --no-default           leave out the default set (the question runs too)
+ *   --no-default           leave out the whole default set, the question runs included
  *
- * Usage: npm run harness:e2e:ai-runner -- [--ytdlp <path>] [--youtube <url>] [--repeat 5] [--long <url>] [--json <out.json>]
+ * Usage: npm run harness:e2e:ai-runner -- [--question-only] [--ytdlp <path>] [--youtube <url>] [--repeat 5] [--long <url>]
+ *          [--only claude|codex] [--no-default] [--json <out.json>]
+ * A case in which no AI run was made fails (it would show nothing).
  * Needs MAPPY_E2E_PORT pointing at the test Obsidian (docs/harness.md 実機検証), macOS, and both CLIs logged in.
  */
 import { execFileSync } from 'node:child_process';
@@ -123,7 +126,8 @@ async function run(name, request, { cancelAfterStartMs = 0, timeoutMs = 16 * 60_
   check(kept.length === 0, `${name}: temporary directories left: ${kept.join(', ')}`);
   const { result } = outcome;
   return {
-    ms: outcome.ms, shape: shape(result), started: outcome.processes.map(process => process.file.split('/').pop()), stages: [...new Set(outcome.progress.map(step => step.stage))], gaps: outcome.gaps, left, kept,
+    ms: outcome.ms, shape: shape(result), started: outcome.processes.map(process => process.file.split('/').pop()),
+    argv: outcome.processes.map(process => process.args), stages: [...new Set(outcome.progress.map(step => step.stage))], gaps: outcome.gaps, left, kept,
     text: result.kind === 'outline' ? result.raw : result.kind === 'failed' ? `${result.reason}: ${result.detail}`.slice(0, 600) : result.reason ?? null,
   };
 }
@@ -151,33 +155,51 @@ try {
   });
   check(record.steps['install the probe plugin']?.availability === 'available', 'the runner is not available in the test Obsidian');
   const questionOnly = flag('--question-only');
+  const runDefault = !flag('--no-default');
+  const runRest = runDefault && !questionOnly;
+  if (questionOnly && (!runDefault || repeat > 0 || long || youtube)) {
+    throw new Error('--question-only runs the question alone: leave out --no-default, --repeat, --long and --youtube');
+  }
   if (!questionOnly) await step('the PDFs in the vault', () => ensurePdfs());
 
   // Question to map, the entry point shown first (2026-10-02): the person's question alone, no material, no web
-  // search. It must not depend on yt-dlp or pdf.js: no material step, and the CLI is the only process started.
-  if (!flag('--no-default')) for (const engine of engines) {
+  // search, so it must not depend on yt-dlp or pdf.js. The request's shape is provisional: the question as the root
+  // node's title and as the request, with no ancestors. LEV-271 wires the real entry and may send another shape.
+  // What is checked: the one process started is the engine (claude's `-p`, codex's `exec`), it was given no web tool
+  // (claude `--tools ""`, codex without `--search`), and no search or fetch was reported.
+  if (runDefault) for (const engine of engines) {
     const question = await step(`${engine}: question to map`, () => run(`${engine}-question`, {
-      ...base, engine, template: 'free', instruction: 'リモートワークで生産性を上げるには？', webSearch: false,
-      context: { ancestors: ['質問'], title: 'リモートワークで生産性を上げるには？', body: '' }, materials: [],
+      ...base, engine, template: 'free', instruction: 'リモートワークで生産性を上げるには？',
+      context: { ancestors: [], title: 'リモートワークで生産性を上げるには？', body: '' },
     }));
     check(question?.shape?.kind === 'outline', `${engine}: the question did not give an outline (${question?.text})`);
-    check(!question?.stages?.includes('material'), `${engine}: the question reported a material step`);
-    // One process, and not yt-dlp (the CLI may run as `node codex.js`, so the name is not checked).
-    check(question?.started?.length === 1 && !question.started.includes('yt-dlp'), `${engine}: the question started ${JSON.stringify(question?.started)}, not only the CLI`);
+    const [argv = [], ...others] = question?.argv ?? [];
+    check(others.length === 0, `${engine}: the question started ${question?.argv?.length ?? 0} processes, not the CLI alone`);
+    const isEngine = engine === 'claude' ? argv.includes('-p') : argv.includes('exec');
+    check(isEngine, `${engine}: the process started was not the engine (${JSON.stringify(question?.started)})`);
+    const tools = argv.indexOf('--tools');
+    const webOff = engine === 'claude' ? tools >= 0 && argv[tools + 1] === '' : !argv.includes('--search');
+    check(webOff, `${engine}: the question was started with web search (${JSON.stringify(argv)})`);
+    check(!question?.stages?.some(stage => stage === 'searching' || stage === 'fetching'), `${engine}: the question reported a web search or fetch`);
   }
 
   // The rest of the default set; --no-default leaves it out (to spend the runs on --repeat or --long only).
-  if (!flag('--no-default') && !questionOnly) for (const engine of engines) {
+  if (runRest) for (const engine of engines) {
+    // A selected node and the brainstorm template: the context path and a purpose other than the question's.
+    const small = await step(`${engine}: brainstorm from a node`, () => run(`${engine}-small`, {
+      ...base, engine, template: 'brainstorm', instruction: 'マインドマップを使うと何がよいか、観点を挙げて', context: { ancestors: ['AI runner'], title: 'マインドマップ', body: '' },
+    }));
+    check(small?.shape?.kind === 'outline', `${engine}: the brainstorm did not give an outline (${small?.text})`);
     const cancel = await step(`${engine}: cancelled mid-run`, () => run(`${engine}-cancel`, { ...base, engine, materials: [{ kind: 'pdf', label: PDF_EN, text: '' }] }, { cancelAfterStartMs: 2_000 }));
     check(cancel?.shape?.kind === 'cancelled', `${engine}: the cancelled run reported ${cancel?.shape?.kind}`);
     // The point is stopping a running CLI and its group: a cancel that came before the spawn would pass trivially.
     check((cancel?.started?.length ?? 0) > 0, `${engine}: the cancelled run started no process`);
   }
-  if (!flag('--no-default') && !questionOnly) for (const [engine, pdf] of [[engines[0], PDF_JA], [engines[engines.length - 1], PDF_EN]]) {
+  if (runRest) for (const [engine, pdf] of [[engines[0], PDF_JA], [engines[engines.length - 1], PDF_EN]]) {
     const read = await step(`${engine}: summary of ${pdf}`, () => run(`${engine}-pdf`, { ...base, engine, materials: [{ kind: 'pdf', label: pdf, text: '' }] }));
     check(read?.shape?.kind === 'outline', `${engine}: ${pdf} did not give an outline (${read?.text})`);
   }
-  if (youtube && !flag('--no-default') && !questionOnly) {
+  if (youtube && runRest) {
     const video = await step(`${engines[0]}: summary of ${youtube}`, () => run(`${engines[0]}-youtube`, { ...base, engine: engines[0], materials: materialFor('youtube') }));
     check(video?.shape?.kind === 'outline', `the video did not give an outline (${video?.text})`);
     check(video?.stages?.includes('material'), 'the video run did not report the material stage');
@@ -213,4 +235,6 @@ try {
     await connection.evaluate(`app.plugins.disablePlugin(${JSON.stringify(PLUGIN)})`).catch(() => undefined);
   }
 }
+// A case that started no AI run has shown nothing: it must not be recorded as PASS.
+if (serial === 0) record.failures.push('no AI run was made (check the flags)');
 process.exit(await finish(record, value('--json')));
