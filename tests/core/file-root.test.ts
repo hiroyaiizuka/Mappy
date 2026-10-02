@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { applyEdits, planEdit, type EditCommand } from '../../src/core/commands';
 import { parseMarkdown, projectMap, type MindDocument } from '../../src/core/markdown';
 import { readTopicPositions } from '../../src/core/topics';
+import { t } from '../../src/i18n';
 
 /**
  * LEV-301（本人の報告 2026-10-02）: 見出しの無いノートの仮の根（ファイル名）。Tab は根の右に「メイントピック」をつなぎ
@@ -108,10 +109,14 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     expect(run(parse(''), { type: 'rename', nodeId: 'root', title: '一行目\n二行目' }).source).toBe('## 一行目<br>二行目');
   });
 
+  // Code review of LEV-301 (2nd): the refusals say what went wrong (they said 「リスト構造を安全に変更できません」 before).
   it('refuses a name the heading cannot hold as it is, rather than writing another title', () => {
-    // `## 名前 #` reads as `名前`: the closing sequence is not part of the heading's text.
-    expect(() => planEdit(parse(''), { type: 'rename', nodeId: 'root', title: '名前 #' })).toThrow();
-    expect(() => planEdit(parse('', '名前 #'), { type: 'add-child', nodeId: 'root', title: 'メイントピック' })).toThrow();
+    // `## 名前 #` reads as `名前`: the closing sequence is not part of the heading's text. A rename says so as any heading's does.
+    expect(() => planEdit(parse(''), { type: 'rename', nodeId: 'root', title: '名前 #' })).toThrow(t().nameChangesHeading);
+    // Tab on such a file name points at the way out: name the root first. A lone `%%` would hide the items after it.
+    expect(() => planEdit(parse('', '名前 #'), { type: 'add-child', nodeId: 'root', title: 'メイントピック' })).toThrow(t().fileNameNotHeading);
+    expect(() => planEdit(parse('- a\n', 'memo %% draft'), { type: 'add-child', nodeId: 'root', title: 'メイントピック' })).toThrow(t().fileNameNotHeading);
+    expect(run(parse('- a\n', 'memo %% draft'), { type: 'rename', nodeId: 'root', title: 'memo' }).source).toBe('## memo\n\n- a\n');
   });
 
   it('moves a topic position whose key the new body root takes, in the same edit set', () => {
@@ -123,11 +128,12 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     expect(readTopicPositions(written).get('X (3)')).toEqual({ mindmap: { x: 2, y: 2 } });
   });
 
-  it('leaves Enter, Delete and moves on the file-name root refused, as before', () => {
+  it('leaves Enter, Delete and moves on the file-name root refused, as before, with a reason that names the rename too', () => {
     const doc = parse('- a\n');
     for (const command of [
       { type: 'add-sibling', nodeId: 'root' }, { type: 'delete', nodeId: 'root' }, { type: 'move-up', nodeId: 'root' },
-    ] as const) expect(() => planEdit(doc, command)).toThrow();
+    ] as const) expect(() => planEdit(doc, command)).toThrow(t().rootAddsChildOnly);
+    expect(t().rootAddsChildOnly).toBe('ルートでは子ノードの追加と名前の変更だけを行えます。');
   });
 
   // A control: it passes with the fix reverted too, and pins that the fix stays on the file-name root.

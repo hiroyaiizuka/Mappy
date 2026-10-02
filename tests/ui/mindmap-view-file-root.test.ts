@@ -26,6 +26,7 @@ import { closeOpenViews } from '../mocks/open-views';
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await closeOpenViews();
   document.body.replaceChildren();
   Notice.log.length = 0;
@@ -253,6 +254,73 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     await mounted.settle();
     expect(mounted.source()).toBe(outside);
     expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent).toBe(t().nodeGone);
+  });
+
+  // Code review of LEV-301 (2nd): the window losing the OS focus saves the draft in place (LEV-216) and keeps it open. The
+  // save turns the file name into a heading, so the draft must follow that heading: the Enter, or more typing, on coming back.
+  describe('ウィンドウのフォーカスが外れる (LEV-216)', () => {
+    async function leave(): Promise<{ mounted: MountedMapView; input: HTMLTextAreaElement; windowFocus: { mockReturnValue(value: boolean): unknown } }> {
+      const mounted = await mountMapView(PATH, `${FM}- a\n`);
+      mounted.key(mounted.select(FILE), 'F2');
+      await mounted.settle();
+      const input = type(mounted, '新しい名前');
+      const windowFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+      input.dispatchEvent(new FocusEvent('blur'));
+      await mounted.settle();
+      return { mounted, input, windowFocus };
+    }
+
+    it('saves the name as the root and keeps the draft; the Enter on coming back closes it without a refusal', async () => {
+      const { mounted, input, windowFocus } = await leave();
+      expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n`);
+      expect(mounted.editor()).toBe(input);
+      windowFocus.mockReturnValue(true);
+      mounted.key(input, 'Enter');
+      await mounted.settle();
+      expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent ?? '').toBe('');
+      expect(mounted.editor()).toBeNull();
+      expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n`);
+      expect(selectedTitle(mounted)).toBe('新しい名前');
+    });
+
+    it('takes what is typed after coming back, and Tab then adds「メイントピック」under the root', async () => {
+      const { mounted, input, windowFocus } = await leave();
+      windowFocus.mockReturnValue(true);
+      type(mounted, '書き足した名前');
+      mounted.key(input, 'Tab');
+      await mounted.settle();
+      expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent ?? '').toBe('');
+      expect(mounted.editor()?.value).toBe(t().mainTopicTitle);
+      mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
+      await mounted.settle();
+      expect(mounted.source()).toBe(`${FM}\n## 書き足した名前\n\n- a\n- ${t().mainTopicTitle}\n`);
+    });
+
+    // A control: it passes with this round's view fix reverted too, since the redraw selects the body root once the draft's node is gone.
+    it('keeps the named root selected when the draft is then dismissed with Escape', async () => {
+      const { mounted, input, windowFocus } = await leave();
+      windowFocus.mockReturnValue(true);
+      mounted.key(input, 'Escape');
+      await mounted.settle();
+      expect(mounted.editor()).toBeNull();
+      expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n`);
+      expect(selectedTitle(mounted)).toBe('新しい名前');
+    });
+  });
+
+  // Code review of LEV-301 (2nd): a command for the root while its draft is open (the menu's 子を追加, a called map) runs
+  // after the draft's save, on the heading that save wrote — not on the parse root behind it, which made a free topic.
+  it('下書き中の「子を追加」: the draft is written first and the item hangs under the named root', async () => {
+    const mounted = await mountMapView(PATH, `${FM}- a\n`);
+    mounted.key(mounted.select(FILE), 'F2');
+    await mounted.settle();
+    type(mounted, '新しい名前');
+    await (mounted.view as unknown as { execute(command: unknown): Promise<void> }).execute({ type: 'add-child', nodeId: 'root' });
+    await mounted.settle();
+    expect(mounted.editor()?.value).toBe(t().mainTopicTitle);
+    mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n- ${t().mainTopicTitle}\n`);
   });
 
   it('複数ビュー: the other view of the note shows the file name as the written root, with the new item under it', async () => {

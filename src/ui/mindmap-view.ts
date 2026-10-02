@@ -56,6 +56,17 @@ function isProvisional(command: EditCommand): command is Extract<EditCommand, { 
 }
 
 /** What a draft edits: the node's title and body as one string (a title never holds a newline), compared before a kept draft is retried. */
+/**
+ * `command` as the map meant it on `document`: the file-name root it was given for, once a heading has taken that root's
+ * place (the root's own draft, saved before the command — LEV-301), is that heading, the map's body root now. Elsewhere the
+ * parse root behind a heading is not on the map, and a command there would write a free topic of its own.
+ */
+function onShownRoot(document: MindDocument, command: EditCommand): EditCommand {
+  if (!("nodeId" in command) || command.nodeId !== "root" || standsForFileName(document)) return command;
+  const body = projectMap(document).root;
+  return body.kind === "root" ? command : { ...command, nodeId: body.id };
+}
+
 function draftFingerprint(document: MindDocument, node: MindNode): string {
   return `${node.title}\n${nodeBody(document, node)}`;
 }
@@ -1404,14 +1415,18 @@ export class MindmapView extends FileView {
     this.knownCalled = new Set([...trees.calls.sources.keys(), ...Array.from(this.knownCalled).filter(kept)]);
   }
 
-  /** The trees on the map as `adopt` made them: the body root (`root`) and the free topics with the calls grafted in, and the projection. */
-  /** The heading a save of the file-name root's draft wrote at `offset`, or the file name the map still shows (LEV-301). */
-  private renamedFileRoot(offset: number | null): MindNode | undefined {
+  /**
+   * The node a draft opened on the file-name root is on now (LEV-301): the heading its save wrote, which the draft follows
+   * (`followNamedRoot`), or the file name while the map still shows it.
+   */
+  private draftedRoot(id: string): MindNode | undefined {
     const document = this.document;
     if (!document) return undefined;
-    return nodeAt(document, offset) ?? (standsForFileName(document) ? document.root : undefined);
+    if (id !== "root") return document.nodes.find(item => item.id === id);
+    return standsForFileName(document) ? document.root : undefined;
   }
 
+  /** The trees on the map as `adopt` made them: the body root (`root`) and the free topics with the calls grafted in, and the projection. */
   private projection(): { root: MindNode; topics: MindNode[]; calls: ShownTrees["calls"] } | undefined {
     const projected = this.projected;
     if (!projected || projected.document !== this.document) return undefined;
@@ -1741,7 +1756,7 @@ export class MindmapView extends FileView {
     }
     const before = this.shownState();
     let planned: ReturnType<MindmapView["planCommand"]>;
-    try { planned = this.planCommand(document, command); } catch (error) { throw refused(error); }
+    try { planned = this.planCommand(document, onShownRoot(document, command)); } catch (error) { throw refused(error); }
     let landed = false;
     let write: CarriedWrite;
     try {
@@ -1774,7 +1789,7 @@ export class MindmapView extends FileView {
       after = parseMarkdown(applyEdits(rename.current.source, rename.plan.edits), file.basename, rename.current, undefined, rename.plan.edits);
     }
     // The planner `execute` writes with, provisional name included: the check and the write plan the same edit.
-    this.planCommand(after, command);
+    this.planCommand(after, onShownRoot(after, command));
   }
 
   /**
@@ -2288,6 +2303,7 @@ export class MindmapView extends FileView {
         const { current, plan, pending } = this.planTitle(file, draft, text);
         // The file-name root left as the file name (or emptied) is not an edit: the note is not written (LEV-301).
         if (plan.edits.length > 0) await this.commit(current.source, plan.edits, file);
+        if (draft.nodeId === "root") this.followNamedRoot(draft, plan.selectionOffset);
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
@@ -2308,7 +2324,7 @@ export class MindmapView extends FileView {
         this.draw();
         // A frontmatter edit in the same set shifts every offset, so the renamed node is found by the plan's selection.
         // The file-name root, once named, is the heading the save wrote (LEV-301); left unnamed, it is the file name still.
-        const current = node.kind === "root" ? this.renamedFileRoot(cancelled ? null : renamedOffset)
+        const current = node.kind === "root" ? this.draftedRoot(draft.nodeId)
           : this.document?.nodes.find(item => item.id === node.id)
             ?? (!cancelled && this.document ? nodeAt(this.document, renamedOffset) : undefined)
             ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
@@ -2393,6 +2409,19 @@ export class MindmapView extends FileView {
    * title is unique, so a node that vanished under one is refused here, and an external edit to the node
    * being drafted is refused rather than overwritten. A node that only moved takes the draft.
    */
+  /**
+   * The draft on the file-name root goes on with the heading its save wrote (LEV-301): a save in place keeps the draft open
+   * (LEV-216), and its next save renames that heading, as a draft on any node does. The heading is new, so no id carries
+   * over to it; it is found where the plan put the selection.
+   */
+  private followNamedRoot(draft: DraftBase, offset: number | null): void {
+    const document = this.document;
+    const named = document ? nodeAt(document, offset) : undefined;
+    if (!document || !named) return;
+    draft.nodeId = named.id;
+    draft.value = draftFingerprint(document, named);
+  }
+
   private draftTarget(file: TFile, draft: DraftBase): { document: MindDocument; node: MindNode } {
     const document = this.document;
     if (file !== this.file || !document) throw new Error(t().noteChanged);

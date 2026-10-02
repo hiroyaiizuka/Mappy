@@ -140,7 +140,7 @@ try {
     check(tab?.opened?.value === MAIN && tab.opened.all, `${shape.id}/Tab: the draft opened as ${JSON.stringify(tab?.opened)}, not 「${MAIN}」 selected`);
     check(tab?.written?.messages?.length === 0, `${shape.id}/Tab: showed ${JSON.stringify(tab?.written?.messages)}`);
     check(tab?.written?.source === shape.tab, `${shape.id}/Tab: wrote ${JSON.stringify(tab?.written?.source)}, not ${JSON.stringify(shape.tab)}`);
-    check(tab?.written?.root === ROOT && tab.written.labels.includes(MAIN), `${shape.id}/Tab: the root reads ${JSON.stringify(tab?.written?.root)} with ${JSON.stringify(tab?.written?.labels)}`);
+    check(tab?.written?.root === ROOT && tab.written.labels?.includes(MAIN), `${shape.id}/Tab: the root reads ${JSON.stringify(tab?.written?.root)} with ${JSON.stringify(tab?.written?.labels)}`);
     check(tab?.undone?.undoSent && tab.undone.source === shape.source, `${shape.id}/Tab: ⌘Z left ${JSON.stringify(tab?.undone)}`);
 
     // A control: a sibling of the file name was refused before the fix and still is; nothing is written.

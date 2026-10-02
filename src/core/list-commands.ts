@@ -452,23 +452,24 @@ export function standsForFileName(doc: MindDocument): boolean {
  * lines after it; a last line of only spaces, with no break after it, stays after the heading as it is), so the items and the text before the first H2 become its own, as a new map's `## 中心トピック` holds
  * them. With `child`, a last item under it is written in the same edit set, as Tab on a new map's root writes one:
  * the root stays in the middle and the item joins it on the right, and one Undo takes both back. Every node keeps its
- * title and only the items that hung on the file name change hands, or the edit is refused.
+ * title and only the items that hung on the file name change hands, or the edit is refused with `refusal`: a title the
+ * heading would read otherwise (`名前 #` reads `名前`; a lone `%%` hides the rest of the note) is one.
  */
-export function planFileRoot(doc: MindDocument, title: string, child?: string): EditPlan {
+export function planFileRoot(doc: MindDocument, title: string, refusal: string, child?: string): EditPlan {
   assertSingleLine(title);
   const body = doc.source.slice(doc.root.bodyFrom);
   const offset = doc.root.bodyFrom + body.length - body.replace(/^(?:[ \t]*\r?\n)*/u, '').length;
   const insert = insertion(doc.source, offset, `## ${title}`, doc.eol, true);
   const heading: TextEdit = { from: offset, to: offset, text: insert.text };
-  const named = validate(doc, [heading], doc.nodes.length + 1, offset + insert.prefix.length, { kind: 'atx', level: 2, title: title.trim() });
   const after = parseMarkdown(applyEdits(doc.source, [heading]), doc.root.title, doc, 'list', [heading]);
   const root = projectMap(after).root;
   const owned = doc.root.children.filter(node => node.kind === 'list').map(node => node.id);
-  if (root.titleFrom !== named.selectionOffset || root.children.map(node => node.id).join() !== owned.join()
+  if (after.nodes.length !== doc.nodes.length + 1 || root.kind !== 'atx' || root.level !== 2 || root.title !== title.trim()
+    || root.from !== offset + insert.prefix.length || root.children.map(node => node.id).join() !== owned.join()
     || doc.nodes.some(node => after.nodes.find(candidate => candidate.id === node.id)?.title !== node.title)) {
-    throw new Error(t().listUnsafe);
+    throw new Error(refusal);
   }
-  if (child === undefined) return named;
+  if (child === undefined) return { edits: [heading], selectionOffset: root.titleFrom };
   const added = add(after, root, false, child);
   // The item's edits are planned on the note with the heading in it: carried back over the heading, one that starts where it does joins it.
   const edits = [heading];
