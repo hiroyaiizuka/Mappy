@@ -42,6 +42,8 @@ export interface RunnerFactoryOptions {
 
 export interface RunnerFactory {
   availability(): AiAvailability;
+  /** Whether this app could run AI at all (not Windows, the desktop app), known without the license or Node. */
+  platformSupported(): boolean;
   /** The runner, or null unless `availability()` is `available`. */
   create(): AiRunner | null;
   /** The Node surface for the settings' rows and 「探す」, under the same condition. */
@@ -92,6 +94,7 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       if (unsupported()) return 'unsupported-platform';
       return host() === null ? 'no-node' : 'available';
     },
+    platformSupported: () => !unsupported(),
     host,
     create() {
       const node = host();

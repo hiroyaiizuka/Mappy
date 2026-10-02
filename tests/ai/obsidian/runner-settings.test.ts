@@ -67,7 +67,7 @@ describe('renderRunnerSettings (architecture.md §11.3, §11.7)', () => {
     const { container } = mount(true, host);
     await flush();
     await flush();
-    expect(container.textContent).toContain('/opt/homebrew/bin/claude にありますが、動かすのに要る Node.js が見つかりません。');
+    expect(container.textContent).toContain('/opt/homebrew/bin/claude にありますが、動かすのに要る Node.js がよくある場所に見つかりません。');
   });
 
   it('saves the engine and a model to data.json and a path to this device', async () => {

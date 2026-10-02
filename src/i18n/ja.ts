@@ -90,7 +90,7 @@ export const ja: Messages = {
   aiPathFound: (path: string) => `空欄なら ${path} を使います。この設定はこの端末にだけ保存します。`,
   aiPathMissing: (url: string) => `よくある場所に見つかりません。導入する（${url}）か、絶対パスを入れてください。Mappy は導入しません。`,
   aiPathInvalid: "このパスにプログラムがありません。",
-  aiPathNeedsNode: (path: string) => `${path} にありますが、動かすのに要る Node.js が見つかりません。Node.js を入れるか、絶対パスを入れてください。`,
+  aiPathNeedsNode: (path: string) => `${path} にありますが、動かすのに要る Node.js がよくある場所に見つかりません。Node.js を入れる（Homebrew など）か、Node.js の要らない導入の絶対パスをこの欄に入れてください。`,
   aiFind: "探す",
   aiFindDesc: "ログインシェルに 1 回だけ問い合わせます。",
   aiFindNotFound: (tool: string) => `ログインシェルでも ${tool} が見つかりませんでした。`,

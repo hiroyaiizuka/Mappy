@@ -10,10 +10,11 @@ import { AiAttachmentError } from '../../../src/ui/ai/services';
 
 /** The AI's services as main.ts wires them (docs/architecture.md §11.8): the license, the runner, the attachments. */
 
-function services(vault: Partial<VaultMaterials> = {}, created: AiRunner | null = null, availability = 'available') {
-  const entitlement = { state: () => ({ kind: 'active', expiresAt: 0 }), onChange: vi.fn(() => () => undefined), refresh: vi.fn() } as unknown as Entitlement;
+function services(vault: Partial<VaultMaterials> = {}, created: AiRunner | null = null, availability = 'available', kind = 'active') {
+  const state = kind === 'active' ? { kind, expiresAt: 0 } : { kind };
+  const entitlement = { state: () => state, onChange: vi.fn(() => () => undefined), refresh: vi.fn(() => Promise.resolve(state)) } as unknown as Entitlement;
   const create = vi.fn(() => created);
-  const factory = { create, availability: () => availability } as unknown as RunnerFactory;
+  const factory = { create, availability: () => availability, platformSupported: () => availability !== 'unsupported-platform' } as unknown as RunnerFactory;
   const materials: VaultMaterials = {
     pdf: vault.pdf ?? (() => Promise.resolve({ kind: 'ok' as const, text: 'pdf text' })),
     note: vault.note ?? (() => Promise.resolve({ kind: 'ok' as const, text: 'note text' })),
@@ -49,6 +50,16 @@ describe('createAiServices', () => {
     expect(services().made.state()).toEqual({ kind: 'active', expiresAt: 0 });
     expect(services({}, null, 'unsupported-platform').made.state()).toEqual({ kind: 'invalid', reason: 'unsupported-platform' });
     expect(services({}, null, 'no-node').made.state()).toEqual({ kind: 'invalid', reason: 'no-node' });
+  });
+
+  it('shows no AI on an app that cannot run it while the license is expired or unreachable too, and a refresh says the same', async () => {
+    for (const kind of ['expired', 'unreachable']) {
+      const { made } = services({}, null, 'unsupported-platform', kind);
+      expect(made.state()).toEqual({ kind: 'invalid', reason: 'unsupported-platform' });
+      await expect(made.refresh()).resolves.toEqual({ kind: 'invalid', reason: 'unsupported-platform' });
+    }
+    // Where the app could run it, an expired license is left to be refreshed.
+    expect(services({}, null, 'available', 'expired').made.state()).toEqual({ kind: 'expired' });
   });
 
   it('offers no fake engine outside a development-unlock build', () => {

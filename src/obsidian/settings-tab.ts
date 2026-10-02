@@ -140,10 +140,11 @@ export class MappySettingTab extends PluginSettingTab {
    */
   private redrawShown(): void {
     if (!this.containerEl.isConnected) return;
-    const declarative = this as unknown as { update?: () => void; renderTab?: () => void };
-    if (typeof declarative.update === 'function' && typeof declarative.renderTab === 'function') {
+    // Obsidian 1.14.4's `update()` takes the definitions again and redraws the page itself (its asar, read in the
+    // review of PR #159): a `renderTab()` after it would draw every row, and run each row's checks, twice.
+    const declarative = this as unknown as { update?: () => void };
+    if (typeof declarative.update === 'function') {
       declarative.update();
-      declarative.renderTab();
     } else {
       this.display();
     }

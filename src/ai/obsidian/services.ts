@@ -3,7 +3,7 @@ import type { AiMaterial } from '../contract';
 import type { Entitlement } from '../license/entitlement';
 import type { RunnerFactory } from '../runner-factory';
 import type { AiPrefsStore } from '../settings';
-import { AiAttachmentError, type AiServices } from '../../ui/ai/services';
+import { AiAttachmentError, type AiEntitlementView, type AiServices } from '../../ui/ai/services';
 import { FakeRunner } from '../../ui/ai/fake-runner';
 import type { VaultMaterials } from './material';
 
@@ -20,17 +20,24 @@ export function createAiServices(options: {
   vault: VaultMaterials;
 }): AiServices {
   const { entitlement, factory, prefs, vault } = options;
+  /**
+   * The license as the view should take it on this app. The view shows the AI for `active`, `expired` and
+   * `unreachable`; where nothing could run that would open an input whose run is refused. So on Windows or outside the
+   * desktop app (known without Node) every one of them reads `invalid` with `unsupported-platform`, and an active
+   * license where Node is not to be had (known once Node is asked for, which only `active` allows) reads `no-node`.
+   * A refresh goes through the same, so the button never opens the input there.
+   */
+  const onThisApp = (state: AiEntitlementView): AiEntitlementView => {
+    const shown = state.kind === 'active' || state.kind === 'expired' || state.kind === 'unreachable';
+    if (!shown) return state;
+    if (!factory.platformSupported()) return { kind: 'invalid', reason: 'unsupported-platform' };
+    if (state.kind === 'active' && factory.availability() === 'no-node') return { kind: 'invalid', reason: 'no-node' };
+    return state;
+  };
   return {
-    // The view shows the AI for an active license. Where nothing could run (Windows, no Node) that would open an input
-    // whose run is refused for no reason it could name: the view is told it is not available instead.
-    state: () => {
-      const state = entitlement.state();
-      if (state.kind !== 'active') return state;
-      const availability = factory.availability();
-      return availability === 'available' ? state : { kind: 'invalid', reason: availability };
-    },
+    state: () => onThisApp(entitlement.state()),
     onChange: listener => entitlement.onChange(() => { listener(); }),
-    refresh: () => entitlement.refresh(),
+    refresh: async () => onThisApp(await entitlement.refresh()),
     createRunner: () => factory.create(),
     defaultEngine: () => prefs.current().engine,
     readAttachment: async (file: TFile, signal: AbortSignal): Promise<AiMaterial> => {

@@ -5,8 +5,10 @@
  *
  * By default the runner is loaded as a plugin of its own (ai-runner-plugin.mjs, built here into the test vault), which
  * observes the processes from inside; `--mappy` goes through Mappy itself as main.ts wires it (§11.8). The code is
- * src/ai as it is either way. After every run the case looks with `ps` for anything left in the run's processes,
- * their groups or naming its temporary directory, and checks the directory is gone.
+ * src/ai as it is either way. With the probe, after every run the case looks with `ps` for anything left in the run's
+ * processes, their groups or naming its temporary directory, and checks the directory is gone. With `--mappy` the
+ * processes are not seen from inside: it looks for the command lines only the runner makes and for a `mappy-ai-*`
+ * directory that was not there before the run.
  *
  * Runs (each a check; a run that fails its check fails the case):
  *   default   question to map first (the first entry point, 2026-10-02): claude and codex each answer a question with
@@ -148,9 +150,11 @@ const materialFor = kind => kind === 'youtube'
   : [{ kind: 'pdf', label: PDF_JA, text: '' }];
 
 /**
- * `--mappy`: the wired plugin, not the probe. The run goes Mappy's entitlement → runner factory → runner, as a press of
- * the AI button does; the processes are not observed from inside, so what is left is looked for by the command lines
- * only the runner makes (claude's `--restricted --safe-mode`, codex's `exec --ignore-user-config`).
+ * `--mappy`: the wired plugin, not the probe. The run goes through Mappy's services as main.ts makes them: the
+ * entitlement, the runner factory and the runner (the input panel, its run lock and `readAttachment` are not in this
+ * path; the question has no attachment). The processes are not observed from inside, so what is left is looked for by
+ * the command lines only the runner makes (claude's `--restricted --safe-mode`, codex's `exec --ignore-user-config`)
+ * and by the `mappy-ai-*` directories in the app's temporary directory, before and after.
  */
 async function runThroughMappy() {
   if (flag('--question-only') || flag('--no-default') || youtube || long || repeat > 0) {
@@ -176,7 +180,12 @@ async function runThroughMappy() {
       context: { ancestors: [], title: 'リモートワークで生産性を上げるには？', body: '' },
     };
     const id = `mappy-${engine}-${++serial}`;
+    const runDirs = () => connection.evaluate(`(() => {
+      const fs = window.require('fs'); const os = window.require('os');
+      return fs.readdirSync(os.tmpdir()).filter(name => name.startsWith('mappy-ai-'));
+    })()`);
     const outcome = await step(`${engine}: question to map through Mappy`, async () => {
+      const before = new Set(await runDirs());
       await connection.evaluate(`(() => {
         const results = (globalThis.__mappyE2eRuns ??= {});
         const runner = app.plugins.plugins.mappy.aiServices.createRunner();
@@ -196,11 +205,13 @@ async function runThroughMappy() {
       await new Promise(resolve => { setTimeout(resolve, 1500); });
       const marker = engine === 'claude' ? '--restricted --safe-mode' : 'exec --ignore-user-config';
       const left = execFileSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' }).split('\n').filter(line => line.includes(marker));
-      return { ms: done.ms, shape: shape(done.result), stages: [...new Set(done.stages)], left, text: done.result.kind === 'outline' ? done.result.raw : JSON.stringify(done.result).slice(0, 600) };
+      const kept = (await runDirs()).filter(name => !before.has(name));
+      return { ms: done.ms, shape: shape(done.result), stages: [...new Set(done.stages)], left, kept, text: done.result.kind === 'outline' ? done.result.raw : JSON.stringify(done.result).slice(0, 600) };
     });
     check(outcome?.shape?.kind === 'outline', `${engine}: the question through Mappy did not give an outline (${outcome?.text ?? outcome?.error})`);
     check(!outcome?.stages?.some(stage => stage === 'searching' || stage === 'fetching'), `${engine}: the question through Mappy reported a web search or fetch`);
     check((outcome?.left ?? ['?']).length === 0, `${engine}: a CLI of the run is still there (${JSON.stringify(outcome?.left)})`);
+    check((outcome?.kept ?? ['?']).length === 0, `${engine}: the run's temporary directory is still there (${JSON.stringify(outcome?.kept)})`);
   }
 }
 

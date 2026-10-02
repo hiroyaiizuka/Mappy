@@ -178,6 +178,31 @@ describe('the AI button (LEV-271)', () => {
     expect(mounted.card().hidden).toBe(false);
   });
 
+  it('says in words that this app cannot run AI, never an internal code (Windows, no Node)', async () => {
+    const ai = services(new HandRunner(), { kind: 'expired' });
+    const mounted = await mount(LIST, ai);
+    mounted.select('温泉旅行');
+    ai.refreshTo = { kind: 'invalid', reason: 'unsupported-platform' };
+    mounted.aiButton().click();
+    await mounted.settle();
+    expect(mounted.card().hidden).toBe(true);
+    expect(Notice.log).toContain(t().aiUnsupported);
+    expect(Notice.log.join('\n')).not.toContain('unsupported-platform');
+  });
+
+  it('refreshes a license that expired while the input was open, then runs', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    const mounted = await mount(LIST, ai);
+    mounted.select('温泉旅行');
+    await mounted.open();
+    ai.set({ kind: 'expired' });
+    ai.refreshTo = { kind: 'active' };
+    await mounted.run();
+    expect(runner.calls).toHaveLength(1);
+    expect(ai.state().kind).toBe('active');
+  });
+
   it('does not show on a sixth-level heading, and an H5 offers one level', async () => {
     const source = '# 1\n\n## 2\n\n### 3\n\n#### 4\n\n##### 5\n\n###### 6\n';
     const mounted = await mount(source, services(new HandRunner()));
