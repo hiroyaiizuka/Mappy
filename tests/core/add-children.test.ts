@@ -161,7 +161,8 @@ describe('add-children in the list format', () => {
 
 /**
  * The texts a model returns that Markdown would read as another block, or that would hide the nodes after them
- * (§11.4), and how each is written (`written`; `heading` where a heading's differs). Every row is written in both
+ * (§11.4), and how each is written in a list item (`written`) and in a heading (`heading`; the text as it is when
+ * absent: an ATX heading's text starts no block, so only `%%`, `<!--`, a closing `#` and `$$` are escaped there). Every row is written in both
  * formats and must read back as the same titles, same count. The written text is spelled out: Mappy's own parse
  * reads some of these as plain text either way (`- - 論点` stays one node to it, `# 見出し` stays a heading's text),
  * while Obsidian's renderer reads them as a nested list or a heading mark, so the reparse alone would not hold the
@@ -184,13 +185,13 @@ const MARKUP: readonly { name: string; text: string; written: string; heading?: 
   { name: '引用', text: '> 引用', written: '\\> 引用' },
   { name: 'フェンス', text: '```js', written: '\\```js' },
   { name: 'フェンス（~）', text: '~~~', written: '\\~~~' },
-  { name: '数式ブロック', text: '$$', written: '\\$$' },
+  { name: '数式ブロック', text: '$$', written: '\\$$', heading: '\\$$' },
   { name: 'HTML', text: '<div>', written: '\\<div>' },
   { name: 'リンク参照の定義', text: '[03:15]: 導入', written: '\\[03:15]: 導入' },
   { name: 'タスク', text: '[ ] やること', written: '\\[ ] やること' },
   { name: '末尾の #', text: '要点 ##', written: '要点 ##', heading: '要点 \\#\\#' },
-  { name: '%% コメント', text: '途中 %% 隠す', written: '途中 \\%\\% 隠す' },
-  { name: 'HTML コメント', text: '途中 <!-- 隠す', written: '途中 &lt;!-- 隠す' },
+  { name: '%% コメント', text: '途中 %% 隠す', written: '途中 \\%\\% 隠す', heading: '途中 \\%\\% 隠す' },
+  { name: 'HTML コメント', text: '途中 <!-- 隠す', written: '途中 &lt;!-- 隠す', heading: '途中 &lt;!-- 隠す' },
 ];
 
 describe('item texts that Markdown would read as markup are written inert (§11.4)', () => {
@@ -203,7 +204,7 @@ describe('item texts that Markdown would read as markup are written inert (§11.
         const doc = parse(source, format);
         const items = [leaf(row.text, leaf('子の項目')), leaf('次')];
         const { after } = addChildren(doc, '子', items);
-        const written = format === 'headings' ? row.heading ?? row.written : row.written;
+        const written = format === 'headings' ? row.heading ?? row.text : row.written;
         expect(childShape(after, '子')).toEqual([`1:${written}`, '2:子の項目', '1:次']);
         expect(after.nodes).toHaveLength(doc.nodes.length + 3);
         // The node after the branches is still there, under its own name.

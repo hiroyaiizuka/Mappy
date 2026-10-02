@@ -61,10 +61,15 @@ export function inertTitle(text: string, form: 'heading' | 'item'): string {
   let title = text.trim()
     .replace(/%{2,}/gu, run => '\\%'.repeat(run.length))
     .replace(/<!--/gu, '&lt;!--');
+  // An ATX heading's text starts no block: only its closing `#`s and a display math `$$` (Obsidian's, which reads it
+  // there too) are escaped, so `### 1. 背景` keeps the heading a link can name, without a backslash.
+  if (form === 'heading') {
+    if (title.startsWith('$$')) title = `\\${title}`;
+    return title.replace(/([ \t])(#+)$/u, (_whole, space: string, marks: string) => space + '\\#'.repeat(marks.length));
+  }
   if (/^([-*_])(?:[ \t]*\1)+[ \t]*$/u.test(title) || /^=+[ \t]*$/u.test(title)) title = `\\${title}`;
   else if (/^\d{1,9}[.)](?:[ \t]|$)/u.test(title)) title = title.replace(/^(\d{1,9})/u, '$1\\');
   else if (/^<[a-z][a-z\d+.-]{1,31}:[^\s<>]*>/iu.test(title)) { /* An autolink: a link, which stays (§11.4). */ }
   else if (/^(?:#{1,6}(?:[ \t]|$)|>|[-*+](?:[ \t]|$)|```|~~~|\$\$|<|\[[ xX]\](?:[ \t]|$)|\[[^\]]+\]:)/u.test(title)) title = `\\${title}`;
-  if (form === 'heading') title = title.replace(/([ \t])(#+)$/u, (_whole, space: string, marks: string) => space + '\\#'.repeat(marks.length));
   return title;
 }

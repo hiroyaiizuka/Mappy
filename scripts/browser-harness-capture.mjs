@@ -3537,6 +3537,36 @@ export async function captureAi(recorder, page) {
       return `下書き ${after.length} 項目、畳む前後で高さが同じ`;
     });
 
+  await recorder.run('ai-card-upper-stage', 'timeline: 上側のステージの森の「二段目」で AI ボタン（世界の原点より上のノード）',
+    '入力欄のカードがそのノードのすぐ下に出る（コードレビュー 4 回目: 下書きの無いときは原点の線まで下がっていた）', async () => {
+      await loadFreshFixture(page, FIXTURE, 'timeline');
+      const node = await select('二段目');
+      const button = await page.harness('h.ai.button()');
+      expect(button, 'no AI button on 二段目');
+      await page.click(center(button).x, center(button).y);
+      await waitFor('h.ai.card()?.phase === "input"', 'the input');
+      const card = await page.harness('h.ai.card()');
+      const bottom = node.rect.y + node.rect.height;
+      expect(card.rect.y >= bottom && card.rect.y - bottom < 30, `the card's top ${Math.round(card.rect.y)} is not right under the node's bottom ${Math.round(bottom)}`);
+      await page.key('Escape', 'Escape', 27);
+      await page.settle();
+      return `ノードの下端から ${Math.round(card.rect.y - bottom)} px`;
+    });
+
+  await recorder.run('ai-draft-pan', `mindmap: 「${TARGET}」の下書きの点線のノードを押して右下へ 80×40 px ドラッグ`,
+    'マップがパンする（下書きのノードは押しを地図へ通す。コードレビュー 4 回目: 押しても何も起きなかった）', async () => {
+      await loadFreshFixture(page, FIXTURE);
+      await runOnce();
+      const [item] = await page.harness('h.ai.draft()');
+      const before = await page.harness('h.viewport()');
+      const from = center(item.rect);
+      await page.drag(from.x, from.y, from.x + 80, from.y + 40);
+      await page.settle();
+      const after = await page.harness('h.viewport()');
+      expect(Math.abs(after.x - before.x - 80) < 2 && Math.abs(after.y - before.y - 40) < 2, `the viewport moved by ${after.x - before.x}, ${after.y - before.y}`);
+      return `viewport ${Math.round(after.x - before.x)}×${Math.round(after.y - before.y)}`;
+    });
+
   await recorder.run('ai-discard', 'mindmap: 下書きの「捨てる」', '下書きとカードが消え、原文は変わらない', async () => {
     await loadFreshFixture(page, FIXTURE);
     await runOnce();

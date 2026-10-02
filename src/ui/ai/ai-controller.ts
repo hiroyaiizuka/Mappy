@@ -155,6 +155,9 @@ export class AiController {
   private readonly draftElements = new Map<string, HTMLDivElement>();
   private lastLayout: LayoutResult | undefined;
   private opening = false;
+  /** The card's size since its content was last drawn, and the pane's since it last changed (`placeCard`). */
+  private cardSize: { width: number; height: number } | undefined;
+  private paneSize: { width: number; height: number } | undefined;
   /** An IME composition is under way in the request (`compositionstart`／`compositionend`), as the inline editor keeps it (LEV-223). */
   private composing = false;
   /** Where the node the button is on was laid out. */
@@ -177,7 +180,7 @@ export class AiController {
       event.stopPropagation();
       void this.openInput();
     });
-    this.card = host.pane.createDiv({ cls: "mappy-ai-card mappy-floating", attr: { role: "dialog", "aria-label": t().aiPanelLabel } });
+    this.card = host.pane.createDiv({ cls: "mappy-ai-card mappy-floating", attr: { role: "dialog", "aria-label": t().aiPanelLabel, tabindex: "-1" } });
     this.card.hidden = true;
     this.card.addEventListener("keydown", event => { this.cardKey(event); });
     this.releaseLock = aiRunLock.onChange(() => { this.sync(); });
@@ -288,6 +291,12 @@ export class AiController {
     if (!this.lastLayout) return undefined;
     this.placedIndex ??= new Map(this.lastLayout.nodes.map(node => [node.id, node]));
     return this.placedIndex.get(id);
+  }
+
+  /** The pane changed size (`onResize`): the card is kept inside it as it is now. */
+  resized(): void {
+    this.paneSize = undefined;
+    this.placeCard();
   }
 
   /** The view panned or zoomed: the card follows its node on screen. */
@@ -484,7 +493,8 @@ export class AiController {
           // 取り消す ends the wait at once, whether or not the reader heeds the signal: the lock goes with the run.
           const read = services.readAttachment(file, run.abort.signal);
           read.catch(() => undefined);
-          const material = await Promise.race([read, whenAborted(run.abort.signal)]);
+          const aborted = whenAborted(run.abort.signal);
+          const material = await Promise.race([read, aborted.promise]).finally(aborted.dispose);
           if (!material) break;
           materials.push(material);
         } catch (error) {
@@ -551,7 +561,8 @@ export class AiController {
     }
     const document = this.host.document();
     const node = document ? findNode(document, run.anchorId) : undefined;
-    if (!document || !node) { this.lostNotice(result.items); return; }
+    // What the Notice copies is the result as a draft would have held it: one line per item, no empty item.
+    if (!document || !node) { this.lostNotice(fitBranches(result.items, run.values.depth)); return; }
     // Deeper than asked is lifted to the depth asked for (§11.4), and never past what the node can take (§11.5).
     const items = fitBranches(result.items, Math.min(run.values.depth, maxDepth(document, node)));
     if (items.length === 0) {
@@ -634,7 +645,9 @@ export class AiController {
   private retry(): void {
     const source = this.draft ?? this.failed;
     if (!source || this.run) return;
-    void this.ensureActive().then(active => active && !this.run ? this.start(source.anchorId, source.values) : undefined);
+    // Run only if what was pressed is still there once the license is refreshed: not after 捨てる or 閉じる meanwhile.
+    void this.ensureActive().then(active => active && !this.run && (this.draft ?? this.failed) === source
+      ? this.start(source.anchorId, source.values) : undefined);
   }
 
   /** 捨てる: the draft goes; the note is not touched. */
@@ -724,12 +737,14 @@ export class AiController {
       return;
     }
     card.hidden = false;
+    this.cardSize = undefined;
     this.placeCard();
     // A redraw under the focus (a button replaced) keeps the keys on the card, on the button of the same name when there is one.
     if (focused && !card.contains(card.doc.activeElement)) {
       const buttons = Array.from(card.querySelectorAll<HTMLButtonElement>("button:not([disabled])"));
       const same = focusedLabel === null ? undefined : buttons.find(button => button.textContent === focusedLabel);
-      (same ?? card.querySelector<HTMLElement>("textarea") ?? buttons[0])?.focus({ preventScroll: true });
+      // Every button disabled (残す under way): the card itself holds the keys until it is drawn again.
+      (same ?? card.querySelector<HTMLElement>("textarea") ?? buttons[0] ?? card)?.focus({ preventScroll: true });
     }
   }
 
@@ -851,22 +866,30 @@ export class AiController {
     const box = this.draftBox;
     const view = this.host.viewport();
     const left = Math.min(anchor.x, box?.left ?? anchor.x) * view.scale + view.x;
-    const bottom = Math.max(anchor.y + anchor.height, box?.bottom ?? 0) * view.scale + view.y + CARD_GAP;
-    const pane = this.host.pane;
-    const width = this.card.offsetWidth;
-    const height = this.card.offsetHeight;
-    const x = Math.max(CARD_MARGIN, Math.min(left, pane.clientWidth - width - CARD_MARGIN));
-    const y = Math.max(CARD_MARGIN, Math.min(bottom, pane.clientHeight - height - CARD_MARGIN));
+    // A node above the world's origin (a timeline's upper stage, a balanced map's upper half) has a negative bottom.
+    const bottom = Math.max(anchor.y + anchor.height, box?.bottom ?? -Infinity) * view.scale + view.y + CARD_GAP;
+    // Sizes read once per card and per pane size (`measured`, `resized`), not after this frame's writes: a read here
+    // would make the browser lay the whole map out again on every pan (LEV-45).
+    this.cardSize ??= { width: this.card.offsetWidth, height: this.card.offsetHeight };
+    this.paneSize ??= { width: this.host.pane.clientWidth, height: this.host.pane.clientHeight };
+    const x = Math.max(CARD_MARGIN, Math.min(left, this.paneSize.width - this.cardSize.width - CARD_MARGIN));
+    const y = Math.max(CARD_MARGIN, Math.min(bottom, this.paneSize.height - this.cardSize.height - CARD_MARGIN));
     this.card.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }
 }
 
-/** Resolves to null once `signal` aborts (never, otherwise): what a wait on something that takes no signal races. */
-function whenAborted(signal: AbortSignal): Promise<null> {
-  return new Promise(resolve => {
+/**
+ * A promise that resolves to null once `signal` aborts: what a wait on something that takes no signal races. `dispose`
+ * takes its listener off the signal once the race is over.
+ */
+function whenAborted(signal: AbortSignal): { promise: Promise<null>; dispose: () => void } {
+  let listener = (): void => undefined;
+  const promise = new Promise<null>(resolve => {
+    listener = () => { resolve(null); };
     if (signal.aborted) resolve(null);
-    else signal.addEventListener("abort", () => { resolve(null); }, { once: true });
+    else signal.addEventListener("abort", listener, { once: true });
   });
+  return { promise, dispose: () => { signal.removeEventListener("abort", listener); } };
 }
 
 /** A material that could not be read: the run ends as a failure of `reason`, with the message as its detail. */

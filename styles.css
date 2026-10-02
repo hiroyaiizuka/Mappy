@@ -505,7 +505,9 @@
 .mappy-view .mappy-ai-button svg { width: 13px; height: 13px; }
 .mappy-view .mappy-ai-button.is-disabled { color: var(--text-faint); cursor: default; }
 .mappy-view .mappy-ai-button:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: 2px; }
+/* A press on the draft goes through to the canvas (a pan, a deselection): the draft's nodes are not the map's. */
 .mappy-view .mappy-node.mappy-ai-draft {
+  pointer-events: none;
   border: 1px dashed var(--mappy-accent);
   background: var(--background-primary);
   color: var(--text-muted);

@@ -1007,3 +1007,75 @@ describe('the license gate and the AI button agree', () => {
     });
   }
 });
+
+/** The fourth code review (after the merge of LEV-273, 555cdda), one row each; the card's place and a pan over the draft are the browser page's. */
+describe('the AI after the fourth code review', () => {
+  it('runs nothing when the draft was discarded while やり直す waited for the license', async () => {
+    const runner = new HandRunner();
+    const ai = services(runner);
+    let release: (state: AiEntitlementView) => void = () => undefined;
+    const mounted = await mount(LIST, ai);
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    ai.set({ kind: 'expired' });
+    ai.refresh = () => new Promise(resolve => { release = resolve; });
+    await mounted.press(t().aiRetry);
+    await mounted.press(t().aiDiscard);
+    ai.set({ kind: 'active' });
+    release({ kind: 'active' });
+    await mounted.settle();
+    expect(runner.calls).toHaveLength(1);
+    expect(mounted.draftLabels()).toEqual([]);
+  });
+
+  it('keeps the keys on the card while 残す runs and after it is refused', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount(LIST, services(runner));
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish(OUTLINE);
+    await mounted.settle();
+    (mounted.view as unknown as { saving: boolean }).saving = true;
+    const keep = Array.from(mounted.card().querySelectorAll('button')).find(button => button.textContent === t().aiKeep);
+    keep?.focus();
+    keep?.click();
+    await mounted.settle();
+    (mounted.view as unknown as { saving: boolean }).saving = false;
+    expect(mounted.card().textContent).toContain(t().aiKeepFailed(t().savingWait));
+    expect(mounted.card().contains(document.activeElement)).toBe(true);
+  });
+
+  it('copies the result as a draft would hold it when its node is gone before the run ends', async () => {
+    const written: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (text: string) => { written.push(text); return Promise.resolve(); } } });
+    const runner = new HandRunner();
+    const mounted = await mount(LIST, services(runner));
+    mounted.select('持ち物');
+    await mounted.open();
+    await mounted.run();
+    mounted.app.put(PATH, LIST.replace('- 持ち物\n', ''));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await mounted.settle();
+    runner.last().finish({ kind: 'outline', dropped: 0, raw: '', items: [{ text: '二行に\nわたる', children: [{ text: '  ', children: [] }] }] });
+    await mounted.settle();
+    document.querySelector<HTMLButtonElement>('.mappy-ai-notice-copy')?.click();
+    await mounted.settle();
+    expect(written).toEqual(['- 二行に わたる']);
+  });
+
+  it('writes a numbered heading without a backslash in the headings format', async () => {
+    const runner = new HandRunner();
+    const mounted = await mount(HEADINGS, services(runner));
+    mounted.select('背景');
+    await mounted.open();
+    await mounted.run();
+    runner.last().finish({ kind: 'outline', dropped: 0, raw: '', items: [{ text: '1. 背景', children: [] }] });
+    await mounted.settle();
+    await mounted.press(t().aiKeep);
+    expect(mounted.source()).toBe(HEADINGS.replace('本文\n\n', '本文\n\n### 1. 背景\n\n'));
+  });
+});

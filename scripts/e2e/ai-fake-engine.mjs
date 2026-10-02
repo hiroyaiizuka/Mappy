@@ -18,7 +18,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeAfter, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeAfter, makePress, makeHistory, refuseOpenLeaves } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -33,17 +33,10 @@ const check = makeCheck(record);
 const select = makeSelect(cdp, evaluate);
 const after = makeAfter(evaluate);
 
-/** A real click at the centre of what `locate` returns in the map's pane. */
-const clickAt = async locate => {
-  const box = await evaluate(`${VIEW}
-    const target = (() => { ${locate} })();
-    if (!target) throw new Error('nothing to click');
-    const rect = target.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };`);
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
-  }
-};
+const press = makePress(cdp, evaluate);
+const history = makeHistory(cdp, evaluate);
+/** A real click at the centre of what `locate` returns, only once it is the topmost element there (`makePress`). */
+const clickAt = locate => press(`const node = (() => { ${locate} })();`);
 const card = () => evaluate(`${VIEW}
   const card = el.querySelector('.mappy-ai-card');
   return card && !card.hidden ? { phase: card.dataset.phase, text: card.textContent } : null;`);
@@ -101,16 +94,13 @@ try {
     const kept = await after(opened.source);
     check(labels.every(label => kept.source.includes(label)), `keep: the draft was not written:\n${kept.source}`);
     check((await draft()).length === 0, 'keep: the dotted nodes stayed');
-    await select('持ち物');
-    await cdp.realKey('z', 4);
-    const undone = await after(kept.source);
+    // ⌘Z／⌘⇧Z with the focus put back in the canvas first (`makeHistory`): a chord outside it reaches macOS.
+    const undone = await history('undo');
     check(undone.source === opened.source, `keep: ⌘Z did not take all of it back:\n${undone.source}`);
-    await cdp.realKey('z', 12);
-    const redone = await after(undone.source);
+    const redone = await history('redo');
     check(redone.source === kept.source, `keep: ⌘⇧Z did not bring it back:\n${redone.source}`);
     // Back to the fixture for the next row.
-    await cdp.realKey('z', 4);
-    await after(redone.source);
+    await history('undo');
     return { added: kept.source.split('\n').length - opened.source.split('\n').length };
   });
 
