@@ -21,6 +21,13 @@ if (args[0] === "--ai-dev") {
   const unlockErrors = devUnlockErrors(await readFile(join(target, "main.js"), "utf8"), `${target}/main.js`, { expected: true });
   if (unlockErrors.length > 0) throw new Error(unlockErrors.join("\n"));
   for (const name of ["manifest.json", "styles.css"]) await copyFile(name, join(target, name));
+  // Ties this bundle to the root main.js built from the same sources just before (npm run harness:prepare:ai-dev runs
+  // npm run check first); preflight refuses the pair once the root build changes without this one.
+  await writeFile(join(target, "build-info.json"), JSON.stringify({
+    id: manifest.id,
+    version: manifest.version,
+    releaseMainSha256: createHash("sha256").update(await readFile("main.js")).digest("hex"),
+  }, null, 2) + "\n");
   console.info(`Packaged ${target} (AI development unlock; never released)`);
 } else {
   const target = join("dist", manifest.id);

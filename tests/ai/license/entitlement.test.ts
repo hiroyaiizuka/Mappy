@@ -148,29 +148,44 @@ describe('LicenseEntitlement.load', () => {
     expect(server.calls).toEqual([]);
   });
 
-  it('reads a token signed by another key, or tampered with, as invalid', async () => {
-    const { open, storage } = await registered();
+  it('never reads a stored token signed by another key, or tampered with, as active: it is to be refreshed', async () => {
+    const { open, storage, server } = await registered();
     const other = await signingKey();
     const stored = storage.value!;
     storage.value = { ...stored, accessToken: await other.sign({ exp: Math.floor(START / 1000) + 3600 }) };
-    expect((await open().load()).kind).toBe('invalid');
+    expect(await open().load()).toEqual({ kind: 'expired' });
     const [header, , signature] = stored.accessToken!.split('.');
     const longer = btoa(JSON.stringify({ exp: Math.floor(START / 1000) + 99 * 3600 })).replace(/=+$/u, '');
     storage.value = { ...stored, accessToken: `${header}.${longer}.${signature}` };
-    expect(await open().load()).toEqual({ kind: 'invalid', reason: 'bad signature' });
+    expect(await open().load()).toEqual({ kind: 'expired' });
+    // The bundled key replaced by an update, say: the refresh secret still works, so the AI button gets the device back.
+    const entitlement = open();
+    await entitlement.load();
+    expect((await entitlement.refresh()).kind).toBe('active');
+    expect(server.calls).toHaveLength(1);
   });
 
-  it.each(['', 'not-a-token', 'a.b', 'a.b.c'])('reads the malformed token %j as invalid', async token => {
+  it.each(['', 'not-a-token', 'a.b', 'a.b.c'])('reads the malformed stored token %j as one to refresh, never active', async token => {
     const { open, storage } = await registered();
     storage.value = { ...storage.value!, accessToken: token };
-    // An empty token is no token: the device can still refresh.
-    expect((await open().load()).kind).toBe(token === '' ? 'expired' : 'invalid');
+    expect(await open().load()).toEqual({ kind: 'expired' });
   });
 
-  it('refuses a token whose header names another algorithm, even when signed', async () => {
+  it('never accepts a token whose header names another algorithm, even when signed', async () => {
     const { open, storage, key } = await registered();
     storage.value = { ...storage.value!, accessToken: await key.sign({ exp: Math.floor(START / 1000) + 3600 }, { alg: 'none' }) };
-    expect(await open().load()).toEqual({ kind: 'invalid', reason: 'unsupported token' });
+    expect(await open().load()).toEqual({ kind: 'expired' });
+  });
+
+  it('is invalid when the token the server has just issued does not verify, so it does not refresh on every press', async () => {
+    const env = await setup();
+    const other = await signingKey();
+    const entitlement = env.open({ verifier: createTokenVerifier(other.publicKey) });
+    await entitlement.load();
+    expect(await entitlement.register('GOOD-CODE')).toEqual({ kind: 'invalid', reason: 'bad signature' });
+    env.server.calls.length = 0;
+    await entitlement.refresh();
+    expect(env.server.calls).toEqual([]);
   });
 
   it('keeps the previous state while verifying again after another window wrote, and moves to its result', async () => {
@@ -228,6 +243,23 @@ describe('LicenseEntitlement.state and the expiry', () => {
     await entitlement.load();
     clock.advance(2 * HOUR);
     expect(entitlement.state()).toEqual({ kind: 'expired' });
+  });
+
+  it('changes nothing and arms no timer when a verification still running ends after dispose', async () => {
+    const { open, clock, storage, key } = await registered();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const verifier = createTokenVerifier(key.publicKey);
+    const entitlement = open({ store: storage.window(), verifier: { verify: async token => { await held; return verifier.verify(token); } } });
+    const heard = vi.fn();
+    entitlement.onChange(heard);
+    const loading = entitlement.load();
+    entitlement.dispose();
+    release();
+    await loading;
+    expect(entitlement.state()).toEqual({ kind: 'checking' });
+    expect(clock.pending()).toBe(0);
+    expect(heard).not.toHaveBeenCalled();
   });
 
   it('stops the timer and the storage subscription on dispose', async () => {
@@ -427,6 +459,19 @@ describe('DevUnlockEntitlement', () => {
     expect((await dev.register()).kind).toBe('active');
     expect((await dev.refresh()).kind).toBe('active');
     expect(dev.marker).toBe('mappy-ai-dev-unlock');
+  });
+});
+
+describe('the token check without WebCrypto', () => {
+  it('reads a token as unsigned, never throws, when crypto.subtle is missing', async () => {
+    const key = await signingKey();
+    const token = await key.sign({ exp: Math.floor(START / 1000) + 3600 });
+    vi.stubGlobal('crypto', {});
+    try {
+      await expect(createTokenVerifier(key.publicKey).verify(token)).resolves.toEqual({ kind: 'unsigned', reason: 'no usable public key' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

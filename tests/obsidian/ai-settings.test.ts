@@ -107,7 +107,7 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
   });
 
   it.each<[Error, string]>([
-    [new LicenseRequestError('rejected', 'unknown code'), 'コードを登録できませんでした（unknown code）。'],
+    [new LicenseRequestError('rejected', 'unknown code'), 'コードが受け付けられませんでした（unknown code）。'],
     [new LicenseRequestError('unreachable', 'offline'), 'ライセンスサーバーに接続できませんでした（offline）。'],
     [new Error('storage is full'), 'コードを登録できませんでした（storage is full）。'],
   ])('says why a registration failed (%s), keeping the code and the state', async (error, text) => {
@@ -127,29 +127,30 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
     expect(failure.hidden).toBe(true);
   });
 
-  it('follows the entitlement while drawn, and lets go of a row display() dropped', () => {
+  it('follows the entitlement with one subscription however often the tab is drawn, and lets go of the rows display() dropped', () => {
     const { status, move, listeners, tab } = mount({ kind: 'checking' });
     move({ kind: 'unregistered' });
     expect(status.textContent).toBe('未登録です。');
+    for (let round = 0; round < 5; round += 1) tab.display();
     expect(listeners.size).toBe(1);
-    tab.display();
-    expect(listeners.size).toBe(2);
     move({ kind: 'expired' });
-    // The first row was out of the document, so it unsubscribed instead of updating.
-    expect(listeners.size).toBe(1);
+    // The first row was dropped by the next display(): it is no longer brought up to date.
     expect(status.textContent).toBe('未登録です。');
     expect(row(tab.containerEl).status.textContent).toBe('期限が切れています。次に AI を使うときに更新します。');
   });
 
-  it('draws the same row through Obsidian 1.13+\'s declarative path, whose cleanup unsubscribes', () => {
-    const { tab, listeners } = mount();
+  it('draws the same row through Obsidian 1.13+\'s declarative path, whose cleanup lets the row go', () => {
+    const { tab, listeners, move } = mount();
     const runtime = tab as unknown as HarnessSettingTab;
     runtime.update();
     runtime.renderTab();
-    expect(row(tab.containerEl).status.textContent).toBe('未登録です。');
-    // display()'s row unsubscribes on the next change; the declarative row has its own subscription.
-    expect(listeners.size).toBe(2);
+    const drawn = row(tab.containerEl).status;
+    expect(drawn.textContent).toBe('未登録です。');
+    move({ kind: 'expired' });
+    expect(drawn.textContent).toBe('期限が切れています。次に AI を使うときに更新します。');
     runtime.hide();
+    move({ kind: 'unregistered' });
+    expect(drawn.textContent).toBe('期限が切れています。次に AI を使うときに更新します。');
     expect(listeners.size).toBe(1);
   });
 });

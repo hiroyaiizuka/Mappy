@@ -61,7 +61,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createTokenVerifier(publicKey: JsonWebKey = LICENSE_PUBLIC_KEY): TokenVerifier {
   let imported: Promise<CryptoKey | null> | null = null;
   const key = (): Promise<CryptoKey | null> => {
-    imported ??= crypto.subtle.importKey('jwk', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'])
+    // Through a promise, so a missing `crypto.subtle` (a throw, not a rejection) reads as no key too.
+    imported ??= Promise.resolve()
+      .then(() => crypto.subtle.importKey('jwk', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']))
       .catch(() => null);
     return imported;
   };
@@ -81,7 +83,8 @@ export function createTokenVerifier(publicKey: JsonWebKey = LICENSE_PUBLIC_KEY):
       const verifyKey = await key();
       if (!verifyKey) return { kind: 'unsigned', reason: 'no usable public key' };
       const signed = new TextEncoder().encode(`${headerText}.${payloadText}`);
-      const valid = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, signature, signed)
+      const valid = await Promise.resolve()
+        .then(() => crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, signature, signed))
         .catch(() => false);
       return valid ? { kind: 'signed', expiresAt: payload.exp * 1000 } : { kind: 'unsigned', reason: 'bad signature' };
     },

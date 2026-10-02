@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import { createLicenseClient, LICENSE_SERVER, LicenseRequestError } from '../../../src/ai/license/client';
@@ -52,6 +53,18 @@ describe('the license client (provisional contract, src/ai/license/client.ts)', 
   ])('reads %i %j as not reached, to try again', async (status, body) => {
     const { client: license } = client(answer(status, body));
     await expect(license.refresh('device', 'secret')).rejects.toMatchObject({ kind: 'unreachable' });
+  });
+
+  it('gives up on a server that never answers, as not reached, so the lock it holds is let go', async () => {
+    vi.useFakeTimers();
+    try {
+      const license = createLicenseClient(() => new Promise(() => undefined), LICENSE_SERVER, 1000);
+      const failing = license.refresh('device', 'secret').catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await failing).toMatchObject({ kind: 'unreachable', reason: 'timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reads a request that throws (offline, DNS) as not reached', async () => {

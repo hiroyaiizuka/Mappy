@@ -5,7 +5,7 @@ import {
 } from './settings';
 import type { Entitlement } from '../ai/license/entitlement';
 import { t } from '../i18n';
-import { aiSettingDefinitions } from './ai-settings';
+import { AiSettingsSection } from './ai-settings';
 
 /** The text key of each theme's name; the Record type turns a new theme into a compile error until it is named. */
 const THEME_LABEL_KEYS: Record<MapTheme, `theme${Capitalize<MapTheme>}`> = { follow: 'themeFollow', light: 'themeLight', dark: 'themeDark' };
@@ -91,11 +91,17 @@ export class MappySettingTab extends PluginSettingTab {
    */
   private readonly layoutRows = new Set<LayoutRow>();
 
-  constructor(app: App, plugin: Plugin, private readonly store: SettingsStore, private readonly entitlement: Entitlement) { super(app, plugin); }
+  /** The AI section (src/obsidian/ai-settings.ts): its license rows follow the entitlement while drawn. */
+  private readonly aiSection: AiSettingsSection;
+
+  constructor(app: App, plugin: Plugin, private readonly store: SettingsStore, entitlement: Entitlement) {
+    super(app, plugin);
+    this.aiSection = new AiSettingsSection(entitlement);
+  }
 
   /** Obsidian 1.13+: the declarative path (rendering and settings search). The map's four settings, then the AI section. */
   getSettingDefinitions(): MapSettingDefinition[] {
-    return [...mapSettingDefinitions(setting => this.renderLayoutToggles(setting)), ...aiSettingDefinitions(this.entitlement)];
+    return [...mapSettingDefinitions(setting => this.renderLayoutToggles(setting)), ...this.aiSection.definitions()];
   }
 
   getControlValue(key: string): unknown {
@@ -129,6 +135,7 @@ export class MappySettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     this.layoutRows.clear();
+    this.aiSection.forgetRows();
     const settings = this.store.current();
     for (const definition of this.getSettingDefinitions()) {
       const setting = new Setting(containerEl).setName(definition.name).setDesc(definition.desc);

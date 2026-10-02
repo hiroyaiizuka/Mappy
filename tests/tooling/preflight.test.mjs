@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   allowedCommunityPlugins,
   harnessPaths,
@@ -52,6 +53,8 @@ function addDevBuild(main = 'module.exports = {}; const marker = "mappy-ai-dev-u
   for (const filename of ['manifest.json', 'styles.css']) {
     writeFileSync(join(paths.devDistribution, filename), readFileSync(join(root, filename)));
   }
+  const releaseMainSha256 = createHash('sha256').update(readFileSync(join(root, 'main.js'))).digest('hex');
+  writeJson(join(paths.devDistribution, 'build-info.json'), { id: 'mappy', version: '0.1.0', releaseMainSha256 });
 }
 
 function readEnabled() {
@@ -229,6 +232,17 @@ describe('the AI development build in the test vault (LEV-273, docs/architecture
     const result = runScript('prepare-test-vault.mjs', '--ai-dev');
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('manifest.json: source and dist/mappy-ai-dev differ');
+  });
+
+  it('refuses an ai-dev bundle left from other sources than the root build, or without its build info', () => {
+    addDevBuild();
+    // The root main.js was rebuilt (npm run package) after the ai-dev bundle: it is no longer the same sources.
+    writeFileSync(join(root, 'main.js'), 'module.exports = { newer: true };\n');
+    expect(() => runPreflight(paths, { build: 'ai-dev' })).toThrow();
+    expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('was not built from the sources of the root main.js');
+    addDevBuild();
+    rmSync(join(paths.devDistribution, 'build-info.json'));
+    expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('build-info.json');
   });
 
   it('refuses an unknown build record and unknown arguments', () => {

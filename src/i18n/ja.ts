@@ -80,7 +80,7 @@ export const ja: Messages = {
   setSaveFailed: "設定を保存できませんでした。",
 
   setAi: "AI 機能",
-  setAiDesc: "AI 機能はアクティベーションコードで使えるようになります。Mappy がライセンスサーバーと通信するのは、コードを登録するときと期限の切れたトークンを更新するときだけで、送るのはコード・ランダムなデバイス ID・リフレッシュシークレットだけです。",
+  setAiDesc: "AI 機能はライセンスコードで使えるようになります。Mappy がライセンスサーバーと通信するのは、コードを登録するときと期限の切れたトークンを更新するときだけで、送るのはコード・ランダムなデバイス ID・リフレッシュシークレットだけです。",
   setAiDevUnlock: "開発用の解放が有効です。このビルドは AI を登録済みとして扱い、リリースには入りません。",
   setAiLicense: "ライセンスコード",
   setAiLicensePlaceholder: "ライセンスコードを入力",
@@ -92,7 +92,7 @@ export const ja: Messages = {
   aiUnreachable: (reason: string) => `ライセンスサーバーに接続できませんでした（${reason}）。次に AI を使うときにもう一度試します。`,
   aiInvalid: (reason: string) => `無効です（${reason}）。ライセンスコードを入れ直してください。`,
   aiRegisterUnreachable: (reason: string) => `ライセンスサーバーに接続できませんでした（${reason}）。`,
-  aiRegisterRejected: (reason: string) => `コードを登録できませんでした（${reason}）。`,
+  aiRegisterRejected: (reason: string) => `コードが受け付けられませんでした（${reason}）。`,
   aiRegisterFailed: (reason: string) => `コードを登録できませんでした（${reason}）。`,
 
   dropStalled: "描画が終わらないノードがあるため、描けたところまでのマップに合わせます。",

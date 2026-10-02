@@ -85,6 +85,7 @@ export class LicenseEntitlement implements Entitlement {
   private readonly listeners = new Set<(state: EntitlementState) => void>();
   private timer: number | null = null;
   private refreshing: Promise<EntitlementState> | null = null;
+  private disposed = false;
   private readonly client: LicenseClient;
   private readonly now: () => number;
   private readonly newDeviceId: () => string;
@@ -134,7 +135,7 @@ export class LicenseEntitlement implements Entitlement {
       const tokens = await this.client.register(licenseCode, stored.deviceId);
       const next: StoredLicense = { deviceId: stored.deviceId, licenseCode, ...tokens };
       this.deps.store.write(next);
-      return this.adopt(next);
+      return this.adopt(next, true);
     });
   }
 
@@ -150,6 +151,7 @@ export class LicenseEntitlement implements Entitlement {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.unwatch();
     this.clearTimer();
     this.listeners.clear();
@@ -183,7 +185,7 @@ export class LicenseEntitlement implements Entitlement {
     });
   }
 
-  /** Write `change(latest)` and verify it; a store that cannot be written leaves the device `unreachable`. */
+  /** Write `change(latest)` and verify it as just issued; a store that cannot be written leaves the device `unreachable`. */
   private writeAndAdopt(stored: StoredLicense, change: (latest: StoredLicense) => StoredLicense): Promise<EntitlementState> {
     const next = change(this.deps.store.read() ?? stored);
     try {
@@ -191,23 +193,29 @@ export class LicenseEntitlement implements Entitlement {
     } catch (error) {
       return Promise.resolve(this.settle({ kind: 'unreachable', reason: error instanceof Error ? error.message : String(error) }));
     }
-    return this.adopt(next);
+    return this.adopt(next, true);
   }
 
-  private async adopt(stored: StoredLicense | null): Promise<EntitlementState> {
+  /** `issued`: the token was just issued by the server (register, refresh), not read back from the store. */
+  private async adopt(stored: StoredLicense | null, issued = false): Promise<EntitlementState> {
     const ticket = ++this.ticket;
-    const next = await this.check(stored);
+    const next = await this.check(stored, issued);
     if (ticket === this.ticket) this.apply(next);
     return this.state();
   }
 
-  /** What a stored license is worth now, verifying its token. */
-  private async check(stored: StoredLicense | null): Promise<EntitlementState> {
+  /**
+   * What a stored license is worth now, verifying its token. A stored token that does not verify, while the device
+   * still has its refresh secret, reads as `expired`: a refresh may recover it (the bundled public key replaced by a
+   * plugin update, a token damaged in storage), and the server decides. A token the server has just issued that
+   * does not verify is `invalid`, so a key that can never verify does not send a refresh on every press.
+   */
+  private async check(stored: StoredLicense | null, issued = false): Promise<EntitlementState> {
     if (stored?.rejected) return { kind: 'invalid', reason: stored.rejected };
     if (!stored?.refreshSecret) return { kind: 'unregistered' };
     if (!stored.accessToken) return { kind: 'expired' };
     const token = await this.deps.verifier.verify(stored.accessToken);
-    if (token.kind === 'unsigned') return { kind: 'invalid', reason: token.reason };
+    if (token.kind === 'unsigned') return issued ? { kind: 'invalid', reason: token.reason } : { kind: 'expired' };
     return this.now() < token.expiresAt ? { kind: 'active', expiresAt: token.expiresAt } : { kind: 'expired' };
   }
 
@@ -217,8 +225,13 @@ export class LicenseEntitlement implements Entitlement {
     return this.state();
   }
 
-  /** Listeners hear a state once; `state()` may have read an expiry before the timer told them. */
+  /**
+   * Listeners hear a state once; `state()` may have read an expiry before the timer told them. After `dispose`, a
+   * verification or request still in flight changes nothing here (its store write stands: a rotated secret must be
+   * kept), so no timer outlives the plugin.
+   */
   private apply(next: EntitlementState): void {
+    if (this.disposed) return;
     this.current = next;
     this.clearTimer();
     if (next.kind === 'active') this.armTimer(next.expiresAt);

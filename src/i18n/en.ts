@@ -96,7 +96,7 @@ export const en = {
 
   // The AI section of the settings (src/obsidian/ai-settings.ts, docs/architecture.md §11.6).
   setAi: "AI",
-  setAiDesc: "AI features are unlocked with an activation code. Mappy contacts the license server only when you register a code and when an expired token is refreshed, and sends only the code, a random device ID and the refresh secret.",
+  setAiDesc: "AI features are unlocked with a license code. Mappy contacts the license server only when you register a code and when an expired token is refreshed, and sends only the code, a random device ID and the refresh secret.",
   setAiDevUnlock: "Development unlock is on: this build treats AI as licensed and is never released.",
   setAiLicense: "License code",
   setAiLicensePlaceholder: "Enter your license code",

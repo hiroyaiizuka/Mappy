@@ -165,6 +165,16 @@ export function readHarnessBuild(paths, build = 'release') {
   if (build === 'ai-dev') {
     const errors = devUnlockErrors(files.get('main.js').toString('utf8'), `${label}/main.js`, { expected: true });
     if (errors.length > 0) throw new Error(errors[0]);
+    // Built with the root main.js of the same sources (package-plugin.mjs --ai-dev), not left from an earlier tree.
+    let info;
+    try {
+      info = JSON.parse(readSafeFile(paths.root, join(directory, 'build-info.json')).toString('utf8'));
+    } catch (error) {
+      throw new Error(`${label}/build-info.json: ${error.message}; run npm run harness:prepare:ai-dev.`);
+    }
+    if (info?.releaseMainSha256 !== sha256(readSafeFile(paths.root, join(paths.root, 'main.js')))) {
+      throw new Error(`${label}/main.js was not built from the sources of the root main.js; run npm run harness:prepare:ai-dev.`);
+    }
   }
   const manifest = parseManifest(files.get('manifest.json'), `${label}/manifest.json`);
   return { files, manifest };

@@ -2,7 +2,11 @@
  * docs/architecture.md §11.7 step 3 (LEV-273): on the real Obsidian, an unregistered Mappy reaches neither Node nor the
  * license server. Before the plugin loads, `window.require` is wrapped so each call that asks for `child_process`,
  * `fs`, `os` or `path` is recorded with its stack, and CDP's Network domain records the requests to the license
- * server's host. Only what comes from Mappy counts: a call whose stack has a frame of Mappy's code (Obsidian evaluates
+ * server's host. Obsidian's `requestUrl` sends from the main process (no CORS), so the renderer's Network domain may
+ * never see it: the case also wraps `electron.ipcRenderer` (`send`, `sendSync`, `invoke`) and records each call whose
+ * arguments name the license host, and before it reports, it sends one request of its own to that host through
+ * `require('obsidian').requestUrl` (the host is `.invalid` and never resolves) and fails unless the counter saw it.
+ * A counter that cannot see `requestUrl` would report 0 whatever Mappy sent. Only what comes from Mappy counts: a call whose stack has a frame of Mappy's code (Obsidian evaluates
  * a plugin's main.js under the name `plugin:mappy`; NOT YET CONFIRMED on a real stack, which is why the first stacks
  * are kept in the record) and a request to the license host. Obsidian's and other plugins' calls are recorded beside
  * them and do not count; counting them would fail the case when Mappy touched nothing, and a case loosened for
@@ -64,8 +68,24 @@ const WRAP = `
     };
     window.__mappyAiFreeState = { seen, original };
   }
+  if (!window.__mappyAiFreeState.ipc) {
+    const ipc = require('electron').ipcRenderer;
+    const calls = [];
+    const originals = {};
+    for (const method of ['send', 'sendSync', 'invoke']) {
+      originals[method] = ipc[method];
+      ipc[method] = function (...args) {
+        let text = '';
+        try { text = JSON.stringify(args); } catch { text = String(args); }
+        if (text.includes(${JSON.stringify(LICENSE_HOST)})) calls.push({ method, at: Date.now(), text: text.slice(0, 300) });
+        return originals[method].apply(this, args);
+      };
+    }
+    window.__mappyAiFreeState.ipc = { ipc, calls, originals };
+  }
   window.__mappyAiFreeState.seen.mappy.length = 0;
   window.__mappyAiFreeState.seen.others.length = 0;
+  window.__mappyAiFreeState.ipc.calls.length = 0;
   return true;`;
 
 const requests = [];
@@ -79,9 +99,13 @@ async function runAiOnce() {
 try {
   required(record, 'preconditions', await step('preconditions', async () => {
     await evaluate(`${refuseOpenLeaves([NOTE])} return true;`);
-    const license = await evaluate(`return window.localStorage.getItem('mappy-ai-license');`);
-    if (!detect && license !== null) throw new Error('this device has a stored license (mappy-ai-license); the free state needs none. Remove it in the test profile first.');
-    return { storedLicense: license !== null };
+    const text = await evaluate(`return window.localStorage.getItem('mappy-ai-license');`);
+    let stored = null;
+    try { stored = text === null ? null : JSON.parse(text); } catch { stored = null; }
+    // A device ID alone (a registration that never got an answer) is still the free state; a refresh secret is not.
+    const registered = Boolean(stored && (stored.refreshSecret || stored.rejected));
+    if (!detect && registered) throw new Error('this device has a registered license (mappy-ai-license); the free state needs none. Remove it in the test profile first.');
+    return { stored: stored ? Object.keys(stored) : null };
   }));
   required(record, 'network', await step('network', async () => { await cdp.send('Network.enable', {}); return true; }));
   required(record, 'wrap', await step('wrap', () => evaluate(WRAP)));
@@ -91,7 +115,11 @@ try {
     await new Promise(resolve => setTimeout(resolve, 800));
     const plugin = app.plugins.plugins.mappy;
     if (!plugin) throw new Error('Mappy did not load again');
-    return { version: plugin.manifest.version, license: plugin.entitlement?.state?.() ?? null };`)));
+    // The stored token is verified asynchronously after onload (checking → unregistered).
+    for (let waited = 0; plugin.entitlement?.state?.().kind === 'checking' && waited < 5000; waited += 100) await new Promise(resolve => setTimeout(resolve, 100));
+    const license = plugin.entitlement?.state?.() ?? null;
+    if (${JSON.stringify(!detect)} && license?.kind !== 'unregistered') throw new Error('Mappy is not in the free state: ' + JSON.stringify(license));
+    return { version: plugin.manifest.version, license };`)));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
   await step('edit', () => evaluate(`${VIEW}
     const node = nth('話題', 0);
@@ -113,22 +141,43 @@ try {
     return names;`));
   if (detect) await step('run AI once', runAiOnce);
   const seen = await step('counts', () => evaluate(`
-    const { seen } = window.__mappyAiFreeState;
-    return { mappy: seen.mappy.length, others: seen.others.length, mappyStacks: seen.mappy.slice(0, 3), otherStacks: seen.others.slice(0, 3) };`));
-  const licenseRequests = requests.filter(url => { try { return new URL(url).host === LICENSE_HOST; } catch { return false; } });
+    const { seen, ipc } = window.__mappyAiFreeState;
+    return { mappy: seen.mappy.length, others: seen.others.length, mappyStacks: seen.mappy.slice(0, 3), otherStacks: seen.others.slice(0, 3),
+      licenseIpc: ipc.calls.slice() };`));
+  const toLicense = url => { try { return new URL(url).host === LICENSE_HOST; } catch { return false; } };
+  const licenseRequests = requests.filter(toLicense);
   record.licenseRequests = licenseRequests;
+  const licenseCalls = (seen && !('error' in seen) ? seen.licenseIpc.length : NaN) + licenseRequests.length;
+  // The counter's own check: one request to the license host through Obsidian's requestUrl must be seen.
+  const probe = await step('counter sees requestUrl', async () => {
+    const before = requests.filter(toLicense).length;
+    const ipcSeen = await evaluate(`
+      const { ipc } = window.__mappyAiFreeState;
+      const before = ipc.calls.length;
+      await require('obsidian').requestUrl({ url: 'https://${LICENSE_HOST}/mappy-e2e-counter-probe', throw: false }).catch(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return ipc.calls.length - before;`);
+    const networkSeen = requests.filter(toLicense).length - before;
+    if (ipcSeen + networkSeen < 1) throw new Error('a requestUrl to the license host was not counted by IPC nor Network: the license count would show nothing');
+    return { ipcSeen, networkSeen };
+  });
   if (detect) {
     check(seen && !('error' in seen) && seen.mappy >= 1, `--detect: Mappy's Node calls were ${seen?.mappy}, expected 1 or more (the counter or the frame match is broken)`);
   } else {
     check(seen && !('error' in seen) && seen.mappy === 0, `Mappy reached Node ${seen?.mappy} times in the free state`);
-    check(licenseRequests.length === 0, `Mappy sent ${licenseRequests.length} requests to ${LICENSE_HOST} in the free state`);
+    check(licenseCalls === 0, `Mappy sent ${licenseCalls} requests to ${LICENSE_HOST} in the free state (IPC and Network)`);
   }
+  check(probe && !('error' in probe), 'the license counter could not be shown to see requestUrl; its 0 shows nothing');
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(String(error));
 } finally {
   await evaluate(`
     const state = window.__mappyAiFreeState;
-    if (state) { window.require = state.original; delete window.__mappyAiFreeState; }
+    if (state) {
+      window.require = state.original;
+      if (state.ipc) for (const [method, original] of Object.entries(state.ipc.originals)) state.ipc.ipc[method] = original;
+      delete window.__mappyAiFreeState;
+    }
     return true;`).catch(() => undefined);
   await cdp.send('Network.disable', {}).catch(() => undefined);
   if (!flag('--keep')) await step('cleanup', makeDeleteNote(evaluate, NOTE));

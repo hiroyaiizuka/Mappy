@@ -34,6 +34,12 @@ export class LicenseRequestError extends Error {
 
 type Request = (request: RequestUrlParam) => Promise<RequestUrlResponse>;
 
+/**
+ * How long one request may take. `requestUrl` has no timeout of its own, and register and refresh hold the lock
+ * every window of the device waits on, so a server that never answers must not hold it for good.
+ */
+export const LICENSE_TIMEOUT_MS = 20_000;
+
 function readJson(response: RequestUrlResponse): unknown {
   try {
     return JSON.parse(response.text) as unknown;
@@ -48,19 +54,26 @@ function field(value: unknown, key: string): string | null {
   return typeof item === 'string' && item !== '' ? item : null;
 }
 
-export function createLicenseClient(request: Request = requestUrl, server: string = LICENSE_SERVER): LicenseClient {
+export function createLicenseClient(request: Request = requestUrl, server: string = LICENSE_SERVER, timeoutMs = LICENSE_TIMEOUT_MS): LicenseClient {
   const post = async (path: string, body: Record<string, string>): Promise<IssuedTokens> => {
     let response: RequestUrlResponse;
+    let timer: number | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = window.setTimeout(() => { reject(new LicenseRequestError('unreachable', 'timeout')); }, timeoutMs);
+    });
     try {
-      response = await request({
+      response = await Promise.race([request({
         url: `${server}${path}`,
         method: 'POST',
         contentType: 'application/json',
         body: JSON.stringify(body),
         throw: false,
-      });
+      }), timeout]);
     } catch (error) {
+      if (error instanceof LicenseRequestError) throw error;
       throw new LicenseRequestError('unreachable', error instanceof Error && error.message ? error.message : 'network error');
+    } finally {
+      window.clearTimeout(timer);
     }
     const { status } = response;
     const json = readJson(response);
