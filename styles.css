@@ -478,3 +478,71 @@
   .mappy-view .mappy-actions { right: 8px; top: 8px; }
   .mappy-view .mappy-zoom { right: 8px; bottom: 8px; }
 }
+
+/* The map's AI, 案 A (LEV-271, docs/architecture.md §11.5). The button is a badge on the selected node's top-right corner in the world, so it
+   follows the node through pans, zooms and layouts; the card is on screen (the view places it under the node or the
+   draft, inside the pane), so it reads at any zoom. The draft's nodes and connectors are dotted: not the note's yet. */
+.mappy-view .mappy-ai-button {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  transform-origin: 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 11px;
+  background: var(--background-primary);
+  color: var(--mappy-accent);
+  box-shadow: var(--shadow-s);
+  cursor: pointer;
+}
+.mappy-view .mappy-ai-button[hidden] { display: none; }
+.mappy-view .mappy-ai-button svg { width: 13px; height: 13px; }
+.mappy-view .mappy-ai-button.is-disabled { color: var(--text-faint); cursor: default; }
+.mappy-view .mappy-ai-button:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: 2px; }
+.mappy-view .mappy-node.mappy-ai-draft {
+  border: 1px dashed var(--mappy-accent);
+  background: var(--background-primary);
+  color: var(--text-muted);
+}
+.mappy-view .mappy-edges path.is-ai-draft { stroke: var(--mappy-accent); stroke-dasharray: 4 4; }
+.mappy-view .mappy-ai-card {
+  left: 0;
+  top: 0;
+  z-index: 3;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 340px;
+  max-width: calc(100% - 16px);
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+.mappy-view .mappy-ai-card[hidden] { display: none; }
+.mappy-view .mappy-ai-instruction { width: 100%; min-height: 60px; resize: vertical; font-size: var(--font-ui-small); }
+.mappy-view .mappy-ai-options { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.mappy-view .mappy-ai-option { display: inline-flex; gap: 4px; align-items: center; color: var(--text-muted); }
+.mappy-view .mappy-ai-option select { font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-ai-attachments { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.mappy-view .mappy-ai-attachment { display: inline-flex; gap: 2px; align-items: center; padding: 1px 2px 1px 8px; border-radius: 10px; background: var(--background-modifier-hover); }
+.mappy-view .mappy-ai-attachment-remove, .mappy-view .mappy-ai-attach { display: inline-flex; gap: 4px; align-items: center; height: auto; padding: 2px 6px; background: transparent; box-shadow: none; font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-ai-attachment-remove svg, .mappy-view .mappy-ai-attach svg { width: 12px; height: 12px; }
+.mappy-view .mappy-ai-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.mappy-view .mappy-ai-keys { margin-right: auto; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-ai-title { font-weight: 600; }
+.mappy-view .mappy-ai-progress { color: var(--text-muted); overflow-wrap: anywhere; }
+.mappy-view .mappy-ai-note { color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-ai-message { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--text-error); overflow-wrap: anywhere; }
+.mappy-view .mappy-ai-message:empty { display: none; }
+.mappy-view .mappy-ai-message button { height: auto; padding: 1px 6px; font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-ai-raw { max-height: 160px; margin: 0; overflow: auto; padding: 6px; border-radius: var(--radius-s); background: var(--background-primary); font-size: var(--font-ui-smaller); white-space: pre-wrap; }

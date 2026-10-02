@@ -1,11 +1,12 @@
 import {
-  applyEdits, assertSingleLine, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, selectionAfterDelete,
+  applyEdits, assertSingleLine, checkedAddition, checkedMove, moveHeadingSection, moveTarget, sectionRemovalFrom, selectionAfterDelete,
   swapSections, type EditCommand, type EditPlan, type TextEdit,
 } from './commands';
 import {
   indentColumns, itemContentColumn, parseMarkdown, parseableSource, projectMap, type MindDocument, type MindNode, verbatimBlockRanges,
 } from './markdown';
 import { endsWithBlankLine, getNode, lineGap, paragraphGap, siblingOf } from './text-edits';
+import { writtenBranches, type NewBranch } from './new-branches';
 import { t } from '../i18n';
 
 type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
@@ -218,6 +219,32 @@ function add(doc: MindDocument, node: MindNode, sibling: boolean, title = ''): E
   const insert = insertion(doc.source, offset, body, doc.eol, heading || (node.kind !== 'list' && node.children.length === 0));
   return validate(doc, [{ from: offset, to: offset, text: insert.text }], doc.nodes.length + 1,
     offset + insert.prefix.length, { kind: heading ? 'atx' : 'list', level: heading ? 2 : parent.level + 1, title: title.trim() });
+}
+
+/**
+ * The branches as list items after the node's last child, as `add` writes one child (§11.5): the top level at the
+ * children's indent and marker (`childStyle`), each nested level at its parent item's content column in the list's
+ * unit (LEV-225). One edit, checked to read back as exactly these branches (`checkedAddition`).
+ */
+function addBranches(doc: MindDocument, node: MindNode, items: readonly NewBranch[]): EditPlan {
+  const written = writtenBranches(items, 'item');
+  if (written.length === 0) throw new Error(t().nothingToAdd);
+  for (const item of written) assertSingleLine(item.title);
+  const style = childStyle(doc, node);
+  const unit = indentUnit(doc, node);
+  // The indent of each depth: the top level's, then each one at the content column of an item of the depth above.
+  const indents = [style.indent];
+  const indentAt = (depth: number): string => {
+    while (indents.length < depth) {
+      const above = indents[indents.length - 1] ?? '';
+      indents.push(whitespace(indentColumns(above) + style.marker.length + 1, unit, true));
+    }
+    return indents[depth - 1] ?? '';
+  };
+  const body = written.map(item => `${indentAt(item.depth)}${style.marker} ${item.title}`).join(doc.eol);
+  const offset = appendOffset(node);
+  const insert = insertion(doc.source, offset, body, doc.eol, node.kind !== 'list' && node.children.length === 0);
+  return checkedAddition(doc, [{ from: offset, to: offset, text: insert.text }], node, written, offset + insert.prefix.length);
 }
 
 interface Column { old: number; new: number }
@@ -446,6 +473,7 @@ export function planListEdit(doc: MindDocument, node: MindNode, command: Structu
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true, command.title);
+    case 'add-children': return addBranches(doc, node, command.items);
     case 'delete': {
       const count = doc.nodes.length - branchSize(node);
       const remove = (edits: TextEdit[]): EditPlan =>

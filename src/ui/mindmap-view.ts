@@ -34,6 +34,9 @@ import { MapEvents, nodeOf } from "./map-events";
 import { NodeDrag, type DragDelta } from "./node-drag";
 import { InlineEditor } from "./inline-editor";
 import { LinkSuggest } from "./link-suggest";
+import { AiController } from "./ai/ai-controller";
+import type { AiServices } from "./ai/services";
+import { isDraftId } from "../layout/ai-draft";
 import { t } from "../i18n";
 
 export const VIEW_TYPE = "mappy-map";
@@ -78,6 +81,13 @@ interface Created {
   readonly collapsed: ReadonlySet<string>;
   readonly viewport: Viewport;
 }
+
+/**
+ * What `execute` did (§11.5, LEV-271): the write it made, or why it made none. Every caller but 残す ignores it; 残す
+ * drops the AI draft only on a write, so a command skipped while a save runs, a draft that could not be confirmed or a
+ * note that left the view keeps the draft and says why.
+ */
+export type ExecuteOutcome = { write: CarriedWrite } | { write: null; reason: string };
 
 /** The snap's index of a drag's base layout; see `MindmapView.snapIndex`. */
 interface SnapIndex {
@@ -322,6 +332,9 @@ export class MindmapView extends FileView {
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
+  /** The map's AI (案 A, LEV-271), made with the DOM in `onOpen`; it shows only with services (`setAi`). */
+  private ai: AiController | undefined;
+  private aiServices: AiServices | null = null;
 
   constructor(
     leaf: WorkspaceLeaf, private readonly store: DocumentStore, private readonly router: ViewRouter,
@@ -390,6 +403,8 @@ export class MindmapView extends FileView {
     if (!file || !this.document) throw new Error(t().exportNoMap);
     if (this.inlineEditor) throw new Error(t().exportEditing);
     if (this.topicDrag || this.dropPreview) throw new Error(t().exportDragging);
+    // The AI draft is not the note's: an export shows what the note holds.
+    if (this.ai?.hasDraft()) throw new Error(t().exportAiDraft);
     // A change arriving while a refresh reads (it is dropped by the epoch) leaves a new debounce behind, hence the loop.
     while (this.refreshTimer !== undefined || this.refreshing) {
       if (this.refreshTimer !== undefined) {
@@ -421,6 +436,15 @@ export class MindmapView extends FileView {
   /** The command's route: capture what is shown and create the attachment; the note is not written. */
   exportImage(format: ExportFormat): Promise<TFile> {
     return this.exportSource().then(source => exportMap(this.app, source.file, source, format));
+  }
+
+  /**
+   * The plugin's AI services (src/main.ts, once the license gate and the runner are wired: docs/architecture.md §11.8),
+   * or none: without them the map shows no AI at all. Kept across `onOpen`, which makes the AI's DOM.
+   */
+  setAi(services: AiServices | null): void {
+    this.aiServices = services;
+    this.ai?.setServices(services);
   }
 
   getViewType(): string { return VIEW_TYPE; }
@@ -498,6 +522,8 @@ export class MindmapView extends FileView {
   async onUnloadFile(file: TFile): Promise<void> {
     await this.saveDraft(file);
     this.dropDraft();
+    // The AI's run and draft are this note's (§11.5): cancelled and dropped, never kept for the next one.
+    this.ai?.reset();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
     this.pendingTopic = null; this.topicDrag = null; this.writes.clear(); this.loads += 1; this.owed = false;
     this.targets = new Map(); this.knownCalled.clear(); void this.reader.clear();
@@ -688,6 +714,7 @@ export class MindmapView extends FileView {
       // A pan or zoom between a drop and the fit held through it is where the view is wanted now (LEV-182).
       if (this.fitHeld && !this.topicDrag) this.clearFit();
       if (!carried) this.viewportMoved(previous, view);
+      this.ai?.reposition();
     }, () => { this.deselect(); }));
     this.events = this.addChild(new MapEvents(this.canvas, {
       selected: () => this.selected(), visible: () => this.visible(), select: (id, focus) => { this.select(id, focus); },
@@ -706,6 +733,20 @@ export class MindmapView extends FileView {
     this.linkPreview = this.addChild(new LinkPreview(this.app, this.canvas, nodeId => this.linkBase(nodeId), {
       editing: () => this.inlineEditor !== undefined,
     }));
+    this.ai = new AiController({
+      app: this.app, pane: this.contentEl, world,
+      document: () => this.document, file: () => this.file, selectedId: () => this.selectedId,
+      readOnly: id => this.calledSource(id) !== undefined, mode: () => this.mode, viewport: () => this.viewport.value,
+      keep: async (nodeId, items) => {
+        const outcome = await this.execute({ type: "add-children", nodeId, items });
+        return outcome.write ? { written: true } : { written: false, reason: outcome.reason };
+      },
+      expand: id => { this.expand(id); },
+      layout: () => { this.scheduleLayout(); },
+    });
+    this.ai.setServices(this.aiServices);
+    // The page going (a reload, Obsidian quitting) sends no `onClose`: the run is cancelled all the same (§11.3).
+    this.registerDomEvent(this.contentEl.win, "pagehide", () => { this.ai?.reset(); });
     this.nodeDrag = this.addChild(new NodeDrag(this.canvas, {
       select: id => { this.select(id); },
       readOnly: id => this.isCalled(id),
@@ -830,6 +871,9 @@ export class MindmapView extends FileView {
     await this.saveDraft(this.file);
     this.closed = true;
     this.dropDraft();
+    // A run under way is cancelled and the AI draft goes with the view, unwritten (§11.5).
+    this.ai?.dispose();
+    this.ai = undefined;
     this.epoch += 1;
     return super.onClose();
   }
@@ -893,7 +937,7 @@ export class MindmapView extends FileView {
     return button;
   }
 
-  private run(action: () => Promise<void>): void {
+  private run(action: () => Promise<unknown>): void {
     void action().catch(error => { new Notice(error instanceof Error ? error.message : t().actionFailed); });
   }
 
@@ -1277,6 +1321,7 @@ export class MindmapView extends FileView {
       const ids = new Set([document.root.id, ...document.nodes.map(node => node.id)]);
       if (this.pendingTopic && !ids.has(this.pendingTopic.id)) this.pendingTopic = null;
       if (this.topicDrag && !ids.has(this.topicDrag.id)) this.endTopicDrag(this.topicDrag.id, false);
+      this.ai?.documentChanged(document);
     }
     this.adopt(targets);
     this.emptyState.hidden = true;
@@ -1503,6 +1548,7 @@ export class MindmapView extends FileView {
     // One node stays selected (the first when the selected one is gone, or the note just opened) unless the empty canvas was clicked.
     if (!this.deselected && !nodes.some(node => node.id === this.selectedId)) this.selectedId = nodes[0]?.id ?? null;
     this.renderer.select(this.selectedId);
+    this.ai?.sync();
     // Undo, delete or an external change can replace the focused node's element; the keyboard stays on the map.
     if (focused && !focused.isConnected && this.selectedId) this.renderer.focus(this.selectedId);
     this.scheduleLayout();
@@ -1552,8 +1598,12 @@ export class MindmapView extends FileView {
       // topic through `overrides`, which leaves nothing for a hold.
       const drag = this.topicDrag && !this.topicDrag.body;
       const held = (preview || drag) && plain && plain.file === this.file && plain.mode === this.mode ? plain.layout : undefined;
-      this.layout = layoutTree(preview?.trees[0] ?? projection.root, sizes, preview?.collapsed ?? this.collapsed, this.mode,
-        this.topicLayouts(preview?.trees, held));
+      // The AI draft's nodes under their node (§11.5), on the trees the preview left: both show at once.
+      const drafted = this.ai?.layoutTrees(preview?.trees ?? [projection.root, ...projection.topics], preview?.collapsed ?? this.collapsed) ?? null;
+      if (drafted) this.ai?.sizes(sizes);
+      const shown = drafted ?? preview;
+      this.layout = layoutTree(shown?.trees[0] ?? projection.root, sizes, shown?.collapsed ?? this.collapsed, this.mode,
+        this.topicLayouts(shown?.trees, held));
       if (!preview) this.plain = { file: this.file, mode: this.mode, layout: this.layout };
       // Only a base the snap actually takes clears the flag, so a change made while a placeholder was laid
       // out still reaches the first base after it. The sizes are checked as well: they are read from the
@@ -1566,6 +1616,7 @@ export class MindmapView extends FileView {
         drag.sizes = sizes;
       }
       this.renderer.place(this.layout.nodes, this.layout.folds);
+      this.ai?.place(this.layout);
       const slot = this.layout.nodes.find(node => node.id === PLACEHOLDER_ID);
       this.placeholder.hidden = !slot;
       if (slot) {
@@ -1598,6 +1649,8 @@ export class MindmapView extends FileView {
    */
   private drawEdges(edges: LayoutResult["edges"]): void {
     this.edges.update(edges);
+    // The AI draft's connectors are dotted, as its nodes are (§11.5).
+    for (const edge of edges) if (isDraftId(edge.to)) this.edges.path(edge.id)?.addClass("is-ai-draft");
     const preview = edges.find(edge => edge.to === PLACEHOLDER_ID);
     const path = preview ? this.edges.path(preview.id) : undefined;
     // Unmarked when it stops being the preview's, whatever `EdgeLayer` does with its paths (today it goes with the preview).
@@ -1663,6 +1716,7 @@ export class MindmapView extends FileView {
 
   private select(id: string, focus = false): void {
     this.selectedId = id; this.deselected = false; this.renderer.select(id);
+    this.ai?.sync();
     if (focus) {
       this.renderer.focus(id);
       if (this.layout?.nodes.some(node => node.id === id)) this.ensureVisible(id);
@@ -1673,6 +1727,7 @@ export class MindmapView extends FileView {
   /** A click on the empty canvas (MapViewport's judgement: not a pan): nothing selected, on screen and for the keys, until a node is selected again. */
   private deselect(): void {
     this.selectedId = null; this.deselected = true; this.renderer.select(null);
+    this.ai?.sync();
   }
 
   private ensureVisible(id: string): void {
@@ -1694,13 +1749,26 @@ export class MindmapView extends FileView {
     this.draw();
   }
 
+  /** Open the folds over `id` and on it: the AI draft under it shows (§11.5). */
+  private expand(id: string): void {
+    const document = this.document;
+    let node = document ? findNode(document, id) : undefined;
+    let changed = false;
+    while (node && document) {
+      changed = this.collapsed.delete(node.id) || changed;
+      node = node.parentId === null ? undefined : findNode(document, node.parentId);
+    }
+    if (changed) this.draw();
+    else this.scheduleLayout();
+  }
+
   private executeSelected(type: "add-child" | "add-sibling" | "delete" | "move-up" | "move-down"): void {
     const node = this.selected();
     if (node) this.run(() => this.execute({ type, nodeId: node.id }));
   }
 
-  private async execute(command: EditCommand): Promise<void> {
-    if (this.saving) return;
+  private async execute(command: EditCommand): Promise<ExecuteOutcome> {
+    if (this.saving) return { write: null, reason: t().savingWait };
     if ("nodeId" in command) this.assertEditable(command.nodeId);
     if ("parentId" in command) this.assertEditable(command.parentId);
     // A kept draft (E05) still addresses its node and a structural edit under it would move what the draft
@@ -1715,7 +1783,7 @@ export class MindmapView extends FileView {
     const draftOpen = draft !== undefined;
     if (draft) {
       this.refusalOverDraft(command);
-      if (!await draft.confirm()) return;
+      if (!await draft.confirm()) return { write: null, reason: t().aiKeepDraftOpen };
     }
     // Refused once the draft was written (the note changed under it meanwhile, so the node is gone or the edit no
     // longer applies; another write of the map's own began meanwhile): the draft's save stays, and the message says
@@ -1726,10 +1794,10 @@ export class MindmapView extends FileView {
     };
     const document = this.document;
     const file = this.file;
-    if (!document) return;
+    if (!document) return { write: null, reason: t().aiKeepNoteChanged };
     if (this.saving) {
       if (draftOpen) throw refused(new Error(t().savingWait));
-      return;
+      return { write: null, reason: t().savingWait };
     }
     const before = this.shownState();
     let planned: ReturnType<MindmapView["planCommand"]>;
@@ -1743,9 +1811,10 @@ export class MindmapView extends FileView {
         return made;
       });
     } catch (error) { throw landed ? error : refused(error); }
-    if (this.file !== file || this.closed) return;
+    if (this.file !== file || this.closed) return { write };
     const selected = this.reveal(planned.plan.selectionOffset);
     if (selected && planned.provisional) this.editTitle({ write, ...before, name: planned.name });
+    return { write };
   }
 
   /**
