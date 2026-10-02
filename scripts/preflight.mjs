@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { sourcesSha256 } from './build-sources.mjs';
 import { devUnlockErrors } from './validate-release.mjs';
 
 export const pluginFiles = ['main.js', 'manifest.json', 'styles.css'];
@@ -143,9 +144,10 @@ export function readInstalledBuild(paths) {
 
 /**
  * Verify a packaged build before preparing or checking a generated vault. `release`: the root files and dist/mappy
- * are the same bytes (`npm run package`). `ai-dev`: dist/mappy-ai-dev has the root manifest and styles, and its
- * main.js carries the development unlock (the inverse of `validate-release --artifacts`); the root main.js is the
- * release build, so it is not compared.
+ * are the same bytes (`npm run package`). `ai-dev`: dist/mappy-ai-dev has the root manifest and styles, its main.js
+ * carries the development unlock (the inverse of `validate-release --artifacts`), and the sources it records
+ * (`sources.json`, over its metafile's inputs) are the ones on disk; the root main.js is the release build, so it is
+ * not compared.
  */
 export function readHarnessBuild(paths, build = 'release') {
   assertHarnessBuild(build);
@@ -165,15 +167,18 @@ export function readHarnessBuild(paths, build = 'release') {
   if (build === 'ai-dev') {
     const errors = devUnlockErrors(files.get('main.js').toString('utf8'), `${label}/main.js`, { expected: true });
     if (errors.length > 0) throw new Error(errors[0]);
-    // Built with the root main.js of the same sources (package-plugin.mjs --ai-dev), not left from an earlier tree.
-    let info;
+    // Built from the sources on disk now (esbuild.config.mjs records them), not left from an earlier tree.
+    let current;
+    let recorded;
     try {
-      info = JSON.parse(readSafeFile(paths.root, join(directory, 'build-info.json')).toString('utf8'));
+      const { inputs } = JSON.parse(readSafeFile(paths.root, join(directory, 'build-meta.json')).toString('utf8'));
+      recorded = JSON.parse(readSafeFile(paths.root, join(directory, 'sources.json')).toString('utf8')).sha256;
+      current = sourcesSha256(paths.root, inputs);
     } catch (error) {
-      throw new Error(`${label}/build-info.json: ${error.message}; run npm run harness:prepare:ai-dev.`);
+      throw new Error(`${label}: cannot tell which sources it was built from (${error.message}); run npm run harness:prepare:ai-dev.`);
     }
-    if (info?.releaseMainSha256 !== sha256(readSafeFile(paths.root, join(paths.root, 'main.js')))) {
-      throw new Error(`${label}/main.js was not built from the sources of the root main.js; run npm run harness:prepare:ai-dev.`);
+    if (current !== recorded) {
+      throw new Error(`${label}/main.js was built from other sources than the ones on disk; run npm run harness:prepare:ai-dev.`);
     }
   }
   const manifest = parseManifest(files.get('manifest.json'), `${label}/manifest.json`);
@@ -184,20 +189,20 @@ export function readHarnessBuild(paths, build = 'release') {
  * `build`: the build the caller needs (a case of the AI development unlock asks for `ai-dev`). A vault holding the
  * other one is refused, so a case never runs on a build it was not written for.
  */
-export function runPreflight(paths, { build: expected = 'release' } = {}) {
+export function runPreflight(paths, { build: wanted = 'release' } = {}) {
   assertGeneratedVault(paths);
-  assertHarnessBuild(expected);
+  assertHarnessBuild(wanted);
   const installedBuild = readInstalledBuild(paths);
-  if (installedBuild !== expected) {
-    throw new Error(`test-vault holds the ${installedBuild} build, not ${expected}; run npm run ${expected === 'release' ? 'harness:prepare' : 'harness:prepare:ai-dev'}.`);
+  if (installedBuild !== wanted) {
+    throw new Error(`test-vault holds the ${installedBuild} build, not ${wanted}; run npm run ${wanted === 'release' ? 'harness:prepare' : 'harness:prepare:ai-dev'}.`);
   }
-  const build = readHarnessBuild(paths, expected);
+  const build = readHarnessBuild(paths, wanted);
   const hashes = {};
   for (const filename of pluginFiles) {
     const installed = readSafeFile(paths.root, join(paths.installed, filename));
     const expected = sha256(build.files.get(filename));
     if (sha256(installed) !== expected) {
-      throw new Error(`${filename}: installed bytes differ; run npm run harness:prepare.`);
+      throw new Error(`${filename}: installed bytes differ; run npm run ${wanted === 'release' ? 'harness:prepare' : 'harness:prepare:ai-dev'}.`);
     }
     hashes[filename] = expected;
   }
@@ -210,7 +215,7 @@ export function runPreflight(paths, { build: expected = 'release' } = {}) {
   }
   const enabledPlugins = readCommunityPlugins(paths);
   assertCommunityPlugins(enabledPlugins);
-  return { id: build.manifest.id, version: build.manifest.version, build: expected, sha256: hashes, enabledPlugins };
+  return { id: build.manifest.id, version: build.manifest.version, build: wanted, sha256: hashes, enabledPlugins };
 }
 
 const invokedAsScript = process.argv[1]

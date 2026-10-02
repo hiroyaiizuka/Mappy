@@ -34,10 +34,17 @@ function registerFailure(error: unknown): string {
  * (`forgetRows`), so a tab opened and closed many times does not pile up listeners.
  */
 export class AiSettingsSection {
-  private readonly rows = new Set<() => void>();
+  /** Each drawn license row's update, by its element. */
+  private readonly rows = new Map<() => void, HTMLElement>();
 
+  /** A row out of the document (a search result dropped without its cleanup, the tab hidden) is let go here. */
   constructor(private readonly entitlement: Entitlement) {
-    entitlement.onChange(() => { for (const sync of this.rows) sync(); });
+    entitlement.onChange(() => {
+      for (const [sync, element] of this.rows) {
+        if (element.isConnected) sync();
+        else this.rows.delete(sync);
+      }
+    });
   }
 
   definitions(): MapSettingDefinition[] {
@@ -101,7 +108,7 @@ export class AiSettingsSection {
       button = control;
       control.setButtonText(t().setAiRegister).setCta().onClick(() => { void submit(); });
     });
-    this.rows.add(sync);
+    this.rows.set(sync, setting.settingEl);
     sync();
     return () => { this.rows.delete(sync); };
   }

@@ -24,9 +24,13 @@ export interface LicenseClient {
   refresh(deviceId: string, refreshSecret: string): Promise<IssuedTokens>;
 }
 
-/** Why a request did not return tokens: `unreachable` may be retried, `rejected` is the server's answer. */
+/**
+ * Why a request did not return tokens: `unreachable` may be retried, `rejected` is the server's answer. A request
+ * given up on after the timeout is still on its way: `late` settles with what the server answered in the end, so a
+ * refresh secret the server rotated meanwhile is not lost.
+ */
 export class LicenseRequestError extends Error {
-  constructor(readonly kind: 'unreachable' | 'rejected', readonly reason: string) {
+  constructor(readonly kind: 'unreachable' | 'rejected', readonly reason: string, readonly late?: Promise<IssuedTokens>) {
     super(reason);
     this.name = 'LicenseRequestError';
   }
@@ -55,25 +59,18 @@ function field(value: unknown, key: string): string | null {
 }
 
 export function createLicenseClient(request: Request = requestUrl, server: string = LICENSE_SERVER, timeoutMs = LICENSE_TIMEOUT_MS): LicenseClient {
-  const post = async (path: string, body: Record<string, string>): Promise<IssuedTokens> => {
+  const send = async (path: string, body: Record<string, string>): Promise<IssuedTokens> => {
     let response: RequestUrlResponse;
-    let timer: number | undefined;
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = window.setTimeout(() => { reject(new LicenseRequestError('unreachable', 'timeout')); }, timeoutMs);
-    });
     try {
-      response = await Promise.race([request({
+      response = await request({
         url: `${server}${path}`,
         method: 'POST',
         contentType: 'application/json',
         body: JSON.stringify(body),
         throw: false,
-      }), timeout]);
+      });
     } catch (error) {
-      if (error instanceof LicenseRequestError) throw error;
       throw new LicenseRequestError('unreachable', error instanceof Error && error.message ? error.message : 'network error');
-    } finally {
-      window.clearTimeout(timer);
     }
     const { status } = response;
     const json = readJson(response);
@@ -85,6 +82,20 @@ export function createLicenseClient(request: Request = requestUrl, server: strin
     const refreshSecret = field(json, 'refreshSecret');
     if (!accessToken || !refreshSecret) throw new LicenseRequestError('unreachable', 'unexpected response');
     return { accessToken, refreshSecret };
+  };
+  const post = async (path: string, body: Record<string, string>): Promise<IssuedTokens> => {
+    const sent = send(path, body);
+    let timer: number | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = window.setTimeout(() => { reject(new LicenseRequestError('unreachable', 'timeout', sent)); }, timeoutMs);
+    });
+    // The late answer is handed over with the timeout; nobody else waits on it, so its failure is not unhandled.
+    sent.catch(() => undefined);
+    try {
+      return await Promise.race([sent, timeout]);
+    } finally {
+      window.clearTimeout(timer);
+    }
   };
   return {
     register: (licenseCode, deviceId) => post('/v1/register', { licenseCode, deviceId }),

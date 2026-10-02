@@ -8,13 +8,18 @@
 
 export const LICENSE_STORAGE_KEY = 'mappy-ai-license';
 
-/** What one device keeps. `rejected` is the server's last refusal, kept so a reload still shows it. */
+/**
+ * What one device keeps. `rejected` is the server's last refusal, kept so a reload still shows it. `unverified` is
+ * why a token the server had just issued did not verify with the bundled key, kept so a reload does not read it as
+ * one to refresh again (a plugin update whose key verifies it clears it by verifying).
+ */
 export interface StoredLicense {
   deviceId: string;
   licenseCode?: string;
   accessToken?: string;
   refreshSecret?: string;
   rejected?: string;
+  unverified?: string;
 }
 
 export interface LicenseStore {
@@ -44,10 +49,12 @@ export function parseStoredLicense(text: string | null): StoredLicense | null {
   const accessToken = optionalString(record.accessToken);
   const refreshSecret = optionalString(record.refreshSecret);
   const rejected = optionalString(record.rejected);
+  const unverified = optionalString(record.unverified);
   if (licenseCode) license.licenseCode = licenseCode;
   if (accessToken) license.accessToken = accessToken;
   if (refreshSecret) license.refreshSecret = refreshSecret;
   if (rejected) license.rejected = rejected;
+  if (unverified) license.unverified = unverified;
   return license;
 }
 

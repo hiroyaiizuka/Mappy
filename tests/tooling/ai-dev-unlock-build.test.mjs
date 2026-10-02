@@ -26,6 +26,7 @@ beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'mappy-ai-dev-build-'));
   cpSync(join(project, 'src'), join(root, 'src'), { recursive: true });
   cpSync(join(project, 'esbuild.config.mjs'), join(root, 'esbuild.config.mjs'));
+  cpSync(join(project, 'scripts'), join(root, 'scripts'), { recursive: true });
   cpSync(join(project, 'package.json'), join(root, 'package.json'));
   symlinkSync(join(project, 'node_modules'), join(root, 'node_modules'), 'dir');
 });
@@ -53,6 +54,7 @@ describe('the AI development unlock in the bundle', () => {
     expect(devUnlockErrors(bundle, 'dist/mappy-ai-dev/main.js')).toHaveLength(1);
     expect(devUnlockErrors(bundle, 'dist/mappy-ai-dev/main.js', { expected: true })).toEqual([]);
     expect(existsSync(join(root, 'dist', 'mappy-ai-dev', 'build-meta.json'))).toBe(true);
+    expect(existsSync(join(root, 'dist', 'mappy-ai-dev', 'sources.json'))).toBe(true);
   }, 60_000);
 
   it('the marker the check looks for is the one the unlock carries', () => {

@@ -1,6 +1,7 @@
 import { context } from "esbuild";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { sourcesSha256 } from "./scripts/build-sources.mjs";
 
 const production = process.argv.includes("production");
 // The development unlock of the AI license (docs/architecture.md §11.6): only `MAPPY_AI_DEV_UNLOCK=1` turns it on,
@@ -34,6 +35,10 @@ if (production) {
   try {
     const result = await build.rebuild();
     await writeFile(join(outdir, "build-meta.json"), JSON.stringify(result.metafile, null, 2));
+    // The development bundle records the sources it came from; preflight refuses it once they change.
+    if (devUnlock) {
+      await writeFile(join(outdir, "sources.json"), JSON.stringify({ sha256: sourcesSha256(process.cwd(), result.metafile.inputs) }, null, 2) + "\n");
+    }
   } finally {
     await build.dispose();
   }

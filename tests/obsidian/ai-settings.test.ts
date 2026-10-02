@@ -139,6 +139,20 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
     expect(row(tab.containerEl).status.textContent).toBe('期限が切れています。次に AI を使うときに更新します。');
   });
 
+  it('lets go of a row taken out of the document without its cleanup (a settings search result dropped)', () => {
+    const { tab, move } = mount();
+    const runtime = tab as unknown as HarnessSettingTab;
+    runtime.update();
+    runtime.renderTab();
+    const drawn = row(tab.containerEl).status;
+    tab.containerEl.remove();
+    move({ kind: 'expired' });
+    // Back in the document, the row was let go on the change above: it is not brought up to date any more.
+    document.body.append(tab.containerEl);
+    move({ kind: 'invalid', reason: 'revoked' });
+    expect(drawn.textContent).toBe('未登録です。');
+  });
+
   it('draws the same row through Obsidian 1.13+\'s declarative path, whose cleanup lets the row go', () => {
     const { tab, listeners, move } = mount();
     const runtime = tab as unknown as HarnessSettingTab;

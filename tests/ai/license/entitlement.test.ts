@@ -177,7 +177,7 @@ describe('LicenseEntitlement.load', () => {
     expect(await open().load()).toEqual({ kind: 'expired' });
   });
 
-  it('is invalid when the token the server has just issued does not verify, so it does not refresh on every press', async () => {
+  it('is invalid when the token the server has just issued does not verify, and stays so after a reload, so it does not refresh on every press', async () => {
     const env = await setup();
     const other = await signingKey();
     const entitlement = env.open({ verifier: createTokenVerifier(other.publicKey) });
@@ -185,7 +185,23 @@ describe('LicenseEntitlement.load', () => {
     expect(await entitlement.register('GOOD-CODE')).toEqual({ kind: 'invalid', reason: 'bad signature' });
     env.server.calls.length = 0;
     await entitlement.refresh();
+    const reloaded = env.open({ verifier: createTokenVerifier(other.publicKey) });
+    expect(await reloaded.load()).toEqual({ kind: 'invalid', reason: 'bad signature' });
+    await reloaded.refresh();
     expect(env.server.calls).toEqual([]);
+    // An update whose bundled key verifies the token clears the mark by verifying.
+    expect((await env.open().load()).kind).toBe('active');
+  });
+
+  it('uses tokens it could not store until unload, and says the store failed', async () => {
+    const { open, storage, server } = await setup();
+    // The device ID was stored earlier; now the storage is full.
+    storage.value = { deviceId: 'device-x' };
+    const entitlement = open({ store: storage.window({ failWrites: true }) });
+    await entitlement.load();
+    await expect(entitlement.register('GOOD-CODE')).rejects.toThrow('storage is full');
+    expect(server.calls).toHaveLength(1);
+    expect(entitlement.state().kind).toBe('active');
   });
 
   it('keeps the previous state while verifying again after another window wrote, and moves to its result', async () => {
@@ -391,6 +407,47 @@ describe('LicenseEntitlement.refresh', () => {
     const entitlement = open({ store: storage.window({ failWrites: true }) });
     await entitlement.load();
     expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'storage is full' });
+  });
+
+  it('keeps a secret the server rotated after the request was given up on, so the next refresh is not refused', async () => {
+    const { open, server, clock, storage } = await registered();
+    clock.advance(2 * HOUR);
+    let release!: () => void;
+    server.gate = new Promise<void>(resolve => { release = resolve; });
+    const sent: { answer?: Promise<IssuedTokens> } = {};
+    const slow: LicenseClient = {
+      register: () => Promise.reject(new Error('unused')),
+      refresh: (deviceId, secret) => {
+        sent.answer = server.refresh(deviceId, secret);
+        return Promise.reject(new LicenseRequestError('unreachable', 'timeout', sent.answer));
+      },
+    };
+    const entitlement = open({ client: slow });
+    await entitlement.load();
+    expect(await entitlement.refresh()).toEqual({ kind: 'unreachable', reason: 'timeout' });
+    release();
+    await sent.answer;
+    await settle();
+    expect(storage.value?.refreshSecret).toBe('secret-2');
+    expect(entitlement.state().kind).toBe('active');
+  });
+
+  it('keeps a newer secret another window stored while the old one was refused (no shared lock)', async () => {
+    const { open, clock, storage } = await registered();
+    clock.advance(2 * HOUR);
+    const meanwhile: LicenseClient = {
+      register: () => Promise.reject(new Error('unused')),
+      refresh: () => {
+        // Another vault window refreshed first and stored its new secret; this request carries the old one.
+        storage.value = { ...storage.value!, refreshSecret: 'secret-from-the-other-window' };
+        return Promise.reject(new LicenseRequestError('rejected', 'refresh secret revoked'));
+      },
+    };
+    const entitlement = open({ client: meanwhile, lock: task => task() });
+    await entitlement.load();
+    expect((await entitlement.refresh()).kind).not.toBe('invalid');
+    expect(storage.value).toMatchObject({ refreshSecret: 'secret-from-the-other-window' });
+    expect(storage.value?.rejected).toBeUndefined();
   });
 
   it('sends one request for calls made while one is in flight', async () => {

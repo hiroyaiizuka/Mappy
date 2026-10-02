@@ -47,11 +47,8 @@ export const LICENSE_LOCK_NAME = 'mappy-ai-license';
 function webLock(): LicenseLock {
   const locks = typeof navigator === 'undefined' ? undefined : navigator.locks;
   if (!locks) return task => task();
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    let result!: T;
-    await locks.request(LICENSE_LOCK_NAME, async () => { result = await task(); });
-    return result;
-  };
+  // `request` resolves with what the task resolves with; its typing nests the promise.
+  return <T>(task: () => Promise<T>) => locks.request(LICENSE_LOCK_NAME, task) as Promise<unknown> as Promise<T>;
 }
 
 export interface EntitlementDeps {
@@ -121,7 +118,8 @@ export class LicenseEntitlement implements Entitlement {
   /**
    * Sends the code with this device's ID. A request that fails throws its `LicenseRequestError` and leaves what was
    * stored and the state as they were (a failed first registration is still `unregistered`, not `unreachable`).
-   * The device ID is stored before the request, so a retry after a lost answer is the same device.
+   * The device ID is stored before the request, so a retry after a lost answer is the same device. Tokens the
+   * device cannot store are still used until the plugin unloads, and the failure is thrown so the settings say so.
    */
   register(code: string): Promise<EntitlementState> {
     const licenseCode = code.trim();
@@ -134,8 +132,13 @@ export class LicenseEntitlement implements Entitlement {
       }
       const tokens = await this.client.register(licenseCode, stored.deviceId);
       const next: StoredLicense = { deviceId: stored.deviceId, licenseCode, ...tokens };
-      this.deps.store.write(next);
-      return this.adopt(next, true);
+      try {
+        this.deps.store.write(next);
+      } catch (error) {
+        await this.adopt(next, true);
+        throw error;
+      }
+      return this.adoptIssued(next);
     });
   }
 
@@ -166,23 +169,45 @@ export class LicenseEntitlement implements Entitlement {
       // (2) Again under the lock, for a window that refreshed while this one waited.
       const stored = this.deps.store.read();
       if ((await this.check(stored)).kind !== 'expired' || !stored?.refreshSecret) return this.adopt(stored);
+      const sent = stored.refreshSecret;
       let tokens: IssuedTokens;
       try {
-        tokens = await this.client.refresh(stored.deviceId, stored.refreshSecret);
+        tokens = await this.client.refresh(stored.deviceId, sent);
       } catch (error) {
-        if (error instanceof LicenseRequestError && error.kind === 'rejected') {
-          return this.writeAndAdopt(stored, ({ deviceId, licenseCode }) => ({
-            deviceId, ...(licenseCode ? { licenseCode } : {}), rejected: error.reason,
-          }));
+        if (error instanceof LicenseRequestError && error.kind === 'rejected') return this.refused(stored, sent, error.reason);
+        // Given up on, the request may still rotate the secret on the server: keep what it answers in the end.
+        if (error instanceof LicenseRequestError && error.late) {
+          void error.late.then(late => this.lock(() => this.storeLate(stored, sent, late)), () => undefined);
         }
         return this.settle({ kind: 'unreachable', reason: error instanceof Error ? error.message : String(error) });
       }
-      // (3) Only the token and the secret are written, over what is stored now.
-      return this.writeAndAdopt(stored, latest => {
-        const { rejected: _dropped, ...kept } = latest;
-        return { ...kept, ...tokens };
-      });
+      return this.storeRotated(stored, tokens);
     });
+  }
+
+  /**
+   * (3) The rotated token and secret, written over what is stored now. The server has just accepted `sent` and
+   * rotated it, so this pair is the device's current one whatever another window stored meanwhile.
+   */
+  private storeRotated(stored: StoredLicense, tokens: IssuedTokens): Promise<EntitlementState> {
+    return this.writeAndAdopt(stored, ({ rejected: _rejected, unverified: _unverified, ...kept }) => ({ ...kept, ...tokens }));
+  }
+
+  /**
+   * The answer to a refresh given up on, arriving later: kept only while `sent` is still the stored secret. Once
+   * another refresh has stored a newer pair, this one is older than it.
+   */
+  private storeLate(stored: StoredLicense, sent: string, tokens: IssuedTokens): Promise<EntitlementState> {
+    const latest = this.deps.store.read() ?? stored;
+    if (latest.refreshSecret !== sent) return this.adopt(latest);
+    return this.storeRotated(stored, tokens);
+  }
+
+  /** The server refused `sent`. Only that secret is dropped: a newer one another window stored meanwhile is kept. */
+  private refused(stored: StoredLicense, sent: string, reason: string): Promise<EntitlementState> {
+    const latest = this.deps.store.read() ?? stored;
+    if (latest.refreshSecret !== sent) return this.adopt(latest);
+    return this.writeAndAdopt(stored, ({ deviceId, licenseCode }) => ({ deviceId, ...(licenseCode ? { licenseCode } : {}), rejected: reason }));
   }
 
   /** Write `change(latest)` and verify it as just issued; a store that cannot be written leaves the device `unreachable`. */
@@ -193,7 +218,20 @@ export class LicenseEntitlement implements Entitlement {
     } catch (error) {
       return Promise.resolve(this.settle({ kind: 'unreachable', reason: error instanceof Error ? error.message : String(error) }));
     }
-    return this.adopt(next, true);
+    return this.adoptIssued(next);
+  }
+
+  /** Verify what the server has just issued; a token that does not verify is marked, so a reload keeps it `invalid`. */
+  private async adoptIssued(next: StoredLicense): Promise<EntitlementState> {
+    const state = await this.adopt(next, true);
+    if (state.kind === 'invalid' && !next.rejected && next.accessToken) {
+      try {
+        this.deps.store.write({ ...next, unverified: state.reason });
+      } catch {
+        // Not kept: a reload reads the token as one to refresh, which asks the server again.
+      }
+    }
+    return state;
   }
 
   /** `issued`: the token was just issued by the server (register, refresh), not read back from the store. */
@@ -215,7 +253,10 @@ export class LicenseEntitlement implements Entitlement {
     if (!stored?.refreshSecret) return { kind: 'unregistered' };
     if (!stored.accessToken) return { kind: 'expired' };
     const token = await this.deps.verifier.verify(stored.accessToken);
-    if (token.kind === 'unsigned') return issued ? { kind: 'invalid', reason: token.reason } : { kind: 'expired' };
+    if (token.kind === 'unsigned') {
+      if (issued) return { kind: 'invalid', reason: token.reason };
+      return stored.unverified ? { kind: 'invalid', reason: stored.unverified } : { kind: 'expired' };
+    }
     return this.now() < token.expiresAt ? { kind: 'active', expiresAt: token.expiresAt } : { kind: 'expired' };
   }
 

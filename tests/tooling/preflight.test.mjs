@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { sourcesSha256 } from '../../scripts/build-sources.mjs';
 import {
   allowedCommunityPlugins,
   harnessPaths,
@@ -53,8 +53,12 @@ function addDevBuild(main = 'module.exports = {}; const marker = "mappy-ai-dev-u
   for (const filename of ['manifest.json', 'styles.css']) {
     writeFileSync(join(paths.devDistribution, filename), readFileSync(join(root, filename)));
   }
-  const releaseMainSha256 = createHash('sha256').update(readFileSync(join(root, 'main.js'))).digest('hex');
-  writeJson(join(paths.devDistribution, 'build-info.json'), { id: 'mappy', version: '0.1.0', releaseMainSha256 });
+  // The sources it was built from, as esbuild.config.mjs records them for this bundle.
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'main.ts'), 'export default 1;\n');
+  const inputs = { 'src/main.ts': {} };
+  writeJson(join(paths.devDistribution, 'build-meta.json'), { inputs, outputs: {} });
+  writeJson(join(paths.devDistribution, 'sources.json'), { sha256: sourcesSha256(root, inputs) });
 }
 
 function readEnabled() {
@@ -124,7 +128,7 @@ describe('preflight community plugin check', () => {
 
 describe('preflight CLI', () => {
   beforeEach(() => {
-    addScripts('preflight.mjs', 'validate-release.mjs');
+    addScripts('preflight.mjs', 'validate-release.mjs', 'build-sources.mjs');
   });
 
   it('passes the Excalidraw-enabled vault and reports the enabled plugins', () => {
@@ -146,7 +150,7 @@ describe('preflight CLI', () => {
 
 describe('prepare-test-vault CLI', () => {
   beforeEach(() => {
-    addScripts('preflight.mjs', 'validate-release.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
+    addScripts('preflight.mjs', 'validate-release.mjs', 'build-sources.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
     cpSync(fixturesSource, paths.fixtureSource, { recursive: true });
   });
 
@@ -183,7 +187,7 @@ describe('prepare-test-vault CLI', () => {
 
 describe('the AI development build in the test vault (LEV-273, docs/architecture.md §11.6)', () => {
   beforeEach(() => {
-    addScripts('preflight.mjs', 'validate-release.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
+    addScripts('preflight.mjs', 'validate-release.mjs', 'build-sources.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
     cpSync(fixturesSource, paths.fixtureSource, { recursive: true });
   });
 
@@ -234,15 +238,23 @@ describe('the AI development build in the test vault (LEV-273, docs/architecture
     expect(result.stderr).toContain('manifest.json: source and dist/mappy-ai-dev differ');
   });
 
-  it('refuses an ai-dev bundle left from other sources than the root build, or without its build info', () => {
+  it('refuses an ai-dev bundle built from other sources than the ones on disk, or without its record of them', () => {
     addDevBuild();
-    // The root main.js was rebuilt (npm run package) after the ai-dev bundle: it is no longer the same sources.
-    writeFileSync(join(root, 'main.js'), 'module.exports = { newer: true };\n');
-    expect(() => runPreflight(paths, { build: 'ai-dev' })).toThrow();
-    expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('was not built from the sources of the root main.js');
+    expect(runScript('prepare-test-vault.mjs', '--ai-dev').status).toBe(0);
+    // A source changed after the bundle was built (an edit and `npm run check`, without the ai-dev build).
+    writeFileSync(join(root, 'src', 'main.ts'), 'export default 2;\n');
+    expect(() => runPreflight(paths, { build: 'ai-dev' })).toThrow('was built from other sources than the ones on disk');
+    expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('was built from other sources');
     addDevBuild();
-    rmSync(join(paths.devDistribution, 'build-info.json'));
-    expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('build-info.json');
+    rmSync(join(paths.devDistribution, 'sources.json'));
+    expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('cannot tell which sources it was built from');
+  });
+
+  it('names the ai-dev prepare when the installed ai-dev bytes differ', () => {
+    addDevBuild();
+    expect(runScript('prepare-test-vault.mjs', '--ai-dev').status).toBe(0);
+    writeFileSync(join(paths.installed, 'main.js'), 'stale\n');
+    expect(() => runPreflight(paths, { build: 'ai-dev' })).toThrow('installed bytes differ; run npm run harness:prepare:ai-dev.');
   });
 
   it('refuses an unknown build record and unknown arguments', () => {
