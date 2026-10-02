@@ -52,6 +52,10 @@
 
 {Tell the story in the order that makes it easiest to understand. It may make sense to show files first, or it may make sense to establish a data structure, SQL table, or API contract first. All views and subheadings are optional. Use only the views that help explain the pr, and name or order them based on the change rather than a fixed template. It should be written as one human would write to another. Use `diff` for a focused change to an existing shape. Show the complete target shape in a language-specific or `text` block when it is new, high-level, or clearer without diff notation.}
 
+## 本人の判断（未決）
+
+{本人の判断が要るときだけ書く（AGENTS.md）。問いごとに、問い・選択肢・仮の答え（推奨）とその理由・推奨と違ったときに直す場所。無ければ見出しごと省く。}
+
 ## コードレビュー
 
 コードレビュー: 指摘 N 件、対応 M 件、見送り K 件（理由）
