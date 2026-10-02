@@ -459,7 +459,8 @@ export function planFileRoot(doc: MindDocument, title: string, refusal: string, 
   assertSingleLine(title);
   const body = doc.source.slice(doc.root.bodyFrom);
   const offset = doc.root.bodyFrom + body.length - body.replace(/^(?:[ \t]*\r?\n)*/u, '').length;
-  const insert = insertion(doc.source, offset, `## ${title}`, doc.eol, true);
+  // Trimmed, as the heading reads it: a file name made outside Obsidian can end in a space.
+  const insert = insertion(doc.source, offset, `## ${title.trim()}`, doc.eol, true);
   const heading: TextEdit = { from: offset, to: offset, text: insert.text };
   const after = parseMarkdown(applyEdits(doc.source, [heading]), doc.root.title, doc, 'list', [heading]);
   const root = projectMap(after).root;

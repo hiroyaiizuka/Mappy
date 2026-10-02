@@ -101,6 +101,11 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
       .toBe('---\nmappy: true\n---\n\n## 新しい名前\n\n   ');
   });
 
+  // Code review of LEV-301 (3rd): a file name made outside Obsidian can end in a space; the heading line does not keep it.
+  it('writes the file name trimmed', () => {
+    expect(run(parse('', 'foo '), { type: 'add-child', nodeId: 'root', title: 'メイントピック' }).source).toBe('## foo\n\n- メイントピック');
+  });
+
   it('writes an empty item for the inline editor when no text is given, as Tab plans it before naming it', () => {
     expect(run(parse(''), { type: 'add-child', nodeId: 'root' }).source).toBe(`## ${FILE}\n\n- `);
   });
