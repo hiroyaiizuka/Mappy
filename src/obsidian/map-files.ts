@@ -101,6 +101,14 @@ export async function resolveNewMapFolder(app: App, folder: string, sourcePath: 
   return created;
 }
 
+/**
+ * The path a new map's "same folder as current file" counts from: the active note, else whatever file is active (a
+ * canvas or a PDF, for which the plugin's active note is null — LEV-300's ribbon makes a map from those too), else none.
+ */
+export function newMapSourcePath(app: App, note: TFile | null): string {
+  return (note ?? app.workspace.getActiveFile())?.path ?? '';
+}
+
 /** Create without overwriting, in the configured folder (or Obsidian's), with the configured layout. */
 export async function createMindmapFile(app: App, sourcePath: string, options: NewMapOptions = {}): Promise<TFile> {
   // The file is named in the app's language (architecture.md §9e); the note's root is the central topic, not the file
