@@ -30,6 +30,8 @@ import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MapEmbeds } from "../../src/ui/map-embed";
 import { nodeOf } from "../../src/ui/map-events";
 import { MindmapView, type MapMenuAction } from "../../src/ui/mindmap-view";
+import { FakeRunner } from "../../src/ui/ai/fake-runner";
+import type { AiServices } from "../../src/ui/ai/services";
 import { paintMap } from "../../src/ui/offscreen-map";
 
 declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
@@ -91,6 +93,25 @@ const activityEl = mustFind<HTMLElement>("#harness-activity");
 const buildEl = mustFind<HTMLElement>("#harness-build");
 
 let view: MindmapView | null = null;
+
+/**
+ * The map's AI on this page (LEV-271): off until `h.ai.enable()`, so the other captures see the map as before. The
+ * license is always active and both engines are `FakeRunner`s (no CLI, no license server: the page has neither);
+ * `h.ai.enable(interval)` sets how slowly the fake goes through its stages.
+ */
+let aiServices: AiServices | null = null;
+function harnessAi(interval: number): AiServices {
+  const runner = new FakeRunner({ interval });
+  return {
+    state: () => ({ kind: "active" }),
+    onChange: () => () => undefined,
+    refresh: () => Promise.resolve({ kind: "active" }),
+    createRunner: () => runner,
+    defaultEngine: () => "claude",
+    readAttachment: file => Promise.resolve({ kind: file.extension === "pdf" ? "pdf" : "note", label: file.path, text: app.content(file) }),
+    fakeRunner: runner,
+  };
+}
 let current: HarnessFixture | null = null;
 let openCount = 0;
 /** What the settings' "テーマ" would hold; applied to every view this page opens. */
@@ -282,6 +303,7 @@ async function openView(): Promise<MindmapView> {
   // The plugin applies the settings when it constructs a view (src/main.ts); the page does the same.
   opened.setTheme(mapTheme);
   opened.setVisibleLayouts(visibleLayouts);
+  opened.setAi(aiServices);
   pane.replaceChildren(opened.containerEl);
   opened.load();
   await opened.onOpen();
@@ -631,6 +653,21 @@ const api = {
   setMapTheme,
   setVisibleLayouts,
   layoutButtons,
+  /** The map's AI with the fake engine (LEV-271): the button, the card and the draft's nodes as on screen. */
+  ai: {
+    enable: (interval = 150) => { aiServices = harnessAi(interval); view?.setAi(aiServices); },
+    disable: () => { aiServices = null; view?.setAi(null); },
+    button: () => {
+      const button = pane.querySelector<HTMLElement>(".mappy-ai-button");
+      return button && !button.hidden ? plainRect(button) : null;
+    },
+    card: () => {
+      const card = pane.querySelector<HTMLElement>(".mappy-ai-card");
+      return card && !card.hidden ? { rect: plainRect(card), text: card.textContent ?? "", phase: card.dataset.phase ?? "" } : null;
+    },
+    draft: () => Array.from(pane.querySelectorAll<HTMLElement>(".mappy-ai-draft"), element => ({ text: element.textContent ?? "", rect: plainRect(element) })),
+    draftEdges: () => pane.querySelectorAll(".mappy-edges path.is-ai-draft").length,
+  },
   /** The bar's expected labels, in LAYOUT_MODES order, from the one definition in core. */
   layoutLabels: LAYOUT_MODES.map(layoutLabel),
   /** Theme classes as they are now: the page's body and the map container. */

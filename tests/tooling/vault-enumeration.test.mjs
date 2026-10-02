@@ -51,6 +51,9 @@ const ALLOWED = {
   "src/ui/link-suggest.ts": ["getFiles"],
   // Calling a map (§5 M12): the candidates are the Markdown notes marked `mappy: true`.
   "src/obsidian/map-search.ts": ["getMarkdownFiles"],
+  // The AI input's attachment (LEV-271, docs/architecture.md §11.2): the candidates are the notes and PDFs, read only
+  // when the license is active and the user presses 添付. README's disclosure of the AI (#41〜#48) comes with LEV-272.
+  "src/ui/ai/ai-controller.ts": ["getFiles"],
 };
 
 async function sources(dir) {
