@@ -1,6 +1,6 @@
 import { createLicenseClient, LicenseRequestError, type IssuedTokens, type LicenseClient } from './client';
 import { DevUnlockEntitlement } from './dev-unlock';
-import { createWindowLicenseStore, type LicenseStore, type StoredLicense } from './store';
+import { createLicenseStore, type LicenseStore, type StoredLicense } from './store';
 import { createTokenVerifier, type TokenVerifier } from './token';
 
 /** The reason a registration failed; the client stays behind this file (tests/tooling/ai-boundaries.test.mjs). */
@@ -42,7 +42,7 @@ export function allowsAiRunner(state: EntitlementState): boolean {
 /** Runs `task` while no other window of this device refreshes: Web Locks, or nothing where the API is missing. */
 export type LicenseLock = <T>(task: () => Promise<T>) => Promise<T>;
 
-export const LICENSE_LOCK_NAME = 'mappy-ai-license';
+export const LICENSE_LOCK_NAME = 'mappy-ai-license-refresh';
 
 function webLock(): LicenseLock {
   const locks = typeof navigator === 'undefined' ? undefined : navigator.locks;
@@ -362,5 +362,5 @@ export class LicenseEntitlement implements Entitlement {
  */
 export function createEntitlement(): Entitlement {
   if (MAPPY_AI_DEV_UNLOCK) return new DevUnlockEntitlement();
-  return new LicenseEntitlement({ store: createWindowLicenseStore(), verifier: createTokenVerifier() });
+  return new LicenseEntitlement({ store: createLicenseStore(), verifier: createTokenVerifier() });
 }

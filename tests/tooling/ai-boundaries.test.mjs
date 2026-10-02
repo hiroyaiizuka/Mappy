@@ -25,6 +25,13 @@ function sourceFiles(directory) {
 
 const posix = path => path.split(sep).join('/');
 
+/** The code without its comments, so a comment naming the storage does not count as touching it. */
+function stripComments(text) {
+  const source = ts.createSourceFile('file.ts', text, ts.ScriptTarget.Latest, true);
+  const printer = ts.createPrinter({ removeComments: true });
+  return printer.printFile(source);
+}
+
 /** Every value import of a file under src/: the resolved module (src-relative, without .ts) or the bare name, and its named values. */
 function valueImports(file, text = readFileSync(file, 'utf8')) {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -80,6 +87,17 @@ describe('the AI feature\'s doors to the outside (§11.7 step 1)', { timeout: 60
 
   it('only src/ai/license/entitlement.ts imports src/ai/license/client.ts', () => {
     expect(importersOf('ai/license/client')).toEqual(['src/ai/license/entitlement.ts']);
+  });
+
+  it('reads and writes the license in src/ai/license/store.ts only, which alone picks the storage (2026-10-02 decision)', () => {
+    // The storage is to follow TaskChute for Obsidian's once the engineer says where that is: one file to change.
+    const touching = sourceFiles(src).filter(file => {
+      const text = readFileSync(file, 'utf8');
+      return /\blocalStorage\b|LICENSE_STORAGE_KEY|['"`]mappy-ai-license['"`]|\bcreateWindowLicenseStore\b/u.test(stripComments(text));
+    }).map(file => posix(relative(project, file)));
+    expect(touching).toEqual(['src/ai/license/store.ts']);
+    expect(importersOf('ai/license/store', entry => entry.names.some(name => name !== 'createLicenseStore'))).toEqual([]);
+    expect(importersOf('ai/license/store')).toEqual(['src/ai/license/entitlement.ts']);
   });
 
   it('imports Obsidian\'s requestUrl in the license client and the export\'s remote images only', () => {

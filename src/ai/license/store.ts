@@ -2,8 +2,12 @@
  * Where the license lives (docs/architecture.md §11.6「保存先」): `window.localStorage`, one entry per device and
  * shared by every vault, because the license counts devices (an entry per vault would register each vault as a
  * device). Not `data.json`: sync would copy the refresh secret, which rotates on every refresh, to other devices.
- * Every caller goes through `LicenseStore`, so moving to `app.saveLocalStorage` is a new implementation only.
  * Other plugins in the same Obsidian can read either place (README #45).
+ *
+ * The person decided on 2026-10-02 to keep the license where TaskChute for Obsidian keeps its own; until the engineer
+ * says where that is, it stays here. Reading and writing the license happen in this file only
+ * (tests/tooling/ai-boundaries.test.mjs), and `createLicenseStore` is the one place that picks the storage, so
+ * moving it (to `app.saveLocalStorage`, say) is a new `LicenseStore` here and a change to that function.
  */
 
 export const LICENSE_STORAGE_KEY = 'mappy-ai-license';
@@ -56,6 +60,11 @@ export function parseStoredLicense(text: string | null): StoredLicense | null {
   if (rejected) license.rejected = rejected;
   if (unverified) license.unverified = unverified;
   return license;
+}
+
+/** The storage the plugin keeps its license in: the one place to change when it moves (see the top of this file). */
+export function createLicenseStore(): LicenseStore {
+  return createWindowLicenseStore();
 }
 
 /**
