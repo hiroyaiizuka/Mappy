@@ -94,6 +94,23 @@ export const en = {
   setLockedDefault: (layout: string) => `${layout} is the default layout for new maps, so it can't be hidden.`,
   setSaveFailed: "Couldn't save the settings.",
 
+  // The AI section of the settings (src/obsidian/ai-settings.ts, docs/architecture.md §11.6).
+  setAi: "AI",
+  setAiDesc: "AI features are unlocked with an activation code. Mappy contacts the license server only when you register a code and when an expired token is refreshed, and sends only the code, a random device ID and the refresh secret.",
+  setAiDevUnlock: "Development unlock is on: this build treats AI as licensed and is never released.",
+  setAiLicense: "License code",
+  setAiLicensePlaceholder: "Enter your license code",
+  setAiRegister: "Register",
+  aiChecking: "Checking the license…",
+  aiUnregistered: "Not registered.",
+  aiActive: (until: string) => `Active until ${until}.`,
+  aiExpired: "Expired. It is refreshed when you next use AI.",
+  aiUnreachable: (reason: string) => `Couldn't reach the license server (${reason}). It is tried again when you next use AI.`,
+  aiInvalid: (reason: string) => `Not valid (${reason}). Enter your license code again.`,
+  aiRegisterUnreachable: (reason: string) => `Couldn't reach the license server (${reason}).`,
+  aiRegisterRejected: (reason: string) => `The code wasn't accepted (${reason}).`,
+  aiRegisterFailed: (reason: string) => `Couldn't register the code (${reason}).`,
+
   // Excalidraw (src/obsidian/excalidraw-bridge.ts).
   dropStalled: "Some nodes haven't finished drawing, so the embed fits the map as far as it was drawn.",
   excalidrawInsertFailed: "Couldn't insert into Excalidraw.",

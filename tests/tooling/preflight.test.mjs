@@ -8,6 +8,7 @@ import {
   allowedCommunityPlugins,
   harnessPaths,
   markerContents,
+  readInstalledBuild,
   pluginFiles,
   runPreflight,
 } from '../../scripts/preflight.mjs';
@@ -44,6 +45,15 @@ function addVault(enabled) {
   writeJson(paths.communityPlugins, enabled);
 }
 
+/** dist/mappy-ai-dev as `npm run harness:prepare:ai-dev` leaves it: the unlocked bundle beside the root manifest and styles. */
+function addDevBuild(main = 'module.exports = {}; const marker = "mappy-ai-dev-unlock";\n') {
+  mkdirSync(paths.devDistribution, { recursive: true });
+  writeFileSync(join(paths.devDistribution, 'main.js'), main);
+  for (const filename of ['manifest.json', 'styles.css']) {
+    writeFileSync(join(paths.devDistribution, filename), readFileSync(join(root, filename)));
+  }
+}
+
 function readEnabled() {
   return JSON.parse(readFileSync(paths.communityPlugins, 'utf8'));
 }
@@ -56,8 +66,8 @@ function addScripts(...filenames) {
   }
 }
 
-function runScript(filename) {
-  return spawnSync(process.execPath, [join('scripts', filename)], { cwd: root, encoding: 'utf8' });
+function runScript(filename, ...args) {
+  return spawnSync(process.execPath, [join('scripts', filename), ...args], { cwd: root, encoding: 'utf8' });
 }
 
 beforeEach(() => {
@@ -111,7 +121,7 @@ describe('preflight community plugin check', () => {
 
 describe('preflight CLI', () => {
   beforeEach(() => {
-    addScripts('preflight.mjs');
+    addScripts('preflight.mjs', 'validate-release.mjs');
   });
 
   it('passes the Excalidraw-enabled vault and reports the enabled plugins', () => {
@@ -133,7 +143,7 @@ describe('preflight CLI', () => {
 
 describe('prepare-test-vault CLI', () => {
   beforeEach(() => {
-    addScripts('preflight.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
+    addScripts('preflight.mjs', 'validate-release.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
     cpSync(fixturesSource, paths.fixtureSource, { recursive: true });
   });
 
@@ -165,5 +175,67 @@ describe('prepare-test-vault CLI', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('community-plugins.json: expected an array of plugin IDs.');
     expect(readEnabled()).toEqual({ mappy: true });
+  });
+});
+
+describe('the AI development build in the test vault (LEV-273, docs/architecture.md §11.6)', () => {
+  beforeEach(() => {
+    addScripts('preflight.mjs', 'validate-release.mjs', 'prepare-test-vault.mjs', 'performance-fixtures.mjs');
+    cpSync(fixturesSource, paths.fixtureSource, { recursive: true });
+  });
+
+  it('reads a vault without .mappy-harness-build as holding the release build, which the plain preflight passes as before', () => {
+    addVault(['mappy']);
+    expect(readInstalledBuild(paths)).toBe('release');
+    expect(runPreflight(paths)).toMatchObject({ build: 'release' });
+    const result = runScript('preflight.mjs');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('main.js: ');
+    expect(result.stdout).toContain('(source = dist = test-vault)');
+  });
+
+  it('installs dist/mappy-ai-dev with --ai-dev, records it, and leaves the release comparison to the release vault', () => {
+    addDevBuild();
+    const prepared = runScript('prepare-test-vault.mjs', '--ai-dev');
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(readFileSync(paths.buildMark, 'utf8')).toBe('ai-dev\n');
+    expect(readFileSync(join(paths.installed, 'main.js'), 'utf8')).toContain('mappy-ai-dev-unlock');
+    expect(runPreflight(paths, { build: 'ai-dev' })).toMatchObject({ build: 'ai-dev' });
+    // The release preflight (and every case that needs it) refuses the unlocked vault instead of comparing it.
+    expect(() => runPreflight(paths)).toThrow('test-vault holds the ai-dev build, not release; run npm run harness:prepare.');
+    const plain = runScript('preflight.mjs');
+    expect(plain.status).toBe(1);
+    const dev = runScript('preflight.mjs', '--ai-dev');
+    expect(dev.status, dev.stderr).toBe(0);
+    expect(dev.stdout).toContain('Preflight passed: mappy 0.1.0 (ai-dev).');
+    // Back to the release build: the plain prepare records it again.
+    const back = runScript('prepare-test-vault.mjs');
+    expect(back.status, back.stderr).toBe(0);
+    expect(readFileSync(paths.buildMark, 'utf8')).toBe('release\n');
+    expect(runPreflight(paths)).toMatchObject({ build: 'release' });
+  });
+
+  it('refuses to install a dist/mappy-ai-dev that lacks the unlock (a release bundle copied there)', () => {
+    addDevBuild('module.exports = {};\n');
+    const result = runScript('prepare-test-vault.mjs', '--ai-dev');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('lacks the AI development unlock');
+  });
+
+  it('refuses an ai-dev bundle whose manifest is not the root one', () => {
+    addDevBuild();
+    writeFileSync(join(paths.devDistribution, 'manifest.json'), '{}\n');
+    expect(() => runPreflight(paths, { build: 'ai-dev' })).toThrow();
+    const result = runScript('prepare-test-vault.mjs', '--ai-dev');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('manifest.json: source and dist/mappy-ai-dev differ');
+  });
+
+  it('refuses an unknown build record and unknown arguments', () => {
+    addVault(['mappy']);
+    writeFileSync(paths.buildMark, 'debug\n');
+    expect(() => runPreflight(paths)).toThrow('Unknown harness build "debug"');
+    expect(runScript('preflight.mjs', '--dev').status).toBe(1);
+    expect(runScript('prepare-test-vault.mjs', '--dev').status).toBe(1);
   });
 });

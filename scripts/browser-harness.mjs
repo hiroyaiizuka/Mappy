@@ -65,6 +65,8 @@ function createContext() {
     plugins: [rawLoader],
     define: {
       __MAPPY_HARNESS_BUILD__: JSON.stringify({ commit: commitHash(), builtAt: new Date().toISOString() }),
+      // As the plugin's release build defines it (esbuild.config.mjs): this page never unlocks AI.
+      MAPPY_AI_DEV_UNLOCK: 'false',
     },
     logLevel: 'info',
   });

@@ -507,6 +507,19 @@ describe('distribution artifact validation', () => {
     }
   });
 
+  it('rejects a packaged main.js that carries the AI development unlock (LEV-273), from the API and the CLI', () => {
+    addArtifacts();
+    const unlocked = 'module.exports = {};\nconst marker = "mappy-ai-dev-unlock";\n';
+    writeFileSync(join(root, 'main.js'), unlocked);
+    writeFileSync(join(root, 'dist', 'mappy', 'main.js'), unlocked);
+    expect(validateRelease(root, { artifacts: true })).toEqual([
+      'dist/mappy/main.js: contains the AI development unlock ("mappy-ai-dev-unlock"); build it without MAPPY_AI_DEV_UNLOCK.',
+    ]);
+    const packaging = spawnSync(process.execPath, [cliPath, '--artifacts'], { cwd: root, encoding: 'utf8' });
+    expect(packaging.status).toBe(1);
+    expect(packaging.stderr).toContain('contains the AI development unlock');
+  });
+
   it('rejects missing and empty distribution artifacts', () => {
     addArtifacts();
     rmSync(join(root, 'dist', 'mappy', 'main.js'));

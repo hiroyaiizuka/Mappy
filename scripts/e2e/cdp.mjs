@@ -11,7 +11,7 @@
  *   MAPPY_E2E_VAULT     absolute path of the vault the window must have open (default: this project's test-vault)
  *   MAPPY_E2E_LANGUAGE  the app language the window must run in (default ja; LEV-226)
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +42,13 @@ export const APP_LANGUAGE = "[window.moment?.locale?.() ?? null, window.localSto
 if (!existsSync(join(VAULT, '.mappy-generated'))) {
   throw new Error(`${VAULT} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
 }
+/**
+ * The build the vault holds, as `prepare-test-vault` records it (`release`, or `ai-dev` for the AI development
+ * unlock, docs/architecture.md §11.6); a vault prepared before the record holds `release`. `connect` refuses a vault
+ * holding another build than the case asks for, so no case reports on the unlocked build by mistake.
+ */
+const buildMark = join(VAULT, '.mappy-harness-build');
+export const HARNESS_BUILD = existsSync(buildMark) ? readFileSync(buildMark, 'utf8').trim() : 'release';
 
 /** modifier bits of Input.dispatchKeyEvent: Alt=1, Ctrl=2, Meta=4, Shift=8 */
 const KEYS = {
@@ -60,10 +67,15 @@ const KEYS = {
  * With `appless` as well, the popout has no `app` of its own to name its vault (Obsidian 1.14's settings window,
  * E72): the mark alone identifies it, so the case makes the mark its own run's (another vault's Obsidian may share the port).
  *
+ * `build`: the build the vault must hold (`HARNESS_BUILD`); only the AI cases ask for `ai-dev`.
+ *
  * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, E69 and E71, which switch it (language.mjs), pass the
  * one they switched to, and `null` to take the window in whatever language it is (to put it back).
  */
-export async function connect({ popout, appless = false, language: expected = LANGUAGE } = {}) {
+export async function connect({ popout, appless = false, language: expected = LANGUAGE, build = 'release' } = {}) {
+  if (build !== HARNESS_BUILD) {
+    throw new Error(`${VAULT} holds the ${HARNESS_BUILD} build, not ${build}; run npm run ${build === 'release' ? 'harness:prepare' : 'harness:prepare:ai-dev'} and restart Obsidian. No action taken.`);
+  }
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
@@ -137,6 +149,13 @@ export async function connect({ popout, appless = false, language: expected = LA
         };
         socket.addEventListener('message', receive);
       }),
+      /** Every CDP event named `method` until the connection closes (e.g. `Network.requestWillBeSent`). */
+      onEvent: (method, handler) => {
+        socket.addEventListener('message', event => {
+          const message = JSON.parse(event.data);
+          if (message.method === method) handler(message.params);
+        });
+      },
       /**
        * A key as the keyboard sends it, so Obsidian's own keymap sees it (a synthesized keydown does not). With
        * `text` (`'\r'` for Enter) the key also types it, so the default action runs where nothing prevents it:
