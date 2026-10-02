@@ -95,7 +95,7 @@ export const en = {
   setSaveFailed: "Couldn't save the settings.",
 
   // The AI runner's rows in the settings (src/ai/obsidian/runner-settings.ts, docs/architecture.md §11.3).
-  aiUnsupported: "AI features run only in the desktop app on macOS.",
+  aiUnsupported: "AI features run only in the desktop app, and not on Windows yet.",
   aiNoNode: "This app can't start other programs, so AI features are off.",
   aiEngine: "AI engine",
   aiEngineDesc: "The command line tool that answers. It runs with your own login, read only, in an empty temporary folder.",

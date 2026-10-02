@@ -107,6 +107,7 @@ export function claudeReader(): StreamReader {
 
 export function codexReader(): StreamReader {
   let last: string | null = null;
+  let completed = false;
   let error: string | null = null;
   let notLoggedIn = false;
   return {
@@ -135,6 +136,9 @@ export function codexReader(): StreamReader {
           }
           return [];
         }
+        case 'turn.completed':
+          completed = true;
+          return [];
         case 'turn.failed': {
           const message = string(record(event.error)?.message) || 'turn failed';
           error = message;
@@ -145,6 +149,7 @@ export function codexReader(): StreamReader {
           return [];
       }
     },
-    outcome: () => ({ text: error === null ? last : null, notLoggedIn, error }),
+    // The last message is the answer only once the turn completed (a stream cut short leaves a preamble last).
+    outcome: () => ({ text: error === null && completed ? last : null, notLoggedIn, error }),
   };
 }

@@ -43,13 +43,15 @@ export function neutralizeItemText(text: string): string {
 interface Line { indent: number; text: string }
 
 function build(lines: readonly Line[], depth: number): OutlineItem[] {
-  const positive = lines.map(line => line.indent).filter(indent => indent > 0);
+  // Indentation counts from the shallowest item (a list indented as a whole is still a list of siblings).
+  const shallowest = lines.length > 0 ? Math.min(...lines.map(line => line.indent)) : 0;
+  const positive = lines.map(line => line.indent - shallowest).filter(indent => indent > 0);
   const unit = positive.length > 0 ? Math.min(...positive) : 1;
   const roots: OutlineItem[] = [];
   const stack: OutlineItem[] = [];
   for (const line of lines) {
     // Never more than one level below the item before it, never deeper than `depth`.
-    const level = Math.min(Math.round(line.indent / unit), stack.length, depth - 1);
+    const level = Math.min(Math.round((line.indent - shallowest) / unit), stack.length, depth - 1);
     const item: OutlineItem = { text: line.text, children: [] };
     stack.length = level;
     const parent = stack[level - 1];

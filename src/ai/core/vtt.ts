@@ -30,7 +30,10 @@ export function vttLines(vtt: string): { at: number; text: string }[] {
   const lines: { at: number; text: string }[] = [];
   let at: number | null = null;
   let inNote = false;
-  for (const raw of vtt.replace(/^\uFEFF/u, '').split(/\r?\n/u)) {
+  const rows = vtt.replace(/^\uFEFF/u, '').split(/\r?\n/u);
+  for (const [index, raw] of rows.entries()) {
+    // A cue's optional identifier (`2` in a track converted from SRT) is the line just before its timing.
+    if (CUE.test(rows[index + 1] ?? '') && !CUE.test(raw)) continue;
     const cue = raw.match(CUE);
     if (cue) {
       at = Number(cue[1] ?? 0) * 3600 + Number(cue[2]) * 60 + Number(cue[3]);

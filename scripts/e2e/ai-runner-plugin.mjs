@@ -47,17 +47,24 @@ export default class AiRunnerProbe extends Plugin {
       setPrefs: next => { prefs = { ...prefs, ...next }; },
       spawned: () => spawned.map(({ chunks, ...rest }) => ({ ...rest, chunks: chunks.length, bytes: chunks.reduce((sum, [, size]) => sum + size, 0) })),
       results,
-      /** Starts a run under `id` (the CDP call returns at once; poll `results[id]`). */
-      start: (id, request, cancelAfterMs) => {
+      /**
+       * Starts a run under `id` (the CDP call returns at once; poll `results[id]`). `cancelAfterStartMs`: abort that
+       * long after the runner reports `starting`, so a CLI is running when the cancel lands.
+       */
+      start: (id, request, cancelAfterStartMs) => {
         const runner = factory.create();
         if (!runner) { results[id] = { error: `no runner: ${factory.availability()}` }; return; }
         const controller = new AbortController();
         const progress = [];
         const started = Date.now();
         const from = spawned.length;
-        if (cancelAfterMs) setTimeout(() => { controller.abort(); }, cancelAfterMs);
         results[id] = { running: true };
-        runner.run(request, step => { progress.push({ ms: Date.now() - started, ...step }); }, controller.signal).then(result => {
+        let armed = false;
+        const onProgress = step => {
+          progress.push({ ms: Date.now() - started, ...step });
+          if (cancelAfterStartMs && step.stage === 'starting' && !armed) { armed = true; setTimeout(() => { controller.abort(); }, cancelAfterStartMs); }
+        };
+        runner.run(request, onProgress, controller.signal).then(result => {
           const mine = spawned.slice(from);
           const gaps = mine.map(entry => {
             const times = [entry.at, ...entry.chunks.map(([time]) => time)];

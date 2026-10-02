@@ -61,7 +61,11 @@ export function runCli(host: NodeHost, spec: CliSpec, onLine: (line: string) => 
       stop = end;
       if (pid === undefined) { finish(end); return; }
       host.killGroup(pid, 'SIGTERM');
-      timers.push(window.setTimeout(() => { host.killGroup(pid, 'SIGKILL'); }, LIMITS.killGraceMs));
+      timers.push(window.setTimeout(() => {
+        host.killGroup(pid, 'SIGKILL');
+        // A descendant that left the group can hold the pipes open, and then 'close' never comes: settle anyway.
+        timers.push(window.setTimeout(() => { finish(end); }, LIMITS.killGraceMs));
+      }, LIMITS.killGraceMs));
     };
     onAbort = (): void => { halt({ kind: 'cancelled' }); };
     signal.addEventListener('abort', onAbort);

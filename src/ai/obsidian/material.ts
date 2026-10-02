@@ -1,6 +1,6 @@
 import { TFile, loadPdfJs, type App } from 'obsidian';
-import type { AiFailure } from '../contract';
 import { LIMITS } from '../core/launch';
+import type { MaterialText } from '../core/material-text';
 
 /**
  * The materials that come from the vault (docs/architecture.md §11.2), read through Obsidian's API: a PDF's text
@@ -8,10 +8,7 @@ import { LIMITS } from '../core/launch';
  * editor's unsaved text). YouTube goes through yt-dlp in `src/ai/host/`.
  */
 
-export type MaterialText =
-  | { kind: 'ok'; text: string }
-  | { kind: 'cancelled' }
-  | { kind: 'failed'; reason: AiFailure; detail: string };
+export type { MaterialText } from '../core/material-text';
 
 export interface VaultMaterials {
   pdf(path: string, signal: AbortSignal): Promise<MaterialText>;

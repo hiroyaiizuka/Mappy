@@ -1,6 +1,6 @@
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner } from './contract';
-import { claudeReader, codexReader } from './core/events';
-import { LIMITS, claudeInvocation, codexInvocation, launchEnv, totalTimeoutMs, type Invocation } from './core/launch';
+import { claudeReader, codexReader, type StreamOutcome } from './core/events';
+import { LIMITS, claudeInvocation, codexInvocation, dirname, launchEnv, totalTimeoutMs, type Invocation } from './core/launch';
 import { outlineResult } from './core/outline';
 import { buildPrompt, type PromptLanguage } from './core/prompt';
 import { youtubeVideoUrl } from './core/youtube';
@@ -66,18 +66,30 @@ async function prepareMaterials(
   return { kind: 'ok', materials: ready };
 }
 
-async function invocationFor(deps: CliRunnerDeps, request: AiRequest, cwd: string): Promise<Invocation | null> {
+/** The invocation, or why there is none: the engine is not found, or it needs a node that is not found. */
+async function invocationFor(deps: CliRunnerDeps, request: AiRequest, cwd: string): Promise<Invocation | 'missing' | 'no-node'> {
   const prefs = deps.prefs();
   const paths = deps.paths();
+  let invocation: Invocation;
+  let node: string | null;
   if (request.engine === 'claude') {
     const claude = await locateClaude(deps.host, paths.claude);
-    return claude && claudeInvocation(claude.file, { model: prefs.claudeModel, webSearch: request.webSearch, ...(claude.node === undefined ? {} : { node: claude.node }) });
+    if (claude === null) return 'missing';
+    if (claude === 'no-node') return 'no-node';
+    node = claude.node;
+    invocation = claudeInvocation(claude.file, { model: prefs.claudeModel, webSearch: request.webSearch, ...(claude.script && claude.node !== null ? { node: claude.node } : {}) });
+  } else {
+    const codex = await locateCodex(deps.host, paths.codex);
+    if (codex === null) return 'missing';
+    if (codex === 'no-node') return 'no-node';
+    node = codex.node;
+    invocation = codexInvocation(codex.launch, { model: prefs.codexModel, webSearch: request.webSearch, cwd });
   }
-  const codex = await locateCodex(deps.host, paths.codex);
-  return codex && codexInvocation(codex, { model: prefs.codexModel, webSearch: request.webSearch, cwd });
+  // A wrapper that is not a script itself may still call `node` from PATH (pnpm's global bin): put node's directory there too.
+  return node === null ? invocation : { ...invocation, pathDirs: [...invocation.pathDirs, dirname(node)] };
 }
 
-function endResult(end: CliEnd, outcome: ReturnType<ReturnType<typeof claudeReader>['outcome']>, depth: number): AiResult {
+function endResult(end: CliEnd, outcome: StreamOutcome, depth: number): AiResult {
   switch (end.kind) {
     case 'cancelled': return { kind: 'cancelled' };
     case 'timeout': return failed('timeout', end.which);
@@ -85,7 +97,8 @@ function endResult(end: CliEnd, outcome: ReturnType<ReturnType<typeof claudeRead
     case 'spawn-failed': return failed('engine-missing', end.error);
     case 'exited':
       if (outcome.notLoggedIn) return failed('not-logged-in', outcome.error ?? end.stderr.trim().slice(-600));
-      if (outcome.text !== null) return outlineResult(outcome.text, depth);
+      // An answer counts only from a CLI that ended well: a message before a crash is not the answer.
+      if (outcome.text !== null && end.code === 0) return outlineResult(outcome.text, depth);
       return failed('exited', outcome.error ?? (end.stderr.trim().slice(-600) || `exit ${end.code ?? end.signal ?? ''}`));
   }
 }
@@ -93,26 +106,38 @@ function endResult(end: CliEnd, outcome: ReturnType<ReturnType<typeof claudeRead
 export function createCliRunner(deps: CliRunnerDeps): AiRunner {
   return {
     async run(request, onProgress, signal) {
-      if (signal.aborted) return { kind: 'cancelled' };
-      const prepared = await prepareMaterials(deps, request.materials, onProgress, signal);
-      if (prepared.kind === 'stop') return prepared.result;
-      const prompt = buildPrompt({ ...request, materials: prepared.materials }, deps.language());
-      const cwd = await deps.host.mkdtemp('mappy-ai-');
+      // The contract is a result, never a rejection: what the host throws (a temporary directory that cannot be made,
+      // a file that cannot be read) comes back as a failure the UI can show.
       try {
-        const invocation = await invocationFor(deps, request, cwd);
-        if (invocation === null) return failed('engine-missing', request.engine);
-        if (signal.aborted) return { kind: 'cancelled' };
-        onProgress({ stage: 'starting' });
-        const reader = request.engine === 'claude' ? claudeReader() : codexReader();
-        const materialChars = prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
-        const end = await runCli(deps.host, {
-          file: invocation.file, args: invocation.args, cwd, env: launchEnv(deps.host.env(), invocation), stdin: prompt,
-          idleMs: LIMITS.idleMs, totalMs: totalTimeoutMs(materialChars),
-        }, line => { for (const progress of reader.line(line)) onProgress(progress); }, signal);
-        return endResult(end, reader.outcome(), request.depth);
-      } finally {
-        await deps.host.rm(cwd).catch(() => undefined);
+        return await runOnce(deps, request, onProgress, signal);
+      } catch (error) {
+        return failed('exited', String(error));
       }
     },
   };
+}
+
+async function runOnce(deps: CliRunnerDeps, request: AiRequest, onProgress: (progress: AiProgress) => void, signal: AbortSignal): Promise<AiResult> {
+  if (signal.aborted) return { kind: 'cancelled' };
+  const prepared = await prepareMaterials(deps, request.materials, onProgress, signal);
+  if (prepared.kind === 'stop') return prepared.result;
+  const prompt = buildPrompt({ ...request, materials: prepared.materials }, deps.language());
+  const cwd = await deps.host.mkdtemp('mappy-ai-');
+  try {
+    const invocation = await invocationFor(deps, request, cwd);
+    if (invocation === 'missing') return failed('engine-missing', request.engine);
+    // Found, but it is a node script and there is no node: name node, not the engine, as what to install.
+    if (invocation === 'no-node') return failed('engine-missing', `${request.engine}: node`);
+    if (signal.aborted) return { kind: 'cancelled' };
+    onProgress({ stage: 'starting' });
+    const reader = request.engine === 'claude' ? claudeReader() : codexReader();
+    const materialChars = prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
+    const end = await runCli(deps.host, {
+      file: invocation.file, args: invocation.args, cwd, env: launchEnv(deps.host.env(), invocation), stdin: prompt,
+      idleMs: LIMITS.idleMs, totalMs: totalTimeoutMs(materialChars),
+    }, line => { for (const progress of reader.line(line)) onProgress(progress); }, signal);
+    return endResult(end, reader.outcome(), request.depth);
+  } finally {
+    await deps.host.rm(cwd).catch(() => undefined);
+  }
 }

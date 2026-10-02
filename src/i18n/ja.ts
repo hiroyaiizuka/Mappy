@@ -79,7 +79,7 @@ export const ja: Messages = {
   setLockedDefault: (layout: string) => `「${layout}」は新規マップの既定レイアウトなので外せません。`,
   setSaveFailed: "設定を保存できませんでした。",
 
-  aiUnsupported: "AI 機能は macOS のデスクトップ版でだけ使えます。",
+  aiUnsupported: "AI 機能はデスクトップ版でだけ使えます（Windows は未対応です）。",
   aiNoNode: "このアプリからは他のプログラムを起動できないため、AI 機能は使えません。",
   aiEngine: "AI のエンジン",
   aiEngineDesc: "答えを作るコマンドラインのツールです。あなたのログインのまま、読み取り専用で、空の一時フォルダで起動します。",

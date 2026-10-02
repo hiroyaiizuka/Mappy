@@ -17,13 +17,13 @@ function mount(entitled: boolean, host = new FakeHost({ executables: ['/opt/home
   let paths: RunnerPaths = EMPTY_PATHS;
   const load = vi.fn(() => host);
   const factory = createRunnerFactory({
-    isEntitled: () => entitled, prefs: () => prefs, paths: { current: () => paths, save: next => { paths = next; } },
+    isEntitled: () => entitled, prefs: () => prefs, paths: { current: () => paths, save: next => { paths = next; return true; } },
     vault: null, language: () => 'ja', platform, load, target: new EventTarget(),
   });
   const prefsSave = vi.fn((next: AiPrefs) => { prefs = next; return Promise.resolve(); });
   const container = document.createElement('div');
   document.body.append(container);
-  renderRunnerSettings(container, { factory, prefs: { current: () => prefs, save: prefsSave }, paths: { current: () => paths, save: next => { paths = next; } } });
+  renderRunnerSettings(container, { factory, prefs: { current: () => prefs, save: prefsSave }, paths: { current: () => paths, save: next => { paths = next; return true; } } });
   return { container, load, host, prefs: () => prefs, paths: () => paths, prefsSave };
 }
 
@@ -39,7 +39,7 @@ describe('renderRunnerSettings (architecture.md §11.3, §11.7)', () => {
 
   it('says 「未対応」 on Windows, without Node', () => {
     const { container, load } = mount(true, undefined, { isDesktopApp: true, isWin: true });
-    expect(container.textContent).toContain('AI 機能は macOS のデスクトップ版でだけ使えます。');
+    expect(container.textContent).toContain('AI 機能はデスクトップ版でだけ使えます（Windows は未対応です）。');
     expect(load).not.toHaveBeenCalled();
   });
 

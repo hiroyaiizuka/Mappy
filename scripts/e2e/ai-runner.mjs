@@ -104,9 +104,10 @@ function shape(result) {
 
 let connection;
 let serial = 0;
-async function run(name, request, { cancelAfterMs = 0, timeoutMs = 16 * 60_000 } = {}) {
+/** `cancelAfterStartMs`: cancel that long after the runner reported `starting` (the CLI is being started), not before. */
+async function run(name, request, { cancelAfterStartMs = 0, timeoutMs = 16 * 60_000 } = {}) {
   const id = `${name}-${++serial}`;
-  await connection.evaluate(`__mappyAiProbe.start(${JSON.stringify(id)}, ${JSON.stringify(request)}, ${cancelAfterMs})`);
+  await connection.evaluate(`__mappyAiProbe.start(${JSON.stringify(id)}, ${JSON.stringify(request)}, ${cancelAfterStartMs})`);
   const outcome = await until(async () => {
     const state = await connection.evaluate(`__mappyAiProbe.results[${JSON.stringify(id)}]`);
     return state && !state.running ? state : null;
@@ -119,7 +120,7 @@ async function run(name, request, { cancelAfterMs = 0, timeoutMs = 16 * 60_000 }
   check(kept.length === 0, `${name}: temporary directories left: ${kept.join(', ')}`);
   const { result } = outcome;
   return {
-    ms: outcome.ms, shape: shape(result), stages: [...new Set(outcome.progress.map(step => step.stage))], gaps: outcome.gaps, left, kept,
+    ms: outcome.ms, shape: shape(result), started: outcome.processes.map(process => process.file.split('/').pop()), stages: [...new Set(outcome.progress.map(step => step.stage))], gaps: outcome.gaps, left, kept,
     text: result.kind === 'outline' ? result.raw : result.kind === 'failed' ? `${result.reason}: ${result.detail}`.slice(0, 600) : result.reason ?? null,
   };
 }
@@ -154,8 +155,10 @@ try {
       ...base, engine, template: 'brainstorm', instruction: 'マインドマップを使うと何がよいか、観点を挙げて', context: { ancestors: ['AI runner'], title: 'マインドマップ', body: '' },
     }));
     check(small?.shape?.kind === 'outline', `${engine}: the small question did not give an outline (${small?.text})`);
-    const cancel = await step(`${engine}: cancelled mid-run`, () => run(`${engine}-cancel`, { ...base, engine, materials: [{ kind: 'pdf', label: PDF_EN, text: '' }] }, { cancelAfterMs: engine === 'claude' ? 3_000 : 6_000 }));
+    const cancel = await step(`${engine}: cancelled mid-run`, () => run(`${engine}-cancel`, { ...base, engine, materials: [{ kind: 'pdf', label: PDF_EN, text: '' }] }, { cancelAfterStartMs: 2_000 }));
     check(cancel?.shape?.kind === 'cancelled', `${engine}: the cancelled run reported ${cancel?.shape?.kind}`);
+    // The point is stopping a running CLI and its group: a cancel that came before the spawn would pass trivially.
+    check((cancel?.started?.length ?? 0) > 0, `${engine}: the cancelled run started no process`);
   }
   if (!flag('--no-default')) for (const [engine, pdf] of [[engines[0], PDF_JA], [engines[engines.length - 1], PDF_EN]]) {
     const read = await step(`${engine}: summary of ${pdf}`, () => run(`${engine}-pdf`, { ...base, engine, materials: [{ kind: 'pdf', label: pdf, text: '' }] }));
@@ -168,11 +171,14 @@ try {
   }
   if (repeat > 0) {
     const kind = value('--material') ?? 'pdf';
+    if (kind === 'youtube' && !youtube) throw new Error('--material youtube needs --youtube <url>');
     for (const engine of engines) {
       const shapes = [];
       for (let i = 0; i < repeat; i++) {
         const one = await step(`${engine}: stability ${i + 1}/${repeat} (${kind})`, () => run(`${engine}-repeat`, { ...base, engine, materials: materialFor(kind) }));
         shapes.push(one?.shape ?? { kind: 'error' });
+        // A shape that bends the contract is counted below; a run that gave no outline at all fails the case.
+        check(one?.shape?.kind === 'outline', `${engine}: stability ${i + 1} did not give an outline (${one?.text ?? one?.error})`);
       }
       record.steps[`${engine}: stability summary`] = {
         runs: shapes.length, broken: shapes.filter(item => item.kind !== 'outline' || item.broken).length,
@@ -183,7 +189,8 @@ try {
   }
   if (long) {
     for (const engine of engines) {
-      await step(`${engine}: long video`, () => run(`${engine}-long`, { ...base, engine, materials: [{ kind: 'youtube', label: long, text: '' }] }));
+      const read = await step(`${engine}: long video`, () => run(`${engine}-long`, { ...base, engine, materials: [{ kind: 'youtube', label: long, text: '' }] }));
+      check(read?.shape?.kind === 'outline', `${engine}: the long video did not give an outline (${read?.text ?? read?.error})`);
     }
   }
 } catch (error) {

@@ -87,6 +87,14 @@ describe('codexReader', () => {
     expect(outcome.error).toContain('401 Unauthorized');
   });
 
+  it('keeps no answer when the stream ends before the turn completed (a preamble is not the answer)', () => {
+    const reader = codexReader();
+    reader.line(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '- 素材を読みます' } }));
+    expect(reader.outcome().text).toBeNull();
+    reader.line(JSON.stringify({ type: 'turn.completed', usage: {} }));
+    expect(reader.outcome().text).toBe('- 素材を読みます');
+  });
+
   it('keeps no answer when the turn failed after a message', () => {
     const reader = codexReader();
     reader.line(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '- partial' } }));

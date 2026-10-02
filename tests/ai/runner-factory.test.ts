@@ -21,7 +21,7 @@ function factory(entitled: () => boolean, overrides: Partial<RunnerFactoryOption
   const load = vi.fn((desktop: boolean) => (desktop ? host : null));
   const target = new EventTarget();
   const made = createRunnerFactory({
-    isEntitled: entitled, prefs: () => DEFAULT_AI_PREFS, paths: { current: () => EMPTY_PATHS, save: () => undefined },
+    isEntitled: entitled, prefs: () => DEFAULT_AI_PREFS, paths: { current: () => EMPTY_PATHS, save: () => true },
     vault: null, language: () => 'ja', platform: { isDesktopApp: true, isWin: false }, load, target, ...overrides,
   });
   return { made, load, target };

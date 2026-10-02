@@ -58,7 +58,7 @@ export function renderRunnerSettings(containerEl: HTMLElement, deps: RunnerSetti
       if (ask === asked) setting.setDesc(desc);
     };
     const save = (value: string): void => {
-      deps.paths.save({ ...deps.paths.current(), [tool]: value.trim() });
+      if (!deps.paths.save({ ...deps.paths.current(), [tool]: value.trim() })) new Notice(text.setSaveFailed);
       void describe();
     };
     let field: { setValue(value: string): unknown } | null = null;

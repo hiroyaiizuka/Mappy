@@ -1,5 +1,5 @@
-import type { AiFailure } from '../contract';
 import { LIMITS, launchEnv, dirname, ytdlpInfoArgs, ytdlpSubtitleArgs } from '../core/launch';
+import type { MaterialText } from '../core/material-text';
 import { vttToTranscript } from '../core/vtt';
 import { pickSubtitle, type VideoInfo } from '../core/youtube';
 import { runCli, type CliEnd } from './cli-process';
@@ -11,15 +11,10 @@ import type { NodeHost } from './node-host';
  * the video's language), then the one chosen track as VTT, folded into `[mm:ss]` paragraphs.
  */
 
-export type TranscriptResult =
-  | { kind: 'ok'; text: string }
-  | { kind: 'cancelled' }
-  | { kind: 'failed'; reason: AiFailure; detail: string };
-
 /** The JSON for one video is large (every format is listed), well past the CLI's 5 MB. */
 const INFO_MAX_BYTES = 64 * 1024 * 1024;
 
-function failure(end: CliEnd, step: string): TranscriptResult {
+function failure(end: CliEnd, step: string): MaterialText {
   switch (end.kind) {
     case 'cancelled': return { kind: 'cancelled' };
     case 'timeout': return { kind: 'failed', reason: 'material-failed', detail: `yt-dlp (${step}): timeout` };
@@ -31,9 +26,10 @@ function failure(end: CliEnd, step: string): TranscriptResult {
 
 export async function fetchTranscript(
   host: NodeHost, ytdlp: string, url: string, uiLanguage: string, signal: AbortSignal,
-): Promise<TranscriptResult> {
-  const cwd = await host.mkdtemp('mappy-ai-');
+): Promise<MaterialText> {
+  let cwd: string | null = null;
   try {
+    cwd = await host.mkdtemp('mappy-ai-');
     const env = launchEnv(host.env(), { pathDirs: [dirname(ytdlp)], env: {} });
     const spec = { file: ytdlp, cwd, env, stdin: '', idleMs: LIMITS.ytdlpMs, totalMs: LIMITS.ytdlpMs };
     let json = '';
@@ -53,7 +49,10 @@ export async function fetchTranscript(
     if (file === undefined) return { kind: 'failed', reason: 'no-subtitles', detail: `${url} (${choice.language})` };
     const text = vttToTranscript(await host.readText(`${cwd}/${file}`));
     return text ? { kind: 'ok', text } : { kind: 'failed', reason: 'no-subtitles', detail: `${url} (${choice.language})` };
+  } catch (error) {
+    // The temporary directory or the subtitle file could not be made or read.
+    return { kind: 'failed', reason: 'material-failed', detail: `yt-dlp: ${String(error)}` };
   } finally {
-    await host.rm(cwd);
+    if (cwd !== null) await host.rm(cwd).catch(() => undefined);
   }
 }

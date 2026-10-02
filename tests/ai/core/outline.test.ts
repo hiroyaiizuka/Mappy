@@ -56,6 +56,10 @@ describe('parseOutline', () => {
     expect(texts(parseOutline('- A\n  - A1', 1).items)).toEqual(['A', 'A1']);
   });
 
+  it('counts levels from the shallowest item: a list indented as a whole stays a list of siblings', () => {
+    expect(texts(parseOutline('  - A\n  - B\n    - B1\n  - C', 2).items)).toEqual(['A', ['B', ['B1']], 'C']);
+  });
+
   it('counts a tab as four columns', () => {
     expect(texts(parseOutline('- A\n\t- A1\n\t\t- A1a', 3).items)).toEqual([['A', [['A1', ['A1a']]]]]);
   });

@@ -66,6 +66,20 @@ describe('runCli', () => {
     await expect(done).resolves.toEqual({ kind: 'cancelled' });
   });
 
+  it('settles 3 seconds after SIGKILL even if the pipes never close (a descendant left the group holding them)', async () => {
+    const host = new FakeHost({ onKill: () => true });
+    const controller = new AbortController();
+    const { done } = start(host, {}, controller.signal);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(5_999);
+    let settled = false;
+    void done.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toEqual({ kind: 'cancelled' });
+  });
+
   it('does not start at all when already cancelled', async () => {
     const host = new FakeHost();
     const controller = new AbortController();

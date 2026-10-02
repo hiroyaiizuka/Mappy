@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { findWithLoginShell, locate, locateClaude } from '../../../src/ai/host/locate';
+import { findWithLoginShell, locate, locateClaude, locateNode } from '../../../src/ai/host/locate';
 import { FakeHost } from '../fake-host';
 
 beforeEach(() => { vi.stubGlobal('window', globalThis); });
@@ -24,9 +24,25 @@ describe('locate (architecture.md §11.3)', () => {
 
   it('gives an npm install’s cli.js to node, and gives up without node', async () => {
     const withNode = new FakeHost({ executables: ['/opt/homebrew/bin/claude', '/opt/homebrew/bin/node'], links: { '/opt/homebrew/bin/claude': '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js' } });
-    await expect(locateClaude(withNode, '')).resolves.toEqual({ file: '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js', node: '/opt/homebrew/bin/node' });
+    await expect(locateClaude(withNode, '')).resolves.toEqual({ file: '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js', node: '/opt/homebrew/bin/node', script: true });
     const without = new FakeHost({ executables: ['/opt/homebrew/bin/claude'], links: { '/opt/homebrew/bin/claude': '/x/cli.js' } });
-    await expect(locateClaude(without, '')).resolves.toBeNull();
+    await expect(locateClaude(without, '')).resolves.toBe('no-node');
+    await expect(locateClaude(new FakeHost(), '')).resolves.toBeNull();
+  });
+
+  it('takes the node beside the tool before one in a known place (another node may be too old for it)', async () => {
+    const nvmBin = '/Users/user/.nvm/versions/node/v22.10.0/bin';
+    const host = new FakeHost({
+      executables: [`${nvmBin}/claude`, `${nvmBin}/node`, '/usr/local/bin/node'], links: { [`${nvmBin}/claude`]: '/Users/user/.nvm/versions/node/v22.10.0/lib/node_modules/@anthropic-ai/claude-code/cli.js' },
+      dirs: { '/Users/user/.nvm/versions/node': ['v22.10.0'] },
+    });
+    await expect(locateNode(host, `${nvmBin}/claude`)).resolves.toBe(`${nvmBin}/node`);
+    await expect(locateClaude(host, '')).resolves.toMatchObject({ node: `${nvmBin}/node`, script: true });
+  });
+
+  it('gives the node for a binary too (a wrapper may call node from PATH)', async () => {
+    const host = new FakeHost({ executables: ['/Users/user/Library/pnpm/claude', '/opt/homebrew/bin/node'] });
+    await expect(locateClaude(host, '/Users/user/Library/pnpm/claude')).resolves.toEqual({ file: '/Users/user/Library/pnpm/claude', node: '/opt/homebrew/bin/node', script: false });
   });
 });
 

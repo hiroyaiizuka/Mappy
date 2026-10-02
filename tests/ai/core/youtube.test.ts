@@ -108,6 +108,11 @@ describe('vttToTranscript', () => {
     expect(vttToTranscript(uploaded)).toBe('[00:01] Stay hungry. Stay foolish.\n[00:40] Thank you.');
   });
 
+  it('leaves out cue identifiers (a track converted from SRT numbers its cues)', () => {
+    const numbered = 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nhello\n\n2\n00:00:03.000 --> 00:00:04.000\nworld\n\nintro-3\n00:00:05.000 --> 00:00:06.000\nagain\n';
+    expect(vttToTranscript(numbered)).toBe('[00:01] hello world again');
+  });
+
   it('is empty for a file without cues', () => {
     expect(vttToTranscript('WEBVTT\n\n')).toBe('');
   });

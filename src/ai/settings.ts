@@ -43,7 +43,8 @@ export const EMPTY_PATHS: RunnerPaths = { claude: '', codex: '', 'yt-dlp': '' };
 
 export interface RunnerPathsStore {
   current(): RunnerPaths;
-  save(next: RunnerPaths): void;
+  /** False when the storage refused the write (full, or locked down). */
+  save(next: RunnerPaths): boolean;
 }
 
 export const PATHS_KEY = 'mappy-ai-paths';
@@ -61,6 +62,8 @@ export function localPathsStore(storage: Pick<Storage, 'getItem' | 'setItem'>): 
     current: () => {
       try { return readPaths(storage.getItem(PATHS_KEY)); } catch { return { ...EMPTY_PATHS }; }
     },
-    save: next => { storage.setItem(PATHS_KEY, JSON.stringify(next)); },
+    save: next => {
+      try { storage.setItem(PATHS_KEY, JSON.stringify(next)); return true; } catch { return false; }
+    },
   };
 }

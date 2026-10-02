@@ -82,6 +82,29 @@ describe('the real runner with Claude', () => {
     await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'exited', detail: 'boom' });
   });
 
+  it('does not take an answer from a CLI that ended badly', async () => {
+    const lines = fixture('claude-partial.jsonl');
+    const { run } = runner({ executables: [`${SHIMS}/claude`], onSpawn: child => { queueMicrotask(() => { child.lines(lines); child.err('crashed after the result\n'); child.close(1); }); } });
+    await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'exited', detail: 'crashed after the result' });
+  });
+
+  it('puts the node it found on PATH even for a binary (a wrapper may call node)', async () => {
+    const { host, run } = runner({ executables: ['/Users/user/Library/pnpm/claude', '/opt/homebrew/bin/node'], onSpawn: replaying('claude-partial.jsonl') }, { claude: '/Users/user/Library/pnpm/claude' });
+    await run(request);
+    expect(host.children[0]?.options.env.PATH).toBe('/Users/user/Library/pnpm:/opt/homebrew/bin:/usr/bin:/bin');
+  });
+
+  it('names node when claude is a script and node is nowhere', async () => {
+    const { run } = runner({ executables: ['/opt/homebrew/bin/claude'], links: { '/opt/homebrew/bin/claude': '/x/cli.js' } });
+    await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'engine-missing', detail: 'claude: node' });
+  });
+
+  it('returns a failure, never a rejection, when the host throws', async () => {
+    const { host, run } = runner({ executables: [`${SHIMS}/claude`] });
+    host.mkdtemp = () => Promise.reject(new Error('ENOSPC'));
+    await expect(run(request)).resolves.toEqual({ kind: 'failed', reason: 'exited', detail: 'Error: ENOSPC' });
+  });
+
   it('reads the refusal line as refused', async () => {
     const { run } = runner({ executables: [`${SHIMS}/claude`], onSpawn: replaying('claude-refused.jsonl') });
     await expect(run(request)).resolves.toMatchObject({ kind: 'refused' });
@@ -134,7 +157,7 @@ describe('the real runner with Codex', () => {
     expect(host.children[0]?.file).toBe(native);
     expect(host.children[0]?.options.env).toMatchObject({ CODEX_MANAGED_BY_NPM: '1' });
     const none = runner({ executables: ['/opt/homebrew/bin/codex'], links: { '/opt/homebrew/bin/codex': CODEX_JS } });
-    await expect(none.run(codexRequest)).resolves.toEqual({ kind: 'failed', reason: 'engine-missing', detail: 'codex' });
+    await expect(none.run(codexRequest)).resolves.toEqual({ kind: 'failed', reason: 'engine-missing', detail: 'codex: node' });
   });
 
   it('runs a mise shim as it is', async () => {

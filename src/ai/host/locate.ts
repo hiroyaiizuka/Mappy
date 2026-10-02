@@ -1,5 +1,5 @@
 import {
-  EXECUTABLES, LIMITS, candidateDirs, codexNativeCandidates, launchEnv, loginShellArgs, needsNode, pathFromShellOutput,
+  EXECUTABLES, LIMITS, candidateDirs, codexNativeCandidates, dirname, launchEnv, loginShellArgs, needsNode, pathFromShellOutput,
   sortNodeVersions, type CodexLaunch, type Tool,
 } from '../core/launch';
 import { runCli } from './cli-process';
@@ -28,14 +28,33 @@ export async function locate(host: NodeHost, tool: Tool | 'node', configured = '
   return inKnownPlaces(host, EXECUTABLES[tool]);
 }
 
-/** Claude as found: a script (an npm install's `cli.js`) is given to node, which then has to be found too. */
-export async function locateClaude(host: NodeHost, configured: string): Promise<{ file: string; node?: string } | null> {
+/**
+ * Node for a tool found at `file`: the one beside it first (an nvm or mise install keeps the node the tool was installed
+ * with in the same `bin/`, and another node elsewhere may be too old for it), else a known place.
+ */
+export async function locateNode(host: NodeHost, file: string): Promise<string | null> {
+  const real = await host.realpath(file) ?? file;
+  for (const dir of [...new Set([dirname(file), dirname(real)])]) {
+    if (await host.isExecutable(`${dir}/node`)) return `${dir}/node`;
+  }
+  return locate(host, 'node');
+}
+
+/**
+ * Where an engine is, with the node to go with it. `node` is given even when the executable is not a script: a shell
+ * wrapper (pnpm's global bin, a hand-written one) can call `node` from PATH, which a GUI app's PATH may lack, so the
+ * runner puts its directory on PATH too. `'no-node'`: the engine is there but needs a node that is nowhere.
+ */
+export type Located<T> = T | 'no-node' | null;
+
+/** Claude as found: a script (an npm install's `cli.js`) is given to node. */
+export async function locateClaude(host: NodeHost, configured: string): Promise<Located<{ file: string; node: string | null; script: boolean }>> {
   const file = await locate(host, 'claude', configured);
   if (file === null) return null;
   const real = await host.realpath(file) ?? file;
-  if (!needsNode(real)) return { file };
-  const node = await locate(host, 'node');
-  return node === null ? null : { file: real, node };
+  const node = await locateNode(host, file);
+  if (!needsNode(real)) return { file, node, script: false };
+  return node === null ? 'no-node' : { file: real, node, script: true };
 }
 
 /**
@@ -44,17 +63,17 @@ export async function locateClaude(host: NodeHost, configured: string): Promise<
  * native binary next to it, given the variables codex.js would set. Anything else (a mise shim, Homebrew's binary)
  * runs as it is.
  */
-export async function locateCodex(host: NodeHost, configured: string): Promise<CodexLaunch | null> {
+export async function locateCodex(host: NodeHost, configured: string): Promise<Located<{ launch: CodexLaunch; node: string | null }>> {
   const file = await locate(host, 'codex', configured);
   if (file === null) return null;
   const real = await host.realpath(file) ?? file;
-  if (!needsNode(real)) return { kind: 'direct', file };
-  const node = await locate(host, 'node');
-  if (node !== null) return { kind: 'node', node, script: real };
+  const node = await locateNode(host, file);
+  if (!needsNode(real)) return { launch: { kind: 'direct', file }, node };
+  if (node !== null) return { launch: { kind: 'node', node, script: real }, node };
   for (const native of codexNativeCandidates(real, host.platform, host.arch)) {
-    if (await host.isExecutable(native.binary)) return { kind: 'native', ...native };
+    if (await host.isExecutable(native.binary)) return { launch: { kind: 'native', ...native }, node: null };
   }
-  return null;
+  return 'no-node';
 }
 
 /**
