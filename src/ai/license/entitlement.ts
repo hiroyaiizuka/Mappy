@@ -1,10 +1,10 @@
-import { createLicenseClient, LicenseRequestError, NETWORK_REASONS, type IssuedTokens, type LicenseClient } from './client';
+import { createLicenseClient, httpStatusOf, LicenseRequestError, NETWORK_REASONS, type IssuedTokens, type LicenseClient } from './client';
 import { DevUnlockEntitlement } from './dev-unlock';
 import { createLicenseStore, type LicenseStore, type StoredLicense } from './store';
 import { createTokenVerifier, type TokenVerifier } from './token';
 
 /** The reason a registration failed; the client stays behind this file (tests/tooling/ai-boundaries.test.mjs). */
-export { LicenseRequestError, NETWORK_REASONS };
+export { httpStatusOf, LicenseRequestError, NETWORK_REASONS };
 export { TOKEN_REASONS } from './token';
 
 /** docs/architecture.md §11.6「受け口」. */
@@ -96,6 +96,7 @@ export class LicenseEntitlement implements Entitlement {
   private unsaved: StoredLicense | null = null;
   /** A request given up on after the timeout and still on its way; no other is sent with the same secret meanwhile. */
   private late: Promise<unknown> | null = null;
+  private lateTimer: number | null = null;
   private disposed = false;
   private readonly client: LicenseClient;
   private readonly now: () => number;
@@ -141,7 +142,11 @@ export class LicenseEntitlement implements Entitlement {
       .catch(() => undefined)
       .finally(() => { if (this.late === settled) this.late = null; });
     this.late = settled;
-    this.timers.set(() => { if (this.late === settled) this.late = null; }, LATE_WAIT_MS);
+    if (this.lateTimer !== null) this.timers.clear(this.lateTimer);
+    this.lateTimer = this.timers.set(() => {
+      this.lateTimer = null;
+      if (this.late === settled) this.late = null;
+    }, LATE_WAIT_MS);
   }
 
   /** Before its first verification ends this stays `checking`; later ones keep the previous state until they end. */
@@ -168,6 +173,8 @@ export class LicenseEntitlement implements Entitlement {
   register(code: string): Promise<EntitlementState> {
     const licenseCode = code.trim();
     if (licenseCode === '') return Promise.resolve(this.state());
+    // A request given up on is still on its way: a second one could be answered with a pair the first then retires.
+    if (this.late) return Promise.reject(new LicenseRequestError('unreachable', NETWORK_REASONS.waiting));
     return this.lock(async () => {
       let stored = this.read();
       if (!stored) {
@@ -221,6 +228,8 @@ export class LicenseEntitlement implements Entitlement {
 
   dispose(): void {
     this.disposed = true;
+    if (this.lateTimer !== null) this.timers.clear(this.lateTimer);
+    this.lateTimer = null;
     this.unwatch();
     this.clearTimer();
     this.listeners.clear();
@@ -232,13 +241,14 @@ export class LicenseEntitlement implements Entitlement {
     // The secret of a request still on its way may already be rotated: sending it again would be refused.
     if (this.late) return this.settle({ kind: 'unreachable', reason: NETWORK_REASONS.waiting });
     // (1) Another window may have refreshed: use its token without sending anything.
-    const first = await this.check(this.read());
-    if (first.kind !== 'expired') return this.settle(first);
+    // Through `adopt`, so a newer verification that started meanwhile (another window's write) wins over this one.
+    const first = await this.adopt(this.read());
+    if (first.kind !== 'expired') return first;
     return this.lock(async () => {
       // (2) Again under the lock, for a window that refreshed while this one waited.
       const stored = this.read();
-      const again = await this.check(stored);
-      if (again.kind !== 'expired' || !stored?.refreshSecret) return this.settle(again);
+      const again = await this.adopt(stored);
+      if (again.kind !== 'expired' || !stored?.refreshSecret) return again;
       // A window (or an instance before a plugin reload) gave up on a refresh with this secret, and its answer may
       // still rotate it on the server: sending it again would be refused, or, on a server that revokes the whole
       // chain when a used secret comes back, lose the license.

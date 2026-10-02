@@ -180,8 +180,16 @@ export function readHarnessBuild(paths, build = 'release') {
     let recorded;
     try {
       const { inputs } = JSON.parse(readSafeFile(paths.root, join(directory, 'build-meta.json')).toString('utf8'));
-      // Inside the project and through no symbolic link, as every other file preflight reads.
-      for (const input of Object.keys(inputs)) assertSafePath(paths.root, join(paths.root, input), 'file');
+      // Inside the project and through no symbolic link, as every other file preflight reads. Dependencies are read
+      // where the package manager put them (node_modules may be a link, pnpm hard-links its files); only kept inside.
+      for (const input of Object.keys(inputs)) {
+        if (input.startsWith('node_modules/')) {
+          const inside = relative(paths.root, resolve(paths.root, input));
+          if (inside.startsWith('..') || isAbsolute(inside)) throw new Error(`Expected a path inside the project: ${input}`);
+        } else {
+          assertSafePath(paths.root, join(paths.root, input), 'file');
+        }
+      }
       recorded = JSON.parse(readSafeFile(paths.root, join(directory, 'sources.json')).toString('utf8')).sha256;
       current = sourcesSha256(paths.root, inputs);
     } catch (error) {

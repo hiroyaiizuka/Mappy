@@ -38,6 +38,13 @@ export const NETWORK_REASONS = {
   http: (status: number) => `net:http-${status}`,
 } as const;
 
+/** The status in an `http-<status>` reason, or null for any other reason. */
+export function httpStatusOf(reason: string): string | null {
+  const prefix = NETWORK_REASONS.http(0).slice(0, -1);
+  const status = reason.startsWith(prefix) ? reason.slice(prefix.length) : '';
+  return /^\d+$/u.test(status) ? status : null;
+}
+
 /**
  * Why a request did not return tokens: `unreachable` may be retried, `rejected` is the server's answer. A request
  * given up on after the timeout is still on its way: `late` settles with what the server answered in the end, so a

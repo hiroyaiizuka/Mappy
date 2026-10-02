@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -248,6 +248,24 @@ describe('the AI development build in the test vault (LEV-273, docs/architecture
     addDevBuild();
     rmSync(join(paths.devDistribution, 'sources.json'));
     expect(runScript('prepare-test-vault.mjs', '--ai-dev').stderr).toContain('cannot tell which sources it was built from');
+  });
+
+  it('reads the dependencies a bundle came from through a linked node_modules (a worktree, pnpm)', () => {
+    addDevBuild();
+    const elsewhere = mkdtempSync(join(tmpdir(), 'mappy-node-modules-'));
+    mkdirSync(join(elsewhere, 'dep'), { recursive: true });
+    writeFileSync(join(elsewhere, 'dep', 'index.js'), 'export default 1;\n');
+    symlinkSync(elsewhere, join(root, 'node_modules'), 'dir');
+    const inputs = { 'src/main.ts': {}, 'node_modules/dep/index.js': {} };
+    writeJson(join(paths.devDistribution, 'build-meta.json'), { inputs, outputs: {} });
+    writeJson(join(paths.devDistribution, 'sources.json'), { sha256: sourcesSha256(root, inputs) });
+    try {
+      expect(runScript('prepare-test-vault.mjs', '--ai-dev').status).toBe(0);
+      writeJson(join(paths.devDistribution, 'build-meta.json'), { inputs: { ...inputs, 'node_modules/../../outside.js': {} }, outputs: {} });
+      expect(() => runPreflight(paths, { build: 'ai-dev' })).toThrow('Expected a path inside the project');
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 
   it('names the ai-dev prepare when the installed ai-dev bytes differ', () => {

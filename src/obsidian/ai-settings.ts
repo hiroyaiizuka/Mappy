@@ -1,5 +1,5 @@
 import type { ButtonComponent, Setting, TextComponent } from 'obsidian';
-import { LicenseRequestError, NETWORK_REASONS, TOKEN_REASONS, type Entitlement, type EntitlementState } from '../ai/license/entitlement';
+import { httpStatusOf, LicenseRequestError, NETWORK_REASONS, TOKEN_REASONS, type Entitlement, type EntitlementState } from '../ai/license/entitlement';
 import { t, textLocale } from '../i18n';
 import type { MapSettingDefinition } from './settings-tab';
 
@@ -12,8 +12,8 @@ export function reasonText(reason: string): string {
   if (reason === NETWORK_REASONS.error) return text.aiReasonNetwork;
   if (reason === NETWORK_REASONS.unexpected) return text.aiReasonUnexpected;
   if (reason === NETWORK_REASONS.waiting) return text.aiReasonWaiting;
-  const status = reason.match(/^net:http-(\d+)$/u)?.[1];
-  if (status !== undefined) return text.aiReasonHttp(status);
+  const status = httpStatusOf(reason);
+  if (status !== null) return text.aiReasonHttp(status);
   return reason;
 }
 
@@ -71,7 +71,7 @@ export class AiSettingsSection {
     return [
       {
         name: text.setAi,
-        desc: MAPPY_AI_DEV_UNLOCK ? text.setAiDevUnlock : text.setAiDesc,
+        desc: text.setAiDesc,
         render: setting => { setting.setHeading(); },
       },
       {
@@ -97,9 +97,13 @@ export class AiSettingsSection {
     let busy = false;
     let input: TextComponent | null = null;
     let button: ButtonComponent | null = null;
+    let shownKind = entitlement.state().kind;
     const sync = (): void => {
-      // A registration given up on that went through after all: the failure line no longer holds.
-      if (entitlement.state().kind === 'active') failure.hidden = true;
+      // A registration given up on that went through after all: the failure line no longer holds. Only on the change
+      // to `active`: a failed new code on a device already active (or kept in memory) still says why.
+      const kind = entitlement.state().kind;
+      if (kind === 'active' && shownKind !== 'active') failure.hidden = true;
+      shownKind = kind;
       status.setText(MAPPY_AI_DEV_UNLOCK ? t().setAiDevUnlock : licenseStatusText(entitlement.state()));
       button?.setDisabled(busy || code.trim() === '');
       input?.setDisabled(busy);

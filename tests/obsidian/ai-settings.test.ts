@@ -103,6 +103,16 @@ describe('the settings tab\'s AI section (LEV-273, docs/architecture.md §11.6)'
     expect(licenseStatusText({ kind: 'unreachable', reason: 'net:waiting' })).toBe('ライセンスサーバーに接続できませんでした（前の要求の応答を待っています）。次に AI を使うときにもう一度試します。');
   });
 
+  it('still says why a new code failed on a device that is already active', async () => {
+    const { input, button, failure, answer } = mount({ kind: 'active', expiresAt: Date.UTC(2026, 9, 31) });
+    type(input, 'MISTYPED');
+    answer(() => Promise.reject(new LicenseRequestError('rejected', 'unknown code')));
+    button.click();
+    await flush();
+    expect(failure.hidden).toBe(false);
+    expect(failure.textContent).toBe('コードが受け付けられませんでした（unknown code）。');
+  });
+
   it('clears the failure line when a registration given up on goes through after all', async () => {
     const { input, button, failure, answer, move } = mount();
     type(input, 'CODE');

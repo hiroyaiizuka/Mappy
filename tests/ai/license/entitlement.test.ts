@@ -382,6 +382,25 @@ describe('LicenseEntitlement.register', () => {
     expect(again.state().kind).toBe('active');
   });
 
+  it('sends no second registration while one given up on is still on its way, and lets its timer go on dispose', async () => {
+    const { open, server, clock } = await setup();
+    const hanging: LicenseClient = {
+      register: (code, deviceId) => {
+        void server.register(code, deviceId).catch(() => undefined);
+        return Promise.reject(new LicenseRequestError('unreachable', 'net:timeout', new Promise<IssuedTokens>(() => undefined)));
+      },
+      refresh: () => Promise.reject(new Error('unused')),
+    };
+    const entitlement = open({ client: hanging });
+    await entitlement.load();
+    await expect(entitlement.register('GOOD-CODE')).rejects.toMatchObject({ reason: 'net:timeout' });
+    await expect(entitlement.register('GOOD-CODE')).rejects.toMatchObject({ reason: 'net:waiting' });
+    expect(server.calls).toHaveLength(1);
+    expect(clock.pending()).toBe(1);
+    entitlement.dispose();
+    expect(clock.pending()).toBe(0);
+  });
+
   it('sends nothing for an empty code', async () => {
     const { open, server } = await setup();
     const entitlement = open();
