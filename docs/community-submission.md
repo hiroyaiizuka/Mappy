@@ -30,7 +30,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | 6 | `description`: 動詞で始める、`This is a plugin` で始めない、250 字以内、ピリオドで終わる、絵文字・特殊文字なし、固有名詞と頭字語の大文字（Requirements） | `View and edit Markdown as linked, illustrated mind maps.`（56 字、英語） | PASS | — |
 | 7 | `fundingUrl` は寄付を受けるときだけ置く（Requirements） | 無し | PASS | — |
 | 8 | `minAppVersion` は必要な最小版（Requirements） | `1.8.7`。型 1.8.7 で型検査が通る。1.8.7 の実機は未確認 | PASS（型）／未実施（実機） | LEV-25 |
-| 9 | Node／Electron API を使うなら `isDesktopOnly: true`（Requirements） | 0.4.0 までは `false`。2026-09-28 の本人決定（§4.4 の (B)）で LEV-249 が `true` にし、0.4.1 からデスクトップ専用（両方の README の「対応環境」のモバイルの行も合わせ、`tests/tooling/desktop-only.test.mjs` が manifest と行の一致を検査する）。`src/` に Node／Electron の import 0 件（ESLint で禁止）。公式 lint の `recommended` は manifest を読み、`isDesktopOnly: true` では `no-nodejs-modules` を切り、後読みを報告せず、Node の global を足すので、`eslint.config.mjs` が `src/` でその 3 つを manifest に依らず有効に戻す（LEV-249。`tests/tooling/mobile-lint.test.mjs`）。バンドルの `require` は `obsidian`（0.3.8 で 17、0.4.0 で 18）・`@lezer/common`・`@lezer/highlight` だけ | PASS（コード）／決定済み（(B)。要件はどちらでも満たす）／未実施（モバイル実機。確かめたら版を上げて `false` に戻す） | LEV-25 |
+| 9 | Node／Electron API を使うなら `isDesktopOnly: true`（Requirements） | 0.4.0 までは `false`。2026-09-28 の本人決定（§4.4 の (B)）で LEV-249 が `true` にし、0.4.1 からデスクトップ専用（両方の README の「対応環境」のモバイルの行も合わせ、`tests/tooling/desktop-only.test.mjs` が manifest と行の一致を検査する）。`src/` に Node／Electron の import 0 件（ESLint で禁止）。公式 lint の `recommended` は manifest を読み、`isDesktopOnly: true` では `no-nodejs-modules` を切り、後読みを報告せず、Node の global を足すので、`eslint.config.mjs` が `src/` でその 3 つを manifest に依らず有効に戻す（LEV-249。`tests/tooling/mobile-lint.test.mjs`）。バンドルの `require` は `obsidian`（0.3.8 で 17、0.4.0 で 18）・`@lezer/common`・`@lezer/highlight` だけ | PASS（コード）／決定済み（(B)。要件はどちらでも満たす。2026-10-02 の本人の決定で、デスクトップ専用のままにし、モバイルの実機確認と `false` に戻す計画は取りやめた。§4.4） | — |
 | 10 | `name` に `Obsidian`・`Plugin` を含めない、`author` を置く（上の 4 文書には無い。`scripts/validate-release.mjs` の検査と LEV-24 の記録による） | `Mappy`、`Hiroya Iizuka` | PASS | — |
 
 ### 1.3 コマンド・UI 文言
@@ -164,7 +164,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | README・LICENSE | 英語の `README.md` に What it does・Storage format・Installation・Basic usage・Compatibility・Known limitations・Troubleshooting・Network use・License がある。LICENSE は MIT で GitHub が認識する |
 | 公開審査の自動レビュー | §1.8（#33 は LEV-243 で PASS、#35 と §4.3 は本人の判断） |
 
-実機（Obsidian）はこの再確認では起動していない。§1 の #16（E63 以外の英語の表示。通知の全文など）は LEV-228 に未実施のまま残り、#30（Windows・Linux・モバイル・1.8.7）は LEV-25 に残る。
+実機（Obsidian）はこの再確認では起動していない。§1 の #16（E63 以外の英語の表示。通知の全文など）は LEV-228 に未実施のまま残り、#30（Windows・Linux・モバイル・1.8.7）は LEV-25 に残る（モバイルは 2026-10-02 の本人の決定で LEV-25 の対象から外れた。§4.4）。
 
 ### 4.3 pre-release のままで一覧が版を拾えるか（#3）と `release.yml`
 
