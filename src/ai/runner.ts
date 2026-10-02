@@ -1,0 +1,118 @@
+import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner } from './contract';
+import { claudeReader, codexReader } from './core/events';
+import { LIMITS, claudeInvocation, codexInvocation, launchEnv, totalTimeoutMs, type Invocation } from './core/launch';
+import { outlineResult } from './core/outline';
+import { buildPrompt, type PromptLanguage } from './core/prompt';
+import { youtubeVideoUrl } from './core/youtube';
+import { runCli, type CliEnd } from './host/cli-process';
+import { locate, locateClaude, locateCodex } from './host/locate';
+import type { NodeHost } from './host/node-host';
+import { fetchTranscript } from './host/yt-dlp';
+import type { VaultMaterials } from './obsidian/material';
+import type { AiPrefs, RunnerPaths } from './settings';
+
+/**
+ * The real `AiRunner` (docs/architecture.md §11.3, §11.4): it prepares the materials, starts the chosen CLI read-only
+ * in an empty temporary directory with the instruction on standard input, turns its event stream into progress, and
+ * reads the final answer leniently. A material whose `text` is empty is fetched here from its `label` (a YouTube URL,
+ * or a vault path for a PDF or a note); one with text is used as it is.
+ */
+
+export interface CliRunnerDeps {
+  host: NodeHost;
+  prefs: () => AiPrefs;
+  paths: () => RunnerPaths;
+  /** Null where there is no vault to read (the materials then have to come with their text). */
+  vault: VaultMaterials | null;
+  /** The UI's language: the instruction's, the answer's, and the one a subtitle track is preferred in. */
+  language: () => PromptLanguage;
+}
+
+function failed(reason: AiFailure, detail: string): AiResult {
+  return { kind: 'failed', reason, detail };
+}
+
+type Prepared = { kind: 'ok'; materials: AiMaterial[] } | { kind: 'stop'; result: AiResult };
+
+async function prepareMaterials(
+  deps: CliRunnerDeps, materials: readonly AiMaterial[], onProgress: (progress: AiProgress) => void, signal: AbortSignal,
+): Promise<Prepared> {
+  const ready: AiMaterial[] = [];
+  for (const material of materials) {
+    if (signal.aborted) return { kind: 'stop', result: { kind: 'cancelled' } };
+    if (material.text !== '') { ready.push(material); continue; }
+    onProgress({ stage: 'material', label: material.label });
+    let fetched;
+    if (material.kind === 'youtube') {
+      const url = youtubeVideoUrl(material.label);
+      if (url === null) return { kind: 'stop', result: failed('material-failed', material.label) };
+      const ytdlp = await locate(deps.host, 'yt-dlp', deps.paths()['yt-dlp']);
+      if (ytdlp === null) return { kind: 'stop', result: failed('ytdlp-missing', '') };
+      fetched = await fetchTranscript(deps.host, ytdlp, url, deps.language(), signal);
+    } else if (deps.vault === null) {
+      return { kind: 'stop', result: failed('material-failed', material.label) };
+    } else {
+      fetched = material.kind === 'pdf' ? await deps.vault.pdf(material.label, signal) : await deps.vault.note(material.label);
+    }
+    if (fetched.kind === 'cancelled') return { kind: 'stop', result: { kind: 'cancelled' } };
+    if (fetched.kind === 'failed') return { kind: 'stop', result: failed(fetched.reason, fetched.detail) };
+    ready.push({ ...material, text: fetched.text });
+  }
+  const size = ready.reduce((sum, material) => sum + material.text.length, 0);
+  if (size > LIMITS.materialMaxChars) {
+    // Cutting the text would make "a summary of the whole" untrue: stop and say how large it is.
+    return { kind: 'stop', result: failed('material-too-large', `${size} / ${LIMITS.materialMaxChars}`) };
+  }
+  return { kind: 'ok', materials: ready };
+}
+
+async function invocationFor(deps: CliRunnerDeps, request: AiRequest, cwd: string): Promise<Invocation | null> {
+  const prefs = deps.prefs();
+  const paths = deps.paths();
+  if (request.engine === 'claude') {
+    const claude = await locateClaude(deps.host, paths.claude);
+    return claude && claudeInvocation(claude.file, { model: prefs.claudeModel, webSearch: request.webSearch, ...(claude.node === undefined ? {} : { node: claude.node }) });
+  }
+  const codex = await locateCodex(deps.host, paths.codex);
+  return codex && codexInvocation(codex, { model: prefs.codexModel, webSearch: request.webSearch, cwd });
+}
+
+function endResult(end: CliEnd, outcome: ReturnType<ReturnType<typeof claudeReader>['outcome']>, depth: number): AiResult {
+  switch (end.kind) {
+    case 'cancelled': return { kind: 'cancelled' };
+    case 'timeout': return failed('timeout', end.which);
+    case 'output-too-large': return failed('output-too-large', `${LIMITS.outputMaxBytes} bytes`);
+    case 'spawn-failed': return failed('engine-missing', end.error);
+    case 'exited':
+      if (outcome.notLoggedIn) return failed('not-logged-in', outcome.error ?? end.stderr.trim().slice(-600));
+      if (outcome.text !== null) return outlineResult(outcome.text, depth);
+      return failed('exited', outcome.error ?? (end.stderr.trim().slice(-600) || `exit ${end.code ?? end.signal ?? ''}`));
+  }
+}
+
+export function createCliRunner(deps: CliRunnerDeps): AiRunner {
+  return {
+    async run(request, onProgress, signal) {
+      if (signal.aborted) return { kind: 'cancelled' };
+      const prepared = await prepareMaterials(deps, request.materials, onProgress, signal);
+      if (prepared.kind === 'stop') return prepared.result;
+      const prompt = buildPrompt({ ...request, materials: prepared.materials }, deps.language());
+      const cwd = await deps.host.mkdtemp('mappy-ai-');
+      try {
+        const invocation = await invocationFor(deps, request, cwd);
+        if (invocation === null) return failed('engine-missing', request.engine);
+        if (signal.aborted) return { kind: 'cancelled' };
+        onProgress({ stage: 'starting' });
+        const reader = request.engine === 'claude' ? claudeReader() : codexReader();
+        const materialChars = prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
+        const end = await runCli(deps.host, {
+          file: invocation.file, args: invocation.args, cwd, env: launchEnv(deps.host.env(), invocation), stdin: prompt,
+          idleMs: LIMITS.idleMs, totalMs: totalTimeoutMs(materialChars),
+        }, line => { for (const progress of reader.line(line)) onProgress(progress); }, signal);
+        return endResult(end, reader.outcome(), request.depth);
+      } finally {
+        await deps.host.rm(cwd).catch(() => undefined);
+      }
+    },
+  };
+}

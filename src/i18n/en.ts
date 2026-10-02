@@ -94,6 +94,23 @@ export const en = {
   setLockedDefault: (layout: string) => `${layout} is the default layout for new maps, so it can't be hidden.`,
   setSaveFailed: "Couldn't save the settings.",
 
+  // The AI runner's rows in the settings (src/ai/obsidian/runner-settings.ts, docs/architecture.md §11.3).
+  aiUnsupported: "AI features run only in the desktop app on macOS.",
+  aiNoNode: "This app can't start other programs, so AI features are off.",
+  aiEngine: "AI engine",
+  aiEngineDesc: "The command line tool that answers. It runs with your own login, read only, in an empty temporary folder.",
+  aiEngineClaude: "Claude (CLI)",
+  aiEngineCodex: "Codex (CLI)",
+  aiModel: (engine: string) => `Model for ${engine}`,
+  aiModelDesc: "Passed to the tool as its model name. Leave empty to use the tool's default.",
+  aiPath: (tool: string) => `Location of ${tool}`,
+  aiPathFound: (path: string) => `Leave empty to use the one found at ${path}. This setting stays on this device.`,
+  aiPathMissing: (url: string) => `Not found in the usual places. Install it (${url}) or enter its full path. Mappy never installs it.`,
+  aiPathInvalid: "No program at this path.",
+  aiFind: "Find",
+  aiFindDesc: "Ask your login shell once.",
+  aiFindNotFound: (tool: string) => `Your login shell didn't find ${tool}.`,
+
   // Excalidraw (src/obsidian/excalidraw-bridge.ts).
   dropStalled: "Some nodes haven't finished drawing, so the embed fits the map as far as it was drawn.",
   excalidrawInsertFailed: "Couldn't insert into Excalidraw.",
