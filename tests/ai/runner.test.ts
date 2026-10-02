@@ -222,6 +222,15 @@ describe('materials', () => {
     expect(setup.host.removed.sort()).toEqual(setup.host.made.sort());
   });
 
+  it('tells a yt-dlp that cannot be run from a missing one, and gives it the helpers\' directories on PATH', async () => {
+    const setup = runner({
+      executables: [`${SHIMS}/claude`, '/Users/user/.local/bin/yt-dlp'],
+      onSpawn: child => { queueMicrotask(() => { child.fail(new Error('spawn EACCES')); }); },
+    });
+    await expect(setup.run({ ...request, materials: [{ kind: 'youtube', label: VIDEO, text: '' }] })).resolves.toMatchObject({ kind: 'failed', reason: 'material-failed' });
+    expect(setup.host.children[0]?.options.env.PATH).toBe('/Users/user/.local/bin:/opt/homebrew/bin:/usr/local/bin:/Users/user/.deno/bin:/usr/bin:/bin');
+  });
+
   it('stops with ytdlp-missing, starting nothing, when yt-dlp is nowhere', async () => {
     const { host, run } = runner({ executables: [`${SHIMS}/claude`] });
     await expect(run({ ...request, materials: [{ kind: 'youtube', label: VIDEO, text: '' }] })).resolves.toEqual({ kind: 'failed', reason: 'ytdlp-missing', detail: '' });
@@ -242,13 +251,19 @@ describe('materials', () => {
     const vault: VaultMaterials = { pdf, note };
     const { host, run } = runner({ executables: [`${SHIMS}/claude`] }, {}, vault);
     const result = await run({ ...request, materials: [{ kind: 'pdf', label: 'a.pdf', text: '' }, { kind: 'note', label: 'b.md', text: '' }] });
-    expect(result).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '210000 / 200000' });
+    expect(result).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '210006 / 200000' });
     // Over the limit after the first: the rest is not fetched.
     const first = await run({ ...request, materials: [{ kind: 'note', label: 'b.md', text: 'x'.repeat(200_001) }, { kind: 'pdf', label: 'c.pdf', text: '' }] });
-    expect(first).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '200001 / 200000' });
+    expect(first).toEqual({ kind: 'failed', reason: 'material-too-large', detail: '200007 / 200000' });
     expect(pdf).toHaveBeenCalledTimes(1);
     expect(pdf).toHaveBeenCalledWith('a.pdf', expect.anything());
     expect(note).toHaveBeenCalledWith('b.md');
+    expect(host.children).toEqual([]);
+  });
+
+  it('counts the selected node\'s body with the material', async () => {
+    const { host, run } = runner({ executables: [`${SHIMS}/claude`] });
+    await expect(run({ ...request, context: { ...request.context, body: 'b'.repeat(200_000) } })).resolves.toEqual({ kind: 'failed', reason: 'material-too-large', detail: '200006 / 200000' });
     expect(host.children).toEqual([]);
   });
 

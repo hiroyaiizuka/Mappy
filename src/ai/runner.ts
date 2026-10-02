@@ -55,6 +55,7 @@ async function fetchMaterial(
 
 async function prepareMaterials(
   deps: CliRunnerDeps, materials: readonly AiMaterial[], onProgress: (progress: AiProgress) => void, signal: AbortSignal,
+  ownText: number,
 ): Promise<Prepared> {
   const ready: AiMaterial[] = [];
   for (const material of materials) {
@@ -66,12 +67,14 @@ async function prepareMaterials(
       ready.push({ ...material, text: fetched.text });
     }
     // Checked after each one, so a run already over the limit does not go on to fetch the rest.
-    const size = ready.reduce((sum, item) => sum + item.text.length, 0);
+    // The selected node's body and the request go into the same prompt: they count too.
+    const size = ownText + ready.reduce((sum, item) => sum + item.text.length, 0);
     if (size > LIMITS.materialMaxChars) {
       // Cutting the text would make "a summary of the whole" untrue: stop and say how large it is.
       return { kind: 'stop', result: failed('material-too-large', `${size} / ${LIMITS.materialMaxChars}`) };
     }
   }
+  if (ownText > LIMITS.materialMaxChars) return { kind: 'stop', result: failed('material-too-large', `${ownText} / ${LIMITS.materialMaxChars}`) };
   return { kind: 'ok', materials: ready };
 }
 
@@ -95,7 +98,7 @@ async function invocationFor(deps: CliRunnerDeps, request: AiRequest, cwd: strin
     invocation = codexInvocation(codex.launch, { model: prefs.codexModel, webSearch: request.webSearch, cwd });
   }
   // A wrapper that is not a script itself may still call `node` from PATH (pnpm's global bin): put node's directory there too.
-  return node === null ? invocation : { ...invocation, pathDirs: [...invocation.pathDirs, dirname(node)] };
+  return node === null || invocation.pathDirs.includes(dirname(node)) ? invocation : { ...invocation, pathDirs: [...invocation.pathDirs, dirname(node)] };
 }
 
 function endResult(end: CliEnd, outcome: StreamOutcome, depth: number): AiResult {
@@ -135,7 +138,8 @@ export function createCliRunner(deps: CliRunnerDeps): AiRunner {
 
 async function runOnce(deps: CliRunnerDeps, request: AiRequest, onProgress: (progress: AiProgress) => void, signal: AbortSignal): Promise<AiResult> {
   if (signal.aborted) return { kind: 'cancelled' };
-  const prepared = await prepareMaterials(deps, request.materials, onProgress, signal);
+  const ownText = request.context.body.length + request.instruction.length;
+  const prepared = await prepareMaterials(deps, request.materials, onProgress, signal, ownText);
   if (prepared.kind === 'stop') return prepared.result;
   const prompt = buildPrompt({ ...request, materials: prepared.materials }, deps.language());
   const cwd = await deps.host.mkdtemp('mappy-ai-');
@@ -147,7 +151,7 @@ async function runOnce(deps: CliRunnerDeps, request: AiRequest, onProgress: (pro
     if (signal.aborted) return { kind: 'cancelled' };
     onProgress({ stage: 'starting' });
     const reader = request.engine === 'claude' ? claudeReader() : codexReader();
-    const materialChars = prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
+    const materialChars = ownText + prepared.materials.reduce((sum, material) => sum + material.text.length, 0);
     const end = await runCli(deps.host, {
       file: invocation.file, args: invocation.args, cwd, env: launchEnv(deps.host.env(), invocation), stdin: prompt,
       idleMs: idleTimeoutMs(materialChars), totalMs: totalTimeoutMs(materialChars),

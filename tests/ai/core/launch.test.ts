@@ -107,7 +107,8 @@ describe('limits', () => {
 
   it('allows longer silence for more material: 90 seconds, a minute more per 50,000 characters, at most 5 minutes', () => {
     expect(idleTimeoutMs(0)).toBe(90_000);
-    expect(idleTimeoutMs(40_000)).toBe(150_000);
+    expect(idleTimeoutMs(40_000)).toBe(90_000);
+    expect(idleTimeoutMs(50_000)).toBe(150_000);
     expect(idleTimeoutMs(200_000)).toBe(5 * 60_000);
     expect(idleTimeoutMs(10_000_000)).toBe(5 * 60_000);
   });
@@ -142,8 +143,11 @@ describe('where executables are looked for', () => {
 
   it('asks an interactive login shell and takes the last absolute path it prints', () => {
     expect(loginShellArgs('yt-dlp')).toEqual(['-ilc', 'command -v yt-dlp']);
-    expect(pathFromShellOutput('welcome!\n/Users/a/.local/bin/claude\n')).toBe('/Users/a/.local/bin/claude');
-    expect(pathFromShellOutput('claude: aliased to foo\n')).toBeNull();
+    expect(pathFromShellOutput('welcome!\n/Users/a/.local/bin/claude\n', '/Users/a')).toBe('/Users/a/.local/bin/claude');
+    expect(pathFromShellOutput('claude: aliased to foo\n', '/Users/a')).toBeNull();
+    // An alias gives its target (Claude's old local installer adds one to .zshrc).
+    expect(pathFromShellOutput("alias claude='~/.claude/local/claude'\n", '/Users/a')).toBe('/Users/a/.claude/local/claude');
+    expect(pathFromShellOutput('claude=/opt/claude/bin/claude\n', '/Users/a')).toBe('/opt/claude/bin/claude');
   });
 });
 

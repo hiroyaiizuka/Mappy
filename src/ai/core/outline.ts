@@ -100,6 +100,12 @@ export function outlineResult(raw: string, depth: number): AiResult {
     const refusal = only.text.match(REFUSAL);
     if (refusal) return { kind: 'refused', reason: (refusal[1] ?? '').trim(), raw };
   }
-  if (items.length === 0) return { kind: 'failed', reason: 'unparsable', detail: raw };
+  if (items.length === 0) {
+    // The refusal line without its `- `: still a refusal, so the reason reaches the person.
+    const lines = raw.split(/\r?\n/u).map(line => line.trim()).filter(line => line !== '' && !FENCE.test(line));
+    const refusal = lines.length === 1 ? (lines[0] ?? '').match(REFUSAL) : null;
+    if (refusal) return { kind: 'refused', reason: (refusal[1] ?? '').trim(), raw };
+    return { kind: 'failed', reason: 'unparsable', detail: raw };
+  }
   return { kind: 'outline', items: neutralizeTree(items), dropped, raw };
 }

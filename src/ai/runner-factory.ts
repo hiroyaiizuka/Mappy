@@ -71,13 +71,14 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
     stopAll = new AbortController();
   };
   let running = 0;
+  let disposed = false;
   const listeners = new Set<(running: boolean) => void>();
   const onPageHide = (): void => { stopEverything(); };
   let listening = false;
 
   const unsupported = (): boolean => platform.isWin || !platform.isDesktopApp;
   const host = (): NodeHost | null => {
-    if (!options.isEntitled() || unsupported()) return null;
+    if (disposed || !options.isEntitled() || unsupported()) return null;
     if (loaded === undefined) {
       loaded = load(platform.isDesktopApp);
       // Directories a run could not remove (Obsidian quit before the cleanup ran): swept once, when they are old.
@@ -88,7 +89,11 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
   const setRunning = (delta: number): void => {
     const before = running > 0;
     running += delta;
-    if (before !== running > 0) for (const listener of listeners) listener(running > 0);
+    if (before === running > 0) return;
+    // A listener that throws (a button already gone) must not break the count or the run's result.
+    for (const listener of listeners) {
+      try { listener(running > 0); } catch { /* the display failed; the count stays right */ }
+    }
   };
 
   return {
@@ -107,6 +112,8 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
         async run(request, onProgress, signal) {
           // The license is asked again: a runner made while it was active must not start a CLI after it ended.
           if (!options.isEntitled()) return { kind: 'failed', reason: 'engine-missing', detail: 'license' };
+          // A runner kept past the plugin's unload starts nothing: no dispose or pagehide would stop it any more.
+          if (disposed) return { kind: 'cancelled' };
           // The caller's signal (the view closing, the note changing, the cancel button) or the plugin going away.
           const controller = new AbortController();
           const all = stopAll.signal;
@@ -134,6 +141,7 @@ export function createRunnerFactory(options: RunnerFactoryOptions): RunnerFactor
       return () => { listeners.delete(listener); };
     },
     dispose() {
+      disposed = true;
       // The plugin unloading can be the first step of Obsidian quitting or reloading: no SIGKILL timer may be left to.
       stopEverything();
       if (listening) { target.removeEventListener('pagehide', onPageHide); listening = false; }

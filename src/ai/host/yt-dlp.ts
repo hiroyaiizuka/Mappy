@@ -1,4 +1,4 @@
-import { LIMITS, launchEnv, dirname, ytdlpInfoArgs, ytdlpSubtitleArgs } from '../core/launch';
+import { LIMITS, launchEnv, dirname, helperDirs, ytdlpInfoArgs, ytdlpSubtitleArgs } from '../core/launch';
 import type { MaterialText } from '../core/material-text';
 import { vttToTranscript } from '../core/vtt';
 import { pickSubtitle, type VideoInfo } from '../core/youtube';
@@ -19,7 +19,7 @@ function failure(end: CliEnd, step: string): MaterialText {
     case 'cancelled': return { kind: 'cancelled' };
     case 'timeout': return { kind: 'failed', reason: 'material-failed', detail: `yt-dlp (${step}): timeout` };
     case 'output-too-large': return { kind: 'failed', reason: 'material-failed', detail: `yt-dlp (${step}): output too large` };
-    case 'spawn-failed': return { kind: 'failed', reason: 'ytdlp-missing', detail: end.error };
+    case 'spawn-failed': return { kind: 'failed', reason: /ENOENT/u.test(end.error) ? 'ytdlp-missing' : 'material-failed', detail: end.error };
     case 'exited': return { kind: 'failed', reason: 'material-failed', detail: `yt-dlp (${step}) exited ${end.code ?? end.signal ?? ''}: ${end.stderr.trim().slice(-600)}` };
   }
 }
@@ -30,7 +30,8 @@ export async function fetchTranscript(
   let cwd: string | null = null;
   try {
     cwd = await host.mkdtemp('mappy-ai-');
-    const env = launchEnv(host.env(), { pathDirs: [dirname(ytdlp)], env: {} });
+    // yt-dlp looks for helpers on PATH (a JS runtime such as deno for YouTube), which a GUI app's PATH lacks.
+    const env = launchEnv(host.env(), { pathDirs: [dirname(ytdlp), ...helperDirs(host.homedir())], env: {} });
     const spec = { file: ytdlp, cwd, env, stdin: '', idleMs: LIMITS.ytdlpMs, totalMs: LIMITS.ytdlpMs, ...(killNow ? { killNow } : {}) };
     let json = '';
     const info = await runCli(host, { ...spec, args: ytdlpInfoArgs(url), maxOutputBytes: INFO_MAX_BYTES }, line => { json += line; }, signal);

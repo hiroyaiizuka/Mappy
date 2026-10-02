@@ -49,7 +49,8 @@ export const LIMITS = {
  * the material: 27 seconds for about 40,000 characters and 23 seconds for 75,000 (artifacts/lev-270).
  */
 export function idleTimeoutMs(materialChars: number): number {
-  const steps = Math.ceil(Math.max(0, materialChars) / LIMITS.totalStepChars);
+  // Whole steps only: a short question keeps the 90 seconds.
+  const steps = Math.floor(Math.max(0, materialChars) / LIMITS.totalStepChars);
   return Math.min(LIMITS.idleMs + steps * 60_000, LIMITS.idleMaxMs);
 }
 
@@ -224,8 +225,23 @@ export function loginShellArgs(tool: Tool): string[] {
   return ['-ilc', `command -v ${EXECUTABLES[tool]}`];
 }
 
-/** The absolute path a login shell printed, or null (it may print the rc files' noise first). */
-export function pathFromShellOutput(output: string): string | null {
-  const lines = output.split(/\r?\n/u).map(line => line.trim()).filter(line => line.startsWith('/'));
-  return lines[lines.length - 1] ?? null;
+/**
+ * The absolute path a login shell printed, or null (it may print the rc files' noise first). An alias
+ * (`alias claude='~/.claude/local/claude'`, what Claude's old local installer adds to .zshrc) gives its target.
+ */
+export function pathFromShellOutput(output: string, home: string): string | null {
+  const found: string[] = [];
+  for (const raw of output.split(/\r?\n/u)) {
+    const line = raw.trim();
+    const alias = line.match(/^(?:alias\s+)?[\w.-]+=(['"]?)(\S+?)\1(?:\s|$)/u);
+    const path = alias ? alias[2] ?? '' : line;
+    if (path.startsWith('/')) found.push(path);
+    else if (path.startsWith('~/')) found.push(`${home}${path.slice(1)}`);
+  }
+  return found[found.length - 1] ?? null;
+}
+
+/** Where programs a tool calls by name usually are (Homebrew, deno's installer), for a GUI app's short PATH. */
+export function helperDirs(home: string): string[] {
+  return ['/opt/homebrew/bin', '/usr/local/bin', `${home}/.deno/bin`, `${home}/.local/bin`];
 }

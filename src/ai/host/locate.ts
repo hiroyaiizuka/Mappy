@@ -92,7 +92,7 @@ export async function findWithLoginShell(host: NodeHost, tool: Tool, signal: Abo
       idleMs: LIMITS.loginShellMs, totalMs: LIMITS.loginShellMs,
     }, line => { lines.push(line); }, signal);
     if (end.kind !== 'exited') return null;
-    const path = pathFromShellOutput(lines.join('\n'));
+    const path = pathFromShellOutput(lines.join('\n'), host.homedir());
     return path !== null && await host.isExecutable(path) ? path : null;
   } finally {
     await host.rm(cwd).catch(() => undefined);

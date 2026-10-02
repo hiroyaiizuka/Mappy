@@ -163,6 +163,28 @@ describe('createRunnerFactory', () => {
     expect(signal.aborted).toBe(true);
   });
 
+  it('starts nothing from a runner kept past dispose (nothing could stop it any more)', async () => {
+    const host = new FakeHost({ executables: ['/Users/user/.local/share/mise/shims/claude'] });
+    const { made } = factory(() => true, {}, host);
+    const runner = made.create();
+    made.dispose();
+    await expect(runner?.run(request, () => undefined, new AbortController().signal)).resolves.toEqual({ kind: 'cancelled' });
+    expect(host.children).toEqual([]);
+    expect(made.create()).toBeNull();
+  });
+
+  it('keeps the count and the result when a running-state listener throws', async () => {
+    const host = new FakeHost({
+      executables: ['/Users/user/.local/share/mise/shims/claude'],
+      onSpawn: child => { queueMicrotask(() => { child.close(1); }); },
+    });
+    const { made } = factory(() => true, {}, host);
+    made.onRunningChange(() => { throw new Error('button gone'); });
+    const result = await made.create()?.run(request, () => undefined, new AbortController().signal);
+    expect(result?.kind).toBe('failed');
+    expect(made.isRunning()).toBe(false);
+  });
+
   it('lets go of pagehide on dispose', () => {
     const { made, target } = factory(() => true);
     const remove = vi.spyOn(target, 'removeEventListener');

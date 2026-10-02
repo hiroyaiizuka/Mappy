@@ -145,6 +145,10 @@ describe('outlineResult', () => {
     expect(outlineResult('- 取得できませんでした: 字幕が %%非公開%% です #', 2)).toMatchObject({ kind: 'refused', reason: '字幕が %%非公開%% です #' });
   });
 
+  it('takes the refusal line written without its list marker', () => {
+    expect(outlineResult('取得できませんでした: 字幕が非公開です', 2)).toMatchObject({ kind: 'refused', reason: '字幕が非公開です' });
+  });
+
   it('is not a refusal when the line is one item among others', () => {
     expect(outlineResult('- 取得できませんでした: 一部\n- 他の項目', 2).kind).toBe('outline');
   });
