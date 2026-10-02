@@ -6,7 +6,7 @@ English | [日本語](README.ja.md) | [Documentation](https://obsidian.levers.co
 
 Mappy lets you read and edit an Obsidian note as a mind map, without turning it into anything else. A plain note written with H2 headings and bullet lists is shown in one of four layouts (mind map, timeline, hierarchy, balanced), and adding, editing and moving nodes writes back to that note's Markdown. There is no special file format: without Mappy, the note is still headings and bullet lists.
 
-**0.x is a beta.** It has been checked only with Obsidian on macOS desktop. Real typing with a Japanese IME, Windows and Linux have not been checked yet, and it doesn't run on mobile for now (see [Compatibility](#compatibility) and [Known limitations](#known-limitations)). Before using it in your everyday vault, make sure you have a backup such as git or Obsidian Sync.
+**0.x is a beta.** It has been checked only with Obsidian on macOS desktop. Real typing with a Japanese IME, Windows and Linux have not been checked yet (see [Compatibility](#compatibility) and [Known limitations](#known-limitations)). Mappy is desktop only and doesn't run on mobile. Before using it in your everyday vault, make sure you have a backup such as git or Obsidian Sync.
 
 ## What it does
 
@@ -172,7 +172,7 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 - The SVG holds the nodes as HTML (`foreignObject`). Browsers and Obsidian show it, but some SVG editors and previews, such as Inkscape and Illustrator, may not show its content. Images from the vault are embedded in the SVG file (it doesn't refer to separate files). An image that can't be read becomes alternative text, keeping the node
 - The PNG draws the same SVG on your device at twice the resolution. A large map is scaled down to fit the device's canvas limit
 - **Fonts are not embedded.** Text widths and wrapping depend on the fonts where the file is opened, while node boxes keep the size they had when exported
-- Where this SVG can't be redrawn as an image (such as iOS, where Mappy doesn't run for now), PNG isn't offered and only SVG can be exported
+- Where this SVG can't be redrawn as an image, PNG isn't offered and only SVG can be exported (the export dialog says so)
 
 ## Compatibility
 
@@ -180,7 +180,7 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 | --- | --- |
 | macOS desktop, Obsidian 1.14 | Checked (main actions, by automation and by eye) |
 | Windows and Linux desktop | Not checked |
-| iOS and Android | Not available for now. Mappy is marked desktop only (`isDesktopOnly` in `manifest.json`), so Obsidian doesn't offer or load it on mobile. It doesn't use desktop-only features; it will be opened to mobile once it has been tried there. If your vault's `.obsidian` folder is synced between devices (Obsidian Sync with plugin sync on, iCloud and so on), the version your desktop installs reaches the phone as well, but from 0.4.1 Obsidian on mobile doesn't load Mappy (0.4.0 and earlier could be installed on mobile). Synced or not, map notes stay plain Markdown and nothing in them changes |
+| iOS and Android | Not supported. Mappy is desktop only (`isDesktopOnly` in `manifest.json`), so Obsidian doesn't offer or load it on mobile. If your vault's `.obsidian` folder is synced between devices (Obsidian Sync with plugin sync on, iCloud and so on), the version your desktop installs reaches the phone as well, but from 0.4.1 Obsidian on mobile doesn't load Mappy (0.4.0 and earlier could be installed on mobile). Synced or not, map notes stay plain Markdown and nothing in them changes |
 | Obsidian 1.8.7 to 1.13 | Can be installed on 1.8.7 and later, but not checked in this range |
 | Interface language | Japanese when Obsidian's language is Japanese, English otherwise (command names, menus, settings and notices, and the provisional names Mappy writes into notes: `Main topic` / `メイントピック`, `Subtopic` / `サブトピック`, `Topic` / `トピック`, and the new map's root `Central topic` / `中心トピック`; the new map's file name `Untitled mind map` / `無題のマインドマップ` follows it too). English was checked on macOS only for command names, buttons, the gear popover, context menus, the tab title, the settings tab, `Subtopic`, `Main topic`, `Central topic` and one refusal message; not every notice |
 
