@@ -60,7 +60,6 @@ export const en = {
   // Commands whose names other text repeats (the settings, a notice, the file menu); src/main.ts registers them by these.
   cmdCreateMap: "Create new mind map",
   cmdConvertNote: "Turn this note into a mind map",
-  convertFirst: (command: string) => `Run "${command}" first.`,
 
   // New maps (src/obsidian/map-files.ts). `untitled` names the file; `centralTopicTitle` is written into the note as its
   // root (LEV-255), under which main topics and then subtopics grow.
@@ -135,7 +134,6 @@ export const en = {
   convertNoteFailed: "Couldn't turn the note into a mind map.",
   formatFailed: "Couldn't change the format.",
   callFailed: "Couldn't insert the map.",
-  openMarkdownNote: "Open a Markdown note.",
   exportedTo: (path: string) => `Exported to ${path}.`,
   exportFailed: "Couldn't export.",
   exportStartFailed: "Couldn't start the export.",

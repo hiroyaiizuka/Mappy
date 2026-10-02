@@ -49,7 +49,6 @@ export const ja: Messages = {
 
   cmdCreateMap: "新しいマインドマップを作成",
   cmdConvertNote: "このノートをマインドマップ化",
-  convertFirst: (command: string) => `先に「${command}」を実行してください。`,
 
   untitled: "無題のマインドマップ",
   centralTopicTitle: "中心トピック",
@@ -117,7 +116,6 @@ export const ja: Messages = {
   convertNoteFailed: "ノートをマインドマップ化できませんでした。",
   formatFailed: "形式を変更できませんでした。",
   callFailed: "マップを呼び出せませんでした。",
-  openMarkdownNote: "Markdown ノートを開いてください。",
   exportedTo: (path: string) => `${path} に書き出しました。`,
   exportFailed: "書き出しに失敗しました。",
   exportStartFailed: "書き出しを始められませんでした。",
