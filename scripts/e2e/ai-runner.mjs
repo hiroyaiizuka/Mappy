@@ -8,14 +8,17 @@
  * for anything left in the run's process groups or naming its temporary directory, and checks the directory is gone.
  *
  * Runs (each a check; a run that fails its check fails the case):
- *   default   claude and codex each answer a small question (an outline); each is cancelled mid-run (cancelled, nothing
- *             left); a Japanese and an English PDF of the vault are read through pdf.js and summarized
+ *   default   question to map first (the first entry point, 2026-10-02): claude and codex each answer a question with
+ *             no material and no web search (an outline, no material step, only the CLI started); then each is
+ *             cancelled mid-run (cancelled, nothing left); a Japanese and an English PDF of the vault are read through
+ *             pdf.js and summarized
+ *   --question-only        only the question-to-map runs (no yt-dlp, no pdf.js)
  *   --youtube <url>        one summary of a video through yt-dlp (needs --ytdlp or yt-dlp in a known place)
  *   --repeat <n>           the same material n times per engine; counts the shapes that break the contract
  *   --material <youtube|pdf>  what --repeat uses (default pdf; youtube needs --youtube)
  *   --long <url>           a long video (an hour or more) once per engine: time to the first output, longest silence, total
  *   --only <claude|codex>  one engine
- *   --no-default           leave out the default set
+ *   --no-default           leave out the default set (the question runs too)
  *
  * Usage: npm run harness:e2e:ai-runner -- [--ytdlp <path>] [--youtube <url>] [--repeat 5] [--long <url>] [--json <out.json>]
  * Needs MAPPY_E2E_PORT pointing at the test Obsidian (docs/harness.md 実機検証), macOS, and both CLIs logged in.
@@ -147,24 +150,34 @@ try {
     })()`);
   });
   check(record.steps['install the probe plugin']?.availability === 'available', 'the runner is not available in the test Obsidian');
-  await step('the PDFs in the vault', () => ensurePdfs());
+  const questionOnly = flag('--question-only');
+  if (!questionOnly) await step('the PDFs in the vault', () => ensurePdfs());
 
-  // The default set; --no-default leaves it out (to spend the runs on --repeat or --long only).
+  // Question to map, the entry point shown first (2026-10-02): the person's question alone, no material, no web
+  // search. It must not depend on yt-dlp or pdf.js: no material step, and the CLI is the only process started.
   if (!flag('--no-default')) for (const engine of engines) {
-    const small = await step(`${engine}: a small question`, () => run(`${engine}-small`, {
-      ...base, engine, template: 'brainstorm', instruction: 'マインドマップを使うと何がよいか、観点を挙げて', context: { ancestors: ['AI runner'], title: 'マインドマップ', body: '' },
+    const question = await step(`${engine}: question to map`, () => run(`${engine}-question`, {
+      ...base, engine, template: 'free', instruction: 'リモートワークで生産性を上げるには？', webSearch: false,
+      context: { ancestors: ['質問'], title: 'リモートワークで生産性を上げるには？', body: '' }, materials: [],
     }));
-    check(small?.shape?.kind === 'outline', `${engine}: the small question did not give an outline (${small?.text})`);
+    check(question?.shape?.kind === 'outline', `${engine}: the question did not give an outline (${question?.text})`);
+    check(!question?.stages?.includes('material'), `${engine}: the question reported a material step`);
+    // One process, and not yt-dlp (the CLI may run as `node codex.js`, so the name is not checked).
+    check(question?.started?.length === 1 && !question.started.includes('yt-dlp'), `${engine}: the question started ${JSON.stringify(question?.started)}, not only the CLI`);
+  }
+
+  // The rest of the default set; --no-default leaves it out (to spend the runs on --repeat or --long only).
+  if (!flag('--no-default') && !questionOnly) for (const engine of engines) {
     const cancel = await step(`${engine}: cancelled mid-run`, () => run(`${engine}-cancel`, { ...base, engine, materials: [{ kind: 'pdf', label: PDF_EN, text: '' }] }, { cancelAfterStartMs: 2_000 }));
     check(cancel?.shape?.kind === 'cancelled', `${engine}: the cancelled run reported ${cancel?.shape?.kind}`);
     // The point is stopping a running CLI and its group: a cancel that came before the spawn would pass trivially.
     check((cancel?.started?.length ?? 0) > 0, `${engine}: the cancelled run started no process`);
   }
-  if (!flag('--no-default')) for (const [engine, pdf] of [[engines[0], PDF_JA], [engines[engines.length - 1], PDF_EN]]) {
+  if (!flag('--no-default') && !questionOnly) for (const [engine, pdf] of [[engines[0], PDF_JA], [engines[engines.length - 1], PDF_EN]]) {
     const read = await step(`${engine}: summary of ${pdf}`, () => run(`${engine}-pdf`, { ...base, engine, materials: [{ kind: 'pdf', label: pdf, text: '' }] }));
     check(read?.shape?.kind === 'outline', `${engine}: ${pdf} did not give an outline (${read?.text})`);
   }
-  if (youtube && !flag('--no-default')) {
+  if (youtube && !flag('--no-default') && !questionOnly) {
     const video = await step(`${engines[0]}: summary of ${youtube}`, () => run(`${engines[0]}-youtube`, { ...base, engine: engines[0], materials: materialFor('youtube') }));
     check(video?.shape?.kind === 'outline', `the video did not give an outline (${video?.text})`);
     check(video?.stages?.includes('material'), 'the video run did not report the material stage');
