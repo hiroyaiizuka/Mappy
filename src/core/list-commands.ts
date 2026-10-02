@@ -449,7 +449,7 @@ export function standsForFileName(doc: MindDocument): boolean {
 
 /**
  * Name the file-name root (LEV-301): `## <title>` written where the body starts (past the frontmatter and the blank
- * lines after it), so the items and the text before the first H2 become its own, as a new map's `## 中心トピック` holds
+ * lines after it; a last line of only spaces, with no break after it, stays after the heading as it is), so the items and the text before the first H2 become its own, as a new map's `## 中心トピック` holds
  * them. With `child`, a last item under it is written in the same edit set, as Tab on a new map's root writes one:
  * the root stays in the middle and the item joins it on the right, and one Undo takes both back. Every node keeps its
  * title and only the items that hung on the file name change hands, or the edit is refused.

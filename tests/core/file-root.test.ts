@@ -94,6 +94,12 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     }
   });
 
+  // Code review of LEV-301: only lines that end are skipped; spaces with no break after them stay where they were, after the heading.
+  it('leaves a last line of only spaces after the heading, byte for byte', () => {
+    expect(run(parse('---\nmappy: true\n---\n   '), { type: 'rename', nodeId: 'root', title: '新しい名前' }).source)
+      .toBe('---\nmappy: true\n---\n\n## 新しい名前\n\n   ');
+  });
+
   it('writes an empty item for the inline editor when no text is given, as Tab plans it before naming it', () => {
     expect(run(parse(''), { type: 'add-child', nodeId: 'root' }).source).toBe(`## ${FILE}\n\n- `);
   });

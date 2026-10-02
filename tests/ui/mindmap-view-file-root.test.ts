@@ -238,7 +238,8 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     expect(mounted.source()).toBe(`${FM}\n## 新しい名前\n\n- a\n- 外から\n`);
   });
 
-  it('外部変更: a heading written from outside while the draft is open is not written over', async () => {
+  // Code review of LEV-301: the refusal named the root's own rule (「ルートでは子ノードの追加だけ」) instead of what happened.
+  it('外部変更: a heading written from outside while the draft is open is not written over, and the draft says its node is gone', async () => {
     const app = new HarnessApp();
     const mounted = await mountMapView(PATH, `${FM}- a\n`, 'mindmap', app);
     dblclick(mounted.node(FILE));
@@ -251,6 +252,7 @@ describe('the file-name root of a note without a heading section (LEV-301)', () 
     mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
     await mounted.settle();
     expect(mounted.source()).toBe(outside);
+    expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent).toBe(t().nodeGone);
   });
 
   it('複数ビュー: the other view of the note shows the file name as the written root, with the new item under it', async () => {

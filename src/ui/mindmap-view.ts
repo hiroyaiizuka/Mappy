@@ -2397,7 +2397,8 @@ export class MindmapView extends FileView {
     const document = this.document;
     if (file !== this.file || !document) throw new Error(t().noteChanged);
     const node = findNode(document, draft.nodeId);
-    if (!node) throw new Error(t().nodeGone);
+    // The file-name root is gone from the map once a heading took its place (an external change): its parse root is not it (LEV-301).
+    if (!node || (node.kind === "root" && !standsForFileName(document))) throw new Error(t().nodeGone);
     if (draftFingerprint(document, node) !== draft.value) {
       throw new Error(t().draftChanged);
     }
