@@ -18,7 +18,7 @@
 - 内部・相対リンクの基準は元ファイル。MarkdownRenderer の Component は描画対象の寿命に合わせて解放する。
 - 日本語 IME、Undo/Redo、同名見出し、外部変更、複数ビューは双方向編集の必須ケース。
 - runtime はブラウザ互換。Node/Electron や個人パスを持ち込まない。公開 API と scoped CSS を使う。例外は M9 の AI 機能の `src/ai/host/node-host.ts` だけで、`Platform.isDesktopApp` の内側で実行時に Node のモジュールを取りに行く（静的 import はしない。範囲と lint は `docs/architecture.md` §11.1）。
-- ランタイム依存を追加する前に、必要性・バンドル増分・モバイル互換性を記録する。
+- ランタイム依存を追加する前に、必要性・バンドル増分を記録する。Mappy はデスクトップ専用（2026-10-02 の本人の決定）なので、モバイル互換性は記録しない（デスクトップの Electron で動くことは確かめる）。
 - 他プラグインは仕様の参考。MarkMind の非公開コードを流用しない。
 - 本番 Vault をテスト対象にしない。自動準備はプロジェクト配下の `test-vault/` のみ。
 - プライマリー（`projects/Mappy` のチェックアウト）は常に `main` に置く。ブランチ作業は `orca worktree create` で作った worktree で行い、プライマリーで `git checkout -b`／`git switch` を実行しない。
