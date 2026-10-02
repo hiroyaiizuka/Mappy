@@ -224,6 +224,11 @@ describe('createMindmapFile', () => {
   });
 });
 
+/**
+ * LEV-300: "same folder as current file" for a map made from a canvas or a PDF (the ribbon makes one from those now; the
+ * command too) counts from that file. Before, the plugin's active note was null there and the path was '' (Obsidian's
+ * default location). Put back to `note?.path ?? ''`, the canvas line fails (artifacts/lev-300/source-path-reverted.txt).
+ */
 describe('newMapSourcePath (LEV-300)', () => {
   const file = (path: string): TFile => { const result = new TFile(); result.path = path; return result; };
   const app = (active: TFile | null) => ({ workspace: { getActiveFile: () => active } }) as unknown as App;

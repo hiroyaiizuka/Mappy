@@ -5,8 +5,7 @@ import { readMapLayout } from "./frontmatter";
 /** The ribbon button's routes; each reports its own failure. */
 export interface RibbonRoutes {
   open(file: TFile, layout: LayoutMode): void;
-  /** `from` is the active note the button was pressed on (null when none is), for "same folder as current file". */
-  create(from: TFile | null): void;
+  create(): void;
   /** The active note is not indexed yet, so whether it is a map is not known. */
   notReady(): void;
 }
@@ -22,5 +21,5 @@ export function runRibbon(app: App, file: TFile | null, routes: RibbonRoutes): v
   if (file && !app.metadataCache.getFileCache(file)) return routes.notReady();
   const layout = file ? readMapLayout(app, file) : null;
   if (file && layout) routes.open(file, layout);
-  else routes.create(file);
+  else routes.create();
 }

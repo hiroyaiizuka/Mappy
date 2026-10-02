@@ -79,7 +79,7 @@ export default class MappyPlugin extends Plugin {
     this.registerMarkdownPostProcessor(embeds.processor);
     this.addCommand({
       id: "create-mindmap", name: t().cmdCreateMap,
-      callback: () => { this.createMap(this.activeFile()); },
+      callback: () => { this.createMap(); },
     });
     this.addCommand({
       id: "convert-note-to-mindmap", name: t().cmdConvertNote,
@@ -174,7 +174,7 @@ export default class MappyPlugin extends Plugin {
     this.addRibbonIcon("git-fork", t().cmdOpen, () => {
       runRibbon(this.app, this.activeFile(), {
         open: (file, layout) => { this.run(() => this.open(file, false, layout), t().openFailed); },
-        create: from => { this.createMap(from); },
+        create: () => { this.createMap(); },
         notReady: () => { new Notice(t().noteNotIndexed); },
       });
     });
@@ -195,13 +195,13 @@ export default class MappyPlugin extends Plugin {
 
   /**
    * The command's and the ribbon's route (LEV-300): an untitled map in the settings' folder, with their layout.
-   * `from` is the active note (`activeFile()` asks the map first, so a map in a sidebar counts too — LEV-89); the
-   * ribbon passes the one it decided on. "Same folder as current file" counts from it (`newMapSourcePath`).
+   * "Same folder as current file" counts from the active note (`activeFile()` asks the map first, so a map in a
+   * sidebar counts too — LEV-89), else from the active file that is not a note (`newMapSourcePath`).
    */
-  private createMap(from: TFile | null): void {
+  private createMap(): void {
     this.run(async () => {
       const { defaultLayout: layout, newMapFolder: folder } = this.settings;
-      const file = await createMindmapFile(this.app, newMapSourcePath(this.app, from), { layout, folder });
+      const file = await createMindmapFile(this.app, newMapSourcePath(this.app, this.activeFile()), { layout, folder });
       await this.open(file, false, layout);
     }, t().createFailed);
   }

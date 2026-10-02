@@ -6,14 +6,14 @@
  *
  * 行列は本人の操作（リボンを押す）× アクティブなものの形（マップのノート 4 レイアウト・マップでないノート・`mappy:
  * false`・frontmatter の無いノート・Excalidraw の図面・何も開いていない・まだ索引されていないノート）。修正を戻す
- * （`runRibbon` を元の src/main.ts の分岐にする）と、作る行が通知を出すだけで落ちる（`artifacts/lev-300/before-fix.txt`）。
+ * （`runRibbon` を元の src/main.ts の分岐にする）と、作る行が `create` を呼ばずに落ちる（`artifacts/lev-300/before-fix.txt`）。
  *
- * ここで見るのは `runRibbon` の振り分け（と、旧版の通知が出ないこと）まで。`runRibbon` は vault に触れないので、
- * 作る経路（`createMap` → `createMindmapFile` → `open`）が開いていたノートを書かないことは実機 E82 が見る。
+ * ここで見るのは `runRibbon` の振り分けまで（旧版の通知は main.ts の中で出していたのでここには届かない）。
+ * `runRibbon` は vault に触れないので、作る経路（`createMap` → `createMindmapFile` → `open`）が開いていたノートを
+ * 書かないことは実機 E82 が見る。
  */
 import { describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
-import { Notice } from '../mocks/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
 import { runRibbon } from '../../src/obsidian/ribbon';
 
@@ -27,10 +27,7 @@ function file(path: string): TFile {
 function press(active: TFile | null, cache: { frontmatter?: Record<string, unknown> } | null) {
   const app = { metadataCache: { getFileCache: () => cache } } as unknown as App;
   const routes = { open: vi.fn(), create: vi.fn(), notReady: vi.fn() };
-  Notice.messages = [];
   runRibbon(app, active, routes);
-  // Through 0.4.5 the button said 「先に…を実行してください。」 or 「Markdown ノートを開いてください。」 here.
-  expect(Notice.messages).toEqual([]);
   return routes;
 }
 
@@ -57,7 +54,7 @@ describe('the ribbon button (LEV-300)', () => {
   for (const [shape, active, cache] of OTHERS) {
     it(`routes to a new map for ${shape}`, () => {
       const routes = press(active, cache);
-      expect(routes.create).toHaveBeenCalledExactlyOnceWith(active);
+      expect(routes.create).toHaveBeenCalledOnce();
       expect(routes.open).not.toHaveBeenCalled();
       expect(routes.notReady).not.toHaveBeenCalled();
     });
