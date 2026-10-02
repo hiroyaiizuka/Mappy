@@ -172,7 +172,6 @@ With a map open, run "Export current map as SVG or PNG" and choose a format. The
 - The SVG holds the nodes as HTML (`foreignObject`). Browsers and Obsidian show it, but some SVG editors and previews, such as Inkscape and Illustrator, may not show its content. Images from the vault are embedded in the SVG file (it doesn't refer to separate files). An image that can't be read becomes alternative text, keeping the node
 - The PNG draws the same SVG on your device at twice the resolution. A large map is scaled down to fit the device's canvas limit
 - **Fonts are not embedded.** Text widths and wrapping depend on the fonts where the file is opened, while node boxes keep the size they had when exported
-- Where this SVG can't be redrawn as an image, PNG isn't offered and only SVG can be exported
 
 ## Compatibility
 
