@@ -30,8 +30,14 @@ export function parseArgs(argv = process.argv) {
   };
 }
 
+/**
+ * A case's record. The provenance at the start (provenance.mjs, LEV-306) is kept out of the record's own fields and
+ * written by `finish` as `harness.start`, beside the end's, so a HEAD or build that changed during the run shows.
+ */
 export function createRecord(vault, note) {
-  return { vault, note, steps: {}, failures: [] };
+  const record = { vault, note, steps: {}, failures: [] };
+  Object.defineProperty(record, 'harnessAtStart', { value: provenance(vault), enumerable: false });
+  return record;
 }
 
 /** Runs one named step, recording either its result or the error, and never throwing past it. */
@@ -53,12 +59,12 @@ export function makeCheck(record) {
 
 /**
  * Writes the record (if `--json <path>` was given), prints the verdict, and returns the process exit code. The record
- * gets `harness`: the HEAD, build and installed plugin files it ran on (provenance.mjs, LEV-306), read here at the end
- * so a rebuild during the run shows.
+ * gets `harness`: the HEAD, build and installed plugin files (provenance.mjs, LEV-306) read here at the end, with the
+ * same read at `createRecord` as `harness.start`; the gate refuses a record whose two reads differ.
  */
 export async function finish(record, jsonPath) {
   record.passed = record.failures.length === 0;
-  record.harness = provenance(record.vault);
+  record.harness = { ...provenance(record.vault), start: record.harnessAtStart ?? null };
   if (jsonPath) await writeFile(jsonPath, `${JSON.stringify(record, null, 2)}\n`);
   console.log(record.passed ? 'PASS' : `FAIL\n- ${record.failures.join('\n- ')}`);
   return record.passed ? 0 : 1;

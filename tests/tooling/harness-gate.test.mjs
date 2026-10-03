@@ -23,18 +23,22 @@ afterEach(() => { while (temporary.length > 0) rmSync(temporary.pop(), { recursi
 
 const BASE = 'c'.repeat(40);
 const receiptAt = (headSha, overrides = {}) => ({
-  issue: 'LEV-306', pr: 170, headSha, headCommittedAt: '2026-10-03T00:30:00Z', baseRefName: 'main', baseRefOid: BASE,
+  issue: 'LEV-306', pr: 170, headSha, headCommittedAt: '2026-10-03T00:30:00Z', baseRefName: 'main', baseRefOid: BASE, baseTip: BASE,
+  writtenAt: '2026-10-03T02:00:00Z',
   check: { result: 'pass', at: '2026-10-03T01:00:00Z' }, review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: BASE },
   evidence: ['artifacts/lev-306/record.md'], ...overrides,
 });
 const caseJson = (overrides = {}) => ({
   vault: '/v', note: 'Fixtures/E2E', steps: { open: { ok: true } }, failures: [], passed: true,
-  harness: { head: HEAD, dirty: false, build: { kind: 'release', marked: true }, sha256: { ...SHA }, recordedAt: '2026-10-03T02:00:00Z' },
+  harness: {
+    head: HEAD, dirty: false, build: { kind: 'release', marked: true }, sha256: { ...SHA }, recordedAt: '2026-10-03T02:00:00Z',
+    start: { head: HEAD, dirty: false, build: { kind: 'release', marked: true }, sha256: { ...SHA }, recordedAt: '2026-10-03T01:58:00Z' },
+  },
   ...overrides,
 });
-const IDENTITY = { headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main' };
-/** PR #170 as `gh pr view` gives it, the PR the receipts and ACKs below are written for. */
-const PR = { number: 170, ...IDENTITY };
+const IDENTITY = { headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main', baseTip: BASE };
+/** PR #170 as `gh pr view` gives it (with the base branch's tip), the PR the receipts and ACKs below are written for. */
+const PR = { number: 170, state: 'OPEN', ...IDENTITY };
 const SUCCESS = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const prWith = statusCheckRollup => ({ ...PR, statusCheckRollup });
 const ackOf = (overrides = {}) => ({
@@ -51,12 +55,14 @@ const green = (overrides = {}) => ({
   ...overrides,
 });
 const withHarness = harness => caseJson({ harness: { ...caseJson().harness, ...harness } });
+/** A JSON whose whole run was on `harness` (the start's read the same), so only the rule under test can refuse it. */
+const ranOn = harness => withHarness({ ...harness, start: { ...caseJson().harness.start, ...harness } });
 
 describe('completion receipt and ACK', () => {
   it('acknowledges the same (issue, head) once; the second is a duplicate and writes nothing', () => {
     const dir = tempDir();
     expect(writeReceipt(dir, receiptAt(HEAD)).status).toBe('written');
-    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'fail', at: '2026-10-03T03:00:00Z' } })).status).toBe('exists');
+    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'fail', at: '2026-10-03T01:30:00Z' } })).status).toBe('exists');
     const first = ackReceipt(dir, { issue: 'LEV-306', pr: PR, now: new Date('2026-10-03T04:00:00Z') });
     const second = ackReceipt(dir, { issue: 'LEV-306', pr: PR, now: new Date('2026-10-03T05:00:00Z') });
     expect(first.status).toBe('acked');
@@ -114,14 +120,36 @@ describe('completion receipt and ACK', () => {
     expect(writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: null, baseSha: BASE } })).status).toBe('rejected');
   });
 
-  it('refuses a receipt whose check or review ran before the HEAD was committed', () => {
+  it('refuses a receipt whose check ran before the HEAD was committed, and takes a review from before it', () => {
     const dir = tempDir();
     const early = '2026-10-03T00:10:00Z';
     expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'pass', at: early } })).status).toBe('rejected');
-    const review = { result: 'pass', at: early, range: 'origin/main...HEAD', baseSha: BASE };
-    expect(writeReceipt(dir, receiptAt(HEAD, { review })).status).toBe('rejected');
     expect(writeReceipt(dir, receiptAt(HEAD, { headCommittedAt: undefined })).status).toBe('rejected');
     expect(readdirSync(dir)).toEqual([]);
+    // AGENTS.md: findings fixed after the review need check again, not always the review (Low only).
+    const review = { result: 'pass', at: early, range: 'origin/main...HEAD', baseSha: BASE };
+    expect(writeReceipt(dir, receiptAt(HEAD, { review })).status).toBe('written');
+  });
+
+  it.each([
+    // On the review, which has no lower bound: on check, a local-time reading can also fall before the commit.
+    ['not ISO 8601 (read in local time)', { review: { result: 'pass', at: '10/3/2026', range: 'origin/main...HEAD', baseSha: BASE } }],
+    ['without a time zone', { review: { result: 'pass', at: '2026-10-03T01:00:00', range: 'origin/main...HEAD', baseSha: BASE } }],
+    ['later than the receipt itself', { check: { result: 'pass', at: '2099-10-03T01:00:00Z' } }],
+    ['a review later than the receipt', { review: { result: 'pass', at: '2099-10-03T01:00:00Z', range: 'origin/main...HEAD', baseSha: BASE } }],
+  ])('refuses a receipt with a time %s', (_, change) => {
+    const dir = tempDir();
+    expect(writeReceipt(dir, receiptAt(HEAD, change)).status).toBe('rejected');
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('does not acknowledge a receipt whose check or review failed, and writes nothing for it', () => {
+    const dir = tempDir();
+    writeReceipt(dir, receiptAt(HEAD, { check: { result: 'fail', at: '2026-10-03T01:00:00Z' } }));
+    const result = ackReceipt(dir, { issue: 'LEV-306', pr: PR });
+    expect(result.status).toBe('rejected');
+    expect(result.reason).toMatch(/check did not pass/u);
+    expect(readdirSync(dir)).toEqual([`LEV-306-${HEAD}.json`]);
   });
 
   it("refuses a receipt whose review compared against another commit than the PR's base", () => {
@@ -129,7 +157,7 @@ describe('completion receipt and ACK', () => {
     const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD' };
     const older = writeReceipt(dir, receiptAt(HEAD, { review: { ...review, baseSha: 'e'.repeat(40) } }));
     expect(older.status).toBe('rejected');
-    expect(older.reason).toMatch(/review\.baseSha \(not baseRefOid/u);
+    expect(older.reason).toMatch(/review\.baseSha \(not baseTip/u);
     expect(writeReceipt(dir, receiptAt(HEAD, { review })).status).toBe('rejected');
     expect(readdirSync(dir)).toEqual([]);
   });
@@ -141,8 +169,9 @@ describe('evidence gate', () => {
   });
 
   it('refuses a JSON from another HEAD even when its sha256 are the same', () => {
-    const result = evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ head: OLD }) }] }));
+    const result = evaluateGate(green({ e2e: [{ path: 'e.json', json: ranOn({ head: OLD }) }] }));
     expect(result.verdict).toBe('STALE');
+    expect(result.reasons.map(reason => reason.message)).toEqual([`e.json: ran on ${OLD}, not the PR's head ${HEAD}`]);
   });
 
   it.each([
@@ -162,6 +191,25 @@ describe('evidence gate', () => {
   it("refuses a receipt whose review compared against another commit than the gated PR's base", () => {
     const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: 'e'.repeat(40) };
     expect(evaluateGate(green({ receipt: receiptAt(HEAD, { review }) })).verdict).toBe('STALE');
+  });
+
+  it('refuses a review taken before a commit was merged into the base branch, though the PR was not pushed since', () => {
+    const moved = { ...prWith(SUCCESS), baseTip: 'd'.repeat(40) };
+    const result = evaluateGate(green({ pr: moved, prAfter: { ...IDENTITY, baseTip: moved.baseTip } }));
+    expect(result.verdict).toBe('STALE');
+    expect(result.reasons.map(reason => reason.message).join('\n')).toMatch(/not the base's tip d{40}/u);
+  });
+
+  it('refuses a PR that is no longer open', () => {
+    expect(evaluateGate(green({ pr: { ...prWith(SUCCESS), state: 'MERGED' } })).verdict).toBe('STALE');
+  });
+
+  it('refuses a JSON whose HEAD or installed build changed between the start and the end of the case', () => {
+    const changed = { ...caseJson().harness.start, sha256: { ...SHA, 'main.js': '9'.repeat(64) } };
+    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ start: changed }) }] })).verdict).toBe('STALE');
+    const earlier = { ...caseJson().harness.start, head: OLD };
+    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ start: earlier }) }] })).verdict).toBe('STALE');
+    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ start: undefined }) }] })).verdict).toBe('INCOMPLETE');
   });
 
   it('refuses a receipt or an ACK of another issue than the gated one', () => {
@@ -202,9 +250,9 @@ describe('evidence gate', () => {
   });
 
   it.each([
-    ['another build', withHarness({ build: { kind: 'ai-dev', marked: true } })],
-    ['other plugin bytes', withHarness({ sha256: { ...SHA, 'main.js': '9'.repeat(64) } })],
-    ['a tree with uncommitted changes', withHarness({ dirty: true })],
+    ['another build', ranOn({ build: { kind: 'ai-dev', marked: true } })],
+    ['other plugin bytes', ranOn({ sha256: { ...SHA, 'main.js': '9'.repeat(64) } })],
+    ['a tree with uncommitted changes', ranOn({ dirty: true })],
   ])('refuses a JSON run on %s', (_, json) => {
     expect(evaluateGate(green({ e2e: [{ path: 'e.json', json }] })).verdict).toBe('STALE');
   });
@@ -285,6 +333,7 @@ describe('the PR read before and after the evidence', () => {
     ['the head is pushed', { headRefOid: OLD }],
     ["the base's sha moves", { baseRefOid: 'd'.repeat(40) }],
     ['the base is retargeted', { baseRefName: 'feature/ai' }],
+    ['a commit is merged into the base branch', { baseTip: 'd'.repeat(40) }],
   ])('voids the verdict (STALE) when %s while the evidence is read', (_, change) => {
     const result = gateAcross(prWith(SUCCESS), { ...prWith(SUCCESS), ...change });
     expect(result.verdict).toBe('STALE');
@@ -315,6 +364,18 @@ describe("finish's harness fields", () => {
     const code = await finish(record, json);
     return { code, written: JSON.parse(readFileSync(json, 'utf8')) };
   };
+
+  it('records the provenance at the start too, so a rebuild during the run shows', async () => {
+    const vault = vaultWith(undefined);
+    const record = createRecord(vault, 'Fixtures/E2E');
+    writeFileSync(join(vault, '.obsidian', 'plugins', 'mappy', 'main.js'), 'rebuilt bytes');
+    const json = join(tempDir(), 'case.json');
+    await finish(record, json);
+    const { harness } = JSON.parse(readFileSync(json, 'utf8'));
+    expect(harness.start.sha256['main.js']).toBe(createHash('sha256').update('main.js bytes').digest('hex'));
+    expect(harness.sha256['main.js']).toBe(createHash('sha256').update('rebuilt bytes').digest('hex'));
+    expect(Object.keys(JSON.parse(readFileSync(json, 'utf8')))).not.toContain('harnessAtStart');
+  });
 
   it('records the HEAD, the build kind and the installed sha256, and keeps the existing fields', async () => {
     const vault = vaultWith('ai-dev\n');

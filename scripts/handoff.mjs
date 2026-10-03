@@ -3,24 +3,26 @@
  * nothing else reads or writes these files, and not running this leaves the harness as it was.
  *
  *   receipt  (the worker, in its worktree, after `npm run check` and the review) writes
- *            `<dir>/<issue>-<headSha>.json`: issue, the PR (number, and its base branch and base sha as `gh pr view`
- *            gives them when the receipt is written), the HEAD, check's and the review's results and times, the
- *            review's range and the base commit the review compared against (`--review-base-sha`: what the range's
- *            base, e.g. `origin/main`, pointed at when the review ran; it must be the PR's base sha), and the
- *            evidence paths. The PR's head must be this HEAD and the tree must have no tracked changes (the HEAD must
- *            be what was checked). A receipt is never replaced: a new result needs a new commit (after a retarget or
- *            a moved base, rebase, check and review again, and write again). The review's base commit is the
- *            worker's own record: the receipt binds it to the PR, it does not prove the review saw it. check's and
- *            the review's times must not be earlier than the HEAD's commit time (`headCommittedAt`), so a run on an
- *            earlier commit cannot be recorded for this one.
+ *            `<dir>/<issue>-<headSha>.json`: issue, the PR (number, base branch and `baseRefOid` as `gh pr view` gives
+ *            them when the receipt is written), the base branch's tip at that moment (`baseTip`, read from the branch
+ *            itself, since `baseRefOid` need not follow the branch between pushes), the HEAD and its commit time,
+ *            check's and the review's results and times, the review's range and the base commit the review compared
+ *            against (`--review-base-sha`: what the range's base, e.g. `origin/main`, pointed at when the review ran;
+ *            it must be `baseTip`), and the evidence paths. The PR's head must be this HEAD and the tree must have no
+ *            tracked changes (the HEAD must be what was checked). check must have run on this HEAD (its time not
+ *            before the HEAD's commit time); the review may be older (AGENTS.md: findings fixed after it need only
+ *            check again). Times are ISO 8601 with a zone and not later than the receipt itself. A receipt is never
+ *            replaced: a new result needs a new commit (after a retarget or a moved base, rebase, check and review
+ *            again, and write again). The review's base commit is the worker's own record: the receipt binds it to
+ *            the base, it does not prove the review saw it.
  *   ack      (the orchestrator) reads the PR given with `--pr` (`gh pr view`: number, head, base branch and sha), takes
  *            the issue's receipt at that head, and records `<dir>/<issue>-<headSha>.ack.json` only when the receipt's
- *            PR and base are that PR's. A second ack of the same (issue, headSha) for the same PR and base is
- *            `duplicate` and writes nothing; a receipt (or an earlier ACK) of another PR or base, or no receipt at the
- *            PR's head, is `rejected`.
+ *            PR and base are that PR's and its check and review passed. A second ack of the same (issue, headSha)
+ *            for the same PR and base is `duplicate` and writes nothing; a failed result, a receipt (or an earlier
+ *            ACK) of another PR or base, or no receipt at the PR's head, is `rejected` and writes nothing.
  *
  * Both files are written whole or not at all: to a temporary file first, then linked to the final name, which fails
- * when the name exists. A reader never sees half a file, and an interrupted write leaves no file under the name.
+ * when the name exists, and the temporary file is removed whatever happens. A reader never sees half a file.
  *
  * `<dir>` is `.tooling/handoff/` in the primary checkout (the directory holding the git common dir), so every
  * worktree of the repository writes to the same place; `MAPPY_HANDOFF_DIR` replaces it. Git ignores `/.tooling/`.
@@ -35,12 +37,14 @@
  */
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const ISSUE = /^[A-Z]+-\d+$/u;
+export const ISSUE = /^[A-Z]+-\d+$/u;
 const SHA = /^[0-9a-f]{40}$/u;
+/** ISO 8601 with a time zone: `Date.parse` alone takes `10/3/2026` and reads it in local time. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/u;
 const RESULTS = ['pass', 'fail'];
 /** What `gh pr view` is asked for: the PR a receipt or an ACK is bound to. */
 export const PR_BINDING = ['number', 'headRefOid', 'baseRefName', 'baseRefOid'];
@@ -55,9 +59,11 @@ export function rangeOnBase(range, baseRefName, headSha) {
   return rest.length === 0 && [baseRefName, `origin/${baseRefName}`].includes(base) && ['HEAD', headSha].includes(head);
 }
 
+const time = value => (typeof value === 'string' && ISO_TIME.test(value) ? Date.parse(value) : Number.NaN);
+
 /**
  * What is wrong with a receipt; empty when it can be acknowledged. With `reviewBase: false` the review's base commit
- * is not compared with the receipt's base (the gate compares it with the PR's base itself).
+ * is not compared with the receipt's `baseTip` (the gate compares it with the base's tip now).
  */
 export function receiptErrors(receipt, { reviewBase = true } = {}) {
   const errors = [];
@@ -67,17 +73,21 @@ export function receiptErrors(receipt, { reviewBase = true } = {}) {
   if (!SHA.test(receipt.headSha ?? '')) errors.push('headSha');
   if (typeof receipt.baseRefName !== 'string' || receipt.baseRefName === '') errors.push('baseRefName');
   if (!SHA.test(receipt.baseRefOid ?? '')) errors.push('baseRefOid');
-  const committed = Date.parse(receipt.headCommittedAt ?? '');
+  if (!SHA.test(receipt.baseTip ?? '')) errors.push('baseTip');
+  const committed = time(receipt.headCommittedAt);
   if (Number.isNaN(committed)) errors.push('headCommittedAt');
+  const written = time(receipt.writtenAt);
+  if (Number.isNaN(written)) errors.push('writtenAt');
   for (const key of ['check', 'review']) {
     if (!RESULTS.includes(receipt[key]?.result)) errors.push(`${key}.result`);
-    const at = Date.parse(receipt[key]?.at ?? '');
-    if (Number.isNaN(at)) errors.push(`${key}.at`);
-    else if (at < committed) errors.push(`${key}.at (before the HEAD was committed: it ran on an earlier commit)`);
+    const at = time(receipt[key]?.at);
+    if (Number.isNaN(at)) errors.push(`${key}.at (not an ISO 8601 time with a zone)`);
+    else if (at > written) errors.push(`${key}.at (later than the receipt itself)`);
   }
+  if (time(receipt.check?.at) < committed) errors.push('check.at (before the HEAD was committed: it ran on an earlier commit)');
   if (!rangeOnBase(receipt.review?.range, receipt.baseRefName, receipt.headSha)) errors.push('review.range (not against baseRefName)');
   if (!SHA.test(receipt.review?.baseSha ?? '')) errors.push('review.baseSha');
-  else if (reviewBase && receipt.review.baseSha !== receipt.baseRefOid) errors.push('review.baseSha (not baseRefOid: the review compared against another base commit)');
+  else if (reviewBase && receipt.review.baseSha !== receipt.baseTip) errors.push('review.baseSha (not baseTip: the review compared against another base commit)');
   if (!Array.isArray(receipt.evidence) || !receipt.evidence.every(path => typeof path === 'string')) errors.push('evidence');
   return errors;
 }
@@ -95,15 +105,15 @@ export function bindingMismatches(record, pr) {
 /** Writes `value` as JSON to `path` whole, unless `path` exists; false when it did. */
 function writeOnce(path, value) {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
   try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
     linkSync(temporary, path);
     return true;
   } catch (error) {
     if (error.code === 'EEXIST') return false;
     throw error;
   } finally {
-    unlinkSync(temporary);
+    rmSync(temporary, { force: true });
   }
 }
 
@@ -120,15 +130,14 @@ function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
 }
 
-/** The issue's receipts in `dir` (unreadable ones as `null`), by file name. */
-export function readReceipts(dir, issue) {
+/** The file names of the issue's receipts in `dir` (not read). */
+export function receiptNames(dir, issue) {
   let names;
   try { names = readdirSync(dir); } catch { return []; }
   return names
     .filter(name => name.startsWith(`${issue}-`) && name.endsWith('.json') && !name.endsWith('.ack.json')
       && SHA.test(name.slice(issue.length + 1, -'.json'.length)))
-    .sort()
-    .map(name => ({ name, receipt: readJson(join(dir, name)) }));
+    .sort();
 }
 
 /** The issue's receipt at `headSha`, or null (none, or unreadable). */
@@ -142,9 +151,10 @@ export function readAck(dir, issue, headSha) {
 
 /**
  * Acknowledges the issue's receipt for `pr` (`PR_BINDING` from `gh pr view`): the receipt at the PR's head, written
- * for this PR number, base branch and base sha. Once per (issue, headSha): the link to the final name is what decides,
- * so two acks racing each other still record one, and the second reads the first's whole file; an earlier ACK for
- * another PR or base is not taken as this one's.
+ * for this PR number, base branch and base sha, with check and review passed. Once per (issue, headSha): the link to
+ * the final name is what decides, so two acks racing each other still record one, and the second reads the first's
+ * whole file; an earlier ACK for another PR or base is not taken as this one's. Nothing is written for a receipt it
+ * refuses, so the ACK of a later, passing receipt at another head is not blocked.
  */
 export function ackReceipt(dir, { issue, pr, now = new Date() }) {
   if (!ISSUE.test(issue ?? '')) return { status: 'rejected', reason: `not an issue key: ${issue}` };
@@ -153,11 +163,11 @@ export function ackReceipt(dir, { issue, pr, now = new Date() }) {
   const name = receiptName(issue, prHead);
   const receipt = readReceipt(dir, issue, prHead);
   if (receipt === null) {
-    const receipts = readReceipts(dir, issue);
+    const receipts = receiptNames(dir, issue);
     return {
       status: 'rejected',
       reason: receipts.length === 0 ? `no receipt for ${issue}` : `no receipt for ${issue} at the PR's head ${prHead}`,
-      receipts: receipts.map(({ name }) => name),
+      receipts,
     };
   }
   const errors = receiptErrors(receipt);
@@ -165,6 +175,8 @@ export function ackReceipt(dir, { issue, pr, now = new Date() }) {
   if (errors.length > 0) return { status: 'rejected', reason: `invalid receipt ${name}: ${errors.join(', ')}` };
   const mismatches = bindingMismatches(receipt, pr);
   if (mismatches.length > 0) return { status: 'rejected', reason: `receipt ${name} is not for this PR: ${mismatches.join('; ')}` };
+  const failed = ['check', 'review'].filter(key => receipt[key].result !== 'pass');
+  if (failed.length > 0) return { status: 'rejected', reason: `receipt ${name}: ${failed.join(' and ')} did not pass` };
   const path = join(dir, ackName(issue, prHead));
   const ack = {
     issue, pr: pr.number, headSha: prHead, baseRefName: pr.baseRefName, baseRefOid: pr.baseRefOid,
@@ -177,7 +189,8 @@ export function ackReceipt(dir, { issue, pr, now = new Date() }) {
   return { status: 'duplicate', path, ack: earlier };
 }
 
-function git(args, cwd) {
+/** `git <args>` in `cwd`, trimmed; throws when git fails. */
+export function git(args, cwd = process.cwd()) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
@@ -188,9 +201,15 @@ export function handoffDir(cwd = process.cwd()) {
   return join(dirname(common), '.tooling', 'handoff');
 }
 
-/** The PR as a receipt or an ACK is bound to it (`gh pr view`). */
-export function viewPr(pr) {
-  return JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--json', PR_BINDING.join(',')], { encoding: 'utf8' }));
+/** The tip of the base branch on GitHub now (not the PR's `baseRefOid`, which need not follow the branch). */
+export function baseTipOf(baseRefName) {
+  return execFileSync('gh', ['api', `repos/{owner}/{repo}/git/ref/heads/${baseRefName}`, '--jq', '.object.sha'],
+    { encoding: 'utf8' }).trim();
+}
+
+/** The PR as a receipt or an ACK is bound to it (`gh pr view`, `fields` beside `PR_BINDING`). */
+export function viewPr(pr, fields = PR_BINDING) {
+  return JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--json', fields.join(',')], { encoding: 'utf8' }));
 }
 
 function parseOptions(args, multi = []) {
@@ -222,16 +241,16 @@ function main(argv) {
   const pr = viewPr(options.pr);
   if (command === 'ack') return ackReceipt(dir, { issue: options.issue, pr });
 
-  if (git(['status', '--porcelain', '--untracked-files=no'], process.cwd()) !== '') {
+  if (git(['status', '--porcelain', '--untracked-files=no']) !== '') {
     return { status: 'rejected', reason: 'the tree has uncommitted tracked changes: commit them, so the HEAD is what was checked' };
   }
-  const headSha = git(['rev-parse', 'HEAD'], process.cwd());
+  const headSha = git(['rev-parse', 'HEAD']);
   if (pr.headRefOid !== headSha) {
     return { status: 'rejected', reason: `PR #${pr.number}'s head is ${pr.headRefOid}, not this HEAD ${headSha}: push first` };
   }
   const reviewBase = options['review-base-sha'] ?? '';
   try {
-    git(['rev-parse', '--verify', '--quiet', `${reviewBase}^{commit}`], process.cwd());
+    git(['rev-parse', '--verify', '--quiet', `${reviewBase}^{commit}`]);
   } catch {
     return { status: 'rejected', reason: `--review-base-sha ${reviewBase} is not a commit in this repository` };
   }
@@ -239,9 +258,10 @@ function main(argv) {
     issue: options.issue,
     pr: pr.number,
     headSha,
-    headCommittedAt: git(['show', '-s', '--format=%cI', 'HEAD'], process.cwd()),
+    headCommittedAt: git(['show', '-s', '--format=%cI', 'HEAD']),
     baseRefName: pr.baseRefName,
     baseRefOid: pr.baseRefOid,
+    baseTip: baseTipOf(pr.baseRefName),
     check: { result: options.check, at: options['check-at'] },
     review: { result: options.review, at: options['review-at'], range: options['review-range'] ?? null, baseSha: reviewBase },
     evidence: options.evidence,

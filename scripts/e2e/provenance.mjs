@@ -8,21 +8,17 @@
  * writes its record. Recorded on every run rather than behind a variable: the fields are only added, and a run that
  * left them out could not be told from one that predates them.
  */
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { git as gitOrThrow } from '../handoff.mjs';
 import { pluginFiles } from '../preflight.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function git(root, args) {
-  try {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return null;
-  }
+  try { return gitOrThrow(args, root); } catch { return null; }
 }
 
 function sha256(path) {
