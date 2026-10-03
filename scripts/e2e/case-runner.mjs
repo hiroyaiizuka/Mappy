@@ -7,6 +7,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { provenance } from './provenance.mjs';
 
 /**
  * A positive numeric `export const <name> = <number>` of src/layout/layout.ts, the value `harness:prepare` builds. For a
@@ -50,9 +51,14 @@ export function makeCheck(record) {
   return (condition, failure) => { if (!condition) record.failures.push(failure); };
 }
 
-/** Writes the record (if `--json <path>` was given), prints the verdict, and returns the process exit code. */
+/**
+ * Writes the record (if `--json <path>` was given), prints the verdict, and returns the process exit code. The record
+ * gets `harness`: the HEAD, build and installed plugin files it ran on (provenance.mjs, LEV-306), read here at the end
+ * so a rebuild during the run shows.
+ */
 export async function finish(record, jsonPath) {
   record.passed = record.failures.length === 0;
+  record.harness = provenance(record.vault);
   if (jsonPath) await writeFile(jsonPath, `${JSON.stringify(record, null, 2)}\n`);
   console.log(record.passed ? 'PASS' : `FAIL\n- ${record.failures.join('\n- ')}`);
   return record.passed ? 0 : 1;

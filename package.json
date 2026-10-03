@@ -23,6 +23,8 @@
     "check": "npm run validate && npm run lint && npm test && npm run package && npm run harness:browser:build",
     "harness:prepare": "npm run check && node scripts/prepare-test-vault.mjs",
     "harness:preflight": "node scripts/preflight.mjs",
+    "harness:handoff": "node scripts/handoff.mjs",
+    "harness:gate": "node scripts/harness-gate.mjs",
     "harness:view-teardown": "node scripts/check-view-teardown.mjs",
     "harness:e2e": "node scripts/e2e/run.mjs",
     "harness:e2e:add-delete": "node scripts/e2e/add-delete.mjs",
