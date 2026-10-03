@@ -747,6 +747,7 @@ export class MindmapView extends FileView {
       expand: id => { this.expand(id); },
       layout: () => { this.scheduleLayout(); },
       isTreeRoot: id => this.isFree(id),
+      scope: this.scope,
       focusMap: () => {
         if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
         else this.canvas.focus({ preventScroll: true });

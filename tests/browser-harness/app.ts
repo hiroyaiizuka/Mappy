@@ -3,7 +3,7 @@
  * writes stay in this page: nothing reaches a vault, so the save path,
  * link resolution and frontmatter persistence remain Obsidian-only checks.
  */
-import { Events, Notice, Scope, TFile, WorkspaceLeaf } from "./obsidian";
+import { Events, Keymap, Notice, Scope, TFile, WorkspaceLeaf } from "./obsidian";
 import { frontmatterLayout } from "../../src/core/markdown";
 import { locateFrontmatterKey, parseYamlValue } from "../../src/core/yaml-lite";
 
@@ -157,6 +157,8 @@ export class HarnessApp {
   readonly workspaceEvents = new Events();
   /** The root scope a view's own scope names as its parent; no keymap consults it in this page. */
   readonly scope = new Scope();
+  /** The scope stack the AI's input pushes its ⌘↵ onto (LEV-307); keys reach it only through a test's `onKeyEvent`. */
+  readonly keymap = new Keymap(this.scope);
   readonly activity: HarnessActivity[] = [];
   private readonly entries = new Map<string, VaultEntry>();
   private attachmentCount = 0;
