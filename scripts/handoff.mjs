@@ -10,12 +10,17 @@
  *            evidence paths. The PR's head must be this HEAD and the tree must have no tracked changes (the HEAD must
  *            be what was checked). A receipt is never replaced: a new result needs a new commit (after a retarget or
  *            a moved base, rebase, check and review again, and write again). The review's base commit is the
- *            worker's own record: the receipt binds it to the PR, it does not prove the review saw it.
+ *            worker's own record: the receipt binds it to the PR, it does not prove the review saw it. check's and
+ *            the review's times must not be earlier than the HEAD's commit time (`headCommittedAt`), so a run on an
+ *            earlier commit cannot be recorded for this one.
  *   ack      (the orchestrator) reads the PR given with `--pr` (`gh pr view`: number, head, base branch and sha), takes
  *            the issue's receipt at that head, and records `<dir>/<issue>-<headSha>.ack.json` only when the receipt's
  *            PR and base are that PR's. A second ack of the same (issue, headSha) for the same PR and base is
  *            `duplicate` and writes nothing; a receipt (or an earlier ACK) of another PR or base, or no receipt at the
  *            PR's head, is `rejected`.
+ *
+ * Both files are written whole or not at all: to a temporary file first, then linked to the final name, which fails
+ * when the name exists. A reader never sees half a file, and an interrupted write leaves no file under the name.
  *
  * `<dir>` is `.tooling/handoff/` in the primary checkout (the directory holding the git common dir), so every
  * worktree of the repository writes to the same place; `MAPPY_HANDOFF_DIR` replaces it. Git ignores `/.tooling/`.
@@ -29,7 +34,8 @@
  * and usage errors (2).
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -49,8 +55,11 @@ export function rangeOnBase(range, baseRefName, headSha) {
   return rest.length === 0 && [baseRefName, `origin/${baseRefName}`].includes(base) && ['HEAD', headSha].includes(head);
 }
 
-/** What is wrong with a receipt's shape; empty when it can be acknowledged. */
-export function receiptErrors(receipt) {
+/**
+ * What is wrong with a receipt; empty when it can be acknowledged. With `reviewBase: false` the review's base commit
+ * is not compared with the receipt's base (the gate compares it with the PR's base itself).
+ */
+export function receiptErrors(receipt, { reviewBase = true } = {}) {
   const errors = [];
   if (!receipt || typeof receipt !== 'object') return ['not an object'];
   if (!ISSUE.test(receipt.issue ?? '')) errors.push('issue');
@@ -58,13 +67,17 @@ export function receiptErrors(receipt) {
   if (!SHA.test(receipt.headSha ?? '')) errors.push('headSha');
   if (typeof receipt.baseRefName !== 'string' || receipt.baseRefName === '') errors.push('baseRefName');
   if (!SHA.test(receipt.baseRefOid ?? '')) errors.push('baseRefOid');
+  const committed = Date.parse(receipt.headCommittedAt ?? '');
+  if (Number.isNaN(committed)) errors.push('headCommittedAt');
   for (const key of ['check', 'review']) {
     if (!RESULTS.includes(receipt[key]?.result)) errors.push(`${key}.result`);
-    if (Number.isNaN(Date.parse(receipt[key]?.at ?? ''))) errors.push(`${key}.at`);
+    const at = Date.parse(receipt[key]?.at ?? '');
+    if (Number.isNaN(at)) errors.push(`${key}.at`);
+    else if (at < committed) errors.push(`${key}.at (before the HEAD was committed: it ran on an earlier commit)`);
   }
   if (!rangeOnBase(receipt.review?.range, receipt.baseRefName, receipt.headSha)) errors.push('review.range (not against baseRefName)');
   if (!SHA.test(receipt.review?.baseSha ?? '')) errors.push('review.baseSha');
-  else if (receipt.review.baseSha !== receipt.baseRefOid) errors.push('review.baseSha (not baseRefOid: the review compared against another base commit)');
+  else if (reviewBase && receipt.review.baseSha !== receipt.baseRefOid) errors.push('review.baseSha (not baseRefOid: the review compared against another base commit)');
   if (!Array.isArray(receipt.evidence) || !receipt.evidence.every(path => typeof path === 'string')) errors.push('evidence');
   return errors;
 }
@@ -79,19 +92,28 @@ export function bindingMismatches(record, pr) {
     .map(([own, theirs]) => `${own} ${JSON.stringify(record?.[own])} is not the PR's ${theirs} ${JSON.stringify(pr?.[theirs])}`);
 }
 
+/** Writes `value` as JSON to `path` whole, unless `path` exists; false when it did. */
+function writeOnce(path, value) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+  try {
+    linkSync(temporary, path);
+    return true;
+  } catch (error) {
+    if (error.code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    unlinkSync(temporary);
+  }
+}
+
 /** Writes `receipt` once; an existing receipt for the same (issue, headSha) is kept as it is (`exists`). */
 export function writeReceipt(dir, receipt) {
   const errors = receiptErrors(receipt);
   if (errors.length > 0) return { status: 'rejected', reason: `invalid receipt: ${errors.join(', ')}` };
   mkdirSync(dir, { recursive: true });
   const path = join(dir, receiptName(receipt.issue, receipt.headSha));
-  try {
-    writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
-  } catch (error) {
-    if (error.code === 'EEXIST') return { status: 'exists', path };
-    throw error;
-  }
-  return { status: 'written', path };
+  return writeOnce(path, receipt) ? { status: 'written', path } : { status: 'exists', path };
 }
 
 function readJson(path) {
@@ -109,48 +131,50 @@ export function readReceipts(dir, issue) {
     .map(name => ({ name, receipt: readJson(join(dir, name)) }));
 }
 
+/** The issue's receipt at `headSha`, or null (none, or unreadable). */
+export function readReceipt(dir, issue, headSha) {
+  return readJson(join(dir, receiptName(issue, headSha)));
+}
+
 export function readAck(dir, issue, headSha) {
   return readJson(join(dir, ackName(issue, headSha)));
 }
 
 /**
  * Acknowledges the issue's receipt for `pr` (`PR_BINDING` from `gh pr view`): the receipt at the PR's head, written
- * for this PR number, base branch and base sha. Once per (issue, headSha): the `wx` write is what decides, so two
- * acks racing each other still record one; an earlier ACK for another PR or base is not taken as this one's.
+ * for this PR number, base branch and base sha. Once per (issue, headSha): the link to the final name is what decides,
+ * so two acks racing each other still record one, and the second reads the first's whole file; an earlier ACK for
+ * another PR or base is not taken as this one's.
  */
 export function ackReceipt(dir, { issue, pr, now = new Date() }) {
   if (!ISSUE.test(issue ?? '')) return { status: 'rejected', reason: `not an issue key: ${issue}` };
   const prHead = pr?.headRefOid;
   if (!SHA.test(prHead ?? '')) return { status: 'rejected', reason: `the PR's head is not a commit: ${prHead}` };
-  const receipts = readReceipts(dir, issue);
-  const match = receipts.find(({ name }) => name === receiptName(issue, prHead));
-  if (!match) {
+  const name = receiptName(issue, prHead);
+  const receipt = readReceipt(dir, issue, prHead);
+  if (receipt === null) {
+    const receipts = readReceipts(dir, issue);
     return {
       status: 'rejected',
       reason: receipts.length === 0 ? `no receipt for ${issue}` : `no receipt for ${issue} at the PR's head ${prHead}`,
       receipts: receipts.map(({ name }) => name),
     };
   }
-  const errors = receiptErrors(match.receipt);
-  if (match.receipt?.issue !== issue) errors.push('issue differs from the file name');
-  if (errors.length > 0) return { status: 'rejected', reason: `invalid receipt ${match.name}: ${errors.join(', ')}` };
-  const mismatches = bindingMismatches(match.receipt, pr);
-  if (mismatches.length > 0) return { status: 'rejected', reason: `receipt ${match.name} is not for this PR: ${mismatches.join('; ')}` };
+  const errors = receiptErrors(receipt);
+  if (receipt.issue !== issue) errors.push('issue differs from the file name');
+  if (errors.length > 0) return { status: 'rejected', reason: `invalid receipt ${name}: ${errors.join(', ')}` };
+  const mismatches = bindingMismatches(receipt, pr);
+  if (mismatches.length > 0) return { status: 'rejected', reason: `receipt ${name} is not for this PR: ${mismatches.join('; ')}` };
   const path = join(dir, ackName(issue, prHead));
   const ack = {
     issue, pr: pr.number, headSha: prHead, baseRefName: pr.baseRefName, baseRefOid: pr.baseRefOid,
-    receipt: match.name, ackedAt: now.toISOString(),
+    receipt: name, ackedAt: now.toISOString(),
   };
-  try {
-    writeFileSync(path, `${JSON.stringify(ack, null, 2)}\n`, { flag: 'wx' });
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    const earlier = readJson(path);
-    const differ = bindingMismatches(earlier, pr);
-    if (differ.length > 0) return { status: 'rejected', reason: `an ACK for another PR or base is recorded at ${prHead}: ${differ.join('; ')}`, path };
-    return { status: 'duplicate', path, ack: earlier };
-  }
-  return { status: 'acked', path, ack };
+  if (writeOnce(path, ack)) return { status: 'acked', path, ack };
+  const earlier = readJson(path);
+  const differ = bindingMismatches(earlier, pr);
+  if (differ.length > 0) return { status: 'rejected', reason: `an ACK for another PR or base is recorded at ${prHead}: ${differ.join('; ')}`, path };
+  return { status: 'duplicate', path, ack: earlier };
 }
 
 function git(args, cwd) {
@@ -215,6 +239,7 @@ function main(argv) {
     issue: options.issue,
     pr: pr.number,
     headSha,
+    headCommittedAt: git(['show', '-s', '--format=%cI', 'HEAD'], process.cwd()),
     baseRefName: pr.baseRefName,
     baseRefOid: pr.baseRefOid,
     check: { result: options.check, at: options['check-at'] },

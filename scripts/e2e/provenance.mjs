@@ -34,14 +34,15 @@ export function provenance(vault, { root = projectRoot } = {}) {
   // Tracked changes only: the build is made from the tracked tree, and artifacts/ and test-vault/ are ignored anyway.
   const status = head === null ? null : git(root, ['status', '--porcelain', '--untracked-files=no']);
   const mark = typeof vault === 'string' ? join(vault, '.mappy-harness-build') : null;
+  const installed = typeof vault === 'string' ? join(vault, '.obsidian', 'plugins', 'mappy') : null;
   let kind = null;
   let marked = false;
   if (mark !== null) {
+    // No mark means release only in a vault that holds the plugin; a case run without one (memory-procedure) has no build.
     try {
-      if (existsSync(mark)) { kind = readFileSync(mark, 'utf8').trim() || null; marked = true; } else kind = 'release';
+      if (existsSync(mark)) { kind = readFileSync(mark, 'utf8').trim() || null; marked = true; } else if (existsSync(installed)) kind = 'release';
     } catch { kind = null; }
   }
-  const installed = typeof vault === 'string' ? join(vault, '.obsidian', 'plugins', 'mappy') : null;
   return {
     head,
     dirty: status === null ? null : status.length > 0,

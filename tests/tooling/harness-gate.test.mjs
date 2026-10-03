@@ -23,7 +23,7 @@ afterEach(() => { while (temporary.length > 0) rmSync(temporary.pop(), { recursi
 
 const BASE = 'c'.repeat(40);
 const receiptAt = (headSha, overrides = {}) => ({
-  issue: 'LEV-306', pr: 170, headSha, baseRefName: 'main', baseRefOid: BASE,
+  issue: 'LEV-306', pr: 170, headSha, headCommittedAt: '2026-10-03T00:30:00Z', baseRefName: 'main', baseRefOid: BASE,
   check: { result: 'pass', at: '2026-10-03T01:00:00Z' }, review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: BASE },
   evidence: ['artifacts/lev-306/record.md'], ...overrides,
 });
@@ -37,8 +37,11 @@ const IDENTITY = { headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main' };
 const PR = { number: 170, ...IDENTITY };
 const SUCCESS = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const prWith = statusCheckRollup => ({ ...PR, statusCheckRollup });
-const ackOf = (overrides = {}) => ({ issue: 'LEV-306', pr: 170, headSha: HEAD, baseRefName: 'main', baseRefOid: BASE, ...overrides });
+const ackOf = (overrides = {}) => ({
+  issue: 'LEV-306', pr: 170, headSha: HEAD, baseRefName: 'main', baseRefOid: BASE, receipt: `LEV-306-${HEAD}.json`, ...overrides,
+});
 const green = (overrides = {}) => ({
+  issue: 'LEV-306',
   pr: prWith(SUCCESS),
   prAfter: { ...IDENTITY },
   receipt: receiptAt(HEAD),
@@ -111,6 +114,16 @@ describe('completion receipt and ACK', () => {
     expect(writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: null, baseSha: BASE } })).status).toBe('rejected');
   });
 
+  it('refuses a receipt whose check or review ran before the HEAD was committed', () => {
+    const dir = tempDir();
+    const early = '2026-10-03T00:10:00Z';
+    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'pass', at: early } })).status).toBe('rejected');
+    const review = { result: 'pass', at: early, range: 'origin/main...HEAD', baseSha: BASE };
+    expect(writeReceipt(dir, receiptAt(HEAD, { review })).status).toBe('rejected');
+    expect(writeReceipt(dir, receiptAt(HEAD, { headCommittedAt: undefined })).status).toBe('rejected');
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   it("refuses a receipt whose review compared against another commit than the PR's base", () => {
     const dir = tempDir();
     const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD' };
@@ -149,6 +162,12 @@ describe('evidence gate', () => {
   it("refuses a receipt whose review compared against another commit than the gated PR's base", () => {
     const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: 'e'.repeat(40) };
     expect(evaluateGate(green({ receipt: receiptAt(HEAD, { review }) })).verdict).toBe('STALE');
+  });
+
+  it('refuses a receipt or an ACK of another issue than the gated one', () => {
+    expect(evaluateGate(green({ receipt: receiptAt(HEAD, { issue: 'LEV-999' }) })).verdict).toBe('STALE');
+    expect(evaluateGate(green({ ack: ackOf({ issue: 'LEV-999' }) })).verdict).toBe('STALE');
+    expect(evaluateGate(green({ ack: ackOf({ receipt: `LEV-306-${OLD}.json` }) })).verdict).toBe('STALE');
   });
 
   it('refuses an ACK alone that names another PR or base than the gated one', () => {
@@ -214,6 +233,19 @@ describe('evidence gate', () => {
     expect(evaluateGate(green({ pr: prWith(rollup) })).verdict).toBe('INCOMPLETE');
   });
 
+  it('does not pass while a required check has not reported, though every reported one is SUCCESS', () => {
+    const others = [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+    expect(evaluateGate(green({ pr: prWith(others) })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green({ ci: { required: ['check', 'build'] } })).verdict).toBe('INCOMPLETE');
+  });
+
+  it('passes a skipped check only when it is named skippable for the run', () => {
+    const release = [...SUCCESS, { __typename: 'CheckRun', name: 'release', status: 'COMPLETED', conclusion: 'SKIPPED' }];
+    expect(evaluateGate(green({ pr: prWith(release) })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green({ pr: prWith(release), ci: { skippable: ['release'] } })).verdict).toBe('PASS');
+    expect(evaluateGate(green({ pr: prWith(release), ci: { skippable: ['attest'] } })).verdict).toBe('INCOMPLETE');
+  });
+
   it('fails on a failed CI check', () => {
     const failed = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'FAILURE' }];
     expect(evaluateGate(green({ pr: prWith(failed) })).verdict).toBe('FAIL');
@@ -236,8 +268,8 @@ describe('the PR read before and after the evidence', () => {
       readPr: () => { expect(reads.length).toBeGreaterThan(0); return reads.shift(); },
       collect: pr => {
         collected.push(pr.headRefOid);
-        const { receipt, ack, e2e, expected } = green();
-        return { receipt, ack, e2e, expected };
+        const { issue, receipt, ack, e2e, expected } = green();
+        return { issue, receipt, ack, e2e, expected };
       },
     });
     expect(reads).toEqual([]);
@@ -294,6 +326,12 @@ describe("finish's harness fields", () => {
     expect(written.harness.build).toEqual({ kind: 'ai-dev', marked: true });
     expect(written.harness.sha256['main.js']).toBe(createHash('sha256').update('main.js bytes').digest('hex'));
     expect(written.harness.sha256['styles.css']).toBe(createHash('sha256').update('styles.css bytes').digest('hex'));
+  });
+
+  it('records no build kind for a directory that holds no plugin (a case run without a vault)', async () => {
+    const { written } = await run(tempDir());
+    expect(written.harness.build).toEqual({ kind: null, marked: false });
+    expect(written.harness.sha256['main.js']).toBeNull();
   });
 
   it('takes a vault without the mark as release, and leaves what it cannot read null', async () => {
