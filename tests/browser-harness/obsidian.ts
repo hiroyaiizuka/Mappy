@@ -177,6 +177,35 @@ export class Scope {
   }
 }
 
+/**
+ * Obsidian's Keymap as of 1.14.4 (app.js, read for LEV-307), for one window: the scope stack (`pushScope` makes a scope
+ * the one keys go to, `popScope` hands them back to the one under it or takes it out from under another) and
+ * `onKeyEvent`, which Obsidian runs at the window's capture phase: the current scope decides, and `false` prevents and
+ * stops the key. This page installs no listener of its own; a test that needs the window's capture phase routes keys
+ * to `onKeyEvent` itself.
+ */
+export class Keymap {
+  scope: Scope;
+  readonly prevScopes: Scope[] = [];
+  constructor(readonly rootScope: Scope) { this.scope = rootScope; }
+  pushScope(scope: Scope): void {
+    if (this.scope === scope) return;
+    this.prevScopes.push(this.scope);
+    this.scope = scope;
+  }
+  popScope(scope: Scope): void {
+    if (scope === this.rootScope) return;
+    if (this.scope === scope) this.scope = this.prevScopes.pop() ?? this.rootScope;
+    else if (this.prevScopes.includes(scope)) this.prevScopes.splice(this.prevScopes.indexOf(scope), 1);
+  }
+  onKeyEvent(event: KeyboardEvent): false | undefined {
+    if (this.scope.handleKey(event) !== false) return undefined;
+    event.preventDefault();
+    event.stopPropagation();
+    return false;
+  }
+}
+
 /** What `WorkspaceLeaf.setViewState` hands a view's `setState` (1.14.2): `layout` and `close` are not in the public type. */
 export interface HarnessStateResult extends ViewStateResult {
   layout: boolean;

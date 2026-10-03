@@ -1,4 +1,4 @@
-import { FuzzySuggestModal, Notice, Platform, setIcon, type App, type TFile } from "obsidian";
+import { FuzzySuggestModal, Notice, Platform, Scope, setIcon, type App, type TFile } from "obsidian";
 import { webSearchAfterAttach, webSearchCaution } from "../../ai/core/web-search";
 import type { AiFailure, AiMaterial, AiProgress, AiRequest, AiResult, AiRunner, AiTemplate, OutlineItem } from "../../ai/contract";
 import { nodeBody } from "../../core/body";
@@ -40,6 +40,8 @@ export interface AiHost {
   focusMap(): void;
   /** Whether `id` is the root of a tree on the map (the body root, a free topic): its children are drawn as stages. */
   isTreeRoot(id: string): boolean;
+  /** The view's keymap scope (its F2), the parent of the input's: every key but ⌘↵ goes on to it as before. */
+  readonly scope: Scope | null;
 }
 
 interface Draft {
@@ -178,6 +180,15 @@ export class AiController {
   private draftBox: { left: number; bottom: number } | null = null;
   /** What the card shows now (`cardState`): a frame or a lock change that changes nothing leaves its DOM, and the focus in it, alone. */
   private shown = "";
+  /**
+   * ⌘↵ for the input (LEV-307). Obsidian's keymap runs at the window's capture phase, and its default Mod+Enter
+   * (`editor:open-link-in-new-leaf`, 1.14.4) always reports itself run — its `checkCallback` has no false branch — so
+   * the keymap prevents and stops the key before the card hears it. Pushed while the input is open and the focus is on
+   * the card (`syncKeys`), so the key is the input's there and Obsidian's everywhere else: a scope that has Mod+Enter
+   * offers it to no other handler, whatever it answers, so it cannot stay on the stack and decline.
+   */
+  private readonly keys: Scope;
+  private keysPushed = false;
 
   constructor(private readonly host: AiHost) {
     this.button = host.world.createEl("button", { cls: "mappy-ai-button", attr: { type: "button", "aria-label": t().aiButton } });
@@ -193,6 +204,23 @@ export class AiController {
     this.card = host.pane.createDiv({ cls: "mappy-ai-card mappy-floating", attr: { role: "dialog", "aria-label": t().aiPanelLabel, tabindex: "-1" } });
     this.card.hidden = true;
     this.card.addEventListener("keydown", event => { this.cardKey(event); });
+    this.card.addEventListener("focusin", () => { this.syncKeys(true); });
+    // The focus moving between the card's own controls stays on the card.
+    this.card.addEventListener("focusout", event => {
+      const next = event.relatedTarget;
+      this.syncKeys(next instanceof Node && this.card.contains(next));
+    });
+    // Its parent is the chain the key had before the push. A window's base scope is the workspace's, which (1.14.4)
+    // hands every key to the active leaf's view scope when that view has one, and the focus on the card makes the
+    // map's leaf the active one: so the view's scope, then the app's (⌘W, ⌘P and the other hotkeys). The scope the
+    // keymap holds at the push is not in the public API to take as the parent instead.
+    this.keys = new Scope(host.scope ?? host.app.scope);
+    this.keys.register(["Mod"], "Enter", event => {
+      // Pushed only with the focus on the card, so the key is the card's; `false` is the keymap's "consumed". The
+      // card's handler stops the key here, at the window, so its own keydown listener never runs it a second time.
+      this.cardKey(event);
+      return false;
+    });
     this.releaseLock = aiRunLock.onChange(() => { this.sync(); });
   }
 
@@ -344,7 +372,7 @@ export class AiController {
     const shown = kind === "active" || kind === "expired" || kind === "unreachable";
     const quiet = this.form === null && this.run === null && this.draft === null && this.failed === null;
     // Nothing to show and nothing shown (no services, no license, no phase): a frame costs nothing more here.
-    if (!shown && quiet && this.button.hidden && this.card.hidden) return;
+    if (!shown && quiet && this.button.hidden && this.card.hidden) { this.syncKeys(); return; }
     const eligible = document && node ? this.eligible(document, node) : "no";
     const placed = node ? this.placed(node.id) : undefined;
     // Not over a title being typed: a press meant for the draft's corner would confirm it and open the input instead.
@@ -360,6 +388,21 @@ export class AiController {
     this.buttonFor = this.button.hidden ? undefined : placed;
     this.placeButton();
     this.renderCard();
+    this.syncKeys();
+  }
+
+  /** The input's ⌘↵ scope on the keymap while the input is open and the focus is on the card, and off it otherwise. */
+  private syncKeys(focused = this.card.contains(this.card.doc.activeElement)): void {
+    const wanted = focused && this.form !== null && !this.card.hidden;
+    if (wanted === this.keysPushed) return;
+    this.keysPushed = wanted;
+    const keymap = this.host.app.keymap;
+    // Popped wherever it is in the window's stack (1.14.4 `popScope` takes a scope out from under another, a Modal's
+    // pushed over it), and popped before a push too: `pushScope` only compares with the top, so a copy left under
+    // another scope would stay and keep ⌘↵ from Obsidian everywhere once the input is gone. Popping a scope not on
+    // a stack does nothing.
+    keymap.popScope(this.keys);
+    if (wanted) keymap.pushScope(this.keys);
   }
 
   /**
