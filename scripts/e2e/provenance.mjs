@@ -8,17 +8,22 @@
  * writes its record. Recorded on every run rather than behind a variable: the fields are only added, and a run that
  * left them out could not be told from one that predates them.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { git as gitOrThrow } from '../handoff.mjs';
 import { pluginFiles } from '../preflight.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+// Its own small git call rather than handoff.mjs's: every case imports this file, and need not load that CLI.
 function git(root, args) {
-  try { return gitOrThrow(args, root); } catch { return null; }
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return null;
+  }
 }
 
 function sha256(path) {
@@ -29,7 +34,7 @@ export function provenance(vault, { root = projectRoot } = {}) {
   const head = git(root, ['rev-parse', 'HEAD']);
   // Untracked files count too (esbuild bundles whatever is imported, committed or not); ignored ones (artifacts/,
   // test-vault/, dist/) do not.
-  const status = head === null ? null : git(root, ['status', '--porcelain']);
+  const status = head === null ? null : git(root, ['status', '--porcelain', '--untracked-files=normal']);
   const mark = typeof vault === 'string' ? join(vault, '.mappy-harness-build') : null;
   const installed = typeof vault === 'string' ? join(vault, '.obsidian', 'plugins', 'mappy') : null;
   let kind = null;

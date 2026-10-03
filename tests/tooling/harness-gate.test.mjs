@@ -25,7 +25,8 @@ const BASE = 'c'.repeat(40);
 const receiptAt = (headSha, overrides = {}) => ({
   issue: 'LEV-306', pr: 170, headSha, headCommittedAt: '2026-10-03T00:30:00Z', baseRefName: 'main', baseRefOid: BASE, baseTip: BASE,
   writtenAt: '2026-10-03T02:00:00Z',
-  check: { result: 'pass', at: '2026-10-03T01:00:00Z' }, review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: BASE },
+  check: { result: 'pass', at: '2026-10-03T01:00:00Z' },
+  review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: BASE, head: headSha },
   evidence: ['artifacts/lev-306/record.md'], ...overrides,
 });
 const caseJson = (overrides = {}) => ({
@@ -117,9 +118,9 @@ describe('completion receipt and ACK', () => {
 
   it('refuses a receipt whose review range is not against its base', () => {
     const dir = tempDir();
-    const result = writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/feature/ai...HEAD', baseSha: BASE } }));
+    const result = writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/feature/ai...HEAD', baseSha: BASE, head: HEAD } }));
     expect(result.status).toBe('rejected');
-    expect(writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: null, baseSha: BASE } })).status).toBe('rejected');
+    expect(writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: null, baseSha: BASE, head: HEAD } })).status).toBe('rejected');
   });
 
   it('takes a check and a review from before the commit (the pre-commit hook runs check before it is made)', () => {
@@ -127,16 +128,16 @@ describe('completion receipt and ACK', () => {
     expect(writeReceipt(dir, receiptAt(HEAD, { headCommittedAt: undefined })).status).toBe('rejected');
     expect(readdirSync(dir)).toEqual([]);
     const early = '2026-10-03T00:10:00Z';
-    const review = { result: 'pass', at: early, range: 'origin/main...HEAD', baseSha: BASE };
+    const review = { result: 'pass', at: early, range: 'origin/main...HEAD', baseSha: BASE, head: HEAD };
     expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'pass', at: early }, review })).status).toBe('written');
   });
 
   it.each([
     // On the review, which has no lower bound: on check, a local-time reading can also fall before the commit.
-    ['not ISO 8601 (read in local time)', { review: { result: 'pass', at: '10/3/2026', range: 'origin/main...HEAD', baseSha: BASE } }],
-    ['without a time zone', { review: { result: 'pass', at: '2026-10-03T01:00:00', range: 'origin/main...HEAD', baseSha: BASE } }],
+    ['not ISO 8601 (read in local time)', { review: { result: 'pass', at: '10/3/2026', range: 'origin/main...HEAD', baseSha: BASE, head: HEAD } }],
+    ['without a time zone', { review: { result: 'pass', at: '2026-10-03T01:00:00', range: 'origin/main...HEAD', baseSha: BASE, head: HEAD } }],
     ['later than the receipt itself', { check: { result: 'pass', at: '2099-10-03T01:00:00Z' } }],
-    ['a review later than the receipt', { review: { result: 'pass', at: '2099-10-03T01:00:00Z', range: 'origin/main...HEAD', baseSha: BASE } }],
+    ['a review later than the receipt', { review: { result: 'pass', at: '2099-10-03T01:00:00Z', range: 'origin/main...HEAD', baseSha: BASE, head: HEAD } }],
   ])('refuses a receipt with a time %s', (_, change) => {
     const dir = tempDir();
     expect(writeReceipt(dir, receiptAt(HEAD, change)).status).toBe('rejected');
@@ -164,7 +165,7 @@ describe('completion receipt and ACK', () => {
 
   it("refuses a receipt whose review compared against another commit than the PR's base", () => {
     const dir = tempDir();
-    const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD' };
+    const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', head: HEAD };
     const older = writeReceipt(dir, receiptAt(HEAD, { review: { ...review, baseSha: 'e'.repeat(40) } }));
     expect(older.status).toBe('rejected');
     expect(older.reason).toMatch(/review\.baseSha \(not baseTip/u);
@@ -199,7 +200,7 @@ describe('evidence gate', () => {
   });
 
   it("refuses a receipt whose review compared against another commit than the gated PR's base", () => {
-    const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: 'e'.repeat(40) };
+    const review = { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: 'e'.repeat(40), head: HEAD };
     expect(evaluateGate(green({ receipt: receiptAt(HEAD, { review }) })).verdict).toBe('STALE');
   });
 
@@ -208,6 +209,23 @@ describe('evidence gate', () => {
     const result = evaluateGate(green({ pr: moved, prAfter: { ...IDENTITY, baseTip: moved.baseTip } }));
     expect(result.verdict).toBe('STALE');
     expect(result.reasons.map(reason => reason.message).join('\n')).toMatch(/not the base's tip d{40}/u);
+  });
+
+  it('never passes a review taken on another commit than the head (fixes since it may need it again)', () => {
+    const review = { ...receiptAt(HEAD).review, head: OLD };
+    const result = evaluateGate(green({ receipt: receiptAt(HEAD, { review }) }));
+    expect(result.verdict).toBe('INCOMPLETE');
+    expect(result.reasons.map(reason => reason.message)).toEqual([
+      `receipt: the review was taken on ${OLD}, not the head ${HEAD}; the review is taken again on the final head (the orchestrator's step)`,
+    ]);
+  });
+
+  it('refuses to write a receipt that does not name the commit the review was taken on', () => {
+    const dir = tempDir();
+    const review = { ...receiptAt(HEAD).review };
+    delete review.head;
+    expect(writeReceipt(dir, receiptAt(HEAD, { review })).status).toBe('rejected');
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   it('refuses a PR that is no longer open', () => {

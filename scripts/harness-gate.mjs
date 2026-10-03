@@ -40,6 +40,7 @@ import {
 import { getHarnessPaths, pluginFiles, readHarnessBuild } from './preflight.mjs';
 
 export const VERDICTS = ['PASS', 'INCOMPLETE', 'STALE', 'FAIL'];
+const SHA_OF = value => typeof value === 'string' && /^[0-9a-f]{40}$/u.test(value);
 
 /**
  * What the gate reads of the PR before and after the evidence; any of them changing in between voids the verdict.
@@ -48,7 +49,7 @@ export const VERDICTS = ['PASS', 'INCOMPLETE', 'STALE', 'FAIL'];
 export const PR_IDENTITY = ['state', 'headRefOid', 'baseRefOid', 'baseRefName', 'baseTip'];
 /** `gh pr view`'s fields for the first read, and for the second (which needs only the identity). */
 export const PR_FIELDS = ['number', 'state', 'headRefOid', 'baseRefOid', 'baseRefName', 'statusCheckRollup'];
-export const PR_FIELDS_AFTER = ['state', 'headRefOid', 'baseRefOid', 'baseRefName'];
+export const PR_FIELDS_AFTER = PR_IDENTITY.filter(field => field !== 'baseTip');
 
 /**
  * One check of `statusCheckRollup` (a CheckRun or a StatusContext) as `pass`, `pending`, `skipped` or `fail`. Only
@@ -84,7 +85,7 @@ function caseReasons(label, record, { head, build, sha256 }) {
   if (!harness || typeof harness !== 'object') { add('INCOMPLETE', 'no harness (HEAD, build, sha256): a run before LEV-306'); return reasons; }
   if (typeof harness.head !== 'string' || harness.head === '') add('INCOMPLETE', 'no HEAD');
   else if (harness.head !== head) add('STALE', `ran on ${harness.head}, not the PR's head ${head}`);
-  if (harness.dirty === true) add('STALE', 'ran on a tree with uncommitted tracked changes');
+  if (harness.dirty === true) add('STALE', 'ran on a tree with uncommitted changes (tracked, or untracked and not ignored)');
   else if (harness.dirty !== false) add('INCOMPLETE', 'whether the tree was clean is not recorded');
   const kind = harness.build?.kind;
   if (typeof kind !== 'string' || kind === '') add('INCOMPLETE', 'no build kind');
@@ -156,6 +157,10 @@ export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, 
     // The review counts only against the base branch as it is now: a merge into the base since makes it stale.
     if (receipt.review?.baseSha !== pr?.baseTip) {
       add('STALE', `receipt: the review compared against ${receipt.review?.baseSha}, not the base's tip ${pr?.baseTip}`);
+    }
+    // A review of an earlier commit may or may not cover the fixes since (only Low ones may skip it): never PASS.
+    if (typeof head === 'string' && SHA_OF(receipt.review?.head) && receipt.review.head !== head) {
+      add('INCOMPLETE', `receipt: the review was taken on ${receipt.review.head}, not the head ${head}; the review is taken again on the final head (the orchestrator's step)`);
     }
     for (const key of ['check', 'review']) {
       const result = receipt[key]?.result;
@@ -229,7 +234,7 @@ function collect(options, pr) {
   const local = [];
   const checkout = git(['rev-parse', 'HEAD']);
   if (checkout !== head) local.push(`this checkout is at ${checkout}, not the PR's head ${head}`);
-  if (git(['status', '--porcelain']) !== '') local.push('this checkout has uncommitted changes (tracked, or untracked and not ignored)');
+  if (git(['status', '--porcelain', '--untracked-files=normal']) !== '') local.push('this checkout has uncommitted changes (tracked, or untracked and not ignored)');
   const build = options.build ?? 'release';
   if (build !== 'release') local.push(`only the release build (dist/mappy) is compared here, not ${build}`);
   if (local.length === 0) {

@@ -9,9 +9,12 @@
  *            check's and the review's results and times, the review's range and the base commit the review compared
  *            against (`--review-base-sha`: what the range's base, e.g. `origin/main`, pointed at when the review ran;
  *            it must be `baseTip`), and the evidence paths. The PR's head must be this HEAD and the tree must have no
- *            changes, tracked or untracked-and-not-ignored (the HEAD must be what was checked and built). The check
- *            for this HEAD is the one `.githooks/pre-commit` ran on its tree before the commit, so its time is not
- *            compared with the commit's; times are ISO 8601 with a zone and not later than the receipt itself. A
+ *            changes, tracked or untracked-and-not-ignored (the HEAD must be what was checked and built). The receipt
+ *            records the commit the review was taken on (`--review-head`); the gate does not pass a review of another
+ *            commit than the PR's head. check's result here is the worker's record only: what shows check passed on
+ *            the head's tree is CI's `check`, which the gate requires (a rebase, a merge or a partial stage makes a
+ *            commit the pre-commit hook never checked). Times are ISO 8601 with a zone and not later than the receipt
+ *            itself. A
  *            receipt is never replaced: writing one with other contents for the same HEAD is `rejected` (a new result
  *            needs a new commit: after a retarget or a moved base, rebase, check and review again, and write again);
  *            the same contents again is `exists`. The review's base commit is the worker's own record: the receipt
@@ -32,7 +35,7 @@
  * Usage:
  *   node scripts/handoff.mjs receipt --issue LEV-306 --pr 170 --check pass --check-at <ISO time>
  *        --review pass --review-at <ISO time> --review-range origin/main...HEAD --review-base-sha <sha>
- *        [--evidence <path>]...
+ *        --review-head <sha> [--evidence <path>]...
  *   node scripts/handoff.mjs ack --issue LEV-306 --pr 170
  * Each prints one JSON line (`status`: written / exists / acked / duplicate / rejected); exit 0 except rejected (1)
  * and usage errors (2).
@@ -87,6 +90,7 @@ export function receiptErrors(receipt, { reviewBase = true } = {}) {
     else if (at > written) errors.push(`${key}.at (later than the receipt itself)`);
   }
   if (!rangeOnBase(receipt.review?.range, receipt.baseRefName, receipt.headSha)) errors.push('review.range (not against baseRefName)');
+  if (!SHA.test(receipt.review?.head ?? '')) errors.push('review.head');
   if (!SHA.test(receipt.review?.baseSha ?? '')) errors.push('review.baseSha');
   else if (reviewBase && receipt.review.baseSha !== receipt.baseTip) errors.push('review.baseSha (not baseTip: the review compared against another base commit)');
   if (!Array.isArray(receipt.evidence) || !receipt.evidence.every(path => typeof path === 'string')) errors.push('evidence');
@@ -215,7 +219,8 @@ export function handoffDir(cwd = process.cwd()) {
 
 /** The tip of the base branch on GitHub now (not the PR's `baseRefOid`, which need not follow the branch). */
 export function baseTipOf(baseRefName) {
-  return execFileSync('gh', ['api', `repos/{owner}/{repo}/git/ref/heads/${baseRefName}`, '--jq', '.object.sha'],
+  const ref = baseRefName.split('/').map(encodeURIComponent).join('/');
+  return execFileSync('gh', ['api', `repos/{owner}/{repo}/git/ref/heads/${ref}`, '--jq', '.object.sha'],
     { encoding: 'utf8' }).trim();
 }
 
@@ -244,7 +249,7 @@ function main(argv) {
     throw new Error('Usage: node scripts/handoff.mjs receipt|ack --issue <KEY-123> --pr <number> ... (see the comment at the top)');
   }
   const known = command === 'receipt'
-    ? ['issue', 'pr', 'check', 'check-at', 'review', 'review-at', 'review-range', 'review-base-sha', 'evidence']
+    ? ['issue', 'pr', 'check', 'check-at', 'review', 'review-at', 'review-range', 'review-base-sha', 'review-head', 'evidence']
     : ['issue', 'pr', 'evidence'];
   const unknown = Object.keys(options).filter(key => !known.includes(key));
   if (unknown.length > 0 || (command === 'ack' && options.evidence.length > 0)) throw new Error(`unknown option --${unknown[0] ?? 'evidence'}`);
@@ -255,8 +260,9 @@ function main(argv) {
   const pr = { ...found, baseTip: baseTipOf(found.baseRefName) };
   if (command === 'ack') return ackReceipt(dir, { issue: options.issue, pr });
 
-  // Untracked files count too: esbuild bundles whatever is imported, committed or not.
-  if (git(['status', '--porcelain']) !== '') {
+  // Untracked files count too: esbuild bundles whatever is imported, committed or not. Named, so a user's
+  // status.showUntrackedFiles=no cannot hide them.
+  if (git(['status', '--porcelain', '--untracked-files=normal']) !== '') {
     return { status: 'rejected', reason: 'the tree has uncommitted changes (tracked, or untracked and not ignored): commit them, so the HEAD is what was checked' };
   }
   const headSha = git(['rev-parse', 'HEAD']);
@@ -264,10 +270,13 @@ function main(argv) {
     return { status: 'rejected', reason: `PR #${pr.number}'s head is ${pr.headRefOid}, not this HEAD ${headSha}: push first` };
   }
   const reviewBase = options['review-base-sha'] ?? '';
-  try {
-    git(['rev-parse', '--verify', '--quiet', `${reviewBase}^{commit}`]);
-  } catch {
-    return { status: 'rejected', reason: `--review-base-sha ${reviewBase} is not a commit in this repository` };
+  const reviewHead = options['review-head'] ?? '';
+  for (const [name, sha] of [['--review-base-sha', reviewBase], ['--review-head', reviewHead]]) {
+    try {
+      git(['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
+    } catch {
+      return { status: 'rejected', reason: `${name} ${sha} is not a commit in this repository` };
+    }
   }
   return writeReceipt(dir, {
     issue: options.issue,
@@ -278,7 +287,10 @@ function main(argv) {
     baseRefOid: pr.baseRefOid,
     baseTip: pr.baseTip,
     check: { result: options.check, at: options['check-at'] },
-    review: { result: options.review, at: options['review-at'], range: options['review-range'] ?? null, baseSha: reviewBase },
+    review: {
+      result: options.review, at: options['review-at'], range: options['review-range'] ?? null, baseSha: reviewBase,
+      head: git(['rev-parse', `${reviewHead}^{commit}`]),
+    },
     evidence: options.evidence,
     writtenAt: new Date().toISOString(),
   });
