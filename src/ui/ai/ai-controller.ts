@@ -189,6 +189,8 @@ export class AiController {
    */
   private readonly keys: Scope;
   private keysPushed = false;
+  /** A push put off to the next task: the card's window was not yet Obsidian's active one (`syncKeys`). */
+  private keysLater = false;
 
   constructor(private readonly host: AiHost) {
     this.button = host.world.createEl("button", { cls: "mappy-ai-button", attr: { type: "button", "aria-label": t().aiButton } });
@@ -204,20 +206,26 @@ export class AiController {
     this.card = host.pane.createDiv({ cls: "mappy-ai-card mappy-floating", attr: { role: "dialog", "aria-label": t().aiPanelLabel, tabindex: "-1" } });
     this.card.hidden = true;
     this.card.addEventListener("keydown", event => { this.cardKey(event); });
-    this.card.addEventListener("focusin", () => { this.syncKeys(true); });
-    // The focus moving between the card's own controls stays on the card.
-    this.card.addEventListener("focusout", event => {
-      const next = event.relatedTarget;
-      this.syncKeys(next instanceof Node && this.card.contains(next));
-    });
+    this.card.addEventListener("focusin", () => { this.syncKeys(); });
+    // Read once the focus has moved: `relatedTarget` is null when the window loses the focus (which stays on the card)
+    // as well as when a focused control is removed (when it goes to the body).
+    this.card.addEventListener("focusout", () => { queueMicrotask(() => { this.syncKeys(); }); });
     // Its parent is the chain the key had before the push. A window's base scope is the workspace's, which (1.14.4)
     // hands every key to the active leaf's view scope when that view has one, and the focus on the card makes the
     // map's leaf the active one: so the view's scope, then the app's (⌘W, ⌘P and the other hotkeys). The scope the
     // keymap holds at the push is not in the public API to take as the parent instead.
     this.keys = new Scope(host.scope ?? host.app.scope);
     this.keys.register(["Mod"], "Enter", event => {
-      // Pushed only with the focus on the card, so the key is the card's; `false` is the keymap's "consumed". The
-      // card's handler stops the key here, at the window, so its own keydown listener never runs it a second time.
+      const target = event.targetNode;
+      if (!this.form || !target || !this.card.contains(target)) {
+        // Left on a stack it should be off: it takes itself off. This one key is lost to Obsidian all the same (a
+        // scope that has the key offers it to no other handler); the next one is Obsidian's again.
+        this.host.app.keymap.popScope(this.keys);
+        this.keysPushed = false;
+        return undefined;
+      }
+      // `false` is the keymap's "consumed". The card's handler stops the key here, at the window, so its own keydown
+      // listener never runs it a second time.
       this.cardKey(event);
       return false;
     });
@@ -392,9 +400,20 @@ export class AiController {
   }
 
   /** The input's ⌘↵ scope on the keymap while the input is open and the focus is on the card, and off it otherwise. */
-  private syncKeys(focused = this.card.contains(this.card.doc.activeElement)): void {
-    const wanted = focused && this.form !== null && !this.card.hidden;
+  private syncKeys(): void {
+    const wanted = this.form !== null && !this.card.hidden && this.card.contains(this.card.doc.activeElement);
     if (wanted === this.keysPushed) return;
+    // `pushScope` pushes on the stack of Obsidian's active window, which in a popout can still be the main window when
+    // the focus arrives on the card: tried again on the next task, and left off the stack until then.
+    if (wanted && activeWindow !== this.card.win) {
+      if (this.keysLater) return;
+      this.keysLater = true;
+      this.card.win.setTimeout(() => {
+        this.keysLater = false;
+        if (activeWindow === this.card.win) this.syncKeys();
+      }, 0);
+      return;
+    }
     this.keysPushed = wanted;
     const keymap = this.host.app.keymap;
     // Popped wherever it is in the window's stack (1.14.4 `popScope` takes a scope out from under another, a Modal's

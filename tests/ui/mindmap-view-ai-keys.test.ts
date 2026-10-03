@@ -11,7 +11,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HarnessApp } from '../browser-harness/app';
 import { installObsidianDom } from '../browser-harness/dom';
-import { Notice, Scope } from '../browser-harness/obsidian';
+import { Notice, Scope, WorkspaceScope } from '../browser-harness/obsidian';
 import type { AiProgress, AiRequest, AiResult, AiRunner } from '../../src/ai/contract';
 import { t } from '../../src/i18n';
 import { aiRunLock, type AiServices } from '../../src/ui/ai/services';
@@ -70,8 +70,9 @@ async function mount(options: { stops?: boolean } = {}) {
   const runner = new HandRunner();
   const mounted = await mountMapView(PATH, LIST, 'mindmap', app, { prepare: view => { view.setAi(services(runner)); } });
   const keymap = app.keymap;
-  // The workspace's scope with this map active: the view's scope, then the app's (1.14.4 `workspace.scope`).
-  if (mounted.view.scope) keymap.pushScope(mounted.view.scope as unknown as Scope);
+  // The window's base scope (1.14.4): the workspace's, over the app's, handing keys to the active view's scope — the map's.
+  const workspace = new WorkspaceScope(app.scope, () => mounted.view.scope as unknown as Scope | null);
+  keymap.pushScope(workspace);
   const base = keymap.scope;
   // What the default Mod+Enter did: its command ran (it dispatches `open-link` on the focus) and the key was consumed.
   const defaults: (EventTarget | null)[] = [];
@@ -177,6 +178,10 @@ describe('⌘↵ in the AI input against Obsidian\'s Mod+Enter (LEV-307)', () =>
     const input = await mounted.open();
     expect(mounted.keymap.scope).not.toBe(mounted.base);
     mounted.node('温泉旅行').focus();
+    // The card reads the focus a microtask after `focusout`; a real click and the next key come in separate tasks, so
+    // the read is done before the key. Sent in the same task, the scope would still be on the stack, take itself off
+    // at this key and lose it to Obsidian (the self-repair's one key) — not a sequence a person can make.
+    await Promise.resolve();
     await mounted.press(mounted.node('温泉旅行'));
     expect(mounted.defaults).toHaveLength(2);
     expect(mounted.keymap.scope).toBe(mounted.base);
@@ -197,15 +202,94 @@ describe('⌘↵ in the AI input against Obsidian\'s Mod+Enter (LEV-307)', () =>
     expect(mounted.runner.requests).toHaveLength(0);
   });
 
-  it('passes every other key on to the view\'s scope from the input: F2 stays the map\'s', async () => {
+  // Review #1 of 0215983: no code change; this holds the chain from the input to what the workspace's scope gave before.
+  it('passes every other key on as the workspace\'s scope did: F2 to the view\'s scope, ⌘W to the app\'s', async () => {
     const mounted = await mount();
     const offered: string[] = [];
     mounted.app.scope.register(null, null, event => { offered.push(event.key); return undefined; });
     const input = await mounted.open();
+    expect(mounted.keymap.scope).not.toBe(mounted.base);
+    expect(mounted.keymap.prevScopes.at(-1)).toBe(mounted.base);
     const f2 = mounted.key(input, 'F2');
     expect(f2.defaultPrevented).toBe(true);
-    mounted.key(input, 'a', { metaKey: true });
-    expect(offered).toEqual(['a']);
+    mounted.key(input, 'w', { metaKey: true });
+    expect(offered).toEqual(['w']);
+  });
+
+  it('takes a scope left on the stack off at the first ⌘↵ outside the card; the next ⌘↵ is Obsidian\'s', async () => {
+    const mounted = await mount();
+    const input = await mounted.open();
+    const keys = mounted.keymap.scope;
+    mounted.key(input, 'Escape');
+    await mounted.settle();
+    expect(mounted.keymap.scope).toBe(mounted.base);
+    // A copy left behind (a popout's stack, a missed pop): put back by hand.
+    mounted.keymap.pushScope(keys);
+    const node = mounted.node('温泉旅行');
+    node.focus();
+    const first = await mounted.press(node);
+    // That one key is lost to Obsidian (a scope with the key offers it to no other handler), but not consumed.
+    expect(first.defaultPrevented).toBe(false);
+    expect(mounted.defaults).toEqual([]);
+    expect(mounted.keymap.scope).toBe(mounted.base);
+    await mounted.press(node);
+    expect(mounted.defaults).toEqual([node]);
+    expect(mounted.runner.requests).toHaveLength(0);
+  });
+
+  it('keeps the scope through a focusout that leaves the focus on the card (the window losing it)', async () => {
+    const mounted = await mount();
+    const input = await mounted.open();
+    const keys = mounted.keymap.scope;
+    // What a window blur sends: no related target, and the focus still on the request.
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    await mounted.settle();
+    expect(document.activeElement).toBe(input);
+    expect(mounted.keymap.scope).toBe(keys);
+    await mounted.press(input);
+    expect(mounted.runner.requests).toHaveLength(1);
+    expect(mounted.defaults).toEqual([]);
+  });
+
+  it('pushes only on the card\'s window: with another window active, it waits a task and pushes once the card\'s is', async () => {
+    const mounted = await mount();
+    const input = await mounted.open();
+    const field = document.body.createEl('input');
+    field.focus();
+    await mounted.settle();
+    expect(mounted.keymap.scope).toBe(mounted.base);
+    const host = window as unknown as { activeWindow: Window };
+    uninstalls.push(() => { host.activeWindow = window; });
+    // A popout's focus arriving before Obsidian makes its window the active one: another window is active.
+    host.activeWindow = {} as Window;
+    input.focus();
+    expect(mounted.keymap.scope).toBe(mounted.base);
+    host.activeWindow = window;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mounted.keymap.scope).not.toBe(mounted.base);
+    expect(mounted.keymap.prevScopes.at(-1)).toBe(mounted.base);
+  });
+
+  it('is on the stack once when the focus comes back before the Modal over the input pops its scope', async () => {
+    const mounted = await mount();
+    const input = await mounted.open();
+    const keys = mounted.keymap.scope;
+    const modal = new Scope();
+    mounted.keymap.pushScope(modal);
+    const field = document.body.createEl('input');
+    field.focus();
+    await mounted.settle();
+    // The focus back on the request first: the input's scope goes over the Modal's, which then pops from under it.
+    input.focus();
+    field.remove();
+    expect(mounted.keymap.scope).toBe(keys);
+    mounted.keymap.popScope(modal);
+    expect(mounted.keymap.scope).toBe(keys);
+    expect(mounted.keymap.prevScopes.includes(modal)).toBe(false);
+    expect(mounted.keymap.prevScopes.filter(scope => scope === keys)).toEqual([]);
+    await mounted.press(input);
+    expect(mounted.runner.requests).toHaveLength(1);
+    expect(mounted.keymap.scope).toBe(mounted.base);
   });
 
   it('is on the stack once after a Modal over the input closes, and off it once the card closes', async () => {

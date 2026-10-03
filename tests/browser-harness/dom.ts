@@ -128,6 +128,8 @@ export function installObsidianDom(): void {
       callback?.(fragment);
       return fragment;
     },
+    // Obsidian's window with the focus; one window here, which a test may replace to stand for a popout's (LEV-307).
+    activeWindow: window,
   };
   for (const [name, value] of Object.entries(globalHelpers)) {
     Object.defineProperty(window, name, { value, configurable: true, writable: true });

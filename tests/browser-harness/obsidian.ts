@@ -178,6 +178,18 @@ export class Scope {
 }
 
 /**
+ * The workspace's scope as of 1.14.4 (app.js, read for LEV-307), a window's base scope: a key goes to the active leaf's
+ * view scope alone when that view has one, and to this scope's own keys and parent only when it has none.
+ */
+export class WorkspaceScope extends Scope {
+  constructor(parent: Scope, private readonly active: () => Scope | null) { super(parent); }
+  override handleKey(event: KeyboardEvent, context?: KeymapContext): unknown {
+    const scope = this.active();
+    return scope ? scope.handleKey(event, context) : super.handleKey(event, context);
+  }
+}
+
+/**
  * Obsidian's Keymap as of 1.14.4 (app.js, read for LEV-307), for one window: the scope stack (`pushScope` makes a scope
  * the one keys go to, `popScope` hands them back to the one under it or takes it out from under another) and
  * `onKeyEvent`, which Obsidian runs at the window's capture phase: the current scope decides, and `false` prevents and

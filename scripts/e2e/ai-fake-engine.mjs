@@ -127,6 +127,13 @@ try {
   // LEV-307: the fake engine's runs and Obsidian's default Mod+Enter, counted in the page (undone in `clean`).
   await evaluate(`${VIEW}
     const runner = view.aiServices.fakeRunner;
+    // A wrapper an earlier run left (--keep) is of the runner before a --reload: undone, then this runner wrapped.
+    const left = window.__mappyE2EKeys;
+    if (left && left.runner !== runner) {
+      left.runner.run = left.run;
+      document.removeEventListener('open-link', left.onLink, true);
+      delete window.__mappyE2EKeys;
+    }
     if (!window.__mappyE2EKeys) {
       const run = runner.run;
       const keys = window.__mappyE2EKeys = { runs: 0, defaults: 0, runner, run };
