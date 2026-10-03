@@ -27,8 +27,9 @@ function sha256(path) {
 
 export function provenance(vault, { root = projectRoot } = {}) {
   const head = git(root, ['rev-parse', 'HEAD']);
-  // Tracked changes only: the build is made from the tracked tree, and artifacts/ and test-vault/ are ignored anyway.
-  const status = head === null ? null : git(root, ['status', '--porcelain', '--untracked-files=no']);
+  // Untracked files count too (esbuild bundles whatever is imported, committed or not); ignored ones (artifacts/,
+  // test-vault/, dist/) do not.
+  const status = head === null ? null : git(root, ['status', '--porcelain']);
   const mark = typeof vault === 'string' ? join(vault, '.mappy-harness-build') : null;
   const installed = typeof vault === 'string' ? join(vault, '.obsidian', 'plugins', 'mappy') : null;
   let kind = null;

@@ -36,9 +36,9 @@ const caseJson = (overrides = {}) => ({
   },
   ...overrides,
 });
-const IDENTITY = { headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main', baseTip: BASE };
+const IDENTITY = { state: 'OPEN', headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main', baseTip: BASE };
 /** PR #170 as `gh pr view` gives it (with the base branch's tip), the PR the receipts and ACKs below are written for. */
-const PR = { number: 170, state: 'OPEN', ...IDENTITY };
+const PR = { number: 170, ...IDENTITY };
 const SUCCESS = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }];
 const prWith = statusCheckRollup => ({ ...PR, statusCheckRollup });
 const ackOf = (overrides = {}) => ({
@@ -62,7 +62,9 @@ describe('completion receipt and ACK', () => {
   it('acknowledges the same (issue, head) once; the second is a duplicate and writes nothing', () => {
     const dir = tempDir();
     expect(writeReceipt(dir, receiptAt(HEAD)).status).toBe('written');
-    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'fail', at: '2026-10-03T01:30:00Z' } })).status).toBe('exists');
+    expect(writeReceipt(dir, receiptAt(HEAD, { writtenAt: '2026-10-03T02:30:00Z' })).status).toBe('exists');
+    // Another result for the same HEAD is not taken as written: it needs a new commit.
+    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'fail', at: '2026-10-03T01:30:00Z' } })).status).toBe('rejected');
     const first = ackReceipt(dir, { issue: 'LEV-306', pr: PR, now: new Date('2026-10-03T04:00:00Z') });
     const second = ackReceipt(dir, { issue: 'LEV-306', pr: PR, now: new Date('2026-10-03T05:00:00Z') });
     expect(first.status).toBe('acked');
@@ -120,15 +122,13 @@ describe('completion receipt and ACK', () => {
     expect(writeReceipt(dir, receiptAt(HEAD, { review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: null, baseSha: BASE } })).status).toBe('rejected');
   });
 
-  it('refuses a receipt whose check ran before the HEAD was committed, and takes a review from before it', () => {
+  it('takes a check and a review from before the commit (the pre-commit hook runs check before it is made)', () => {
     const dir = tempDir();
-    const early = '2026-10-03T00:10:00Z';
-    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'pass', at: early } })).status).toBe('rejected');
     expect(writeReceipt(dir, receiptAt(HEAD, { headCommittedAt: undefined })).status).toBe('rejected');
     expect(readdirSync(dir)).toEqual([]);
-    // AGENTS.md: findings fixed after the review need check again, not always the review (Low only).
+    const early = '2026-10-03T00:10:00Z';
     const review = { result: 'pass', at: early, range: 'origin/main...HEAD', baseSha: BASE };
-    expect(writeReceipt(dir, receiptAt(HEAD, { review })).status).toBe('written');
+    expect(writeReceipt(dir, receiptAt(HEAD, { check: { result: 'pass', at: early }, review })).status).toBe('written');
   });
 
   it.each([
@@ -141,6 +141,16 @@ describe('completion receipt and ACK', () => {
     const dir = tempDir();
     expect(writeReceipt(dir, receiptAt(HEAD, change)).status).toBe('rejected');
     expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('does not acknowledge a receipt whose review was against an earlier tip of the base branch', () => {
+    const dir = tempDir();
+    writeReceipt(dir, receiptAt(HEAD));
+    // A merge into main since: the PR's baseRefOid need not follow, the branch's tip does.
+    const result = ackReceipt(dir, { issue: 'LEV-306', pr: { ...PR, baseTip: 'd'.repeat(40) } });
+    expect(result.status).toBe('rejected');
+    expect(result.reason).toMatch(/the base moved since/u);
+    expect(readdirSync(dir)).toEqual([`LEV-306-${HEAD}.json`]);
   });
 
   it('does not acknowledge a receipt whose check or review failed, and writes nothing for it', () => {
@@ -180,7 +190,7 @@ describe('evidence gate', () => {
     ["this PR after its base's sha moved", { baseRefOid: 'd'.repeat(40) }],
   ])("refuses the receipt and the ACK written for PR #170 at main's c… when gating %s", (_, change) => {
     const pr = { ...prWith(SUCCESS), ...change };
-    const prAfter = { headRefOid: pr.headRefOid, baseRefOid: pr.baseRefOid, baseRefName: pr.baseRefName };
+    const prAfter = { state: pr.state, headRefOid: pr.headRefOid, baseRefOid: pr.baseRefOid, baseRefName: pr.baseRefName, baseTip: pr.baseTip };
     const result = evaluateGate(green({ pr, prAfter }));
     expect(result.verdict).toBe('STALE');
     const messages = result.reasons.map(reason => reason.message);
@@ -201,7 +211,17 @@ describe('evidence gate', () => {
   });
 
   it('refuses a PR that is no longer open', () => {
-    expect(evaluateGate(green({ pr: { ...prWith(SUCCESS), state: 'MERGED' } })).verdict).toBe('STALE');
+    // Merged before the gate's first read, so both reads agree and only the open-state rule can refuse it.
+    const result = evaluateGate(green({ pr: { ...prWith(SUCCESS), state: 'MERGED' }, prAfter: { ...IDENTITY, state: 'MERGED' } }));
+    expect(result.verdict).toBe('STALE');
+    expect(result.reasons.map(reason => reason.message)).toEqual(['the PR is MERGED, not open']);
+  });
+
+  it('refuses a JSON whose case started on a tree with uncommitted changes, though it ended clean', () => {
+    const json = withHarness({ start: { ...caseJson().harness.start, dirty: true } });
+    const result = evaluateGate(green({ e2e: [{ path: 'e.json', json }] }));
+    expect(result.verdict).toBe('STALE');
+    expect(result.reasons.map(reason => reason.message)).toEqual(['e.json: started on a tree with uncommitted changes']);
   });
 
   it('refuses a JSON whose HEAD or installed build changed between the start and the end of the case', () => {
@@ -334,6 +354,7 @@ describe('the PR read before and after the evidence', () => {
     ["the base's sha moves", { baseRefOid: 'd'.repeat(40) }],
     ['the base is retargeted', { baseRefName: 'feature/ai' }],
     ['a commit is merged into the base branch', { baseTip: 'd'.repeat(40) }],
+    ['the PR is merged', { state: 'MERGED' }],
   ])('voids the verdict (STALE) when %s while the evidence is read', (_, change) => {
     const result = gateAcross(prWith(SUCCESS), { ...prWith(SUCCESS), ...change });
     expect(result.verdict).toBe('STALE');

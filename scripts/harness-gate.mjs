@@ -35,7 +35,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
-  ISSUE, baseTipOf, bindingMismatches, git, handoffDir, readAck, readReceipt, receiptErrors, receiptName, viewPr,
+  ISSUE, baseTipOf, bindingMismatches, git, handoffDir, parseOptions, readAck, readReceipt, receiptErrors, receiptName, viewPr,
 } from './handoff.mjs';
 import { getHarnessPaths, pluginFiles, readHarnessBuild } from './preflight.mjs';
 
@@ -45,10 +45,10 @@ export const VERDICTS = ['PASS', 'INCOMPLETE', 'STALE', 'FAIL'];
  * What the gate reads of the PR before and after the evidence; any of them changing in between voids the verdict.
  * `baseTip` is the base branch's tip read from GitHub beside `gh pr view` (`baseRefOid` need not follow the branch).
  */
-export const PR_IDENTITY = ['headRefOid', 'baseRefOid', 'baseRefName', 'baseTip'];
+export const PR_IDENTITY = ['state', 'headRefOid', 'baseRefOid', 'baseRefName', 'baseTip'];
 /** `gh pr view`'s fields for the first read, and for the second (which needs only the identity). */
 export const PR_FIELDS = ['number', 'state', 'headRefOid', 'baseRefOid', 'baseRefName', 'statusCheckRollup'];
-export const PR_FIELDS_AFTER = ['headRefOid', 'baseRefOid', 'baseRefName'];
+export const PR_FIELDS_AFTER = ['state', 'headRefOid', 'baseRefOid', 'baseRefName'];
 
 /**
  * One check of `statusCheckRollup` (a CheckRun or a StatusContext) as `pass`, `pending`, `skipped` or `fail`. Only
@@ -107,6 +107,7 @@ function caseReasons(label, record, { head, build, sha256 }) {
     if (differs(start.build?.kind, kind)) moved.push(`build ${start.build?.kind} -> ${kind}`);
     for (const file of pluginFiles) if (differs(start.sha256?.[file], harness.sha256?.[file])) moved.push(`${file}`);
     if (moved.length > 0) add('STALE', `changed during the run: ${moved.join(', ')}`);
+    if (start.dirty === true) add('STALE', 'started on a tree with uncommitted changes');
   }
   return reasons;
 }
@@ -191,15 +192,9 @@ export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, 
 
 
 function parseArgs(args) {
-  const lists = ['--e2e', '--require-check', '--skippable'];
-  const options = { e2e: [], 'require-check': [], skippable: [] };
-  for (let at = 0; at < args.length; at += 2) {
-    const name = args[at];
-    const value = args[at + 1];
-    if (![...lists, '--pr', '--issue', '--build'].includes(name)) throw new Error(`unknown option ${name}`);
-    if (value === undefined || value.startsWith('--')) throw new Error(`${name} needs a value`);
-    if (lists.includes(name)) options[name.slice(2)].push(value); else options[name.slice(2)] = value;
-  }
+  const options = parseOptions(args, ['e2e', 'require-check', 'skippable']);
+  const unknown = Object.keys(options).filter(key => !['e2e', 'require-check', 'skippable', 'pr', 'issue', 'build'].includes(key));
+  if (unknown.length > 0) throw new Error(`unknown option --${unknown[0]}`);
   if (!/^\d+$/u.test(options.pr ?? '') || !ISSUE.test(options.issue ?? '')) {
     throw new Error('Usage: npm run harness:gate -- --pr <number> --issue <KEY-123> --e2e <json>... [--build release] [--require-check <name>]... [--skippable <name>]...');
   }
@@ -234,7 +229,7 @@ function collect(options, pr) {
   const local = [];
   const checkout = git(['rev-parse', 'HEAD']);
   if (checkout !== head) local.push(`this checkout is at ${checkout}, not the PR's head ${head}`);
-  if (git(['status', '--porcelain', '--untracked-files=no']) !== '') local.push('this checkout has uncommitted tracked changes');
+  if (git(['status', '--porcelain']) !== '') local.push('this checkout has uncommitted changes (tracked, or untracked and not ignored)');
   const build = options.build ?? 'release';
   if (build !== 'release') local.push(`only the release build (dist/mappy) is compared here, not ${build}`);
   if (local.length === 0) {
