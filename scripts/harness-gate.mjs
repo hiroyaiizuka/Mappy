@@ -1,41 +1,45 @@
 /**
  * The evidence gate for a PR (LEV-306, docs/harness.md「完了の受領記録と証跡の機械ゲート」). Read only and opt-in:
- * it reads the PR (`gh pr view`: state, head, base sha and branch, CI; and the base branch's tip from GitHub) before
- * and after the rest, puts together the worker's
- * receipt and its ACK for that head (scripts/handoff.mjs) and the real-Obsidian JSONs (`harness` in each,
- * scripts/e2e/provenance.mjs), and says PASS only when all of them are there and agree. Otherwise:
+ * it reads the PR (`gh pr view`: state, head, base sha and branch, CI; the base branch's tip and whether the head
+ * contains it, from GitHub) before and after the rest, puts together the worker's receipt and its ACK for that head
+ * (scripts/handoff.mjs) and the real-Obsidian JSONs (`harness` in each, scripts/e2e/provenance.mjs), and says PASS only
+ * when all of them are there and agree. Otherwise:
  *   FAIL        something ran and failed: a CI check, `npm run check` or the review in the receipt, a case (or a row of
  *               one: `passed` with failures, a step that threw, a stopped case, a summary with a failed case)
  *   STALE       evidence of something else: another HEAD (even with the same sha256, the owner's rule of 2026-10-03),
  *               a tree with uncommitted changes, another build, other plugin bytes than this checkout's dist, a HEAD or
  *               build that changed between the start and the end of the case; a receipt or ACK of another issue, PR
  *               number, base branch or base sha than the PR gated, a review against another commit than the base
- *               branch's tip now (the base moved since); a PR that is no longer open
- *               (and the PR itself: its head, base sha or base branch changed while the evidence was read, so the
- *               verdict would be about a PR that no longer is; LEV-306's comment of 2026-10-03)
- *   INCOMPLETE  something is missing or not finished: no CI checks, a pending or skipped one, no receipt or ACK at the
- *               head, no JSON, a JSON without HEAD / build / sha256
+ *               branch's tip now (the base moved since); a head that does not contain the base's tip; a PR that is no
+ *               longer open (and the PR itself: its state, head, base or CI changed while the evidence was read, so
+ *               the verdict would be about a PR that no longer is; LEV-306's comment of 2026-10-03)
+ *   INCOMPLETE  something is missing or not finished: no CI checks, a pending or skipped one, a required check not
+ *               passed, no receipt or ACK at the head, a review of another commit than the head, no JSON, no
+ *               `--require-case` or a required case not among the JSONs, a JSON without HEAD / build / sha256
  * The worst of these is the verdict, and every reason is listed.
  *
  * The sha256 the JSONs must have is that of this checkout's packaged release build, read with preflight.mjs's
  * `readHarnessBuild` (which also refuses a dist/mappy that differs from the root build), so the gate runs in the
- * checkout that built what the cases ran on (`npm run harness:prepare`), at the PR's head with no tracked changes;
+ * checkout that built what the cases ran on (`npm run harness:prepare`), at the PR's head with no changes;
  * elsewhere, or for another `--build`, it says INCOMPLETE rather than compare against another build.
  *
- * CI: every check reported for the head must be SUCCESS, and each `--require-check` name (default `check`, the Quality
- * checks job) must be among them, so a head where only some workflows have reported yet does not pass. A skipped check
- * is INCOMPLETE unless its name is given with `--skippable` (opt-in per run: e.g. release.yml's `release` and `attest`,
- * which run only on a tag and are skipped on a PR by design).
+ * CI: every check reported for the head must be SUCCESS. `check` (the Quality checks job) is always required and must
+ * have passed; `--require-check` adds more. A skipped check is INCOMPLETE unless its name is given with `--skippable`
+ * (opt-in per run: e.g. release.yml's `release` and `attest`, which run only on a tag), and a required check cannot be
+ * made skippable. Cases: each `--require-case` (a summary's case name, or a case JSON's file name without `.json`)
+ * must be among the JSONs.
  *
- * Usage: npm run harness:gate -- --pr <number> --issue <KEY-123> --e2e <case.json|summary.json>... [--build release]
- *          [--require-check <name>]... [--skippable <name>]...
+ * Usage: npm run harness:gate -- --pr <number> --issue <KEY-123> --e2e <case.json|summary.json>...
+ *          --require-case <name>... [--build release] [--require-check <name>]... [--skippable <name>]...
  * Prints the verdict and the reasons; exit 0 for PASS, 1 otherwise, 2 for a usage error.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  ISSUE, baseTipOf, bindingMismatches, git, handoffDir, parseOptions, readAck, readReceipt, receiptErrors, receiptName, viewPr,
+  ISSUE, baseTipOf, bindingMismatches, containsBaseOf, git, handoffDir, parseOptions, readAck, readReceipt, receiptErrors,
+  receiptName, viewPr,
 } from './handoff.mjs';
 import { getHarnessPaths, pluginFiles, readHarnessBuild } from './preflight.mjs';
 
@@ -47,9 +51,25 @@ const SHA_OF = value => typeof value === 'string' && /^[0-9a-f]{40}$/u.test(valu
  * `baseTip` is the base branch's tip read from GitHub beside `gh pr view` (`baseRefOid` need not follow the branch).
  */
 export const PR_IDENTITY = ['state', 'headRefOid', 'baseRefOid', 'baseRefName', 'baseTip'];
-/** `gh pr view`'s fields for the first read, and for the second (which needs only the identity). */
+/**
+ * `gh pr view`'s fields for the first read, and for the second (the identity and CI: a check that finished or was
+ * re-run in between voids the verdict too).
+ */
 export const PR_FIELDS = ['number', 'state', 'headRefOid', 'baseRefOid', 'baseRefName', 'statusCheckRollup'];
-export const PR_FIELDS_AFTER = PR_IDENTITY.filter(field => field !== 'baseTip');
+export const PR_FIELDS_AFTER = [...PR_IDENTITY.filter(field => field !== 'baseTip'), 'statusCheckRollup'];
+/** The Quality checks job: always required, whatever `--require-check` adds. */
+export const ALWAYS_REQUIRED = ['check'];
+
+const checkName = item => item.name ?? item.context ?? '(unnamed)';
+/** A rollup as comparable text: each check's name and state, in a fixed order. */
+const rollupText = rollup => JSON.stringify((Array.isArray(rollup) ? rollup : [])
+  .map(item => [checkName(item), item.status ?? '', item.conclusion ?? '', item.state ?? '']).sort());
+
+/** The case names a JSON stands for: a summary's case names, or a case JSON's file name without `.json`. */
+export function caseNames({ path, json }) {
+  if (Array.isArray(json?.results)) return json.results.map(result => result?.name).filter(name => typeof name === 'string');
+  return [basename(path).replace(/\.json$/u, '')];
+}
 
 /**
  * One check of `statusCheckRollup` (a CheckRun or a StatusContext) as `pass`, `pending`, `skipped` or `fail`. Only
@@ -109,18 +129,21 @@ function caseReasons(label, record, { head, build, sha256 }) {
     for (const file of pluginFiles) if (differs(start.sha256?.[file], harness.sha256?.[file])) moved.push(`${file}`);
     if (moved.length > 0) add('STALE', `changed during the run: ${moved.join(', ')}`);
     if (start.dirty === true) add('STALE', 'started on a tree with uncommitted changes');
+    else if (start.dirty !== false) add('INCOMPLETE', 'whether the tree was clean at the start is not recorded');
   }
   return reasons;
 }
 
 /**
- * The verdict for one PR. `pr`: `PR_FIELDS` from `gh pr view` and `baseTip`, read before the evidence; `prAfter`:
- * `PR_IDENTITY` read again after it. `receipt`, `ack`: the handoff files at that head (or null). `e2e`: `[{ path, json }]` with
+ * The verdict for one PR. `pr`: `PR_FIELDS` from `gh pr view`, `baseTip`, and `headContainsBase` (whether the head has
+ * the base's tip in its history), read before the evidence; `prAfter`: `PR_FIELDS_AFTER` and `baseTip` read again
+ * after it. `cases`: the case names (`--require-case`) the PR needs, each among the JSONs. `receipt`, `ack`: the handoff files at that head (or null). `e2e`: `[{ path, json }]` with
  * `json` null when unreadable. `expected`: `{ build, sha256 }`, `sha256` null when this checkout cannot vouch for a
  * build.
  */
-export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, ci = {} }) {
-  const { required = ['check'], skippable = [] } = ci;
+export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, cases = [], ci = {} }) {
+  const required = [...new Set([...ALWAYS_REQUIRED, ...(ci.required ?? [])])];
+  const skippable = ci.skippable ?? [];
   const reasons = [];
   const add = (verdict, message) => reasons.push({ verdict, message });
   const head = pr?.headRefOid;
@@ -131,18 +154,24 @@ export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, 
     if (typeof before !== 'string' || before === '') { add('INCOMPLETE', `the PR's ${field} is unknown`); continue; }
     if (prAfter?.[field] !== before) add('STALE', `the PR's ${field} changed while the evidence was read: ${before} -> ${prAfter?.[field]}`);
   }
+  // The head must hold the base's tip (rebased onto it); a review against a newer tip is not enough.
+  if (pr?.headContainsBase === false) add('STALE', `the head does not contain the base's tip ${pr?.baseTip}: rebase onto it`);
+  else if (pr?.headContainsBase !== true) add('INCOMPLETE', "whether the head contains the base's tip is unknown");
 
   const checks = Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : [];
-  const checkName = item => item.name ?? item.context ?? '(unnamed)';
   if (checks.length === 0) add('INCOMPLETE', 'CI: no checks reported for the head');
+  if (rollupText(checks) !== rollupText(prAfter?.statusCheckRollup)) add('STALE', 'CI: the checks changed while the evidence was read');
   for (const name of required) {
-    if (!checks.some(item => checkName(item) === name)) add('INCOMPLETE', `CI: the required check ${name} has not reported for the head`);
+    if (!checks.some(item => checkName(item) === name && checkState(item) === 'pass')) {
+      add('INCOMPLETE', `CI: the required check ${name} has not passed for the head`);
+    }
   }
   for (const item of checks) {
     const state = checkState(item);
     const name = checkName(item);
     if (state === 'pending') add('INCOMPLETE', `CI: ${name} has not finished (${item.status ?? item.state})`);
-    if (state === 'skipped' && !skippable.includes(name)) add('INCOMPLETE', `CI: ${name} did not run (${item.conclusion})`);
+    // A required check cannot be skipped away.
+    if (state === 'skipped' && (required.includes(name) || !skippable.includes(name))) add('INCOMPLETE', `CI: ${name} did not run (${item.conclusion})`);
     if (state === 'fail') add('FAIL', `CI: ${name} is ${item.conclusion ?? item.state}`);
   }
 
@@ -176,6 +205,10 @@ export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, 
   }
 
   if (!Array.isArray(e2e) || e2e.length === 0) add('INCOMPLETE', 'e2e: no JSON given');
+  // Which cases the PR needs is named, so an unrelated JSON cannot stand in for them.
+  if (cases.length === 0) add('INCOMPLETE', 'e2e: no case required (--require-case)');
+  const given = new Set((e2e ?? []).filter(({ json }) => json && typeof json === 'object').flatMap(caseNames));
+  for (const name of cases) if (!given.has(name)) add('INCOMPLETE', `e2e: the required case ${name} is not among the JSONs`);
   for (const { path, json } of e2e ?? []) {
     if (json === null || typeof json !== 'object') { add('INCOMPLETE', `${path}: unreadable`); continue; }
     const context = { head, build: expected.build, sha256: expected.sha256 };
@@ -197,11 +230,11 @@ export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, 
 
 
 function parseArgs(args) {
-  const options = parseOptions(args, ['e2e', 'require-check', 'skippable']);
-  const unknown = Object.keys(options).filter(key => !['e2e', 'require-check', 'skippable', 'pr', 'issue', 'build'].includes(key));
+  const options = parseOptions(args, ['e2e', 'require-case', 'require-check', 'skippable']);
+  const unknown = Object.keys(options).filter(key => !['e2e', 'require-case', 'require-check', 'skippable', 'pr', 'issue', 'build'].includes(key));
   if (unknown.length > 0) throw new Error(`unknown option --${unknown[0]}`);
   if (!/^\d+$/u.test(options.pr ?? '') || !ISSUE.test(options.issue ?? '')) {
-    throw new Error('Usage: npm run harness:gate -- --pr <number> --issue <KEY-123> --e2e <json>... [--build release] [--require-check <name>]... [--skippable <name>]...');
+    throw new Error('Usage: npm run harness:gate -- --pr <number> --issue <KEY-123> --e2e <json>... --require-case <name>... [--build release] [--require-check <name>]... [--skippable <name>]...');
   }
   return options;
 }
@@ -243,15 +276,16 @@ function collect(options, pr) {
       sha = Object.fromEntries(pluginFiles.map(file => [file, createHash('sha256').update(files.get(file)).digest('hex')]));
     } catch (error) { local.push(`no packaged build to compare with: ${error.message}`); }
   }
-  const ci = { required: options['require-check'].length > 0 ? options['require-check'] : ['check'], skippable: options.skippable };
-  return { issue: options.issue, receipt, ack, e2e, expected: { build, sha256: sha }, ci, local };
+  const ci = { required: options['require-check'], skippable: options.skippable };
+  return { issue: options.issue, receipt, ack, e2e, expected: { build, sha256: sha }, cases: options['require-case'], ci, local };
 }
 
 function main(argv) {
   const options = parseArgs(argv);
   const readPr = fields => {
     const pr = viewPr(options.pr, fields);
-    return { ...pr, baseTip: baseTipOf(pr.baseRefName) };
+    const baseTip = baseTipOf(pr.baseRefName);
+    return { ...pr, baseTip, headContainsBase: containsBaseOf(baseTip, pr.headRefOid) };
   };
   return runGate({ readPr, collect: pr => collect(options, pr) });
 }

@@ -24,6 +24,7 @@ afterEach(() => { while (temporary.length > 0) rmSync(temporary.pop(), { recursi
 const BASE = 'c'.repeat(40);
 const receiptAt = (headSha, overrides = {}) => ({
   issue: 'LEV-306', pr: 170, headSha, headCommittedAt: '2026-10-03T00:30:00Z', baseRefName: 'main', baseRefOid: BASE, baseTip: BASE,
+  headContainsBase: true,
   writtenAt: '2026-10-03T02:00:00Z',
   check: { result: 'pass', at: '2026-10-03T01:00:00Z' },
   review: { result: 'pass', at: '2026-10-03T01:10:00Z', range: 'origin/main...HEAD', baseSha: BASE, head: headSha },
@@ -37,11 +38,14 @@ const caseJson = (overrides = {}) => ({
   },
   ...overrides,
 });
-const IDENTITY = { state: 'OPEN', headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main', baseTip: BASE };
-/** PR #170 as `gh pr view` gives it (with the base branch's tip), the PR the receipts and ACKs below are written for. */
-const PR = { number: 170, ...IDENTITY };
 const SUCCESS = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SUCCESS' }];
+/** What the gate reads again after the evidence (with the CI it read the first time). */
+const IDENTITY = { state: 'OPEN', headRefOid: HEAD, baseRefOid: BASE, baseRefName: 'main', baseTip: BASE, statusCheckRollup: SUCCESS };
+/** PR #170 as `gh pr view` gives it (with the base branch's tip), the PR the receipts and ACKs below are written for. */
+const PR = { number: 170, headContainsBase: true, ...IDENTITY };
 const prWith = statusCheckRollup => ({ ...PR, statusCheckRollup });
+/** The same CI at both reads. */
+const withCi = statusCheckRollup => ({ pr: prWith(statusCheckRollup), prAfter: { ...IDENTITY, statusCheckRollup } });
 const ackOf = (overrides = {}) => ({
   issue: 'LEV-306', pr: 170, headSha: HEAD, baseRefName: 'main', baseRefOid: BASE, receipt: `LEV-306-${HEAD}.json`, ...overrides,
 });
@@ -53,6 +57,7 @@ const green = (overrides = {}) => ({
   ack: ackOf(),
   e2e: [{ path: 'ribbon-new-map.json', json: caseJson() }],
   expected: { build: 'release', sha256: { ...SHA } },
+  cases: ['ribbon-new-map'],
   ...overrides,
 });
 const withHarness = harness => caseJson({ harness: { ...caseJson().harness, ...harness } });
@@ -154,6 +159,23 @@ describe('completion receipt and ACK', () => {
     expect(readdirSync(dir)).toEqual([`LEV-306-${HEAD}.json`]);
   });
 
+  it("refuses a receipt whose HEAD does not contain the base's tip", () => {
+    const dir = tempDir();
+    const result = writeReceipt(dir, receiptAt(HEAD, { headContainsBase: false }));
+    expect(result.status).toBe('rejected');
+    expect(result.reason).toMatch(/headContainsBase/u);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('does not acknowledge a receipt whose review was taken on another commit than the head', () => {
+    const dir = tempDir();
+    writeReceipt(dir, receiptAt(HEAD, { review: { ...receiptAt(HEAD).review, head: OLD } }));
+    const result = ackReceipt(dir, { issue: 'LEV-306', pr: PR });
+    expect(result.status).toBe('rejected');
+    expect(result.reason).toMatch(/the review was taken on b{40}/u);
+    expect(readdirSync(dir)).toEqual([`LEV-306-${HEAD}.json`]);
+  });
+
   it('does not acknowledge a receipt whose check or review failed, and writes nothing for it', () => {
     const dir = tempDir();
     writeReceipt(dir, receiptAt(HEAD, { check: { result: 'fail', at: '2026-10-03T01:00:00Z' } }));
@@ -180,9 +202,9 @@ describe('evidence gate', () => {
   });
 
   it('refuses a JSON from another HEAD even when its sha256 are the same', () => {
-    const result = evaluateGate(green({ e2e: [{ path: 'e.json', json: ranOn({ head: OLD }) }] }));
+    const result = evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: ranOn({ head: OLD }) }] }));
     expect(result.verdict).toBe('STALE');
-    expect(result.reasons.map(reason => reason.message)).toEqual([`e.json: ran on ${OLD}, not the PR's head ${HEAD}`]);
+    expect(result.reasons.map(reason => reason.message)).toEqual([`ribbon-new-map.json: ran on ${OLD}, not the PR's head ${HEAD}`]);
   });
 
   it.each([
@@ -237,17 +259,21 @@ describe('evidence gate', () => {
 
   it('refuses a JSON whose case started on a tree with uncommitted changes, though it ended clean', () => {
     const json = withHarness({ start: { ...caseJson().harness.start, dirty: true } });
-    const result = evaluateGate(green({ e2e: [{ path: 'e.json', json }] }));
+    const result = evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json }] }));
     expect(result.verdict).toBe('STALE');
-    expect(result.reasons.map(reason => reason.message)).toEqual(['e.json: started on a tree with uncommitted changes']);
+    expect(result.reasons.map(reason => reason.message)).toEqual(['ribbon-new-map.json: started on a tree with uncommitted changes']);
+    const unknown = withHarness({ start: { ...caseJson().harness.start, dirty: null } });
+    const unrecorded = evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: unknown }] }));
+    expect(unrecorded.verdict).toBe('INCOMPLETE');
+    expect(unrecorded.reasons.map(reason => reason.message)).toEqual(['ribbon-new-map.json: whether the tree was clean at the start is not recorded']);
   });
 
   it('refuses a JSON whose HEAD or installed build changed between the start and the end of the case', () => {
     const changed = { ...caseJson().harness.start, sha256: { ...SHA, 'main.js': '9'.repeat(64) } };
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ start: changed }) }] })).verdict).toBe('STALE');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: withHarness({ start: changed }) }] })).verdict).toBe('STALE');
     const earlier = { ...caseJson().harness.start, head: OLD };
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ start: earlier }) }] })).verdict).toBe('STALE');
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: withHarness({ start: undefined }) }] })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: withHarness({ start: earlier }) }] })).verdict).toBe('STALE');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: withHarness({ start: undefined }) }] })).verdict).toBe('INCOMPLETE');
   });
 
   it('refuses a receipt or an ACK of another issue than the gated one', () => {
@@ -284,7 +310,7 @@ describe('evidence gate', () => {
     ['no build kind', withHarness({ build: { kind: null, marked: false } })],
     ['no sha256 of a file', withHarness({ sha256: { ...SHA, 'styles.css': null } })],
   ])('refuses a JSON with %s', (_, json) => {
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json }] })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json }] })).verdict).toBe('INCOMPLETE');
   });
 
   it.each([
@@ -292,16 +318,16 @@ describe('evidence gate', () => {
     ['other plugin bytes', ranOn({ sha256: { ...SHA, 'main.js': '9'.repeat(64) } })],
     ['a tree with uncommitted changes', ranOn({ dirty: true })],
   ])('refuses a JSON run on %s', (_, json) => {
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json }] })).verdict).toBe('STALE');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json }] })).verdict).toBe('STALE');
   });
 
   it('refuses a JSON whose rows only partly passed', () => {
     const partly = caseJson({ failures: ['plain (double click): the vault gained 2 notes'] });
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: partly }] })).verdict).toBe('FAIL');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: partly }] })).verdict).toBe('FAIL');
     const threw = caseJson({ steps: { open: { ok: true }, click: { error: 'Error: timed out' } } });
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: threw }] })).verdict).toBe('FAIL');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: threw }] })).verdict).toBe('FAIL');
     const stopped = caseJson({ stopped: 'plugin failed; the remaining steps were not run' });
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: stopped }] })).verdict).toBe('FAIL');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: stopped }] })).verdict).toBe('FAIL');
     const summary = { passed: false, results: [
       { name: 'a', passed: true, exitCode: 0, record: caseJson() },
       { name: 'b', passed: false, exitCode: 1, record: caseJson({ passed: false, failures: ['x'] }) },
@@ -316,32 +342,84 @@ describe('evidence gate', () => {
     ['neutral', [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'NEUTRAL' }]],
     ['none (no checks)', []],
   ])('does not pass while CI is %s', (_, rollup) => {
-    expect(evaluateGate(green({ pr: prWith(rollup) })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green(withCi(rollup))).verdict).toBe('INCOMPLETE');
   });
 
   it('does not pass while a required check has not reported, though every reported one is SUCCESS', () => {
     const others = [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' }];
-    expect(evaluateGate(green({ pr: prWith(others) })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green(withCi(others))).verdict).toBe('INCOMPLETE');
     expect(evaluateGate(green({ ci: { required: ['check', 'build'] } })).verdict).toBe('INCOMPLETE');
   });
 
   it('passes a skipped check only when it is named skippable for the run', () => {
     const release = [...SUCCESS, { __typename: 'CheckRun', name: 'release', status: 'COMPLETED', conclusion: 'SKIPPED' }];
-    expect(evaluateGate(green({ pr: prWith(release) })).verdict).toBe('INCOMPLETE');
-    expect(evaluateGate(green({ pr: prWith(release), ci: { skippable: ['release'] } })).verdict).toBe('PASS');
-    expect(evaluateGate(green({ pr: prWith(release), ci: { skippable: ['attest'] } })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green(withCi(release))).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green({ ...withCi(release), ci: { skippable: ['release'] } })).verdict).toBe('PASS');
+    expect(evaluateGate(green({ ...withCi(release), ci: { skippable: ['attest'] } })).verdict).toBe('INCOMPLETE');
   });
 
   it('fails on a failed CI check', () => {
     const failed = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'FAILURE' }];
-    expect(evaluateGate(green({ pr: prWith(failed) })).verdict).toBe('FAIL');
+    expect(evaluateGate(green(withCi(failed))).verdict).toBe('FAIL');
+  });
+
+  it('keeps check required when --require-check adds another, and never lets a required check be skipped', () => {
+    const build = { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' };
+    expect(evaluateGate(green({ ...withCi([...SUCCESS, build]), ci: { required: ['build'] } })).verdict).toBe('PASS');
+    const onlyBuild = evaluateGate(green({ ...withCi([build]), ci: { required: ['build'] } }));
+    expect(onlyBuild.verdict).toBe('INCOMPLETE');
+    expect(onlyBuild.reasons.map(reason => reason.message)).toEqual(['CI: the required check check has not passed for the head']);
+    const skipped = [{ __typename: 'CheckRun', name: 'check', status: 'COMPLETED', conclusion: 'SKIPPED' }];
+    const notSkipped = evaluateGate(green({ ...withCi(skipped), ci: { skippable: ['check'] } }));
+    expect(notSkipped.verdict).toBe('INCOMPLETE');
+    // Both rules are named: the required check did not pass, and its skip is not taken as allowed.
+    expect(notSkipped.reasons.map(reason => reason.message)).toEqual([
+      'CI: the required check check has not passed for the head', 'CI: check did not run (SKIPPED)',
+    ]);
+  });
+
+  it('voids the verdict when CI changes between the two reads', () => {
+    const later = [...SUCCESS, { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }];
+    const result = evaluateGate(green({ prAfter: { ...IDENTITY, statusCheckRollup: later } }));
+    expect(result.verdict).toBe('STALE');
+    expect(result.reasons.map(reason => reason.message)).toEqual(['CI: the checks changed while the evidence was read']);
+  });
+
+  it("refuses a head that does not contain the base's tip (a review against a newer tip without the rebase)", () => {
+    const result = evaluateGate(green({ pr: { ...prWith(SUCCESS), headContainsBase: false } }));
+    expect(result.verdict).toBe('STALE');
+    expect(result.reasons.map(reason => reason.message)).toEqual([`the head does not contain the base's tip ${BASE}: rebase onto it`]);
+    expect(evaluateGate(green({ pr: { ...prWith(SUCCESS), headContainsBase: undefined } })).verdict).toBe('INCOMPLETE');
+  });
+
+  it('does not pass without the cases the PR needs, and not on an unrelated JSON', () => {
+    expect(evaluateGate(green({ cases: [] })).verdict).toBe('INCOMPLETE');
+    const unrelated = evaluateGate(green({ e2e: [{ path: 'theme.json', json: caseJson() }] }));
+    expect(unrelated.verdict).toBe('INCOMPLETE');
+    expect(unrelated.reasons.map(reason => reason.message)).toEqual(['e2e: the required case ribbon-new-map is not among the JSONs']);
+    const summary = { passed: true, results: [{ name: 'ribbon-new-map', passed: true, exitCode: 0, record: caseJson() }] };
+    expect(evaluateGate(green({ e2e: [{ path: 'summary.json', json: summary }] })).verdict).toBe('PASS');
+  });
+
+  it.each([
+    ['a case whose passed alone is false', { path: 'ribbon-new-map.json', json: caseJson({ passed: false }) }, 'ribbon-new-map.json: passed is false'],
+    ["a summary whose run's passed alone is false",
+      { path: 'summary.json', json: { passed: false, results: [{ name: 'ribbon-new-map', passed: true, exitCode: 0, record: caseJson() }] } },
+      "summary.json: the run's passed is false"],
+    ["a summary whose case's passed alone is false",
+      { path: 'summary.json', json: { passed: true, results: [{ name: 'ribbon-new-map', passed: false, exitCode: 1, record: caseJson() }] } },
+      'summary.json › ribbon-new-map: exit code 1'],
+  ])('fails %s', (_, entry, message) => {
+    const result = evaluateGate(green({ e2e: [entry] }));
+    expect(result.verdict).toBe('FAIL');
+    expect(result.reasons.map(reason => reason.message)).toEqual([message]);
   });
 
   it('refuses a receipt whose check or review did not pass, and a run with no JSON', () => {
     expect(evaluateGate(green({ receipt: receiptAt(HEAD, { check: { result: 'fail', at: 'x' } }) })).verdict).toBe('FAIL');
     expect(evaluateGate(green({ receipt: receiptAt(HEAD, { review: { result: 'fail', at: 'x' } }) })).verdict).toBe('FAIL');
     expect(evaluateGate(green({ e2e: [] })).verdict).toBe('INCOMPLETE');
-    expect(evaluateGate(green({ e2e: [{ path: 'e.json', json: null }] })).verdict).toBe('INCOMPLETE');
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: null }] })).verdict).toBe('INCOMPLETE');
   });
 });
 
@@ -354,8 +432,8 @@ describe('the PR read before and after the evidence', () => {
       readPr: () => { expect(reads.length).toBeGreaterThan(0); return reads.shift(); },
       collect: pr => {
         collected.push(pr.headRefOid);
-        const { issue, receipt, ack, e2e, expected } = green();
-        return { issue, receipt, ack, e2e, expected };
+        const { issue, receipt, ack, e2e, expected, cases } = green();
+        return { issue, receipt, ack, e2e, expected, cases };
       },
     });
     expect(reads).toEqual([]);

@@ -9,7 +9,9 @@
  *            check's and the review's results and times, the review's range and the base commit the review compared
  *            against (`--review-base-sha`: what the range's base, e.g. `origin/main`, pointed at when the review ran;
  *            it must be `baseTip`), and the evidence paths. The PR's head must be this HEAD and the tree must have no
- *            changes, tracked or untracked-and-not-ignored (the HEAD must be what was checked and built). The receipt
+ *            changes, tracked or untracked-and-not-ignored (the HEAD must be what was checked and built), and the
+ *            HEAD must contain `baseTip` (rebased onto it: `git merge-base --is-ancestor`; a review against a newer tip
+ *            without the rebase is refused). `--review-base-sha` and `--review-head` are 40-hex SHAs. The receipt
  *            records the commit the review was taken on (`--review-head`); the gate does not pass a review of another
  *            commit than the PR's head. check's result here is the worker's record only: what shows check passed on
  *            the head's tree is CI's `check`, which the gate requires (a rebase, a merge or a partial stage makes a
@@ -21,13 +23,14 @@
  *            binds it to the base, it does not prove the review saw it.
  *   ack      (the orchestrator) reads the PR given with `--pr` (`gh pr view`: number, head, base branch and sha), takes
  *            the issue's receipt at that head, and records `<dir>/<issue>-<headSha>.ack.json` only when the receipt's
- *            PR and base are that PR's, its review was against the base branch's tip now (`gh api`), and its check
- *            and review passed. A second ack of the same (issue, headSha)
+ *            PR and base are that PR's, its review was taken on that head and against the base branch's tip now
+ *            (`gh api`), and its check and review passed. A second ack of the same (issue, headSha)
  *            for the same PR and base is `duplicate` and writes nothing; a failed result, a receipt (or an earlier
  *            ACK) of another PR or base, or no receipt at the PR's head, is `rejected` and writes nothing.
  *
- * Both files are written whole or not at all: to a temporary file first, then linked to the final name, which fails
- * when the name exists, and the temporary file is removed whatever happens. A reader never sees half a file.
+ * Both files are written whole or not at all: to a temporary file first (synced to disk), then linked to the final
+ * name, which fails when the name exists, and the temporary file is removed whatever happens; the directory is synced
+ * after the link where the system allows. A reader never sees half a file.
  *
  * `<dir>` is `.tooling/handoff/` in the primary checkout (the directory holding the git common dir), so every
  * worktree of the repository writes to the same place; `MAPPY_HANDOFF_DIR` replaces it. Git ignores `/.tooling/`.
@@ -42,7 +45,9 @@
  */
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -79,6 +84,7 @@ export function receiptErrors(receipt, { reviewBase = true } = {}) {
   if (typeof receipt.baseRefName !== 'string' || receipt.baseRefName === '') errors.push('baseRefName');
   if (!SHA.test(receipt.baseRefOid ?? '')) errors.push('baseRefOid');
   if (!SHA.test(receipt.baseTip ?? '')) errors.push('baseTip');
+  if (receipt.headContainsBase !== true) errors.push('headContainsBase (the HEAD does not contain baseTip: rebase onto it)');
   const committed = time(receipt.headCommittedAt);
   if (Number.isNaN(committed)) errors.push('headCommittedAt');
   const written = time(receipt.writtenAt);
@@ -111,8 +117,15 @@ export function bindingMismatches(record, pr) {
 function writeOnce(path, value) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+    const fd = openSync(temporary, 'wx', 0o644);
+    try {
+      writeSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     linkSync(temporary, path);
+    syncDirectory(dirname(path));
     return true;
   } catch (error) {
     if (error.code === 'EEXIST') return false;
@@ -120,6 +133,12 @@ function writeOnce(path, value) {
   } finally {
     rmSync(temporary, { force: true });
   }
+}
+
+/** Syncs a directory's entries (the new link) to disk; skipped where the system refuses to open a directory. */
+function syncDirectory(directory) {
+  let fd;
+  try { fd = openSync(directory, 'r'); fsyncSync(fd); } catch { /* best effort */ } finally { if (fd !== undefined) closeSync(fd); }
 }
 
 /** The receipt without the time it was written, to tell the same receipt written twice from another one. */
@@ -191,6 +210,9 @@ export function ackReceipt(dir, { issue, pr, now = new Date() }) {
   if (receipt.review.baseSha !== pr.baseTip) {
     return { status: 'rejected', reason: `receipt ${name}: the review compared against ${receipt.review.baseSha}, not the base's tip ${pr.baseTip} (the base moved since)` };
   }
+  if (receipt.review.head !== prHead) {
+    return { status: 'rejected', reason: `receipt ${name}: the review was taken on ${receipt.review.head}, not the head ${prHead}` };
+  }
   const failed = ['check', 'review'].filter(key => receipt[key].result !== 'pass');
   if (failed.length > 0) return { status: 'rejected', reason: `receipt ${name}: ${failed.join(' and ')} did not pass` };
   const path = join(dir, ackName(issue, prHead));
@@ -222,6 +244,13 @@ export function baseTipOf(baseRefName) {
   const ref = baseRefName.split('/').map(encodeURIComponent).join('/');
   return execFileSync('gh', ['api', `repos/{owner}/{repo}/git/ref/heads/${ref}`, '--jq', '.object.sha'],
     { encoding: 'utf8' }).trim();
+}
+
+/** Whether `head` has `baseTip` in its history, from GitHub's compare (`behind_by` 0). */
+export function containsBaseOf(baseTip, head) {
+  const behind = execFileSync('gh', ['api', `repos/{owner}/{repo}/compare/${baseTip}...${head}`, '--jq', '.behind_by'],
+    { encoding: 'utf8' }).trim();
+  return behind === '0';
 }
 
 /** The PR as a receipt or an ACK is bound to it (`gh pr view`, `fields` beside `PR_BINDING`). */
@@ -272,11 +301,20 @@ function main(argv) {
   const reviewBase = options['review-base-sha'] ?? '';
   const reviewHead = options['review-head'] ?? '';
   for (const [name, sha] of [['--review-base-sha', reviewBase], ['--review-head', reviewHead]]) {
+    if (!SHA.test(sha)) return { status: 'rejected', reason: `${name} must be a full 40-hex commit SHA, not ${JSON.stringify(sha)}` };
     try {
       git(['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
     } catch {
-      return { status: 'rejected', reason: `${name} ${sha} is not a commit in this repository` };
+      return { status: 'rejected', reason: `${name} ${sha} is not a commit in this repository (fetch first)` };
     }
+  }
+  let headContainsBase;
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', pr.baseTip, 'HEAD'], { stdio: 'ignore' });
+    headContainsBase = true;
+  } catch (error) {
+    if (error.status !== 1) return { status: 'rejected', reason: `the base's tip ${pr.baseTip} is not in this repository: fetch first` };
+    headContainsBase = false;
   }
   return writeReceipt(dir, {
     issue: options.issue,
@@ -286,10 +324,11 @@ function main(argv) {
     baseRefName: pr.baseRefName,
     baseRefOid: pr.baseRefOid,
     baseTip: pr.baseTip,
+    headContainsBase,
     check: { result: options.check, at: options['check-at'] },
     review: {
       result: options.review, at: options['review-at'], range: options['review-range'] ?? null, baseSha: reviewBase,
-      head: git(['rev-parse', `${reviewHead}^{commit}`]),
+      head: reviewHead,
     },
     evidence: options.evidence,
     writtenAt: new Date().toISOString(),
