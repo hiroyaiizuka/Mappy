@@ -118,12 +118,13 @@
 /* A layout the settings leave out (M14); the button's own display rule below would otherwise win over [hidden]. */
 .mappy-view .mappy-modes .mappy-button[hidden] { display: none; }
 .mappy-view .mappy-actions { right: 16px; top: 16px; }
-.mappy-view .mappy-button > .mappy-button-label { display: none; }
-.mappy-view .mappy-button { display: inline-flex; gap: 5px; align-items: center; justify-content: center; font-size: var(--font-ui-small); min-height: 32px; min-width: 32px; padding: 6px 8px; background: transparent; box-shadow: none; }
-.mappy-view .mappy-button:hover { background: var(--background-modifier-hover); }
-.mappy-view .mappy-button > span { display: inline-flex; }
-.mappy-view .mappy-button svg { width: 15px; height: 15px; }
-.mappy-view .mappy-button:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: 3px; }
+.mappy-view button.mappy-button > .mappy-button-label { display: none; }
+/* Specificity (0,2,1): outranks app.css's `.is-tablet button:not(.clickable-icon)` (LEV-85). */
+.mappy-view button.mappy-button { display: inline-flex; gap: 5px; align-items: center; justify-content: center; font-size: var(--font-ui-small); min-height: 32px; min-width: 32px; padding: 6px 8px; background: transparent; box-shadow: none; }
+.mappy-view button.mappy-button:hover { background: var(--background-modifier-hover); }
+.mappy-view button.mappy-button > span { display: inline-flex; }
+.mappy-view button.mappy-button svg { width: 15px; height: 15px; }
+.mappy-view button.mappy-button:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: 3px; }
 /* The 操作 popover (§5 M3): a card under the gear, its right edge on the gear's, above the other floating controls.
    The view sets top, right, max-width (320px at most, less in a narrow pane) and max-height from the pane's and the
    gear's rects (placePopover); the width is the content's up to that cap, and a short pane scrolls the card instead
@@ -131,7 +132,8 @@
    (M14), and its `button` styling is undone item by item: app.css centres a button's content
    (`justify-content: center`), which put each row's icon somewhere else once the rows shared the card's width
    (LEV-84), so a row's content starts at its left edge (`justify-content: flex-start`; the card's
-   `align-items: stretch` is the column default written out). */
+   `align-items: stretch` is the column default written out). Specificity (0,2,1): outranks app.css's
+   `.is-tablet button:not(.clickable-icon)` (LEV-85). */
 .mappy-view .mappy-popover {
   position: absolute;
   z-index: 4;
@@ -149,7 +151,7 @@
   color: var(--text-normal);
   box-shadow: var(--shadow-s);
 }
-.mappy-view .mappy-popover-item {
+.mappy-view button.mappy-popover-item {
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
@@ -173,18 +175,18 @@
   white-space: normal;
   cursor: var(--cursor);
 }
-.mappy-view .mappy-popover-item:hover, .mappy-view .mappy-popover-item:focus-visible { background: var(--background-modifier-hover); box-shadow: none; }
-.mappy-view .mappy-popover-item:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: -2px; }
+.mappy-view button.mappy-popover-item:hover, .mappy-view button.mappy-popover-item:focus-visible { background: var(--background-modifier-hover); box-shadow: none; }
+.mappy-view button.mappy-popover-item:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: -2px; }
 /* The faint colour alone: app.css also dims `button[aria-disabled="true"]` to 0.7. */
-.mappy-view .mappy-popover-item.is-disabled { color: var(--text-faint); cursor: default; opacity: 1; }
-.mappy-view .mappy-popover-item.is-disabled:hover { background: transparent; }
+.mappy-view button.mappy-popover-item.is-disabled { color: var(--text-faint); cursor: default; opacity: 1; }
+.mappy-view button.mappy-popover-item.is-disabled:hover { background: transparent; }
 .mappy-view .mappy-popover-icon { display: inline-flex; flex: none; margin-top: 1px; color: var(--text-muted); }
-.mappy-view .mappy-popover-item.is-disabled .mappy-popover-icon { color: inherit; }
+.mappy-view button.mappy-popover-item.is-disabled .mappy-popover-icon { color: inherit; }
 .mappy-view .mappy-popover-icon svg { width: 16px; height: 16px; }
 .mappy-view .mappy-popover-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 /* One line: the card takes the width of the longest description, and a narrow pane cuts it with an ellipsis. */
 .mappy-view .mappy-popover-description { overflow: hidden; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }
-.mappy-view .mappy-popover-item.is-disabled .mappy-popover-description { color: inherit; }
+.mappy-view button.mappy-popover-item.is-disabled .mappy-popover-description { color: inherit; }
 .mappy-view .mappy-canvas {
   position: absolute;
   inset: 0;
