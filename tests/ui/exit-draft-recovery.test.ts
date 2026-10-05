@@ -411,6 +411,24 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     expect(Notice.log).toEqual([t().rescueSaved(`${base} 2.md`)]);
   });
 
+  // Review 3: the confirmation named a path in the folder's place though a file is there, and offered to save.
+  it('says in the confirmation that a file has the folder name, and offers no save', () => {
+    const vault = new FakeVault();
+    vault.file('Mappy recovery', '同じ名前のファイル');
+    rescueExitDrafts(appWith([withSource()], vault).app);
+    button(t().rescuePick).click();
+    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueFolderIsFile(RECOVERY_FOLDER));
+    expect(button(t().rescueSave).disabled).toBe(true);
+    expect(vault.calls).toEqual([]);
+  });
+
+  // Review 3: the success Notice said the draft was kept without looking.
+  it('does not say the draft is kept after a rescue when it is no longer in the entry', async () => {
+    const draft = withSource();
+    const { app } = appWith([], new FakeVault());
+    expect(await rescueExitDraft(app, draft)).toBe(t().rescueSavedNotKept(`${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`));
+  });
+
   it('writes nothing when the confirmation is cancelled', async () => {
     const { app, vault, stored } = appWith([refused()]);
     const before = stored();

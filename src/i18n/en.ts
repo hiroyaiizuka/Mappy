@@ -203,6 +203,7 @@ export const en = {
   rescueSave: "Save to separate file",
   rescueCancel: "Cancel",
   rescueSaved: (path: string) => `Saved to ${path}. The original note wasn't changed. The draft is still kept, so rescuing it again makes another file with the same content.`,
+  rescueSavedNotKept: (path: string) => `Saved to ${path}. The original note wasn't changed.`,
   rescueFailed: (reason: string) => `Couldn't save to a separate file: ${reason}`,
   rescueFolderIsFile: (folder: string) => `Couldn't create the folder because a file named "${folder}" exists. The existing file wasn't changed.`,
   rescueNoFreeName: "No free file name was found.",

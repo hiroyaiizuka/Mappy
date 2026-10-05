@@ -177,6 +177,7 @@ export const ja: Messages = {
   rescueSave: "別ファイルに保存",
   rescueCancel: "キャンセル",
   rescueSaved: (path: string) => `${path} に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。`,
+  rescueSavedNotKept: (path: string) => `${path} に保存しました。元のノートは変更していません。`,
   rescueFailed: (reason: string) => `別ファイルに保存できませんでした: ${reason}`,
   rescueFolderIsFile: (folder: string) => `「${folder}」という名前のファイルがあるため保存先を作れませんでした。既存のファイルは変更していません。`,
   rescueNoFreeName: "空いているファイル名が見つかりませんでした。",

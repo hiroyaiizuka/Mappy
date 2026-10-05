@@ -188,9 +188,12 @@ try {
     const saved = await evaluate(`const button = Array.from(document.querySelectorAll('.modal button')).find(item => item.textContent === '別ファイルに保存');
       if (!button) return false; button.click(); return true;`);
     if (!saved) throw new Error(`no 別ファイルに保存 button: ${JSON.stringify(confirm)}`);
+    // What the save made is known before the Notice is waited for, so the clean step deletes it whatever follows.
+    created = await until(async () => {
+      const made = (await recoveryFiles()).filter(path => !before.includes(path));
+      return made.length > 0 ? made : null;
+    }, 5000, `no new file in ${FOLDER}`);
     const notice = await until(async () => (await notices()).find(item => item.includes(SAVED)) ?? null, 5000, 'no Notice said where the draft was saved');
-    const after = await recoveryFiles();
-    created = after.filter(path => !before.includes(path));
     check(created.length === 1, `rescue: not one new file in ${FOLDER}: ${JSON.stringify(created)}`);
     const path = created[0] ?? '';
     check(/^Mappy Recovery\/E2E-exit-draft-recovery \d{4}-\d{2}-\d{2} \d{6} [0-9a-z]{6}( \d+)?\.md$/u.test(path), `rescue: the file name is not <note> <date time> <id>.md: ${path}`);
@@ -224,6 +227,8 @@ try {
   if (record.steps.setup && !record.steps.setup.error && !flag('--keep')) {
     await step('clean', async () => {
       const dropped = await dropOurs();
+      // And any file the rescue made that the step did not get to record (it stopped before).
+      created = [...new Set([...created, ...(await recoveryFiles()).filter(path => !before.includes(path))])];
       for (const path of created) await evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(path)}); if (file) await app.vault.delete(file); return true;`);
       const folder = folderCreated ? await evaluate(`const folder = app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});
         if (folder && 'children' in folder && folder.children.length === 0) { await app.vault.delete(folder); return 'deleted'; } return 'kept';`) : 'existed';

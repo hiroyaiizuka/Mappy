@@ -41,7 +41,9 @@ export function rescueExitDrafts(app: App): void {
 export async function rescueExitDraft(app: RescueApp, draft: ExitDraft): Promise<string> {
   const text = t();
   try {
-    return text.rescueSaved(await saveRescuedDraft(app, draft));
+    const path = await saveRescuedDraft(app, draft);
+    // The draft is said to be kept only when it still is (a load in between may have written it: review 3).
+    return stillKept(app, draft) ? text.rescueSaved(path) : text.rescueSavedNotKept(path);
   } catch (error) {
     // Only what was checked is said: the draft is kept only when it is still in the entry.
     const kept = stillKept(app, draft);
@@ -112,10 +114,14 @@ function rescuedFilePath(folder: string, base: string, number: number): string {
   return `${folder}/${base}${number === 1 ? "" : ` ${number}`}.md`;
 }
 
-/** Where the rescue would save the draft now: the first free name in the folder there (or the one it would create). */
-export function plannedRescuePath(vault: RescueVault, draft: ExitDraft): string {
+/**
+ * Where the rescue would save the draft now: the first free name in the folder there (or the one it would create);
+ * null when a file has the folder's name, and the save would be refused (review 3).
+ */
+export function plannedRescuePath(vault: RescueVault, draft: ExitDraft): string | null {
   const found = findRecoveryFolder(vault);
-  const folder = found instanceof TFolder ? found.path : RECOVERY_FOLDER;
+  if (found && !(found instanceof TFolder)) return null;
+  const folder = found?.path ?? RECOVERY_FOLDER;
   const base = rescuedFileBase(draft);
   for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
     const path = rescuedFilePath(folder, base, number);
@@ -251,12 +257,14 @@ class ExitDraftConfirmModal extends Modal {
     const text = t();
     const draft = this.draft;
     this.setTitle(text.rescueConfirmTitle);
-    this.contentEl.createEl("p", { text: text.rescueConfirmPath(plannedRescuePath(this.app.vault, draft)) });
+    const path = plannedRescuePath(this.app.vault, draft);
+    // A file in the folder's place: said here, and nothing is offered to save.
+    this.contentEl.createEl("p", { text: path === null ? text.rescueFolderIsFile(RECOVERY_FOLDER) : text.rescueConfirmPath(path) });
     this.contentEl.createEl("p", { text: "refused" in draft ? text.rescueConfirmRefused
       : draft.source === undefined ? text.rescueConfirmEdits : text.rescueConfirmSource(String(draft.source.length)) });
     this.contentEl.createEl("p", { text: text.rescueConfirmUnchanged });
     new Setting(this.contentEl)
-      .addButton(button => button.setButtonText(text.rescueSave).setCta().onClick(() => { this.close(); this.save(); }))
+      .addButton(button => button.setButtonText(text.rescueSave).setCta().setDisabled(path === null).onClick(() => { this.close(); this.save(); }))
       .addButton(button => button.setButtonText(text.rescueCancel).onClick(() => { this.close(); }));
   }
 
