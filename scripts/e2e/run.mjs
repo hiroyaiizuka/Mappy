@@ -66,6 +66,7 @@ export const CASES = [
   { name: 'reread-conflict-line', file: 'reread-conflict-line.mjs', description: 'E76 再読込がノートを読んでいる最中に確定して衝突で拒否された下書き（本文モーダル・インライン編集）のエラー行が、拒否のあとのマップの再読込で「更新されました」に変わり、次の確定で適用される', shot: false },
   { name: 'draft-own-write', file: 'draft-own-write.mjs', description: 'E77 OS のクリップボードから下書きに貼る（画像・文字・画像と文字）、エラー行の無い下書きは右ボタンで閉じる、保持した下書きの上の右クリックの「元に戻す」は下書きを拒否させず、拒否される「子を追加」は何も書かない', shot: false },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
+  { name: 'exit-draft-recovery', file: 'exit-draft-recovery.mjs', description: 'E84 再読込のときに書き込めなかった下書き（人工の故障でノートを 0 バイトにする）が残り、知らせが出て、救出コマンドで Mappy Recovery/ に別ファイルとして保存される。元のノートは 0 バイトのまま、下書きも残る', shot: false },
 ];
 
 const args = process.argv.slice(2);
