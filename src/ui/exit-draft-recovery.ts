@@ -1,4 +1,4 @@
-import { Modal, Notice, Setting, TFolder, type App } from "obsidian";
+import { Modal, Notice, Setting, TFolder, type App, type TAbstractFile } from "obsidian";
 import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-drafts";
 import { t, type Messages } from "../i18n";
 import { EXIT_DRAFTS_KEY, sameDraft } from "./exit-drafts";
@@ -17,9 +17,14 @@ export const RECOVERY_FOLDER = "Mappy Recovery";
 export const RECOVERY_ATTEMPTS = 20;
 /** The longest part of a rescued file's name taken from the original note's (code points). */
 const NAME_LIMIT = 80;
+/**
+ * The same in UTF-8 bytes: a file name holds 255 on the usual file systems, and the rescue adds at most 31 (` YYYY-MM-DD
+ * HHmmss abcdef 20.md`), so a long Japanese or emoji name still fits (review 2).
+ */
+const NAME_BYTES = 200;
 
 /** The parts of the vault the rescue uses. */
-type RescueVault = Pick<App["vault"], "getAbstractFileByPath" | "createFolder" | "create">;
+type RescueVault = Pick<App["vault"], "getAbstractFileByPath" | "getRoot" | "createFolder" | "create">;
 interface RescueApp { vault: RescueVault; loadLocalStorage(key: string): unknown }
 
 /** The command's route: the kept drafts listed, one chosen, confirmed, then saved to a separate file. */
@@ -67,17 +72,21 @@ function stillKept(app: RescueApp, draft: ExitDraft): boolean {
  */
 export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promise<string> {
   const vault = app.vault;
-  const isFolder = (): boolean => vault.getAbstractFileByPath(RECOVERY_FOLDER) instanceof TFolder;
-  const found = vault.getAbstractFileByPath(RECOVERY_FOLDER);
+  const found = findRecoveryFolder(vault);
   if (found && !(found instanceof TFolder)) throw new FolderIsFile();
+  let folder = found?.path ?? RECOVERY_FOLDER;
   if (!found) {
-    try { await vault.createFolder(RECOVERY_FOLDER); } catch (error) { if (!isFolder()) throw error; }
+    try { await vault.createFolder(RECOVERY_FOLDER); } catch (error) {
+      const appeared = findRecoveryFolder(vault);
+      if (!(appeared instanceof TFolder)) throw error;
+      folder = appeared.path;
+    }
   }
   const content = rescuedNoteText(draft);
   const base = rescuedFileBase(draft);
   let failure: unknown = null;
   for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
-    const path = `${RECOVERY_FOLDER}/${base}${number === 1 ? "" : ` ${number}`}.md`;
+    const path = rescuedFilePath(folder, base, number);
     if (vault.getAbstractFileByPath(path)) continue;
     try {
       await vault.create(path, content);
@@ -88,6 +97,33 @@ export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promis
   throw failure instanceof Error ? failure : new Error(t().rescueUnknownReason);
 }
 
+/**
+ * What is at the vault's top under `RECOVERY_FOLDER`'s name, in any case: the disk usually ignores case, so a folder
+ * `mappy recovery` is the one to use and a file `MAPPY RECOVERY` blocks the folder as the exact name would (review 2).
+ */
+function findRecoveryFolder(vault: RescueVault): TAbstractFile | null {
+  const wanted = RECOVERY_FOLDER.toLowerCase();
+  return vault.getAbstractFileByPath(RECOVERY_FOLDER)
+    ?? vault.getRoot().children.find(child => child.name.toLowerCase() === wanted) ?? null;
+}
+
+/** The `number`-th name tried for a rescued file in `folder`: `<base>.md`, then `<base> 2.md`, …. */
+function rescuedFilePath(folder: string, base: string, number: number): string {
+  return `${folder}/${base}${number === 1 ? "" : ` ${number}`}.md`;
+}
+
+/** Where the rescue would save the draft now: the first free name in the folder there (or the one it would create). */
+export function plannedRescuePath(vault: RescueVault, draft: ExitDraft): string {
+  const found = findRecoveryFolder(vault);
+  const folder = found instanceof TFolder ? found.path : RECOVERY_FOLDER;
+  const base = rescuedFileBase(draft);
+  for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
+    const path = rescuedFilePath(folder, base, number);
+    if (!vault.getAbstractFileByPath(path)) return path;
+  }
+  return rescuedFilePath(folder, base, 1);
+}
+
 /** The original note's name without its folder and `.md`. */
 export function noteBasename(path: string): string {
   return (path.split("/").pop() ?? path).replace(/\.md$/iu, "");
@@ -96,12 +132,20 @@ export function noteBasename(path: string): string {
 /**
  * A name a file can take on every desktop system and that a link can reach: `\ / : * ? " < > | # ^ [ ]` and control
  * characters as `_`, no leading dot or space (a hidden file, one the vault does not list), at most `NAME_LIMIT` code
- * points; `draft` when nothing is left.
+ * points and `NAME_BYTES` UTF-8 bytes; `draft` when nothing is left.
  */
 export function safeFileName(name: string): string {
   const replaced = Array.from(name.replace(/[\\/:*?"<>|#^[\]]/gu, "_"), char => char < " " || char === "\u007f" ? "_" : char)
     .join("").replace(/^[.\s]+/u, "");
-  const cut = Array.from(replaced).slice(0, NAME_LIMIT).join("").trimEnd();
+  const encoder = new TextEncoder();
+  let cut = "";
+  let bytes = 0;
+  for (const char of Array.from(replaced).slice(0, NAME_LIMIT)) {
+    bytes += encoder.encode(char).length;
+    if (bytes > NAME_BYTES) break;
+    cut += char;
+  }
+  cut = cut.trimEnd();
   return cut === "" ? "draft" : cut;
 }
 
@@ -207,7 +251,7 @@ class ExitDraftConfirmModal extends Modal {
     const text = t();
     const draft = this.draft;
     this.setTitle(text.rescueConfirmTitle);
-    this.contentEl.createEl("p", { text: text.rescueConfirmPath(`${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`) });
+    this.contentEl.createEl("p", { text: text.rescueConfirmPath(plannedRescuePath(this.app.vault, draft)) });
     this.contentEl.createEl("p", { text: "refused" in draft ? text.rescueConfirmRefused
       : draft.source === undefined ? text.rescueConfirmEdits : text.rescueConfirmSource(String(draft.source.length)) });
     this.contentEl.createEl("p", { text: text.rescueConfirmUnchanged });

@@ -65,6 +65,13 @@ class FakeVault {
   }
 
   getAbstractFileByPath = (path: string): TFile | TFolder | null => this.entries.get(path) ?? null;
+  /** The vault's top folder, holding what has no folder in its path. */
+  getRoot = (): TFolder => {
+    const root = new TFolder();
+    root.path = '/';
+    root.children = [...this.entries.values()].filter(entry => !entry.path.includes('/'));
+    return root;
+  };
   createFolder = (path: string): Promise<TFolder> => {
     this.calls.push(`createFolder ${path}`);
     if (this.entries.has(path)) return Promise.reject(new Error('Folder already exists.'));
@@ -198,9 +205,18 @@ describe('the rescued file name (LEV-240)', () => {
     expect(safeFileName('...')).toBe('draft');
   });
 
-  it('cuts a long name at 80 code points without splitting a character', () => {
-    expect(Array.from(safeFileName('あ'.repeat(100)))).toHaveLength(80);
-    expect(safeFileName('😀'.repeat(100))).toBe('😀'.repeat(80));
+  it('cuts a long name at 80 code points and 200 UTF-8 bytes without splitting a character', () => {
+    expect(safeFileName('a'.repeat(100))).toBe('a'.repeat(80));
+    expect(safeFileName('あ'.repeat(100))).toBe('あ'.repeat(66));
+    expect(safeFileName('😀'.repeat(100))).toBe('😀'.repeat(50));
+  });
+
+  // Review 2: a long Japanese name gave a rescued file name over the 255 bytes a file name holds.
+  it('keeps the whole file name within 255 UTF-8 bytes, number and extension included', () => {
+    for (const name of ['あ'.repeat(100), '😀'.repeat(100), 'a'.repeat(300)]) {
+      const file = `${rescuedFileBase({ ...withSource(), path: `${name}.md` })} ${RECOVERY_ATTEMPTS}.md`;
+      expect(new TextEncoder().encode(file).length).toBeLessThanOrEqual(255);
+    }
   });
 
   it('is the note name, the local time it was kept and a six-character id', () => {
@@ -270,6 +286,21 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     };
     const { app } = appWith([draft], vault);
     expect(await rescueExitDraft(app, draft)).toBe(t().rescueSaved(`${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`));
+  });
+
+  // Review 2: the disk usually ignores case, and a folder `mappy recovery` made the folder's create fail at every rescue.
+  it('uses a folder of the same name in another case, and is blocked by a file of it', async () => {
+    const draft = withSource();
+    const vault = new FakeVault();
+    vault.folder('mappy recovery');
+    const { app } = appWith([draft], vault);
+    const path = `mappy recovery/${rescuedFileBase(draft)}.md`;
+    expect(await rescueExitDraft(app, draft)).toBe(t().rescueSaved(path));
+    expect(vault.calls).toEqual([`create ${path}`]);
+    const blocked = new FakeVault();
+    blocked.file('MAPPY RECOVERY', '同じ名前のファイル');
+    expect(await rescueExitDraft(appWith([draft], blocked).app, draft)).toBe(`${t().rescueFolderIsFile(RECOVERY_FOLDER)}${t().rescueDraftKept}`);
+    expect(blocked.calls).toEqual([]);
   });
 
   it('changes nothing when a file has the folder name, and says so', async () => {
@@ -362,6 +393,22 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     expect(vault.contents.get(NOTE)).toBe('元のノートの本文\n');
     expect(stored()).toBe(before);
     expect(Notice.log).toEqual([t().rescueSaved(path)]);
+  });
+
+  // Review 2: the confirmation named the first name though the rescue was to take the next free one.
+  it('names in the confirmation the path the rescue will take', async () => {
+    const draft = withSource();
+    const vault = new FakeVault();
+    vault.folder(RECOVERY_FOLDER);
+    const base = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}`;
+    vault.file(`${base}.md`, '前の救出');
+    const { app } = appWith([draft], vault);
+    rescueExitDrafts(app);
+    button(t().rescuePick).click();
+    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmPath(`${base} 2.md`));
+    button(t().rescueSave).click();
+    await settle();
+    expect(Notice.log).toEqual([t().rescueSaved(`${base} 2.md`)]);
   });
 
   it('writes nothing when the confirmation is cancelled', async () => {
