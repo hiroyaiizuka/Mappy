@@ -38,14 +38,22 @@ export async function rescueExitDraft(app: RescueApp, draft: ExitDraft): Promise
   try {
     return text.rescueSaved(await saveRescuedDraft(app, draft));
   } catch (error) {
+    // Only what was checked is said: the draft is kept only when it is still in the entry.
     const kept = stillKept(app, draft);
-    if (error instanceof FolderIsFile) return kept ? text.rescueFolderIsFileKept(RECOVERY_FOLDER) : text.rescueFolderIsFile(RECOVERY_FOLDER);
-    const reason = error instanceof Error && error.message ? error.message : text.rescueNoFreeName;
-    return kept ? text.rescueFailedKept(reason) : text.rescueFailed(reason);
+    if (error instanceof FolderIsFile) {
+      const said = text.rescueFolderIsFile(RECOVERY_FOLDER);
+      // No space after a Japanese full stop.
+      return !kept ? said : said.endsWith("。") ? `${said}${text.rescueDraftKept}` : `${said} ${text.rescueDraftKept}`;
+    }
+    const said = text.rescueFailed(error instanceof NoFreeName ? text.rescueNoFreeName
+      : error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
+    return kept ? `${said} ${text.rescueDraftKept}` : said;
   }
 }
 
 class FolderIsFile extends Error {}
+/** Every name up to `RECOVERY_ATTEMPTS` is taken: nothing was created or refused. */
+class NoFreeName extends Error {}
 
 /** Whether the draft is still in the entry, read again: the failure Notice says it is kept only then. */
 function stillKept(app: RescueApp, draft: ExitDraft): boolean {
@@ -76,7 +84,8 @@ export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promis
       return path;
     } catch (error) { failure = error; }
   }
-  throw failure instanceof Error ? failure : new Error(t().rescueNoFreeName);
+  if (failure === null) throw new NoFreeName();
+  throw failure instanceof Error ? failure : new Error(t().rescueUnknownReason);
 }
 
 /** The original note's name without its folder and `.md`. */

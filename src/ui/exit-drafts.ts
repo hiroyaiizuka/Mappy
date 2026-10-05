@@ -27,7 +27,10 @@ export const EXIT_DRAFTS_KEY = "mappy-exit-drafts";
 export function installExitDrafts(owner: Component, app: App, store: DocumentStore, views: () => readonly MindmapView[]): void {
   let unloaded = false;
   owner.register(() => { unloaded = true; });
-  const apply = (): void => { if (!unloaded) void applyExitDrafts(app, store, () => unloaded); };
+  // The drafts this load has reported already: `pageshow` and the layout's readiness can both apply in one load, and a
+  // draft not written is reported once per load, not once per pass (review 1 of LEV-240).
+  const reported = new Set<string>();
+  const apply = (): void => { if (!unloaded) void applyExitDrafts(app, store, () => unloaded, reported); };
   owner.registerDomEvent(window, "pagehide", (event: PageTransitionEvent) => {
     // A page kept for coming back to (a WebView's back／forward cache) keeps its drafts open.
     if (event.persisted) return;
@@ -55,7 +58,7 @@ let applying = false;
  * (`after`). Only a draft written, or one the note has already, leaves the entry: any other stays as it was kept, for
  * the next load and the rescue command (LEV-240). A Mappy unloaded meanwhile stops: the next load takes the rest.
  */
-async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => boolean): Promise<void> {
+async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => boolean, reported: Set<string>): Promise<void> {
   if (applying) return;
   applying = true;
   try {
@@ -63,15 +66,22 @@ async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => b
     try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { return; }
     // Nothing readable: what is there (not of the drafts' shape) goes.
     if (drafts.length === 0) { saveWithout(app, null); return; }
+    // The entry as last written in this pass (undefined: not yet; null: storage refused it). One not written stays as
+    // it is, so the entry is written back once, to tell whether it holds the drafts the Notices say are kept.
+    let written: ExitDraft[] | null | undefined;
     for (let index = 0; index < drafts.length && !unloaded(); index += 1) {
       const draft = drafts[index]!;
       let failure: unknown = null;
       try { await applyExitDraft(app, store, draft); } catch (error) { failure = error ?? new Error(""); }
-      if (failure === null) { saveWithout(app, draft); continue; }
-      // Written back as it is, so the Notice says it is kept only when the entry was written and holds it.
-      const kept = saveWithout(app, null)?.some(item => sameDraft(item, draft)) ?? false;
+      if (failure === null) { written = saveWithout(app, draft); continue; }
+      if (written === undefined) written = saveWithout(app, null);
+      // As the entry holds it: a `pagehide` meanwhile may have kept it again without the note's text.
+      const kept = written?.find(item => sameDraft(item, draft)) ?? null;
+      const key = draftKey(draft);
+      if (reported.has(key)) continue;
+      reported.add(key);
       // Until dismissed: it holds the only copy of what was typed, and shows while the workspace is still loading.
-      new Notice(exitDraftNotice(draft, failure instanceof Error ? failure.message : "", kept), 0);
+      new Notice(exitDraftNotice(kept ?? draft, failure instanceof Error ? failure.message : "", kept !== null), 0);
     }
   } finally { applying = false; }
 }
@@ -90,18 +100,27 @@ function saveWithout(app: App, done: ExitDraft | null): ExitDraft[] | null {
   } catch { return null; }
 }
 
-/** Whether two kept drafts are the same one: every field, as `readExitDrafts` reads them back. */
+/** A kept draft without the note text it may carry: what `withoutSources` leaves of it when storage is short. */
+function draftKey(draft: ExitDraft): string {
+  return JSON.stringify("refused" in draft ? [draft.path, draft.title, draft.at, draft.refused]
+    : [draft.path, draft.title, draft.at, draft.before, draft.after, draft.edits]);
+}
+
+/**
+ * Whether two kept drafts are the same one: every field but the note's text, which a `pagehide` short of storage
+ * takes off (`withoutSources`) while the draft stays.
+ */
 export function sameDraft(a: ExitDraft, b: ExitDraft): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return draftKey(a) === draftKey(b);
 }
 
 /** What the Notice for a draft not written says is kept: its text and the note's, its edit alone, or only the reason. */
 function exitDraftNotice(draft: ExitDraft, reason: string, kept: boolean): string {
   const text = t();
-  if (!kept) return text.exitDraftKeepUnconfirmed(draft.title, draft.path, reason);
-  if ("refused" in draft) return text.exitDraftKeptRefused(draft.title, draft.path, reason);
-  return draft.source === undefined ? text.exitDraftKeptEdits(draft.title, draft.path, reason)
-    : text.exitDraftKeptSource(draft.title, draft.path, reason);
+  const command = text.cmdRescueDrafts;
+  const tail = !kept ? text.exitKeepUnconfirmed : "refused" in draft ? text.exitKeptRefused(command)
+    : draft.source === undefined ? text.exitKeptEdits(command) : text.exitKeptSource(command);
+  return `${text.exitDraftNotWritten(draft.title, draft.path, reason)} ${tail}`;
 }
 
 async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft): Promise<void> {

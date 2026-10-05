@@ -278,7 +278,7 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     vault.file(RECOVERY_FOLDER, '同じ名前のファイル');
     const { app, stored } = appWith([draft], vault);
     const before = stored();
-    expect(await rescueExitDraft(app, draft)).toBe(t().rescueFolderIsFileKept(RECOVERY_FOLDER));
+    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFolderIsFile(RECOVERY_FOLDER)}${t().rescueDraftKept}`);
     expect(vault.calls).toEqual([]);
     expect(vault.contents.get(RECOVERY_FOLDER)).toBe('同じ名前のファイル');
     expect(stored()).toBe(before);
@@ -297,7 +297,19 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     const vault = new FakeVault();
     vault.createFolder = (): Promise<TFolder> => Promise.reject(new Error('書き込みが許可されていません。'));
     const { app } = appWith([draft], vault);
-    expect(await rescueExitDraft(app, draft)).toBe(t().rescueFailedKept('書き込みが許可されていません。'));
+    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed('書き込みが許可されていません。')} ${t().rescueDraftKept}`);
+  });
+
+  // Review 1: an error without a message was reported as no free name being left.
+  it('says the reason is unknown for an error without a message, not that no name is free', async () => {
+    const draft = withSource();
+    for (const thrown of [new Error(''), 'not an error'] as unknown[]) {
+      const vault = new FakeVault();
+      vault.create = (path: string): Promise<TFile> => { vault.calls.push(`create ${path}`); throw thrown; };
+      const { app } = appWith([draft], vault);
+      expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed(t().rescueUnknownReason)} ${t().rescueDraftKept}`);
+      expect(vault.calls.filter(call => call.startsWith('create '))).toHaveLength(RECOVERY_ATTEMPTS);
+    }
   });
 
   it(`gives up after ${RECOVERY_ATTEMPTS} names, and says so`, async () => {
@@ -307,7 +319,7 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     const base = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}`;
     for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) vault.file(`${base}${number === 1 ? '' : ` ${number}`}.md`, 'x');
     const { app } = appWith([draft], vault);
-    expect(await rescueExitDraft(app, draft)).toBe(t().rescueFailedKept(t().rescueNoFreeName));
+    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed(t().rescueNoFreeName)} ${t().rescueDraftKept}`);
     expect(vault.calls).toEqual([]);
   });
 });

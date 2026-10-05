@@ -177,10 +177,11 @@ export const en = {
   draftNotSaved: (reason: string) => `Couldn't save the text being edited. ${reason}`,
   // A draft left open when the window reloaded or Obsidian quit, applied when Mappy loads again (src/ui/exit-drafts.ts).
   // Not written, it stays kept (LEV-240): what is kept, and the command that saves it to a separate file.
-  exitDraftKeptSource: (title: string, note: string, reason: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit. ${reason} What you typed and the note's original text are kept. Run "Rescue unsaved drafts" to save them to a separate file.`,
-  exitDraftKeptEdits: (title: string, note: string, reason: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit. ${reason} The title you typed and the planned change are kept, but the note's original text wasn't saved, so the whole note can't be restored. Run "Rescue unsaved drafts" to save what is kept to a separate file.`,
-  exitDraftKeptRefused: (title: string, note: string, reason: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit. ${reason} The title you typed and the reason are kept. The note's original text wasn't saved, so the whole note can't be restored. Run "Rescue unsaved drafts" to save what is kept to a separate file.`,
-  exitDraftKeepUnconfirmed: (title: string, note: string, reason: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit. ${reason} Couldn't confirm that the draft is still kept.`,
+  exitDraftNotWritten: (title: string, note: string, reason: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit. ${reason}`,
+  exitKeptSource: (command: string) => `What you typed and the note's original text are kept. Run "${command}" to save them to a separate file.`,
+  exitKeptEdits: (command: string) => `The title you typed and the planned change are kept, but the note's original text wasn't saved, so the whole note can't be restored. Run "${command}" to save what is kept to a separate file.`,
+  exitKeptRefused: (command: string) => `The title you typed and the reason are kept. The note's original text wasn't saved, so the whole note can't be restored. Run "${command}" to save what is kept to a separate file.`,
+  exitKeepUnconfirmed: "Couldn't confirm that the draft is still kept.",
   exitNoteChanged: "The note changed in the meantime.",
   exitNoteGone: "The note is no longer in the vault.",
   exitDraftExpired: "It was kept for more than a day, so it wasn't written.",
@@ -203,10 +204,10 @@ export const en = {
   rescueCancel: "Cancel",
   rescueSaved: (path: string) => `Saved to ${path}. The original note wasn't changed. The draft is still kept, so rescuing it again makes another file with the same content.`,
   rescueFailed: (reason: string) => `Couldn't save to a separate file: ${reason}`,
-  rescueFailedKept: (reason: string) => `Couldn't save to a separate file: ${reason} The draft is still kept.`,
   rescueFolderIsFile: (folder: string) => `Couldn't create the folder because a file named "${folder}" exists. The existing file wasn't changed.`,
-  rescueFolderIsFileKept: (folder: string) => `Couldn't create the folder because a file named "${folder}" exists. The existing file wasn't changed. The draft is still kept.`,
   rescueNoFreeName: "No free file name was found.",
+  rescueDraftKept: "The draft is still kept.",
+  rescueUnknownReason: "The reason is unknown.",
   // The rescued file's text (a plain note: no frontmatter, so never a map).
   recHeading: (name: string) => `Mappy draft rescue: ${name}`,
   recPath: (path: string) => `Original path: ${path}`,
