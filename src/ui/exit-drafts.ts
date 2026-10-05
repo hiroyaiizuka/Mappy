@@ -120,7 +120,16 @@ function exitDraftNotice(draft: ExitDraft, reason: string, kept: boolean): strin
   const command = text.cmdRescueDrafts;
   const tail = !kept ? text.exitKeepUnconfirmed : "refused" in draft ? text.exitKeptRefused(command)
     : draft.source === undefined ? text.exitKeptEdits(command) : text.exitKeptSource(command);
-  return `${text.exitDraftNotWritten(draft.title, draft.path, reason)} ${tail}`;
+  return joinSentences(text.exitDraftNotWritten(draft.title, draft.path), reason, tail);
+}
+
+/**
+ * Sentences of a Notice in a row: none between after a Japanese full stop (or a closing bracket after one), a space
+ * otherwise; an empty one (a reason without a message) adds nothing.
+ */
+export function joinSentences(...sentences: string[]): string {
+  return sentences.filter(sentence => sentence !== "")
+    .reduce((joined, sentence) => joined === "" ? sentence : /[。！？」）]$/u.test(joined) ? `${joined}${sentence}` : `${joined} ${sentence}`, "");
 }
 
 async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft): Promise<void> {

@@ -177,7 +177,7 @@ export const en = {
   draftNotSaved: (reason: string) => `Couldn't save the text being edited. ${reason}`,
   // A draft left open when the window reloaded or Obsidian quit, applied when Mappy loads again (src/ui/exit-drafts.ts).
   // Not written, it stays kept (LEV-240): what is kept, and the command that saves it to a separate file.
-  exitDraftNotWritten: (title: string, note: string, reason: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit. ${reason}`,
+  exitDraftNotWritten: (title: string, note: string) => `Couldn't write "${title}" in ${note}, which was being edited when Obsidian reloaded or quit.`,
   exitKeptSource: (command: string) => `What you typed and the note's original text are kept. Run "${command}" to save them to a separate file.`,
   exitKeptEdits: (command: string) => `The title you typed and the planned change are kept, but the note's original text wasn't saved, so the whole note can't be restored. Run "${command}" to save what is kept to a separate file.`,
   exitKeptRefused: (command: string) => `The title you typed and the reason are kept. The note's original text wasn't saved, so the whole note can't be restored. Run "${command}" to save what is kept to a separate file.`,

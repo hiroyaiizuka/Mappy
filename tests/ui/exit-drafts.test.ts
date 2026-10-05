@@ -18,7 +18,7 @@ import { installObsidianDom } from '../browser-harness/dom';
 import { HarnessApp } from '../browser-harness/app';
 import { Component, Notice } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { t } from '../../src/i18n';
+import { setLanguage, t } from '../../src/i18n';
 import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -100,9 +100,12 @@ async function loadAgain(app: HarnessApp): Promise<void> {
 
 const noteOf = (app: HarnessApp): string => app.content(app.asApp<App>().vault.getFileByPath(PATH)!);
 
-/** The Notice for a kept draft not written: what was typed and where, why, then what is kept (`tail`). */
+/**
+ * The Notice for a kept draft not written: what was typed and where, why, then what is kept (`tail`). Japanese sentences
+ * follow one another with no space after 「。」; a reason without one (a test's `x`) is followed by a space.
+ */
 const notWritten = (tail: 'exitKeptSource' | 'exitKeptEdits' | 'exitKeptRefused' | 'exitKeepUnconfirmed', title: string, note: string, reason: string): string =>
-  `${t().exitDraftNotWritten(title, note, reason)} ${tail === 'exitKeepUnconfirmed' ? t().exitKeepUnconfirmed : t()[tail](t().cmdRescueDrafts)}`;
+  `${t().exitDraftNotWritten(title, note)}${reason}${reason.endsWith('。') ? '' : ' '}${tail === 'exitKeepUnconfirmed' ? t().exitKeepUnconfirmed : t()[tail](t().cmdRescueDrafts)}`;
 
 /** Obsidian's `Tasks` (`workspace.on('quit')`): what a handler adds, awaited before the window closes. */
 class Tasks {
@@ -583,13 +586,40 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     expect(Notice.log[0]).not.toContain('残してあります');
   });
 
-  it('names the rescue command in each Notice that says the draft is kept', () => {
-    const command = t().cmdRescueDrafts;
-    for (const tail of ['exitKeptSource', 'exitKeptEdits', 'exitKeptRefused'] as const) expect(t()[tail](command)).toContain('「保存できなかった下書きを救出」');
-    expect(t().exitKeptSource(command)).toContain('入力と元の原文は残してあります');
-    expect(t().exitKeptEdits(command)).toContain('本文全体は復元できません');
-    expect(t().exitKeptRefused(command)).toContain('本文全体は復元できません');
-    expect(t().exitKeepUnconfirmed).not.toContain(t().cmdRescueDrafts);
+  // What each Notice says is kept, and the command it names, read off the Notices a load shows (not the table).
+  it('names the rescue command and what is kept in the Notice of each kind of draft', async () => {
+    const at = Date.now();
+    const edits = [{ from: 0, to: 1, text: 'a' }];
+    const app = new HarnessApp();
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [
+      { path: 'Fixtures/a.md', title: 'a', at, before: '1:x', after: '1:y', edits, source: 'b' },
+      { path: 'Fixtures/b.md', title: 'b', at, before: '1:x', after: '1:y', edits },
+      { path: 'Fixtures/c.md', title: 'c', at, refused: 'x' },
+    ]);
+    await loadAgain(app);
+    expect(Notice.log).toHaveLength(3);
+    for (const notice of Notice.log) expect(notice).toContain('コマンド「保存できなかった下書きを救出」');
+    expect(Notice.log[0]).toContain('入力と元の原文は残してあります');
+    expect(Notice.log[1]).toContain('入力中の題名と変更内容は残してありますが、ノートの原文は保存されていないため、本文全体は復元できません。');
+    expect(Notice.log[2]).toContain('入力中の題名と失敗理由を残しています。ノートの原文は保存されていないため、本文全体は復元できません。');
+  });
+
+  // Independent review of 2a0eedb (L4): a space came after 「。」 between the reason and what is kept.
+  it('puts no space after a Japanese full stop, and no double space in English when the reason is empty', async () => {
+    const { mounted, owner } = await keep('句点の下書き');
+    mounted.app.put(PATH, '');
+    await reload(mounted, owner);
+    expect(Notice.log).toEqual([`再読込・終了のときに ${PATH} で編集していた「句点の下書き」を書き込めませんでした。その間にノートが変わりました。入力と元の原文は残してあります。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`]);
+    Notice.log.length = 0;
+    setLanguage('en');
+    try {
+      const app = new HarnessApp();
+      app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: 'a', at: Date.now(), refused: '' }]);
+      await loadAgain(app);
+      expect(Notice.log).toHaveLength(1);
+      expect(Notice.log[0]).not.toContain('  ');
+      expect(Notice.log[0]).toContain('reloaded or quit. The title you typed');
+    } finally { setLanguage('ja'); }
   });
 
   // Review 1: pageshow and the layout's readiness both apply in one load; the Notice that stays was shown twice.

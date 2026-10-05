@@ -152,7 +152,7 @@ export const ja: Messages = {
   viewTitle: (name: string) => `${name} · マップ`,
   viewTitleEmpty: "マインドマップ",
   draftNotSaved: (reason: string) => `編集中の内容を保存できませんでした。${reason}`,
-  exitDraftNotWritten: (title: string, note: string, reason: string) => `再読込・終了のときに ${note} で編集していた「${title}」を書き込めませんでした。${reason}`,
+  exitDraftNotWritten: (title: string, note: string) => `再読込・終了のときに ${note} で編集していた「${title}」を書き込めませんでした。`,
   exitKeptSource: (command: string) => `入力と元の原文は残してあります。コマンド「${command}」で別ファイルに保存できます。`,
   exitKeptEdits: (command: string) => `入力中の題名と変更内容は残してありますが、ノートの原文は保存されていないため、本文全体は復元できません。コマンド「${command}」で残っている内容を別ファイルに保存できます。`,
   exitKeptRefused: (command: string) => `入力中の題名と失敗理由を残しています。ノートの原文は保存されていないため、本文全体は復元できません。コマンド「${command}」で残っている内容を別ファイルに保存できます。`,

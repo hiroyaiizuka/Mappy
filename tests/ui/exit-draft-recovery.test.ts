@@ -328,7 +328,7 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     const vault = new FakeVault();
     vault.createFolder = (): Promise<TFolder> => Promise.reject(new Error('書き込みが許可されていません。'));
     const { app } = appWith([draft], vault);
-    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed('書き込みが許可されていません。')} ${t().rescueDraftKept}`);
+    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed('書き込みが許可されていません。')}${t().rescueDraftKept}`);
   });
 
   // Review 1: an error without a message was reported as no free name being left.
@@ -338,7 +338,7 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
       const vault = new FakeVault();
       vault.create = (path: string): Promise<TFile> => { vault.calls.push(`create ${path}`); throw thrown; };
       const { app } = appWith([draft], vault);
-      expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed(t().rescueUnknownReason)} ${t().rescueDraftKept}`);
+      expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed(t().rescueUnknownReason)}${t().rescueDraftKept}`);
       expect(vault.calls.filter(call => call.startsWith('create '))).toHaveLength(RECOVERY_ATTEMPTS);
     }
   });
@@ -350,7 +350,7 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     const base = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}`;
     for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) vault.file(`${base}${number === 1 ? '' : ` ${number}`}.md`, 'x');
     const { app } = appWith([draft], vault);
-    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed(t().rescueNoFreeName)} ${t().rescueDraftKept}`);
+    expect(await rescueExitDraft(app, draft)).toBe(`${t().rescueFailed(t().rescueNoFreeName)}${t().rescueDraftKept}`);
     expect(vault.calls).toEqual([]);
   });
 });
@@ -420,6 +420,21 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueFolderIsFile(RECOVERY_FOLDER));
     expect(button(t().rescueSave).disabled).toBe(true);
     expect(vault.calls).toEqual([]);
+  });
+
+  // Independent review of 2a0eedb (L6): with every name taken, the confirmation named one that exists.
+  it('says in the confirmation that no name is free, offers no save, and overwrites nothing', () => {
+    const draft = withSource();
+    const vault = new FakeVault();
+    vault.folder(RECOVERY_FOLDER);
+    const base = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}`;
+    for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) vault.file(`${base}${number === 1 ? '' : ` ${number}`}.md`, `前の救出 ${number}`);
+    rescueExitDrafts(appWith([draft], vault).app);
+    button(t().rescuePick).click();
+    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueFailed(t().rescueNoFreeName));
+    expect(button(t().rescueSave).disabled).toBe(true);
+    expect(vault.calls).toEqual([]);
+    expect(vault.contents.get(`${base}.md`)).toBe('前の救出 1');
   });
 
   // Review 3: the success Notice said the draft was kept without looking.

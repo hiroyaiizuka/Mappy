@@ -45,8 +45,8 @@ const EXIT_KEY = 'mappy-exit-drafts';
 /** src/ui/exit-draft-recovery.ts's `RECOVERY_FOLDER`. */
 const FOLDER = 'Mappy Recovery';
 const COMMAND = 'mappy:rescue-exit-drafts';
-/** src/i18n/ja.ts's `exitDraftNotWritten` + `exitKeptSource` for this draft (the reason is `exitNoteChanged`), copied: a change of wording fails here. */
-const KEPT_NOTICE = `再読込・終了のときに ${NOTE} で編集していた「${TITLE}」を書き込めませんでした。その間にノートが変わりました。 入力と元の原文は残してあります。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`;
+/** src/i18n/ja.ts's `exitDraftNotWritten`, `exitNoteChanged` and `exitKeptSource` joined (no space after 「。」) for this draft (the reason is `exitNoteChanged`), copied: a change of wording fails here. */
+const KEPT_NOTICE = `再読込・終了のときに ${NOTE} で編集していた「${TITLE}」を書き込めませんでした。その間にノートが変わりました。入力と元の原文は残してあります。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`;
 const SAVED = 'に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。';
 /** Where the fault listener writes what it saw (`window.localStorage`, synchronous, kept across the reload). */
 const FAULT_KEY = 'mappy-e2e-exit-draft-fault';

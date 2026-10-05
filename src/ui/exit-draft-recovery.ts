@@ -1,7 +1,7 @@
 import { Modal, Notice, Setting, TFolder, type App, type TAbstractFile } from "obsidian";
 import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-drafts";
 import { t, type Messages } from "../i18n";
-import { EXIT_DRAFTS_KEY, sameDraft } from "./exit-drafts";
+import { EXIT_DRAFTS_KEY, joinSentences, sameDraft } from "./exit-drafts";
 
 /**
  * The command 保存できなかった下書きを救出 (LEV-240). A draft kept at `pagehide` that the next load could not write
@@ -47,14 +47,10 @@ export async function rescueExitDraft(app: RescueApp, draft: ExitDraft): Promise
   } catch (error) {
     // Only what was checked is said: the draft is kept only when it is still in the entry.
     const kept = stillKept(app, draft);
-    if (error instanceof FolderIsFile) {
-      const said = text.rescueFolderIsFile(RECOVERY_FOLDER);
-      // No space after a Japanese full stop.
-      return !kept ? said : said.endsWith("。") ? `${said}${text.rescueDraftKept}` : `${said} ${text.rescueDraftKept}`;
-    }
-    const said = text.rescueFailed(error instanceof NoFreeName ? text.rescueNoFreeName
-      : error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
-    return kept ? `${said} ${text.rescueDraftKept}` : said;
+    const said = error instanceof FolderIsFile ? text.rescueFolderIsFile(RECOVERY_FOLDER)
+      : text.rescueFailed(error instanceof NoFreeName ? text.rescueNoFreeName
+        : error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
+    return kept ? joinSentences(said, text.rescueDraftKept) : said;
   }
 }
 
@@ -116,18 +112,19 @@ function rescuedFilePath(folder: string, base: string, number: number): string {
 
 /**
  * Where the rescue would save the draft now: the first free name in the folder there (or the one it would create);
- * null when a file has the folder's name, and the save would be refused (review 3).
+ * `file` when a file has the folder's name (review 3), `full` when every name up to `RECOVERY_ATTEMPTS` is taken: the
+ * save would be refused either way, and nothing is overwritten.
  */
-export function plannedRescuePath(vault: RescueVault, draft: ExitDraft): string | null {
+export function plannedRescuePath(vault: RescueVault, draft: ExitDraft): { path: string } | { blocked: "file" | "full" } {
   const found = findRecoveryFolder(vault);
-  if (found && !(found instanceof TFolder)) return null;
+  if (found && !(found instanceof TFolder)) return { blocked: "file" };
   const folder = found?.path ?? RECOVERY_FOLDER;
   const base = rescuedFileBase(draft);
   for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
     const path = rescuedFilePath(folder, base, number);
-    if (!vault.getAbstractFileByPath(path)) return path;
+    if (!vault.getAbstractFileByPath(path)) return { path };
   }
-  return rescuedFilePath(folder, base, 1);
+  return { blocked: "full" };
 }
 
 /** The original note's name without its folder and `.md`. */
@@ -257,14 +254,16 @@ class ExitDraftConfirmModal extends Modal {
     const text = t();
     const draft = this.draft;
     this.setTitle(text.rescueConfirmTitle);
-    const path = plannedRescuePath(this.app.vault, draft);
-    // A file in the folder's place: said here, and nothing is offered to save.
-    this.contentEl.createEl("p", { text: path === null ? text.rescueFolderIsFile(RECOVERY_FOLDER) : text.rescueConfirmPath(path) });
+    const planned = plannedRescuePath(this.app.vault, draft);
+    // A file in the folder's place, or no free name: said here, and nothing is offered to save.
+    const blocked = "blocked" in planned;
+    this.contentEl.createEl("p", { text: !blocked ? text.rescueConfirmPath(planned.path)
+      : planned.blocked === "file" ? text.rescueFolderIsFile(RECOVERY_FOLDER) : text.rescueFailed(text.rescueNoFreeName) });
     this.contentEl.createEl("p", { text: "refused" in draft ? text.rescueConfirmRefused
       : draft.source === undefined ? text.rescueConfirmEdits : text.rescueConfirmSource(String(draft.source.length)) });
     this.contentEl.createEl("p", { text: text.rescueConfirmUnchanged });
     new Setting(this.contentEl)
-      .addButton(button => button.setButtonText(text.rescueSave).setCta().setDisabled(path === null).onClick(() => { this.close(); this.save(); }))
+      .addButton(button => button.setButtonText(text.rescueSave).setCta().setDisabled(blocked).onClick(() => { this.close(); this.save(); }))
       .addButton(button => button.setButtonText(text.rescueCancel).onClick(() => { this.close(); }));
   }
 
