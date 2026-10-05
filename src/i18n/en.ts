@@ -195,7 +195,7 @@ export const en = {
   rescueRefused: (reason: string) => `Original text not saved. Reason: ${reason}`,
   rescuePick: "Choose",
   rescueConfirmTitle: "Save to a separate file",
-  rescueConfirmPath: (path: string) => `Saved to: ${path} (a number is added if the name is taken)`,
+  rescueConfirmPath: (path: string) => `Destination: ${path} (a number is added if the name is taken)`,
   rescueConfirmSource: (length: string) => `Contents: the original text (${length} UTF-16 units), the title and the planned change`,
   rescueConfirmEdits: "Contents: the title and the planned change (no original text)",
   rescueConfirmRefused: "Contents: the title and the reason (no original text)",

@@ -12,7 +12,7 @@ import { installObsidianDom } from '../browser-harness/dom';
 import { Notice, TFile, TFolder } from '../browser-harness/obsidian';
 import { frontmatterLayout } from '../../src/core/markdown';
 import type { ExitDraft } from '../../src/core/exit-drafts';
-import { t } from '../../src/i18n';
+import { setLanguage, t } from '../../src/i18n';
 import { EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import {
   RECOVERY_ATTEMPTS, RECOVERY_FOLDER, draftId, fenced, localTime, rescueExitDraft, rescueExitDrafts, rescuedFileBase,
@@ -444,6 +444,18 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     const draft = withSource();
     const { app } = appWith([], new FakeVault());
     expect(await rescueExitDraft(app, draft)).toBe(t().rescueSavedNotKept(`${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`));
+  });
+
+  // Independent review of 0dd1d43 (B): the English confirmation read 'Saved to:' before anything was saved.
+  it('names the destination in the English confirmation without saying it is saved', () => {
+    setLanguage('en');
+    try {
+      rescueExitDrafts(appWith([withSource()]).app);
+      button('Choose').click();
+      const shown = document.querySelector('.modal p')?.textContent ?? '';
+      expect(shown).toBe(`Destination: ${RECOVERY_FOLDER}/${rescuedFileBase(withSource())}.md (a number is added if the name is taken)`);
+      expect(shown).not.toMatch(/saved/iu);
+    } finally { setLanguage('ja'); }
   });
 
   it('writes nothing when the confirmation is cancelled', async () => {

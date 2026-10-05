@@ -30,8 +30,6 @@
  */
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
@@ -56,8 +54,9 @@ const SAVED = 'に保存しました。元のノートは変更していませ�
 const FAULT_KEY = 'mappy-e2e-exit-draft-fault';
 
 /**
- * Script (with `app`): removes `folder` through the adapter only when it is empty on disk; what it found. Exported, as
- * the builders below, so they can be checked without Obsidian.
+ * Script (with `app`): removes `folder` through the adapter only when it is empty on disk; what it found. These script
+ * builders use nothing outside themselves, so they can be checked without Obsidian by reading this file's text (not by
+ * importing it: like every case, the file runs the case when loaded).
  */
 export const removeEmptyFolderScript = folder => `const adapter = app.vault.adapter;
   if (!(await adapter.exists(${JSON.stringify(folder)}))) return 'gone';
@@ -88,8 +87,8 @@ export const leftoverScript = (note, folder) => `const file = app.vault.getAbstr
   return { noteBytes: file && !('children' in file) ? file.stat?.size ?? null : null, leavesClosed: leaves.length,
     folder: !found ? 'none' : 'children' in found ? (found.children.length === 0 ? 'empty folder' : 'folder') : 'file' };`;
 
-// Run only when started as the case (npm run, run.mjs), not when imported to check the builders above.
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+// Always run, as every case does: a run decided by comparing paths could end with 0 and no record when they differ.
+await main();
 
 async function main() {
   const { flag, value } = parseArgs();
