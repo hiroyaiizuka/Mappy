@@ -9,7 +9,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { installObsidianDom } from '../browser-harness/dom';
-import { Notice, TFile, TFolder } from '../browser-harness/obsidian';
+import { Notice, Platform, TFile, TFolder } from '../browser-harness/obsidian';
 import { frontmatterLayout } from '../../src/core/markdown';
 import type { ExitDraft } from '../../src/core/exit-drafts';
 import { setLanguage, t } from '../../src/i18n';
@@ -219,6 +219,14 @@ describe('the rescued file name (LEV-240)', () => {
     }
   });
 
+  // Review of 22215d0: a finite time out of Date's range (kept by readExitDrafts) gave NaN in the name and the note.
+  it('says the time is unknown for a time no date has', () => {
+    const draft = { ...withSource(), at: 1e20 };
+    expect(localTime(1e20)).toBe('unknown time');
+    expect(rescuedFileBase(draft)).toBe(`退避の元 unknown time ${draftId(draft)}`);
+    expect(rescuedNoteText(draft)).not.toContain('NaN');
+  });
+
   it('is the note name, the local time it was kept and a six-character id', () => {
     expect(localTime(AT)).toBe('2026-10-05 07:08:09');
     expect(draftId(withSource())).toMatch(/^[0-9a-z]{6}$/u);
@@ -301,6 +309,23 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
     blocked.file('MAPPY RECOVERY', '同じ名前のファイル');
     expect(await rescueExitDraft(appWith([draft], blocked).app, draft)).toBe(`${t().rescueFolderIsFile(RECOVERY_FOLDER)}${t().rescueDraftKept}`);
     expect(blocked.calls).toEqual([]);
+  });
+
+  // Review of 22215d0: on Linux the disk usually tells case apart, and another folder or file of the name in another
+  // case was taken for the folder.
+  it('on Linux, takes only the exact folder name', async () => {
+    const draft = withSource();
+    Platform.isLinux = true;
+    try {
+      const vault = new FakeVault();
+      vault.folder('mappy recovery');
+      vault.file('MAPPY RECOVERY', '別のファイル');
+      const { app } = appWith([draft], vault);
+      const path = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`;
+      expect(await rescueExitDraft(app, draft)).toBe(t().rescueSaved(path));
+      expect(vault.calls).toEqual([`createFolder ${RECOVERY_FOLDER}`, `create ${path}`]);
+      expect(vault.contents.get('MAPPY RECOVERY')).toBe('別のファイル');
+    } finally { Platform.isLinux = false; }
   });
 
   it('changes nothing when a file has the folder name, and says so', async () => {

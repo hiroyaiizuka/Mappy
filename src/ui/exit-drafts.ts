@@ -93,7 +93,8 @@ async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => b
 function saveWithout(app: App, done: ExitDraft | null): ExitDraft[] | null {
   try {
     const stored = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY));
-    const at = done ? stored.findIndex(item => sameDraft(item, done)) : -1;
+    const key = done ? draftKey(done) : null;
+    const at = key === null ? -1 : stored.findIndex(item => draftKey(item) === key);
     if (at !== -1) stored.splice(at, 1);
     app.saveLocalStorage(EXIT_DRAFTS_KEY, stored.length > 0 ? stored : null);
     return stored;

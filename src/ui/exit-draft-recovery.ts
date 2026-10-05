@@ -1,4 +1,4 @@
-import { Modal, Notice, Setting, TFolder, type App, type TAbstractFile } from "obsidian";
+import { Modal, Notice, Platform, Setting, TFolder, type App, type TAbstractFile } from "obsidian";
 import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-drafts";
 import { t, type Messages } from "../i18n";
 import { EXIT_DRAFTS_KEY, joinSentences, sameDraft } from "./exit-drafts";
@@ -81,11 +81,8 @@ export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promis
     }
   }
   const content = rescuedNoteText(draft);
-  const base = rescuedFileBase(draft);
   let failure: unknown = null;
-  for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
-    const path = rescuedFilePath(folder, base, number);
-    if (vault.getAbstractFileByPath(path)) continue;
+  for (const path of freeRescuePaths(vault, folder, rescuedFileBase(draft))) {
     try {
       await vault.create(path, content);
       return path;
@@ -96,18 +93,26 @@ export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promis
 }
 
 /**
- * What is at the vault's top under `RECOVERY_FOLDER`'s name, in any case: the disk usually ignores case, so a folder
- * `mappy recovery` is the one to use and a file `MAPPY RECOVERY` blocks the folder as the exact name would (review 2).
+ * What is at the vault's top under `RECOVERY_FOLDER`'s name. On macOS and Windows the disk usually ignores case, so a
+ * folder `mappy recovery` is the one to use and a file `MAPPY RECOVERY` blocks the folder as the exact name would
+ * (review 2); on Linux, where it usually does not, only the exact name counts (review of 22215d0).
  */
 function findRecoveryFolder(vault: RescueVault): TAbstractFile | null {
+  const exact = vault.getAbstractFileByPath(RECOVERY_FOLDER);
+  if (exact || Platform.isLinux) return exact;
   const wanted = RECOVERY_FOLDER.toLowerCase();
-  return vault.getAbstractFileByPath(RECOVERY_FOLDER)
-    ?? vault.getRoot().children.find(child => child.name.toLowerCase() === wanted) ?? null;
+  return vault.getRoot().children.find(child => child.name.toLowerCase() === wanted) ?? null;
 }
 
-/** The `number`-th name tried for a rescued file in `folder`: `<base>.md`, then `<base> 2.md`, …. */
-function rescuedFilePath(folder: string, base: string, number: number): string {
-  return `${folder}/${base}${number === 1 ? "" : ` ${number}`}.md`;
+/**
+ * The names a rescued file may take in `folder`, `<base>.md`, then `<base> 2.md`, … up to `RECOVERY_ATTEMPTS`, each
+ * yielded only when nothing is there as it is reached: the save and the confirmation take them from here alike.
+ */
+function* freeRescuePaths(vault: RescueVault, folder: string, base: string): Generator<string> {
+  for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
+    const path = `${folder}/${base}${number === 1 ? "" : ` ${number}`}.md`;
+    if (!vault.getAbstractFileByPath(path)) yield path;
+  }
 }
 
 /**
@@ -118,13 +123,8 @@ function rescuedFilePath(folder: string, base: string, number: number): string {
 export function plannedRescuePath(vault: RescueVault, draft: ExitDraft): { path: string } | { blocked: "file" | "full" } {
   const found = findRecoveryFolder(vault);
   if (found && !(found instanceof TFolder)) return { blocked: "file" };
-  const folder = found?.path ?? RECOVERY_FOLDER;
-  const base = rescuedFileBase(draft);
-  for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) {
-    const path = rescuedFilePath(folder, base, number);
-    if (!vault.getAbstractFileByPath(path)) return { path };
-  }
-  return { blocked: "full" };
+  const first = freeRescuePaths(vault, found?.path ?? RECOVERY_FOLDER, rescuedFileBase(draft)).next();
+  return first.done ? { blocked: "full" } : { path: first.value };
 }
 
 /** The original note's name without its folder and `.md`. */
@@ -154,9 +154,13 @@ export function safeFileName(name: string): string {
 
 const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
 
-/** `at` (epoch ms) in local time, as `YYYY-MM-DD HH:mm:ss` (`separator` between the time's parts). */
+/**
+ * `at` (epoch ms) in local time, as `YYYY-MM-DD HH:mm:ss` (`separator` between the time's parts); `unknown time` for
+ * one no date has (a finite `at` out of range, which `readExitDrafts` keeps).
+ */
 export function localTime(at: number, separator = ":"): string {
   const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "unknown time";
   const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   return `${day} ${[date.getHours(), date.getMinutes(), date.getSeconds()].map(part => pad(part)).join(separator)}`;
 }

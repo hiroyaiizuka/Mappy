@@ -99,7 +99,8 @@ async function main() {
   const check = makeCheck(record);
 
   /** The kept drafts of this note (script). */
-  const OURS = `(app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) ?? []).filter(item => item?.path === ${JSON.stringify(NOTE)})`;
+  const OURS = `(Array.isArray(app.loadLocalStorage(${JSON.stringify(EXIT_KEY)})) ? app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) : [])
+    .filter(item => item?.path === ${JSON.stringify(NOTE)})`;
   /** Takes this note's drafts out of the entry and leaves the others as they are; resolves to how many went. */
   const dropOurs = () => evaluate(`const all = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)});
     if (!Array.isArray(all)) return 0;
@@ -148,6 +149,11 @@ async function main() {
       folderCreated = !(await evaluate(`return !!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)});`));
       const folderIsFile = await evaluate(`const found = app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)}); return !!found && !('children' in found);`);
       if (folderIsFile) throw new Error(`${FOLDER} is a file in this vault; the rescue would refuse to create its folder`);
+      // The product takes a top-level entry of the folder's name in another case (macOS, Windows); this case looks for
+      // the exact name only, so it refuses one rather than look in a folder the rescue does not use.
+      const otherCase = await evaluate(`return app.vault.getRoot().children.map(child => child.name)
+        .filter(name => name !== ${JSON.stringify(FOLDER)} && name.toLowerCase() === ${JSON.stringify(FOLDER.toLowerCase())});`);
+      if (otherCase.length > 0) throw new Error(`the vault has ${JSON.stringify(otherCase)} at its top, the folder's name in another case; rename or remove it first`);
       await evaluate(`window.localStorage.removeItem(${JSON.stringify(FAULT_KEY)}); return true;`);
       return { ...result, leftover, earlier, recoveryBefore: before, folderExisted: !folderCreated };
     }));
