@@ -417,7 +417,8 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     vault.file('Mappy recovery', '同じ名前のファイル');
     rescueExitDrafts(appWith([withSource()], vault).app);
     button(t().rescuePick).click();
-    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueFolderIsFile(RECOVERY_FOLDER));
+    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmFolderIsFile(RECOVERY_FOLDER));
+    expect(t().rescueConfirmFolderIsFile(RECOVERY_FOLDER)).not.toContain('でした');
     expect(button(t().rescueSave).disabled).toBe(true);
     expect(vault.calls).toEqual([]);
   });
@@ -431,7 +432,8 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) vault.file(`${base}${number === 1 ? '' : ` ${number}`}.md`, `前の救出 ${number}`);
     rescueExitDrafts(appWith([draft], vault).app);
     button(t().rescuePick).click();
-    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueFailed(t().rescueNoFreeName));
+    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmNoFreeName);
+    expect(t().rescueConfirmNoFreeName).not.toContain('でした');
     expect(button(t().rescueSave).disabled).toBe(true);
     expect(vault.calls).toEqual([]);
     expect(vault.contents.get(`${base}.md`)).toBe('前の救出 1');

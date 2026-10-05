@@ -258,7 +258,7 @@ class ExitDraftConfirmModal extends Modal {
     // A file in the folder's place, or no free name: said here, and nothing is offered to save.
     const blocked = "blocked" in planned;
     this.contentEl.createEl("p", { text: !blocked ? text.rescueConfirmPath(planned.path)
-      : planned.blocked === "file" ? text.rescueFolderIsFile(RECOVERY_FOLDER) : text.rescueFailed(text.rescueNoFreeName) });
+      : planned.blocked === "file" ? text.rescueConfirmFolderIsFile(RECOVERY_FOLDER) : text.rescueConfirmNoFreeName });
     this.contentEl.createEl("p", { text: "refused" in draft ? text.rescueConfirmRefused
       : draft.source === undefined ? text.rescueConfirmEdits : text.rescueConfirmSource(String(draft.source.length)) });
     this.contentEl.createEl("p", { text: text.rescueConfirmUnchanged });

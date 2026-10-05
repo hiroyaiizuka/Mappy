@@ -207,6 +207,8 @@ export const en = {
   rescueFailed: (reason: string) => `Couldn't save to a separate file: ${reason}`,
   rescueFolderIsFile: (folder: string) => `Couldn't create the folder because a file named "${folder}" exists. The existing file wasn't changed.`,
   rescueNoFreeName: "No free file name was found.",
+  rescueConfirmNoFreeName: "Can't save to a separate file: no file name is free.",
+  rescueConfirmFolderIsFile: (folder: string) => `Can't create the folder because a file named "${folder}" exists. The existing file isn't changed.`,
   rescueDraftKept: "The draft is still kept.",
   rescueUnknownReason: "The reason is unknown.",
   // The rescued file's text (a plain note: no frontmatter, so never a map).

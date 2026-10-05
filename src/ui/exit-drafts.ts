@@ -1,7 +1,7 @@
 import { Notice, type App, type Component } from "obsidian";
 import { EXIT_DRAFT_TTL, readExitDrafts, rebaseExitEdits, textFingerprint, withoutSources, type ExitDraft } from "../core/exit-drafts";
 import type { DocumentStore } from "../obsidian/document-store";
-import { t } from "../i18n";
+import { messagesFor, t } from "../i18n";
 import type { MindmapView } from "./mindmap-view";
 
 /** Where the kept drafts wait for the next load: the vault's own `localStorage` entry (`App.saveLocalStorage`). */
@@ -124,12 +124,14 @@ function exitDraftNotice(draft: ExitDraft, reason: string, kept: boolean): strin
 }
 
 /**
- * Sentences of a Notice in a row: none between after a Japanese full stop (or a closing bracket after one), a space
- * otherwise; an empty one (a reason without a message) adds nothing.
+ * Sentences of a Notice in a row, by the table's language: in the Japanese one none between after a full-width stop or
+ * closing bracket, a space otherwise; in the English one always a space, whatever ends the sentence before (a reason
+ * from elsewhere can end in 「。」). An empty one (a reason without a message) adds nothing.
  */
 export function joinSentences(...sentences: string[]): string {
-  return sentences.filter(sentence => sentence !== "")
-    .reduce((joined, sentence) => joined === "" ? sentence : /[。！？」）]$/u.test(joined) ? `${joined}${sentence}` : `${joined} ${sentence}`, "");
+  const japanese = t() === messagesFor("ja");
+  return sentences.filter(sentence => sentence !== "").reduce((joined, sentence) => joined === "" ? sentence
+    : japanese && /[。！？」）]$/u.test(joined) ? `${joined}${sentence}` : `${joined} ${sentence}`, "");
 }
 
 async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft): Promise<void> {

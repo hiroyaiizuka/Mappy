@@ -181,6 +181,8 @@ export const ja: Messages = {
   rescueFailed: (reason: string) => `別ファイルに保存できませんでした: ${reason}`,
   rescueFolderIsFile: (folder: string) => `「${folder}」という名前のファイルがあるため保存先を作れませんでした。既存のファイルは変更していません。`,
   rescueNoFreeName: "空いているファイル名が見つかりませんでした。",
+  rescueConfirmNoFreeName: "別ファイルに保存できません: 空いているファイル名がありません。",
+  rescueConfirmFolderIsFile: (folder: string) => `「${folder}」という名前のファイルがあるため保存先を作れません。既存のファイルは変更しません。`,
   rescueDraftKept: "下書きは残してあります。",
   rescueUnknownReason: "理由は分かりません。",
   recHeading: (name: string) => `Mappy の退避: ${name}`,

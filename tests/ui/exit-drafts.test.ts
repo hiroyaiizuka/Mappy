@@ -102,10 +102,11 @@ const noteOf = (app: HarnessApp): string => app.content(app.asApp<App>().vault.g
 
 /**
  * The Notice for a kept draft not written: what was typed and where, why, then what is kept (`tail`). Japanese sentences
- * follow one another with no space after 「。」; a reason without one (a test's `x`) is followed by a space.
+ * follow one another with no space after 「。」; a reason without one (a test's `x`) is followed by a space, an empty one
+ * adds nothing (as `joinSentences`).
  */
 const notWritten = (tail: 'exitKeptSource' | 'exitKeptEdits' | 'exitKeptRefused' | 'exitKeepUnconfirmed', title: string, note: string, reason: string): string =>
-  `${t().exitDraftNotWritten(title, note)}${reason}${reason.endsWith('。') ? '' : ' '}${tail === 'exitKeepUnconfirmed' ? t().exitKeepUnconfirmed : t()[tail](t().cmdRescueDrafts)}`;
+  `${t().exitDraftNotWritten(title, note)}${reason}${reason === '' || reason.endsWith('。') ? '' : ' '}${tail === 'exitKeepUnconfirmed' ? t().exitKeepUnconfirmed : t()[tail](t().cmdRescueDrafts)}`;
 
 /** Obsidian's `Tasks` (`workspace.on('quit')`): what a handler adds, awaited before the window closes. */
 class Tasks {
@@ -604,6 +605,15 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     expect(Notice.log[2]).toContain('入力中の題名と失敗理由を残しています。ノートの原文は保存されていないため、本文全体は復元できません。');
   });
 
+  // Second independent review (Info): the helper above added a space after an empty reason, where the Notice adds none.
+  it('adds nothing for an empty reason, as the helper expects', async () => {
+    const app = new HarnessApp();
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: '理由のない下書き', at: Date.now(), refused: '' }]);
+    await loadAgain(app);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '理由のない下書き', PATH, '')]);
+    expect(Notice.log[0]).toContain('書き込めませんでした。入力中の題名と失敗理由');
+  });
+
   // Independent review of 2a0eedb (L4): a space came after 「。」 between the reason and what is kept.
   it('puts no space after a Japanese full stop, and no double space in English when the reason is empty', async () => {
     const { mounted, owner } = await keep('句点の下書き');
@@ -619,6 +629,12 @@ describe('a kept draft that could not be written (LEV-240)', () => {
       expect(Notice.log).toHaveLength(1);
       expect(Notice.log[0]).not.toContain('  ');
       expect(Notice.log[0]).toContain('reloaded or quit. The title you typed');
+      // Second independent review: a reason ending in 「。」 was run into the next sentence in the English UI.
+      Notice.log.length = 0;
+      app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: 'a', at: Date.now(), refused: '日本語の理由。' }]);
+      await loadAgain(app);
+      expect(Notice.log).toHaveLength(1);
+      expect(Notice.log[0]).toContain('reloaded or quit. 日本語の理由。 The title you typed');
     } finally { setLanguage('ja'); }
   });
 
