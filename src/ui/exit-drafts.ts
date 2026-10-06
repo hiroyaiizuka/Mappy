@@ -152,7 +152,9 @@ async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft, 
   if (!file) throw new Error(t().exitNoteGone);
   const current = await store.read(file);
   const found = textFingerprint(current);
-  if (found === draft.after) return;
+  // Written already (at an earlier load, the page gone before the entry let it go): its edits are in the note as they
+  // were planned, for another draft of the note to move over (review 3 of LEV-309).
+  if (found === draft.after) { known.set(`${draft.path}\n${found}`, { before: draft.before, steps: [draft.edits] }); return; }
   if (Date.now() - draft.at > EXIT_DRAFT_TTL) throw new Error(t().exitDraftExpired);
   // The note the draft was planned on; one that other kept drafts planned on the same text left this pass (two maps
   // of the note), whose edits are known (LEV-309); or one changed elsewhere since (a change the map had not read) whose

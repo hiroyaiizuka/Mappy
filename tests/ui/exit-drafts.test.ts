@@ -256,6 +256,26 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(Notice.log).toEqual([]);
   });
 
+  // LEV-309, review 3: the first draft was written at an earlier load and the page went before the entry let it go. The
+  // note has its edits as planned; the second draft moves over them, not by the diff, which took the last line renamed
+  // to the very end for a cut.
+  it('applies a kept draft over another draft of the note that the note has already', async () => {
+    const bare = SOURCE.slice(0, -1);
+    const at = (text: string) => bare.indexOf(text);
+    const first = [{ from: at('別のノード'), to: bare.length, text: '一つ目の下書き' }];
+    const second = [{ from: at('子ノード'), to: at('子ノード') + 4, text: '二つ目の下書き' }];
+    const kept = (title: string, planned: typeof first) => ({
+      path: PATH, title, at: Date.now(), before: textFingerprint(bare), after: textFingerprint(applyEdits(bare, planned)), edits: planned, source: bare,
+    });
+    const app = new HarnessApp();
+    app.put(PATH, applyEdits(bare, first));
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [kept('一つ目', first), kept('二つ目', second)]);
+    await loadAgain(app);
+    expect(noteOf(app)).toBe(applyEdits(bare, [...first, ...second]));
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+    expect(Notice.log).toEqual([]);
+  });
+
   // Review 1: a page kept for coming back to (`persisted`) is not going; its draft stays open.
   it('keeps the draft open on a pagehide of a page that is kept', async () => {
     const { mounted } = await draft('残るページの下書き');

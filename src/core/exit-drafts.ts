@@ -42,13 +42,16 @@ export function rebaseExitEdits(before: string, current: string, edits: readonly
   const late = diffEdit(before, current);
   const early = diffFromEnd(before, current);
   if (cutsEnd(before, early)) return null;
-  const side = (change: TextEdit, edit: TextEdit): number => change.to < edit.from ? -1 : change.from > edit.to ? 1 : 0;
+  const side = (change: TextEdit, edit: TextEdit): number => touches(change, edit) ? 0 : change.to < edit.from ? -1 : 1;
   for (const edit of edits) {
     const at = side(late, edit);
     if (at === 0 || side(early, edit) !== at) return null;
   }
   return rebaseEdits(edits, [late]) ?? null;
 }
+
+/** Whether `change` reaches `edit` or only touches it (an end of one at an end of the other, an insertion there). */
+const touches = (change: TextEdit, edit: TextEdit): boolean => change.to >= edit.from && change.from <= edit.to;
 
 /**
  * Whether `change` takes the end off `text`, as a write that stopped part way does: what it takes away is not all
@@ -78,7 +81,7 @@ export function rebaseOverDrafts(edits: readonly TextEdit[], steps: readonly (re
   if (edits.length !== 1) return null;
   let moved: TextEdit[] = [...edits];
   for (const step of steps) {
-    if (moved.some(edit => step.some(other => other.from <= edit.to && other.to >= edit.from))) return null;
+    if (moved.some(edit => step.some(other => touches(other, edit)))) return null;
     const next = rebaseEdits(moved, step);
     if (!next) return null;
     moved = next;
