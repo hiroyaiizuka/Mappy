@@ -10,6 +10,7 @@
  * the file: artifacts/lev-230), so the draft is planned as its edit at `pagehide` and kept in the vault's
  * `localStorage`, and the reloaded plugin applies it through the store, checked against the note it was planned on.
  * A quit sends `pagehide` too and takes the same way (a quit task would keep Obsidian running on macOS).
+ * A draft not written stays kept and is reported at every load (LEV-240, the last block).
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
@@ -17,7 +18,7 @@ import { installObsidianDom } from '../browser-harness/dom';
 import { HarnessApp } from '../browser-harness/app';
 import { Component, Notice } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
-import { t } from '../../src/i18n';
+import { setLanguage, t } from '../../src/i18n';
 import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
@@ -72,19 +73,40 @@ async function draft(title: string, source = SOURCE): Promise<{ mounted: Mounted
  * view is gone with it. What the vault holds then is what the reloaded page starts from; the plugin loads again on
  * it and its layout is ready. Resolves to the reloaded vault.
  */
-async function reload(mounted: MountedMapView, owner: Component): Promise<HarnessApp> {
+async function reload(mounted: MountedMapView, owner: Component, prepare?: (app: HarnessApp, store: DocumentStore) => void): Promise<HarnessApp> {
   window.dispatchEvent(new Event('pagehide'));
   const left = mounted.source();
   owner.unload();
   mounted.view.containerEl.remove();
   const app = new HarnessApp();
   app.put(PATH, left);
-  install(app, new DocumentStore(app.asApp<App>()), () => []);
-  for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+  const store = new DocumentStore(app.asApp<App>());
+  prepare?.(app, store);
+  install(app, store, () => []);
+  await rounds();
   return app;
 }
 
+/** Enough turns of the event loop for the kept drafts to be applied. */
+async function rounds(): Promise<void> {
+  for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+/** Another load of the plugin on the same vault (the next reload): the kept drafts are tried again. */
+async function loadAgain(app: HarnessApp): Promise<void> {
+  install(app, new DocumentStore(app.asApp<App>()), () => []);
+  await rounds();
+}
+
 const noteOf = (app: HarnessApp): string => app.content(app.asApp<App>().vault.getFileByPath(PATH)!);
+
+/**
+ * The Notice for a kept draft not written: what was typed and where, why, then what is kept (`tail`). Japanese sentences
+ * follow one another with no space after 「。」; a reason without one (a test's `x`) is followed by a space, an empty one
+ * adds nothing (as `joinSentences`).
+ */
+const notWritten = (tail: 'exitKeptSource' | 'exitKeptEdits' | 'exitKeptRefused' | 'exitKeepUnconfirmed', title: string, note: string, reason: string): string =>
+  `${t().exitDraftNotWritten(title, note)}${reason}${reason === '' || reason.endsWith('。') ? '' : ' '}${tail === 'exitKeepUnconfirmed' ? t().exitKeepUnconfirmed : t()[tail](t().cmdRescueDrafts)}`;
 
 /** Obsidian's `Tasks` (`workspace.on('quit')`): what a handler adds, awaited before the window closes. */
 class Tasks {
@@ -152,7 +174,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent).toBe(t().draftChanged);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(external);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('外で変わったノードの下書き', PATH, t().draftChanged)]);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '外で変わったノードの下書き', PATH, t().draftChanged)]);
   });
 
   // Review 1: the kept edit was checked against the exact note it was planned on, so any change elsewhere in the
@@ -174,7 +196,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.put(PATH, changed);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(changed);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('間に変わったノードの下書き', PATH, t().exitNoteChanged)]);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '間に変わったノードの下書き', PATH, t().exitNoteChanged)]);
   });
 
   // Review 1: a change the map had not read yet (within the re-read's debounce) made the kept edit's note stale.
@@ -225,7 +247,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, earlier);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('二度目の再読込の下書き'));
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('前のページの下書き', 'Fixtures/other.md', 'x')]);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '前のページの下書き', 'Fixtures/other.md', 'x')]);
   });
 
   // Review 2: a draft kept for long (Mappy disabled for weeks, the note worked on elsewhere) was written unasked.
@@ -236,7 +258,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ ...kept, at: Date.now() - 2 * 24 * 60 * 60 * 1000 }]);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(SOURCE);
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('古い下書き', PATH, t().exitDraftExpired)]);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '古い下書き', PATH, t().exitDraftExpired)]);
   });
 
   // Review 2: a full localStorage dropped every draft, though they fit without the note texts.
@@ -331,7 +353,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     const app = new HarnessApp();
     install(app, new DocumentStore(app.asApp<App>()), () => []);
     for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
-    expect(Notice.log).toEqual([t().exitDraftNotSaved('消えたノートの下書き', PATH, t().exitNoteGone)]);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '消えたノートの下書き', PATH, t().exitNoteGone)]);
   });
 
   it('does nothing when the note already has the draft (a save that landed after all)', async () => {
@@ -400,5 +422,262 @@ describe('a title draft open when Obsidian quits (LEV-230)', () => {
     expect(applyOver).not.toHaveBeenCalled();
     expect(mounted.source()).toBe(SOURCE);
     expect(mounted.editor()).toBeNull();
+  });
+});
+
+/**
+ * LEV-240: a draft the next load could not write was dropped from the entry as its Notice showed, the note's text it
+ * held (the only copy, when the note was left empty by a write cut off as the page went) with it. Now only a draft
+ * written, or one the note has already, leaves the entry; any other stays as it was kept, is tried again at every load,
+ * and its Notice says what is kept and how to save it to a separate file. The rows are the ways a draft is not written.
+ */
+describe('a kept draft that could not be written (LEV-240)', () => {
+  const keptOf = (app: HarnessApp): unknown => app.loadLocalStorage(EXIT_DRAFTS_KEY);
+
+  /** F2 on 「子ノード」, `title` typed, then `pagehide`: the vault and what the page kept. */
+  async function keep(title: string): Promise<{ mounted: MountedMapView; owner: Component; kept: unknown[] }> {
+    const { mounted, owner } = await draft(title);
+    window.dispatchEvent(new Event('pagehide'));
+    const kept = mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY) as unknown[];
+    if (!Array.isArray(kept) || kept.length !== 1) throw new Error('pagehide did not keep the draft');
+    return { mounted, owner, kept };
+  }
+
+  it('keeps a draft whose node changed meanwhile as it was, with its note text, and says so', async () => {
+    const { mounted, owner, kept } = await keep('間に変わったノードの下書き');
+    const changed = SOURCE.replace('  - 子ノード\n', '  - 子ノード（外で）\n');
+    mounted.app.put(PATH, changed);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(changed);
+    expect(keptOf(app)).toEqual(kept);
+    expect((kept[0] as { source?: string }).source).toBe(SOURCE);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '間に変わったノードの下書き', PATH, t().exitNoteChanged)]);
+  });
+
+  // The shape s2-m1 of the investigation left (REPORT.md): the note emptied by a write cut off as the page went.
+  it('keeps the draft and the note text it was planned on when the note was left empty', async () => {
+    const { mounted, owner, kept } = await keep('空になったノートの下書き');
+    mounted.app.put(PATH, '');
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe('');
+    expect(keptOf(app)).toEqual(kept);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '空になったノートの下書き', PATH, t().exitNoteChanged)]);
+  });
+
+  it('keeps a draft that could not be planned (refused) and says only its title and reason are kept', async () => {
+    const { mounted, input, owner } = await draft('計画できなかった下書き');
+    const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');
+    mounted.app.put(PATH, external);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await mounted.settle();
+    mounted.key(input, 'Enter');
+    await mounted.settle();
+    window.dispatchEvent(new Event('pagehide'));
+    const kept = mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY);
+    expect(kept).toEqual([expect.objectContaining({ refused: t().draftChanged })]);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(external);
+    expect(keptOf(app)).toEqual(kept);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '計画できなかった下書き', PATH, t().draftChanged)]);
+  });
+
+  it('keeps a draft whose note is gone', async () => {
+    const { mounted, owner, kept } = await keep('消えたノートに残る下書き');
+    owner.unload();
+    mounted.view.containerEl.remove();
+    const app = new HarnessApp();
+    await loadAgain(app);
+    expect(keptOf(app)).toEqual(kept);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '消えたノートに残る下書き', PATH, t().exitNoteGone)]);
+  });
+
+  it('keeps a draft kept for more than a day, its time unchanged, without writing it', async () => {
+    const { mounted, owner, kept } = await keep('一日を過ぎて残る下書き');
+    const old = [{ ...(kept[0] as object), at: Date.now() - 2 * 24 * 60 * 60 * 1000 }];
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, old);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(SOURCE);
+    expect(keptOf(app)).toEqual(old);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '一日を過ぎて残る下書き', PATH, t().exitDraftExpired)]);
+  });
+
+  it('keeps a draft whose write the store refused', async () => {
+    const { mounted, owner, kept } = await keep('書き込みを拒否された下書き');
+    const app = await reload(mounted, owner, (_app, store) => {
+      vi.spyOn(store, 'applyOver').mockRejectedValue(new Error('書き込みが拒否されました。'));
+    });
+    expect(noteOf(app)).toBe(SOURCE);
+    expect(keptOf(app)).toEqual(kept);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '書き込みを拒否された下書き', PATH, '書き込みが拒否されました。')]);
+  });
+
+  it('says the note text is not kept for a draft kept without it', async () => {
+    const { mounted, owner, kept } = await keep('原文なしで残る下書き');
+    const bare = { ...(kept[0] as object) } as { source?: string };
+    delete bare.source;
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [bare]);
+    const changed = SOURCE.replace('- 別のノード\n', '- 再読込の間に足した\n');
+    mounted.app.put(PATH, changed);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(changed);
+    expect(keptOf(app)).toEqual([bare]);
+    expect(Notice.log).toEqual([notWritten('exitKeptEdits', '原文なしで残る下書き', PATH, t().exitNoteChanged)]);
+  });
+
+  it('tries the kept draft again at the next load, and says so again while it cannot be written', async () => {
+    const { mounted, owner, kept } = await keep('次の読み込みで入る下書き');
+    owner.unload();
+    mounted.view.containerEl.remove();
+    const app = new HarnessApp();
+    await loadAgain(app);
+    await loadAgain(app);
+    const notice = notWritten('exitKeptSource', '次の読み込みで入る下書き', PATH, t().exitNoteGone);
+    expect(Notice.log).toEqual([notice, notice]);
+    expect(keptOf(app)).toEqual(kept);
+    app.put(PATH, SOURCE);
+    await loadAgain(app);
+    expect(noteOf(app)).toBe(renamed('次の読み込みで入る下書き'));
+    expect(keptOf(app)).toBeNull();
+    expect(Notice.log).toEqual([notice, notice]);
+  });
+
+  it('drops a written draft and keeps one that was not, in the same entry', async () => {
+    const { mounted, owner, kept } = await keep('入る下書き');
+    const other = { path: 'Fixtures/other.md', title: '入らない下書き', at: Date.now(), refused: 'x' };
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [other, ...kept]);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('入る下書き'));
+    expect(keptOf(app)).toEqual([other]);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '入らない下書き', 'Fixtures/other.md', 'x')]);
+  });
+
+  it('drops a draft the note has already', async () => {
+    const { mounted, owner } = await keep('入っていた下書き');
+    mounted.app.put(PATH, renamed('入っていた下書き'));
+    const app = await reload(mounted, owner);
+    expect(keptOf(app)).toBeNull();
+    expect(Notice.log).toEqual([]);
+  });
+
+  // A page that sends pagehide and is kept after all adds its drafts while the earlier ones are being written.
+  it('keeps a draft added to the entry while another was being written', async () => {
+    const { mounted, owner, kept } = await keep('書いている間の下書き');
+    const added = { path: 'Fixtures/other.md', title: '間に足された下書き', at: Date.now(), refused: 'y' };
+    const app = await reload(mounted, owner, (vault, store) => {
+      const applyOver = store.applyOver.bind(store);
+      vi.spyOn(store, 'applyOver').mockImplementation(async (...args: Parameters<DocumentStore['applyOver']>) => {
+        vault.saveLocalStorage(EXIT_DRAFTS_KEY, [...kept, added]);
+        return applyOver(...args);
+      });
+    });
+    expect(noteOf(app)).toBe(renamed('書いている間の下書き'));
+    expect(keptOf(app)).toEqual([added]);
+  });
+
+  it('does not say the draft is kept when the entry could not be written', async () => {
+    const { mounted, owner, kept } = await keep('残せたか分からない下書き');
+    const changed = SOURCE.replace('  - 子ノード\n', '  - 子ノード（外で）\n');
+    mounted.app.put(PATH, changed);
+    const app = await reload(mounted, owner, vault => {
+      vi.spyOn(vault, 'saveLocalStorage').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+    });
+    expect(noteOf(app)).toBe(changed);
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toEqual(kept);
+    expect(Notice.log).toEqual([notWritten('exitKeepUnconfirmed', '残せたか分からない下書き', PATH, t().exitNoteChanged)]);
+    expect(Notice.log[0]).not.toContain('残してあります');
+  });
+
+  // What each Notice says is kept, and the command it names, read off the Notices a load shows (not the table).
+  it('names the rescue command and what is kept in the Notice of each kind of draft', async () => {
+    const at = Date.now();
+    const edits = [{ from: 0, to: 1, text: 'a' }];
+    const app = new HarnessApp();
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [
+      { path: 'Fixtures/a.md', title: 'a', at, before: '1:x', after: '1:y', edits, source: 'b' },
+      { path: 'Fixtures/b.md', title: 'b', at, before: '1:x', after: '1:y', edits },
+      { path: 'Fixtures/c.md', title: 'c', at, refused: 'x' },
+    ]);
+    await loadAgain(app);
+    expect(Notice.log).toHaveLength(3);
+    for (const notice of Notice.log) expect(notice).toContain('コマンド「保存できなかった下書きを救出」');
+    expect(Notice.log[0]).toContain('入力と元の原文は残してあります');
+    expect(Notice.log[1]).toContain('入力中の題名と変更内容は残してありますが、ノートの原文は保存されていないため、本文全体は復元できません。');
+    expect(Notice.log[2]).toContain('入力中の題名と失敗理由を残しています。ノートの原文は保存されていないため、本文全体は復元できません。');
+  });
+
+  // Second independent review (Info): the helper above added a space after an empty reason, where the Notice adds none.
+  it('adds nothing for an empty reason, as the helper expects', async () => {
+    const app = new HarnessApp();
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: '理由のない下書き', at: Date.now(), refused: '' }]);
+    await loadAgain(app);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '理由のない下書き', PATH, '')]);
+    expect(Notice.log[0]).toContain('書き込めませんでした。入力中の題名と失敗理由');
+  });
+
+  // Independent review of 2a0eedb (L4): a space came after 「。」 between the reason and what is kept.
+  it('puts no space after a Japanese full stop, and no double space in English when the reason is empty', async () => {
+    const { mounted, owner } = await keep('句点の下書き');
+    mounted.app.put(PATH, '');
+    await reload(mounted, owner);
+    expect(Notice.log).toEqual([`再読込・終了のときに ${PATH} で編集していた「句点の下書き」を書き込めませんでした。その間にノートが変わりました。入力と元の原文は残してあります。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`]);
+    Notice.log.length = 0;
+    setLanguage('en');
+    try {
+      const app = new HarnessApp();
+      app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: 'a', at: Date.now(), refused: '' }]);
+      await loadAgain(app);
+      expect(Notice.log).toHaveLength(1);
+      expect(Notice.log[0]).not.toContain('  ');
+      expect(Notice.log[0]).toContain('reloaded or quit. The title you typed');
+      // Second independent review: a reason ending in 「。」 was run into the next sentence in the English UI.
+      Notice.log.length = 0;
+      app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: 'a', at: Date.now(), refused: '日本語の理由。' }]);
+      await loadAgain(app);
+      expect(Notice.log).toHaveLength(1);
+      expect(Notice.log[0]).toContain('reloaded or quit. 日本語の理由。 The title you typed');
+    } finally { setLanguage('ja'); }
+  });
+
+  // Review 1: pageshow and the layout's readiness both apply in one load; the Notice that stays was shown twice.
+  it('reports a kept draft once per load though it is applied again in the same load', async () => {
+    const { mounted, owner } = await keep('一度だけ知らせる下書き');
+    owner.unload();
+    mounted.view.containerEl.remove();
+    const app = new HarnessApp();
+    await loadAgain(app);
+    window.dispatchEvent(new Event('pageshow'));
+    await rounds();
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '一度だけ知らせる下書き', PATH, t().exitNoteGone)]);
+  });
+
+  // Review 1: drafts not written were written back one by one, the whole entry each time.
+  it('writes the entry back once for the drafts not written', async () => {
+    const app = new HarnessApp();
+    const drafts = [1, 2, 3].map(index => ({ path: `Fixtures/gone-${index}.md`, title: `下書き${index}`, at: Date.now(), refused: 'x' }));
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, drafts);
+    const save = vi.spyOn(app, 'saveLocalStorage');
+    await loadAgain(app);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(keptOf(app)).toEqual(drafts);
+    expect(Notice.log).toHaveLength(3);
+  });
+
+  // Review 1: drafts were told apart by every field, so one a pagehide kept again without its note text (storage short)
+  // was neither taken out once written nor found kept.
+  it('tells a draft kept again without its note text meanwhile from the others', async () => {
+    const { mounted, owner, kept } = await keep('原文を外されても入る下書き');
+    const gone = { ...(kept[0] as object), path: 'Fixtures/gone.md', title: '原文を外されて残る下書き' } as { source?: string };
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [...kept, gone]);
+    const bare = (items: unknown[]): unknown[] => items.map(item => { const copy = { ...(item as object) } as { source?: string }; delete copy.source; return copy; });
+    const app = await reload(mounted, owner, (vault, store) => {
+      const applyOver = store.applyOver.bind(store);
+      vi.spyOn(store, 'applyOver').mockImplementation(async (...args: Parameters<DocumentStore['applyOver']>) => {
+        vault.saveLocalStorage(EXIT_DRAFTS_KEY, bare([...kept, gone]));
+        return applyOver(...args);
+      });
+    });
+    expect(noteOf(app)).toBe(renamed('原文を外されても入る下書き'));
+    expect(keptOf(app)).toEqual(bare([gone]));
+    expect(Notice.log).toEqual([notWritten('exitKeptEdits', '原文を外されて残る下書き', 'Fixtures/gone.md', t().exitNoteGone)]);
   });
 });

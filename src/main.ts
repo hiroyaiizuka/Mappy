@@ -15,6 +15,7 @@ import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
 import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
+import { rescueExitDrafts } from "./ui/exit-draft-recovery";
 import { installExitDrafts } from "./ui/exit-drafts";
 import { HOVER_SOURCE } from "./ui/link-preview";
 import { MapEmbeds } from "./ui/map-embed";
@@ -170,6 +171,11 @@ export default class MappyPlugin extends Plugin {
         if (!checking) this.run(() => map.convertToList(), t().formatFailed);
         return true;
       },
+    });
+    // A draft kept at a reload or quit that could not be written stays kept; this saves it to a separate file (LEV-240).
+    this.addCommand({
+      id: "rescue-exit-drafts", name: t().cmdRescueDrafts,
+      callback: () => { rescueExitDrafts(this.app); },
     });
     this.addRibbonIcon("git-fork", t().cmdOpen, () => {
       runRibbon(this.app, this.activeFile(), {
