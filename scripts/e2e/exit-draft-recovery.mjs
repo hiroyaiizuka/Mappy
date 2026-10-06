@@ -25,8 +25,9 @@
  *    still as the fault left it and the draft is still kept.
  * The case then takes its draft out of `mappy-exit-drafts` and deletes the files it made (not with `--keep`): each part
  * of the clean-up is tried on its own and a failure is recorded without stopping the rest; the folder goes only when
- * this run made it and it is empty, through the adapter's `rmdir` (`vault.delete` on the folder stopped with EISDIR on
- * Obsidian 1.13.7). A run left behind by an earlier one (this note emptied or cut, its draft kept, its map open, an
+ * this run made it and it is empty, through Node's `fs.promises.rmdir`, which removes an empty folder only
+ * (`vault.delete` and the adapter's `rmdir(…, false)` both stopped with EISDIR on Obsidian 1.13.7: the adapter's is
+ * `fs.promises.rm`, which takes a folder only when recursive; LEV-309's run). A run left behind by an earlier one (this note emptied or cut, its draft kept, its map open, an
  * empty folder) is taken up: setup closes this note's leaves and rewrites it; a folder that was there is left as it is.
  *
  * Usage: npm run harness:e2e:exit-draft-recovery -- [--cut] [--reload] [--json <out.json>] [--keep]
@@ -62,15 +63,17 @@ const SAVED = 'に保存しました。元のノートは変更していませ�
 const FAULT_KEY = 'mappy-e2e-exit-draft-fault';
 
 /**
- * Script (with `app`): removes `folder` through the adapter only when it is empty on disk; what it found. These script
- * builders use nothing outside themselves, so they can be checked without Obsidian by reading this file's text (not by
- * importing it: like every case, the file runs the case when loaded).
+ * Script (with `app`): removes `folder` only when it is empty on disk; what it found. Not the adapter's `rmdir`: on
+ * Obsidian 1.13.7 it is `fs.promises.rm(…, { recursive })`, which refuses a folder unless recursive (EISDIR), and
+ * recursive would take what came in after the listing; `fs.promises.rmdir` refuses a folder that is not empty.
+ * These script builders use nothing outside themselves, so they can be checked without Obsidian by reading this
+ * file's text (not by importing it: like every case, the file runs the case when loaded).
  */
 export const removeEmptyFolderScript = folder => `const adapter = app.vault.adapter;
   if (!(await adapter.exists(${JSON.stringify(folder)}))) return 'gone';
   const listed = await adapter.list(${JSON.stringify(folder)});
   if (listed.files.length > 0 || listed.folders.length > 0) return { kept: 'not empty', files: listed.files, folders: listed.folders };
-  await adapter.rmdir(${JSON.stringify(folder)}, false);
+  await require('fs').promises.rmdir(adapter.getFullPath(${JSON.stringify(folder)}));
   return 'removed';`;
 
 /** Script (with `app`): deletes the file at `path` if the vault has one there (a folder is not touched); what it did. */
