@@ -21,7 +21,12 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
 import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import { applyEdits } from '../../src/core/commands';
-import { textFingerprint } from '../../src/core/exit-drafts';
+import { textFingerprint, type ExitDraft } from '../../src/core/exit-drafts';
+import {
+  EXIT_BACKUP_LIMIT, appliedName, backupId, backupText, makeExitBackup, preparedName, readExitBackup, utf8Bytes,
+} from '../../src/core/exit-backup';
+import { ExitBackupStore, exitBackupFolder, type BackupAdapter } from '../../src/obsidian/exit-backup-store';
+import { rescueExitDrafts } from '../../src/ui/exit-draft-recovery';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
@@ -32,6 +37,51 @@ beforeAll(() => { installObsidianDom(); });
 const PATH = 'Fixtures/exit-draft.md';
 const SOURCE = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '- 別のノード', ''].join('\n');
 const renamed = (title: string, from = SOURCE): string => from.replace('  - 子ノード\n', `  - ${title}\n`);
+
+/** The plugin's folder, where the backups go (`exit-backups/`). */
+const PLUGIN = '.config/plugins/mappy';
+const BACKUPS = exitBackupFolder(PLUGIN);
+type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir';
+
+/**
+ * The disk under the plugin's folder, kept across a reload as the vault's files are, through the adapter's part the
+ * backups use (`HarnessApp` has no adapter). A row can make a step fail, and nothing on it is ever deleted.
+ */
+class Disk {
+  readonly files = new Map<string, string>();
+  readonly folders = new Set<string>([PLUGIN]);
+  readonly calls: string[] = [];
+  fault: (step: Step, path: string) => Error | null = () => null;
+  /** What a read gives back for a path holding `text`. */
+  readBack = (_path: string, text: string): string => text;
+  private run<T>(step: Step, path: string, body: () => T): Promise<T> {
+    this.calls.push(`${step} ${path}`);
+    const error = this.fault(step, path);
+    if (error) return Promise.reject(error);
+    try { return Promise.resolve(body()); } catch (thrown) { return Promise.reject(thrown instanceof Error ? thrown : new Error(String(thrown))); }
+  }
+  readonly adapter: BackupAdapter = {
+    exists: path => this.run('exists', path, () => this.files.has(path) || this.folders.has(path)),
+    stat: path => this.run('stat', path, () => this.folders.has(path) ? { type: 'folder' as const, ctime: 0, mtime: 0, size: 0 }
+      : this.files.has(path) ? { type: 'file' as const, ctime: 0, mtime: 0, size: utf8Bytes(this.files.get(path)!) } : null),
+    list: path => this.run('list', path, () => {
+      const under = (item: string) => item.startsWith(`${path}/`) && !item.slice(path.length + 1).includes('/');
+      return { files: [...this.files.keys()].filter(under), folders: [...this.folders].filter(under) };
+    }),
+    read: path => this.run('read', path, () => { const text = this.files.get(path); if (text === undefined) throw new Error('ENOENT'); return this.readBack(path, text); }),
+    write: (path, data) => this.run('write', path, () => { this.files.set(path, data); }),
+    rename: (from, to) => this.run('rename', from, () => {
+      const text = this.files.get(from);
+      if (text === undefined || this.files.has(to)) throw new Error(`rename ${from} ${to}`);
+      this.files.delete(from);
+      this.files.set(to, text);
+    }),
+    mkdir: path => this.run('mkdir', path, () => { this.folders.add(path); }),
+  };
+  /** The names in the backup folder. */
+  names(): string[] { return [...this.files.keys()].filter(path => path.startsWith(`${BACKUPS}/`)).map(path => path.slice(BACKUPS.length + 1)).sort(); }
+}
+let disk = new Disk();
 
 const owners: Component[] = [];
 afterEach(async () => {
@@ -45,16 +95,23 @@ afterEach(async () => {
   Notice.log.length = 0;
   window.localStorage.clear();
   document.body.replaceChildren();
+  disk = new Disk();
 });
 
-/** The plugin's part (src/main.ts): the handlers on the page, for the views open on it. */
-function install(app: HarnessApp, store: DocumentStore, views: () => readonly MindmapView[]): Component {
+/**
+ * The plugin's part (src/main.ts): the handlers on the page, for the views open on it, with the backups on `disk` (one
+ * store per load, as the plugin makes one, unless a row shares its own with the rescue command).
+ */
+function install(app: HarnessApp, store: DocumentStore, views: () => readonly MindmapView[], backups = new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6')): Component {
   const owner = new Component();
   owner.load();
   owners.push(owner);
-  installExitDrafts(owner as never, app.asApp<App>(), store, views);
+  idle = installExitDrafts(owner as never, app.asApp<App>(), store, backups, views);
   return owner;
 }
+
+/** When the pass the last `install` started is over (`installExitDrafts`'s answer). */
+let idle: () => Promise<void> = () => Promise.resolve();
 
 /** A map with F2 on 「子ノード」 and `title` typed, and the plugin's handlers installed for it. */
 async function draft(title: string, source = SOURCE): Promise<{ mounted: MountedMapView; input: HTMLTextAreaElement; owner: Component }> {
@@ -92,6 +149,9 @@ async function reload(mounted: MountedMapView, owner: Component, prepare?: (app:
 /** Enough turns of the event loop for the kept drafts to be applied. */
 async function rounds(): Promise<void> {
   for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+  // The backups' hashing and file steps (LEV-309) take turns of their own: the pass is waited for, not counted.
+  await idle();
+  for (let round = 0; round < 2; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
 }
 
 /** Another load of the plugin on the same vault (the next reload): the kept drafts are tried again. */
@@ -110,6 +170,9 @@ const noteOf = (app: HarnessApp): string => app.content(app.asApp<App>().vault.g
 const notWritten = (tail: 'exitKeptSource' | 'exitKeptEdits' | 'exitKeptRefused' | 'exitKeepUnconfirmed', title: string, note: string, reason: string): string =>
   `${t().exitDraftNotWritten(title, note)}${reason}${reason === '' || reason.endsWith('。') ? '' : ' '}${tail === 'exitKeepUnconfirmed' ? t().exitKeepUnconfirmed : t()[tail](t().cmdRescueDrafts)}`;
 
+/** The Notice a kept draft's write shows once, with the backup it left first (LEV-309). */
+const wrote = (title: string, note = PATH): string => t().exitWrittenWithBackup(title, note, t().cmdRescueDrafts);
+
 /** Obsidian's `Tasks` (`workspace.on('quit')`): what a handler adds, awaited before the window closes. */
 class Tasks {
   readonly promises: Promise<unknown>[] = [];
@@ -124,7 +187,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     const { mounted, owner } = await draft('再読込の前の下書き');
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('再読込の前の下書き'));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('再読込の前の下書き')]);
   });
 
   it('writes nothing at pagehide itself (a write started there can empty the note)', async () => {
@@ -141,7 +204,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('へんかんちゅう'));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('へんかんちゅう')]);
   });
 
   it('keeps line breaks typed in the draft as the save writes them', async () => {
@@ -162,7 +225,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(mounted.view.containerEl.querySelector('.mappy-inline-error')?.textContent ?? '').toContain('もう一度確定すると');
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('再読込のあとの下書き', other));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('再読込のあとの下書き')]);
   });
 
   it('leaves the note and says which draft was not saved when its node changed outside the map', async () => {
@@ -188,7 +251,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.put(PATH, changed);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('間に変わったノートの下書き', changed));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('間に変わったノートの下書き')]);
   });
 
   it('leaves the note and says so when the node itself changed while the window reloaded', async () => {
@@ -210,7 +273,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     silent.mockRestore();
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('読む前に再読込した下書き', other));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('読む前に再読込した下書き')]);
   });
 
   // Review 1: two maps of one note each with a draft; the first applied made the second's note stale.
@@ -229,7 +292,8 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     second.view.containerEl.remove();
     const app = await reload(first, owner);
     expect(noteOf(app)).toBe(renamed('一つ目のマップの下書き').replace('- 別のノード\n', '- 二つ目のマップの下書き\n'));
-    expect(Notice.log).toEqual([]);
+    // Only the second map's draft is kept: F2 in it took the focus, and the first's blur saved its draft (LEV-311).
+    expect(Notice.log).toEqual([wrote('二つ目のマップの下書き')]);
   });
 
   // LEV-309, review 1: drafts of a note kept at once (a draft blur does not save, an error row's or one mid IME
@@ -253,7 +317,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     await loadAgain(app);
     expect(noteOf(app)).toBe(applyEdits(bare, edits.flat()));
     expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual(edits.map((_planned, index) => wrote(`下書き${index}`)));
   });
 
   // LEV-309, review 3: the first draft was written at an earlier load and the page went before the entry let it go. The
@@ -273,7 +337,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     await loadAgain(app);
     expect(noteOf(app)).toBe(applyEdits(bare, [...first, ...second]));
     expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('二つ目')]);
   });
 
   // Review 1: a page kept for coming back to (`persisted`) is not going; its draft stays open.
@@ -293,7 +357,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, earlier);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('二度目の再読込の下書き'));
-    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '前のページの下書き', 'Fixtures/other.md', 'x')]);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '前のページの下書き', 'Fixtures/other.md', 'x'), wrote('二度目の再読込の下書き')]);
   });
 
   // Review 2: a draft kept for long (Mappy disabled for weeks, the note worked on elsewhere) was written unasked.
@@ -317,7 +381,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     });
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('容量の足りない下書き'));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('容量の足りない下書き')]);
   });
 
   // Review 2: a page that sends pagehide and is kept after all (a mobile WebView) lost the open draft until some later load.
@@ -383,7 +447,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     vi.spyOn(app.workspace, 'onLayoutReady').mockImplementation(callback => { ready = callback; });
     const owner = new Component();
     owner.load();
-    installExitDrafts(owner as never, app.asApp<App>(), new DocumentStore(app.asApp<App>()), () => []);
+    installExitDrafts(owner as never, app.asApp<App>(), new DocumentStore(app.asApp<App>()), new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6'), () => []);
     owner.unload();
     ready();
     for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
@@ -429,18 +493,20 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     install(app, new DocumentStore(app.asApp<App>()), () => []);
     for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
     expect(noteOf(app)).toBe(SOURCE);
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('一度だけの下書き')]);
   });
 
   it('ignores what it cannot read as kept drafts', async () => {
     const app = new HarnessApp();
     app.put(PATH, SOURCE);
-    app.saveLocalStorage(EXIT_DRAFTS_KEY, [{ path: PATH, title: 1 }, 'x', { path: PATH, title: 'a', before: 'b', after: 'c', edits: [{ from: 'x' }] }]);
+    const unreadable = [{ path: PATH, title: 1 }, 'x', { path: PATH, title: 'a', before: 'b', after: 'c', edits: [{ from: 'x' }] }];
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, unreadable);
     install(app, new DocumentStore(app.asApp<App>()), () => []);
     for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
     expect(noteOf(app)).toBe(SOURCE);
     expect(Notice.log).toEqual([]);
-    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
+    // LEV-309: left as it is (it was taken out before), so nothing it may hold goes unasked.
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toEqual(unreadable);
   });
 });
 
@@ -454,7 +520,7 @@ describe('a title draft open when Obsidian quits (LEV-230)', () => {
     expect(tasks.isEmpty()).toBe(true);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('終了の前の下書き'));
-    expect(Notice.log).toEqual([]);
+    expect(Notice.log).toEqual([wrote('終了の前の下書き')]);
   });
 
   // On a quit the window's blur comes after `unload` (artifacts/lev-230), and the draft's blur save (LEV-216) started a
@@ -577,7 +643,7 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     });
     expect(noteOf(app)).toBe(SOURCE);
     expect(keptOf(app)).toEqual(kept);
-    expect(Notice.log).toEqual([notWritten('exitKeptSource', '書き込みを拒否された下書き', PATH, '書き込みが拒否されました。')]);
+    expect(Notice.log).toEqual([notWritten('exitKeptSource', '書き込みを拒否された下書き', PATH, `書き込みが拒否されました。${t().exitBackupLeftPrepared}`)]);
   });
 
   it('says the note text is not kept for a draft kept without it', async () => {
@@ -607,7 +673,7 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     await loadAgain(app);
     expect(noteOf(app)).toBe(renamed('次の読み込みで入る下書き'));
     expect(keptOf(app)).toBeNull();
-    expect(Notice.log).toEqual([notice, notice]);
+    expect(Notice.log).toEqual([notice, notice, wrote('次の読み込みで入る下書き')]);
   });
 
   it('drops a written draft and keeps one that was not, in the same entry', async () => {
@@ -617,7 +683,7 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(renamed('入る下書き'));
     expect(keptOf(app)).toEqual([other]);
-    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '入らない下書き', 'Fixtures/other.md', 'x')]);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '入らない下書き', 'Fixtures/other.md', 'x'), wrote('入る下書き')]);
   });
 
   it('drops a draft the note has already', async () => {
@@ -747,6 +813,363 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     });
     expect(noteOf(app)).toBe(renamed('原文を外されても入る下書き'));
     expect(keptOf(app)).toEqual(bare([gone]));
-    expect(Notice.log).toEqual([notWritten('exitKeptEdits', '原文を外されて残る下書き', 'Fixtures/gone.md', t().exitNoteGone)]);
+    expect(Notice.log).toEqual([wrote('原文を外されても入る下書き'), notWritten('exitKeptEdits', '原文を外されて残る下書き', 'Fixtures/gone.md', t().exitNoteGone)]);
+  });
+});
+
+/**
+ * LEV-309, the owner's decision of 2026-10-06: every write of a kept draft backs the whole note up first, in the
+ * plugin's folder, read back before the note is written (S1 the temporary file, S2 the prepared one read back, S3 the
+ * write, S4 the backup marked applied, S5 the draft out of the entry); a note shorter than the one the draft was
+ * planned on is not written at all; and what the folder holds at the next load decides what may be written. The rows
+ * are what the note became (a cut that ends like the note, longer, shorter, a cut the old guards saw) × each step
+ * failing or stopped × what the folder holds (temporary, broken, unknown files, a file in its place, an earlier
+ * backup of the draft) × the size of the folder.
+ */
+describe('a backup before each write of a kept draft (LEV-309)', () => {
+  const keptOf = (app: HarnessApp): unknown => app.loadLocalStorage(EXIT_DRAFTS_KEY);
+  /** A map note whose last nodes can be moved and cut. */
+  const NOTE = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '- 一', '- メモ', '- 別', '- メモ', ''].join('\n');
+  const renameIn = (source: string, title: string) => [{ from: source.indexOf('子ノード'), to: source.indexOf('子ノード') + 4, text: title }];
+  /** A draft as `pagehide` keeps it: renaming 「子ノード」 in `source` to `title`. */
+  const keptDraft = (title: string, source = NOTE, withSource = true): ExitDraft => {
+    const edits = renameIn(source, title);
+    return {
+      path: PATH, title, at: Date.now(), before: textFingerprint(source), after: textFingerprint(applyEdits(source, edits)), edits,
+      ...(withSource ? { source } : {}),
+    };
+  };
+  const recordPath = async (draft: ExitDraft, kind: 'prepared' | 'applied'): Promise<string> =>
+    `${BACKUPS}/${(kind === 'applied' ? appliedName : preparedName)(await backupId(draft))}`;
+  /** A load of the plugin on `app` (the note there as a row put it), the store's writes marked in `disk.calls`. */
+  async function load(app: HarnessApp, options: { refuse?: Error; backups?: ExitBackupStore } = {}): Promise<void> {
+    const store = new DocumentStore(app.asApp<App>());
+    const applyOver = store.applyOver.bind(store);
+    vi.spyOn(store, 'applyOver').mockImplementation(async (...args: Parameters<DocumentStore['applyOver']>) => {
+      disk.calls.push('applyOver');
+      if (options.refuse) throw options.refuse;
+      return applyOver(...args);
+    });
+    install(app, store, () => [], options.backups);
+    await rounds();
+  }
+  /** A vault holding the note as `current`, with `drafts` kept. */
+  const vaultWith = (current: string, drafts: unknown[]): HarnessApp => {
+    const app = new HarnessApp();
+    app.put(PATH, current);
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, drafts);
+    return app;
+  };
+  const changed = (title: string, reason: string, tail: 'exitKeptSource' | 'exitKeptEdits' = 'exitKeptSource'): string => notWritten(tail, title, PATH, reason);
+
+  // Acceptance 1: what a write cut off can leave and the earlier guards let through, the note shorter than it was.
+  it.each([
+    ['the last node moved up, cut after it', NOTE.replace('- 別\n- メモ\n', '- メモ\n- 別\n').slice(0, NOTE.replace('- 別\n- メモ\n', '- メモ\n- 別\n').lastIndexOf('- 別'))],
+    ['a line above changed, cut just after a line the same as the last one', NOTE.replace('- 一\n', '- 一つ\n').slice(0, NOTE.replace('- 一\n', '- 一つ\n').indexOf('- 別'))],
+  ])('does not write a shorter note (%s): the draft and its note text stay, nothing is backed up, and it says so', async (_shape, current) => {
+    expect(current.length).toBeLessThan(NOTE.length);
+    const draft = keptDraft('短くなったノートの下書き');
+    const app = vaultWith(current, [draft]);
+    await load(app);
+    expect(noteOf(app)).toBe(current);
+    expect(keptOf(app)).toEqual([draft]);
+    expect(disk.names()).toEqual([]);
+    expect(Notice.log).toEqual([changed('短くなったノートの下書き', t().exitNoteChanged)]);
+  });
+
+  // Acceptance 2: the same shape, but longer than the note was: written, after a backup read back first.
+  it('writes a cut it cannot tell when the note is longer, after a backup of it read back, and lists the backup for the rescue', async () => {
+    const written = NOTE.replace('- 一\n', '- 一つめの長い長い長い長い名前に変えていた\n');
+    const current = written.slice(0, written.indexOf('- 別'));
+    expect(current.length).toBeGreaterThanOrEqual(NOTE.length);
+    const draft = keptDraft('長くなったノートの下書き');
+    const app = vaultWith(current, [draft]);
+    await load(app);
+    const id = await backupId(draft);
+    expect(noteOf(app)).toBe(current.replace('子ノード', '長くなったノートの下書き'));
+    expect(keptOf(app)).toBeNull();
+    expect(disk.names()).toEqual([appliedName(id)]);
+    const backup = readExitBackup(disk.files.get(await recordPath(draft, 'applied'))!);
+    expect(backup?.note.before).toBe(current);
+    // The text the cut lost is in the backup, with the draft as it was kept.
+    expect(backup?.draft.source).toBe(NOTE);
+    const prepared = await recordPath(draft, 'prepared');
+    expect(disk.calls.indexOf(`read ${prepared}`)).toBeGreaterThan(disk.calls.findIndex(call => call.startsWith('write ') && call.includes('.tmp-')));
+    expect(disk.calls.indexOf(`read ${prepared}`)).toBeLessThan(disk.calls.indexOf('applyOver'));
+    expect(disk.calls.indexOf(`rename ${prepared}`)).toBeGreaterThan(disk.calls.indexOf('applyOver'));
+    expect(Notice.log).toEqual([wrote('長くなったノートの下書き')]);
+    await rescueExitDrafts(app.asApp<App>(), new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6'));
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item'));
+    expect(rows.map(row => row.dataset.mappyRescue)).toEqual(['applied']);
+    expect(rows[0]?.querySelector('.setting-item-name')?.textContent).toBe(PATH);
+  });
+
+  // Acceptance 3: the cut LEV-309's first guards see, and a deletion the person made, are not written either.
+  it('does not write a cut the earlier guards see, nor over a line the person took out', async () => {
+    const putIn = NOTE.replace('- 別\n', '- 足しかけた行\n- 別\n').slice(0, -2);
+    expect(putIn.length).toBeGreaterThanOrEqual(NOTE.length);
+    const deleted = NOTE.replace('- 一\n', '');
+    for (const current of [putIn, deleted]) {
+      disk = new Disk();
+      Notice.log.length = 0;
+      const draft = keptDraft('止まる下書き');
+      const app = vaultWith(current, [draft]);
+      await load(app);
+      expect(noteOf(app)).toBe(current);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual([]);
+      expect(Notice.log).toEqual([changed('止まる下書き', t().exitNoteChanged)]);
+    }
+  });
+
+  // Acceptance 4: a draft kept without the note text (a long note, or kept by an earlier version) is backed up too,
+  // the whole note as it is, before it is written on the note it was planned on; without the backup it is not written.
+  it('backs up the whole note before writing a draft kept without its note text, and does not write it without the backup', async () => {
+    const draft = keptDraft('原文なしの下書き', NOTE, false);
+    const app = vaultWith(NOTE, [draft]);
+    await load(app);
+    expect(noteOf(app)).toBe(NOTE.replace('子ノード', '原文なしの下書き'));
+    const backup = readExitBackup(disk.files.get(await recordPath(draft, 'applied'))!);
+    expect(backup?.note.before).toBe(NOTE);
+    expect(backup?.draft.source).toBeUndefined();
+    disk = new Disk();
+    Notice.log.length = 0;
+    disk.fault = (step, path) => step === 'write' && path.includes('.tmp-') ? new Error('ENOSPC: no space left on device') : null;
+    const blocked = vaultWith(NOTE, [draft]);
+    await load(blocked);
+    expect(noteOf(blocked)).toBe(NOTE);
+    expect(keptOf(blocked)).toEqual([draft]);
+    expect(disk.calls).not.toContain('applyOver');
+    expect(Notice.log).toEqual([changed('原文なしの下書き', t().exitBackupNotSaved('ENOSPC: no space left on device'), 'exitKeptEdits')]);
+  });
+
+  // Acceptance 5: each step failing or stopped. Nothing is written twice, and nothing is deleted.
+  describe('a step that fails or stops', () => {
+    const title = '途中で止まる下書き';
+
+    it('S1: the temporary file cannot be written: the note is not written', async () => {
+      disk.fault = (step, path) => step === 'write' && path.includes('.tmp-') ? new Error('EACCES: permission denied') : null;
+      const draft = keptDraft(title);
+      const app = vaultWith(NOTE, [draft]);
+      await load(app);
+      expect(noteOf(app)).toBe(NOTE);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.calls).not.toContain('applyOver');
+      expect(Notice.log).toEqual([changed(title, t().exitBackupNotSaved('EACCES: permission denied'))]);
+    });
+
+    it('S2: the temporary file is left (renamed or not), and the next load writes nothing at all', async () => {
+      disk.fault = (step, path) => step === 'rename' && path.includes('.tmp-') ? new Error('EPERM') : null;
+      const draft = keptDraft(title);
+      const app = vaultWith(NOTE, [draft]);
+      await load(app);
+      expect(noteOf(app)).toBe(NOTE);
+      const left = disk.names();
+      expect(left).toHaveLength(1);
+      expect(left[0]).toMatch(/\.tmp-[0-9a-f]{12}\.json$/u);
+      disk.fault = () => null;
+      Notice.log.length = 0;
+      await load(app);
+      expect(noteOf(app)).toBe(NOTE);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual(left);
+      expect(Notice.log).toEqual([changed(title, t().exitBackupUnverified(BACKUPS))]);
+    });
+
+    it('S2: the prepared backup reads back changed: the note is not written, and the next load does not write it either', async () => {
+      disk.readBack = (path, text) => path.endsWith('.prepared.json') ? text.replace('子ノード', '子ノーX') : text;
+      const draft = keptDraft(title);
+      const app = vaultWith(NOTE, [draft]);
+      await load(app);
+      expect(noteOf(app)).toBe(NOTE);
+      expect(Notice.log).toEqual([changed(title, t().exitBackupMismatch)]);
+      disk.readBack = (_path, text) => text;
+      Notice.log.length = 0;
+      await load(app);
+      expect(noteOf(app)).toBe(NOTE);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual([preparedName(await backupId(draft))]);
+      expect(Notice.log).toEqual([changed(title, t().exitBackupPending)]);
+    });
+
+    it('S3: the store refuses the write: the prepared backup and the draft stay, and the next load does not write it', async () => {
+      const draft = keptDraft(title);
+      const app = vaultWith(NOTE, [draft]);
+      await load(app, { refuse: new Error('書き込みが拒否されました。') });
+      expect(noteOf(app)).toBe(NOTE);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual([preparedName(await backupId(draft))]);
+      expect(Notice.log).toEqual([changed(title, `書き込みが拒否されました。${t().exitBackupLeftPrepared}`)]);
+      Notice.log.length = 0;
+      await load(app);
+      expect(noteOf(app)).toBe(NOTE);
+      expect(disk.calls.filter(call => call === 'applyOver')).toHaveLength(1);
+      expect(Notice.log).toEqual([changed(title, t().exitBackupPending)]);
+    });
+
+    it('S4: the backup cannot be marked applied: written once, the draft stays, and it is not written again', async () => {
+      disk.fault = (step, path) => step === 'rename' && path.endsWith('.prepared.json') ? new Error('EPERM') : null;
+      const draft = keptDraft(title);
+      const app = vaultWith(NOTE, [draft]);
+      await load(app);
+      const once = NOTE.replace('子ノード', title);
+      expect(noteOf(app)).toBe(once);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual([preparedName(await backupId(draft))]);
+      expect(Notice.log).toEqual([t().exitWrittenNotMarked(title, PATH, t().cmdRescueDrafts)]);
+      disk.fault = () => null;
+      Notice.log.length = 0;
+      await load(app);
+      expect(noteOf(app)).toBe(once);
+      expect(disk.calls.filter(call => call === 'applyOver')).toHaveLength(1);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(Notice.log).toEqual([changed(title, t().exitBackupPending)]);
+    });
+
+    it('S5: the draft cannot be taken out of the entry: the next load finds the applied backup and writes nothing', async () => {
+      const draft = keptDraft(title);
+      const app = vaultWith(NOTE, [draft]);
+      const save = app.saveLocalStorage.bind(app);
+      const refused = vi.spyOn(app, 'saveLocalStorage').mockImplementation(() => { throw new DOMException('denied', 'SecurityError'); });
+      await load(app);
+      const once = NOTE.replace('子ノード', title);
+      expect(noteOf(app)).toBe(once);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual([appliedName(await backupId(draft))]);
+      refused.mockImplementation(save);
+      Notice.log.length = 0;
+      await load(app);
+      expect(noteOf(app)).toBe(once);
+      expect(disk.calls.filter(call => call === 'applyOver')).toHaveLength(1);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(Notice.log).toEqual([changed(title, t().exitBackupAlreadyApplied)]);
+    });
+  });
+
+  // Acceptance 6: the folder's size, every file counted (the store's rows hold the edges: tests/obsidian).
+  it('stops before the write when the backup would take the folder over 10 MiB, deletes nothing, and uses no more localStorage', async () => {
+    // An applied backup of another draft, 100 bytes short of the limit: this draft's backup takes more than that.
+    const other = keptDraft('前の下書き') as Exclude<ExitDraft, { refused: string }>;
+    const fill = async (length: number) => backupText(await makeExitBackup({
+      draft: other, path: PATH, before: 'x'.repeat(length), after: 'y', edits: other.edits, mappyVersion: '0.4.6', createdAt: 1,
+    }));
+    const target = EXIT_BACKUP_LIMIT - 100;
+    let length = target - utf8Bytes(await fill(0));
+    let text = await fill(length);
+    length += target - utf8Bytes(text);
+    text = await fill(length);
+    expect(utf8Bytes(text)).toBe(target);
+    disk.folders.add(BACKUPS);
+    disk.files.set(`${BACKUPS}/${appliedName(await backupId(other))}`, text);
+    const files = new Map(disk.files);
+    const draft = keptDraft('入らない下書き');
+    const app = vaultWith(NOTE, [draft]);
+    const keys = Object.keys(window.localStorage).sort();
+    const entry = window.localStorage.getItem(`mappy-harness-${EXIT_DRAFTS_KEY}`);
+    await load(app);
+    await vi.waitFor(() => { expect(Notice.log).toHaveLength(1); }, { timeout: 20_000 });
+    expect(noteOf(app)).toBe(NOTE);
+    expect(disk.files).toEqual(files);
+    expect(disk.calls).not.toContain('applyOver');
+    expect(Notice.log).toEqual([changed('入らない下書き', t().exitBackupFull('10 MiB'))]);
+    expect(Object.keys(window.localStorage).sort()).toEqual(keys);
+    expect(window.localStorage.getItem(`mappy-harness-${EXIT_DRAFTS_KEY}`)).toBe(entry);
+  }, 30_000);
+
+  // Acceptance 7: what the folder holds that is not a backup, or a folder that cannot be read: nothing is written,
+  // in any note, and nothing is deleted.
+  it.each([
+    ['a temporary file', () => { disk.folders.add(BACKUPS); disk.files.set(`${BACKUPS}/${'a'.repeat(64)}.tmp-000000000000.json`, '{'); }],
+    ['a file that does not read', () => { disk.folders.add(BACKUPS); disk.files.set(`${BACKUPS}/${'b'.repeat(64)}.applied.json`, '{ broken'); }],
+    ['an unknown file', () => { disk.folders.add(BACKUPS); disk.files.set(`${BACKUPS}/memo.txt`, 'x'); }],
+    ['a file in the folder\'s place', () => { disk.files.set(BACKUPS, 'a file'); }],
+  ])('writes no draft when the backup folder holds %s', async (_case, put) => {
+    put();
+    const files = new Map(disk.files);
+    const drafts = [keptDraft('一つ目の止まる下書き'), { ...keptDraft('二つ目の止まる下書き'), path: 'Fixtures/other.md' }];
+    const app = vaultWith(NOTE, drafts);
+    app.put('Fixtures/other.md', NOTE);
+    await load(app);
+    expect(noteOf(app)).toBe(NOTE);
+    expect(app.content(app.asApp<App>().vault.getFileByPath('Fixtures/other.md')!)).toBe(NOTE);
+    expect(keptOf(app)).toEqual(drafts);
+    expect(disk.files).toEqual(files);
+    expect(disk.calls).not.toContain('applyOver');
+    expect(Notice.log).toEqual([changed('一つ目の止まる下書き', t().exitBackupUnverified(BACKUPS)),
+      notWritten('exitKeptSource', '二つ目の止まる下書き', 'Fixtures/other.md', t().exitBackupUnverified(BACKUPS))]);
+  });
+
+  // A draft that could not be planned is never written: what it says is its own reason, whatever the folder holds.
+  it('says the reason of a draft that could not be planned though the backup folder stops the writes', async () => {
+    disk.folders.add(BACKUPS);
+    disk.files.set(`${BACKUPS}/memo.txt`, 'x');
+    const refusedDraft = { path: PATH, title: '計画できなかった下書き', at: Date.now(), refused: '理由' };
+    const app = vaultWith(NOTE, [refusedDraft]);
+    await load(app);
+    expect(Notice.log).toEqual([notWritten('exitKeptRefused', '計画できなかった下書き', PATH, '理由')]);
+    expect(keptOf(app)).toEqual([refusedDraft]);
+  });
+
+  it('writes no draft when the backup folder cannot be listed', async () => {
+    disk.folders.add(BACKUPS);
+    disk.fault = step => step === 'list' ? new Error('EACCES') : null;
+    const draft = keptDraft('読めない保存先の下書き');
+    const app = vaultWith(NOTE, [draft]);
+    await load(app);
+    expect(noteOf(app)).toBe(NOTE);
+    expect(keptOf(app)).toEqual([draft]);
+    expect(Notice.log).toEqual([changed('読めない保存先の下書き', t().exitBackupUnlisted(BACKUPS))]);
+  });
+
+  // Acceptance 8: a backup of the same id that is not of this very draft, and a rescue reading while a load writes.
+  it('does not write a draft whose backup there is of another generation (kept again without its note text)', async () => {
+    const draft = keptDraft('世代の違う下書き');
+    const store = new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6');
+    await store.prepare(draft as never, PATH, NOTE, applyEdits(NOTE, renameIn(NOTE, '世代の違う下書き')), renameIn(NOTE, '世代の違う下書き'));
+    await store.markApplied(await backupId(draft));
+    const bare = { ...draft } as { source?: string };
+    delete bare.source;
+    const app = vaultWith(NOTE, [bare]);
+    await load(app);
+    expect(noteOf(app)).toBe(NOTE);
+    expect(keptOf(app)).toEqual([bare]);
+    expect(Notice.log).toEqual([changed('世代の違う下書き', t().exitBackupOtherGeneration, 'exitKeptEdits')]);
+  });
+
+  it('runs a rescue that reads the folder while a load writes one after the other, on the one chain', async () => {
+    const backups = new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6');
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const write = disk.adapter.write;
+    disk.adapter.write = async (path: string, data: string) => { disk.calls.push('write held'); await held; return write(path, data); };
+    const draft = keptDraft('同時の下書き');
+    const app = vaultWith(NOTE, [draft]);
+    const loading = load(app, { backups });
+    // The rescue asks while the backup is being written: it reads once that step is done.
+    await vi.waitFor(() => { expect(disk.calls).toContain('write held'); });
+    const rescuing = backups.survey().then(survey => { disk.calls.push('rescue read'); return survey; });
+    release();
+    const [survey] = await Promise.all([rescuing, loading]);
+    // The rescue read once the backup was prepared and read back, before the note was written and the backup marked.
+    expect(survey.records.get(await backupId(draft))?.prepared).toBeDefined();
+    const prepared = await recordPath(draft, 'prepared');
+    expect(disk.calls.indexOf('rescue read')).toBeGreaterThan(disk.calls.indexOf(`read ${prepared}`));
+    expect(disk.calls.indexOf('rescue read')).toBeLessThan(disk.calls.indexOf(`rename ${prepared}`));
+    expect(noteOf(app)).toBe(NOTE.replace('子ノード', '同時の下書き'));
+  });
+
+  // Acceptance 10: the entry keeps its shape (an earlier version reads it as before and knows nothing of backups), and
+  // what does not read in it stays.
+  it('keeps the entry in the shape an earlier version reads, and leaves an item that does not read in it', async () => {
+    const { mounted, owner } = await draft('形の変わらない下書き');
+    window.dispatchEvent(new Event('pagehide'));
+    const [kept] = mounted.app.loadLocalStorage(EXIT_DRAFTS_KEY) as Record<string, unknown>[];
+    expect(Object.keys(kept!)).toEqual(['path', 'title', 'at', 'before', 'after', 'edits', 'source']);
+    const unreadable = { path: 'Fixtures/other.md', title: 1 };
+    mounted.app.saveLocalStorage(EXIT_DRAFTS_KEY, [unreadable, kept]);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(renamed('形の変わらない下書き'));
+    expect(keptOf(app)).toEqual([unreadable]);
+    expect(Object.keys(window.localStorage).filter(key => key.includes('backup'))).toEqual([]);
   });
 });

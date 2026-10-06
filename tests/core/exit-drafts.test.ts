@@ -99,22 +99,38 @@ describe('rebaseExitEdits', () => {
     });
   });
 
-  // Passes without LEV-309 too: what it holds is that the guard leaves LEV-230's moves alone, a change of the last line
-  // within it, and a line taken out above it (as late as it goes, that change reaches into the last line; as early as
-  // it goes, it does not: the guard places it early).
-  it('still moves over a change of the last line that keeps its line break, and over a line taken out above it', () => {
-    const last = before.replace('- 別のノード\n', '- 別の名前\n');
+  // Passes without LEV-309 too: the guards leave LEV-230's move over a change of the last line alone, when it keeps its
+  // line break and the note's length.
+  it('still moves over a change of the last line that keeps its line break and does not shorten the note', () => {
+    const last = before.replace('- 別のノード\n', '- 別のノードです\n');
     expect(applyEdits(last, rebaseExitEdits(before, last, rename)!)).toBe(last.replace('子ノード', '新しい名前'));
-    const longer = before.replace('- 別のノード\n', '- 一\n- 真ん中\n- 別のノード\n');
-    const current = longer.replace('- 真ん中\n', '');
-    expect(applyEdits(current, rebaseExitEdits(longer, current, rename)!)).toBe(current.replace('子ノード', '新しい名前'));
   });
 
-  // Review 1 of LEV-309: a change that takes only blank text at the end (a trailing blank line, the last line break)
-  // loses nothing, and was refused as a cut.
-  it('still moves over a change that takes only blank text at the end', () => {
-    expect(applyEdits(before.slice(0, -1), rebaseExitEdits(before, before.slice(0, -1), rename)!)).toBe(renamed.slice(0, -1));
-    expect(applyEdits(before, rebaseExitEdits(`${before}\n`, before, rename)!)).toBe(renamed);
+  // The owner's decision of 2026-10-06 (LEV-309, round 4): a note shorter than the one the draft was planned on is not
+  // written into, whatever made it shorter. A cut can end like the note did (the last node moved up, a line above it
+  // changed): the person's own deletion, or a shorter title, is stopped with it (told and kept, as E05).
+  it('refuses a note shorter than the one the draft was planned on, a change of the person included', () => {
+    expect(rebaseExitEdits(before, before.replace('- 別のノード\n', '- 別\n'), rename)).toBeNull();
+    const longer = before.replace('- 別のノード\n', '- 一\n- 真ん中\n- 別のノード\n');
+    expect(rebaseExitEdits(longer, longer.replace('- 真ん中\n', ''), rename)).toBeNull();
+    expect(rebaseExitEdits(before, before.slice(0, -1), rename)).toBeNull();
+    expect(rebaseExitEdits(`${before}\n`, before, rename)).toBeNull();
+  });
+
+  it('refuses a cut that ends like the note did: the last node moved up, a line above it changed', () => {
+    const moving = '- 親\n  - 子ノード\n- 一\n- 二\n- 末\n';
+    // The write moving 「- 末」 above 「- 二」 stopped after it: what is left ends with the last line, and is shorter.
+    const moved = moving.replace('- 二\n- 末\n', '- 末\n- 二\n');
+    expect(rebaseExitEdits(moving, moved.slice(0, moved.indexOf('- 二')), rename)).toBeNull();
+    const same = '- 親\n  - 子ノード\n- 一\n- メモ\n- 別\n- メモ\n';
+    expect(rebaseExitEdits(same, '- 親\n  - 子ノード\n- 一つ\n- メモ\n', rename)).toBeNull();
+  });
+
+  // Review 1 of LEV-309: blank text taken from the end loses nothing; with the length kept, it still moves.
+  it('still moves over a change that replaces only blank text at the very end', () => {
+    const spaced = `${before.slice(0, -1)}  `;
+    const current = `${before.slice(0, -1)}xx`;
+    expect(applyEdits(current, rebaseExitEdits(spaced, current, rename)!)).toBe(current.replace('子ノード', '新しい名前'));
   });
 
   // Passes without LEV-309 too: text only added at the very end leaves all of the note there, and still moves.

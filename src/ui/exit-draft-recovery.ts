@@ -1,5 +1,6 @@
 import { Modal, Notice, Platform, Setting, TFolder, type App, type TAbstractFile } from "obsidian";
 import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-drafts";
+import type { BackupRecord, BackupSurvey, ExitBackupStore } from "../obsidian/exit-backup-store";
 import { t, type Messages } from "../i18n";
 import { EXIT_DRAFTS_KEY, joinSentences, sameDraft } from "./exit-drafts";
 
@@ -9,6 +10,9 @@ import { EXIT_DRAFTS_KEY, joinSentences, sameDraft } from "./exit-drafts";
  * text as it was planned on, when it was small enough to keep, the title typed and the edit planned. Nothing is
  * applied, the original note is not touched and the draft stays kept (rescuing it again makes another file); only
  * `vault.create` writes, so no file that exists is ever overwritten. Why the note emptied is not fixed here (LEV-240).
+ * The backups the writes of kept drafts leave (LEV-309, `src/obsidian/exit-backup-store.ts`) are listed too, finished
+ * or not, and saved the same way, the whole note before the write first; a file in the backup folder that does not
+ * read as one is listed by its path alone. Nothing here deletes or changes a backup.
  */
 
 /** The folder the rescued drafts go to, at the vault's top level. */
@@ -27,13 +31,28 @@ const NAME_BYTES = 200;
 type RescueVault = Pick<App["vault"], "getAbstractFileByPath" | "getRoot" | "createFolder" | "create">;
 interface RescueApp { vault: RescueVault; loadLocalStorage(key: string): unknown }
 
-/** The command's route: the kept drafts listed, one chosen, confirmed, then saved to a separate file. */
-export function rescueExitDrafts(app: App): void {
+/** What the list offers: the kept drafts, the backups' records, and the backup folder's paths that are not records. */
+interface RescueChoices { drafts: ExitDraft[]; records: BackupRecord[]; unchecked: string[]; unlisted: string | null }
+
+/** The command's route: the kept drafts and the backups listed, one chosen, confirmed, then saved to a separate file. */
+export async function rescueExitDrafts(app: App, backups: ExitBackupStore): Promise<void> {
   let drafts: ExitDraft[] = [];
   try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { /* Unreadable: none. */ }
-  if (drafts.length === 0) { new Notice(t().rescueNone); return; }
-  new ExitDraftListModal(app, drafts, draft => {
-    new ExitDraftConfirmModal(app, draft, () => { void rescueExitDraft(app, draft).then(message => { new Notice(message); }); }).open();
+  // Read through the backups' chain: never while a load is writing one.
+  let survey: BackupSurvey | null = null;
+  try { survey = await backups.survey(); } catch { /* Listed as a folder that could not be read. */ }
+  const records = survey ? [...survey.records.values()].flatMap(entry => [entry.prepared, entry.applied])
+    .filter((record): record is BackupRecord => record !== undefined).sort((a, b) => b.backup.createdAt - a.backup.createdAt) : [];
+  const choices: RescueChoices = { drafts, records, unchecked: survey?.unchecked ?? [], unlisted: survey ? null : backups.folder };
+  if (drafts.length === 0 && records.length === 0 && choices.unchecked.length === 0 && choices.unlisted === null) {
+    new Notice(t().rescueNone);
+    return;
+  }
+  new ExitDraftListModal(app, choices, choice => {
+    const save = "draft" in choice
+      ? () => { void rescueExitDraft(app, choice.draft).then(message => { new Notice(message); }); }
+      : () => { void rescueExitBackup(app, choice.record).then(message => { new Notice(message); }); };
+    new ExitDraftConfirmModal(app, choice, save).open();
   }).open();
 }
 
@@ -47,11 +66,24 @@ export async function rescueExitDraft(app: RescueApp, draft: ExitDraft): Promise
   } catch (error) {
     // Only what was checked is said: the draft is kept only when it is still in the entry.
     const kept = stillKept(app, draft);
-    const said = error instanceof FolderIsFile ? text.rescueFolderIsFile(RECOVERY_FOLDER)
-      : text.rescueFailed(error instanceof NoFreeName ? text.rescueNoFreeName
-        : error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
+    const said = failureText(error);
     return kept ? joinSentences(said, text.rescueDraftKept) : said;
   }
+}
+
+/** One backup saved to a separate file (the backup itself is not touched); what the Notice says. */
+export async function rescueExitBackup(app: RescueApp, record: BackupRecord): Promise<string> {
+  try {
+    return t().rescueSavedBackup(await saveRescued(app, rescuedFileBase(record.backup.draft), rescuedBackupText(record)));
+  } catch (error) { return failureText(error); }
+}
+
+/** What a rescue that failed says. */
+function failureText(error: unknown): string {
+  const text = t();
+  return error instanceof FolderIsFile ? text.rescueFolderIsFile(RECOVERY_FOLDER)
+    : text.rescueFailed(error instanceof NoFreeName ? text.rescueNoFreeName
+      : error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
 }
 
 class FolderIsFile extends Error {}
@@ -68,7 +100,12 @@ function stillKept(app: RescueApp, draft: ExitDraft): boolean {
  * is; a folder that appeared meanwhile (created elsewhere, the create refused for it) is used. A name taken, or a create
  * refused, moves to the next number; nothing is modified.
  */
-export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promise<string> {
+export function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promise<string> {
+  return saveRescued(app, rescuedFileBase(draft), rescuedNoteText(draft));
+}
+
+/** `content` saved as a new file named after `base` in the recovery folder, as `saveRescuedDraft`. */
+async function saveRescued(app: RescueApp, base: string, content: string): Promise<string> {
   const vault = app.vault;
   const found = findRecoveryFolder(vault);
   if (found && !(found instanceof TFolder)) throw new FolderIsFile();
@@ -80,9 +117,8 @@ export async function saveRescuedDraft(app: RescueApp, draft: ExitDraft): Promis
       folder = appeared.path;
     }
   }
-  const content = rescuedNoteText(draft);
   let failure: unknown = null;
-  for (const path of freeRescuePaths(vault, folder, rescuedFileBase(draft))) {
+  for (const path of freeRescuePaths(vault, folder, base)) {
     try {
       await vault.create(path, content);
       return path;
@@ -229,42 +265,88 @@ export function rescuedNoteText(draft: ExitDraft, text: Messages = t()): string 
   return lines.join("\n");
 }
 
-/** One line per kept draft: where, when, the title, and what it holds. */
+/**
+ * The rescued note of a backup: as `rescuedNoteText`, with the whole note as it was just before the write first, then
+ * the draft's own note text (when it was kept), the title and the change written. A backup of a draft that kept no note
+ * text holds the note as it was at the write, not a text lost before it, and says so; nothing is said to be restored.
+ */
+export function rescuedBackupText(record: BackupRecord, text: Messages = t()): string {
+  const { backup } = record;
+  const { draft, note } = backup;
+  const lines: string[] = [`# ${text.recBackupHeading(inlineCode(noteBasename(note.path)))}`, ""];
+  lines.push(`- ${text.recPath(inlineCode(note.path))}`, `- ${text.recBackupAt(localTime(backup.createdAt))}`,
+    `- ${record.state === "applied" ? text.recBackupApplied : text.recBackupPrepared}`, `- ${text.recKeptAt(localTime(draft.at))}`,
+    `- ${text.recTitleRef}`, `- ${text.recUnchanged}`, `- ${text.recBeforeLength(String(note.beforeLength), inlineCode(note.beforeSha256))}`);
+  lines.push("", `## ${text.recBeforeHeading}`, "", draft.source === undefined ? text.recBeforeNotOriginal : text.recBeforeIs, "");
+  if (note.before !== "" && !note.before.endsWith("\n")) lines.push(text.recAddedNewline, "");
+  lines.push(fenced(note.before), "", `## ${text.recSourceHeading}`, "");
+  if (draft.source === undefined) lines.push(text.recNoSource, "");
+  else {
+    if (draft.source !== "" && !draft.source.endsWith("\n")) lines.push(text.recAddedNewline, "");
+    lines.push(fenced(draft.source), "");
+  }
+  lines.push(`## ${text.recTitleHeading}`, "", fenced(draft.title), "", `## ${text.recWrittenEditsHeading}`, "");
+  backup.edits.forEach((edit, index) => {
+    lines.push(text.recWrittenEdit(String(index + 1), String(edit.from), String(edit.to)), "", fenced(edit.text), "");
+  });
+  return lines.join("\n");
+}
+
+/** A choice of the list: a kept draft or a backup's record. */
+type RescueChoice = { draft: ExitDraft } | { record: BackupRecord };
+
+/**
+ * One line per kept draft (where, when, the title, and what it holds), per backup record (where, whether its write
+ * finished, when) and per path in the backup folder that is not one (shown, not offered: it does not read). Each line
+ * says what it is in `data-mappy-rescue` (`draft`, `applied`, `prepared`, `unchecked`) for the real-app case.
+ */
 class ExitDraftListModal extends Modal {
-  constructor(app: App, private readonly drafts: readonly ExitDraft[], private readonly choose: (draft: ExitDraft) => void) { super(app); }
+  constructor(app: App, private readonly choices: RescueChoices, private readonly choose: (choice: RescueChoice) => void) { super(app); }
 
   onOpen(): void {
     const text = t();
     this.setTitle(text.cmdRescueDrafts);
     this.contentEl.createEl("p", { text: text.rescueLead });
-    for (const draft of this.drafts) {
+    for (const draft of this.choices.drafts) {
       const holds = "refused" in draft ? text.rescueRefused(draft.refused)
         : draft.source === undefined ? text.rescueNoSource : text.rescueHasSource(String(draft.source.length));
-      new Setting(this.contentEl)
-        .setName(draft.path)
-        .setDesc(`${text.rescueKeptAt(localTime(draft.at))} · ${text.rescueTitleLine(draft.title)} · ${holds}`)
-        .addButton(button => button.setButtonText(text.rescuePick).onClick(() => { this.close(); this.choose(draft); }));
+      this.line("draft", draft.path, `${text.rescueKeptAt(localTime(draft.at))} · ${text.rescueTitleLine(draft.title)} · ${holds}`, { draft });
     }
+    for (const record of this.choices.records) {
+      const { backup } = record;
+      const state = record.state === "applied" ? text.rescueBackupApplied : text.rescueBackupPrepared;
+      this.line(record.state, backup.note.path,
+        `${state} · ${text.rescueBackupAt(localTime(backup.createdAt))} · ${text.rescueTitleLine(backup.draft.title)}`, { record });
+    }
+    for (const path of this.choices.unchecked) this.line("unchecked", path, text.rescueUnchecked, null);
+    if (this.choices.unlisted !== null) this.line("unchecked", this.choices.unlisted, text.rescueUnlisted, null);
+  }
+
+  private line(kind: string, name: string, desc: string, choice: RescueChoice | null): void {
+    const setting = new Setting(this.contentEl).setName(name).setDesc(desc);
+    setting.settingEl.dataset.mappyRescue = kind;
+    if (choice) setting.addButton(button => button.setButtonText(t().rescuePick).onClick(() => { this.close(); this.choose(choice); }));
   }
 
   onClose(): void { this.contentEl.empty(); }
 }
 
-/** Where the draft goes and what goes in, before anything is written. */
+/** Where the draft or the backup goes and what goes in, before anything is written. */
 class ExitDraftConfirmModal extends Modal {
-  constructor(app: App, private readonly draft: ExitDraft, private readonly save: () => void) { super(app); }
+  constructor(app: App, private readonly choice: RescueChoice, private readonly save: () => void) { super(app); }
 
   onOpen(): void {
     const text = t();
-    const draft = this.draft;
+    const draft = "draft" in this.choice ? this.choice.draft : this.choice.record.backup.draft;
     this.setTitle(text.rescueConfirmTitle);
     const planned = plannedRescuePath(this.app.vault, draft);
     // A file in the folder's place, or no free name: said here, and nothing is offered to save.
     const blocked = "blocked" in planned;
     this.contentEl.createEl("p", { text: !blocked ? text.rescueConfirmPath(planned.path)
       : planned.blocked === "file" ? text.rescueConfirmFolderIsFile(RECOVERY_FOLDER) : text.rescueConfirmNoFreeName });
-    this.contentEl.createEl("p", { text: "refused" in draft ? text.rescueConfirmRefused
-      : draft.source === undefined ? text.rescueConfirmEdits : text.rescueConfirmSource(String(draft.source.length)) });
+    this.contentEl.createEl("p", { text: "record" in this.choice ? text.rescueConfirmBackup(String(this.choice.record.backup.note.beforeLength))
+      : "refused" in draft ? text.rescueConfirmRefused
+        : draft.source === undefined ? text.rescueConfirmEdits : text.rescueConfirmSource(String(draft.source.length)) });
     this.contentEl.createEl("p", { text: text.rescueConfirmUnchanged });
     new Setting(this.contentEl)
       .addButton(button => button.setButtonText(text.rescueSave).setCta().setDisabled(blocked).onClick(() => { this.close(); this.save(); }))

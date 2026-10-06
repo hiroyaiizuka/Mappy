@@ -2,6 +2,7 @@ import { MarkdownView, Notice, Plugin, TFile, getLanguage, type WorkspaceLeaf } 
 import { setLanguage, t } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
+import { ExitBackupStore, exitBackupFolder } from "./obsidian/exit-backup-store";
 import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
@@ -70,8 +71,11 @@ export default class MappyPlugin extends Plugin {
       view.setVisibleLayouts(this.settings.visibleLayouts);
       return view;
     });
-    // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230).
-    installExitDrafts(this, this.app, store, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
+    // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230); each
+    // write of one leaves a backup of the note first, in the plugin's own folder (LEV-309).
+    const pluginFolder = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    const backups = new ExitBackupStore(this.app.vault.adapter, exitBackupFolder(pluginFolder), this.manifest.version);
+    installExitDrafts(this, this.app, store, backups, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
       .map(leaf => leaf.view).filter((view): view is MindmapView => view instanceof MindmapView));
     // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is
     // unregistered first and the release below puts the plain embeds back without a new map taking over.
@@ -172,10 +176,11 @@ export default class MappyPlugin extends Plugin {
         return true;
       },
     });
-    // A draft kept at a reload or quit that could not be written stays kept; this saves it to a separate file (LEV-240).
+    // A draft kept at a reload or quit that could not be written stays kept; this saves it, or a backup a write of one
+    // left (LEV-309), to a separate file (LEV-240).
     this.addCommand({
       id: "rescue-exit-drafts", name: t().cmdRescueDrafts,
-      callback: () => { rescueExitDrafts(this.app); },
+      callback: () => { void rescueExitDrafts(this.app, backups); },
     });
     this.addRibbonIcon("git-fork", t().cmdOpen, () => {
       runRibbon(this.app, this.activeFile(), {

@@ -15,9 +15,13 @@ import type { ExitDraft } from '../../src/core/exit-drafts';
 import { setLanguage, t } from '../../src/i18n';
 import { EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import {
-  RECOVERY_ATTEMPTS, RECOVERY_FOLDER, draftId, fenced, localTime, rescueExitDraft, rescueExitDrafts, rescuedFileBase,
+  RECOVERY_ATTEMPTS, RECOVERY_FOLDER, draftId, fenced, localTime, rescueExitDraft, rescueExitDrafts, rescuedBackupText, rescuedFileBase,
   rescuedNoteText, safeFileName,
 } from '../../src/ui/exit-draft-recovery';
+import { applyEdits } from '../../src/core/commands';
+import { textFingerprint } from '../../src/core/exit-drafts';
+import { appliedName, backupId, utf8Bytes } from '../../src/core/exit-backup';
+import { ExitBackupStore, exitBackupFolder, type BackupAdapter, type BackupRecord } from '../../src/obsidian/exit-backup-store';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
@@ -89,6 +93,38 @@ class FakeVault {
   delete = (file: TFile): never => { this.calls.push(`delete ${file.path}`); throw new Error('delete'); };
   rename = (file: TFile): never => { this.calls.push(`rename ${file.path}`); throw new Error('rename'); };
 }
+
+/** The plugin's folder on disk, where the backups are (LEV-309); a row can make listing it fail. */
+const PLUGIN = 'cfg/plugins/mappy';
+const BACKUPS = exitBackupFolder(PLUGIN);
+class Disk {
+  readonly files = new Map<string, string>();
+  readonly folders = new Set<string>([PLUGIN]);
+  listFails = false;
+  private run<T>(body: () => T): Promise<T> {
+    try { return Promise.resolve(body()); } catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
+  }
+  readonly adapter: BackupAdapter = {
+    exists: path => this.run(() => this.files.has(path) || this.folders.has(path)),
+    stat: path => this.run(() => this.folders.has(path) ? { type: 'folder' as const, ctime: 0, mtime: 0, size: 0 }
+      : this.files.has(path) ? { type: 'file' as const, ctime: 0, mtime: 0, size: utf8Bytes(this.files.get(path)!) } : null),
+    list: path => this.run(() => {
+      if (this.listFails) throw new Error('EACCES');
+      const under = (item: string) => item.startsWith(`${path}/`) && !item.slice(path.length + 1).includes('/');
+      return { files: [...this.files.keys()].filter(under), folders: [...this.folders].filter(under) };
+    }),
+    read: path => this.run(() => { const text = this.files.get(path); if (text === undefined) throw new Error('ENOENT'); return text; }),
+    write: (path, data) => this.run(() => { this.files.set(path, data); }),
+    rename: (from, to) => this.run(() => {
+      const text = this.files.get(from);
+      if (text === undefined || this.files.has(to)) throw new Error(`rename ${from} ${to}`);
+      this.files.delete(from);
+      this.files.set(to, text);
+    }),
+    mkdir: path => this.run(() => { this.folders.add(path); }),
+  };
+}
+const storeOn = (disk = new Disk(), now = () => AT) => new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6', undefined, now);
 
 /** The app the command sees: the vault and the vault's `localStorage` entry holding `drafts`. */
 function appWith(drafts: readonly ExitDraft[] | null, vault = new FakeVault()): { app: App; vault: FakeVault; stored: () => string | null } {
@@ -381,14 +417,14 @@ describe('saving a kept draft to a separate file (LEV-240)', () => {
 });
 
 describe('the command 保存できなかった下書きを救出 (LEV-240)', () => {
-  it('says there is nothing to rescue when no draft is kept', () => {
-    rescueExitDrafts(appWith(null).app);
+  it('says there is nothing to rescue when no draft is kept', async () => {
+    await rescueExitDrafts(appWith(null).app, storeOn());
     expect(Notice.log).toEqual([t().rescueNone]);
     expect(document.querySelector('.modal')).toBeNull();
   });
 
-  it('lists each kept draft with where, when, its title and what it holds', () => {
-    rescueExitDrafts(appWith([withSource(), withoutSource(), refused()]).app);
+  it('lists each kept draft with where, when, its title and what it holds', async () => {
+    await rescueExitDrafts(appWith([withSource(), withoutSource(), refused()]).app, storeOn());
     const rows = Array.from(document.querySelectorAll('.modal .setting-item'), row => [
       row.querySelector('.setting-item-name')?.textContent, row.querySelector('.setting-item-description')?.textContent]);
     const when = t().rescueKeptAt('2026-10-05 07:08:09');
@@ -404,7 +440,7 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     const draft = withSource();
     const { app, vault, stored } = appWith([withoutSource(), draft]);
     const before = stored();
-    rescueExitDrafts(app);
+    await rescueExitDrafts(app, storeOn());
     buttons()[1]!.click();
     const path = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`;
     const shown = Array.from(document.querySelectorAll('.modal p'), item => item.textContent);
@@ -428,7 +464,7 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     const base = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}`;
     vault.file(`${base}.md`, '前の救出');
     const { app } = appWith([draft], vault);
-    rescueExitDrafts(app);
+    await rescueExitDrafts(app, storeOn());
     button(t().rescuePick).click();
     expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmPath(`${base} 2.md`));
     button(t().rescueSave).click();
@@ -437,10 +473,10 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
   });
 
   // Review 3: the confirmation named a path in the folder's place though a file is there, and offered to save.
-  it('says in the confirmation that a file has the folder name, and offers no save', () => {
+  it('says in the confirmation that a file has the folder name, and offers no save', async () => {
     const vault = new FakeVault();
     vault.file('Mappy recovery', '同じ名前のファイル');
-    rescueExitDrafts(appWith([withSource()], vault).app);
+    await rescueExitDrafts(appWith([withSource()], vault).app, storeOn());
     button(t().rescuePick).click();
     expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmFolderIsFile(RECOVERY_FOLDER));
     expect(t().rescueConfirmFolderIsFile(RECOVERY_FOLDER)).not.toContain('でした');
@@ -449,13 +485,13 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
   });
 
   // Independent review of 2a0eedb (L6): with every name taken, the confirmation named one that exists.
-  it('says in the confirmation that no name is free, offers no save, and overwrites nothing', () => {
+  it('says in the confirmation that no name is free, offers no save, and overwrites nothing', async () => {
     const draft = withSource();
     const vault = new FakeVault();
     vault.folder(RECOVERY_FOLDER);
     const base = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}`;
     for (let number = 1; number <= RECOVERY_ATTEMPTS; number += 1) vault.file(`${base}${number === 1 ? '' : ` ${number}`}.md`, `前の救出 ${number}`);
-    rescueExitDrafts(appWith([draft], vault).app);
+    await rescueExitDrafts(appWith([draft], vault).app, storeOn());
     button(t().rescuePick).click();
     expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmNoFreeName);
     expect(t().rescueConfirmNoFreeName).not.toContain('でした');
@@ -472,10 +508,10 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
   });
 
   // Independent review of 0dd1d43 (B): the English confirmation read 'Saved to:' before anything was saved.
-  it('names the destination in the English confirmation without saying it is saved', () => {
+  it('names the destination in the English confirmation without saying it is saved', async () => {
     setLanguage('en');
     try {
-      rescueExitDrafts(appWith([withSource()]).app);
+      await rescueExitDrafts(appWith([withSource()]).app, storeOn());
       button('Choose').click();
       const shown = document.querySelector('.modal p')?.textContent ?? '';
       expect(shown).toBe(`Destination: ${RECOVERY_FOLDER}/${rescuedFileBase(withSource())}.md (a number is added if the name is taken)`);
@@ -486,7 +522,7 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
   it('writes nothing when the confirmation is cancelled', async () => {
     const { app, vault, stored } = appWith([refused()]);
     const before = stored();
-    rescueExitDrafts(app);
+    await rescueExitDrafts(app, storeOn());
     button(t().rescuePick).click();
     expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueConfirmPath(`${RECOVERY_FOLDER}/${rescuedFileBase(refused())}.md`));
     button(t().rescueCancel).click();
@@ -495,5 +531,113 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     expect(vault.calls).toEqual([]);
     expect(stored()).toBe(before);
     expect(Notice.log).toEqual([]);
+  });
+});
+
+/**
+ * LEV-309: the backups every write of a kept draft leaves first (src/obsidian/exit-backup-store.ts) are listed after
+ * the kept drafts, finished (`applied`) or not (`prepared`), and saved the same way, through `vault.create` only; a
+ * file in the backup folder that does not read as one, or the folder itself when it cannot be read, is shown by its
+ * path alone, with nothing to save. The backups are not changed by the rescue.
+ */
+describe('the backups the writes of kept drafts left (LEV-309)', () => {
+  const MAP = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '- 別のノード', ''].join('\n');
+  const planned = (title: string, withSource = true): Exclude<ExitDraft, { refused: string }> => {
+    const edits = [{ from: MAP.indexOf('子ノード'), to: MAP.indexOf('子ノード') + 4, text: title }];
+    return { path: NOTE, title, at: AT, before: textFingerprint(MAP), after: textFingerprint(applyEdits(MAP, edits)), edits, ...(withSource ? { source: MAP } : {}) };
+  };
+  /** A backup made by the store on `disk` of writing `draft` into the note holding `before`, marked applied when `finish`. */
+  async function backUp(disk: Disk, draft: Exclude<ExitDraft, { refused: string }>, before: string, finish: boolean, at = AT): Promise<BackupRecord> {
+    const store = storeOn(disk, () => at);
+    await store.prepare(draft, draft.path, before, applyEdits(before, draft.edits), draft.edits);
+    if (finish) await store.markApplied(await backupId(draft));
+    const survey = await store.survey();
+    const entry = survey.records.get(await backupId(draft))!;
+    return (finish ? entry.applied : entry.prepared)!;
+  }
+  const rows = () => Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item'), row => ({
+    kind: row.dataset.mappyRescue, name: row.querySelector('.setting-item-name')?.textContent,
+    desc: row.querySelector('.setting-item-description')?.textContent, pick: row.querySelector('button') !== null,
+  }));
+
+  it('lists the backups after the kept drafts, the newest first, and the files it cannot read by their path alone', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true, AT);
+    await backUp(disk, planned('途中の題名'), `${MAP}- 足した\n`, false, AT + 60_000);
+    disk.files.set(`${BACKUPS}/${'a'.repeat(64)}.tmp-000000000000.json`, '{');
+    const { app } = appWith([withSource()]);
+    await rescueExitDrafts(app, storeOn(disk));
+    const time = (at: number) => t().rescueBackupAt(localTime(at));
+    expect(rows()).toEqual([
+      { kind: 'draft', name: NOTE, desc: `${t().rescueKeptAt('2026-10-05 07:08:09')} · ${t().rescueTitleLine('入力中の題名')} · ${t().rescueHasSource(String(SOURCE.length))}`, pick: true },
+      { kind: 'prepared', name: NOTE, desc: `${t().rescueBackupPrepared} · ${time(AT + 60_000)} · ${t().rescueTitleLine('途中の題名')}`, pick: true },
+      { kind: 'applied', name: NOTE, desc: `${t().rescueBackupApplied} · ${time(AT)} · ${t().rescueTitleLine('書いた題名')}`, pick: true },
+      { kind: 'unchecked', name: `${BACKUPS}/${'a'.repeat(64)}.tmp-000000000000.json`, desc: t().rescueUnchecked, pick: false },
+    ]);
+  });
+
+  it('lists the backups when no draft is kept, and the backup folder when it cannot be read', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true);
+    await rescueExitDrafts(appWith(null).app, storeOn(disk));
+    expect(rows().map(row => row.kind)).toEqual(['applied']);
+    document.body.replaceChildren();
+    disk.listFails = true;
+    await rescueExitDrafts(appWith(null).app, storeOn(disk));
+    expect(rows()).toEqual([{ kind: 'unchecked', name: BACKUPS, desc: t().rescueUnlisted, pick: false }]);
+    expect(Notice.log).toEqual([]);
+  });
+
+  // Acceptance 9: a backup saved to a new file, as a kept draft is.
+  it('saves a chosen backup to a new file after the confirmation: the note before the write, the draft\'s text, the change', async () => {
+    const disk = new Disk();
+    const before = `${MAP}- 書く前にあった行\n`;
+    const record = await backUp(disk, planned('書いた題名'), before, true);
+    const files = new Map(disk.files);
+    const { app, vault, stored } = appWith(null);
+    await rescueExitDrafts(app, storeOn(disk));
+    button(t().rescuePick).click();
+    const path = `${RECOVERY_FOLDER}/${rescuedFileBase(record.backup.draft)}.md`;
+    expect(Array.from(document.querySelectorAll('.modal p'), item => item.textContent))
+      .toEqual([t().rescueConfirmPath(path), t().rescueConfirmBackup(String(before.length)), t().rescueConfirmUnchanged]);
+    button(t().rescueSave).click();
+    await settle();
+    const text = vault.contents.get(path)!;
+    expect(text).toBe(rescuedBackupText(record));
+    expect(fencedAfter(text, `## ${t().recBeforeHeading}`)).toBe(before);
+    expect(fencedAfter(text, `## ${t().recSourceHeading}`)).toBe(MAP);
+    expect(text).toContain(t().recBackupApplied);
+    expect(text).toContain(t().recBeforeIs);
+    expect(Notice.log).toEqual([t().rescueSavedBackup(path)]);
+    expect(disk.files).toEqual(files);
+    expect(stored()).toBeNull();
+    expect(vault.calls).toEqual([`createFolder ${RECOVERY_FOLDER}`, `create ${path}`]);
+  });
+
+  it('says the backup of a draft kept without its note text holds the note at the write, not a text lost before it', async () => {
+    const disk = new Disk();
+    const record = await backUp(disk, planned('原文なしの題名', false), MAP, false);
+    const text = rescuedBackupText(record);
+    expect(text).toContain(t().recBeforeNotOriginal);
+    expect(text).not.toContain(t().recBeforeIs);
+    expect(text).toContain(t().recNoSource);
+    expect(text).toContain(t().recBackupPrepared);
+    expect(fencedAfter(text, `## ${t().recBeforeHeading}`)).toBe(MAP);
+    for (const word of ['復元しました', '復元できます', '失いません', 'restored']) expect(text).not.toContain(word);
+  });
+
+  it('names the backup by the applied file it read, and changes no backup file when the save fails', async () => {
+    const disk = new Disk();
+    const draft = planned('書いた題名');
+    const record = await backUp(disk, draft, MAP, true);
+    expect(record.path).toBe(`${BACKUPS}/${appliedName(await backupId(draft))}`);
+    const vault = new FakeVault();
+    vault.file(RECOVERY_FOLDER, 'フォルダの名前のファイル');
+    const files = new Map(disk.files);
+    const { app } = appWith(null, vault);
+    await rescueExitDrafts(app, storeOn(disk));
+    button(t().rescuePick).click();
+    expect(button(t().rescueSave).disabled).toBe(true);
+    expect(disk.files).toEqual(files);
   });
 });

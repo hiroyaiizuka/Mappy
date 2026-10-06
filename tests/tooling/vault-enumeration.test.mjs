@@ -51,6 +51,9 @@ const ALLOWED = {
   "src/ui/link-suggest.ts": ["getFiles"],
   // Calling a map (§5 M12): the candidates are the Markdown notes marked `mappy: true`.
   "src/obsidian/map-search.ts": ["getMarkdownFiles"],
+  // The backups kept drafts leave before they are written (LEV-309): the plugin's own `exit-backups/` folder is listed
+  // to add up its size and to find temporary, broken or unknown files in it. It does not list the vault's notes.
+  "src/obsidian/exit-backup-store.ts": ["adapter.list"],
 };
 
 async function sources(dir) {

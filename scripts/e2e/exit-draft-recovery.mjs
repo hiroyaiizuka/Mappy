@@ -30,9 +30,21 @@
  * `fs.promises.rm`, which takes a folder only when recursive; LEV-309's run). A run left behind by an earlier one (this note emptied or cut, its draft kept, its map open, an
  * empty folder) is taken up: setup closes this note's leaves and rewrites it; a folder that was there is left as it is.
  *
+ * LEV-309 (the owner's decision of 2026-10-06) adds a row to each mode, after the rescue. `--cut`: (a) a note whose last
+ * node a write was moving up when the page went, cut just after it (shorter than the note, ending like it): the draft
+ * is not written, stays with its note text, the Notice says so, and no backup is made. Without `--cut`: (b) a change
+ * made elsewhere while the window reloaded (a longer last line) that the draft is written over: the note is written,
+ * after a backup of it in `<plugin folder>/exit-backups/`, which the rescue lists and saves to a new file; (c) the
+ * backup's prepared file was renamed to the applied one (no prepared or temporary file of it is left), and, as an
+ * observation recorded but not judged, what the adapter's `rename` does onto a name that is there, in a folder of its
+ * own beside the backups; (d) the applied file's bytes on disk, the adapter's `stat` and its text's UTF-8 length agree
+ * (the size the store counts the folder by). The backup files this run made are deleted with the rest (not with
+ * `--keep`); the plugin itself deletes none.
+ *
  * Usage: npm run harness:e2e:exit-draft-recovery -- [--cut] [--reload] [--json <out.json>] [--keep]
  */
-import { readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
@@ -51,13 +63,32 @@ const TITLE = '救出する入力';
  * change would touch the edit, refused before LEV-309 too).
  */
 const CUT_LEFT = SOURCE.slice(0, SOURCE.indexOf('- 別のノード') + 3);
+/** `--cut`'s row (a): a note whose last node 「- 末」 a write was moving above 「- 二」, cut just after it moved. */
+const MOVE_SOURCE = ['---', 'mappy: true', '---', '## 救出する下書き', '', '- 親', '  - 子ノード', '- 一', '- 二', '- 末', ''].join('\n');
+const MOVE_TITLE = '移す途中の入力';
+const MOVED = MOVE_SOURCE.replace('- 二\n- 末\n', '- 末\n- 二\n');
+const MOVED_CUT = MOVED.slice(0, MOVED.indexOf('- 二'));
+/** The normal mode's row (b): the last line made longer elsewhere while the window reloaded; the draft is written over it. */
+const BACKUP_TITLE = '控えを残す入力';
+const LONGER = SOURCE.replace('- 別のノード\n', '- 別のノードを外で長くした\n');
 /** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`. */
 const EXIT_KEY = 'mappy-exit-drafts';
 /** src/ui/exit-draft-recovery.ts's `RECOVERY_FOLDER`. */
 const FOLDER = 'Mappy Recovery';
 const COMMAND = 'mappy:rescue-exit-drafts';
 /** src/i18n/ja.ts's `exitDraftNotWritten`, `exitNoteChanged` and `exitKeptSource` joined (no space after 「。」) for this draft (the reason is `exitNoteChanged`), copied: a change of wording fails here. */
-const KEPT_NOTICE = `再読込・終了のときに ${NOTE} で編集していた「${TITLE}」を書き込めませんでした。その間にノートが変わりました。入力と元の原文は残してあります。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`;
+const keptNotice = title => `再読込・終了のときに ${NOTE} で編集していた「${title}」を書き込めませんでした。その間にノートが変わりました。入力と元の原文は残してあります。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`;
+const KEPT_NOTICE = keptNotice(TITLE);
+/** src/i18n/ja.ts's `exitWrittenWithBackup` for a draft of this note, copied. */
+const wroteNotice = title => `再読込・終了のときに ${NOTE} で編集していた「${title}」を書き込みました。書き込む直前のノートの控えを残しています。コマンド「保存できなかった下書きを救出」で別ファイルに保存できます。`;
+/** src/i18n/ja.ts's `rescueSavedBackup` after the path, copied. */
+const SAVED_BACKUP = 'に保存しました。元のノートと控えは変更していません。';
+/**
+ * src/core/exit-drafts.ts's `draftKey` and src/core/exit-backup.ts's `backupId`, copied: the name a kept draft's backup
+ * files take (its edits as `readExitDrafts` keeps them).
+ */
+const backupIdOf = draft => createHash('sha256').update(JSON.stringify([draft.path, draft.title, draft.at, draft.before, draft.after,
+  draft.edits.map(edit => ({ from: edit.from, to: edit.to, text: edit.text }))])).digest('hex');
 const SAVED = 'に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。';
 /** Where the fault listener writes what it saw (`window.localStorage`, synchronous, kept across the reload). */
 const FAULT_KEY = 'mappy-e2e-exit-draft-fault';
@@ -160,6 +191,58 @@ async function main() {
   let before = [];
   let created = [];
   let folderCreated = false;
+  /** The plugin's backup folder (vault path), and the backup files this run made there (LEV-309). */
+  let backupsDir = '';
+  const backupsMade = [];
+  /** The names in the backup folder on disk now (none when it is not there). */
+  const backupFiles = async () => {
+    try { return (await readdir(join(VAULT, backupsDir))).sort(); } catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
+  };
+
+  /**
+   * Opens the note as a map, F2 on 「子ノード」, types `title`, adds the artificial fault (the note written as `written`
+   * as the page goes, after Mappy kept the draft), reloads and reconnects; what the fault saw, the draft kept among it.
+   */
+  const reloadWithFault = async (title, written) => {
+    await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove();
+      const leaf = app.workspace.getLeaf('tab');
+      await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: true });
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      app.workspace.setActiveLeaf(leaf, { focus: true });
+      window.__mappyE2E = leaf;
+      return true;`);
+    await makeSelect(cdp, evaluate)('子ノード');
+    await cdp.realKey('F2');
+    await until(() => evaluate(`${VIEW} return !!input();`), 3000, 'F2 did not open the draft');
+    await evaluate(`${VIEW} input().select(); return true;`);
+    await cdp.insertText(title);
+    await wait(300);
+    const typed = await evaluate(`${VIEW} return input()?.value ?? null;`);
+    if (typed !== title) throw new Error(`the draft does not hold the title typed: ${JSON.stringify(typed)}`);
+    await evaluate(`window.localStorage.removeItem(${JSON.stringify(FAULT_KEY)}); return true;`);
+    // The artificial fault: added after Mappy's handler (registered when the plugin loaded), so it runs after Mappy kept
+    // the draft; a synchronous write, so the note is as written before the page goes. What it saw is kept for the next
+    // page, the draft kept among it.
+    await evaluate(`window.addEventListener('pagehide', event => {
+        if (event.persisted) return;
+        const kept = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)});
+        const ours = Array.isArray(kept) ? kept.filter(item => item?.path === ${JSON.stringify(NOTE)}) : [];
+        const target = require('path').join(app.vault.adapter.basePath, ${JSON.stringify(NOTE)});
+        let wrote = false;
+        try { require('fs').writeFileSync(target, ${JSON.stringify(written)}); wrote = true; } catch {}
+        window.localStorage.setItem(${JSON.stringify(FAULT_KEY)}, JSON.stringify({ at: Date.now(), keptBefore: ours.length, wrote, draft: ours[ours.length - 1] ?? null }));
+      });
+      window.__mappyE2E = null;
+      setTimeout(() => app.commands.executeCommandById('app:reload'), 0);
+      return true;`);
+    await wait(2000);
+    await reconnect();
+    await evaluate(`${ERRORS} return true;`);
+    const fault = await evaluate(`return JSON.parse(window.localStorage.getItem(${JSON.stringify(FAULT_KEY)}) ?? 'null');`);
+    if (!fault?.wrote) throw new Error(`the fault did not write the note as the page went (the case would prove nothing): ${JSON.stringify(fault)}`);
+    if (fault.keptBefore !== 1 || fault.draft?.title !== title) throw new Error(`Mappy had not kept the draft when the fault ran (the listener order is not as the case assumes): ${JSON.stringify(fault)}`);
+    return { typed, fault };
+  };
 
   try {
     required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
@@ -182,43 +265,9 @@ async function main() {
     }));
 
     required(record, 'reload', await step('reload', async () => {
-      await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove();
-        const leaf = app.workspace.getLeaf('tab');
-        await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(NOTE)}, layout: 'mindmap' }, active: true });
-        await new Promise(resolve => setTimeout(resolve, 1200));
-        app.workspace.setActiveLeaf(leaf, { focus: true });
-        window.__mappyE2E = leaf;
-        return true;`);
-      await makeSelect(cdp, evaluate)('子ノード');
-      await cdp.realKey('F2');
-      await until(() => evaluate(`${VIEW} return !!input();`), 3000, 'F2 did not open the draft');
-      await evaluate(`${VIEW} input().select(); return true;`);
-      await cdp.insertText(TITLE);
-      await wait(300);
-      const typed = await evaluate(`${VIEW} return input()?.value ?? null;`);
-      if (typed !== TITLE) throw new Error(`the draft does not hold the title typed: ${JSON.stringify(typed)}`);
-      // The artificial fault: added after Mappy's handler (registered when the plugin loaded), so it runs after Mappy kept
-      // the draft; a synchronous write, so the note is empty (or cut) before the page goes. What it saw is kept for the
-      // next page.
-      await evaluate(`window.addEventListener('pagehide', event => {
-          if (event.persisted) return;
-          const kept = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)});
-          const ours = Array.isArray(kept) ? kept.filter(item => item?.path === ${JSON.stringify(NOTE)}) : [];
-          const target = require('path').join(app.vault.adapter.basePath, ${JSON.stringify(NOTE)});
-          let wrote = false;
-          try { require('fs').writeFileSync(target, ${JSON.stringify(left)}); wrote = true; } catch {}
-          window.localStorage.setItem(${JSON.stringify(FAULT_KEY)}, JSON.stringify({ at: Date.now(), keptBefore: ours.length, wrote }));
-        });
-        window.__mappyE2E = null;
-        setTimeout(() => app.commands.executeCommandById('app:reload'), 0);
-        return true;`);
-      await wait(2000);
-      await reconnect();
-      await evaluate(`${ERRORS} return true;`);
-      const fault = await evaluate(`return JSON.parse(window.localStorage.getItem(${JSON.stringify(FAULT_KEY)}) ?? 'null');`);
-      if (!fault?.wrote) throw new Error(`the fault did not write the note as the page went (the case would prove nothing): ${JSON.stringify(fault)}`);
-      if (fault.keptBefore !== 1) throw new Error(`Mappy had not kept the draft when the fault ran (the listener order is not as the case assumes): ${JSON.stringify(fault)}`);
-      return { typed, fault, left };
+      backupsDir = `${await evaluate('return app.plugins.plugins.mappy.manifest.dir;')}/exit-backups`;
+      const { typed, fault } = await reloadWithFault(TITLE, left);
+      return { typed, fault, left, backupsDir };
     }));
 
     await step('after-reload', async () => {
@@ -245,7 +294,7 @@ async function main() {
       const listed = await until(() => evaluate(`const rows = Array.from(document.querySelectorAll('.modal .setting-item'), row => ({
           name: row.querySelector('.setting-item-name')?.textContent ?? '', desc: row.querySelector('.setting-item-description')?.textContent ?? '' }));
         return rows.length > 0 ? { title: document.querySelector('.modal .modal-title')?.textContent ?? '', rows } : null;`), 3000, 'the list did not open');
-      const picked = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item')).find(item =>
+      const picked = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item[data-mappy-rescue="draft"]')).find(item =>
           item.querySelector('.setting-item-name')?.textContent === ${JSON.stringify(NOTE)}
           && item.querySelector('.setting-item-description')?.textContent.includes(${JSON.stringify(`題名: ${TITLE}`)}));
         const button = row?.querySelector('button');
@@ -266,6 +315,7 @@ async function main() {
         const made = (await recoveryFiles()).filter(path => !before.includes(path));
         return made.length > 0 ? made : null;
       }, 5000, `no new file in ${FOLDER}`);
+      before = [...before, ...created];
       const notice = await until(async () => (await notices()).find(item => item.includes(SAVED)) ?? null, 5000, 'no Notice said where the draft was saved');
       check(created.length === 1, `rescue: not one new file in ${FOLDER}: ${JSON.stringify(created)}`);
       const path = created[0] ?? '';
@@ -285,6 +335,117 @@ async function main() {
       check(disk.text === left, `rescue: the original note changed: ${JSON.stringify(disk.text)}`);
       check(kept.length === 1 && kept[0].source === SOURCE, `rescue: the draft is no longer kept: ${JSON.stringify(kept).slice(0, 400)}`);
       return { listed, confirm, notice, path, cache, bytes: disk.bytes, keptCount: kept.length, text: text.slice(0, 600) };
+    });
+
+    // (a) LEV-309: the cut the earlier guards let through, shorter than the note: not written, nothing backed up.
+    if (cut) await step('moved-cut', async () => {
+      await detachAll();
+      await dropOurs();
+      await makeNoteStep(evaluate, { note: NOTE, source: MOVE_SOURCE, errors: ERRORS })();
+      const backupsBefore = await backupFiles();
+      const { fault } = await reloadWithFault(MOVE_TITLE, MOVED_CUT);
+      const shown = await until(async () => {
+        const list = await notices();
+        return list.some(item => item.includes(MOVE_TITLE)) ? list : null;
+      }, 10000, 'no Notice named the draft after the reload');
+      await wait(3000);
+      const kept = await evaluate(`return ${OURS};`);
+      const disk = await onDisk();
+      await detachAll();
+      const made = (await backupFiles()).filter(name => !backupsBefore.includes(name));
+      backupsMade.push(...made);
+      check(shown.includes(keptNotice(MOVE_TITLE)), `moved-cut: the Notice is not the one saying the input and the note's text are kept: ${JSON.stringify(shown.filter(item => item.includes(NOTE)))}`);
+      check(kept.some(item => item.title === MOVE_TITLE && item.source === MOVE_SOURCE), `moved-cut: ${EXIT_KEY} does not hold the draft with the note's text: ${JSON.stringify(kept).slice(0, 600)}`);
+      check(disk.text === MOVED_CUT, `moved-cut: the note is not as the fault left it (written over?): ${JSON.stringify(disk.text)}`);
+      check(made.length === 0, `moved-cut: a backup was made though nothing was to be written: ${JSON.stringify(made)}`);
+      return { notices: shown, kept, text: disk.text, id: backupIdOf(fault.draft), made };
+    });
+
+    // (b), (c), (d) LEV-309: written over a longer change made elsewhere, after a backup the rescue saves.
+    if (!cut) await step('written-backup', async () => {
+      await detachAll();
+      await dropOurs();
+      await makeNoteStep(evaluate, { note: NOTE, source: SOURCE, errors: ERRORS })();
+      const backupsBefore = await backupFiles();
+      const { fault } = await reloadWithFault(BACKUP_TITLE, LONGER);
+      const id = backupIdOf(fault.draft);
+      const shown = await until(async () => {
+        const list = await notices();
+        return list.some(item => item.includes(BACKUP_TITLE)) ? list : null;
+      }, 10000, 'no Notice named the draft after the reload');
+      await wait(1000);
+      const kept = await evaluate(`return ${OURS};`);
+      const disk = await onDisk();
+      await detachAll();
+      const made = (await backupFiles()).filter(name => !backupsBefore.includes(name));
+      backupsMade.push(...made);
+      const expected = LONGER.replace('  - 子ノード\n', `  - ${BACKUP_TITLE}\n`);
+      check(shown.includes(wroteNotice(BACKUP_TITLE)), `written-backup: no Notice saying it was written with a backup: ${JSON.stringify(shown.filter(item => item.includes(NOTE)))}`);
+      check(disk.text === expected, `written-backup: the note is not the change made elsewhere with the title written: ${JSON.stringify(disk.text)}`);
+      check(kept.length === 0, `written-backup: the draft is still kept: ${JSON.stringify(kept).slice(0, 400)}`);
+      // (c) the prepared file became the applied one: no prepared or temporary file of it is left.
+      check(JSON.stringify(made) === JSON.stringify([`${id}.applied.json`]), `written-backup: the backup files made are not just ${id}.applied.json: ${JSON.stringify(made)}`);
+      const appliedPath = `${backupsDir}/${id}.applied.json`;
+      const content = made.includes(`${id}.applied.json`) ? await readFile(join(VAULT, appliedPath), 'utf8') : '';
+      let backup = null;
+      try { backup = JSON.parse(content); } catch { /* Checked below. */ }
+      check(backup?.format === 'mappy-exit-backup' && backup?.version === 1 && backup?.id === id, `written-backup: the applied file is not a backup of this draft: ${content.slice(0, 300)}`);
+      check(backup?.note?.before === LONGER, 'written-backup: the backup does not hold the note as it was just before the write');
+      check(backup?.draft?.source === SOURCE && backup?.draft?.title === BACKUP_TITLE, 'written-backup: the backup does not hold the draft as it was kept, with its note text');
+      // (d) the bytes on disk, the adapter's stat and the text's UTF-8 length agree.
+      const onDiskBytes = content ? (await stat(join(VAULT, appliedPath))).size : -1;
+      const adapterBytes = content ? await evaluate(`return (await app.vault.adapter.stat(${JSON.stringify(appliedPath)}))?.size ?? null;`) : null;
+      check(onDiskBytes === Buffer.byteLength(content, 'utf8') && adapterBytes === onDiskBytes,
+        `written-backup: the sizes do not agree: on disk ${onDiskBytes}, adapter ${adapterBytes}, UTF-8 ${Buffer.byteLength(content, 'utf8')}`);
+      // The rescue lists the backup and saves it to a new file.
+      await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove();
+        app.commands.executeCommandById(${JSON.stringify(COMMAND)}); return true;`);
+      const listed = await until(() => evaluate(`const rows = Array.from(document.querySelectorAll('.modal .setting-item'), row => ({ kind: row.dataset.mappyRescue,
+          name: row.querySelector('.setting-item-name')?.textContent ?? '', desc: row.querySelector('.setting-item-description')?.textContent ?? '' }));
+        return rows.length > 0 ? rows : null;`), 3000, 'the list did not open');
+      // The newest backup first: this run's, if an earlier run left one of the same title.
+      const picked = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item[data-mappy-rescue="applied"]')).find(item =>
+          item.querySelector('.setting-item-name')?.textContent === ${JSON.stringify(NOTE)}
+          && item.querySelector('.setting-item-description')?.textContent.includes(${JSON.stringify(`題名: ${BACKUP_TITLE}`)}));
+        const button = row?.querySelector('button');
+        if (!button) return false;
+        button.click(); return true;`);
+      if (!picked) throw new Error(`no applied backup row for this note and title in the list: ${JSON.stringify(listed)}`);
+      await until(() => evaluate(`return Array.from(document.querySelectorAll('.modal p'), item => item.textContent).some(text => text.startsWith('保存先: '));`), 3000, 'the confirmation did not open');
+      const saved = await evaluate(`const button = Array.from(document.querySelectorAll('.modal button')).find(item => item.textContent === '別ファイルに保存');
+        if (!button) return false; button.click(); return true;`);
+      if (!saved) throw new Error('no 別ファイルに保存 button for the backup');
+      const rescued = await until(async () => {
+        const made = (await recoveryFiles()).filter(path => !before.includes(path));
+        return made.length > 0 ? made : null;
+      }, 5000, `no new file in ${FOLDER} for the backup`);
+      created.push(...rescued);
+      before = [...before, ...rescued];
+      const notice = await until(async () => (await notices()).find(item => item.includes(SAVED_BACKUP)) ?? null, 5000, 'no Notice said where the backup was saved');
+      const text = rescued.length === 1 ? await readFile(join(VAULT, rescued[0]), 'utf8') : '';
+      check(rescued.length === 1 && notice === `${rescued[0]} ${SAVED_BACKUP}`, `written-backup: not one rescued file named in the Notice: ${JSON.stringify({ rescued, notice })}`);
+      check(text.includes(`\n\`\`\`\n${LONGER}\`\`\`\n`) && text.includes(`\n\`\`\`\n${SOURCE}\`\`\`\n`), 'written-backup: the rescued file does not hold the note before the write and the draft\'s text in fences');
+      const after = await backupFiles();
+      check(after.includes(`${id}.applied.json`) && (await readFile(join(VAULT, appliedPath), 'utf8')) === content, 'written-backup: the rescue changed the backup');
+      return { id, made, notices: shown, listed, notice, rescued, sizes: { onDiskBytes, adapterBytes, utf8: Buffer.byteLength(content, 'utf8') } };
+    });
+
+    // (c) An observation, recorded and not judged: what the adapter's rename does onto a name that is there. The store
+    // never asks for one (it checks first); this says whether that check is what keeps a backup from being replaced.
+    if (!cut) await step('rename-probe', async () => {
+      const probe = `${backupsDir}-e2e-probe`;
+      return evaluate(`const adapter = app.vault.adapter;
+        const probe = ${JSON.stringify(probe)};
+        if (await adapter.exists(probe)) throw new Error(probe + ' is there already (an earlier run left it): look at it, then remove it');
+        await adapter.mkdir(probe);
+        await adapter.write(probe + '/from.json', 'from');
+        await adapter.write(probe + '/to.json', 'to');
+        let threw = null;
+        try { await adapter.rename(probe + '/from.json', probe + '/to.json'); } catch (error) { threw = String(error); }
+        const seen = { threw, fromLeft: await adapter.exists(probe + '/from.json'), to: await adapter.read(probe + '/to.json') };
+        for (const name of ['from.json', 'to.json']) if (await adapter.exists(probe + '/' + name)) await adapter.remove(probe + '/' + name);
+        await require('fs').promises.rmdir(adapter.getFullPath(probe));
+        return { observation: 'adapter.rename onto a name that is there', obsidian: require('electron').ipcRenderer.sendSync('version'), ...seen };`);
     });
 
     await step('after', async () => {
@@ -315,6 +476,18 @@ async function main() {
           return done;
         });
         await part('folder', () => folderCreated ? evaluate(removeEmptyFolderScript(FOLDER)) : 'existed before the run: left');
+        await part('backups', async () => {
+          // Only the backup files this run made (LEV-309); the plugin itself deletes none.
+          const done = {};
+          for (const name of backupsMade) {
+            const path = `${backupsDir}/${name}`;
+            try {
+              done[path] = await evaluate(`if (!(await app.vault.adapter.exists(${JSON.stringify(path)}))) return 'gone';
+                await app.vault.adapter.remove(${JSON.stringify(path)}); return 'deleted';`);
+            } catch (error) { done[path] = { error: String(error) }; record.failures.push(`clean backup ${path}: ${error}`); }
+          }
+          return done;
+        });
         await part('note', makeDeleteNote(evaluate, NOTE));
         await part('fault', () => evaluate(`window.localStorage.removeItem(${JSON.stringify(FAULT_KEY)}); return true;`));
         return parts;
