@@ -74,6 +74,12 @@ export const removeEmptyFolderScript = folder => `const adapter = app.vault.adap
   const listed = await adapter.list(${JSON.stringify(folder)});
   if (listed.files.length > 0 || listed.folders.length > 0) return { kept: 'not empty', files: listed.files, folders: listed.folders };
   await require('fs').promises.rmdir(adapter.getFullPath(${JSON.stringify(folder)}));
+  // The vault takes it out when its watcher sees the change; the next case's setup reads the vault (run.mjs runs
+  // exit-draft-cut right after this case), so it waits for that.
+  for (let waited = 0; waited < 5000 && app.vault.getAbstractFileByPath(${JSON.stringify(folder)}); waited += 100) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (app.vault.getAbstractFileByPath(${JSON.stringify(folder)})) throw new Error('removed on disk, but the vault still lists it after 5 s');
   return 'removed';`;
 
 /** Script (with `app`): deletes the file at `path` if the vault has one there (a folder is not touched); what it did. */
@@ -103,9 +109,13 @@ await main();
 
 async function main() {
   const { flag, value } = parseArgs();
+  const cut = flag('--cut');
   const record = createRecord(VAULT, NOTE);
+  // The case this run is (one script behind two: run.mjs, package.json): the gate takes it over the JSON's file name,
+  // so a run without `--cut` saved as exit-draft-cut.json does not stand for it (review 1 of LEV-309).
+  record.case = cut ? 'exit-draft-cut' : 'exit-draft-recovery';
   /** The note on disk as the fault leaves it. */
-  const left = flag('--cut') ? CUT_LEFT : '';
+  const left = cut ? CUT_LEFT : '';
   let cdp = await connect();
   let evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
   const step = makeStep(record);
@@ -208,7 +218,7 @@ async function main() {
       const fault = await evaluate(`return JSON.parse(window.localStorage.getItem(${JSON.stringify(FAULT_KEY)}) ?? 'null');`);
       if (!fault?.wrote) throw new Error(`the fault did not write the note as the page went (the case would prove nothing): ${JSON.stringify(fault)}`);
       if (fault.keptBefore !== 1) throw new Error(`Mappy had not kept the draft when the fault ran (the listener order is not as the case assumes): ${JSON.stringify(fault)}`);
-      return { typed, fault, shape: flag('--cut') ? 'cut' : 'empty', left };
+      return { typed, fault, left };
     }));
 
     await step('after-reload', async () => {

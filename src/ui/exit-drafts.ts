@@ -1,5 +1,5 @@
 import { Notice, type App, type Component } from "obsidian";
-import { EXIT_DRAFT_TTL, readExitDrafts, rebaseExitEdits, textFingerprint, withoutSources, type ExitDraft } from "../core/exit-drafts";
+import { EXIT_DRAFT_TTL, readExitDrafts, rebaseExitEdits, rebaseOverDraft, textFingerprint, withoutSources, type ExitDraft } from "../core/exit-drafts";
 import type { DocumentStore } from "../obsidian/document-store";
 import { messagesFor, t } from "../i18n";
 import type { MindmapView } from "./mindmap-view";
@@ -72,7 +72,7 @@ async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => b
     for (let index = 0; index < drafts.length && !unloaded(); index += 1) {
       const draft = drafts[index]!;
       let failure: unknown = null;
-      try { await applyExitDraft(app, store, draft); } catch (error) { failure = error ?? new Error(""); }
+      try { await applyExitDraft(app, store, draft, drafts); } catch (error) { failure = error ?? new Error(""); }
       if (failure === null) { written = saveWithout(app, draft); continue; }
       if (written === undefined) written = saveWithout(app, null);
       // As the entry holds it: a `pagehide` meanwhile may have kept it again without the note's text.
@@ -135,7 +135,8 @@ export function joinSentences(...sentences: string[]): string {
     : japanese && /[。！？」）]$/u.test(joined) ? `${joined}${sentence}` : `${joined} ${sentence}`, "");
 }
 
-async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft): Promise<void> {
+/** `draft` written into its note; `kept`, the drafts this pass read, for another draft of the note written first. */
+async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft, kept: readonly ExitDraft[]): Promise<void> {
   if ("refused" in draft) throw new Error(draft.refused);
   const file = app.vault.getFileByPath(draft.path);
   if (!file) throw new Error(t().exitNoteGone);
@@ -143,9 +144,13 @@ async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft):
   const found = textFingerprint(current);
   if (found === draft.after) return;
   if (Date.now() - draft.at > EXIT_DRAFT_TTL) throw new Error(t().exitDraftExpired);
-  // The note the draft was planned on, or one changed elsewhere since (a change the map had not read, another kept
-  // draft of the same note applied first) whose change stays clear of a plain rename.
-  const edits = found === draft.before ? draft.edits : draft.source === undefined ? null : rebaseExitEdits(draft.source, current, draft.edits);
+  // The note the draft was planned on; one that another kept draft planned on the same text left (two maps of the
+  // note), whose edits are known (LEV-309); or one changed elsewhere since (a change the map had not read) whose
+  // change stays clear of a plain rename and does not look cut off.
+  const first = kept.find((item): item is Exclude<ExitDraft, { refused: string }> => item !== draft && !("refused" in item)
+    && item.path === draft.path && item.before === draft.before && item.after === found);
+  const edits = found === draft.before ? draft.edits : first ? rebaseOverDraft(draft.edits, first.edits)
+    : draft.source === undefined ? null : rebaseExitEdits(draft.source, current, draft.edits);
   if (!edits) throw new Error(t().exitNoteChanged);
   // Refused by the store if the note moved on since the read above.
   await store.applyOver(file, current, edits);

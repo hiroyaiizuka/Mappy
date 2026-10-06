@@ -31,12 +31,14 @@ export const EXIT_DRAFT_TTL = 24 * 60 * 60 * 1000;
  * planned again here (review 2). Where the change sits is ambiguous in repeated text (「- A\n- A\n」 losing a line
  * could have lost either): it is placed both as far forward and as far back as it goes, and the edit moves only when
  * both leave it clear on the same side, so a same-titled node never takes another's draft (review 3, AGENTS.md: 同名
- * 見出し). Nothing is guessed either when the change reaches the edit (E05), nor when it takes the note's end off, even
- * placed as early as it goes (`cutsEnd`): a write cut off as the page went leaves the first part of the note, and the
- * draft, the one copy of the rest, would go once written (LEV-309).
+ * 見出し). Nothing is guessed either when the change reaches the edit (E05), nor when the note looks cut off (LEV-309):
+ * a write that stopped as the page went leaves the first part of what it was writing, and the draft, the one copy of
+ * the rest, would go once written. So nothing moves onto the first part of `before` itself, nor over a change that
+ * takes its end off even placed as early as it goes (`cutsEnd`), unless all it takes is blank (nothing is lost then).
  */
 export function rebaseExitEdits(before: string, current: string, edits: readonly TextEdit[]): TextEdit[] | null {
   if (edits.length !== 1) return null;
+  if (current.length < before.length && before.startsWith(current) && /\S/u.test(before.slice(current.length))) return null;
   const late = diffEdit(before, current);
   const early = diffFromEnd(before, current);
   if (cutsEnd(before, early)) return null;
@@ -49,17 +51,31 @@ export function rebaseExitEdits(before: string, current: string, edits: readonly
 }
 
 /**
- * Whether `change` takes the end off `text`, as a write that stopped part way does: what it takes away reaches into
- * the last line with text, and runs to the very end or takes a line break with it. A change within the last line that
- * keeps its line break does not, nor one that only inserts (all of `text` is still there). Not told apart: a change
- * the person made there of the same shape (the last line taken out, or changed to the very end of a note without a
- * final line break), refused too; and a cut that leaves a whole line equal to the last one at the end, let through.
+ * Whether `change` takes the end off `text`, as a write that stopped part way does: what it takes away is not all
+ * blank, reaches the last line with text (or the line break before it: the line left at the end is not that whole line
+ * then, only text ending like it, as a same-titled node at another depth), and runs to the very end or takes a line
+ * break with it. A change within the last line that keeps its line break does not, nor one that only inserts (all of
+ * `text` is still there). Not told apart: a change the person made there of the same shape (the last line taken out,
+ * or changed to the very end of a note without a final line break), refused too; and a cut that leaves at the end a
+ * whole line the same as the last one (from the line's start), let through.
  */
 function cutsEnd(text: string, change: TextEdit): boolean {
-  if (change.to === change.from) return false;
+  const removed = text.slice(change.from, change.to);
+  if (!/\S/u.test(removed)) return false;
   const end = text.trimEnd().length;
   const last = end === 0 ? 0 : text.lastIndexOf('\n', end - 1) + 1;
-  return change.to > last && (change.to === text.length || /[\n\r]/u.test(text.slice(change.from, change.to)));
+  return change.to >= last && (change.to === text.length || /[\n\r]/u.test(removed));
+}
+
+/**
+ * `edits`, planned on a note, moved over `earlier`: the edits of another kept draft planned on the same text, once
+ * they are in the note (two maps of a note, each with a draft). Known exactly, so neither where a change sits nor
+ * whether the note was cut off is guessed (LEV-309: the first map renaming the last line of a note without a final
+ * line break looked to `rebaseExitEdits` like its end cut off). Only a plan of one edit moves, as there.
+ */
+export function rebaseOverDraft(edits: readonly TextEdit[], earlier: readonly TextEdit[]): TextEdit[] | null {
+  if (edits.length !== 1) return null;
+  return rebaseEdits(edits, earlier) ?? null;
 }
 
 /** `diffEdit` with the common end taken first: the same change placed as early in the text as it goes. */

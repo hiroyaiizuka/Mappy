@@ -401,6 +401,20 @@ describe('evidence gate', () => {
     expect(evaluateGate(green({ e2e: [{ path: 'summary.json', json: summary }] })).verdict).toBe('PASS');
   });
 
+  // LEV-309: exit-draft-recovery.mjs is behind two cases (E84 and its --cut); the file name alone named the case, so a
+  // run without --cut saved as exit-draft-cut.json stood for exit-draft-cut.
+  it('takes the case a record names over its file name, and fails a summary row whose record is of another case', () => {
+    const cases = ['exit-draft-cut'];
+    const misnamed = evaluateGate(green({ cases, e2e: [{ path: 'exit-draft-cut.json', json: caseJson({ case: 'exit-draft-recovery' }) }] }));
+    expect(misnamed.verdict).toBe('INCOMPLETE');
+    expect(misnamed.reasons.map(reason => reason.message)).toEqual(['e2e: the required case exit-draft-cut is not among the JSONs']);
+    expect(evaluateGate(green({ cases, e2e: [{ path: 'any.json', json: caseJson({ case: 'exit-draft-cut' }) }] })).verdict).toBe('PASS');
+    const summary = { passed: true, results: [{ name: 'exit-draft-cut', passed: true, exitCode: 0, record: caseJson({ case: 'exit-draft-recovery' }) }] };
+    const row = evaluateGate(green({ cases, e2e: [{ path: 'summary.json', json: summary }] }));
+    expect(row.verdict).toBe('FAIL');
+    expect(row.reasons.map(reason => reason.message)).toEqual(['summary.json › exit-draft-cut: the record is of the case exit-draft-recovery']);
+  });
+
   it.each([
     ['a case whose passed alone is false', { path: 'ribbon-new-map.json', json: caseJson({ passed: false }) }, 'ribbon-new-map.json: passed is false'],
     ["a summary whose run's passed alone is false",

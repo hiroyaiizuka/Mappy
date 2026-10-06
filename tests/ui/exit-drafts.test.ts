@@ -20,6 +20,8 @@ import { Component, Notice } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
 import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
+import { applyEdits } from '../../src/core/commands';
+import { textFingerprint } from '../../src/core/exit-drafts';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
@@ -227,6 +229,26 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     second.view.containerEl.remove();
     const app = await reload(first, owner);
     expect(noteOf(app)).toBe(renamed('一つ目のマップの下書き').replace('- 別のノード\n', '- 二つ目のマップの下書き\n'));
+    expect(Notice.log).toEqual([]);
+  });
+
+  // LEV-309, review 1: two drafts of a note kept at once (a draft blur does not save, an error row's or one mid IME
+  // composition, in one map, and one in another; E59's 9). The first renamed the last node of a note without a final
+  // line break, which the second's move took for the note's end cut off. Its edits are known, and the second moves
+  // over them (passes before LEV-309 too, where the diff moved it; fails with LEV-309's guard alone).
+  it('applies two kept drafts of a note when the first renames the last node of a note without a final line break', async () => {
+    const bare = SOURCE.slice(0, -1);
+    const lastLine = [{ from: bare.indexOf('別のノード'), to: bare.length, text: '一つ目の下書き' }];
+    const child = [{ from: bare.indexOf('子ノード'), to: bare.indexOf('子ノード') + 4, text: '二つ目の下書き' }];
+    const keptDraft = (title: string, edits: typeof child) => ({
+      path: PATH, title, at: Date.now(), before: textFingerprint(bare), after: textFingerprint(applyEdits(bare, edits)), edits, source: bare,
+    });
+    const app = new HarnessApp();
+    app.put(PATH, bare);
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, [keptDraft('一つ目の下書き', lastLine), keptDraft('二つ目の下書き', child)]);
+    await loadAgain(app);
+    expect(noteOf(app)).toBe(bare.replace('- 別のノード', '- 一つ目の下書き').replace('  - 子ノード\n', '  - 二つ目の下書き\n'));
+    expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
     expect(Notice.log).toEqual([]);
   });
 
@@ -469,10 +491,10 @@ describe('a kept draft that could not be written (LEV-240)', () => {
   // note's text went, with no Notice.
   it('keeps the draft and the note text it was planned on when only the first part of the note was left', async () => {
     const { mounted, owner, kept } = await keep('前半だけ残ったノートの下書き');
-    // A few characters into the line after the edited one, then all but the last line break. (Cut just after the edited
-    // line, the change touches the edit and was refused already.)
+    // A few characters into the line after the edited one (cut just after the edited line, the change touches the edit
+    // and was refused already); then what a write putting a line in there left, longer than the note was.
     const midLine = SOURCE.slice(0, SOURCE.indexOf('- 別のノード') + 3);
-    const lineBreak = SOURCE.slice(0, -1);
+    const longer = SOURCE.replace('- 別のノード\n', '- 足しかけた\n- 別のノード\n').slice(0, -2);
     mounted.app.put(PATH, midLine);
     const app = await reload(mounted, owner);
     expect(noteOf(app)).toBe(midLine);
@@ -480,9 +502,9 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     expect((kept[0] as { source?: string }).source).toBe(SOURCE);
     const notice = notWritten('exitKeptSource', '前半だけ残ったノートの下書き', PATH, t().exitNoteChanged);
     expect(Notice.log).toEqual([notice]);
-    app.put(PATH, lineBreak);
+    app.put(PATH, longer);
     await loadAgain(app);
-    expect(noteOf(app)).toBe(lineBreak);
+    expect(noteOf(app)).toBe(longer);
     expect(keptOf(app)).toEqual(kept);
     expect(Notice.log).toEqual([notice, notice]);
   });
