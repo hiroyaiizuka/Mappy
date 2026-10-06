@@ -1023,7 +1023,28 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
       expect(noteOf(app)).toBe(once);
       expect(disk.calls.filter(call => call === 'applyOver')).toHaveLength(1);
       expect(keptOf(app)).toEqual([draft]);
-      expect(Notice.log).toEqual([changed(title, t().exitBackupPending)]);
+      // Review of e5745d1 (L1): the note reads as the write leaves it, so it is not said to be unwritten.
+      expect(Notice.log).toEqual([t().exitWrittenUnconfirmed(title, PATH, t().cmdRescueDrafts)]);
+    });
+
+    // Review of e5745d1 (L1): the same, written over a change made elsewhere: the note is not the draft's `after`, but
+    // the text the prepared backup says the write makes.
+    it('S4: a write over a change made elsewhere, not marked: the next load says it was most likely written', async () => {
+      disk.fault = (step, path) => step === 'rename' && path.endsWith('.prepared.json') ? new Error('EPERM') : null;
+      const draft = keptDraft(title);
+      const longer = NOTE.replace('- 別\n', '- 別を外で長くした\n');
+      const app = vaultWith(longer, [draft]);
+      await load(app);
+      const once = longer.replace('子ノード', title);
+      expect(noteOf(app)).toBe(once);
+      expect(textFingerprint(once)).not.toBe((draft as { after: string }).after);
+      disk.fault = () => null;
+      Notice.log.length = 0;
+      await load(app);
+      expect(noteOf(app)).toBe(once);
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.names()).toEqual([preparedName(await backupId(draft))]);
+      expect(Notice.log).toEqual([t().exitWrittenUnconfirmed(title, PATH, t().cmdRescueDrafts)]);
     });
 
     it('S5: the draft cannot be taken out of the entry: the next load finds the applied backup and writes nothing', async () => {
@@ -1071,7 +1092,11 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     expect(noteOf(app)).toBe(NOTE);
     expect(disk.files).toEqual(files);
     expect(disk.calls).not.toContain('applyOver');
-    expect(Notice.log).toEqual([changed('入らない下書き', t().exitBackupFull('10 MiB'))]);
+    expect(Notice.log).toEqual([changed('入らない下書き', t().exitBackupFull('10 MiB', BACKUPS))]);
+    // Review of e5745d1 (L3): where the folder is, and that the person makes room by deleting files there (nothing is
+    // deleted for them).
+    expect(Notice.log[0]).toContain(`（${BACKUPS}）`);
+    expect(Notice.log[0]).toContain('救出してから、そのフォルダのファイルを自分で消すと空きます');
     expect(Object.keys(window.localStorage).sort()).toEqual(keys);
     expect(window.localStorage.getItem(`mappy-harness-${EXIT_DRAFTS_KEY}`)).toBe(entry);
   }, 30_000);

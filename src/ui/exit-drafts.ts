@@ -1,6 +1,6 @@
 import { Notice, type App, type Component } from "obsidian";
 import { applyEdits, type TextEdit } from "../core/commands";
-import { backupId, sameBackupGeneration } from "../core/exit-backup";
+import { backupId, sameBackupGeneration, sha256Hex } from "../core/exit-backup";
 import {
   EXIT_DRAFT_TTL, draftKey, readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint, withoutSources, type ExitDraft,
 } from "../core/exit-drafts";
@@ -109,9 +109,13 @@ async function applyEach(
       continue;
     }
     const key = draftKey(draft);
-    if (outcome === "unmarked") {
-      // Written, but its backup still reads as unfinished: the draft stays, and the next load does not write it again.
-      if (!reported.has(key)) { reported.add(key); new Notice(t().exitWrittenNotMarked(draft.title, draft.path, t().cmdRescueDrafts), 0); }
+    if (outcome === "unmarked" || outcome === "unconfirmed") {
+      // Written, or most likely written, but its backup reads as unfinished: the draft stays, and is not written again.
+      if (!reported.has(key)) {
+        reported.add(key);
+        const said = outcome === "unmarked" ? t().exitWrittenNotMarked : t().exitWrittenUnconfirmed;
+        new Notice(said(draft.title, draft.path, t().cmdRescueDrafts), 0);
+      }
       continue;
     }
     if (written === undefined) written = saveWithout(app, null);
@@ -179,8 +183,11 @@ export function joinSentences(...sentences: string[]): string {
  */
 type KnownWrites = Map<string, { before: string; steps: TextEdit[][] }>;
 
-/** What became of a kept draft: in the note already, written (and its backup finished), or written with its backup not. */
-type Outcome = "had" | "written" | "unmarked";
+/**
+ * What became of a kept draft: in the note already, written (and its backup finished), written with its backup not
+ * marked finished, or found as its write leaves the note with a backup an earlier load did not mark (`unconfirmed`).
+ */
+type Outcome = "had" | "written" | "unmarked" | "unconfirmed";
 
 /**
  * `draft` written into its note; `known`, what this pass wrote before it, added to when this write is one of them;
@@ -203,7 +210,14 @@ async function applyExitDraft(
     for (const kept of [record.prepared, record.applied]) {
       if (kept && !await sameBackupGeneration(kept.backup, draft)) throw new Error(text.exitBackupOtherGeneration);
     }
-    throw new Error(record.applied ? text.exitBackupAlreadyApplied : text.exitBackupPending);
+    if (record.applied) throw new Error(text.exitBackupAlreadyApplied);
+    // Prepared alone: an earlier load stopped after the backup was checked (S2) and before it was marked (S4). A note
+    // as that write leaves it (the draft's `after`, or the text the backup says the write makes) was most likely
+    // written (S3): said so, not that it was not, and still neither written again nor taken out.
+    const file = app.vault.getFileByPath(draft.path);
+    const now = file ? await store.read(file) : null;
+    if (now !== null && (textFingerprint(now) === draft.after || await sha256Hex(now) === record.prepared?.backup.note.afterSha256)) return "unconfirmed";
+    throw new Error(text.exitBackupPending);
   }
   const file = app.vault.getFileByPath(draft.path);
   if (!file) throw new Error(text.exitNoteGone);
@@ -240,7 +254,7 @@ function backupReason(error: unknown, backups: ExitBackupStore): string {
   const text = t();
   if (!(error instanceof ExitBackupError)) return text.exitBackupNotSaved(error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
   switch (error.failure) {
-    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`);
+    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`, backups.folder);
     case "unmeasured": return text.exitBackupUnmeasured;
     case "unsaved": return text.exitBackupNotSaved(error.detail || text.rescueUnknownReason);
     case "mismatch": return text.exitBackupMismatch;

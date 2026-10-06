@@ -13,7 +13,7 @@ import {
  * (S2), then, once the note is written (S3), renamed to `<id>.applied.json` (S4). A rename is never made onto a name
  * that is there. Nothing here deletes a file: what is left by a step that did not finish stays for the person to see
  * (the rescue command lists it) and stops the writes, as does anything else in the folder that is not a backup of
- * this format. Every step runs after the one before it, in one chain, so a rescue reading the folder and a load
+ * this format (but the files an operating system leaves there, `SYSTEM_FILES`, which are only counted in its size). Every step runs after the one before it, in one chain, so a rescue reading the folder and a load
  * writing to it never interleave.
  */
 
@@ -41,7 +41,8 @@ export interface BackupRecord { state: "prepared" | "applied"; path: string; bac
 /**
  * The folder as a load or the rescue finds it: the records by draft id, and every path there that is not one
  * (`unchecked`: a temporary file, one that does not read as a backup of this format or whose content does not match
- * its name, a folder, or the backup folder itself when it is a file).
+ * its name, a folder, or the backup folder itself when it is a file), the operating system's files (`SYSTEM_FILES`) left
+ * out of both.
  */
 export interface BackupSurvey {
   records: Map<string, { prepared?: BackupRecord; applied?: BackupRecord }>;
@@ -49,6 +50,13 @@ export interface BackupSurvey {
 }
 
 const message = (error: unknown): string => error instanceof Error && error.message ? error.message : String(error);
+
+/**
+ * Files an operating system leaves in a folder it shows (macOS's Finder, Windows' Explorer), by their exact names: not
+ * backups and not taken for unknown ones (a person who opened the folder would otherwise stop every write), but on disk
+ * all the same, so the folder's size counts them. A name like them is not one of them (`.DS_Store.json`, `x.DS_Store`).
+ */
+const SYSTEM_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 
 export class ExitBackupStore {
   private chain: Promise<unknown> = Promise.resolve();
@@ -143,6 +151,7 @@ export class ExitBackupStore {
     const listed = await this.adapter.list(this.folder);
     survey.unchecked.push(...listed.folders);
     for (const path of listed.files) {
+      if (SYSTEM_FILES.has(path.slice(path.lastIndexOf("/") + 1))) continue;
       const name = backupFileName(path.slice(path.lastIndexOf("/") + 1));
       if (name.kind === "unknown" || name.kind === "temporary") { survey.unchecked.push(path); continue; }
       let text: string | null = null;

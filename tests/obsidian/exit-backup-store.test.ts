@@ -262,7 +262,7 @@ describe('what a load finds in the folder', () => {
     const good = disk.files.get(`${FOLDER}/${preparedName(id)}`)!;
     const other = 'd'.repeat(64);
     disk.files.set(`${FOLDER}/${other}.tmp-000000000000.json`, good);
-    disk.files.set(`${FOLDER}/.DS_Store`, '');
+    disk.files.set(`${FOLDER}/memo.txt`, '');
     disk.files.set(`${FOLDER}/${'e'.repeat(64)}.applied.json`, '{ broken');
     disk.files.set(`${FOLDER}/${other}.applied.json`, good);
     disk.files.set(`${FOLDER}/${'f'.repeat(64)}.applied.json`, good.replace('"version":1', '"version":2'));
@@ -270,10 +270,33 @@ describe('what a load finds in the folder', () => {
     disk.folders.add(`${FOLDER}/nested`);
     const survey = await store.survey();
     expect(survey.unchecked.sort()).toEqual([
-      `${FOLDER}/${other}.tmp-000000000000.json`, `${FOLDER}/.DS_Store`, `${FOLDER}/${'e'.repeat(64)}.applied.json`,
+      `${FOLDER}/${other}.tmp-000000000000.json`, `${FOLDER}/memo.txt`, `${FOLDER}/${'e'.repeat(64)}.applied.json`,
       `${FOLDER}/${other}.applied.json`, `${FOLDER}/${'f'.repeat(64)}.applied.json`, `${FOLDER}/${id}.applied.json`, `${FOLDER}/nested`,
     ].sort());
     expect([...survey.records.keys()]).toEqual([id]);
+  });
+
+  // Review of e5745d1 (M1): a person who opened the folder in Finder or Explorer left `.DS_Store` (or `Thumbs.db`,
+  // `desktop.ini`) there, and every write stopped. Those exact names are not taken for unknown files; they still take
+  // room, so the size counts them. A name only like them still stops the writes.
+  it('does not take the files an operating system leaves for unknown ones, and counts them in the size', async () => {
+    const system = ['.DS_Store', 'Thumbs.db', 'desktop.ini'];
+    const disk = new Disk();
+    disk.folders.add(FOLDER);
+    for (const name of system) disk.files.set(`${FOLDER}/${name}`, 'x'.repeat(100));
+    expect((await storeOn(disk).survey()).unchecked).toEqual([]);
+    const adding = utf8Bytes(await expectedText());
+    expect(await failureOf(prepare(storeOn(disk, 300 + adding - 1)))).toBe('full');
+    expect(await failureOf(prepare(storeOn(disk, 300 + adding)))).toBe('none');
+    expect((await storeOn(disk).survey()).unchecked).toEqual([]);
+  });
+
+  it('still takes a name only like those for an unknown file', async () => {
+    const disk = new Disk();
+    disk.folders.add(FOLDER);
+    const like = ['.DS_Store.json', 'x.DS_Store', 'thumbs.db', 'Desktop.ini', '.DS_Store ', 'Thumbs.db.json'];
+    for (const name of like) disk.files.set(`${FOLDER}/${name}`, '');
+    expect((await storeOn(disk).survey()).unchecked.sort()).toEqual(like.map(name => `${FOLDER}/${name}`).sort());
   });
 
   it('lists the folder itself when a file is in its place, and fails when it cannot be listed', async () => {
