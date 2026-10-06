@@ -464,6 +464,29 @@ describe('a kept draft that could not be written (LEV-240)', () => {
     expect(Notice.log).toEqual([notWritten('exitKeptSource', '空になったノートの下書き', PATH, t().exitNoteChanged)]);
   });
 
+  // LEV-309: the shape the investigation did not see, a write cut off with the first part of the note left. The lost
+  // end is clear of the rename before it, so the rename was written over what was left, and the draft holding the
+  // note's text went, with no Notice.
+  it('keeps the draft and the note text it was planned on when only the first part of the note was left', async () => {
+    const { mounted, owner, kept } = await keep('前半だけ残ったノートの下書き');
+    // A few characters into the line after the edited one, then all but the last line break. (Cut just after the edited
+    // line, the change touches the edit and was refused already.)
+    const midLine = SOURCE.slice(0, SOURCE.indexOf('- 別のノード') + 3);
+    const lineBreak = SOURCE.slice(0, -1);
+    mounted.app.put(PATH, midLine);
+    const app = await reload(mounted, owner);
+    expect(noteOf(app)).toBe(midLine);
+    expect(keptOf(app)).toEqual(kept);
+    expect((kept[0] as { source?: string }).source).toBe(SOURCE);
+    const notice = notWritten('exitKeptSource', '前半だけ残ったノートの下書き', PATH, t().exitNoteChanged);
+    expect(Notice.log).toEqual([notice]);
+    app.put(PATH, lineBreak);
+    await loadAgain(app);
+    expect(noteOf(app)).toBe(lineBreak);
+    expect(keptOf(app)).toEqual(kept);
+    expect(Notice.log).toEqual([notice, notice]);
+  });
+
   it('keeps a draft that could not be planned (refused) and says only its title and reason are kept', async () => {
     const { mounted, input, owner } = await draft('計画できなかった下書き');
     const external = SOURCE.replace('  - 子ノード\n', '  - 外で書き換えた\n');

@@ -7,7 +7,8 @@
  * `npm run harness:e2e:<name>`) run here as its own child process, not imported into this one: a case
  * that hangs or crashes mid-CDP-call then only takes down its own process and connection, not the run's
  * (or the next case's). This file only sequences them and points `--json`/`--shot` at per-case paths so
- * a full run does not have every case overwrite the same file.
+ * a full run does not have every case overwrite the same file. A case with `args` runs its file with
+ * them first (one script behind two named cases, as its `npm run` script does).
  *
  * Usage: npm run harness:e2e -- [--case <name>] [--reload] [--json <dir>] [--shot <dir>] [--keep]
  *   --case   run only the named case (see CASES below) instead of all of them; no `summary.json` then,
@@ -67,6 +68,7 @@ export const CASES = [
   { name: 'draft-own-write', file: 'draft-own-write.mjs', description: 'E77 OS のクリップボードから下書きに貼る（画像・文字・画像と文字）、エラー行の無い下書きは右ボタンで閉じる、保持した下書きの上の右クリックの「元に戻す」は下書きを拒否させず、拒否される「子を追加」は何も書かない', shot: false },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
   { name: 'exit-draft-recovery', file: 'exit-draft-recovery.mjs', description: 'E84 再読込のときに書き込めなかった下書き（人工の故障でノートを 0 バイトにする）が残り、知らせが出て、救出コマンドで Mappy Recovery/ に別ファイルとして保存される。元のノートは 0 バイトのまま、下書きも残る', shot: false },
+  { name: 'exit-draft-cut', file: 'exit-draft-recovery.mjs', args: ['--cut'], description: 'E84 の --cut（LEV-309）: 人工の故障でノートを前半だけにしても、題名の下書きを書かずに原文ごと残し、知らせが出て、救出できる。元のノートは前半のまま', shot: false },
 ];
 
 const args = process.argv.slice(2);
@@ -99,7 +101,7 @@ if (jsonDir) await mkdir(jsonDir, { recursive: true });
 if (shotDir) await mkdir(shotDir, { recursive: true });
 
 const run = testCase => new Promise(resolve => {
-  const caseArgs = [...passthrough];
+  const caseArgs = [...(testCase.args ?? []), ...passthrough];
   if (jsonDir) caseArgs.push('--json', join(jsonDir, `${testCase.name}.json`));
   if (shotDir && testCase.shot) caseArgs.push('--shot', join(shotDir, `${testCase.name}.png`));
   console.log(`\n=== ${testCase.name}: ${testCase.description} ===`);

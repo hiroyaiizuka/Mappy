@@ -8,25 +8,28 @@
  * has kept the draft, a `pagehide` listener the case adds later (listeners run in the order added) empties the note
  * with a synchronous `fs.writeFileSync(…, '')`, which finishes before the page goes. It is not the real truncation,
  * and the case does not show why a note empties nor that it no longer does (LEV-240 does not fix that).
+ * With `--cut` (LEV-309) the fault leaves the first part of the note instead (`CUT_LEFT`: up to a few characters into
+ * the line after the edited one), the shape a write that stopped part way would leave and the investigation did not
+ * see. Before LEV-309 the next load wrote the title over what was left and dropped the draft with the note's text.
  *
  * 1. setup: `Fixtures/E2E-exit-draft-recovery.md` (`mappy: true`, `- 親`／`  - 子ノード`／`- 別のノード`); a draft of
  *    this note kept by an earlier run is taken out of `mappy-exit-drafts` first (the others are left as they are).
  * 2. reload: the map opened, F2 on 「子ノード」, a title typed, the fault listener added, `app:reload`. Before the page
- *    went, the listener saw Mappy's kept draft (Mappy's handler ran first) and emptied the note.
+ *    went, the listener saw Mappy's kept draft (Mappy's handler ran first) and emptied the note (`--cut`: cut it).
  * 3. after-reload: a Notice names the note and the title and says the input and the note's text are kept and the
  *    rescue command saves them (the exact Japanese text); `mappy-exit-drafts` still holds the draft with the note's
- *    text as it was; the note is still 0 bytes on disk 3 s later (Mappy writes nothing back).
+ *    text as it was; the note is still as the fault left it on disk 3 s later (Mappy writes nothing back).
  * 4. rescue: the command → the list (the row of this note and title) → 選ぶ → the confirmation (保存先, 元のノートは
  *    変更しません) → 別ファイルに保存: one new file in `Mappy Recovery/`, named `<note> <date time> <id>.md`, holding the
  *    note's text in a fence; the metadata cache gives it no frontmatter (no `mappy`); the Notice names it; the note is
- *    still 0 bytes and the draft is still kept.
+ *    still as the fault left it and the draft is still kept.
  * The case then takes its draft out of `mappy-exit-drafts` and deletes the files it made (not with `--keep`): each part
  * of the clean-up is tried on its own and a failure is recorded without stopping the rest; the folder goes only when
  * this run made it and it is empty, through the adapter's `rmdir` (`vault.delete` on the folder stopped with EISDIR on
- * Obsidian 1.13.7). A run left behind by an earlier one (this note emptied, its draft kept, its map open, an empty
- * folder) is taken up: setup closes this note's leaves and rewrites it; a folder that was there is left as it is.
+ * Obsidian 1.13.7). A run left behind by an earlier one (this note emptied or cut, its draft kept, its map open, an
+ * empty folder) is taken up: setup closes this note's leaves and rewrites it; a folder that was there is left as it is.
  *
- * Usage: npm run harness:e2e:exit-draft-recovery -- [--reload] [--json <out.json>] [--keep]
+ * Usage: npm run harness:e2e:exit-draft-recovery -- [--cut] [--reload] [--json <out.json>] [--keep]
  */
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -42,6 +45,11 @@ const SOURCE = [
   '- 親', '  - 子ノード', '- 別のノード', '',
 ].join('\n');
 const TITLE = '救出する入力';
+/**
+ * What `--cut`'s fault leaves of the note: up to 「- 別」, after the edited line (cut just after the edited line, the
+ * change would touch the edit, refused before LEV-309 too).
+ */
+const CUT_LEFT = SOURCE.slice(0, SOURCE.indexOf('- 別のノード') + 3);
 /** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`. */
 const EXIT_KEY = 'mappy-exit-drafts';
 /** src/ui/exit-draft-recovery.ts's `RECOVERY_FOLDER`. */
@@ -93,6 +101,8 @@ await main();
 async function main() {
   const { flag, value } = parseArgs();
   const record = createRecord(VAULT, NOTE);
+  /** The note on disk as the fault leaves it. */
+  const left = flag('--cut') ? CUT_LEFT : '';
   let cdp = await connect();
   let evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
   const step = makeStep(record);
@@ -175,15 +185,16 @@ async function main() {
       const typed = await evaluate(`${VIEW} return input()?.value ?? null;`);
       if (typed !== TITLE) throw new Error(`the draft does not hold the title typed: ${JSON.stringify(typed)}`);
       // The artificial fault: added after Mappy's handler (registered when the plugin loaded), so it runs after Mappy kept
-      // the draft; a synchronous write, so the note is empty before the page goes. What it saw is kept for the next page.
+      // the draft; a synchronous write, so the note is empty (or cut) before the page goes. What it saw is kept for the
+      // next page.
       await evaluate(`window.addEventListener('pagehide', event => {
           if (event.persisted) return;
           const kept = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)});
           const ours = Array.isArray(kept) ? kept.filter(item => item?.path === ${JSON.stringify(NOTE)}) : [];
           const target = require('path').join(app.vault.adapter.basePath, ${JSON.stringify(NOTE)});
-          let emptied = false;
-          try { require('fs').writeFileSync(target, ''); emptied = true; } catch {}
-          window.localStorage.setItem(${JSON.stringify(FAULT_KEY)}, JSON.stringify({ at: Date.now(), keptBefore: ours.length, emptied }));
+          let wrote = false;
+          try { require('fs').writeFileSync(target, ${JSON.stringify(left)}); wrote = true; } catch {}
+          window.localStorage.setItem(${JSON.stringify(FAULT_KEY)}, JSON.stringify({ at: Date.now(), keptBefore: ours.length, wrote }));
         });
         window.__mappyE2E = null;
         setTimeout(() => app.commands.executeCommandById('app:reload'), 0);
@@ -192,9 +203,9 @@ async function main() {
       await reconnect();
       await evaluate(`${ERRORS} return true;`);
       const fault = await evaluate(`return JSON.parse(window.localStorage.getItem(${JSON.stringify(FAULT_KEY)}) ?? 'null');`);
-      if (!fault?.emptied) throw new Error(`the fault did not empty the note as the page went (the case would prove nothing): ${JSON.stringify(fault)}`);
+      if (!fault?.wrote) throw new Error(`the fault did not write the note as the page went (the case would prove nothing): ${JSON.stringify(fault)}`);
       if (fault.keptBefore !== 1) throw new Error(`Mappy had not kept the draft when the fault ran (the listener order is not as the case assumes): ${JSON.stringify(fault)}`);
-      return { typed, fault };
+      return { typed, fault, shape: flag('--cut') ? 'cut' : 'empty', left };
     }));
 
     await step('after-reload', async () => {
@@ -210,8 +221,8 @@ async function main() {
       check(shown.includes(KEPT_NOTICE), `after-reload: the Notice is not the one saying the input and the note's text are kept: ${JSON.stringify(shown.filter(item => item.includes(NOTE)))}`);
       check(kept.length === 1 && kept[0].title === TITLE && kept[0].source === SOURCE,
         `after-reload: ${EXIT_KEY} does not hold the draft with the note's text: ${JSON.stringify(kept).slice(0, 800)}`);
-      check(disk.bytes === 0 && later.bytes === 0, `after-reload: the note is not empty on disk (Mappy wrote something back?): ${disk.bytes} then ${later.bytes} bytes`);
-      return { notices: shown, kept, bytes: [disk.bytes, later.bytes] };
+      check(disk.text === left && later.text === left, `after-reload: the note is not as the fault left it on disk (Mappy wrote something back?): ${JSON.stringify(disk.text)} then ${JSON.stringify(later.text)}`);
+      return { notices: shown, kept, bytes: [disk.bytes, later.bytes], text: later.text };
     });
 
     await step('rescue', async () => {
@@ -233,7 +244,7 @@ async function main() {
           buttons: Array.from(document.querySelectorAll('.modal button'), item => ({ text: item.textContent, cta: item.classList.contains('mod-cta') })) } : null;`),
       3000, 'the confirmation did not open');
       const unsaved = await onDisk();
-      check(unsaved.bytes === 0, 'rescue: the note changed before the save');
+      check(unsaved.text === left, 'rescue: the note changed before the save');
       const saved = await evaluate(`const button = Array.from(document.querySelectorAll('.modal button')).find(item => item.textContent === '別ファイルに保存');
         if (!button) return false; button.click(); return true;`);
       if (!saved) throw new Error(`no 別ファイルに保存 button: ${JSON.stringify(confirm)}`);
@@ -258,7 +269,7 @@ async function main() {
       check(cache?.frontmatter === null, `rescue: the metadata cache gives the file frontmatter: ${JSON.stringify(cache?.frontmatter)}`);
       const disk = await onDisk();
       const kept = await evaluate(`return ${OURS};`);
-      check(disk.bytes === 0, `rescue: the original note changed: ${disk.bytes} bytes`);
+      check(disk.text === left, `rescue: the original note changed: ${JSON.stringify(disk.text)}`);
       check(kept.length === 1 && kept[0].source === SOURCE, `rescue: the draft is no longer kept: ${JSON.stringify(kept).slice(0, 400)}`);
       return { listed, confirm, notice, path, cache, bytes: disk.bytes, keptCount: kept.length, text: text.slice(0, 600) };
     });

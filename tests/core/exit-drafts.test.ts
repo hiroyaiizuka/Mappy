@@ -52,6 +52,57 @@ describe('rebaseExitEdits', () => {
     const current = '- 前\n' + twins;
     expect(applyEdits(current, rebaseExitEdits(twins, current, [{ from: 6, to: 7, text: 'B' }])!)).toBe('- 前\n- A\n- B\n');
   });
+
+  // LEV-309: a write cut off as the page went can leave the first part of the note, not 0 bytes. The change is then the
+  // lost end, clear of a rename before it, and the rename was written over what was left; the draft, which held the
+  // note's text, went with it.
+  describe('a note whose end was cut off', () => {
+    // A line between the edit and the cut: cut just after the edited line, the change touches the edit, which was
+    // refused already. No two lines end alike, so no common end but the line break places the change.
+    const long = '- 親\n  - 子ノード\n- 一\n- 二\n- 別の項目\n';
+    const last = long.indexOf('- 別の項目');
+    it.each([
+      ['at the end of a line (its line break a common end)', long.slice(0, long.indexOf('- 二'))],
+      ['inside the last line', long.slice(0, last + 3)],
+      ['by its last line break alone', long.slice(0, -1)],
+    ])('refuses it cut %s', (_shape, current) => {
+      expect(rebaseExitEdits(long, current, rename)).toBeNull();
+    });
+  });
+
+  it('refuses a note cut off in the middle of a write that made it longer', () => {
+    // Another write was putting a line in after the edit when the page went: more is left than the draft's note had,
+    // but its end is gone.
+    const written = before.replace('- 別のノード\n', '- 足した\n- 別のノード\n');
+    const current = written.slice(0, -2);
+    expect(current.length).toBeGreaterThan(before.length);
+    expect(rebaseExitEdits(before, current, rename)).toBeNull();
+  });
+
+  // Passes without LEV-309 too: what it holds is that the guard leaves LEV-230's moves alone, a change of the last line
+  // within it, and a line taken out above it (as late as it goes, that change reaches into the last line; as early as
+  // it goes, it does not: the guard places it early).
+  it('still moves over a change of the last line that keeps its line break, and over a line taken out above it', () => {
+    const last = before.replace('- 別のノード\n', '- 別の名前\n');
+    expect(applyEdits(last, rebaseExitEdits(before, last, rename)!)).toBe(last.replace('子ノード', '新しい名前'));
+    const longer = before.replace('- 別のノード\n', '- 一\n- 真ん中\n- 別のノード\n');
+    const current = longer.replace('- 真ん中\n', '');
+    expect(applyEdits(current, rebaseExitEdits(longer, current, rename)!)).toBe(current.replace('子ノード', '新しい名前'));
+  });
+
+  it('refuses a note without a final line break cut inside its last line', () => {
+    const bare = before.slice(0, -1);
+    expect(rebaseExitEdits(bare, bare.slice(0, -2), rename)).toBeNull();
+    // The cost: a change there that runs to the very end looks the same, and is refused too (told and kept, as E05).
+    expect(rebaseExitEdits(bare, bare.replace('別のノード', '別の名前'), rename)).toBeNull();
+  });
+
+  // Passes without LEV-309 too: text only added at the very end leaves all of the note there, and still moves.
+  it('still moves over text added at the very end of a note without a final line break', () => {
+    const bare = before.slice(0, -1);
+    const added = `${bare}\n- 足した`;
+    expect(applyEdits(added, rebaseExitEdits(bare, added, rename)!)).toBe(added.replace('子ノード', '新しい名前'));
+  });
 });
 
 describe('readExitDrafts', () => {
