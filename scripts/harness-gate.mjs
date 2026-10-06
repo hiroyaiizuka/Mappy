@@ -26,8 +26,9 @@
  * CI: every check reported for the head must be SUCCESS. `check` (the Quality checks job) is always required and must
  * have passed; `--require-check` adds more. A skipped check is INCOMPLETE unless its name is given with `--skippable`
  * (opt-in per run: e.g. release.yml's `release` and `attest`, which run only on a tag), and a required check cannot be
- * made skippable. Cases: each `--require-case` (a summary's case name, or a case JSON's file name without `.json`)
- * must be among the JSONs.
+ * made skippable. Cases: each `--require-case` (a summary's case name, or the case a case JSON names itself, `case`,
+ * else its file name without `.json`) must be among the JSONs. A script behind two cases (E84 and its `--cut`) names the
+ * one it ran, so a run of the other saved under this one's name does not stand for it (LEV-309).
  *
  * Usage: npm run harness:gate -- --pr <number> --issue <KEY-123> --e2e <case.json|summary.json>...
  *          --require-case <name>... [--build release] [--require-check <name>]... [--skippable <name>]...
@@ -65,9 +66,13 @@ const checkName = item => item.name ?? item.context ?? '(unnamed)';
 const rollupText = rollup => JSON.stringify((Array.isArray(rollup) ? rollup : [])
   .map(item => [checkName(item), item.status ?? '', item.conclusion ?? '', item.state ?? '']).sort());
 
-/** The case names a JSON stands for: a summary's case names, or a case JSON's file name without `.json`. */
+/**
+ * The case names a JSON stands for: a summary's case names, or the case a case JSON names itself (`case`), else its
+ * file name without `.json`.
+ */
 export function caseNames({ path, json }) {
   if (Array.isArray(json?.results)) return json.results.map(result => result?.name).filter(name => typeof name === 'string');
+  if (typeof json?.case === 'string') return [json.case];
   return [basename(path).replace(/\.json$/u, '')];
 }
 
@@ -220,7 +225,11 @@ export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, 
       const label = `${path} › ${result?.name}`;
       if (result?.passed !== true) add('FAIL', `${label}: exit code ${result?.exitCode}`);
       if (!result?.record) add('INCOMPLETE', `${label}: no record`);
-      else reasons.push(...caseReasons(label, result.record, context));
+      else {
+        // run.mjs runs a case's file with its args: a record of the other case of the same file is not this one.
+        if (typeof result.record.case === 'string' && result.record.case !== result.name) add('FAIL', `${label}: the record is of the case ${result.record.case}`);
+        reasons.push(...caseReasons(label, result.record, context));
+      }
     }
   }
 

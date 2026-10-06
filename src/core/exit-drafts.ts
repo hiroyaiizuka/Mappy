@@ -31,18 +31,68 @@ export const EXIT_DRAFT_TTL = 24 * 60 * 60 * 1000;
  * planned again here (review 2). Where the change sits is ambiguous in repeated text (「- A\n- A\n」 losing a line
  * could have lost either): it is placed both as far forward and as far back as it goes, and the edit moves only when
  * both leave it clear on the same side, so a same-titled node never takes another's draft (review 3, AGENTS.md: 同名
- * 見出し). Nothing is guessed either when the change reaches the edit (E05).
+ * 見出し). Nothing is guessed either when the change reaches the edit (E05), nor when the note looks cut off (LEV-309):
+ * a write that stopped as the page went leaves the first part of what it was writing, and the draft, the one copy of
+ * the rest, would go once written. So nothing moves onto a note shorter than `before` (a cut that also changed a line
+ * above it, or moved the last node up, can end like `before` does: the owner's decision of 2026-10-06 refuses every
+ * shorter note, a deletion the person made included), nor onto the first part of `before` itself, nor over a change
+ * that takes its end off even placed as early as it goes (`cutsEnd`), unless all it takes is blank. A note that is
+ * written is backed up first (`src/obsidian/exit-backup-store.ts`), so a cut this cannot tell still leaves `before`.
  */
 export function rebaseExitEdits(before: string, current: string, edits: readonly TextEdit[]): TextEdit[] | null {
   if (edits.length !== 1) return null;
+  // The first part of `before` itself (LEV-309's first guard), then any shorter note (the owner's decision of
+  // 2026-10-06), which takes in the first: the first is kept as it was, so each reads as its own rule.
+  if (current.length < before.length && before.startsWith(current) && /\S/u.test(before.slice(current.length))) return null;
+  if (current.length < before.length) return null;
   const late = diffEdit(before, current);
   const early = diffFromEnd(before, current);
-  const side = (change: TextEdit, edit: TextEdit): number => change.to < edit.from ? -1 : change.from > edit.to ? 1 : 0;
+  if (cutsEnd(before, early)) return null;
+  const side = (change: TextEdit, edit: TextEdit): number => touches(change, edit) ? 0 : change.to < edit.from ? -1 : 1;
   for (const edit of edits) {
     const at = side(late, edit);
     if (at === 0 || side(early, edit) !== at) return null;
   }
   return rebaseEdits(edits, [late]) ?? null;
+}
+
+/** Whether `change` reaches `edit` or only touches it (an end of one at an end of the other, an insertion there). */
+const touches = (change: TextEdit, edit: TextEdit): boolean => change.to >= edit.from && change.from <= edit.to;
+
+/**
+ * Whether `change` takes the end off `text`, as a write that stopped part way does: what it takes away is not all
+ * blank, reaches the last line with text (or the line break before it: the line left at the end is not that whole line
+ * then, only text ending like it, as a same-titled node at another depth), and runs to the very end or takes a line
+ * break with it. A change within the last line that keeps its line break does not, nor one that only inserts (all of
+ * `text` is still there). Not told apart: a change the person made there of the same shape (the last line taken out,
+ * or changed to the very end of a note without a final line break), refused too; and a cut that leaves at the end a
+ * whole line the same as the last one (from the line's start), let through.
+ */
+function cutsEnd(text: string, change: TextEdit): boolean {
+  const removed = text.slice(change.from, change.to);
+  if (!/\S/u.test(removed)) return false;
+  const end = text.trimEnd().length;
+  const last = end === 0 ? 0 : text.lastIndexOf('\n', end - 1) + 1;
+  return change.to >= last && (change.to === text.length || /[\n\r]/u.test(removed));
+}
+
+/**
+ * `edits`, planned on a note, moved over `steps`: the edits other kept drafts planned on the same text made in it this
+ * load, in order, each in the text the one before left (two maps of a note, each with a draft). Known exactly, so
+ * neither where a change sits nor whether the note was cut off is guessed (LEV-309: the first map renaming the last
+ * line of a note without a final line break looked to `rebaseExitEdits` like its end cut off). Only a plan of one edit
+ * moves, as there, and only clear of each step (not touching it either: review 2).
+ */
+export function rebaseOverDrafts(edits: readonly TextEdit[], steps: readonly (readonly TextEdit[])[]): TextEdit[] | null {
+  if (edits.length !== 1) return null;
+  let moved: TextEdit[] = [...edits];
+  for (const step of steps) {
+    if (moved.some(edit => step.some(other => touches(other, edit)))) return null;
+    const next = rebaseEdits(moved, step);
+    if (!next) return null;
+    moved = next;
+  }
+  return moved;
 }
 
 /** `diffEdit` with the common end taken first: the same change placed as early in the text as it goes. */
@@ -72,7 +122,8 @@ export function textFingerprint(text: string): string {
   return `${text.length}:${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`;
 }
 
-const isEdit = (value: unknown): value is TextEdit => {
+/** Whether `value` is an edit as kept: whole offsets, `to` not before `from`, a text. */
+export const isEdit = (value: unknown): value is TextEdit => {
   if (!value || typeof value !== 'object') return false;
   const edit = value as Record<string, unknown>;
   return Number.isInteger(edit.from) && Number.isInteger(edit.to) && typeof edit.text === 'string'
@@ -93,6 +144,15 @@ export function readExitDrafts(value: unknown): ExitDraft[] {
     const kept = edits.map(edit => ({ from: edit.from, to: edit.to, text: edit.text }));
     return [{ path, title, at, before, after, edits: kept, ...(typeof draft.source === 'string' ? { source: draft.source } : {}) }];
   });
+}
+
+/**
+ * A kept draft without the note text it may carry: what `withoutSources` leaves of it when storage is short, so a draft
+ * kept again without its text is still the same one. Its SHA-256 names the draft's backup (`src/core/exit-backup.ts`).
+ */
+export function draftKey(draft: ExitDraft): string {
+  return JSON.stringify('refused' in draft ? [draft.path, draft.title, draft.at, draft.refused]
+    : [draft.path, draft.title, draft.at, draft.before, draft.after, draft.edits]);
 }
 
 /** The same drafts without the note texts they carry: what still fits when `localStorage` refuses them all. */

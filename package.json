@@ -64,6 +64,7 @@
     "harness:e2e:reread-own-writes": "node scripts/e2e/reread-own-writes.mjs",
     "harness:e2e:close-draft": "node scripts/e2e/close-draft.mjs",
     "harness:e2e:exit-draft-recovery": "node scripts/e2e/exit-draft-recovery.mjs",
+    "harness:e2e:exit-draft-cut": "node scripts/e2e/exit-draft-recovery.mjs --cut",
     "harness:e2e:indent-unit": "node scripts/e2e/indent-unit.mjs",
     "harness:e2e:english-ui": "node scripts/e2e/english-ui.mjs",
     "harness:e2e:main-topic": "node scripts/e2e/main-topic.mjs",
