@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdits } from '../../src/core/commands';
-import { readExitDrafts, rebaseExitEdits, rebaseOverDraft, textFingerprint } from '../../src/core/exit-drafts';
+import { readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint } from '../../src/core/exit-drafts';
 
 // LEV-230: a draft kept as the page went is applied at the next load to the note as it is then.
 describe('rebaseExitEdits', () => {
@@ -136,22 +136,35 @@ describe('rebaseExitEdits', () => {
 
 // LEV-309, review 1: two maps of a note, each with a draft. The first written leaves a note whose change the second
 // knows exactly (the first's edits), where a diff would guess, and saw the last line renamed to the very end as a cut.
-describe('rebaseOverDraft', () => {
+describe('rebaseOverDrafts', () => {
   const bare = '- 親\n  - 子ノード\n- 別のノード';
   const rename = [{ from: bare.indexOf('子ノード'), to: bare.indexOf('子ノード') + 4, text: '新しい名前' }];
   const lastLine = [{ from: bare.indexOf('別のノード'), to: bare.length, text: '別の名前' }];
+  const parent = [{ from: bare.indexOf('親'), to: bare.indexOf('親') + 1, text: '上' }];
 
   it('moves a rename over the edits of another draft of the note', () => {
     const first = applyEdits(bare, lastLine);
     expect(rebaseExitEdits(bare, first, rename)).toBeNull();
-    expect(applyEdits(first, rebaseOverDraft(rename, lastLine)!)).toBe('- 親\n  - 新しい名前\n- 別の名前');
+    expect(applyEdits(first, rebaseOverDrafts(rename, [lastLine])!)).toBe('- 親\n  - 新しい名前\n- 別の名前');
     const other = applyEdits(bare, rename);
-    expect(applyEdits(other, rebaseOverDraft(lastLine, rename)!)).toBe('- 親\n  - 新しい名前\n- 別の名前');
+    expect(applyEdits(other, rebaseOverDrafts(lastLine, [rename])!)).toBe('- 親\n  - 新しい名前\n- 別の名前');
   });
 
-  it('refuses a plan of more edits, and one over edits that reach it', () => {
-    expect(rebaseOverDraft([...lastLine, { from: 0, to: 0, text: '---\nmappy: true\n---\n' }], rename)).toBeNull();
-    expect(rebaseOverDraft(rename, [{ from: rename[0]!.from, to: rename[0]!.to, text: '外' }])).toBeNull();
+  // Review 2: with a third draft the note matched neither earlier draft's `after`, and the diff refused it again.
+  it('moves over the edits of several drafts in order, each in the text the one before left', () => {
+    const first = applyEdits(bare, lastLine);
+    const second = rebaseOverDrafts(rename, [lastLine])!;
+    const both = applyEdits(first, second);
+    expect(applyEdits(both, rebaseOverDrafts(parent, [lastLine, second])!)).toBe('- 上\n  - 新しい名前\n- 別の名前');
+  });
+
+  // Review 2: `rebaseEdits` moves an edit over one that only touches it; `rebaseExitEdits` refuses that.
+  it('refuses a plan of more edits, and one over edits that reach or touch it', () => {
+    expect(rebaseOverDrafts([...lastLine, { from: 0, to: 0, text: '---\nmappy: true\n---\n' }], [rename])).toBeNull();
+    const { from, to } = rename[0]!;
+    expect(rebaseOverDrafts(rename, [[{ from, to, text: '外' }]])).toBeNull();
+    expect(rebaseOverDrafts(rename, [[{ from: to, to, text: 'X' }]])).toBeNull();
+    expect(rebaseOverDrafts(rename, [[{ from: from - 1, to: from, text: '' }]])).toBeNull();
   });
 });
 

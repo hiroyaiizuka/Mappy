@@ -68,14 +68,22 @@ function cutsEnd(text: string, change: TextEdit): boolean {
 }
 
 /**
- * `edits`, planned on a note, moved over `earlier`: the edits of another kept draft planned on the same text, once
- * they are in the note (two maps of a note, each with a draft). Known exactly, so neither where a change sits nor
- * whether the note was cut off is guessed (LEV-309: the first map renaming the last line of a note without a final
- * line break looked to `rebaseExitEdits` like its end cut off). Only a plan of one edit moves, as there.
+ * `edits`, planned on a note, moved over `steps`: the edits other kept drafts planned on the same text made in it this
+ * load, in order, each in the text the one before left (two maps of a note, each with a draft). Known exactly, so
+ * neither where a change sits nor whether the note was cut off is guessed (LEV-309: the first map renaming the last
+ * line of a note without a final line break looked to `rebaseExitEdits` like its end cut off). Only a plan of one edit
+ * moves, as there, and only clear of each step (not touching it either: review 2).
  */
-export function rebaseOverDraft(edits: readonly TextEdit[], earlier: readonly TextEdit[]): TextEdit[] | null {
+export function rebaseOverDrafts(edits: readonly TextEdit[], steps: readonly (readonly TextEdit[])[]): TextEdit[] | null {
   if (edits.length !== 1) return null;
-  return rebaseEdits(edits, earlier) ?? null;
+  let moved: TextEdit[] = [...edits];
+  for (const step of steps) {
+    if (moved.some(edit => step.some(other => other.from <= edit.to && other.to >= edit.from))) return null;
+    const next = rebaseEdits(moved, step);
+    if (!next) return null;
+    moved = next;
+  }
+  return moved;
 }
 
 /** `diffEdit` with the common end taken first: the same change placed as early in the text as it goes. */

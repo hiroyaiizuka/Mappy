@@ -232,22 +232,26 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
     expect(Notice.log).toEqual([]);
   });
 
-  // LEV-309, review 1: two drafts of a note kept at once (a draft blur does not save, an error row's or one mid IME
+  // LEV-309, review 1: drafts of a note kept at once (a draft blur does not save, an error row's or one mid IME
   // composition, in one map, and one in another; E59's 9). The first renamed the last node of a note without a final
-  // line break, which the second's move took for the note's end cut off. Its edits are known, and the second moves
-  // over them (passes before LEV-309 too, where the diff moved it; fails with LEV-309's guard alone).
-  it('applies two kept drafts of a note when the first renames the last node of a note without a final line break', async () => {
+  // line break, which the next one's move took for the note's end cut off. Their edits are known, and each moves over
+  // those before it (two pass before LEV-309 too, where the diff moved them, and fail with its guard alone; review 2:
+  // a third matched neither earlier draft's `after`, and was refused again).
+  it.each([2, 3])('applies %i kept drafts of a note when the first renames the last node of a note without a final line break', async (count) => {
     const bare = SOURCE.slice(0, -1);
-    const lastLine = [{ from: bare.indexOf('別のノード'), to: bare.length, text: '一つ目の下書き' }];
-    const child = [{ from: bare.indexOf('子ノード'), to: bare.indexOf('子ノード') + 4, text: '二つ目の下書き' }];
-    const keptDraft = (title: string, edits: typeof child) => ({
-      path: PATH, title, at: Date.now(), before: textFingerprint(bare), after: textFingerprint(applyEdits(bare, edits)), edits, source: bare,
-    });
+    const at = (text: string) => bare.indexOf(text);
+    const edits = [
+      [{ from: at('別のノード'), to: bare.length, text: '一つ目の下書き' }],
+      [{ from: at('子ノード'), to: at('子ノード') + 4, text: '二つ目の下書き' }],
+      [{ from: at('親'), to: at('親') + 1, text: '三つ目の下書き' }],
+    ].slice(0, count);
     const app = new HarnessApp();
     app.put(PATH, bare);
-    app.saveLocalStorage(EXIT_DRAFTS_KEY, [keptDraft('一つ目の下書き', lastLine), keptDraft('二つ目の下書き', child)]);
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, edits.map((planned, index) => ({
+      path: PATH, title: `下書き${index}`, at: Date.now(), before: textFingerprint(bare), after: textFingerprint(applyEdits(bare, planned)), edits: planned, source: bare,
+    })));
     await loadAgain(app);
-    expect(noteOf(app)).toBe(bare.replace('- 別のノード', '- 一つ目の下書き').replace('  - 子ノード\n', '  - 二つ目の下書き\n'));
+    expect(noteOf(app)).toBe(applyEdits(bare, edits.flat()));
     expect(app.loadLocalStorage(EXIT_DRAFTS_KEY)).toBeNull();
     expect(Notice.log).toEqual([]);
   });

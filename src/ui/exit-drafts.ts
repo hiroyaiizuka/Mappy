@@ -1,5 +1,6 @@
 import { Notice, type App, type Component } from "obsidian";
-import { EXIT_DRAFT_TTL, readExitDrafts, rebaseExitEdits, rebaseOverDraft, textFingerprint, withoutSources, type ExitDraft } from "../core/exit-drafts";
+import type { TextEdit } from "../core/commands";
+import { EXIT_DRAFT_TTL, readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint, withoutSources, type ExitDraft } from "../core/exit-drafts";
 import type { DocumentStore } from "../obsidian/document-store";
 import { messagesFor, t } from "../i18n";
 import type { MindmapView } from "./mindmap-view";
@@ -69,10 +70,11 @@ async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => b
     // The entry as last written in this pass (undefined: not yet; null: storage refused it). One not written stays as
     // it is, so the entry is written back once, to tell whether it holds the drafts the Notices say are kept.
     let written: ExitDraft[] | null | undefined;
+    const known: KnownWrites = new Map();
     for (let index = 0; index < drafts.length && !unloaded(); index += 1) {
       const draft = drafts[index]!;
       let failure: unknown = null;
-      try { await applyExitDraft(app, store, draft, drafts); } catch (error) { failure = error ?? new Error(""); }
+      try { await applyExitDraft(app, store, draft, known); } catch (error) { failure = error ?? new Error(""); }
       if (failure === null) { written = saveWithout(app, draft); continue; }
       if (written === undefined) written = saveWithout(app, null);
       // As the entry holds it: a `pagehide` meanwhile may have kept it again without the note's text.
@@ -135,8 +137,16 @@ export function joinSentences(...sentences: string[]): string {
     : japanese && /[。！？」）]$/u.test(joined) ? `${joined}${sentence}` : `${joined} ${sentence}`, "");
 }
 
-/** `draft` written into its note; `kept`, the drafts this pass read, for another draft of the note written first. */
-async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft, kept: readonly ExitDraft[]): Promise<void> {
+/**
+ * The notes this pass wrote kept drafts into from the text they were planned on, by the note and the text each write
+ * left (`path` and its fingerprint, a line apart): that text and the edits written, in order. Only this load's: a
+ * draft whose note another draft was written into at an earlier load (the rest left when Mappy was unloaded midway)
+ * is moved by the diff (`rebaseExitEdits`), as an unread change.
+ */
+type KnownWrites = Map<string, { before: string; steps: TextEdit[][] }>;
+
+/** `draft` written into its note; `known`, what this pass wrote before it, added to when this write is one of them. */
+async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft, known: KnownWrites): Promise<void> {
   if ("refused" in draft) throw new Error(draft.refused);
   const file = app.vault.getFileByPath(draft.path);
   if (!file) throw new Error(t().exitNoteGone);
@@ -144,14 +154,15 @@ async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft, 
   const found = textFingerprint(current);
   if (found === draft.after) return;
   if (Date.now() - draft.at > EXIT_DRAFT_TTL) throw new Error(t().exitDraftExpired);
-  // The note the draft was planned on; one that another kept draft planned on the same text left (two maps of the
-  // note), whose edits are known (LEV-309); or one changed elsewhere since (a change the map had not read) whose
+  // The note the draft was planned on; one that other kept drafts planned on the same text left this pass (two maps
+  // of the note), whose edits are known (LEV-309); or one changed elsewhere since (a change the map had not read) whose
   // change stays clear of a plain rename and does not look cut off.
-  const first = kept.find((item): item is Exclude<ExitDraft, { refused: string }> => item !== draft && !("refused" in item)
-    && item.path === draft.path && item.before === draft.before && item.after === found);
-  const edits = found === draft.before ? draft.edits : first ? rebaseOverDraft(draft.edits, first.edits)
+  const over = known.get(`${draft.path}\n${found}`);
+  const steps = found === draft.before ? [] : over?.before === draft.before ? over.steps : null;
+  const edits = found === draft.before ? draft.edits : steps ? rebaseOverDrafts(draft.edits, steps)
     : draft.source === undefined ? null : rebaseExitEdits(draft.source, current, draft.edits);
   if (!edits) throw new Error(t().exitNoteChanged);
   // Refused by the store if the note moved on since the read above.
-  await store.applyOver(file, current, edits);
+  const write = await store.applyOver(file, current, edits);
+  if (steps && write.before === current) known.set(`${draft.path}\n${textFingerprint(write.after)}`, { before: draft.before, steps: [...steps, write.edits] });
 }
