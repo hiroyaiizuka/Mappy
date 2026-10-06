@@ -63,6 +63,11 @@ const renamed = (title, from = SOURCE) => from.replace('  - 子ノード\n', `  
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 const NOT_SAVED = '編集中の内容を保存できませんでした';
 const EXIT_NOT_SAVED = '再読込・終了のときに';
+/**
+ * What only the Notice of a draft not written says (src/i18n/ja.ts's `exitDraftNotWritten`). Since LEV-309 the Notice
+ * of a draft that was written begins the same way (`exitWrittenWithBackup`), and does not say the draft was not saved.
+ */
+const EXIT_NOT_WRITTEN = '書き込めませんでした';
 /** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`: without this note's drafts once the plugin has applied what the page before kept. */
 const EXIT_KEY = 'mappy-exit-drafts';
 /** Script: the kept drafts of this note (a draft not written stays kept since LEV-240; other notes' may be there). */
@@ -75,7 +80,7 @@ const dropKeptHere = () => evaluate(`const all = app.loadLocalStorage(${JSON.str
   app.saveLocalStorage(${JSON.stringify(EXIT_KEY)}, rest.length > 0 ? rest : null);
   return all.length - rest.length;`);
 /** A Notice saying a draft of this note was not written at the reload or quit. */
-const notSavedHere = item => item.includes(EXIT_NOT_SAVED) && item.includes(NOTE);
+const notSavedHere = item => item.includes(EXIT_NOT_SAVED) && item.includes(EXIT_NOT_WRITTEN) && item.includes(NOTE);
 
 /** Row 9 launches Obsidian again after its quit, with the profile the harness names (docs/harness.md 実機検証). */
 const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
@@ -395,7 +400,7 @@ try {
       await detachAll();
       check(after.errors.length === 0, `8b-reload-held-own-node: page errors after the reload: ${JSON.stringify(after.errors).slice(0, 1500)}`);
       check(after.source === external, `8b-reload-held-own-node: the reload wrote over the outside change: ${JSON.stringify(after.source)}`);
-      check(after.notices.some(item => item.includes(EXIT_NOT_SAVED) && item.includes('再読込で保存できない下書き')),
+      check(after.notices.some(item => item.includes(EXIT_NOT_SAVED) && item.includes(EXIT_NOT_WRITTEN) && item.includes('再読込で保存できない下書き')),
         `8b-reload-held-own-node: no Notice after the reload named the draft that was not saved: ${JSON.stringify(after.notices)}`);
       // LEV-240: the draft not written stays kept (for the rescue command); taken out here so row 9 starts from none.
       check(after.kept.length === 1 && after.kept[0].title === '再読込で保存できない下書き',
