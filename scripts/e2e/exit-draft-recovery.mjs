@@ -41,6 +41,16 @@
  * (the size the store counts the folder by). The backup files this run made are deleted with the rest (not with
  * `--keep`); the plugin itself deletes none.
  *
+ * LEV-310 adds 破棄 to the rescue list, after a confirmation, and these rows. In both modes, after the rescue:
+ * (e) discard-draft: a second draft of this note is put beside the one kept (as a later page would keep it); 破棄 on the
+ * kept one's line → the confirmation (what goes, 破棄する as a warning, キャンセル) → キャンセル: the entry is as it was, to
+ * the character, and the note too; then 破棄 → 破棄する: that draft alone is gone, the second one and every other item
+ * stay as they were and where they were, the note is as before, no file is made, and the Notice says it was discarded.
+ * Without `--cut`, after the backup's rescue: (f) discard-backup: 破棄 on the applied backup's line → the confirmation
+ * (it goes to the system trash) → キャンセル: the backup folder is as it was; then 破棄 → 破棄する: that file alone is gone
+ * from the folder (moved to the system trash, or deleted where there is none, as the Notice says), the note is as
+ * written. Where the trashed file went is recorded, not judged. Nothing else discards: the plugin deletes nothing itself.
+ *
  * Usage: npm run harness:e2e:exit-draft-recovery -- [--cut] [--reload] [--json <out.json>] [--keep]
  */
 import { createHash } from 'node:crypto';
@@ -89,7 +99,14 @@ const SAVED_BACKUP = 'に保存しました。元のノートと控えは変更�
  */
 const backupIdOf = draft => createHash('sha256').update(JSON.stringify([draft.path, draft.title, draft.at, draft.before, draft.after,
   draft.edits.map(edit => ({ from: edit.from, to: edit.to, text: edit.text }))])).digest('hex');
-const SAVED = 'に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。';
+const SAVED = 'に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。要らなくなった下書きは、同じコマンドの一覧の「破棄」で消せます。';
+/** src/i18n/ja.ts's `discardDraftWhat`, `discardedDraft`, `discardedBackupTrash` and `discardedBackupRemoved`, copied (LEV-310). */
+const discardWhat = title => `再読込・終了のときに ${NOTE} で編集していた「${title}」の下書きを破棄します。`;
+const discarded = title => `「${title}」の下書きを破棄しました。元のノートは変更していません。`;
+const BACKUP_TRASHED = '控えを OS のゴミ箱に移しました。元のノートは変更していません。';
+const BACKUP_REMOVED = 'OS のゴミ箱が使えなかったため、控えを消しました。元のノートは変更していません。';
+/** The second draft of this note the discard row puts beside the kept one, which must stay (LEV-310). */
+const SIBLING_TITLE = '残す入力';
 /** Where the fault listener writes what it saw (`window.localStorage`, synchronous, kept across the reload). */
 const FAULT_KEY = 'mappy-e2e-exit-draft-fault';
 
@@ -244,6 +261,36 @@ async function main() {
     return { typed, fault };
   };
 
+  /**
+   * Opens the rescue list and presses 破棄 on the `kind` line of this note whose title is `title`; the confirmation as
+   * shown (title, texts, buttons), or throws when the line or the confirmation is not there (LEV-310).
+   */
+  const openDiscard = async (kind, title) => {
+    await evaluate(`for (const modal of document.querySelectorAll('.modal-container')) modal.remove();
+      app.commands.executeCommandById(${JSON.stringify(COMMAND)}); return true;`);
+    await until(() => evaluate(`return document.querySelectorAll('.modal .setting-item').length > 0;`), 3000, 'the list did not open');
+    const pressed = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item[data-mappy-rescue=${JSON.stringify(kind)}]')).find(item =>
+        item.querySelector('.setting-item-name')?.textContent === ${JSON.stringify(NOTE)}
+        && item.querySelector('.setting-item-description')?.textContent.includes(${JSON.stringify(`題名: ${title}`)}));
+      const button = row?.querySelector('button[data-mappy-rescue-action="discard"]');
+      if (!button) return false;
+      button.click(); return true;`);
+    if (!pressed) throw new Error(`no ${kind} line with 破棄 for this note and ${title}`);
+    return until(() => evaluate(`const title = document.querySelector('.modal .modal-title')?.textContent ?? '';
+      return title.endsWith('を破棄') ? { title, texts: Array.from(document.querySelectorAll('.modal p'), item => item.textContent),
+        buttons: Array.from(document.querySelectorAll('.modal button'), item => ({ text: item.textContent, warning: item.classList.contains('mod-warning'), disabled: item.disabled })) } : null;`),
+    3000, 'the discard confirmation did not open');
+  };
+  /** Presses the confirmation's button `text`, then waits for the modal to close. */
+  const pressInModal = async text => {
+    const pressed = await evaluate(`const button = Array.from(document.querySelectorAll('.modal button')).find(item => item.textContent === ${JSON.stringify(text)});
+      if (!button) return false; button.click(); return true;`);
+    if (!pressed) throw new Error(`no ${text} button in the confirmation`);
+    await until(() => evaluate(`return document.querySelectorAll('.modal').length === 0;`), 3000, 'the confirmation did not close');
+  };
+  /** The entry as stored (its JSON text, to compare to the character), and its items. */
+  const entryNow = () => evaluate(`const raw = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}); return { text: JSON.stringify(raw), items: Array.isArray(raw) ? raw : [] };`);
+
   try {
     required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
     required(record, 'setup', await step('setup', async () => {
@@ -297,7 +344,7 @@ async function main() {
       const picked = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item[data-mappy-rescue="draft"]')).find(item =>
           item.querySelector('.setting-item-name')?.textContent === ${JSON.stringify(NOTE)}
           && item.querySelector('.setting-item-description')?.textContent.includes(${JSON.stringify(`題名: ${TITLE}`)}));
-        const button = row?.querySelector('button');
+        const button = row?.querySelector('button[data-mappy-rescue-action="pick"]');
         if (!button) return false;
         button.click(); return true;`);
       if (!picked) throw new Error(`no row for this note and title in the list: ${JSON.stringify(listed)}`);
@@ -335,6 +382,47 @@ async function main() {
       check(disk.text === left, `rescue: the original note changed: ${JSON.stringify(disk.text)}`);
       check(kept.length === 1 && kept[0].source === SOURCE, `rescue: the draft is no longer kept: ${JSON.stringify(kept).slice(0, 400)}`);
       return { listed, confirm, notice, path, cache, bytes: disk.bytes, keptCount: kept.length, text: text.slice(0, 600) };
+    });
+
+    // (e) LEV-310: 破棄 on the kept draft's line: キャンセル changes nothing; 破棄する takes out that draft alone.
+    await step('discard-draft', async () => {
+      // A second draft of this note beside the kept one, as a later page would keep it: it must stay.
+      const added = await evaluate(`const raw = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)});
+        const items = Array.isArray(raw) ? raw.slice() : [];
+        const kept = items.find(item => item?.path === ${JSON.stringify(NOTE)} && item?.title === ${JSON.stringify(TITLE)});
+        if (!kept) return null;
+        const sibling = { ...kept, title: ${JSON.stringify(SIBLING_TITLE)}, at: kept.at + 1000 };
+        app.saveLocalStorage(${JSON.stringify(EXIT_KEY)}, [...items, sibling]);
+        return sibling;`);
+      if (!added) throw new Error(`no kept draft of ${TITLE} to put a second one beside`);
+      const start = await entryNow();
+      const recoveryBefore = await recoveryFiles();
+      const noteBefore = await onDisk();
+      const shown = await openDiscard('draft', TITLE);
+      check(shown.title === '下書きを破棄' && shown.texts[0] === discardWhat(TITLE), `discard-draft: the confirmation does not say which draft goes: ${JSON.stringify(shown)}`);
+      check(JSON.stringify(shown.buttons) === JSON.stringify([{ text: '破棄する', warning: true, disabled: false }, { text: 'キャンセル', warning: false, disabled: false }]),
+        `discard-draft: the confirmation's buttons are not 破棄する (a warning) and キャンセル: ${JSON.stringify(shown.buttons)}`);
+      await pressInModal('キャンセル');
+      await wait(500);
+      const cancelled = await entryNow();
+      check(cancelled.text === start.text, `discard-draft: キャンセル changed the entry: ${cancelled.text.slice(0, 400)}`);
+      const confirm = await openDiscard('draft', TITLE);
+      await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove(); return true;`);
+      await pressInModal('破棄する');
+      const notice = await until(async () => (await notices()).find(item => item === discarded(TITLE)) ?? null, 5000, 'no Notice said the draft was discarded');
+      const after = await entryNow();
+      const expected = start.items.filter((item, index) => index !== start.items.findIndex(other => other?.path === NOTE && other?.title === TITLE));
+      check(JSON.stringify(after.items) === JSON.stringify(expected), `discard-draft: the entry is not the one before less that draft: ${after.text.slice(0, 600)}`);
+      check(after.items.some(item => item?.path === NOTE && item?.title === SIBLING_TITLE), 'discard-draft: the second draft of this note went too');
+      const noteAfter = await onDisk();
+      check(noteBefore.text === left && noteAfter.text === left, `discard-draft: the note changed: ${JSON.stringify(noteAfter.text)}`);
+      const recoveryAfter = await recoveryFiles();
+      check(JSON.stringify(recoveryAfter) === JSON.stringify(recoveryBefore), `discard-draft: files changed in ${FOLDER}: ${JSON.stringify(recoveryAfter)}`);
+      const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
+      check(errors.length === 0, `discard-draft: page errors: ${JSON.stringify(errors).slice(0, 600)}`);
+      await dropOurs();
+      return { shown, cancelledSame: cancelled.text === start.text, confirm, notice, before: start.items.length, after: after.items.length,
+        others: after.items.filter(item => item?.path !== NOTE).length, noteBytes: noteAfter.bytes };
     });
 
     // (a) LEV-309: the cut the earlier guards let through, shorter than the note: not written, nothing backed up.
@@ -407,7 +495,7 @@ async function main() {
       const picked = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item[data-mappy-rescue="applied"]')).find(item =>
           item.querySelector('.setting-item-name')?.textContent === ${JSON.stringify(NOTE)}
           && item.querySelector('.setting-item-description')?.textContent.includes(${JSON.stringify(`題名: ${BACKUP_TITLE}`)}));
-        const button = row?.querySelector('button');
+        const button = row?.querySelector('button[data-mappy-rescue-action="pick"]');
         if (!button) return false;
         button.click(); return true;`);
       if (!picked) throw new Error(`no applied backup row for this note and title in the list: ${JSON.stringify(listed)}`);
@@ -428,6 +516,39 @@ async function main() {
       const after = await backupFiles();
       check(after.includes(`${id}.applied.json`) && (await readFile(join(VAULT, appliedPath), 'utf8')) === content, 'written-backup: the rescue changed the backup');
       return { id, made, notices: shown, listed, notice, rescued, sizes: { onDiskBytes, adapterBytes, utf8: Buffer.byteLength(content, 'utf8') } };
+    });
+
+    // (f) LEV-310: 破棄 on the applied backup's line: キャンセル changes nothing; 破棄する takes that file alone away.
+    if (!cut) await step('discard-backup', async () => {
+      const id = record.steps['written-backup']?.id;
+      if (!id) throw new Error('written-backup did not make a backup to discard');
+      const name = `${id}.applied.json`;
+      const folderBefore = await backupFiles();
+      if (!folderBefore.includes(name)) throw new Error(`${name} is not in the backup folder`);
+      const content = await readFile(join(VAULT, backupsDir, name), 'utf8');
+      const expectedNote = LONGER.replace('  - 子ノード\n', `  - ${BACKUP_TITLE}\n`);
+      const shown = await openDiscard('applied', BACKUP_TITLE);
+      check(shown.title === '控えを破棄' && shown.texts.some(text => text.includes('OS のゴミ箱に移します')),
+        `discard-backup: the confirmation does not say the backup goes to the system trash: ${JSON.stringify(shown)}`);
+      check(shown.buttons[0]?.text === '破棄する' && shown.buttons[0]?.warning && !shown.buttons[0]?.disabled, `discard-backup: 破棄する is not offered: ${JSON.stringify(shown.buttons)}`);
+      await pressInModal('キャンセル');
+      await wait(500);
+      const cancelled = await backupFiles();
+      check(JSON.stringify(cancelled) === JSON.stringify(folderBefore), `discard-backup: キャンセル changed the backup folder: ${JSON.stringify(cancelled)}`);
+      await openDiscard('applied', BACKUP_TITLE);
+      await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove(); return true;`);
+      await pressInModal('破棄する');
+      const notice = await until(async () => (await notices()).find(item => item === BACKUP_TRASHED || item === BACKUP_REMOVED) ?? null, 5000, 'no Notice said the backup was discarded');
+      const folderAfter = await backupFiles();
+      check(JSON.stringify(folderAfter) === JSON.stringify(folderBefore.filter(item => item !== name)), `discard-backup: the backup folder is not the one before less ${name}: ${JSON.stringify(folderAfter)}`);
+      const disk = await onDisk();
+      check(disk.text === expectedNote, `discard-backup: the note changed: ${JSON.stringify(disk.text)}`);
+      // Where the trashed file went: recorded, not judged (macOS keeps the name; reading ~/.Trash may be refused).
+      let inTrash = null;
+      try { inTrash = (await readFile(join(process.env.HOME ?? '', '.Trash', name), 'utf8')) === content; } catch (error) { inTrash = `not read: ${error?.code ?? error}`; }
+      const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
+      check(errors.length === 0, `discard-backup: page errors: ${JSON.stringify(errors).slice(0, 600)}`);
+      return { shown, notice, trashed: notice === BACKUP_TRASHED, folderBefore, folderAfter, observation: { inTrash } };
     });
 
     // (c) An observation, recorded and not judged: what the adapter's rename does onto a name that is there. The store
