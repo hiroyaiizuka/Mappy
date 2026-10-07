@@ -7,7 +7,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { heldEntry, sharedUses } from './instance.mjs';
+import { heldEntry, sharedUses, windowWatch } from './instance.mjs';
 import { provenance } from './provenance.mjs';
 
 /**
@@ -68,7 +68,8 @@ export async function finish(record, jsonPath) {
   // which; null for a case that never connected (memory-procedure). A case that opened a window without asking to run
   // alone (cdp.mjs) took the OS focus from whatever ran beside it: it fails, so its `solo` gets written.
   const entry = heldEntry();
-  record.instance = entry ? { port: entry.port, vault: entry.vault, solo: entry.solo } : null;
+  // `windows`: whether the windows it opened were watched (cdp.mjs stops when some were open before the case).
+  record.instance = entry ? { port: entry.port, vault: entry.vault, solo: entry.solo, windows: windowWatch() } : null;
   for (const use of sharedUses()) record.failures.push(`${use} without connect({ solo }): another instance's case may have lost the OS focus (docs/harness.md「専用の Obsidian を並べる」)`);
   record.passed = record.failures.length === 0;
   record.harness = { ...provenance(record.vault), start: record.harnessAtStart ?? null };

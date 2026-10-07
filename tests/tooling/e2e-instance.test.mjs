@@ -7,6 +7,7 @@ import {
   blocks, canonical, claimInstance, exportLine, freePort, liveEntries, lockDir, noteShared, parentRun, portFromFlag, processStarts, profileHolder,
   profilesWithVault, relaunchProfile, releaseInstance, waitSeconds,
 } from '../../scripts/e2e/instance.mjs';
+import * as instance from '../../scripts/e2e/instance.mjs';
 import { createRecord, finish } from '../../scripts/e2e/case-runner.mjs';
 import { harnessVault, vaultName } from '../../scripts/preflight.mjs';
 
@@ -130,6 +131,20 @@ describe('the register', () => {
     setTimeout(() => rmSync(join(dir, `${OTHER}.json`)), 300);
     await claim(dir, { solo: 'takes the OS focus', wait: 10, log: () => seen.push(readdirSync(dir).includes(`${process.pid}.json`)) });
     expect(seen).toEqual([true]);
+  });
+
+  it('does not hold a waiting solo process\'s entry against a run on its instance, so the run\'s next case comes in', async () => {
+    // Orchestrator review (Medium): a solo process (harness:obsidian stop, a standalone E59) waiting for a run on its port
+    // kept its entry; the run's next case then waited for it, the run for that case, and both waited out MAPPY_E2E_WAIT.
+    const dir = tempDir();
+    writeOther(dir, { kind: 'run', run: null, port: '9242', vault: '/b/test-vault', what: 'run.mjs' });
+    const solo = { pid: process.pid, kind: 'case', run: null, port: '9242', vault: '/b/test-vault', solo: 'quits an Obsidian' };
+    // Why holding it would deadlock: the run's own next case is kept out by a solo entry.
+    expect(blocks({ pid: 123, kind: 'case', run: OTHER, port: '9242', vault: '/b/test-vault', solo: null }, solo)).toBe(true);
+    const seen = [];
+    setTimeout(() => rmSync(join(dir, `${OTHER}.json`)), 300);
+    await claim(dir, { solo: 'quits an Obsidian', wait: 10, log: () => seen.push(readdirSync(dir).includes(`${process.pid}.json`)) });
+    expect(seen).toEqual([false]);
   });
 
   it('steps a later solo process back while an earlier one waits too, so they do not hold each other for ever', async () => {
@@ -272,7 +287,20 @@ describe('what uses the register', () => {
     expect(JSON.parse(readFileSync(json, 'utf8')).instance).toBe(null);
     await claim(dir, { solo: 'opens the settings window' });
     await finish(createRecord(dir, 'Fixtures/E2E'), json);
-    expect(JSON.parse(readFileSync(json, 'utf8')).instance).toEqual({ port: '9242', vault: '/b/test-vault', solo: 'opens the settings window' });
+    expect(JSON.parse(readFileSync(json, 'utf8')).instance).toEqual({ port: '9242', vault: '/b/test-vault', solo: 'opens the settings window', windows: null });
+  });
+
+  it('says in the record whether the windows the case opened were watched', async () => {
+    // Orchestrator review (Low 5): with windows open before the case, cdp.mjs stops watching; only a console line said so.
+    const dir = tempDir();
+    const json = join(dir, 'case.json');
+    await claim(dir);
+    instance.markWindowWatch('not watched: 1 window(s) besides the main one were open before the case');
+    await finish(createRecord(dir, 'Fixtures/E2E'), json);
+    expect(JSON.parse(readFileSync(json, 'utf8')).instance.windows).toBe('not watched: 1 window(s) besides the main one were open before the case');
+    instance.markWindowWatch('watched');
+    await finish(createRecord(dir, 'Fixtures/E2E'), json);
+    expect(JSON.parse(readFileSync(json, 'utf8')).instance.windows).toBe('watched');
   });
 
   it('fails a case that opened a window without asking to run alone, and not one that asked', async () => {
@@ -344,6 +372,17 @@ describe('one vault, one instance', () => {
   const read = path => { if (!(path in lists)) throw new Error('ENOENT'); return JSON.stringify(lists[path]); };
   const profiles = ['/w/artifacts/obsidian-profile-9241', '/w/artifacts/obsidian-profile-9242', '/w2/artifacts/obsidian-profile', everyday];
 
+  it('stops, rather than reading no Obsidian running, when ps cannot run', () => {
+    // Orchestrator review (Low 3): a ps that failed read as "no Obsidian has the vault open".
+    const path = process.env.PATH;
+    try {
+      process.env.PATH = '/nowhere';
+      expect(() => instance.runningProfiles()).toThrow(/Could not run ps/u);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
   it('finds the running profile that has the vault open, in this checkout or another worktree', () => {
     // Review 2-2: start launched a second Obsidian on a vault another one had open; review 3-5: one of another checkout too.
     expect(profilesWithVault('/w/test-vault', { profiles, everyday, read })).toEqual(['/w/artifacts/obsidian-profile-9241']);
@@ -409,7 +448,7 @@ describe('cases that act on what every instance shares run alone', () => {
     /remote\.app\.focus\(|steal: true|\bBrowserWindow\b|getCurrentWindow\(\)\.(?:focus|blur|show)\(/u, // the OS focus
     /openPopoutLeaf|moveLeafToPopout|getLeaf\(\s*['"]window['"]|new-window/u, // a popout window
     /app\.setting\.open\(|app:open-settings|openTabById/u, // the settings window
-    /app\.quit\(|app\.relaunch\(|'open', \['-n/u, // Obsidian quitting or launching
+    /app\.quit\(|app\.relaunch\(|'open', \['-n|\bQUIT\b|launchObsidian\(/u, // Obsidian quitting or launching (instance.mjs's helpers too)
     /--budget/u, // frame times judged
   ];
   const scripts = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).scripts;
@@ -430,6 +469,14 @@ describe('cases that act on what every instance shares run alone', () => {
     const own = text.split('\n').filter(line => !/^\s*(?:\*|\/\*|\/\/)/u.test(line)).join('\n');
     return [own, ...imported.map(name => code(name, seen))].join('\n');
   };
+
+  it('counts quitting and launching through instance.mjs\'s helpers as shared work', () => {
+    // Orchestrator review (Low 2): 9eee912 moved the quit and the launch into instance.mjs (QUIT, launchObsidian()).
+    const flagged = text => SHARED.some(pattern => pattern.test(text));
+    expect(flagged('await evaluate(`window.__mappyE2E = null; ${QUIT} return true;`);')).toBe(true);
+    expect(flagged('launchObsidian({ profile, port: PORT });')).toBe(true);
+    expect(flagged('const quitting = 1;')).toBe(false);
+  });
 
   it('reads what a case imports, and not comments', () => {
     expect(code('draft-own-write.mjs')).toMatch(/clipboard\.write\(/u);

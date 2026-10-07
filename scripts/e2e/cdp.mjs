@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { canonical, claimInstance, noteShared, PORT, VAULT } from './instance.mjs';
+import { canonical, claimInstance, markWindowWatch, noteShared, PORT, VAULT } from './instance.mjs';
 
 export { PORT, VAULT };
 /** The window targets this process has seen on its instance, across its connections (reloads reconnect). */
@@ -149,6 +149,7 @@ export async function connect({ popout, appless = false, language: expected = LA
       for (const target of before) note(target.id, target.url);
       if (watching === null) {
         watching = before.length === 0;
+        markWindowWatch(watching ? 'watched' : `not watched: ${before.length} window(s) besides the main one were open before the case`);
         if (!watching) console.error(`${before.length} window(s) besides the main one were open on port ${port} before the case; windows it opens are not watched (docs/harness.md「専用の Obsidian を並べる」).`);
       }
       socket.addEventListener('message', event => {

@@ -159,7 +159,8 @@ let held = null;
  * seconds; then it throws without having touched the instance. The entry is written before the others are read: of two
  * processes that come at once, each then sees the other and steps back (and tries again a moment later), so two never
  * both go. A waiting `solo` process keeps its entry (unless an earlier one waits too), so the processes that start
- * after it wait for it instead of going round it. The entry is removed when the process exits; one left by a process
+ * after it wait for it instead of going round it; not while a run of its instance or vault is in its way, though: that
+ * run's next case would wait for the entry and the run for that case, and the two would wait each other out. The entry is removed when the process exits; one left by a process
  * that was killed is not counted (`liveEntries`). A process enters once: a later call hands back the same entry (before
  * anything else is read), and one asking to be `solo` after entering without it throws.
  */
@@ -190,7 +191,7 @@ export async function claimInstance(options = {}) {
     try { others = liveEntries(dir, process.pid, { starts }); } catch (error) { unlinkSync(file); throw error; }
     const blocking = others.filter(other => blocks(entry, other));
     if (blocking.length === 0) break;
-    const keep = entry.solo && !others.some(other => other.solo && before(other, entry));
+    const keep = entry.solo && !blocking.some(other => other.kind === 'run') && !others.some(other => other.solo && before(other, entry));
     if (!keep) unlinkSync(file);
     if (Date.now() >= deadline) {
       if (keep) unlinkSync(file);
@@ -230,6 +231,14 @@ export function noteShared(what) {
 
 /** What this process did that only a `solo` one may (`noteShared`). */
 export const sharedUses = () => [...(held?.shared ?? [])];
+
+/** Whether cdp.mjs watches the windows this process opens (`watched`, or `not watched: <why>`), for the record. */
+export function markWindowWatch(state) {
+  if (held) held.windows = state;
+}
+
+/** What `markWindowWatch` said, or null (a solo process, or one that never reached a main window). */
+export const windowWatch = () => held?.windows ?? null;
 
 /** A shell word for `value`: single-quoted, with `'` written `'\\''`, so a path with a space or `$` stays one word. */
 export const shellWord = value => `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -304,6 +313,8 @@ export const EVERYDAY_PROFILE = canonical(join(homedir(), 'Library', 'Applicatio
 /** The `--user-data-dir` of every running Obsidian process, read from `ps` (the arguments only). */
 export function runningProfiles() {
   const result = spawnSync('ps', ['-axo', 'args='], { encoding: 'utf8', env: psEnv() });
+  // ps that did not run would read as "no Obsidian has the vault open".
+  if (result.error || result.status !== 0) throw new Error(`Could not run ps (${result.error?.message ?? result.stderr?.trim() ?? result.signal}), so which Obsidian has the vault open cannot be read. No action taken.`);
   const profiles = new Set();
   for (const line of (result.stdout ?? '').split('\n')) {
     if (!/Obsidian/u.test(line)) continue;

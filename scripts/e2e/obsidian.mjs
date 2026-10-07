@@ -7,7 +7,8 @@
  *   npm run harness:obsidian -- list
  *
  * start: the vault is `--vault`, else `MAPPY_E2E_VAULT`, else `test-vault`, and must be a generated one in this checkout
- * (`npm run harness:prepare` with the same `MAPPY_E2E_VAULT`) that no running Obsidian of this checkout has open. The
+ * (`npm run harness:prepare` with the same `MAPPY_E2E_VAULT`) that no running Obsidian has open (any profile but the
+ * everyday one: this checkout's, or another worktree's driving it through `MAPPY_E2E_VAULT`). The
  * port is `--port`, else the first one in 9241–9299 that nothing listens on (`MAPPY_E2E_PORT` is not read: it is what
  * the start prints, and the instance it named may still be up). The profile is `--profile`, else
  * `artifacts/obsidian-profile-<port>`, and must be inside this checkout's `artifacts/` with no link on the way, so the
