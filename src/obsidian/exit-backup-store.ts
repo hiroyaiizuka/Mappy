@@ -123,13 +123,16 @@ export class ExitBackupStore {
       try { text = await this.adapter.read(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
       const read = readExitBackup(text);
       if (!read || backupText(read) !== backupText(record.backup)) return "gone";
-      // The system trash first; where it cannot (none there, or it refused), the vault's own.
+      // The system trash first; where it cannot (none there, or it refused), the vault's own. One that answered no or
+      // threw may have moved the file all the same (review 2): then it is not moved again.
       let trashed = false;
       try { trashed = await this.adapter.trashSystem(path); } catch { trashed = false; }
+      if (!trashed && !await this.adapter.exists(path).catch(() => true)) return "trashed";
       if (!trashed) {
         try { await this.adapter.trashLocal(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
       }
-      if (await this.exists(path)) return "stillThere";
+      // A check that fails after the trash took it is not told as a failure (review 2): the move stands as the trash said.
+      if (await this.adapter.exists(path).catch(() => false)) return "stillThere";
       return trashed ? "trashed" : "localTrashed";
     });
   }

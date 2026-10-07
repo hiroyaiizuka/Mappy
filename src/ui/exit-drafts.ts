@@ -66,17 +66,39 @@ export function installExitDrafts(
 /** The pass running now: one at a time, and one asked for meanwhile is that one. */
 let applying: Promise<void> | null = null;
 
-/** Resolves once no pass is applying the kept drafts, one started meanwhile included (LEV-310). */
-async function passesOver(): Promise<void> {
-  while (applying) await applying.catch(() => undefined);
+/** How long a discard waits for a pass applying the kept drafts before it gives up (ms, LEV-310). */
+export const DISCARD_WAIT = 10_000;
+
+/**
+ * Whether no pass is applying the kept drafts, one started meanwhile included, within `wait` ms (LEV-310): false when
+ * one is still running then (a write held up), so a discard says so rather than wait without a word (review 2).
+ */
+async function passesOver(wait: number): Promise<boolean> {
+  const until = Date.now() + wait;
+  while (applying) {
+    const left = until - Date.now();
+    if (left <= 0) return false;
+    let timer = 0;
+    const late = new Promise<"late">(resolve => { timer = window.setTimeout(() => { resolve("late"); }, left); });
+    const settled = await Promise.race([applying.then(() => "over" as const, () => "over" as const), late]);
+    window.clearTimeout(timer);
+    if (settled === "late") return false;
+  }
+  return true;
+}
+
+/** How many times the entry holds `draft` (`sameDraft`); throws when the entry cannot be read. */
+export function keptCount(app: Pick<App, "loadLocalStorage">, draft: ExitDraft): number {
+  return readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).filter(item => sameDraft(item, draft)).length;
 }
 
 /**
  * What became of a kept draft the person discarded (LEV-310): taken out of the entry (`discarded`), not in it
  * (`gone`: written or discarded meanwhile; nothing done), not taken out (`failed`: the entry could not be read, or
- * still holds it after the write), or not known (`unknown`: the entry could not be read back).
+ * still holds it after the write; `busy`: a pass was still applying the drafts), or not known (`unknown`: the entry
+ * could not be read back).
  */
-export type DraftDiscard = "discarded" | "gone" | "failed" | "unknown";
+export type DraftDiscard = "discarded" | "gone" | "failed" | "busy" | "unknown";
 
 /**
  * LEV-310: `draft` taken out of the entry at the person's explicit request (the rescue list's 破棄, confirmed), and
@@ -85,15 +107,14 @@ export type DraftDiscard = "discarded" | "gone" | "failed" | "unknown";
  * pass is applying the kept drafts, so a pass that read the draft already does not write it after it was discarded.
  * Said discarded only when the entry read back holds one fewer of it.
  */
-export async function discardExitDraft(app: App, draft: ExitDraft): Promise<DraftDiscard> {
-  await passesOver();
-  const held = (): number => readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).filter(item => sameDraft(item, draft)).length;
+export async function discardExitDraft(app: App, draft: ExitDraft, wait = DISCARD_WAIT): Promise<DraftDiscard> {
+  if (!await passesOver(wait)) return "busy";
   let before: number;
-  try { before = held(); } catch { return "failed"; }
+  try { before = keptCount(app, draft); } catch { return "failed"; }
   if (before === 0) return "gone";
   // The first item of it out, as a load takes out a draft it wrote; storage refusing it is told by the read back.
   saveWithout(app, draft);
-  try { return held() < before ? "discarded" : "failed"; } catch { return "unknown"; }
+  try { return keptCount(app, draft) < before ? "discarded" : "failed"; } catch { return "unknown"; }
 }
 
 /**
@@ -107,10 +128,11 @@ export async function keptBackupIds(app: App): Promise<Set<string> | null> {
 /**
  * What became of a backup the person discarded (LEV-310): moved to the system trash, moved to the vault's own trash
  * (`.trash/`, where the system's cannot take it), still in the folder after it was moved (`stillThere`), not there as
- * it was read (`gone`), refused because a kept draft is of it (`draftKept`), or refused because the kept drafts could
- * not be told (`unread`). Nothing is taken away in the last three; nothing is ever deleted outright.
+ * it was read (`gone`), refused because a kept draft is of it (`draftKept`), because the kept drafts could not be told
+ * (`unread`), or because a pass was still applying them (`busy`). Nothing is taken away in the last four; nothing is
+ * ever deleted outright.
  */
-export type BackupDiscard = "trashed" | "localTrashed" | "stillThere" | "gone" | "draftKept" | "unread";
+export type BackupDiscard = "trashed" | "localTrashed" | "stillThere" | "gone" | "draftKept" | "unread" | "busy";
 
 /**
  * LEV-310: the backup `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
@@ -119,8 +141,8 @@ export type BackupDiscard = "trashed" | "localTrashed" | "stillThere" | "gone" |
  * not finish, or one that did while the draft stayed), so taking it away could let a load write the draft once more.
  * The note, the kept drafts and the other files in the folder are not touched.
  */
-export async function discardExitBackup(app: App, backups: ExitBackupStore, record: BackupRecord): Promise<BackupDiscard> {
-  await passesOver();
+export async function discardExitBackup(app: App, backups: ExitBackupStore, record: BackupRecord, wait = DISCARD_WAIT): Promise<BackupDiscard> {
+  if (!await passesOver(wait)) return "busy";
   // The entry only loses drafts from here on (no page goes while the rescue runs), so one not kept now stays not kept.
   const kept = await keptBackupIds(app);
   if (!kept) return "unread";

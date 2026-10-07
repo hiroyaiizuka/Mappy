@@ -443,6 +443,34 @@ describe('discarding a backup (LEV-310)', () => {
     expect(taking(disk)).toEqual([]);
   });
 
+  // Review 2: a system trash that moved the file and then threw (or answered no) sent it on to the vault's trash, which
+  // failed on the file gone; and a check after a move that failed told the move as a failure.
+  it.each([['threw', true], ['answered no', false]])('tells a move the system trash made though it %s, and moves nothing again', async (_case, throws) => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    const text = disk.files.get(record.path)!;
+    disk.adapter.trashSystem = (path: string) => {
+      disk.calls.push(`trashSystem ${path}`);
+      disk.files.delete(path);
+      disk.trash.set(path, text);
+      return throws ? Promise.reject(new Error('EIO after the move')) : Promise.resolve(false);
+    };
+    expect(await storeOn(disk).discard(record)).toBe('trashed');
+    expect(taking(disk)).toEqual([`trashSystem ${record.path}`]);
+    expect(disk.localTrash.size).toBe(0);
+  });
+
+  it('tells the move as made when the check after it fails', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    let moved = false;
+    const trash = disk.adapter.trashSystem;
+    disk.adapter.trashSystem = async (path: string) => { const answer = await trash(path); moved = true; return answer; };
+    disk.fault = step => step === 'exists' && moved ? new Error('EIO') : null;
+    expect(await storeOn(disk).discard(record)).toBe('trashed');
+    expect(disk.files.has(record.path)).toBe(false);
+  });
+
   // Review 1: a file still there after the trash said it took it was told by its path as the reason.
   it('says the file is still there when the trash said it took it but the folder still has it', async () => {
     const disk = new Disk();

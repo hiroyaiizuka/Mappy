@@ -252,8 +252,8 @@ export const en = {
   discardedBackupLocalTrash: "Moved the backup to the vault's .trash folder (the system trash couldn't be used). The original note wasn't changed.",
   discardBackupStillThere: "Couldn't move the backup to the trash (it is still in the backup folder).",
   discardBackupDraftsUnread: "The kept drafts couldn't be checked, so this backup can't be discarded now.",
+  discardBusy: "The drafts being written at load haven't finished, so nothing was discarded. Wait a moment and try again.",
   discardBackupGone: "That backup was no longer there, or its content had changed. Nothing was discarded.",
-  discardBackupUnread: "The kept drafts couldn't be read, so the backup wasn't discarded.",
   discardBackupFailed: (reason: string) => `Couldn't discard the backup: ${reason}`,
   // The rescued file's text (a plain note: no frontmatter, so never a map).
   recHeading: (name: string) => `Mappy draft rescue: ${name}`,

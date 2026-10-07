@@ -19,7 +19,7 @@ import { HarnessApp } from '../browser-harness/app';
 import { Component, Notice } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
-import { discardExitDraft, installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
+import { discardExitBackup, discardExitDraft, installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import { applyEdits } from '../../src/core/commands';
 import { textFingerprint, type ExitDraft } from '../../src/core/exit-drafts';
 import {
@@ -1239,6 +1239,35 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     expect(await discarding).toBe('gone');
     expect(noteOf(app)).toBe(NOTE.replace('子ノード', '書いている下書き'));
     expect(keptOf(app)).toBeNull();
+  });
+
+  // Review 2 of LEV-310: a pass held up (a write that does not finish) kept a discard waiting with no word for ever.
+  it('discards nothing and says so when a load is still applying the kept drafts after the wait', async () => {
+    const backups = new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6');
+    const store = new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6');
+    const other = keptDraft('前の下書き') as Exclude<ExitDraft, { refused: string }>;
+    await store.prepare(other, PATH, NOTE, applyEdits(NOTE, other.edits), other.edits);
+    await store.markApplied(await backupId(other));
+    const record = (await store.survey()).records.get(await backupId(other))!.applied!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const write = disk.adapter.write;
+    disk.adapter.write = async (path: string, data: string) => { disk.calls.push('write held'); await held; return write(path, data); };
+    const draft = keptDraft('止まった下書き');
+    const app = vaultWith(NOTE, [draft]);
+    const files = new Map(disk.files);
+    const loading = load(app, { backups });
+    try {
+      await vi.waitFor(() => { expect(disk.calls).toContain('write held'); });
+      expect(await discardExitDraft(app.asApp<App>(), draft, 30)).toBe('busy');
+      expect(await discardExitBackup(app.asApp<App>(), backups, record, 30)).toBe('busy');
+      expect(keptOf(app)).toEqual([draft]);
+      expect(disk.files).toEqual(files);
+      expect(disk.trash.size).toBe(0);
+    } finally {
+      release();
+      await loading;
+    }
   });
 
   // LEV-310: a full folder stops every write until the person makes room; discarding a backup there in the rescue

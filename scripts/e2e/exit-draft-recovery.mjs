@@ -49,12 +49,13 @@
  * Without `--cut`, after the backup's rescue: (f) discard-backup: 破棄 on the applied backup's line → the confirmation
  * (it goes to the system trash) → キャンセル: the backup folder is as it was; then 破棄 → 破棄する: that file alone is gone
  * from the folder (moved to the system trash, or to the vault's `.trash/` where it cannot, as the Notice says), the note is as
- * written. Where the trashed file went is recorded, not judged. Nothing else discards: the plugin deletes nothing itself.
+ * written. Where the trashed file went is recorded, not judged, and the clean step takes that copy out of the trash
+ * when it can read it (not with `--keep`). Nothing else discards: the plugin deletes nothing itself.
  *
  * Usage: npm run harness:e2e:exit-draft-recovery -- [--cut] [--reload] [--json <out.json>] [--keep]
  */
 import { createHash } from 'node:crypto';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
@@ -100,7 +101,7 @@ const SAVED_BACKUP = 'に保存しました。元のノートと控えは変更�
 const backupIdOf = draft => createHash('sha256').update(JSON.stringify([draft.path, draft.title, draft.at, draft.before, draft.after,
   draft.edits.map(edit => ({ from: edit.from, to: edit.to, text: edit.text }))])).digest('hex');
 const SAVED = 'に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。要らなくなった下書きは、同じコマンドの一覧の「破棄」で消せます。';
-/** src/i18n/ja.ts's `discardDraftWhat`, `discardedDraft`, `discardedBackupTrash` and `discardedBackupRemoved`, copied (LEV-310). */
+/** src/i18n/ja.ts's `discardDraftWhat`, `discardedDraft`, `discardedBackupTrash` and `discardedBackupLocalTrash`, copied (LEV-310). */
 const discardWhat = title => `再読込・終了のときに ${NOTE} で編集していた「${title}」の下書きを破棄します。`;
 const discarded = title => `「${title}」の下書きを破棄しました。元のノートは変更していません。`;
 const BACKUP_TRASHED = '控えを OS のゴミ箱に移しました。元のノートは変更していません。';
@@ -211,6 +212,8 @@ async function main() {
   /** The plugin's backup folder (vault path), and the backup files this run made there (LEV-309). */
   let backupsDir = '';
   const backupsMade = [];
+  /** Where the backup this run discarded went (a trash), with its text: the clean step takes that copy out (LEV-310). */
+  const trashedCopies = [];
   /** The names in the backup folder on disk now (none when it is not there). */
   const backupFiles = async () => {
     try { return (await readdir(join(VAULT, backupsDir))).sort(); } catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
@@ -544,10 +547,10 @@ async function main() {
       const disk = await onDisk();
       check(disk.text === expectedNote, `discard-backup: the note changed: ${JSON.stringify(disk.text)}`);
       // Where the trashed file went: recorded, not judged (macOS keeps the name; reading ~/.Trash may be refused).
-      const sameIn = async folder => {
-        try { return (await readFile(join(folder, name), 'utf8')) === content; } catch (error) { return `not read: ${error?.code ?? error}`; }
-      };
-      const inTrash = notice === BACKUP_TRASHED ? await sameIn(join(process.env.HOME ?? '', '.Trash')) : await sameIn(join(VAULT, '.trash'));
+      const trashFolder = notice === BACKUP_TRASHED ? join(process.env.HOME ?? '', '.Trash') : join(VAULT, '.trash');
+      trashedCopies.push({ path: join(trashFolder, name), content });
+      let inTrash;
+      try { inTrash = (await readFile(join(trashFolder, name), 'utf8')) === content; } catch (error) { inTrash = `not read: ${error?.code ?? error}`; }
       const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
       check(errors.length === 0, `discard-backup: page errors: ${JSON.stringify(errors).slice(0, 600)}`);
       return { shown, notice, trashed: notice === BACKUP_TRASHED, folderBefore, folderAfter, observation: { inTrash } };
@@ -599,6 +602,18 @@ async function main() {
           return done;
         });
         await part('folder', () => folderCreated ? evaluate(removeEmptyFolderScript(FOLDER)) : 'existed before the run: left');
+        await part('trashed', async () => {
+          // The copy of the backup this run discarded, in the trash it went to (LEV-310): taken out only when it is
+          // that file, with that text; one the system does not let the case read or remove is left and said so.
+          const done = {};
+          for (const { path, content } of trashedCopies) {
+            let text = null;
+            try { text = await readFile(path, 'utf8'); } catch (error) { done[path] = `left: not read (${error?.code ?? error})`; continue; }
+            if (text !== content) { done[path] = 'left: another file of the name'; continue; }
+            try { await unlink(path); done[path] = 'deleted'; } catch (error) { done[path] = `left: not removed (${error?.code ?? error})`; }
+          }
+          return done;
+        });
         await part('backups', async () => {
           // Only the backup files this run made (LEV-309); the plugin itself deletes none.
           const done = {};

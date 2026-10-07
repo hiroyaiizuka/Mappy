@@ -3,7 +3,7 @@ import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-dr
 import { ExitBackupError, type BackupRecord, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
 import { t, type Messages } from "../i18n";
 import {
-  EXIT_DRAFTS_KEY, discardExitBackup, discardExitDraft, joinSentences, keptBackupIds, sameDraft, type BackupDiscard, type DraftDiscard,
+  EXIT_DRAFTS_KEY, discardExitBackup, discardExitDraft, joinSentences, keptBackupIds, keptCount, type BackupDiscard, type DraftDiscard,
 } from "./exit-drafts";
 
 /**
@@ -90,6 +90,7 @@ function draftDiscardText(outcome: DraftDiscard, draft: ExitDraft): string {
     case "discarded": return text.discardedDraft(draft.title);
     case "gone": return text.discardDraftGone;
     case "failed": return text.discardDraftFailed;
+    case "busy": return text.discardBusy;
     case "unknown": return text.discardDraftUnconfirmed;
   }
 }
@@ -103,7 +104,8 @@ function backupDiscardText(outcome: BackupDiscard): string {
     case "stillThere": return text.discardBackupStillThere;
     case "gone": return text.discardBackupGone;
     case "draftKept": return text.discardBackupDraftKept;
-    case "unread": return text.discardBackupUnread;
+    case "unread": return text.discardBackupDraftsUnread;
+    case "busy": return text.discardBusy;
   }
 }
 
@@ -143,7 +145,7 @@ class NoFreeName extends Error {}
 
 /** Whether the draft is still in the entry, read again: the failure Notice says it is kept only then. */
 function stillKept(app: RescueApp, draft: ExitDraft): boolean {
-  try { return readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).some(item => sameDraft(item, draft)); } catch { return false; }
+  try { return keptCount(app, draft) > 0; } catch { return false; }
 }
 
 /**
