@@ -1259,8 +1259,11 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     const loading = load(app, { backups });
     try {
       await vi.waitFor(() => { expect(disk.calls).toContain('write held'); });
-      expect(await discardExitDraft(app.asApp<App>(), draft, 30)).toBe('busy');
-      expect(await discardExitBackup(app.asApp<App>(), backups, record, 30)).toBe('busy');
+      // Bounded here too: a discard that waited for ever would leave the load held, and every later test with it.
+      const within = <T>(promise: Promise<T>): Promise<T | 'still waiting'> =>
+        Promise.race([promise, new Promise<'still waiting'>(resolve => { setTimeout(() => { resolve('still waiting'); }, 2000); })]);
+      expect(await within(discardExitDraft(app.asApp<App>(), draft, 30))).toBe('busy');
+      expect(await within(discardExitBackup(app.asApp<App>(), backups, record, 30))).toBe('busy');
       expect(keptOf(app)).toEqual([draft]);
       expect(disk.files).toEqual(files);
       expect(disk.trash.size).toBe(0);
