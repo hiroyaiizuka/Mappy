@@ -105,17 +105,19 @@ export type DraftDiscard = "discarded" | "gone" | "failed" | "busy" | "unknown";
 
 /**
  * LEV-310: `draft` taken out of the entry at the person's explicit request (the rescue list's 破棄, confirmed), and
- * nothing else: the first item of it goes as a load's write takes one out (`saveWithout`), the other items stay as they
- * are and where they are, those that do not read as drafts included, and no note is read or written. Done once no
- * pass is applying the kept drafts, so a pass that read the draft already does not write it after it was discarded.
- * Said discarded only when the entry read back holds one fewer of it.
+ * nothing else: the very item pressed goes (its note text as it is too), or else the first item of the same draft
+ * (`saveWithout`, as a load's write takes one out), the other items stay as they are and where they are, those that
+ * do not read as drafts included, and no note is read or written. Done once no pass is applying the kept drafts, so a
+ * pass that read the draft already does not write it after it was discarded. Said discarded only when the entry read
+ * back holds one fewer of it.
  */
 export async function discardExitDraft(app: App, draft: ExitDraft, wait = DISCARD_WAIT): Promise<DraftDiscard> {
   if (!await passesOver(wait)) return "busy";
   let before: number;
   try { before = keptCount(app, draft); } catch { return "failed"; }
   if (before === 0) return "gone";
-  // The first item of it out, as a load takes out a draft it wrote; storage refusing it is told by the read back.
+  // That very item out, or else the first of the same draft, as a load takes out a draft it wrote; storage refusing it
+  // is told by the read back.
   saveWithout(app, draft);
   try { return keptCount(app, draft) < before ? "discarded" : "failed"; } catch { return "unknown"; }
 }

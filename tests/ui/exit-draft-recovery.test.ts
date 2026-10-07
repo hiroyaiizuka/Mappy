@@ -22,7 +22,7 @@ import { applyEdits } from '../../src/core/commands';
 import { textFingerprint } from '../../src/core/exit-drafts';
 import { appliedName, backupId, backupText, utf8Bytes } from '../../src/core/exit-backup';
 import { discardExitBackup, keptBackupIds } from '../../src/ui/exit-drafts';
-import { ExitBackupStore, exitBackupFolder, type BackupAdapter, type BackupRecord } from '../../src/obsidian/exit-backup-store';
+import { ExitBackupError, ExitBackupStore, exitBackupFolder, type BackupAdapter, type BackupRecord } from '../../src/obsidian/exit-backup-store';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 beforeAll(() => { installObsidianDom(); });
@@ -955,6 +955,22 @@ describe('discarding a backup from the list (LEV-310)', () => {
     expect(disk.files).toEqual(files);
     expect(disk.files.has(record.path)).toBe(true);
     expect(Notice.log).toEqual([t().discardBackupFailed('EBUSY: resource busy or locked')]);
+  });
+
+  // Review 3 (the orchestrator's check of it): an ExitBackupError without the adapter's message showed its failure's
+  // code (`unsaved`) as the reason. The store gives one a message in every path today, so the store is stood in for.
+  it('says the reason is unknown, not the failure\'s code, for a failure without a message', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true);
+    const store = storeOn(disk);
+    vi.spyOn(store, 'discard').mockRejectedValue(new ExitBackupError('unsaved'));
+    await rescueExitDrafts(appWith(null).app, store);
+    press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
+    button(t().discardConfirm).click();
+    await settle();
+    expect(Notice.log).toEqual([t().discardBackupFailed(t().rescueUnknownReason)]);
+    expect(Notice.log[0]).not.toContain('unsaved');
   });
 
   // Review 1: a backup that could not be read was told as gone or changed.
