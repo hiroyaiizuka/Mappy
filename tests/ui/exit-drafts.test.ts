@@ -1273,6 +1273,35 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     }
   });
 
+  // Review 3 of LEV-310: a discard waiting for a load said nothing until it was done (up to the wait).
+  it('says at once that a discard waits for a load still writing the kept drafts, then what came of it', async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const draft = keptDraft('書いている下書き');
+    const other = { ...keptDraft('別の下書き'), path: 'Fixtures/other.md' };
+    const app = vaultWith(NOTE, [draft, other]);
+    app.put('Fixtures/other.md', NOTE);
+    const store = new DocumentStore(app.asApp<App>());
+    const applyOver = store.applyOver.bind(store);
+    const writing = vi.spyOn(store, 'applyOver').mockImplementation(async (...args: Parameters<DocumentStore['applyOver']>) => { await held; return applyOver(...args); });
+    install(app, store, () => []);
+    try {
+      await vi.waitFor(() => { expect(writing).toHaveBeenCalled(); });
+      await rescueExitDrafts(app.asApp<App>(), new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6'));
+      const line = Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item[data-mappy-rescue="draft"]'))
+        .find(row => row.querySelector('.setting-item-description')?.textContent?.includes(t().rescueTitleLine('別の下書き')));
+      line!.querySelector<HTMLButtonElement>('button[data-mappy-rescue-action="discard"]')!.click();
+      Array.from(document.querySelectorAll<HTMLButtonElement>('.modal button')).find(item => item.textContent === t().discardConfirm)!.click();
+      expect(Notice.log).toEqual([t().discardWaiting]);
+    } finally {
+      release();
+      await idle();
+    }
+    // The load wrote the other draft too (it had read it): the discard says it was no longer kept.
+    await vi.waitFor(() => { expect(Notice.log.at(-1)).toBe(t().discardDraftGone); });
+    expect(keptOf(app)).toBeNull();
+  });
+
   // LEV-310: a full folder stops every write until the person makes room; discarding a backup there in the rescue
   // command does, and the draft held back is written at the next load (nothing is deleted for them).
   it('writes a draft held back by a full folder at the next load once the person discards a backup there', async () => {

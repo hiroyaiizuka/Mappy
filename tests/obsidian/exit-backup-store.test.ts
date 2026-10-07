@@ -444,8 +444,9 @@ describe('discarding a backup (LEV-310)', () => {
   });
 
   // Review 2: a system trash that moved the file and then threw (or answered no) sent it on to the vault's trash, which
-  // failed on the file gone; and a check after a move that failed told the move as a failure.
-  it.each([['threw', true], ['answered no', false]])('tells a move the system trash made though it %s, and moves nothing again', async (_case, throws) => {
+  // failed on the file gone; and a check after a move that failed told the move as a failure. Review 3: it is not said
+  // to be in the system trash either, which did not say so.
+  it.each([['threw', true], ['answered no', false]])('tells a file gone though the system trash %s as gone unconfirmed, and moves nothing again', async (_case, throws) => {
     const disk = new Disk();
     const record = await madeOn(disk);
     const text = disk.files.get(record.path)!;
@@ -455,7 +456,7 @@ describe('discarding a backup (LEV-310)', () => {
       disk.trash.set(path, text);
       return throws ? Promise.reject(new Error('EIO after the move')) : Promise.resolve(false);
     };
-    expect(await storeOn(disk).discard(record)).toBe('trashed');
+    expect(await storeOn(disk).discard(record)).toBe('movedUnconfirmed');
     expect(taking(disk)).toEqual([`trashSystem ${record.path}`]);
     expect(disk.localTrash.size).toBe(0);
   });

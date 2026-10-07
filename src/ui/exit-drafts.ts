@@ -69,6 +69,9 @@ let applying: Promise<void> | null = null;
 /** How long a discard waits for a pass applying the kept drafts before it gives up (ms, LEV-310). */
 export const DISCARD_WAIT = 10_000;
 
+/** Whether a pass is applying the kept drafts now: a discard then waits, and the rescue says so first (review 3). */
+export const exitDraftsApplying = (): boolean => applying !== null;
+
 /**
  * Whether no pass is applying the kept drafts, one started meanwhile included, within `wait` ms (LEV-310): false when
  * one is still running then (a write held up), so a discard says so rather than wait without a word (review 2).
@@ -127,12 +130,13 @@ export async function keptBackupIds(app: App): Promise<Set<string> | null> {
 
 /**
  * What became of a backup the person discarded (LEV-310): moved to the system trash, moved to the vault's own trash
- * (`.trash/`, where the system's cannot take it), still in the folder after it was moved (`stillThere`), not there as
+ * (`.trash/`, where the system's cannot take it), out of the folder though no trash said it took it
+ * (`movedUnconfirmed`), still in the folder after it was moved (`stillThere`), not there as
  * it was read (`gone`), refused because a kept draft is of it (`draftKept`), because the kept drafts could not be told
  * (`unread`), or because a pass was still applying them (`busy`). Nothing is taken away in the last four; nothing is
  * ever deleted outright.
  */
-export type BackupDiscard = "trashed" | "localTrashed" | "stillThere" | "gone" | "draftKept" | "unread" | "busy";
+export type BackupDiscard = "trashed" | "localTrashed" | "movedUnconfirmed" | "stillThere" | "gone" | "draftKept" | "unread" | "busy";
 
 /**
  * LEV-310: the backup `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
@@ -215,7 +219,8 @@ async function applyEach(
 
 /**
  * The entry without `done` (none: as it is), read again first so a draft a `pagehide` added meanwhile (a page kept
- * after all) stays; what was written, or null when storage refused it (access, quota) and the entry is as it was.
+ * after all) stays: the item that is `done` itself, its note text included, or else the first of the same draft;
+ * what was written, or null when storage refused it (access, quota) and the entry is as it was.
  * Items that do not read as drafts stay in it as they are (LEV-309: nothing unreadable is dropped here), and an entry
  * that is not a list is not written at all.
  */
@@ -225,7 +230,12 @@ function saveWithout(app: App, done: ExitDraft | null): ExitDraft[] | null {
     if (!Array.isArray(raw)) return readExitDrafts(raw);
     const items = (raw as unknown[]).slice();
     const key = done ? draftKey(done) : null;
-    const at = key === null ? -1 : items.findIndex(item => readExitDrafts([item]).some(draft => draftKey(draft) === key));
+    // That very item first (its note text as it is too), then another of the same draft (one kept again without it).
+    const exact = done ? JSON.stringify(readExitDrafts([done])) : null;
+    const at = key === null ? -1 : [
+      items.findIndex(item => JSON.stringify(readExitDrafts([item])) === exact),
+      items.findIndex(item => readExitDrafts([item]).some(draft => draftKey(draft) === key)),
+    ].find(index => index !== -1) ?? -1;
     if (at !== -1) items.splice(at, 1);
     app.saveLocalStorage(EXIT_DRAFTS_KEY, items.length > 0 ? items : null);
     return readExitDrafts(items);

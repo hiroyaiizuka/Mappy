@@ -112,9 +112,10 @@ export class ExitBackupStore {
    * confirmed): moved to the system trash (`trashed`), or to the vault's own `.trash/` where the system's does not take
    * it (`localTrashed`); never deleted outright. Only a file of this folder that still holds the backup as it was read:
    * one renamed, changed or removed meanwhile is left (`gone`), and so is everything else in the folder. `stillThere`:
-   * moved, the trash said, but the folder still has it. Throws an `ExitBackupError` when it cannot be read or moved.
+   * moved, the trash said, but the folder still has it; `movedUnconfirmed`: out of the folder, though the system trash
+   * did not say it took it. Throws an `ExitBackupError` when it cannot be read or moved.
    */
-  discard(record: BackupRecord): Promise<"trashed" | "localTrashed" | "stillThere" | "gone"> {
+  discard(record: BackupRecord): Promise<"trashed" | "localTrashed" | "movedUnconfirmed" | "stillThere" | "gone"> {
     return this.queue(async () => {
       const { path } = record;
       if (!path.startsWith(`${this.folder}/`) || path.slice(this.folder.length + 1).includes("/")) return "gone";
@@ -124,10 +125,11 @@ export class ExitBackupStore {
       const read = readExitBackup(text);
       if (!read || backupText(read) !== backupText(record.backup)) return "gone";
       // The system trash first; where it cannot (none there, or it refused), the vault's own. One that answered no or
-      // threw may have moved the file all the same (review 2): then it is not moved again.
+      // threw may have moved the file all the same (review 2): then it is not moved again, nor said to be in the
+      // system trash, which did not say so (`movedUnconfirmed`, review 3).
       let trashed = false;
       try { trashed = await this.adapter.trashSystem(path); } catch { trashed = false; }
-      if (!trashed && !await this.adapter.exists(path).catch(() => true)) return "trashed";
+      if (!trashed && !await this.adapter.exists(path).catch(() => true)) return "movedUnconfirmed";
       if (!trashed) {
         try { await this.adapter.trashLocal(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
       }

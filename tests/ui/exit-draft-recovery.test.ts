@@ -761,6 +761,28 @@ describe('discarding a kept draft from the list (LEV-310)', () => {
     expect(Notice.log).toEqual([t().discardedDraft('入力中の題名')]);
   });
 
+  // Review 3: the entry holding the same draft twice (once kept again without its note text), the first of the two went
+  // whichever line was pressed.
+  it('takes out the very item of the line pressed when the entry holds the same draft twice', async () => {
+    const bare = { ...withSource() } as { source?: string };
+    delete bare.source;
+    const { app, stored } = appWith([withSource(), bare as ExitDraft]);
+    await rescueExitDrafts(app, storeOn());
+    expect(Array.from(document.querySelectorAll('.modal .setting-item-description'), row => row.textContent?.endsWith(t().rescueNoSource))).toEqual([false, true]);
+    actions('discard')[1]!.click();
+    button(t().discardConfirm).click();
+    await settle();
+    expect(JSON.parse(stored()!)).toEqual([withSource()]);
+    expect(Notice.log).toEqual([t().discardedDraft('入力中の題名')]);
+  });
+
+  // Review 3: the confirmation of a draft that could not be planned spoke of a planned change and a note text it never had.
+  it('says only the title and the reason go for a draft that could not be planned', async () => {
+    await rescueExitDrafts(appWith([refused()]).app, storeOn());
+    press(lineOf('draft', '拒否された題名'), 'discard');
+    expect(shownTexts()).toEqual([t().discardDraftWhat('拒否された題名', NOTE), t().discardDraftLostRefused, t().discardUnchanged]);
+  });
+
   it('leaves no entry when the last kept draft is discarded', async () => {
     const { app, stored } = appWith([refused()]);
     await rescueExitDrafts(app, storeOn());

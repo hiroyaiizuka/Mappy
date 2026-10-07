@@ -101,11 +101,15 @@ const SAVED_BACKUP = 'に保存しました。元のノートと控えは変更�
 const backupIdOf = draft => createHash('sha256').update(JSON.stringify([draft.path, draft.title, draft.at, draft.before, draft.after,
   draft.edits.map(edit => ({ from: edit.from, to: edit.to, text: edit.text }))])).digest('hex');
 const SAVED = 'に保存しました。元のノートは変更していません。下書きは残してあるので、もう一度救出すると同じ内容のファイルが増えます。要らなくなった下書きは、同じコマンドの一覧の「破棄」で消せます。';
-/** src/i18n/ja.ts's `discardDraftWhat`, `discardedDraft`, `discardedBackupTrash` and `discardedBackupLocalTrash`, copied (LEV-310). */
+/**
+ * src/i18n/ja.ts's `discardDraftWhat`, `discardedDraft`, `discardedBackupTrash`, `discardedBackupLocalTrash` and
+ * `discardedBackupUnconfirmed`, copied (LEV-310).
+ */
 const discardWhat = title => `再読込・終了のときに ${NOTE} で編集していた「${title}」の下書きを破棄します。`;
 const discarded = title => `「${title}」の下書きを破棄しました。元のノートは変更していません。`;
 const BACKUP_TRASHED = '控えを OS のゴミ箱に移しました。元のノートは変更していません。';
 const BACKUP_LOCAL_TRASH = 'OS のゴミ箱が使えなかったため、控えを Vault の .trash フォルダに移しました。元のノートは変更していません。';
+const BACKUP_UNCONFIRMED = '控えは保存先から無くなりましたが、OS のゴミ箱に移ったかどうかは確かめられませんでした。元のノートは変更していません。';
 /** The second draft of this note the discard row puts beside the kept one, which must stay (LEV-310). */
 const SIBLING_TITLE = '残す入力';
 /** Where the fault listener writes what it saw (`window.localStorage`, synchronous, kept across the reload). */
@@ -269,7 +273,10 @@ async function main() {
    * shown (title, texts, buttons), or throws when the line or the confirmation is not there (LEV-310).
    */
   const openDiscard = async (kind, title) => {
-    await evaluate(`for (const modal of document.querySelectorAll('.modal-container')) modal.remove();
+    // A modal left open is closed through its own close button (its `close`, which lets its keys go), not taken out
+    // of the page (review 3).
+    await evaluate(`for (const close of document.querySelectorAll('.modal-container .modal-close-button')) close.click();
+      await new Promise(resolve => setTimeout(resolve, 200));
       app.commands.executeCommandById(${JSON.stringify(COMMAND)}); return true;`);
     await until(() => evaluate(`return document.querySelectorAll('.modal .setting-item').length > 0;`), 3000, 'the list did not open');
     const pressed = await evaluate(`const row = Array.from(document.querySelectorAll('.modal .setting-item[data-mappy-rescue=${JSON.stringify(kind)}]')).find(item =>
@@ -541,16 +548,20 @@ async function main() {
       await openDiscard('applied', BACKUP_TITLE);
       await evaluate(`for (const notice of document.querySelectorAll('.notice')) notice.remove(); return true;`);
       await pressInModal('破棄する');
-      const notice = await until(async () => (await notices()).find(item => item === BACKUP_TRASHED || item === BACKUP_LOCAL_TRASH) ?? null, 5000, 'no Notice said the backup was discarded');
+      const notice = await until(async () => (await notices()).find(item => item === BACKUP_TRASHED || item === BACKUP_LOCAL_TRASH || item === BACKUP_UNCONFIRMED) ?? null, 5000, 'no Notice said the backup was discarded');
       const folderAfter = await backupFiles();
       check(JSON.stringify(folderAfter) === JSON.stringify(folderBefore.filter(item => item !== name)), `discard-backup: the backup folder is not the one before less ${name}: ${JSON.stringify(folderAfter)}`);
       const disk = await onDisk();
       check(disk.text === expectedNote, `discard-backup: the note changed: ${JSON.stringify(disk.text)}`);
       // Where the trashed file went: recorded, not judged (macOS keeps the name; reading ~/.Trash may be refused).
-      const trashFolder = notice === BACKUP_TRASHED ? join(process.env.HOME ?? '', '.Trash') : join(VAULT, '.trash');
-      trashedCopies.push({ path: join(trashFolder, name), content });
-      let inTrash;
-      try { inTrash = (await readFile(join(trashFolder, name), 'utf8')) === content; } catch (error) { inTrash = `not read: ${error?.code ?? error}`; }
+      // Where it went, by what the Notice says; out of the folder with no trash saying so, both are looked in.
+      const trashFolders = notice === BACKUP_TRASHED ? [join(process.env.HOME ?? '', '.Trash')] : notice === BACKUP_LOCAL_TRASH ? [join(VAULT, '.trash')]
+        : [join(process.env.HOME ?? '', '.Trash'), join(VAULT, '.trash')];
+      const inTrash = {};
+      for (const folder of trashFolders) {
+        trashedCopies.push({ path: join(folder, name), content });
+        try { inTrash[folder] = (await readFile(join(folder, name), 'utf8')) === content; } catch (error) { inTrash[folder] = `not read: ${error?.code ?? error}`; }
+      }
       const errors = await evaluate('return [...(window.__mappyE2EErrors ?? [])];');
       check(errors.length === 0, `discard-backup: page errors: ${JSON.stringify(errors).slice(0, 600)}`);
       return { shown, notice, trashed: notice === BACKUP_TRASHED, folderBefore, folderAfter, observation: { inTrash } };

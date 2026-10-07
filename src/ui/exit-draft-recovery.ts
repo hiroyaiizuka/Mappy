@@ -3,7 +3,8 @@ import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-dr
 import { ExitBackupError, type BackupRecord, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
 import { t, type Messages } from "../i18n";
 import {
-  EXIT_DRAFTS_KEY, discardExitBackup, discardExitDraft, joinSentences, keptBackupIds, keptCount, type BackupDiscard, type DraftDiscard,
+  EXIT_DRAFTS_KEY, discardExitBackup, discardExitDraft, exitDraftsApplying, joinSentences, keptBackupIds, keptCount, type BackupDiscard,
+  type DraftDiscard,
 } from "./exit-drafts";
 
 /**
@@ -60,11 +61,15 @@ export async function rescueExitDrafts(app: App, backups: ExitBackupStore): Prom
     new ExitDraftConfirmModal(app, choice, save).open();
   }, choice => {
     if ("draft" in choice) {
-      const discard = () => { void discardExitDraft(app, choice.draft).then(outcome => { new Notice(draftDiscardText(outcome, choice.draft)); }); };
+      const discard = () => {
+        sayWaiting();
+        void discardExitDraft(app, choice.draft).then(outcome => { new Notice(draftDiscardText(outcome, choice.draft)); });
+      };
       new ExitDraftDiscardModal(app, choice, null, discard).open();
       return;
     }
     const discard = () => {
+      sayWaiting();
       void discardExitBackup(app, backups, choice.record).then(backupDiscardText, (error: unknown) => t().discardBackupFailed(reasonOf(error)))
         .then(message => { new Notice(message); });
     };
@@ -77,10 +82,18 @@ export async function rescueExitDrafts(app: App, backups: ExitBackupStore): Prom
   }).open();
 }
 
-/** Why a step failed, in its own words: the adapter's message an `ExitBackupError` carries, or the error's. */
+/**
+ * Why a step failed, in its own words: the adapter's message an `ExitBackupError` carries (not its failure's code when
+ * it has none: review 3), or the error's.
+ */
 function reasonOf(error: unknown): string {
-  if (error instanceof ExitBackupError && error.detail) return error.detail;
+  if (error instanceof ExitBackupError) return error.detail || t().rescueUnknownReason;
   return error instanceof Error && error.message ? error.message : t().rescueUnknownReason;
+}
+
+/** A discard that has to wait for a load writing the kept drafts says so at once, not only when it is done (review 3). */
+function sayWaiting(): void {
+  if (exitDraftsApplying()) new Notice(t().discardWaiting);
 }
 
 /** What a discarded draft's Notice says (LEV-310). */
@@ -101,6 +114,7 @@ function backupDiscardText(outcome: BackupDiscard): string {
   switch (outcome) {
     case "trashed": return text.discardedBackupTrash;
     case "localTrashed": return text.discardedBackupLocalTrash;
+    case "movedUnconfirmed": return text.discardedBackupUnconfirmed;
     case "stillThere": return text.discardBackupStillThere;
     case "gone": return text.discardBackupGone;
     case "draftKept": return text.discardBackupDraftKept;
@@ -438,7 +452,7 @@ class ExitDraftDiscardModal extends Modal {
       const { draft } = this.choice;
       this.setTitle(text.discardDraftTitle);
       this.contentEl.createEl("p", { text: text.discardDraftWhat(draft.title, draft.path) });
-      this.contentEl.createEl("p", { text: text.discardDraftLost });
+      this.contentEl.createEl("p", { text: "refused" in draft ? text.discardDraftLostRefused : text.discardDraftLost });
     } else {
       const { backup } = this.choice.record;
       this.setTitle(text.discardBackupTitle);
