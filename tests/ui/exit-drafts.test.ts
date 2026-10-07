@@ -1224,11 +1224,16 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     await vi.waitFor(() => { expect(disk.calls).toContain('write held'); });
     let answered = false;
     const discarding = discardExitDraft(app.asApp<App>(), draft).then(outcome => { answered = true; return outcome; });
-    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
-    expect(answered).toBe(false);
-    expect(keptOf(app)).toEqual([draft]);
-    release();
-    await loading;
+    // Released and waited for whatever happens: a pass left held would hold every later test's load (one pass at a
+    // time), and one left running would show its Notice in the next test.
+    try {
+      for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+      expect(answered).toBe(false);
+      expect(keptOf(app)).toEqual([draft]);
+    } finally {
+      release();
+      await loading;
+    }
     expect(await discarding).toBe('gone');
     expect(noteOf(app)).toBe(NOTE.replace('子ノード', '書いている下書き'));
     expect(keptOf(app)).toBeNull();
