@@ -8,14 +8,17 @@
  *   MAPPY_E2E_PROFILE   the profile (`--user-data-dir`) the instance runs with; optional, checked where a case relaunches
  *   MAPPY_E2E_WAIT      seconds a process waits for its turn before giving up (default 1800)
  *   MAPPY_E2E_LOCK_DIR  where the entries are written (default: `.tooling/e2e-instances/` in the primary checkout)
+ *   MAPPY_E2E_RUN       set by run.mjs for its cases: the pid of the run they belong to (honoured only from that parent)
  *
  * Nothing here talks to Obsidian, so it loads without a vault (case-runner.mjs reads the entry from here).
  */
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toolingDir } from '../handoff.mjs';
+import { isInside } from '../preflight.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -38,19 +41,26 @@ export const PORT = process.env.MAPPY_E2E_PORT ?? '9231';
  */
 export const VAULT = canonical(process.env.MAPPY_E2E_VAULT || join(root, 'test-vault'));
 export const PROFILE = process.env.MAPPY_E2E_PROFILE ? canonical(process.env.MAPPY_E2E_PROFILE) : null;
-const WAIT = Number(process.env.MAPPY_E2E_WAIT ?? 1800);
-/** Ports `npm run harness:obsidian -- start` picks from when none is given: away from 9231 (the default) and 9222 (Kioku's). */
+/** Seconds `MAPPY_E2E_WAIT` gives (default 1800); anything but a number of seconds is refused, not waited for ever. */
+export function waitSeconds(value = process.env.MAPPY_E2E_WAIT) {
+  if (value === undefined) return 1800;
+  const seconds = Number(value);
+  if (String(value).trim() === '' || !Number.isFinite(seconds) || seconds < 0) throw new Error(`MAPPY_E2E_WAIT must be a number of seconds, not ${JSON.stringify(value)}. No action taken.`);
+  return seconds;
+}
+/** Ports `npm run harness:obsidian -- start` picks from (and the only ones `--port` takes): away from 9231 (the default) and 9222 (Kioku's). */
 export const PORT_RANGE = [9241, 9299];
 
-/** `.tooling/e2e-instances/` beside the git common dir, the same place from every worktree (as handoff.mjs does). */
+/** `.tooling/e2e-instances/` in the primary checkout (handoff.mjs's `toolingDir`), the same place from every worktree. */
 export function lockDir() {
   if (process.env.MAPPY_E2E_LOCK_DIR) return resolve(process.env.MAPPY_E2E_LOCK_DIR);
-  try {
-    const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return join(dirname(realpathSync(resolve(root, common))), '.tooling', 'e2e-instances');
-  } catch {
-    return join(root, '.tooling', 'e2e-instances');
-  }
+  try { return join(toolingDir(root), 'e2e-instances'); } catch { return join(root, '.tooling', 'e2e-instances'); }
+}
+
+/** The run.mjs this process is a case of (`MAPPY_E2E_RUN`), only when that run is this process's parent. */
+export function parentRun(env = process.env, ppid = process.ppid) {
+  const run = Number(env.MAPPY_E2E_RUN);
+  return Number.isInteger(run) && run > 0 && run === ppid ? run : null;
 }
 
 /**
@@ -86,11 +96,16 @@ const samePath = (a, b) => typeof a === 'string' && typeof b === 'string' && can
  * Whether `other` keeps `mine` from starting. Two processes on one instance (port) or one vault would drive the same
  * window or the same files. A `solo` process acts on what every instance shares (the OS clipboard, the OS focus, an
  * Obsidian coming up or going away, frame times another instance's load would show in), so it runs with nothing else,
- * and nothing starts beside it.
+ * and nothing starts beside it. A run (run.mjs, `kind: 'run'`) holds its instance between its cases, so another run's
+ * cases do not come in between; it drives nothing itself, so it keeps only its own instance and vault, and its own cases
+ * pass it (`run`).
  */
 export function blocks(mine, other) {
+  if (mine.run != null && other.pid === mine.run) return false;
+  const shares = (mine.port !== null && String(other.port) === String(mine.port)) || samePath(other.vault, mine.vault);
+  if (mine.kind === 'run' || other.kind === 'run') return shares;
   if (mine.solo || other.solo) return true;
-  return (mine.port !== null && String(other.port) === String(mine.port)) || samePath(other.vault, mine.vault);
+  return shares;
 }
 
 /**
@@ -101,22 +116,31 @@ export function before(a, b) {
   return a.claimedAt === b.claimedAt ? a.pid < b.pid : a.claimedAt < b.claimedAt;
 }
 
-/** The entries of processes still running, other than `pid`'s. An entry that cannot be read is skipped. */
+/**
+ * The entries of processes still running, other than `pid`'s. An entry that cannot be read is skipped. One of a process
+ * that is gone (killed, so its exit did not remove it) is removed, if the file still holds what was read (a new process
+ * with the same pid writes its own entry under that name).
+ */
 export function liveEntries(dir, pid = process.pid, { starts = processStarts } = {}) {
   let names;
   try { names = readdirSync(dir); } catch { return []; }
   const entries = [];
   for (const name of names) {
     if (!/^\d+\.json$/u.test(name)) continue;
+    let text;
     let entry;
-    try { entry = JSON.parse(readFileSync(join(dir, name), 'utf8')); } catch { continue; }
-    if (entry && entry.pid !== pid && typeof entry.pid === 'number' && typeof entry.started === 'string') entries.push(entry);
+    try { text = readFileSync(join(dir, name), 'utf8'); entry = JSON.parse(text); } catch { continue; }
+    if (entry && entry.pid !== pid && typeof entry.pid === 'number' && typeof entry.started === 'string') entries.push({ entry, file: join(dir, name), text });
   }
-  const running = starts(entries.map(entry => entry.pid));
-  return entries.filter(entry => running.get(entry.pid) === entry.started);
+  const running = starts(entries.map(({ entry }) => entry.pid));
+  return entries.filter(({ entry, file, text }) => {
+    if (running.get(entry.pid) === entry.started) return true;
+    try { if (readFileSync(file, 'utf8') === text) unlinkSync(file); } catch { /* gone already */ }
+    return false;
+  }).map(({ entry }) => entry);
 }
 
-export const describeEntry = entry => `${entry.what} (pid ${entry.pid}, port ${entry.port ?? '—'}, ${entry.vault ?? 'no vault'}${entry.solo ? `, alone: ${entry.solo}` : ''})`;
+export const describeEntry = entry => `${entry.kind === 'run' ? 'the run ' : ''}${entry.what} (pid ${entry.pid}, port ${entry.port ?? '—'}, ${entry.vault ?? 'no vault'}${entry.solo ? `, alone: ${entry.solo}` : ''})`;
 
 let held = null;
 
@@ -132,15 +156,22 @@ let held = null;
 export async function claimInstance(options = {}) {
   if (held) {
     if (options.solo && !held.entry.solo) throw new Error(`This process entered for ${describeEntry(held.entry)} without asking to run alone; ask on its first connect().`);
+    // One process, one instance: a second instance would be driven without an entry of its own.
+    const port = options.port === undefined ? PORT : options.port;
+    const vault = options.vault === undefined ? VAULT : options.vault;
+    if ((held.entry.port !== null && port !== null && String(port) !== held.entry.port) || (held.entry.vault !== null && vault !== null && canonical(vault) !== held.entry.vault)) {
+      throw new Error(`This process entered for ${describeEntry(held.entry)}, not port ${port} and ${vault}; one process drives one instance. No action taken.`);
+    }
     return held;
   }
-  const { port = PORT, vault = VAULT, solo = null, what = whatRuns(), wait = WAIT, dir = lockDir(), log = message => console.error(message), starts = processStarts } = options;
+  const { port = PORT, vault = VAULT, solo = null, kind = 'case', what = whatRuns(), wait = waitSeconds(), dir = lockDir(), log = message => console.error(message), starts = processStarts, run = parentRun() } = options;
+  if (!Number.isFinite(wait) || wait < 0) throw new Error(`wait must be a number of seconds, not ${wait}. No action taken.`);
   // An entry without its start would read as a dead process's to everyone else, and nothing would wait for it.
   const own = starts([process.pid]).get(process.pid);
   if (!own) throw new Error(`Could not read this process's start with ps, so it cannot enter the register in ${dir}. No action taken.`);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${process.pid}.json`);
-  const entry = { pid: process.pid, started: own, port: port === null ? null : String(port), vault: vault === null ? null : canonical(vault), solo: solo || null, what, claimedAt: new Date().toISOString() };
+  const entry = { pid: process.pid, started: own, kind, run, port: port === null ? null : String(port), vault: vault === null ? null : canonical(vault), solo: solo || null, what, claimedAt: new Date().toISOString() };
   const deadline = Date.now() + Math.max(0, wait) * 1000;
   let told = 0;
   for (;;) {
@@ -175,6 +206,9 @@ export async function claimInstance(options = {}) {
 /** This process's entry while it holds one (case-runner.mjs writes it into the record), else null. */
 export const heldEntry = () => held?.entry ?? null;
 
+/** Leaves the register now rather than at exit (the tests; a process that drives nothing more). */
+export const releaseInstance = () => { held?.release(); };
+
 /**
  * Notes that this process did what only a `solo` one may (cdp.mjs sees a window it opened): `finish` fails the case's
  * record, so a case that should run alone and does not say so cannot pass, whether or not another instance ran beside it.
@@ -185,6 +219,12 @@ export function noteShared(what) {
 
 /** What this process did that only a `solo` one may (`noteShared`). */
 export const sharedUses = () => [...(held?.shared ?? [])];
+
+/** A shell word for `value`: single-quoted, with `'` written `'\\''`, so a path with a space or `$` stays one word. */
+export const shellWord = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+/** The line `harness:obsidian -- start` prints for the cases to run against the instance it launched. */
+export const exportLine = ({ port, vault, profile }) => `export MAPPY_E2E_PORT=${shellWord(port)} MAPPY_E2E_VAULT=${shellWord(vault)} MAPPY_E2E_PROFILE=${shellWord(profile)}`;
 
 /** The script and its flags, as the entry names who holds it. */
 export function whatRuns(argv = process.argv) {
@@ -218,7 +258,7 @@ export async function freePort({ range = PORT_RANGE, free = portFree } = {}) {
  */
 export function profileHolder(profile, { starts = processStarts } = {}) {
   let target;
-  try { target = execFileSync('readlink', [join(profile, 'SingletonLock')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; }
+  try { target = readlinkSync(join(profile, 'SingletonLock')); } catch { return null; }
   const pid = Number(/-(\d+)$/u.exec(target)?.[1]);
   return Number.isInteger(pid) && pid > 0 && starts([pid]).has(pid) ? pid : null;
 }
@@ -244,8 +284,7 @@ export function profilesWithVault(vault, { within = root, profiles = runningProf
   const base = canonical(within);
   const wanted = canonical(vault);
   return profiles.filter(profile => {
-    const inside = relative(base, profile);
-    if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return false;
+    if (!isInside(base, profile)) return false;
     let list;
     try { list = JSON.parse(read(join(profile, 'obsidian.json'))); } catch { return false; }
     return Object.values(list?.vaults ?? {}).some(item => item?.open && typeof item.path === 'string' && canonical(item.path) === wanted);

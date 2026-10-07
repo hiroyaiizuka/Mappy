@@ -1,9 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  blocks, canonical, claimInstance, freePort, heldEntry, liveEntries, noteShared, processStarts, profileHolder, profilesWithVault, relaunchProfile,
+  blocks, canonical, claimInstance, exportLine, freePort, liveEntries, noteShared, parentRun, processStarts, profileHolder,
+  profilesWithVault, relaunchProfile, releaseInstance, waitSeconds,
 } from '../../scripts/e2e/instance.mjs';
 import { createRecord, finish } from '../../scripts/e2e/case-runner.mjs';
 import { harnessVault, vaultName } from '../../scripts/preflight.mjs';
@@ -16,9 +19,9 @@ import { harnessVault, vaultName } from '../../scripts/preflight.mjs';
  */
 const temporary = [];
 const tempDir = () => { const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mappy-lev327-'))); temporary.push(dir); return dir; };
-afterEach(async () => {
+afterEach(() => {
   // A test that entered leaves the register as a process exit would.
-  if (heldEntry()) (await claimInstance()).release();
+  releaseInstance();
   while (temporary.length > 0) rmSync(temporary.pop(), { recursive: true, force: true });
 });
 
@@ -42,6 +45,23 @@ describe('which entries keep a process from starting', () => {
   it('blocks everything beside a solo process, on either side', () => {
     expect(blocks(mine, { port: '9242', vault: '/b/test-vault', solo: 'clipboard' })).toBe(true);
     expect(blocks({ ...mine, solo: 'clipboard' }, { port: '9242', vault: '/b/test-vault', solo: null })).toBe(true);
+  });
+
+  it('keeps a run\'s instance for the run, lets its own cases pass, and keeps no other instance from a solo case', () => {
+    // Review 2-7: two runs on one instance came in between each other's cases.
+    const run = { pid: 500, kind: 'run', port: '9241', vault: '/a/test-vault', solo: null };
+    expect(blocks({ ...mine, pid: 600, run: 400 }, run)).toBe(true);
+    expect(blocks({ ...mine, pid: 600, run: 500 }, run)).toBe(false);
+    expect(blocks({ ...mine, pid: 600, run: 500, solo: 'opens a popout window' }, run)).toBe(false);
+    expect(blocks({ pid: 700, port: '9242', vault: '/b/test-vault', solo: 'opens a popout window', run: 800 }, run)).toBe(false);
+    expect(blocks({ pid: 900, kind: 'run', port: '9241', vault: '/c/test-vault', solo: null }, run)).toBe(true);
+    expect(blocks({ pid: 900, kind: 'run', port: '9242', vault: '/b/test-vault', solo: null }, { ...mine, pid: 600, solo: 'clipboard' })).toBe(false);
+  });
+
+  it('takes the run a case belongs to only from its parent', () => {
+    expect(parentRun({ MAPPY_E2E_RUN: '4321' }, 4321)).toBe(4321);
+    expect(parentRun({ MAPPY_E2E_RUN: '4321' }, 1)).toBe(null);
+    expect(parentRun({}, 4321)).toBe(null);
   });
 });
 
@@ -122,11 +142,33 @@ describe('the register', () => {
     expect(seen).toEqual([false]);
   });
 
-  it('hands a process its one entry again, and refuses to make it solo afterwards', async () => {
+  it('hands a process its one entry again, and refuses to make it solo or point it at another instance afterwards', async () => {
     const dir = tempDir();
     const held = await claim(dir);
-    expect(await claim(dir, { port: '9243' })).toBe(held);
+    expect(await claim(dir)).toBe(held);
     await expect(claim(dir, { solo: 'quits Obsidian' })).rejects.toThrow(/without asking to run alone/u);
+    // Review 2-3: a second instance was driven with the first one's entry.
+    await expect(claim(dir, { port: '9243' })).rejects.toThrow(/one process drives one instance/u);
+    await expect(claim(dir, { vault: '/c/test-vault' })).rejects.toThrow(/one process drives one instance/u);
+  });
+
+  it('removes the entry of a process that is gone, but not one rewritten since it was read', () => {
+    const dir = tempDir();
+    writeOther(dir, { port: '9242' });
+    expect(liveEntries(dir, process.pid, { starts: startedWith({ dead: true }) })).toEqual([]);
+    expect(existsSync(join(dir, `${OTHER}.json`))).toBe(false);
+    writeOther(dir, { port: '9242' });
+    const rewrite = pids => { writeOther(dir, { port: '9243' }); return startedWith({ dead: true })(pids); };
+    expect(liveEntries(dir, process.pid, { starts: rewrite })).toEqual([]);
+    expect(JSON.parse(readFileSync(join(dir, `${OTHER}.json`), 'utf8')).port).toBe('9243');
+  });
+
+  it('refuses a wait that is not a number of seconds rather than waiting for ever', async () => {
+    // Review 2-1: MAPPY_E2E_WAIT=30s made the deadline NaN, never reached.
+    expect(waitSeconds(undefined)).toBe(1800);
+    expect(waitSeconds('0')).toBe(0);
+    for (const value of ['30s', '', 'abc', '-1']) expect(() => waitSeconds(value)).toThrow(/MAPPY_E2E_WAIT must be a number of seconds/u);
+    await expect(claim(tempDir(), { wait: Number.NaN })).rejects.toThrow(/wait must be a number of seconds/u);
   });
 
   it('reads a process\'s start the same way whatever the locale and time zone of the shell reading it', () => {
@@ -235,6 +277,31 @@ describe('choosing a port', () => {
 
   it('says so when the range is full', async () => {
     await expect(freePort({ range: [9241, 9242], free: async () => false })).rejects.toThrow('No free port in 9241–9242.');
+  });
+});
+
+describe('the line start prints', () => {
+  it('keeps a path with a space, a quote or a $ as one word', () => {
+    // Review 2-5: the paths were printed bare, and a space split them.
+    const line = exportLine({ port: '9241', vault: "/My Projects/it's $HOME/test-vault-b", profile: '/p q/artifacts/obsidian-profile-9241' });
+    const shell = spawnSync('sh', ['-c', `${line}; printf '%s|%s|%s' "$MAPPY_E2E_PORT" "$MAPPY_E2E_VAULT" "$MAPPY_E2E_PROFILE"`], { encoding: 'utf8' });
+    expect(shell.stdout).toBe("9241|/My Projects/it's $HOME/test-vault-b|/p q/artifacts/obsidian-profile-9241");
+  });
+
+  it('refuses a --port outside 9241–9299 before anything else', () => {
+    // Review 2-4: --port 9222 (Kioku's) or 9231 (the default) was taken when nothing listened there.
+    const script = fileURLToPath(new URL('../../scripts/e2e/obsidian.mjs', import.meta.url));
+    for (const port of ['9222', '9231', '9300', 'x']) {
+      const result = spawnSync(process.execPath, [script, 'start', '--port', port], { encoding: 'utf8', env: { ...process.env, MAPPY_E2E_LOCK_DIR: tempDir() } });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`--port must be in 9241–9299, not ${port}.`);
+    }
+  });
+
+  it('run.mjs enters the register for the run and tells its cases which run they belong to', () => {
+    const text = readFileSync(new URL('../../scripts/e2e/run.mjs', import.meta.url), 'utf8');
+    expect(text).toContain("await claimInstance({ kind: 'run',");
+    expect(text).toContain('MAPPY_E2E_RUN: String(process.pid)');
   });
 });
 

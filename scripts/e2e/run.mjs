@@ -2,8 +2,10 @@
  * Runs the real-Obsidian e2e cases (docs/harness.md 実機検証) registered below on one dedicated Obsidian (the
  * instance `MAPPY_E2E_PORT`/`MAPPY_E2E_VAULT` name), one case after another, each connecting to it in turn: they
  * share its window. Another instance (its own port, profile and test vault) can have a run of its own beside this one
- * (LEV-327, docs/harness.md「専用の Obsidian を並べる」); each case enters instance.mjs's register as it connects, so
- * two runs never drive one instance at once, and a case marked `solo` there waits for the other instances' cases.
+ * (LEV-327, docs/harness.md「専用の Obsidian を並べる」). The run enters instance.mjs's register for its instance and
+ * vault before its first case and holds it to its end (`kind: 'run'`), so another run's cases do not come in between;
+ * each case enters too as it connects (`MAPPY_E2E_RUN` tells it the run it belongs to), and a case marked `solo` waits
+ * for the other instances' cases, not for their runs.
  *
  * Each case stays a standalone script (`node scripts/e2e/<file>.mjs`, wired to its own
  * `npm run harness:e2e:<name>`) run here as its own child process, not imported into this one: a case
@@ -22,7 +24,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PORT, VAULT } from './instance.mjs';
+import { claimInstance, PORT, VAULT } from './instance.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -109,11 +111,17 @@ const run = testCase => new Promise(resolve => {
   if (jsonDir) caseArgs.push('--json', join(jsonDir, `${testCase.name}.json`));
   if (shotDir && testCase.shot) caseArgs.push('--shot', join(shotDir, `${testCase.name}.png`));
   console.log(`\n=== ${testCase.name}: ${testCase.description} ===`);
-  const child = spawn(process.execPath, [join(here, testCase.file), ...caseArgs], { stdio: 'inherit' });
+  const child = spawn(process.execPath, [join(here, testCase.file), ...caseArgs], { stdio: 'inherit', env: { ...process.env, MAPPY_E2E_RUN: String(process.pid) } });
   child.on('exit', code => resolve(code ?? 1));
   child.on('error', error => { console.error(error); resolve(1); });
 });
 
+try {
+  await claimInstance({ kind: 'run', what: `run.mjs${caseName ? ` --case ${caseName}` : ''}` });
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
 const startedAt = new Date().toISOString();
 console.log(`Instance: port ${PORT}, vault ${VAULT}`);
 const results = [];

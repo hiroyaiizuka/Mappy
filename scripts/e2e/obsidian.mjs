@@ -25,11 +25,14 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault } from '../preflight.mjs';
+import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault, isInside } from '../preflight.mjs';
 import { connect, wait } from './cdp.mjs';
-import { canonical, claimInstance, describeEntry, freePort, liveEntries, lockDir, PORT, portFree, PORT_RANGE, profileHolder, profilesWithVault, VAULT } from './instance.mjs';
+import {
+  canonical, claimInstance, describeEntry, exportLine, freePort, liveEntries, lockDir, PORT, portFree, PORT_RANGE, profileHolder,
+  profilesWithVault, shellWord, VAULT,
+} from './instance.mjs';
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
 const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
@@ -42,11 +45,20 @@ const value = name => { const at = rest.indexOf(name); return at === -1 ? undefi
  */
 function inArtifacts(path) {
   const resolved = resolve(root, path);
-  const inside = relative(join(root, 'artifacts'), canonical(resolved));
-  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+  if (!isInside(join(root, 'artifacts'), canonical(resolved))) {
     throw new Error(`The profile must be inside ${join(root, 'artifacts')}, not ${resolved}. No action taken.`);
   }
   return resolved;
+}
+
+/** `--port`, if given, as one of PORT_RANGE: 9231 (the default instance) and 9222 (Kioku's) are never launched on. */
+function requestedPort(given) {
+  if (given === undefined) return null;
+  const port = Number(given);
+  if (!Number.isInteger(port) || port < PORT_RANGE[0] || port > PORT_RANGE[1]) {
+    throw new Error(`--port must be in ${PORT_RANGE[0]}–${PORT_RANGE[1]}, not ${given}. No action taken.`);
+  }
+  return String(port);
 }
 
 /** A stable vault id for the profile's `obsidian.json`, so a relaunch keeps the vault's own local storage. */
@@ -67,10 +79,10 @@ function writeVaultList(profile, vault) {
 const portOpen = port => fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false);
 
 async function start() {
+  const requested = requestedPort(value('--port'));
   if (process.platform !== 'darwin') throw new Error('harness:obsidian launches with open -na, on macOS only. No action taken.');
   const vault = harnessVault(root, value('--vault') ?? process.env.MAPPY_E2E_VAULT);
   assertGeneratedVault(harnessPaths(root, vault));
-  const requested = value('--port') ?? null;
   // Alone: no case runs while it does, so the ports to keep clear of are the listening ones (instance.mjs's freePort).
   await claimInstance({ port: requested, vault, solo: 'launches an Obsidian, which comes to the front', what: 'obsidian.mjs start' });
   const open = profilesWithVault(vault);
@@ -87,15 +99,23 @@ async function start() {
   const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`], { encoding: 'utf8' });
   if (launched.status !== 0) throw new Error(`open could not launch Obsidian (${launched.status}): ${launched.stderr || launched.error}`);
 
+  // What the launched Obsidian is left as when the start fails: quit if its window answered, else named for a hand quit
+  // (nothing here signals a process).
+  const leftover = () => {
+    const pid = profileHolder(profile);
+    return pid === null ? '' : ` The Obsidian it launched (pid ${pid}, profile ${profile}) is still running without a window this can reach: quit it from its window (⌘Q) before the next start with that profile.`;
+  };
   let cdp;
   let refused;
   for (const started = Date.now(); !cdp && Date.now() - started < 90000; await wait(500)) {
     try { cdp = await connect({ port, vault, language: null }); } catch (error) { refused = error; }
   }
-  if (!cdp) throw new Error(`Obsidian did not open ${vault} on port ${port} within 90 s: ${refused}`);
+  if (!cdp) throw new Error(`Obsidian did not open ${vault} on port ${port} within 90 s: ${refused}.${leftover()}`);
+  let ours = false;
   try {
     const userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')");
-    if (canonical(userData) !== canonical(profile)) throw new Error(`The window on port ${port} runs with the profile ${userData}, not ${profile}: another Obsidian has the port.`);
+    if (canonical(userData) !== canonical(profile)) throw new Error(`The window on port ${port} runs with the profile ${userData}, not ${profile}: another Obsidian has the port.${leftover()}`);
+    ours = true;
     const state = await cdp.evaluate(`(async () => {
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
       for (let i = 0; i < 300 && !app.workspace.layoutReady; i += 1) await sleep(100);
@@ -116,8 +136,15 @@ async function start() {
     const result = { port, vault, profile, ...state };
     console.log(JSON.stringify(result, null, 2));
     if (!state.mappy) throw new Error(`Mappy did not load in the new window (restricted mode ${state.restricted ? 'on' : 'off'}).`);
-    console.log(`\nexport MAPPY_E2E_PORT=${port} MAPPY_E2E_VAULT=${vault} MAPPY_E2E_PROFILE=${profile}`);
-    console.log(`Stop it with: MAPPY_E2E_PORT=${port} MAPPY_E2E_VAULT=${vault} npm run harness:obsidian -- stop`);
+    console.log(`\n${exportLine({ port, vault, profile })}`);
+    console.log(`Stop it with: MAPPY_E2E_PORT=${shellWord(port)} MAPPY_E2E_VAULT=${shellWord(vault)} npm run harness:obsidian -- stop`);
+  } catch (error) {
+    // The window is this start's (its profile): quit it rather than leave an instance no one will use.
+    if (ours) {
+      await cdp.evaluate("(() => { setTimeout(() => require('electron').remote.app.quit(), 0); return true; })()").catch(() => undefined);
+      error.message += ' The Obsidian it launched was quit (app.quit()).';
+    }
+    throw error;
   } finally {
     cdp.close();
   }

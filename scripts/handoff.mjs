@@ -232,11 +232,16 @@ export function git(args, cwd = process.cwd()) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-/** `.tooling/handoff/` beside the git common dir, i.e. in the primary checkout whatever worktree runs this. */
+/** `.tooling/` beside the git common dir, i.e. in the primary checkout whatever worktree runs this (git ignores it). */
+export function toolingDir(cwd = process.cwd()) {
+  const common = realpathSync(resolve(cwd, git(['rev-parse', '--git-common-dir'], cwd)));
+  return join(dirname(common), '.tooling');
+}
+
+/** `.tooling/handoff/` in the primary checkout (`toolingDir`). */
 export function handoffDir(cwd = process.cwd()) {
   if (process.env.MAPPY_HANDOFF_DIR) return resolve(process.env.MAPPY_HANDOFF_DIR);
-  const common = realpathSync(resolve(cwd, git(['rev-parse', '--git-common-dir'], cwd)));
-  return join(dirname(common), '.tooling', 'handoff');
+  return join(toolingDir(cwd), 'handoff');
 }
 
 /** The tip of the base branch on GitHub now (not the PR's `baseRefOid`, which need not follow the branch). */

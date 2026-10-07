@@ -19,6 +19,11 @@ import { join } from 'node:path';
 import { canonical, claimInstance, noteShared, PORT, VAULT } from './instance.mjs';
 
 export { PORT, VAULT };
+/** The window targets this process has seen on its instance, across its connections (reloads reconnect). */
+const seenWindows = new Set();
+let watching = false;
+/** A window the instance opened (a popout, the settings window, the vault picker), as opposed to its main window. */
+const opened = target => target.type === 'page' && !String(target.url ?? '').startsWith('app://obsidian.md/index.html');
 /**
  * The plugin's text follows Obsidian's language (src/i18n: Japanese for `ja`, English otherwise), and the cases find
  * buttons and read notices by their Japanese text. A window in another language is refused rather than driven, so a
@@ -128,14 +133,21 @@ export async function connect({ popout, appless = false, language: expected = LA
     await evaluate(`(() => { try { require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false); return true; } catch { return false; } })()`);
     // A window the instance opens (a popout, the settings window) takes the OS focus from every other instance's window
     // (artifacts/lev-327/focus-probe*.json): a process that did not ask to run alone has it noted, and its record fails.
+    // Seen once per process (every connection hears the event); one that came while no connection was open (a reload)
+    // is in the target list of the next one.
     if (popout === undefined && !entry.solo) {
-      const known = new Set(targets.map(target => target.id));
+      const note = (id, url) => {
+        if (seenWindows.has(id)) return;
+        seenWindows.add(id);
+        if (watching) noteShared(`opened a window (${url || 'about:blank'}) on port ${port}`);
+      };
+      // The first connection's windows were there before the case; a main window is never counted.
+      for (const target of targets) if (opened(target)) note(target.id, target.url);
+      watching = true;
       socket.addEventListener('message', event => {
         const message = JSON.parse(event.data);
-        if (message.method !== 'Target.targetCreated' || message.params?.targetInfo?.type !== 'page') return;
-        if (known.has(message.params.targetInfo.targetId)) return;
-        known.add(message.params.targetInfo.targetId);
-        noteShared(`opened a window (${message.params.targetInfo.url || 'about:blank'}) on port ${port}`);
+        const info = message.method === 'Target.targetCreated' ? message.params?.targetInfo : null;
+        if (info && opened(info)) note(info.targetId, info.url);
       });
       await send('Target.setDiscoverTargets', { discover: true });
     }

@@ -55,12 +55,18 @@ export function harnessVault(root, requested) {
   return join(root, basename(vault));
 }
 
+/** Whether `path` lies strictly inside `base` (both absolute, compared as written). */
+export function isInside(base, path) {
+  const inside = relative(base, resolve(path));
+  return Boolean(inside) && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+}
+
 /** Check every path component, so a symlinked parent cannot redirect a write. */
 export function assertSafePath(root, target, kind, { optional = false } = {}) {
-  const path = relative(root, resolve(target));
-  if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) {
+  if (!isInside(root, target)) {
     throw new Error(`Expected a path inside the project: ${target}`);
   }
+  const path = relative(root, resolve(target));
   const segments = path.split(sep);
   let current = root;
   for (let index = 0; index < segments.length; index += 1) {
