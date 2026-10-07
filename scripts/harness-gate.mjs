@@ -281,7 +281,8 @@ function collect(options, pr) {
   if (build !== 'release') local.push(`only the release build (dist/mappy) is compared here, not ${build}`);
   if (local.length === 0) {
     try {
-      const { files } = readHarnessBuild(getHarnessPaths());
+      // The build only: the vault MAPPY_E2E_VAULT names (perhaps another checkout's) is not this gate's to check.
+      const { files } = readHarnessBuild(getHarnessPaths({ env: {} }));
       sha = Object.fromEntries(pluginFiles.map(file => [file, createHash('sha256').update(files.get(file)).digest('hex')]));
     } catch (error) { local.push(`no packaged build to compare with: ${error.message}`); }
   }

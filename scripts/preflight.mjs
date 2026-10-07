@@ -39,14 +39,20 @@ export function getHarnessPaths({ env = process.env } = {}) {
   return harnessPaths(root, harnessVault(root, env.MAPPY_E2E_VAULT));
 }
 
-/** `requested` (a path, absolute or from `root`) as a vault this project may prepare, or `root/test-vault` when unset. */
+/**
+ * `requested` (a path, absolute or from `root`) as a vault this project may prepare, or `root/test-vault` when unset. The
+ * folder it is in is compared with its links resolved (`root` is real), so the checkout reached through a link is the
+ * same checkout; the vault is handed back under `root`.
+ */
 export function harnessVault(root, requested) {
   if (!requested) return join(root, 'test-vault');
   const vault = resolve(root, requested);
-  if (dirname(vault) !== root || !vaultName.test(basename(vault))) {
-    throw new Error(`MAPPY_E2E_VAULT must be test-vault or test-vault-<name> directly in ${root}, not ${vault}.`);
+  let parent = dirname(vault);
+  try { parent = realpathSync(parent); } catch { /* a folder that is not there is not the project */ }
+  if (parent !== root || !vaultName.test(basename(vault))) {
+    throw new Error(`MAPPY_E2E_VAULT must be test-vault or test-vault-<name> directly in ${root}, not ${vault}. A vault of another checkout is prepared and checked from that checkout.`);
   }
-  return vault;
+  return join(root, basename(vault));
 }
 
 /** Check every path component, so a symlinked parent cannot redirect a write. */

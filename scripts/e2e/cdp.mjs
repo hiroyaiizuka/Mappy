@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { claimInstance, PORT, VAULT } from './instance.mjs';
+import { canonical, claimInstance, noteShared, PORT, VAULT } from './instance.mjs';
 
 export { PORT, VAULT };
 /**
@@ -65,7 +65,7 @@ export async function connect({ popout, appless = false, language: expected = LA
   if (!existsSync(join(ours, '.mappy-generated'))) {
     throw new Error(`${ours} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
   }
-  await claimInstance({ port, vault: ours, solo });
+  const { entry } = await claimInstance({ port, vault: ours, solo });
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
@@ -107,7 +107,8 @@ export async function connect({ popout, appless = false, language: expected = LA
     const vault = await connection.evaluate('app.vault.adapter.basePath').catch(() => null);
     const marked = popout === undefined
       || await connection.evaluate(`document.body?.dataset.mappyE2ePopout === ${JSON.stringify(String(popout))}`).catch(() => false);
-    if ((vault !== ours && !(appless && popout !== undefined)) || !marked) { connection.socket.close(); continue; }
+    const other = typeof vault !== 'string' || canonical(vault) !== canonical(ours);
+    if ((other && !(appless && popout !== undefined)) || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
     // `language`: the cases that switch the app's language (E63, E69, E71) connect in the language they switched to.
@@ -125,6 +126,19 @@ export async function connect({ popout, appless = false, language: expected = LA
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
     // frames and every screenshot; keep it running while the case does its steps (LEV-64, LEV-72).
     await evaluate(`(() => { try { require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false); return true; } catch { return false; } })()`);
+    // A window the instance opens (a popout, the settings window) takes the OS focus from every other instance's window
+    // (artifacts/lev-327/focus-probe*.json): a process that did not ask to run alone has it noted, and its record fails.
+    if (popout === undefined && !entry.solo) {
+      const known = new Set(targets.map(target => target.id));
+      socket.addEventListener('message', event => {
+        const message = JSON.parse(event.data);
+        if (message.method !== 'Target.targetCreated' || message.params?.targetInfo?.type !== 'page') return;
+        if (known.has(message.params.targetInfo.targetId)) return;
+        known.add(message.params.targetInfo.targetId);
+        noteShared(`opened a window (${message.params.targetInfo.url || 'about:blank'}) on port ${port}`);
+      });
+      await send('Target.setDiscoverTargets', { discover: true });
+    }
     return {
       send, evaluate, vault,
       /** The next CDP event named `method` (e.g. `Input.dragIntercepted`), or a rejection after `ms`. */

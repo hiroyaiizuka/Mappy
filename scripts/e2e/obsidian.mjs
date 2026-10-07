@@ -7,11 +7,12 @@
  *   npm run harness:obsidian -- list
  *
  * start: the vault is `--vault`, else `MAPPY_E2E_VAULT`, else `test-vault`, and must be a generated one in this checkout
- * (`npm run harness:prepare` with the same `MAPPY_E2E_VAULT`). The port is `--port`, else the first one in 9241–9299 that
- * nothing listens on and no entry of the register names (`MAPPY_E2E_PORT` is not read: it is what the start prints, and
- * the instance it named may still be up). The profile is `--profile`, else `artifacts/obsidian-profile-<port>`, and must
- * be inside this checkout's `artifacts/`, so the everyday Obsidian's profile is never launched. A profile another
- * Obsidian still runs with is refused (a second launch would only hand that one its arguments). Its `obsidian.json` is
+ * (`npm run harness:prepare` with the same `MAPPY_E2E_VAULT`) that no running Obsidian of this checkout has open. The
+ * port is `--port`, else the first one in 9241–9299 that nothing listens on (`MAPPY_E2E_PORT` is not read: it is what
+ * the start prints, and the instance it named may still be up). The profile is `--profile`, else
+ * `artifacts/obsidian-profile-<port>`, and must be inside this checkout's `artifacts/` with no link on the way, so the
+ * everyday Obsidian's profile is never launched or written. A profile another Obsidian still runs with is refused (a
+ * second launch would only hand that one its arguments). Its `obsidian.json` is
  * written to open the vault alone, with updates off; restricted mode is turned off in the window (the vault's own
  * `community-plugins.json` says what loads). It prints the variables the cases read.
  *
@@ -26,19 +27,22 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertGeneratedVault, harnessPaths, harnessVault } from '../preflight.mjs';
+import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault } from '../preflight.mjs';
 import { connect, wait } from './cdp.mjs';
-import { claimInstance, describeEntry, freePort, liveEntries, lockDir, PORT, portFree, PORT_RANGE, profileHolder, VAULT } from './instance.mjs';
+import { canonical, claimInstance, describeEntry, freePort, liveEntries, lockDir, PORT, portFree, PORT_RANGE, profileHolder, profilesWithVault, VAULT } from './instance.mjs';
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
 const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
 const [command, ...rest] = process.argv.slice(2);
 const value = name => { const at = rest.indexOf(name); return at === -1 ? undefined : rest[at + 1]; };
 
-/** `path` resolved, if it lies inside this checkout's `artifacts/`; otherwise it throws. */
+/**
+ * `path` resolved, if it lies inside this checkout's `artifacts/` with its links resolved; otherwise it throws. `start`
+ * also checks every component with `assertSafePath` (no link anywhere), before it writes the profile's `obsidian.json`.
+ */
 function inArtifacts(path) {
   const resolved = resolve(root, path);
-  const inside = relative(join(root, 'artifacts'), resolved);
+  const inside = relative(join(root, 'artifacts'), canonical(resolved));
   if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
     throw new Error(`The profile must be inside ${join(root, 'artifacts')}, not ${resolved}. No action taken.`);
   }
@@ -51,6 +55,7 @@ const vaultId = vault => createHash('sha256').update(vault).digest('hex').slice(
 /** `obsidian.json` that opens `vault` alone, keeping the other keys of one already there. */
 function writeVaultList(profile, vault) {
   const file = join(profile, 'obsidian.json');
+  assertSafePath(root, file, 'file', { optional: true });
   let current = {};
   if (existsSync(file)) {
     try { current = JSON.parse(readFileSync(file, 'utf8')); } catch { current = {}; }
@@ -66,14 +71,16 @@ async function start() {
   const vault = harnessVault(root, value('--vault') ?? process.env.MAPPY_E2E_VAULT);
   assertGeneratedVault(harnessPaths(root, vault));
   const requested = value('--port') ?? null;
+  // Alone: no case runs while it does, so the ports to keep clear of are the listening ones (instance.mjs's freePort).
   await claimInstance({ port: requested, vault, solo: 'launches an Obsidian, which comes to the front', what: 'obsidian.mjs start' });
-  const others = liveEntries(lockDir());
-  if (requested !== null && (!(await portFree(requested)) || others.some(entry => String(entry.port) === String(requested)))) {
-    throw new Error(`Port ${requested} is in use (or a run expects its instance there). No action taken.`);
-  }
-  const port = requested ?? await freePort({ entries: () => others });
+  const open = profilesWithVault(vault);
+  if (open.length > 0) throw new Error(`${vault} is already open in the Obsidian with the profile ${open.join(', ')}; one vault, one instance. No action taken.`);
+  if (requested !== null && !(await portFree(requested))) throw new Error(`Port ${requested} is in use. No action taken.`);
+  const port = requested ?? await freePort();
   const profile = inArtifacts(value('--profile') ?? join('artifacts', `obsidian-profile-${port}`));
+  assertSafePath(root, profile, 'directory', { optional: true });
   mkdirSync(profile, { recursive: true });
+  assertSafePath(root, profile, 'directory');
   const holder = profileHolder(profile);
   if (holder !== null) throw new Error(`The profile ${profile} is in use by pid ${holder}; stop that Obsidian first (or give another --profile). No action taken.`);
   writeVaultList(profile, vault);
@@ -88,7 +95,7 @@ async function start() {
   if (!cdp) throw new Error(`Obsidian did not open ${vault} on port ${port} within 90 s: ${refused}`);
   try {
     const userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')");
-    if (resolve(userData) !== profile) throw new Error(`The window on port ${port} runs with the profile ${userData}, not ${profile}: another Obsidian has the port.`);
+    if (canonical(userData) !== canonical(profile)) throw new Error(`The window on port ${port} runs with the profile ${userData}, not ${profile}: another Obsidian has the port.`);
     const state = await cdp.evaluate(`(async () => {
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
       for (let i = 0; i < 300 && !app.workspace.layoutReady; i += 1) await sleep(100);

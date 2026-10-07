@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  blocks, claimInstance, freePort, heldEntry, liveEntries, profileHolder, relaunchProfile,
+  blocks, canonical, claimInstance, freePort, heldEntry, liveEntries, noteShared, processStarts, profileHolder, profilesWithVault, relaunchProfile,
 } from '../../scripts/e2e/instance.mjs';
 import { createRecord, finish } from '../../scripts/e2e/case-runner.mjs';
 import { harnessVault, vaultName } from '../../scripts/preflight.mjs';
@@ -24,11 +24,12 @@ afterEach(async () => {
 
 const OTHER = 99999991;
 /** `ps -o lstart` stand-in: this process and OTHER (unless `dead`) are running. */
-const startedWith = ({ dead = false } = {}) => pid => (pid === process.pid ? 'self' : pid === OTHER && !dead ? 'other' : null);
+const startedWith = ({ dead = false } = {}) => pids => new Map(pids
+  .map(pid => [pid, pid === process.pid ? 'self' : pid === OTHER && !dead ? 'other' : null]).filter(([, start]) => start !== null));
 const writeOther = (dir, fields) => writeFileSync(join(dir, `${OTHER}.json`), JSON.stringify({
   pid: OTHER, started: 'other', port: '9241', vault: '/a/test-vault', solo: null, what: 'other.mjs', claimedAt: '2026-10-07T00:00:00.000Z', ...fields,
 }));
-const claim = (dir, fields = {}) => claimInstance({ port: '9242', vault: '/b/test-vault', what: 'this.mjs', wait: 0, dir, log: () => {}, started: startedWith(), ...fields });
+const claim = (dir, fields = {}) => claimInstance({ port: '9242', vault: '/b/test-vault', what: 'this.mjs', wait: 0, dir, log: () => {}, starts: startedWith(), ...fields });
 
 describe('which entries keep a process from starting', () => {
   const mine = { port: '9241', vault: '/a/test-vault', solo: null };
@@ -70,7 +71,7 @@ describe('the register', () => {
   it('does not count the entry of a process that is gone', async () => {
     const dir = tempDir();
     writeOther(dir, { port: '9242' });
-    const held = await claim(dir, { started: startedWith({ dead: true }) });
+    const held = await claim(dir, { starts: startedWith({ dead: true }) });
     expect(held.entry.pid).toBe(process.pid);
   });
 
@@ -128,12 +129,61 @@ describe('the register', () => {
     await expect(claim(dir, { solo: 'quits Obsidian' })).rejects.toThrow(/without asking to run alone/u);
   });
 
+  it('reads a process\'s start the same way whatever the locale and time zone of the shell reading it', () => {
+    // Review 1: `lstart` is printed in the caller's TZ and locale; an entry written from one shell read as dead from another.
+    const saved = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
+    try {
+      Object.assign(process.env, { TZ: 'Asia/Tokyo', LC_ALL: 'ja_JP.UTF-8', LANG: 'ja_JP.UTF-8' });
+      const tokyo = processStarts([process.pid]).get(process.pid);
+      Object.assign(process.env, { TZ: 'America/Los_Angeles', LC_ALL: 'en_US.UTF-8', LANG: 'en_US.UTF-8' });
+      const angeles = processStarts([process.pid]).get(process.pid);
+      expect(tokyo).toBeTruthy();
+      expect(angeles).toBe(tokyo);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    }
+  });
+
+  it('reads the starts of several processes, and a pid ps refuses does not hide the running ones', () => {
+    // macOS ps prints nothing for a list with a pid it calls too large (OTHER is one); the running entry must still count.
+    const starts = processStarts([OTHER, process.pid]);
+    expect([...starts.keys()]).toEqual([process.pid]);
+    expect(starts.get(process.pid)).toBe(processStarts([process.pid]).get(process.pid));
+  });
+
+  it('takes its exit listener away when it releases the entry', async () => {
+    const dir = tempDir();
+    const before = process.listenerCount('exit');
+    const held = await claim(dir);
+    expect(process.listenerCount('exit')).toBe(before + 1);
+    held.release();
+    expect(process.listenerCount('exit')).toBe(before);
+  });
+
+  it('counts one vault reached through a link and directly as one vault', async () => {
+    const dir = tempDir();
+    const real = join(dir, 'checkout');
+    mkdirSync(join(real, 'test-vault'), { recursive: true });
+    symlinkSync(real, join(dir, 'link'));
+    writeOther(dir, { port: '9241', vault: join(real, 'test-vault') });
+    expect(canonical(join(dir, 'link', 'test-vault'))).toBe(join(real, 'test-vault'));
+    // Through the link here, directly in the other entry: the entry is written with the real path.
+    await expect(claim(dir, { vault: join(dir, 'link', 'test-vault') })).rejects.toThrow(/Not run/u);
+    // Directly here, through the link in the other entry (one not written by claimInstance): compared through links too.
+    writeOther(dir, { port: '9241', vault: join(dir, 'link', 'test-vault') });
+    await expect(claim(dir, { vault: join(real, 'test-vault') })).rejects.toThrow(/Not run/u);
+    // And the entry (and the record after it) names the vault by its real path, however it was reached.
+    rmSync(join(dir, `${OTHER}.json`));
+    const held = await claim(dir, { vault: join(dir, 'link', 'test-vault') });
+    expect(JSON.parse(readFileSync(held.file, 'utf8')).vault).toBe(join(real, 'test-vault'));
+  });
+
   it('skips entries it cannot read and lists only the others', () => {
     const dir = tempDir();
     writeOther(dir, {});
     writeFileSync(join(dir, '123.json'), '{ not json');
     writeFileSync(join(dir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, started: 'self' }));
-    expect(liveEntries(dir, process.pid, { started: startedWith() }).map(entry => entry.pid)).toEqual([OTHER]);
+    expect(liveEntries(dir, process.pid, { starts: startedWith() }).map(entry => entry.pid)).toEqual([OTHER]);
   });
 });
 
@@ -142,6 +192,7 @@ describe('what uses the register', () => {
     const text = readFileSync(new URL('../../scripts/e2e/cdp.mjs', import.meta.url), 'utf8');
     const body = text.slice(text.indexOf('export async function connect('));
     expect(body.indexOf('await claimInstance({ port, vault: ours, solo });')).toBeGreaterThan(-1);
+    expect(body).toContain("await send('Target.setDiscoverTargets', { discover: true });");
     expect(body.indexOf('await claimInstance(')).toBeLessThan(body.indexOf('fetch('));
   });
 
@@ -154,17 +205,56 @@ describe('what uses the register', () => {
     await finish(createRecord(dir, 'Fixtures/E2E'), json);
     expect(JSON.parse(readFileSync(json, 'utf8')).instance).toEqual({ port: '9242', vault: '/b/test-vault', solo: 'opens the settings window' });
   });
+
+  it('fails a case that opened a window without asking to run alone, and not one that asked', async () => {
+    // Review 10: whether a case runs alone was only what it said about itself; cdp.mjs now notes the windows it opens.
+    const dir = tempDir();
+    const json = join(dir, 'case.json');
+    const held = await claim(dir);
+    noteShared('opened a window (about:blank) on port 9242');
+    expect(await finish(createRecord(dir, 'Fixtures/E2E'), json)).toBe(1);
+    expect(JSON.parse(readFileSync(json, 'utf8')).failures[0]).toMatch(/^opened a window \(about:blank\) on port 9242 without connect\(\{ solo \}\)/u);
+    held.release();
+    await claim(dir, { solo: 'opens a popout window' });
+    noteShared('opened a window (about:blank) on port 9242');
+    expect(await finish(createRecord(dir, 'Fixtures/E2E'), json)).toBe(0);
+  });
+
+  it('the gate reads the build without the vault MAPPY_E2E_VAULT names', () => {
+    // Review 3: the gate went through the vault check and refused a build that was fine when the variable named another vault.
+    expect(readFileSync(new URL('../../scripts/harness-gate.mjs', import.meta.url), 'utf8')).toContain('readHarnessBuild(getHarnessPaths({ env: {} }))');
+  });
 });
 
 describe('choosing a port', () => {
-  it('takes the first port nothing listens on and no entry names', async () => {
-    const listening = new Set(['9241']);
-    const port = await freePort({ range: [9241, 9299], free: async candidate => !listening.has(String(candidate)), entries: () => [{ port: '9242' }] });
+  it('takes the first port nothing listens on', async () => {
+    const listening = new Set(['9241', '9242']);
+    const port = await freePort({ range: [9241, 9299], free: async candidate => !listening.has(String(candidate)) });
     expect(port).toBe('9243');
   });
 
   it('says so when the range is full', async () => {
-    await expect(freePort({ range: [9241, 9242], free: async () => false, entries: () => [] })).rejects.toThrow('No free port in 9241–9242.');
+    await expect(freePort({ range: [9241, 9242], free: async () => false })).rejects.toThrow('No free port in 9241–9242.');
+  });
+});
+
+describe('one vault, one instance', () => {
+  const checkout = '/w';
+  const lists = {
+    '/w/artifacts/obsidian-profile-9241/obsidian.json': { vaults: { a: { path: '/w/test-vault', open: true } } },
+    '/w/artifacts/obsidian-profile-9242/obsidian.json': { vaults: { b: { path: '/w/test-vault-b', open: false } } },
+    '/elsewhere/profile/obsidian.json': { vaults: { c: { path: '/w/test-vault-b', open: true } } },
+  };
+  const read = path => { if (!(path in lists)) throw new Error('ENOENT'); return JSON.stringify(lists[path]); };
+  const profiles = ['/w/artifacts/obsidian-profile-9241', '/w/artifacts/obsidian-profile-9242', '/elsewhere/profile'];
+
+  it('finds the running profile of this checkout that has the vault open', () => {
+    // Review 2: start launched a second Obsidian on a vault another one had open.
+    expect(profilesWithVault('/w/test-vault', { within: checkout, profiles, read })).toEqual(['/w/artifacts/obsidian-profile-9241']);
+  });
+
+  it('does not count a vault listed but not open, nor read a profile outside the checkout', () => {
+    expect(profilesWithVault('/w/test-vault-b', { within: checkout, profiles, read })).toEqual([]);
   });
 });
 
@@ -187,9 +277,9 @@ describe('the profile', () => {
   it('finds the process holding a profile from its SingletonLock, and none when that process is gone', () => {
     const profile = tempDir();
     symlinkSync(`some-host-${OTHER}`, join(profile, 'SingletonLock'));
-    expect(profileHolder(profile, { started: startedWith() })).toBe(OTHER);
-    expect(profileHolder(profile, { started: startedWith({ dead: true }) })).toBe(null);
-    expect(profileHolder(tempDir(), { started: startedWith() })).toBe(null);
+    expect(profileHolder(profile, { starts: startedWith() })).toBe(OTHER);
+    expect(profileHolder(profile, { starts: startedWith({ dead: true }) })).toBe(null);
+    expect(profileHolder(tempDir(), { starts: startedWith() })).toBe(null);
   });
 });
 
@@ -199,8 +289,14 @@ describe('cases that act on what every instance shares run alone', () => {
    * which takes it from another instance's window: artifacts/lev-327/focus-probe*.json), quitting or launching Obsidian,
    * judging frame times. A reload does not move the focus (focus-probe-reload.json).
    */
-  const SHARED = [/clipboard\.(?:write|clear)\(/u, /remote\.app\.focus\(/u, /steal: true/u, /openPopoutLeaf|moveLeafToPopout/u,
-    /app\.setting\.open\(/u, /app\.quit\(\)/u, /'open', \['-na'/u, /--budget/u];
+  const SHARED = [
+    /\bclipboard\b/u, // the OS clipboard, read or written (Electron's or navigator's)
+    /remote\.app\.focus\(|steal: true|\bBrowserWindow\b|getCurrentWindow\(\)\.(?:focus|blur|show)\(/u, // the OS focus
+    /openPopoutLeaf|moveLeafToPopout|getLeaf\(\s*['"]window['"]|new-window/u, // a popout window
+    /app\.setting\.open\(|app:open-settings|openTabById/u, // the settings window
+    /app\.quit\(|app\.relaunch\(|'open', \['-n/u, // Obsidian quitting or launching
+    /--budget/u, // frame times judged
+  ];
   const scripts = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).scripts;
   const files = [...new Set(Object.entries(scripts).filter(([name]) => name.startsWith('harness:e2e:'))
     .map(([, command]) => /scripts\/e2e\/([\w-]+\.mjs)/u.exec(command)?.[1]).filter(Boolean))];
@@ -225,6 +321,14 @@ describe('a second vault in one checkout', () => {
     expect(harnessVault(root, undefined)).toBe('/w/test-vault');
     expect(harnessVault(root, 'test-vault-b')).toBe('/w/test-vault-b');
     expect(harnessVault(root, '/w/test-vault-9242')).toBe('/w/test-vault-9242');
+  });
+
+  it('takes the checkout reached through a link as the same checkout', () => {
+    // Review 3: a logical path through a linked checkout was refused as another project.
+    const real = tempDir();
+    const link = join(tempDir(), 'link');
+    symlinkSync(real, link);
+    expect(harnessVault(real, join(link, 'test-vault-b'))).toBe(join(real, 'test-vault-b'));
   });
 
   it.each(['/elsewhere/test-vault-b', 'Fixtures/test-vault-b', 'my-vault', 'test-vault-B', 'test-vault_b', '../w2/test-vault'])('refuses %s', requested => {
