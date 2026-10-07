@@ -43,9 +43,7 @@ const after = makeAfter(evaluate);
 
 const press = makePress(cdp, evaluate);
 const history = makeHistory(cdp, evaluate);
-/** A real click at the centre of what `locate` returns, only once it is the topmost element there (`makePress`). */
-const clickAt = locate => press(`const node = (() => { ${locate} })();`);
-const ai = makeAiCard(cdp, evaluate);
+const ai = makeAiCard(cdp, evaluate, { select, press });
 const { card, draft } = ai;
 
 /** Select 旅の計画, press the AI button, focus the request and choose the fake engine. */
@@ -211,7 +209,7 @@ try {
     const phase = (await card())?.phase ?? null;
     check(phase === 'input', `keys-scope: the input did not stay open with the focus on the map (${phase})`);
     // The card closed (Escape from the request), the key is Obsidian's again.
-    await clickAt(`return el.querySelector('[data-ai-field="instruction"]');`);
+    await press(`const node = el.querySelector('[data-ai-field="instruction"]');`);
     check(await inputScope(), 'keys-scope: the input\'s scope did not come back with the focus');
     await cdp.realKey('Escape');
     await wait(300);

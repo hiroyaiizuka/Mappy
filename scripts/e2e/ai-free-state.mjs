@@ -5,9 +5,9 @@
  * server's host. Obsidian's `requestUrl` sends from the main process (no CORS), so the renderer's Network domain may
  * never see it: the case also wraps `electron.ipcRenderer` (`send`, `sendSync`, `invoke`) and records each call whose
  * arguments name the license host, and before it reports, it sends one request of its own to that host through
- * `window.requestUrl` (the host is `.invalid` and never resolves) and fails unless the counter saw it. The page's own
- * `require` has no `obsidian` module, so the probe first shows, in the running Obsidian's app.js, that the module's
- * `requestUrl` and `window.requestUrl` are one function, and fails when it cannot.
+ * Mappy's own license client (`entitlement.client.refresh`, which keeps no state; the host is `.invalid` and never
+ * resolves), so the probe takes the very `requestUrl` Mappy's requests take (the `obsidian` module's, which the page's
+ * own `require` cannot reach), and fails unless the counter saw it.
  * A counter that cannot see `requestUrl` would report 0 whatever Mappy sent. Only what comes from Mappy counts: a call whose stack has a frame of Mappy's code (Obsidian evaluates
  * a plugin's main.js under the name `plugin:mappy`, and the first stacks are kept in the record) and a request to the
  * license host. Obsidian's and other plugins' calls are recorded beside
@@ -26,10 +26,11 @@
  * `--detect` (the check that the counting works; a 0 from a broken counter shows nothing): the vault must hold the
  * development unlock (`npm run harness:prepare:ai-dev`), and the same steps run with the license active. Mappy takes
  * Node the first time the AI's availability is asked (the map's AI button, the settings' engine rows), within the steps
- * the free state counts: `child_process` must be among Mappy's counted calls. Then AI is run once through the map with
- * the person's real CLI (`runAiOnce` below: one run of their subscription), and the run must start a process through
- * that `child_process` (the wrap hands Mappy's a watched copy that records each `spawn`). A run that did not end in a
- * draft fails the case: it never reports PASS without having run AI.
+ * the free state counts: `child_process` must be among Mappy's calls counted by then, before AI is run. Then AI is run
+ * once through the map with the person's real CLI (`runAiOnce` below: one run of their subscription), and the run must
+ * start the engine's process through that `child_process` (the wrap hands Mappy's a watched copy that records each
+ * `spawn`). A run that did not end in a draft fails the case: it never reports PASS without having run AI. The unlock
+ * has no license client, so the license count and its probe are the free state's only.
  *
  * First native runs: LEV-326 (2026-10-07, Obsidian 1.13.7). A frame of Mappy's read of its license entry there was
  * `at Object.read (plugin:mappy:1:2760)`, which the pattern above matches.
@@ -64,10 +65,19 @@ const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`)
 const step = makeStep(record);
 const check = makeCheck(record);
 
-/** Script: wrap `window.require` once per page; `window.__mappyAiFreeState` holds what it saw. */
+/** Script: wrap `window.require`, `Storage.prototype.getItem` and the IPC afresh; `window.__mappyAiFreeState` holds what they saw. */
 const WRAP = `
   const modules = ${JSON.stringify(NODE_MODULES)};
-  if (!window.__mappyAiFreeState) {
+  // A state left by a run that never restored it (or by an older version of this case) is taken off first, so the
+  // wrap is always this one, installed once.
+  const left = window.__mappyAiFreeState;
+  if (left) {
+    window.require = left.original;
+    Storage.prototype.getItem = left.getItem;
+    if (left.ipc) for (const [method, original] of Object.entries(left.ipc.originals)) left.ipc.ipc[method] = original;
+    delete window.__mappyAiFreeState;
+  }
+  {
     // Mappy reads its license entry on load: those stacks show how Obsidian names Mappy's frames.
     const getItem = Storage.prototype.getItem;
     const licenseReads = [];
@@ -79,11 +89,12 @@ const WRAP = `
     const original = window.require;
     if (typeof original !== 'function') throw new Error('window.require is not a function in this window');
     window.require = function (name, ...rest) {
-      const module = original.call(this, name, ...rest);
-      if (!modules.includes(name)) return module;
+      if (!modules.includes(name)) return original.call(this, name, ...rest);
+      // Recorded before the call: a call the original refuses (and Mappy catches) was still Mappy reaching for Node.
       const stack = new Error().stack ?? '';
       const mappy = /plugin:mappy(?![\\w-])/u.test(stack);
       (mappy ? seen.mappy : seen.others).push({ name, stack: stack.split('\\n').slice(0, 8).join('\\n') });
+      const module = original.call(this, name, ...rest);
       // Mappy's child_process comes back watched (--detect ties the run to it): each spawn through it is recorded.
       if (!mappy || name !== 'child_process') return module;
       return new Proxy(module, {
@@ -95,7 +106,7 @@ const WRAP = `
     };
     window.__mappyAiFreeState = { seen, original, getItem, licenseReads };
   }
-  if (!window.__mappyAiFreeState.ipc) {
+  {
     const ipc = require('electron').ipcRenderer;
     const calls = [];
     const originals = {};
@@ -110,11 +121,6 @@ const WRAP = `
     }
     window.__mappyAiFreeState.ipc = { ipc, calls, originals };
   }
-  window.__mappyAiFreeState.seen.mappy.length = 0;
-  window.__mappyAiFreeState.seen.others.length = 0;
-  window.__mappyAiFreeState.seen.spawns.length = 0;
-  window.__mappyAiFreeState.ipc.calls.length = 0;
-  window.__mappyAiFreeState.licenseReads.length = 0;
   return true;`;
 
 const requests = [];
@@ -123,24 +129,27 @@ cdp.onEvent('Network.requestWillBeSent', params => { requests.push(params.reques
 /**
  * `--detect`: AI run once through the map as a person runs it (the AI button on 話題 → the question → ⌘↵ with the
  * engine the settings choose, a real CLI on the person's login). The question is general and names nothing of the
- * person's: it goes to their CLI (§11.3: no tools, an empty working directory). However the run ends, the card is
- * ended by its last button (`makeAiCard`): 捨てる on the draft (the note stays as the edit step left it), 閉じる on a
- * failure, 取り消す on a run still going (one this case gave up on must not keep the person's CLI busy).
+ * person's: it goes to their CLI (§11.3: no tools, an empty working directory). However the run goes, the card is
+ * ended before the case goes on: Escape on the input, else its last button (`makeAiCard`): 捨てる on the draft (the note
+ * stays as the edit step left it), 閉じる on a failure, 取り消す on a run still going (one this case gave up on must not
+ * keep the person's CLI busy). Ending it never hides why the run failed.
  */
 const QUESTION = '良い睡眠のための習慣';
 async function runAiOnce() {
-  const ai = makeAiCard(cdp, evaluate);
   const press = makePress(cdp, evaluate);
+  const ai = makeAiCard(cdp, evaluate, { press });
   const watched = () => evaluate(`const { seen } = window.__mappyAiFreeState; return { calls: seen.mappy.map(call => call.name), spawns: seen.spawns.slice() };`);
-  const before = await watched();
-  const engine = await ai.open('話題');
-  if (engine !== 'claude' && engine !== 'codex') throw new Error(`the input's engine is ${engine}, not a CLI`);
-  await cdp.insertText(QUESTION);
-  await wait(200);
-  const started = Date.now();
+  let engine = null;
   let end = null;
   let labels = [];
+  let started = Infinity;
+  let failure = null;
   try {
+    engine = await ai.open('話題');
+    if (engine !== 'claude' && engine !== 'codex') throw new Error(`the input's engine is ${engine}, not a CLI`);
+    await cdp.insertText(QUESTION);
+    await wait(200);
+    started = Date.now();
     await cdp.realKey('Enter', 4);
     // Off the input: running, or already ended (a CLI not found fails at once, before a frame shows running).
     await until(async () => ['running', 'draft', 'failed'].includes((await ai.card())?.phase), 5000, 'the run did not start');
@@ -149,19 +158,29 @@ async function runAiOnce() {
       return now && (now.phase === 'draft' || now.phase === 'failed') ? now : null;
     }, 5 * 60_000, 'the AI run did not end');
     labels = await ai.draft();
-  } finally {
-    if ((await ai.card())?.phase !== 'input') {
-      await press(ai.last);
-      await until(async () => (await ai.card()) === null, 5000, 'the card did not close on its last button');
-    }
+  } catch (error) {
+    failure = error;
   }
+  let closing = null;
+  try {
+    const shown = await ai.card();
+    if (shown?.phase === 'input') await cdp.realKey('Escape');
+    else if (shown) await press(ai.last);
+    if (shown) await until(async () => (await ai.card()) === null, 5000, `the ${shown.phase} card did not close`);
+  } catch (error) {
+    closing = String(error);
+  }
+  if (failure) throw new Error(closing ? `${failure} (ending its card: ${closing})` : String(failure));
+  if (closing) throw new Error(closing);
   const ms = Date.now() - started;
-  const after = await watched();
   if (end.phase !== 'draft') throw new Error(`the AI run ended in ${end.phase}: ${end.text}`);
-  const spawned = after.spawns.slice(before.spawns.length);
-  // The run reached Node: the CLI was started through the child_process Mappy took (and the counter counted).
-  if (spawned.length === 0) throw new Error('the run started no process through the child_process Mappy took');
-  return { engine, question: QUESTION, ms, labels, nodeCallsBefore: before.calls, nodeCallsAfter: after.calls, spawned };
+  // The run reached Node: the engine's process was started through the child_process Mappy took, after ⌘↵ (codex may
+  // be started as node with its codex.js, §11.3).
+  const after = await watched();
+  const files = engine === 'claude' ? ['claude'] : ['codex', 'node'];
+  const spawned = after.spawns.filter(item => item.at >= started && files.includes(item.file));
+  if (spawned.length === 0) throw new Error(`the run started no ${files.join('/')} process through the child_process Mappy took: ${JSON.stringify(after.spawns)}`);
+  return { engine, question: QUESTION, ms, labels, spawned, nodeCalls: after.calls };
 }
 
 try {
@@ -220,7 +239,17 @@ try {
     app.setting.close();
     if (!names.includes('ライセンスコード') && !names.includes('License code')) throw new Error('the settings tab with the AI section was not shown (active tab: ' + (tab?.id ?? 'none') + '): ' + JSON.stringify(names));
     return names;`)));
-  if (detect) await step('run AI once', runAiOnce);
+  if (detect) {
+    // Within the steps the free state counts (reload, open, edit, settings), before AI is run: Mappy's child_process.
+    const before = await step('Node calls before the run', () => evaluate(`return window.__mappyAiFreeState.seen.mappy.map(call => call.name);`));
+    if (!Array.isArray(before) || !before.includes('child_process')) {
+      record.failures.push(`--detect: within the free state's steps Mappy's Node calls were ${JSON.stringify(before)}, expected child_process among them (the counter or the frame match is broken)`);
+      // A run would show nothing more and spend one of the person's runs: stop before it.
+      record.stopped = 'the counter did not see Mappy take child_process; AI was not run';
+      throw new StopCase(record.stopped);
+    }
+    await step('run AI once', runAiOnce);
+  }
   const seen = await step('counts', () => evaluate(`
     const { seen, ipc } = window.__mappyAiFreeState;
     return { mappy: seen.mappy.length, others: seen.others.length, mappyNames: seen.mappy.map(call => call.name), spawns: seen.spawns.length,
@@ -240,38 +269,30 @@ try {
     if (after - before !== 1) throw new Error('a window.require call from a Mappy-named script was not counted');
     return true;
   });
-  // The counter's own check: one request to the license host through Obsidian's requestUrl must be seen.
-  const probe = await step('counter sees requestUrl', async () => {
+  // The counter's own check (the free state's: the unlock has no license client): one request to the license host
+  // through Mappy's own client must be seen.
+  const probe = detect ? null : await step('counter sees requestUrl', async () => {
     const before = requests.filter(toLicense).length;
     const ipcSeen = await evaluate(`
       const { ipc } = window.__mappyAiFreeState;
+      // Mappy's own client (\`createLicenseClient\`), so the probe takes the very requestUrl Mappy's requests take: the
+      // obsidian module's, which the page's own require (Electron's) cannot reach. Its refresh only posts and keeps no
+      // state; the .invalid host never answers, so it rejects.
+      const client = app.plugins.plugins.mappy?.entitlement?.client;
+      if (typeof client?.refresh !== 'function') throw new Error('Mappy\\'s license client is not reachable; the probe cannot take its requestUrl');
       const before = ipc.calls.length;
-      // The page's own require (Electron's) has no 'obsidian': Obsidian hands that module to plugins only, and puts its
-      // requestUrl on the window too. That they are one function is shown in this Obsidian's own app.js (1.13.7:
-      // \`requestUrl:()=>Vy\` in the module's exports and \`window.requestUrl=Vy\`); a probe through another function
-      // could be seen while Mappy's requests are not.
-      const appJs = Array.from(document.scripts, script => script.src).find(src => /\\/app\\.js$/u.test(src));
-      const text = appJs ? await fetch(appJs).then(response => response.text()) : '';
-      const exported = text.match(/requestUrl:\\(\\)=>([\\w$]+)/u)?.[1];
-      const global = text.match(/window\\.requestUrl=([\\w$]+)/u)?.[1];
-      if (!exported || exported !== global || typeof window.requestUrl !== 'function') {
-        throw new Error('cannot show window.requestUrl is the obsidian module\\'s requestUrl here (module ' + exported + ', window ' + global + ')');
-      }
-      await window.requestUrl({ url: 'https://${LICENSE_HOST}/mappy-e2e-counter-probe', throw: false }).catch(() => undefined);
+      await client.refresh('mappy-e2e-counter-probe', 'mappy-e2e-counter-probe').catch(() => undefined);
       await new Promise(resolve => setTimeout(resolve, 500));
       return ipc.calls.length - before;`);
     const networkSeen = requests.filter(toLicense).length - before;
     if (ipcSeen + networkSeen < 1) throw new Error('a requestUrl to the license host was not counted by IPC nor Network: the license count would show nothing');
     return { ipcSeen, networkSeen };
   });
-  if (detect) {
-    // §11.7: what is shown is Mappy's taking of child_process, the module that starts the CLI.
-    check(counted && seen.mappyNames.includes('child_process'), `--detect: Mappy's Node calls were ${JSON.stringify(seen?.mappyNames)}, expected child_process among them (the counter or the frame match is broken)`);
-  } else {
+  if (!detect) {
     check(counted && seen.mappy === 0, `Mappy reached Node ${seen?.mappy} times in the free state`);
     check(licenseCalls === 0, `Mappy sent ${licenseCalls} requests to ${LICENSE_HOST} in the free state (IPC and Network)`);
   }
-  check(probe !== null && typeof probe === 'object' && !('error' in probe), 'the license counter could not be shown to see requestUrl; its 0 shows nothing');
+  if (!detect) check(probe !== null && typeof probe === 'object' && !('error' in probe), 'the license counter could not be shown to see requestUrl; its 0 shows nothing');
   check(nodeProbe === true, 'the Node counter could not be shown to count Mappy-named calls; its 0 shows nothing');
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(String(error));

@@ -154,11 +154,10 @@ export function makePress(cdp, evaluate) {
 
 /**
  * The map's AI card (案 A, LEV-271) for the AI cases (ai-fake-engine, ai-free-state `--detect`): what it shows, its dotted
- * draft, its buttons, and the input opened on a node. `button` and `last` are `makePress` scripts.
+ * draft, its buttons, and the input opened on a node. `button` and `last` are `makePress` scripts; a case passes its own
+ * `select` and `press` when it has them.
  */
-export function makeAiCard(cdp, evaluate) {
-  const select = makeSelect(cdp, evaluate);
-  const press = makePress(cdp, evaluate);
+export function makeAiCard(cdp, evaluate, { select = makeSelect(cdp, evaluate), press = makePress(cdp, evaluate) } = {}) {
   /** The card's phase (`input`, `running`, `draft`, `failed`) and text, or null when none is shown. */
   const card = () => evaluate(`${VIEW}
     const card = el.querySelector('.mappy-ai-card');
