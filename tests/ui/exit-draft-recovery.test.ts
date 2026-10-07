@@ -729,7 +729,7 @@ describe('discarding a kept draft from the list (LEV-310)', () => {
     press(lineOf('draft', '入力中の題名'), 'discard');
     expect(document.querySelector('.modal-title')?.textContent).toBe(t().discardDraftTitle);
     expect(shownTexts()).toEqual([t().discardDraftWhat('入力中の題名', NOTE), t().discardDraftLost, t().discardUnchanged]);
-    expect(button(t().discardConfirm).classList.contains('mod-warning')).toBe(true);
+    expect(button(t().discardConfirm).classList.contains('mod-destructive')).toBe(true);
     expect(stored()).toBe(before);
     button(t().rescueCancel).click();
     await settle();
@@ -849,7 +849,7 @@ describe('discarding a backup from the list (LEV-310)', () => {
     expect(shownTexts()).toEqual([t().discardBackupWhat('書いた題名', NOTE, localTime(record.backup.createdAt)),
       t().discardBackupLost(String(before.length)), t().discardUnchanged]);
     expect(button(t().discardConfirm).disabled).toBe(false);
-    expect(button(t().discardConfirm).classList.contains('mod-warning')).toBe(true);
+    expect(button(t().discardConfirm).classList.contains('mod-destructive')).toBe(true);
     button(t().rescueCancel).click();
     await settle();
     expect(document.querySelector('.modal')).toBeNull();

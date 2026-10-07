@@ -288,7 +288,7 @@ async function main() {
     if (!pressed) throw new Error(`no ${kind} line with 破棄 for this note and ${title}`);
     return until(() => evaluate(`const title = document.querySelector('.modal .modal-title')?.textContent ?? '';
       return title.endsWith('を破棄') ? { title, texts: Array.from(document.querySelectorAll('.modal p'), item => item.textContent),
-        buttons: Array.from(document.querySelectorAll('.modal button'), item => ({ text: item.textContent, warning: item.classList.contains('mod-warning'), disabled: item.disabled })) } : null;`),
+        buttons: Array.from(document.querySelectorAll('.modal button'), item => ({ text: item.textContent, warning: item.classList.contains('mod-destructive'), disabled: item.disabled })) } : null;`),
     3000, 'the discard confirmation did not open');
   };
   /** Presses the confirmation's button `text`, then waits for the modal to close. */

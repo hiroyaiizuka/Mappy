@@ -739,7 +739,8 @@ export class ButtonComponent {
   setButtonText(text: string): this { this.buttonEl.setText(text); return this; }
   setCta(): this { this.buttonEl.addClass("mod-cta"); return this; }
   removeCta(): this { this.buttonEl.removeClass("mod-cta"); return this; }
-  setWarning(): this { this.buttonEl.addClass("mod-warning"); return this; }
+  /** As Obsidian 1.13.7 and 1.14.4 do (`setDestructive().setCta()`): a red call to action, `mod-destructive` (LEV-310). */
+  setWarning(): this { this.buttonEl.addClass("mod-destructive"); return this.setCta(); }
   setDisabled(disabled: boolean): this { this.buttonEl.disabled = disabled; return this; }
   setTooltip(tooltip: string): this { this.buttonEl.setAttribute("aria-label", tooltip); return this; }
   setIcon(icon: string): this { setIcon(this.buttonEl, icon); return this; }
