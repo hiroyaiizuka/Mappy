@@ -46,7 +46,8 @@ const CYCLES = 10;
 const TRACKED = 1 + 1 + 2 + 1 + CYCLES;
 
 const record = createRecord(VAULT, NOTE);
-const main = await connect();
+// A popout window takes the OS focus from every other window (LEV-327): run alone.
+const main = await connect({ solo: 'opens popout windows' });
 const evaluate = expression => main.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

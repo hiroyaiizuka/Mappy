@@ -92,8 +92,8 @@ const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidi
 let quitDone = false;
 
 const record = createRecord(VAULT, NOTE);
-// Row 9 quits this instance and launches it again, which takes the OS focus from every other window.
-let cdp = await connect({ solo: flag('--exits') ? 'quits Obsidian and launches it again (row 9)' : null });
+// Row 7's popout window and row 9's quit and launch take the OS focus from every other window (LEV-327): run alone.
+let cdp = await connect({ solo: flag('--exits') ? 'opens a popout window (row 7), quits Obsidian and launches it again (row 9)' : 'opens a popout window (row 7)' });
 let evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

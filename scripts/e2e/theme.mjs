@@ -44,7 +44,8 @@ const NON_TEXT = 3;
 const TOLERANCE = 4;
 
 const record = createRecord(VAULT, NOTE);
-const cdp = await connect();
+// The settings window takes the OS focus from every other window (LEV-327): run alone.
+const cdp = await connect({ solo: 'opens the settings window' });
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

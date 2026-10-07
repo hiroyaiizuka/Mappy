@@ -174,8 +174,13 @@ describe('the profile', () => {
 });
 
 describe('cases that act on what every instance shares run alone', () => {
-  /** What only a solo case may do: the OS clipboard, the OS focus, quitting or launching Obsidian, judging frame times. */
-  const SHARED = [/clipboard\.(?:write|clear)\(/u, /remote\.app\.focus\(/u, /steal: true/u, /app\.quit\(\)/u, /'open', \['-na'/u, /--budget/u];
+  /**
+   * What only a solo case may do: the OS clipboard, the OS focus (taking it, or opening a popout or the settings window,
+   * which takes it from another instance's window: artifacts/lev-327/focus-probe*.json), quitting or launching Obsidian,
+   * judging frame times. A reload does not move the focus (focus-probe-reload.json).
+   */
+  const SHARED = [/clipboard\.(?:write|clear)\(/u, /remote\.app\.focus\(/u, /steal: true/u, /openPopoutLeaf|moveLeafToPopout/u,
+    /app\.setting\.open\(/u, /app\.quit\(\)/u, /'open', \['-na'/u, /--budget/u];
   const scripts = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).scripts;
   const files = [...new Set(Object.entries(scripts).filter(([name]) => name.startsWith('harness:e2e:'))
     .map(([, command]) => /scripts\/e2e\/([\w-]+\.mjs)/u.exec(command)?.[1]).filter(Boolean))];
@@ -187,9 +192,10 @@ describe('cases that act on what every instance shares run alone', () => {
     if (shared.length > 0) expect(first, `${file}: ${shared.join(', ')}`).toMatch(/solo:/u);
   });
 
-  it('finds the four that do', () => {
+  it('finds the nine that do', () => {
     const solo = files.filter(file => /await connect\(\{ solo:/u.test(readFileSync(new URL(`../../scripts/e2e/${file}`, import.meta.url), 'utf8')));
-    expect(solo.sort()).toEqual(['close-draft.mjs', 'draft-own-write.mjs', 'panzoom-frames.mjs', 'window-blur-draft.mjs']);
+    expect(solo.sort()).toEqual(['close-draft.mjs', 'draft-own-write.mjs', 'english-ui.mjs', 'panzoom-frames.mjs', 'popout.mjs', 'theme.mjs',
+      'view-padding.mjs', 'visible-layouts.mjs', 'window-blur-draft.mjs']);
   });
 });
 
