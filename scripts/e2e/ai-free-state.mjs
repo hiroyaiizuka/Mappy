@@ -180,6 +180,9 @@ async function runAiOnce() {
   if (failure) throw new Error(closing ? `${failure} (ending its card: ${closing})` : String(failure));
   if (closing) throw new Error(closing);
   if (end.phase !== 'draft') throw new Error(`the AI run ended in ${end.phase}: ${end.text}`);
+  // The draft shown on the map, read by its dotted nodes: a selector that no longer finds them would record no items
+  // and pass on the card's phase alone.
+  check(labels.length > 0, `--detect: the draft card was shown but no dotted node (.mappy-ai-draft) was found under 話題: ${end.text}`);
   // The run reached Node: the engine was started through the child_process Mappy took, after ⌘↵. Known by its
   // arguments, not the file's name: either CLI may be started as node with its script (§11.3, launch.ts), or by a path
   // of another name set in the settings. claude runs as `-p`, codex as `exec`.
