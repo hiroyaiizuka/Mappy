@@ -99,7 +99,11 @@ async function start() {
         if (trust) { trust.click(); trusted = true; } else if (i >= 20 && !app.plugins.isEnabled()) await app.plugins.setEnable(true);
         await sleep(100);
       }
-      return { layoutReady: app.workspace.layoutReady, trusted, restricted: !app.plugins.isEnabled(), mappy: app.plugins.plugins.mappy?.manifest?.version ?? null,
+      // Obsidian 1.13.7 once opened its settings window after the trust (LEV-327); a case finds windows by their marks,
+      // and starts from the main window alone.
+      app.setting?.close?.();
+      await sleep(300);
+      return { layoutReady: app.workspace.layoutReady, trusted, windows: require('electron').remote.BrowserWindow.getAllWindows().length, restricted: !app.plugins.isEnabled(), mappy: app.plugins.plugins.mappy?.manifest?.version ?? null,
         obsidian: require('electron').remote.app.getVersion(), language: window.moment?.locale?.() ?? null };
     })()`);
     const result = { port, vault, profile, ...state };

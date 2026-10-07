@@ -90,16 +90,39 @@ view の片付け（LEV-239）: ブラウザ検証ページの `View`（と `tes
 ### Obsidian 実機の初回準備
 
 1. まだ試用していない専用環境で `npm run harness:prepare` を実行する。生成するのはこのプロジェクト内の `test-vault/` のみ。
-2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。M6 のケース（E23〜E27・E30・E33）には Excalidraw（`obsidian-excalidraw-plugin`）をこの Vault にインストールして有効にする。
+2. Obsidian でそのフォルダを Vault として開く（専用の Obsidian は `npm run harness:obsidian -- start` が新しいプロファイルと空いたポートで立て、制限モードも解く。下の「専用の Obsidian を並べる」）。必要な初回の制限モード設定はテスト環境で行う。M6 のケース（E23〜E27・E30・E33）には Excalidraw（`obsidian-excalidraw-plugin`）をこの Vault にインストールして有効にする。
 3. `npm run harness:preflight` を実行する。これはファイルと設定の検査であり、実行中プラグインが最新である証明ではない。有効プラグインは mappy と Excalidraw（M6 用）だけを有効にする。それ以外が有効なら preflight は失敗し、実機確認の条件に含めない。
 4. プラグインを再読込し、対象 Vault と機能の挙動を画面で確認する。将来は表示する build ID も照合する。
 5. 下記ケースを再現し、UI の状態と変更後の Markdown を両方保存する。
 
 `harness:prepare` は既知の fixture を初期化するため、ユーザーが試用中の Vault には再実行しない。生成 fixture に書いたノードも利用者の変更として保持する。再実行した場合、`community-plugins.json` は mappy と、すでに有効なら Excalidraw だけを残して書き直す（Excalidraw の配布物と設定には触れない）。既存の Evergreens Vault や taskchute-plus の配布物は操作しない。
 
+### 専用の Obsidian を並べる（LEV-327）
+
+インスタンスごとにポート・プロファイル・test-vault を分ければ、専用の Obsidian を同時に複数動かし、別々のケースを並べて回してよい（2026-10-07 の本人の指示）。ふだん使いの Obsidian（`~/Library/Application Support/obsidian` のプロファイル）と本番 Vault には触らない。LEV-327 までは「実機は 1 台なので同時に 1 本」で、別の worktree のチケットが実機を待ち合っていた。
+
+1. **Vault**: 1 つ目は `test-vault`。同じ checkout に 2 つ目からを置くときは `MAPPY_E2E_VAULT=test-vault-<名前> npm run harness:prepare`（名前は英小文字・数字・`-`）。準備できるのはプロジェクト直下の `test-vault`・`test-vault-<名前>` だけで、それ以外を指すと何も書かずに止まる（AGENTS.md: 自動準備はプロジェクト配下のみ）。`npm run harness:preflight` も同じ変数を読む。`test-vault-*/` は git と eslint が無視する。別の worktree なら、その worktree の `test-vault` を使う。
+2. **起動**: `npm run harness:obsidian -- start`（`scripts/e2e/obsidian.mjs`。Vault は `--vault`、無ければ `MAPPY_E2E_VAULT`、無ければ `test-vault`）。
+   - ポートは自分で決めない: 9241〜9299 のうち、何も listen しておらず、下の登録簿のどのエントリーも名乗っていない最初のものを選ぶ。9231（従来の既定）と 9222（Kioku の専用 Obsidian）は範囲の外。`--port` で決めることもでき、そのときも listen されているか登録簿にあれば止まる。`MAPPY_E2E_PORT` は読まない（それは start が出力する値で、前に立てたインスタンスがまだ動いているかもしれない）。
+   - プロファイルは `artifacts/obsidian-profile-<ポート>`。`--profile` は checkout の `artifacts/` の中だけを受け付ける（ふだん使いのプロファイルで起動しない）。ほかの Obsidian が使っているプロファイル（Chromium がプロファイルに置く `SingletonLock` の pid が動いている）は止まる: 同じプロファイルの 2 回目の起動は、動いている方に引数を渡すだけで、新しいポートでは開かない。
+   - プロファイルの `obsidian.json` にその Vault だけを開く形で書き（更新は切る）、`open -na /Applications/Obsidian.app --args --user-data-dir=<プロファイル> --remote-debugging-port=<ポート>` で起動し、そのポートの窓がその Vault とそのプロファイルで開いたことを確かめる。新しいプロファイルは制限モードで始まるので、初回の「作成者を信頼しプラグインを有効化」を押し（無ければ `app.plugins.setEnable(true)`）、Mappy が読み込まれるまで待つ。読み込まれなければ失敗で終わる。
+   - 最後に `export MAPPY_E2E_PORT=… MAPPY_E2E_VAULT=… MAPPY_E2E_PROFILE=…` の行を出す。
+3. **回す**: その変数を付けて `npm run harness:e2e:<名前> -- --json artifacts/<チケット>/<ポート>/<名前>.json`（`npm run harness:e2e` も同じ）。`--json` の置き場はインスタンスごとに分ける（同じディレクトリに 2 つの run が書くと `summary.json` も各ケースの JSON も上書きし合う）。ケースの JSON の `instance` に、そのプロセスが入ったポート・Vault・単独で走ったか（`solo`）が入り、`summary.json` の `instance` に run のポートと Vault が入る。
+4. **終了**: 終わったら閉じる。`MAPPY_E2E_PORT=<ポート> MAPPY_E2E_VAULT=<Vault> npm run harness:obsidian -- stop` が CDP で `app.quit()` を呼び（シグナルは送らない）、ポートが閉じるまで待つ。窓の Vault が違うもの、プロファイルが checkout の `artifacts/` の外にあるものは閉じない。`npm run harness:obsidian -- list` は登録簿の生きているエントリーを出す。
+
+**登録簿**（`scripts/e2e/instance.mjs`）: 実機を動かすプロセス（各ケースと `harness:obsidian`）は、`connect()` の最初、窓に触る前に、プライマリーの `.tooling/e2e-instances/<pid>.json` に入る（どの worktree からも同じ場所。git 管理外。`MAPPY_E2E_LOCK_DIR` で差し替え）。
+
+- 同じポート（同じインスタンス）か同じ Vault のエントリーが生きていれば待つ。1 つのインスタンスのケースは窓を共有するので 1 本ずつになる。別のインスタンス・別の Vault なら並ぶ。
+- OS 全体で共有するものを触るケース（`solo`）は、ほかにエントリーが 1 つも無くなるまで待ち、走っている間はほかのケースを待たせる。いまの solo は、OS のクリップボード（E77）、OS のフォーカスを取る（E56）、別ウィンドウを開く（E50・E59 の行 7・E70）、設定ウィンドウを開く（E48・E63・E72）、Obsidian を終了・起動する（E59 の `--exits`、`harness:obsidian` の start と stop）、フレーム時間で合否を決める（E75）。実機（9241・9242、Obsidian 1.13.7、2026-10-07）で、B が別ウィンドウや設定ウィンドウを開くと A のウィンドウから OS のフォーカスが外れ、B のウィンドウの再読込では外れないことを確かめた（`artifacts/lev-327/focus-probe*.json`。再読込するケース〔E51・E63 の言語の切替・E84〕はこのために solo にはしていない）。同じことをするケースを足すときは、最初の `connect({ solo: '<理由>' })` に書く。`tests/tooling/e2e-instance.test.mjs` が、クリップボードへの書き込み・フォーカスの取得・別ウィンドウ・設定ウィンドウ・`app.quit()`・`open -na`・`--budget` のどれかを使うのに solo を名乗らないケースを落とす（文字で見ているので、別の書き方は見落とす）。
+- 待つのは `MAPPY_E2E_WAIT` 秒（既定 1800）まで。過ぎたら窓に触らずに「Not run」で止まる（PASS にしない）。待っている間は 60 秒ごとに、誰を待っているか（スクリプト・pid・ポート・Vault・solo の理由）を出す。
+- エントリーはプロセスの終了で消える。kill されたプロセスが残したエントリーは、pid と起動時刻（`ps -o lstart`）が合わなければ数えない。2 つが同時に来ても、どちらも自分のエントリーを書いてから他を読むので、少なくとも一方が下がってやり直す（両方が進むことは無い）。待っている solo は自分のエントリーを残す（先に待っている solo がいるときだけ下がる）ので、後から来るケースに追い越され続けない。
+- **前提と崩れる条件**: 登録簿が調整するのは、この版の `scripts/e2e/` を使うプロセスどうしだけ。Kioku の専用 Obsidian（9222）、登録簿の無い古い `scripts/e2e/` で回すケース（`feature/ai` は main を取り込むまで登録簿を持たない）、本人がその間にするクリップボードやフォーカスの操作とは調整しない。solo の判定はケースの自己申告で、上のテストの文字の照合が漏れを拾う範囲に限られる。E45 のフレームの記録は合否に使わないので solo にしていないが、並べて回した値はほかの実行と比べない。
+
+E59 の行 9 は、`app.quit()` の前に窓のプロファイル（`app.getPath('userData')`）を読み、同じプロファイル・同じポートで起動し直す。LEV-327 までは `MAPPY_E2E_PROFILE`（既定 `artifacts/obsidian-profile`）で起動し直していたので、2 つ目のインスタンスを別のプロファイルで動かすと行 9 は 1 つ目のプロファイルで起動した（1 つ目が動いていれば引数をそちらに渡すだけで、2 つ目は戻らない）。`MAPPY_E2E_PROFILE` を付けたときは、窓のプロファイルと違えば終了の前に止まる。
+
 ### 試用中の更新
 
-製品コードを変更したら、配布物だけを更新する。作業ディレクトリがこのプロジェクトであることと、実機の Vault がこのプロジェクトの `test-vault/` であることを確認する。
+製品コードを変更したら、配布物だけを更新する。作業ディレクトリがこのプロジェクトであることと、実機の Vault がこのプロジェクトの `test-vault/` であることを確認する（2 つ目からの Vault は `test-vault-<名前>/` に読み替え、preflight に `MAPPY_E2E_VAULT` を付ける）。
 
 ```sh
 npm run check
@@ -197,7 +220,7 @@ CDP でキー操作を再現するとき、要素へ送る合成 `keydown` は O
 
 ### E2E ケース一覧
 
-実機のケースは使い捨ての probe ではなくリポジトリの `scripts/e2e/` に置き、`npm run harness:e2e:<名前>` で誰でも同じ手順を再実行できるようにする（`scripts/e2e/cdp.mjs` が接続と実キー、`scripts/e2e/case-runner.mjs` が `step`／`check`／`record`／JSON 出力の共通部分、`scripts/e2e/dom-helpers.mjs` が view の DOM 読み取り・マップの解析（`PARSE`／`makeTree`）・ノード選択（中心の最前面の要素がそのノードでなければ押さない。前の手順の Notice ならクリックで閉じて見直し、ペインの外や浮かせたボタンの下なら何があるかを書いて止める）・プラグイン読み込みと fixture ノートを開く手順（同じノートを開いた leaf（map と Markdown。遅延読み込みのタブも view state で見る）があれば開かずに止める）・画像貼り付け・追加（Enter／Tab＋名前。空のノードの書き込みが届いてから名前を打つ）・F2 改名・⌥↑／⌥↓・⌘Z／⌘⇧Z の共通部分。操作のあとは固定時間ではなく原文が変わりマップが読み直すまで待ち、そこから 0.5 秒あとの Notice・下書きを読む（`makeAfter`。変わらないのが正解の手順は上限まで待つ）。操作の前から出ていた Notice は既読の印を付けて数えない。前提の手順（plugin・open など）が失敗したら `required` がそのケースを打ち切り、record に `stopped` を書く。E17・E18 は打ち切っても自分が開いたノートを片付ける（LEV-17）。`scripts/e2e/excalidraw-helpers.mjs` が E24・E25 の共通部分: fixture ノートと図面（Excalidraw の `create`）、プラグインの切替（`makeToggle`。`community-plugins.json` を書き換えず、プラグインと `ExcalidrawAutomate`・drop hook が揃うまで待つ）、ファイルエクスプローラーから図面への合成ドラッグ（`makeFileDrag`。`cdp.mjs` の `once` で `Input.dragIntercepted` を待つ。図面の要素の id と version が静かになるまで前後で待つ）、前のビルドが残した routing の検出（`makeNoStaleRouting`）。開いている leaf のガードは `dom-helpers.mjs` の `refuseOpenLeaves` を共有する（LEV-22）、各ケースはその上に手順と合否を持つ）。`artifacts/` に書いた probe は次のセッションから再実行されず、LEV-142 の修正が「実機で確認済み」として 0.3.2 で出たあと、同じ症状が 0.3.2 のビルドで再現した一因になった（LEV-146）。`npm run harness:e2e`（`scripts/e2e/run.mjs`）は下の表のケースを登録順に 1 つの Obsidian インスタンスへ、ケースごとに新しい接続で走らせる（実機は 1 台なので同時に 1 本、docs/linear-workflow.md「Obsidian 実機は1台なので、実機を使うチケットは同時に1本にする」）。各ケースは独立した子プロセスとして spawn する: 1 本が CDP 呼び出し中にハング・クラッシュしても、その接続だけが失われ、次のケースは新しい接続からやり直せる。`--case <名前>` で 1 本だけ実行（このときは前回の全体実行の `summary.json` を 1 ケース分の結果で上書きしないよう書かない）、`--json <dir>` で各ケースの JSON と、まとめて走らせたときだけ `summary.json` を書く。`--shot <dir>` は撮影に対応するケースだけ PNG を残す。
+実機のケースは使い捨ての probe ではなくリポジトリの `scripts/e2e/` に置き、`npm run harness:e2e:<名前>` で誰でも同じ手順を再実行できるようにする（`scripts/e2e/cdp.mjs` が接続と実キー、`scripts/e2e/case-runner.mjs` が `step`／`check`／`record`／JSON 出力の共通部分、`scripts/e2e/dom-helpers.mjs` が view の DOM 読み取り・マップの解析（`PARSE`／`makeTree`）・ノード選択（中心の最前面の要素がそのノードでなければ押さない。前の手順の Notice ならクリックで閉じて見直し、ペインの外や浮かせたボタンの下なら何があるかを書いて止める）・プラグイン読み込みと fixture ノートを開く手順（同じノートを開いた leaf（map と Markdown。遅延読み込みのタブも view state で見る）があれば開かずに止める）・画像貼り付け・追加（Enter／Tab＋名前。空のノードの書き込みが届いてから名前を打つ）・F2 改名・⌥↑／⌥↓・⌘Z／⌘⇧Z の共通部分。操作のあとは固定時間ではなく原文が変わりマップが読み直すまで待ち、そこから 0.5 秒あとの Notice・下書きを読む（`makeAfter`。変わらないのが正解の手順は上限まで待つ）。操作の前から出ていた Notice は既読の印を付けて数えない。前提の手順（plugin・open など）が失敗したら `required` がそのケースを打ち切り、record に `stopped` を書く。E17・E18 は打ち切っても自分が開いたノートを片付ける（LEV-17）。`scripts/e2e/excalidraw-helpers.mjs` が E24・E25 の共通部分: fixture ノートと図面（Excalidraw の `create`）、プラグインの切替（`makeToggle`。`community-plugins.json` を書き換えず、プラグインと `ExcalidrawAutomate`・drop hook が揃うまで待つ）、ファイルエクスプローラーから図面への合成ドラッグ（`makeFileDrag`。`cdp.mjs` の `once` で `Input.dragIntercepted` を待つ。図面の要素の id と version が静かになるまで前後で待つ）、前のビルドが残した routing の検出（`makeNoStaleRouting`）。開いている leaf のガードは `dom-helpers.mjs` の `refuseOpenLeaves` を共有する（LEV-22）、各ケースはその上に手順と合否を持つ）。`artifacts/` に書いた probe は次のセッションから再実行されず、LEV-142 の修正が「実機で確認済み」として 0.3.2 で出たあと、同じ症状が 0.3.2 のビルドで再現した一因になった（LEV-146）。`npm run harness:e2e`（`scripts/e2e/run.mjs`）は下の表のケースを登録順に 1 つの Obsidian インスタンス（`MAPPY_E2E_PORT`・`MAPPY_E2E_VAULT`）へ、ケースごとに新しい接続で走らせる（ケースはその窓を共有するので 1 本ずつ。別のインスタンスには別の run を同時に走らせてよい。上の「専用の Obsidian を並べる」）。各ケースは独立した子プロセスとして spawn する: 1 本が CDP 呼び出し中にハング・クラッシュしても、その接続だけが失われ、次のケースは新しい接続からやり直せる。`--case <名前>` で 1 本だけ実行（このときは前回の全体実行の `summary.json` を 1 ケース分の結果で上書きしないよう書かない）、`--json <dir>` で各ケースの JSON と、まとめて走らせたときだけ `summary.json` を書く。`--shot <dir>` は撮影に対応するケースだけ PNG を残す。
 
 | 名前 | 対応する実機ケース | 何を固定しているか（AGENTS.md: 回帰テストは何を固定しているか明記する） |
 | --- | --- | --- |
@@ -260,9 +283,9 @@ CDP でキー操作を再現するとき、要素へ送る合成 `keydown` は O
 
 **テスト用 Obsidian の言語（LEV-233）**: プラグインの文言は Obsidian の言語に従う（`ja` なら日本語、それ以外は英語。architecture.md §9e）。ケースはボタンや通知を日本語の文言で探すので、`connect()`（`scripts/e2e/cdp.mjs`）は窓の言語が `MAPPY_E2E_LANGUAGE`（既定 `ja`）と違えば何もせずに止まる。見るのは窓が起動時に決めた言語（`getLanguage()` がプラグインに渡すもの。Obsidian が同じ値に合わせる `moment.locale()` で、workspace の準備ができてから読む）。保存された `localStorage` の `language` は、別の言語が入っているときだけ止める（変えて再読込していない窓）。未設定は英語ではない: Obsidian は OS の言語を使う（日本語の Mac で新しく作ったプロファイルは日本語で始まる。LEV-235 で確認）。まだ読み込み中の窓には、言語ではなく読み込み中だと言って止まる。別の言語の窓は、設定 → 一般 → 言語で日本語にするか、窓で `localStorage.setItem('language', 'ja')` を実行して再読込する。照合を文言に依らない形（id・属性）へ移すことはしなかった: 全ケースの照合を書き換える量に対して、得るのは英語の窓でも回せることだけで、英語の表示は LEV-235 で足す E63 が 1 ケースで確かめる。
 
-ポートと vault は `MAPPY_E2E_PORT`・`MAPPY_E2E_VAULT` で差し替えられるので、worktree ごとに `artifacts/obsidian-profile`（`obsidian.json` に vault を 1 つ書く）と別ポートで専用の Obsidian を立てられる。新しいプロファイルで開いた vault は制限モードで始まりプラグインが読み込まれないので、その窓で `app.plugins.setEnable(true)` を 1 度実行する（初回はさらに「この保管庫の作成者を信頼しますか？」のダイアログを「作成者を信頼しプラグインを有効化」で閉じる）。新しいプロファイルは /Applications の版（installer 版）で起動するため `minAppVersion` に届かないことがある。既存プロファイルの `obsidian-<版>.asar` をコピーして起動し直すと更新版で開く。
+ポートと vault は `MAPPY_E2E_PORT`・`MAPPY_E2E_VAULT` で差し替えられ、専用の Obsidian はインスタンスごとに別のポート・プロファイル・Vault で立てる（上の「専用の Obsidian を並べる」。`npm run harness:obsidian -- start` が `obsidian.json` を書き、制限モードを解く）。手で立てるときは、新しいプロファイルで開いた vault は制限モードで始まりプラグインが読み込まれないので、その窓で `app.plugins.setEnable(true)` を 1 度実行する（初回はさらに「この保管庫の作成者を信頼しますか？」のダイアログを「作成者を信頼しプラグインを有効化」で閉じる）。新しいプロファイルは /Applications の版（installer 版）で起動するため `minAppVersion` に届かないことがある。既存プロファイルの `obsidian-<版>.asar` をコピーして起動し直すと更新版で開く。Obsidian 1.13.7 では、初回の信頼のあとに設定が別ウィンドウで開いたことがある（2026-10-07、LEV-327）。
 
-検証用 Obsidian の注意: 検証用 Obsidian は `open -na /Applications/Obsidian.app --args --user-data-dir=artifacts/obsidian-profile --remote-debugging-port=9231` で専用プロファイルと CDP ポート 9231 を付けて起動する。`http://127.0.0.1:9231/json/list` には vault picker（`starter.html`）の target が先に並ぶことがあるので、probe は `type === 'page'` かつ URL が `app://obsidian.md/index.html` で始まる target を選ぶ（`artifacts/lev-71-map-search-e2e/cdp.mjs`）。ウィンドウが最小化されている（画面ロック・他のウィンドウの後ろも同じ）と `requestAnimationFrame` が止まり、map の配置フレームを待つ `Runtime.evaluate` もスクリーンショットも進まない。接続時に `require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false)` を呼んで回避する（LEV-64 の 2 回目の実行が全滅した原因。`connect()` で呼ぶようにした）。描画・入力・撮影は renderer で動くが実表示は消えたままなので、その状態で取った証跡は record にそう書く。
+検証用 Obsidian の注意: 検証用 Obsidian は `npm run harness:obsidian -- start` で立てる（中身は `open -na /Applications/Obsidian.app --args --user-data-dir=artifacts/obsidian-profile-<ポート> --remote-debugging-port=<ポート>`。LEV-327 までは `artifacts/obsidian-profile` と 9231 で 1 つだけ立てていた）。`http://127.0.0.1:<ポート>/json/list` には vault picker（`starter.html`）の target が先に並ぶことがあるので、probe は `type === 'page'` かつ URL が `app://obsidian.md/index.html` で始まる target を選ぶ（`artifacts/lev-71-map-search-e2e/cdp.mjs`）。ウィンドウが最小化されている（画面ロック・他のウィンドウの後ろも同じ）と `requestAnimationFrame` が止まり、map の配置フレームを待つ `Runtime.evaluate` もスクリーンショットも進まない。接続時に `require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false)` を呼んで回避する（LEV-64 の 2 回目の実行が全滅した原因。`connect()` で呼ぶようにした）。描画・入力・撮影は renderer で動くが実表示は消えたままなので、その状態で取った証跡は record にそう書く。
 
 記録テンプレート:
 

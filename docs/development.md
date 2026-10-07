@@ -26,6 +26,7 @@ npm run test:watch        # テスト監視
 npm run test:coverage     # 現在のテスト対象のカバレッジ
 npm run harness:prepare   # 初回専用。既知の fixture を初期化する
 npm run harness:preflight # ビルド成果物と検証 Vault の一致を確認
+npm run harness:obsidian -- start # 専用の Obsidian を空いたポート・新しいプロファイルで立てる（stop で閉じる。docs/harness.md「専用の Obsidian を並べる」）
 npm run harness:browser   # Obsidian なしで map view を動かす検証ページ（http://127.0.0.1:8765/）
 npm run harness:browser:capture # headless Chrome で fixture と主要操作を撮影し artifacts/ に記録
 npm run harness:view-teardown # view を作る全テストファイルが片付けを外すと落ちることを確かめる（docs/harness.md）

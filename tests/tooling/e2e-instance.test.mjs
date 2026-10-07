@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   blocks, claimInstance, freePort, heldEntry, liveEntries, profileHolder, relaunchProfile,
 } from '../../scripts/e2e/instance.mjs';
+import { createRecord, finish } from '../../scripts/e2e/case-runner.mjs';
 import { harnessVault, vaultName } from '../../scripts/preflight.mjs';
 
 /**
@@ -133,6 +134,25 @@ describe('the register', () => {
     writeFileSync(join(dir, '123.json'), '{ not json');
     writeFileSync(join(dir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, started: 'self' }));
     expect(liveEntries(dir, process.pid, { started: startedWith() }).map(entry => entry.pid)).toEqual([OTHER]);
+  });
+});
+
+describe('what uses the register', () => {
+  it('connect() enters the register before it reaches the instance', () => {
+    const text = readFileSync(new URL('../../scripts/e2e/cdp.mjs', import.meta.url), 'utf8');
+    const body = text.slice(text.indexOf('export async function connect('));
+    expect(body.indexOf('await claimInstance({ port, vault: ours, solo });')).toBeGreaterThan(-1);
+    expect(body.indexOf('await claimInstance(')).toBeLessThan(body.indexOf('fetch('));
+  });
+
+  it('writes the instance the case entered for into its record, and none for a case that never connected', async () => {
+    const dir = tempDir();
+    const json = join(dir, 'case.json');
+    await finish(createRecord(dir, 'Fixtures/E2E'), json);
+    expect(JSON.parse(readFileSync(json, 'utf8')).instance).toBe(null);
+    await claim(dir, { solo: 'opens the settings window' });
+    await finish(createRecord(dir, 'Fixtures/E2E'), json);
+    expect(JSON.parse(readFileSync(json, 'utf8')).instance).toEqual({ port: '9242', vault: '/b/test-vault', solo: 'opens the settings window' });
   });
 });
 
