@@ -1,8 +1,11 @@
 import { Modal, Notice, Platform, Setting, TFolder, type App, type TAbstractFile } from "obsidian";
 import { readExitDrafts, textFingerprint, type ExitDraft } from "../core/exit-drafts";
-import type { BackupRecord, BackupSurvey, ExitBackupStore } from "../obsidian/exit-backup-store";
+import { ExitBackupError, type BackupRecord, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
 import { t, type Messages } from "../i18n";
-import { EXIT_DRAFTS_KEY, joinSentences, sameDraft } from "./exit-drafts";
+import {
+  EXIT_DRAFTS_KEY, discardExitBackup, discardExitDraft, exitDraftsApplying, joinSentences, keptBackupIds, keptCount, type BackupDiscard,
+  type DraftDiscard,
+} from "./exit-drafts";
 
 /**
  * The command 保存できなかった下書きを救出 (LEV-240). A draft kept at `pagehide` that the next load could not write
@@ -12,7 +15,10 @@ import { EXIT_DRAFTS_KEY, joinSentences, sameDraft } from "./exit-drafts";
  * `vault.create` writes, so no file that exists is ever overwritten. Why the note emptied is not fixed here (LEV-240).
  * The backups the writes of kept drafts leave (LEV-309, `src/obsidian/exit-backup-store.ts`) are listed too, finished
  * or not, and saved the same way, the whole note before the write first; a file in the backup folder that does not
- * read as one is listed by its path alone. Nothing here deletes or changes a backup.
+ * read as one is listed by its path alone. Saving changes no draft and no backup. A kept draft or a backup goes only
+ * when the person presses 破棄 on its line and confirms (LEV-310): that one alone, the draft taken out of the entry,
+ * the backup moved to a trash (the system's, else the vault's), and never one whose kept draft it holds back
+ * (`discardExitBackup`).
  */
 
 /** The folder the rescued drafts go to, at the vault's top level. */
@@ -53,7 +59,68 @@ export async function rescueExitDrafts(app: App, backups: ExitBackupStore): Prom
       ? () => { void rescueExitDraft(app, choice.draft).then(message => { new Notice(message); }); }
       : () => { void rescueExitBackup(app, choice.record).then(message => { new Notice(message); }); };
     new ExitDraftConfirmModal(app, choice, save).open();
+  }, choice => {
+    if ("draft" in choice) {
+      const discard = () => {
+        sayWaiting();
+        void discardExitDraft(app, choice.draft).then(outcome => { new Notice(draftDiscardText(outcome, choice.draft)); });
+      };
+      new ExitDraftDiscardModal(app, choice, null, discard).open();
+      return;
+    }
+    const discard = () => {
+      sayWaiting();
+      void discardExitBackup(app, backups, choice.record).then(backupDiscardText, (error: unknown) => t().discardBackupFailed(reasonOf(error)))
+        .then(message => { new Notice(message); });
+    };
+    // Whether a kept draft holds the backup back, as the entry is when 破棄 is pressed (it may have lost the draft since
+    // the list was read); not told, nothing is offered.
+    void keptBackupIds(app).then(kept => {
+      const blocked = kept === null ? "unread" : kept.has(choice.record.backup.id) ? "draftKept" : null;
+      new ExitDraftDiscardModal(app, choice, blocked, discard).open();
+    });
   }).open();
+}
+
+/**
+ * Why a step failed, in its own words: the adapter's message an `ExitBackupError` carries (not its failure's code when
+ * it has none: review 3), or the error's.
+ */
+function reasonOf(error: unknown): string {
+  if (error instanceof ExitBackupError) return error.detail || t().rescueUnknownReason;
+  return error instanceof Error && error.message ? error.message : t().rescueUnknownReason;
+}
+
+/** A discard that has to wait for a load writing the kept drafts says so at once, not only when it is done (review 3). */
+function sayWaiting(): void {
+  if (exitDraftsApplying()) new Notice(t().discardWaiting);
+}
+
+/** What a discarded draft's Notice says (LEV-310). */
+function draftDiscardText(outcome: DraftDiscard, draft: ExitDraft): string {
+  const text = t();
+  switch (outcome) {
+    case "discarded": return text.discardedDraft(draft.title);
+    case "gone": return text.discardDraftGone;
+    case "failed": return text.discardDraftFailed;
+    case "busy": return text.discardBusy;
+    case "unknown": return text.discardDraftUnconfirmed;
+  }
+}
+
+/** What a discarded backup's Notice says (LEV-310). */
+function backupDiscardText(outcome: BackupDiscard): string {
+  const text = t();
+  switch (outcome) {
+    case "trashed": return text.discardedBackupTrash;
+    case "localTrashed": return text.discardedBackupLocalTrash;
+    case "movedUnconfirmed": return text.discardedBackupUnconfirmed;
+    case "stillThere": return text.discardBackupStillThere;
+    case "gone": return text.discardBackupGone;
+    case "draftKept": return text.discardBackupDraftKept;
+    case "unread": return text.discardBackupDraftsUnread;
+    case "busy": return text.discardBusy;
+  }
 }
 
 /** One draft saved to a separate file; what the Notice says, whether it was saved or not. */
@@ -92,7 +159,7 @@ class NoFreeName extends Error {}
 
 /** Whether the draft is still in the entry, read again: the failure Notice says it is kept only then. */
 function stillKept(app: RescueApp, draft: ExitDraft): boolean {
-  try { return readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).some(item => sameDraft(item, draft)); } catch { return false; }
+  try { return keptCount(app, draft) > 0; } catch { return false; }
 }
 
 /**
@@ -297,11 +364,16 @@ type RescueChoice = { draft: ExitDraft } | { record: BackupRecord };
 
 /**
  * One line per kept draft (where, when, the title, and what it holds), per backup record (where, whether its write
- * finished, when) and per path in the backup folder that is not one (shown, not offered: it does not read). Each line
- * says what it is in `data-mappy-rescue` (`draft`, `applied`, `prepared`, `unchecked`) for the real-app case.
+ * finished, when) and per path in the backup folder that is not one (shown, not offered: it does not read). A draft's
+ * or a record's line offers 選ぶ (save it to a separate file) and 破棄 (LEV-310); each opens its confirmation. Each line
+ * says what it is in `data-mappy-rescue` (`draft`, `applied`, `prepared`, `unchecked`), and each button what it does
+ * in `data-mappy-rescue-action` (`pick`, `discard`), for the real-app case.
  */
 class ExitDraftListModal extends Modal {
-  constructor(app: App, private readonly choices: RescueChoices, private readonly choose: (choice: RescueChoice) => void) { super(app); }
+  constructor(
+    app: App, private readonly choices: RescueChoices, private readonly choose: (choice: RescueChoice) => void,
+    private readonly discard: (choice: RescueChoice) => void,
+  ) { super(app); }
 
   onOpen(): void {
     const text = t();
@@ -325,7 +397,15 @@ class ExitDraftListModal extends Modal {
   private line(kind: string, name: string, desc: string, choice: RescueChoice | null): void {
     const setting = new Setting(this.contentEl).setName(name).setDesc(desc);
     setting.settingEl.dataset.mappyRescue = kind;
-    if (choice) setting.addButton(button => button.setButtonText(t().rescuePick).onClick(() => { this.close(); this.choose(choice); }));
+    if (!choice) return;
+    setting.addButton(button => {
+      button.setButtonText(t().rescuePick).onClick(() => { this.close(); this.choose(choice); });
+      button.buttonEl.dataset.mappyRescueAction = "pick";
+    });
+    setting.addButton(button => {
+      button.setButtonText(t().rescueDiscard).onClick(() => { this.close(); this.discard(choice); });
+      button.buttonEl.dataset.mappyRescueAction = "discard";
+    });
   }
 
   onClose(): void { this.contentEl.empty(); }
@@ -350,6 +430,39 @@ class ExitDraftConfirmModal extends Modal {
     this.contentEl.createEl("p", { text: text.rescueConfirmUnchanged });
     new Setting(this.contentEl)
       .addButton(button => button.setButtonText(text.rescueSave).setCta().setDisabled(blocked).onClick(() => { this.close(); this.save(); }))
+      .addButton(button => button.setButtonText(text.rescueCancel).onClick(() => { this.close(); }));
+  }
+
+  onClose(): void { this.contentEl.empty(); }
+}
+
+/**
+ * LEV-310: what discarding the draft or the backup takes away, before anything is: 破棄する (a warning) and キャンセル,
+ * which changes nothing. A backup a kept draft is held back by (`draftKept`), or one when the kept drafts could not be
+ * told (`unread`), says so and offers no discard.
+ */
+class ExitDraftDiscardModal extends Modal {
+  constructor(
+    app: App, private readonly choice: RescueChoice, private readonly blocked: "draftKept" | "unread" | null, private readonly discard: () => void,
+  ) { super(app); }
+
+  onOpen(): void {
+    const text = t();
+    if ("draft" in this.choice) {
+      const { draft } = this.choice;
+      this.setTitle(text.discardDraftTitle);
+      this.contentEl.createEl("p", { text: text.discardDraftWhat(draft.title, draft.path) });
+      this.contentEl.createEl("p", { text: "refused" in draft ? text.discardDraftLostRefused : text.discardDraftLost });
+    } else {
+      const { backup } = this.choice.record;
+      this.setTitle(text.discardBackupTitle);
+      this.contentEl.createEl("p", { text: text.discardBackupWhat(backup.draft.title, backup.note.path, localTime(backup.createdAt)) });
+      this.contentEl.createEl("p", { text: this.blocked === "draftKept" ? text.discardBackupDraftKept : this.blocked === "unread" ? text.discardBackupDraftsUnread
+        : text.discardBackupLost(String(backup.note.beforeLength)) });
+    }
+    this.contentEl.createEl("p", { text: text.discardUnchanged });
+    new Setting(this.contentEl)
+      .addButton(button => button.setButtonText(text.discardConfirm).setWarning().setDisabled(this.blocked !== null).onClick(() => { this.close(); this.discard(); }))
       .addButton(button => button.setButtonText(text.rescueCancel).onClick(() => { this.close(); }));
   }
 

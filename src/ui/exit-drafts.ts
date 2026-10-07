@@ -5,7 +5,7 @@ import {
   EXIT_DRAFT_TTL, draftKey, readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint, withoutSources, type ExitDraft,
 } from "../core/exit-drafts";
 import type { DocumentStore } from "../obsidian/document-store";
-import { ExitBackupError, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
+import { ExitBackupError, type BackupRecord, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
 import { messagesFor, t } from "../i18n";
 import type { MindmapView } from "./mindmap-view";
 
@@ -26,7 +26,8 @@ export const EXIT_DRAFTS_KEY = "mappy-exit-drafts";
  * the command 保存できなかった下書きを救出 saves what it holds to a separate file (`src/ui/exit-draft-recovery.ts`).
  * Every write of a kept draft leaves a backup of the whole note first, read back before the note is written
  * (LEV-309, `src/obsidian/exit-backup-store.ts`); what the backups say at the next load decides which drafts may be
- * written at all, and nothing that is unclear is written, taken out of the entry or deleted.
+ * written at all, and nothing that is unclear is written, taken out of the entry or deleted. A draft or a backup goes
+ * only when the person discards it in the rescue command, confirmed (LEV-310: `discardExitDraft`, `discardExitBackup`).
  *
  * Not `workspace.on("quit")`'s tasks, though Obsidian waits for them: waiting cancels the quit, and on macOS only the
  * window closes after them, leaving Obsidian running with no window (1.14.2's `main.js`: `window-all-closed` does not
@@ -64,6 +65,96 @@ export function installExitDrafts(
 
 /** The pass running now: one at a time, and one asked for meanwhile is that one. */
 let applying: Promise<void> | null = null;
+
+/** How long a discard waits for a pass applying the kept drafts before it gives up (ms, LEV-310). */
+export const DISCARD_WAIT = 10_000;
+
+/** Whether a pass is applying the kept drafts now: a discard then waits, and the rescue says so first (review 3). */
+export const exitDraftsApplying = (): boolean => applying !== null;
+
+/**
+ * Whether no pass is applying the kept drafts, one started meanwhile included, within `wait` ms (LEV-310): false when
+ * one is still running then (a write held up), so a discard says so rather than wait without a word (review 2).
+ */
+async function passesOver(wait: number): Promise<boolean> {
+  const until = Date.now() + wait;
+  while (applying) {
+    const left = until - Date.now();
+    if (left <= 0) return false;
+    let timer = 0;
+    const late = new Promise<"late">(resolve => { timer = window.setTimeout(() => { resolve("late"); }, left); });
+    const settled = await Promise.race([applying.then(() => "over" as const, () => "over" as const), late]);
+    window.clearTimeout(timer);
+    if (settled === "late") return false;
+  }
+  return true;
+}
+
+/** How many times the entry holds `draft` (`sameDraft`); throws when the entry cannot be read. */
+export function keptCount(app: Pick<App, "loadLocalStorage">, draft: ExitDraft): number {
+  return readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).filter(item => sameDraft(item, draft)).length;
+}
+
+/**
+ * What became of a kept draft the person discarded (LEV-310): taken out of the entry (`discarded`), not in it
+ * (`gone`: written or discarded meanwhile; nothing done), not taken out (`failed`: the entry could not be read, or
+ * still holds it after the write; `busy`: a pass was still applying the drafts), or not known (`unknown`: the entry
+ * could not be read back).
+ */
+export type DraftDiscard = "discarded" | "gone" | "failed" | "busy" | "unknown";
+
+/**
+ * LEV-310: `draft` taken out of the entry at the person's explicit request (the rescue list's 破棄, confirmed), and
+ * nothing else: the very item pressed goes (its note text as it is too), or else the first item of the same draft
+ * (`saveWithout`, as a load's write takes one out), the other items stay as they are and where they are, those that
+ * do not read as drafts included, and no note is read or written. Done once no pass is applying the kept drafts, so a
+ * pass that read the draft already does not write it after it was discarded. Said discarded only when the entry read
+ * back holds one fewer of it.
+ */
+export async function discardExitDraft(app: App, draft: ExitDraft, wait = DISCARD_WAIT): Promise<DraftDiscard> {
+  if (!await passesOver(wait)) return "busy";
+  let before: number;
+  try { before = keptCount(app, draft); } catch { return "failed"; }
+  if (before === 0) return "gone";
+  // That very item out, or else the first of the same draft, as a load takes out a draft it wrote; storage refusing it
+  // is told by the read back.
+  saveWithout(app, draft);
+  try { return keptCount(app, draft) < before ? "discarded" : "failed"; } catch { return "unknown"; }
+}
+
+/**
+ * The ids of the kept drafts' backups (`backupId`, the SHA-256 of each `draftKey`): a backup of one of them holds that
+ * draft back and is not discarded (LEV-310). Null when the entry or a hash cannot be had: no backup is discarded then.
+ */
+export async function keptBackupIds(app: App): Promise<Set<string> | null> {
+  try { return new Set(await Promise.all(readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).map(draft => backupId(draft)))); } catch { return null; }
+}
+
+/**
+ * What became of a backup the person discarded (LEV-310): moved to the system trash, moved to the vault's own trash
+ * (`.trash/`, where the system's cannot take it), out of the folder though no trash said it took it
+ * (`movedUnconfirmed`), still in the folder after it was moved (`stillThere`), not there as
+ * it was read (`gone`), refused because a kept draft is of it (`draftKept`), because the kept drafts could not be told
+ * (`unread`), or because a pass was still applying them (`busy`). Nothing is taken away in the last four; nothing is
+ * ever deleted outright.
+ */
+export type BackupDiscard = "trashed" | "localTrashed" | "movedUnconfirmed" | "stillThere" | "gone" | "draftKept" | "unread" | "busy";
+
+/**
+ * LEV-310: the backup `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
+ * confirmed), once no pass is applying the kept drafts, through the backups' own chain (`ExitBackupStore.discard`).
+ * Refused while a draft of it is kept: its record is what keeps that draft from being written again (a write that did
+ * not finish, or one that did while the draft stayed), so taking it away could let a load write the draft once more.
+ * The note, the kept drafts and the other files in the folder are not touched.
+ */
+export async function discardExitBackup(app: App, backups: ExitBackupStore, record: BackupRecord, wait = DISCARD_WAIT): Promise<BackupDiscard> {
+  if (!await passesOver(wait)) return "busy";
+  // The entry only loses drafts from here on (no page goes while the rescue runs), so one not kept now stays not kept.
+  const kept = await keptBackupIds(app);
+  if (!kept) return "unread";
+  if (kept.has(record.backup.id)) return "draftKept";
+  return backups.discard(record);
+}
 
 /**
  * Each kept draft in turn. The entry keeps a draft until its write is done, so a page that goes meanwhile (the write
@@ -130,7 +221,8 @@ async function applyEach(
 
 /**
  * The entry without `done` (none: as it is), read again first so a draft a `pagehide` added meanwhile (a page kept
- * after all) stays; what was written, or null when storage refused it (access, quota) and the entry is as it was.
+ * after all) stays: the item that is `done` itself, its note text included, or else the first of the same draft;
+ * what was written, or null when storage refused it (access, quota) and the entry is as it was.
  * Items that do not read as drafts stay in it as they are (LEV-309: nothing unreadable is dropped here), and an entry
  * that is not a list is not written at all.
  */
@@ -140,7 +232,12 @@ function saveWithout(app: App, done: ExitDraft | null): ExitDraft[] | null {
     if (!Array.isArray(raw)) return readExitDrafts(raw);
     const items = (raw as unknown[]).slice();
     const key = done ? draftKey(done) : null;
-    const at = key === null ? -1 : items.findIndex(item => readExitDrafts([item]).some(draft => draftKey(draft) === key));
+    // That very item first (its note text as it is too), then another of the same draft (one kept again without it).
+    const exact = done ? JSON.stringify(readExitDrafts([done])) : null;
+    const at = key === null ? -1 : [
+      items.findIndex(item => JSON.stringify(readExitDrafts([item])) === exact),
+      items.findIndex(item => readExitDrafts([item]).some(draft => draftKey(draft) === key)),
+    ].find(index => index !== -1) ?? -1;
     if (at !== -1) items.splice(at, 1);
     app.saveLocalStorage(EXIT_DRAFTS_KEY, items.length > 0 ? items : null);
     return readExitDrafts(items);
@@ -254,7 +351,7 @@ function backupReason(error: unknown, backups: ExitBackupStore): string {
   const text = t();
   if (!(error instanceof ExitBackupError)) return text.exitBackupNotSaved(error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
   switch (error.failure) {
-    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`, backups.folder);
+    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`, backups.folder, text.cmdRescueDrafts);
     case "unmeasured": return text.exitBackupUnmeasured;
     case "unsaved": return text.exitBackupNotSaved(error.detail || text.rescueUnknownReason);
     case "mismatch": return text.exitBackupMismatch;
