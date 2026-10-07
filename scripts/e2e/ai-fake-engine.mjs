@@ -26,7 +26,7 @@
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
-import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeAfter, makePress, makeHistory, refuseOpenLeaves } from './dom-helpers.mjs';
+import { VIEW, makeSelect, makePluginStep, makeOpenStep, makeAfter, makePress, makeHistory, makeAiCard, refuseOpenLeaves } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -45,22 +45,13 @@ const press = makePress(cdp, evaluate);
 const history = makeHistory(cdp, evaluate);
 /** A real click at the centre of what `locate` returns, only once it is the topmost element there (`makePress`). */
 const clickAt = locate => press(`const node = (() => { ${locate} })();`);
-const card = () => evaluate(`${VIEW}
-  const card = el.querySelector('.mappy-ai-card');
-  return card && !card.hidden ? { phase: card.dataset.phase, text: card.textContent } : null;`);
-const draft = () => evaluate(`${VIEW} return Array.from(el.querySelectorAll('.mappy-ai-draft'), item => item.textContent);`);
-const cardButton = text => `return Array.from(el.querySelectorAll('.mappy-ai-card button')).find(item => item.textContent === ${JSON.stringify(text)});`;
+const ai = makeAiCard(cdp, evaluate);
+const { card, draft } = ai;
 
-/** Select 旅の計画, press the AI button, choose the fake engine and focus the request. */
+/** Select 旅の計画, press the AI button, focus the request and choose the fake engine. */
 const openInput = async () => {
-  await select('旅の計画');
-  await clickAt(`return el.querySelector('.mappy-ai-button:not([hidden])');`);
-  await until(async () => (await card())?.phase === 'input', 3000, 'the input did not open');
-  await evaluate(`${VIEW}
-    const engine = el.querySelector('[data-ai-field="engine"]');
-    engine.value = 'fake';
-    el.querySelector('[data-ai-field="instruction"]').focus();
-    return true;`);
+  await ai.open('旅の計画');
+  await evaluate(`${VIEW} el.querySelector('[data-ai-field="engine"]').value = 'fake'; return true;`);
 };
 
 try {
@@ -98,7 +89,7 @@ try {
 
   await step('keep', async () => {
     const labels = await draft();
-    await clickAt(cardButton('残す'));
+    await press(ai.button('残す'));
     const kept = await after(opened.source);
     check(labels.every(label => kept.source.includes(label)), `keep: the draft was not written:\n${kept.source}`);
     check((await draft()).length === 0, 'keep: the dotted nodes stayed');
@@ -117,7 +108,7 @@ try {
     await cdp.insertText('捨てる案');
     await cdp.realKey('Enter', 4);
     await until(async () => (await card())?.phase === 'draft', 15000, 'discard: the fake engine did not answer');
-    await clickAt(cardButton('捨てる'));
+    await press(ai.button('捨てる'));
     await wait(500);
     check((await draft()).length === 0 && (await card()) === null, 'discard: the draft or the card stayed');
     check(await evaluate(`${VIEW} return await source();`) === opened.source, 'discard: the note changed');
@@ -149,7 +140,7 @@ try {
   /** 捨てる on the draft the row's run left, so the next row starts from the note as it was. */
   const discardDraft = async row => {
     await until(async () => (await card())?.phase === 'draft', 15000, `${row}: the fake engine did not answer`);
-    await clickAt(cardButton('捨てる'));
+    await press(ai.button('捨てる'));
     await wait(500);
     check(await evaluate(`${VIEW} return await source();`) === opened.source, `${row}: the note changed`);
   };

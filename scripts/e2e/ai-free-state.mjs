@@ -5,11 +5,12 @@
  * server's host. Obsidian's `requestUrl` sends from the main process (no CORS), so the renderer's Network domain may
  * never see it: the case also wraps `electron.ipcRenderer` (`send`, `sendSync`, `invoke`) and records each call whose
  * arguments name the license host, and before it reports, it sends one request of its own to that host through
- * `window.requestUrl` (the function Obsidian's `obsidian` module gives plugins; the host is `.invalid` and never
- * resolves) and fails unless the counter saw it.
+ * `window.requestUrl` (the host is `.invalid` and never resolves) and fails unless the counter saw it. The page's own
+ * `require` has no `obsidian` module, so the probe first shows, in the running Obsidian's app.js, that the module's
+ * `requestUrl` and `window.requestUrl` are one function, and fails when it cannot.
  * A counter that cannot see `requestUrl` would report 0 whatever Mappy sent. Only what comes from Mappy counts: a call whose stack has a frame of Mappy's code (Obsidian evaluates
- * a plugin's main.js under the name `plugin:mappy`; seen on the real stack in LEV-326's first runs, and the first stacks
- * are kept in the record) and a request to the license host. Obsidian's and other plugins' calls are recorded beside
+ * a plugin's main.js under the name `plugin:mappy`, and the first stacks are kept in the record) and a request to the
+ * license host. Obsidian's and other plugins' calls are recorded beside
  * them and do not count; counting them would fail the case when Mappy touched nothing, and a case loosened for
  * that would miss a real leak too.
  *
@@ -23,19 +24,22 @@
  * (tests/tooling/ai-boundaries.test.mjs), not by this case.
  *
  * `--detect` (the check that the counting works; a 0 from a broken counter shows nothing): the vault must hold the
- * development unlock (`npm run harness:prepare:ai-dev`), AI is run once through the map with the person's real CLI
- * (`runAiOnce` below: one run of their subscription), and Mappy's Node calls must include `child_process`. A run that
- * did not end in a draft fails the case: it never reports PASS without having run AI.
+ * development unlock (`npm run harness:prepare:ai-dev`), and the same steps run with the license active. Mappy takes
+ * Node the first time the AI's availability is asked (the map's AI button, the settings' engine rows), within the steps
+ * the free state counts: `child_process` must be among Mappy's counted calls. Then AI is run once through the map with
+ * the person's real CLI (`runAiOnce` below: one run of their subscription), and the run must start a process through
+ * that `child_process` (the wrap hands Mappy's a watched copy that records each `spawn`). A run that did not end in a
+ * draft fails the case: it never reports PASS without having run AI.
  *
- * First native runs: LEV-326 (2026-10-07, Obsidian 1.13.7, artifacts/lev-326/). The frames of Mappy's own stack read
- * `plugin:mappy:<line>:<column>` there, as the pattern above expects.
+ * First native runs: LEV-326 (2026-10-07, Obsidian 1.13.7). A frame of Mappy's read of its license entry there was
+ * `at Object.read (plugin:mappy:1:2760)`, which the pattern above matches.
  *
  * Usage: npm run harness:e2e:ai-free-state -- [--detect] [--json <out.json>] [--keep]
  */
 import { readFile } from 'node:fs/promises';
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
-import { makeDeleteNote, makeOpenStep, makePress, makeSelect, refuseOpenLeaves, VIEW } from './dom-helpers.mjs';
+import { makeAiCard, makeDeleteNote, makeOpenStep, makePress, refuseOpenLeaves, VIEW } from './dom-helpers.mjs';
 
 const { flag, value } = parseArgs();
 const detect = flag('--detect');
@@ -71,15 +75,23 @@ const WRAP = `
       if (key === 'mappy-ai-license') licenseReads.push((new Error().stack ?? '').split('\\n').slice(0, 8).join('\\n'));
       return getItem.call(this, key);
     };
-    const seen = { mappy: [], others: [] };
+    const seen = { mappy: [], others: [], spawns: [] };
     const original = window.require;
     if (typeof original !== 'function') throw new Error('window.require is not a function in this window');
     window.require = function (name, ...rest) {
-      if (modules.includes(name)) {
-        const stack = new Error().stack ?? '';
-        (/plugin:mappy(?![\\w-])/u.test(stack) ? seen.mappy : seen.others).push({ name, stack: stack.split('\\n').slice(0, 8).join('\\n') });
-      }
-      return original.call(this, name, ...rest);
+      const module = original.call(this, name, ...rest);
+      if (!modules.includes(name)) return module;
+      const stack = new Error().stack ?? '';
+      const mappy = /plugin:mappy(?![\\w-])/u.test(stack);
+      (mappy ? seen.mappy : seen.others).push({ name, stack: stack.split('\\n').slice(0, 8).join('\\n') });
+      // Mappy's child_process comes back watched (--detect ties the run to it): each spawn through it is recorded.
+      if (!mappy || name !== 'child_process') return module;
+      return new Proxy(module, {
+        get: (target, key) => key !== 'spawn' ? Reflect.get(target, key) : (...args) => {
+          seen.spawns.push({ file: String(args[0]).split('/').pop(), at: Date.now() });
+          return target.spawn(...args);
+        },
+      });
     };
     window.__mappyAiFreeState = { seen, original, getItem, licenseReads };
   }
@@ -100,6 +112,7 @@ const WRAP = `
   }
   window.__mappyAiFreeState.seen.mappy.length = 0;
   window.__mappyAiFreeState.seen.others.length = 0;
+  window.__mappyAiFreeState.seen.spawns.length = 0;
   window.__mappyAiFreeState.ipc.calls.length = 0;
   window.__mappyAiFreeState.licenseReads.length = 0;
   return true;`;
@@ -109,45 +122,46 @@ cdp.onEvent('Network.requestWillBeSent', params => { requests.push(params.reques
 
 /**
  * `--detect`: AI run once through the map as a person runs it (the AI button on 話題 → the question → ⌘↵ with the
- * engine the settings choose, a real CLI on the person's login), then 捨てる, so the note stays as the edit step left
- * it. The question is general and names nothing of the person's: it goes to their CLI (§11.3: no tools, an empty
- * working directory). Mappy's Node calls are read before and after the run; the check below is on the count after.
+ * engine the settings choose, a real CLI on the person's login). The question is general and names nothing of the
+ * person's: it goes to their CLI (§11.3: no tools, an empty working directory). However the run ends, the card is
+ * ended by its last button (`makeAiCard`): 捨てる on the draft (the note stays as the edit step left it), 閉じる on a
+ * failure, 取り消す on a run still going (one this case gave up on must not keep the person's CLI busy).
  */
 const QUESTION = '良い睡眠のための習慣';
 async function runAiOnce() {
-  const select = makeSelect(cdp, evaluate);
+  const ai = makeAiCard(cdp, evaluate);
   const press = makePress(cdp, evaluate);
-  const card = () => evaluate(`${VIEW}
-    const card = el.querySelector('.mappy-ai-card');
-    return card && !card.hidden ? { phase: card.dataset.phase, text: card.textContent } : null;`);
-  const nodeCalls = () => evaluate(`return window.__mappyAiFreeState.seen.mappy.map(call => call.name);`);
-  const before = await nodeCalls();
-  await select('話題');
-  await press(`const node = el.querySelector('.mappy-ai-button:not([hidden])');`);
-  await until(async () => (await card())?.phase === 'input', 3000, 'the AI input did not open');
-  const engine = await evaluate(`${VIEW}
-    el.querySelector('[data-ai-field="instruction"]').focus();
-    return el.querySelector('[data-ai-field="engine"]')?.value ?? null;`);
+  const watched = () => evaluate(`const { seen } = window.__mappyAiFreeState; return { calls: seen.mappy.map(call => call.name), spawns: seen.spawns.slice() };`);
+  const before = await watched();
+  const engine = await ai.open('話題');
   if (engine !== 'claude' && engine !== 'codex') throw new Error(`the input's engine is ${engine}, not a CLI`);
   await cdp.insertText(QUESTION);
   await wait(200);
   const started = Date.now();
-  await cdp.realKey('Enter', 4);
-  // Off the input: running, or already ended (a CLI not found fails at once, before a frame shows running).
-  await until(async () => ['running', 'draft', 'failed'].includes((await card())?.phase), 5000, 'the run did not start');
-  const end = await until(async () => {
-    const now = await card();
-    return now && (now.phase === 'draft' || now.phase === 'failed') ? now : null;
-  }, 5 * 60_000, 'the AI run did not end');
-  const ms = Date.now() - started;
-  const labels = await evaluate(`${VIEW} return Array.from(el.querySelectorAll('.mappy-ai-draft'), item => item.textContent);`);
-  if (end.phase === 'draft') {
-    await press(`const node = Array.from(el.querySelectorAll('.mappy-ai-card button')).find(item => item.textContent === '捨てる');`);
-    await until(async () => (await card()) === null, 3000, '捨てる did not close the card');
+  let end = null;
+  let labels = [];
+  try {
+    await cdp.realKey('Enter', 4);
+    // Off the input: running, or already ended (a CLI not found fails at once, before a frame shows running).
+    await until(async () => ['running', 'draft', 'failed'].includes((await ai.card())?.phase), 5000, 'the run did not start');
+    end = await until(async () => {
+      const now = await ai.card();
+      return now && (now.phase === 'draft' || now.phase === 'failed') ? now : null;
+    }, 5 * 60_000, 'the AI run did not end');
+    labels = await ai.draft();
+  } finally {
+    if ((await ai.card())?.phase !== 'input') {
+      await press(ai.last);
+      await until(async () => (await ai.card()) === null, 5000, 'the card did not close on its last button');
+    }
   }
-  const after = await nodeCalls();
+  const ms = Date.now() - started;
+  const after = await watched();
   if (end.phase !== 'draft') throw new Error(`the AI run ended in ${end.phase}: ${end.text}`);
-  return { engine, question: QUESTION, ms, labels, nodeCallsBefore: before, nodeCallsAfter: after };
+  const spawned = after.spawns.slice(before.spawns.length);
+  // The run reached Node: the CLI was started through the child_process Mappy took (and the counter counted).
+  if (spawned.length === 0) throw new Error('the run started no process through the child_process Mappy took');
+  return { engine, question: QUESTION, ms, labels, nodeCallsBefore: before.calls, nodeCallsAfter: after.calls, spawned };
 }
 
 try {
@@ -204,12 +218,12 @@ try {
     const tab = app.setting.activeTab;
     const names = tab?.id === 'mappy' ? Array.from(tab.containerEl.querySelectorAll('.setting-item-name'), el => el.textContent) : [];
     app.setting.close();
-    if (!names.includes('ライセンスコード') && !names.includes('License code')) throw new Error('the settings tab with the AI section was not shown: ' + JSON.stringify(names));
+    if (!names.includes('ライセンスコード') && !names.includes('License code')) throw new Error('the settings tab with the AI section was not shown (active tab: ' + (tab?.id ?? 'none') + '): ' + JSON.stringify(names));
     return names;`)));
   if (detect) await step('run AI once', runAiOnce);
   const seen = await step('counts', () => evaluate(`
     const { seen, ipc } = window.__mappyAiFreeState;
-    return { mappy: seen.mappy.length, others: seen.others.length, mappyNames: seen.mappy.map(call => call.name),
+    return { mappy: seen.mappy.length, others: seen.others.length, mappyNames: seen.mappy.map(call => call.name), spawns: seen.spawns.length,
       mappyStacks: seen.mappy.slice(0, 3), otherStacks: seen.others.slice(0, 3),
       licenseIpc: ipc.calls.slice() };`));
   const toLicense = url => { try { return new URL(url).host === LICENSE_HOST; } catch { return false; } };
@@ -232,8 +246,17 @@ try {
     const ipcSeen = await evaluate(`
       const { ipc } = window.__mappyAiFreeState;
       const before = ipc.calls.length;
-      // The page's own require (Electron's) has no 'obsidian': Obsidian hands that module to plugins only. It puts the
-      // same function on the window: in 1.13.7's app.js the module's \`requestUrl\` and \`window.requestUrl\` are one (LEV-326).
+      // The page's own require (Electron's) has no 'obsidian': Obsidian hands that module to plugins only, and puts its
+      // requestUrl on the window too. That they are one function is shown in this Obsidian's own app.js (1.13.7:
+      // \`requestUrl:()=>Vy\` in the module's exports and \`window.requestUrl=Vy\`); a probe through another function
+      // could be seen while Mappy's requests are not.
+      const appJs = Array.from(document.scripts, script => script.src).find(src => /\\/app\\.js$/u.test(src));
+      const text = appJs ? await fetch(appJs).then(response => response.text()) : '';
+      const exported = text.match(/requestUrl:\\(\\)=>([\\w$]+)/u)?.[1];
+      const global = text.match(/window\\.requestUrl=([\\w$]+)/u)?.[1];
+      if (!exported || exported !== global || typeof window.requestUrl !== 'function') {
+        throw new Error('cannot show window.requestUrl is the obsidian module\\'s requestUrl here (module ' + exported + ', window ' + global + ')');
+      }
       await window.requestUrl({ url: 'https://${LICENSE_HOST}/mappy-e2e-counter-probe', throw: false }).catch(() => undefined);
       await new Promise(resolve => setTimeout(resolve, 500));
       return ipc.calls.length - before;`);
