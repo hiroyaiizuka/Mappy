@@ -14,21 +14,22 @@ import {
  * that is there. Nothing here deletes a file on its own: what is left by a step that did not finish stays for the person
  * to see (the rescue command lists it) and stops the writes, as does anything else in the folder that is not a backup
  * of this format (but the files an operating system leaves there, `SYSTEM_FILES`, which are only counted in its size).
- * The one file taken away is a backup the person discards in the rescue command, confirmed (`discard`, LEV-310). Every
- * step runs after the one before it, in one chain, so a rescue reading or discarding and a load writing never interleave.
+ * The one file taken away is a backup the person discards in the rescue command, confirmed (`discard`, LEV-310), and
+ * it goes to a trash, never deleted outright. Every step runs after the one before it, in one chain, so a rescue
+ * reading or discarding and a load writing never interleave.
  */
 
 /** The adapter's part the backups use. */
-export type BackupAdapter = Pick<DataAdapter, "exists" | "stat" | "list" | "read" | "write" | "rename" | "mkdir" | "trashSystem" | "remove">;
+export type BackupAdapter = Pick<DataAdapter, "exists" | "stat" | "list" | "read" | "write" | "rename" | "mkdir" | "trashSystem" | "trashLocal">;
 
 /** The backup folder in the plugin's folder (`manifest.dir`). */
 export const exitBackupFolder = (pluginFolder: string): string => `${pluginFolder}/exit-backups`;
 
 /**
  * Why a backup was not made or finished: the folder would hold more than the limit (`full`), its size could not be
- * measured (`unmeasured`), a file could not be written or renamed (`unsaved`, with the adapter's message), the backup
- * read back was not what was written (`mismatch`), a name it needed was taken (`taken`), or the folder is not one
- * (`unverified`). The note is not written for any of them.
+ * measured (`unmeasured`), a file could not be written or renamed, or (LEV-310) read or moved to a trash when it is
+ * discarded (`unsaved`, with the adapter's message), the backup read back was not what was written (`mismatch`), a
+ * name it needed was taken (`taken`), or the folder is not one (`unverified`). The note is not written for any of them.
  */
 export type ExitBackupFailure = "full" | "unmeasured" | "unsaved" | "mismatch" | "taken" | "unverified";
 
@@ -108,26 +109,28 @@ export class ExitBackupStore {
 
   /**
    * LEV-310: the file `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
-   * confirmed): moved to the system trash (`trashed`), or removed where there is none (`removed`). Only a file of this
-   * folder that still holds the backup as it was read: one renamed, changed or removed meanwhile is left (`gone`), and
-   * so is everything else in the folder. Throws an `ExitBackupError` when it could not be taken away.
+   * confirmed): moved to the system trash (`trashed`), or to the vault's own `.trash/` where the system's does not take
+   * it (`localTrashed`); never deleted outright. Only a file of this folder that still holds the backup as it was read:
+   * one renamed, changed or removed meanwhile is left (`gone`), and so is everything else in the folder. `stillThere`:
+   * moved, the trash said, but the folder still has it. Throws an `ExitBackupError` when it cannot be read or moved.
    */
-  discard(record: BackupRecord): Promise<"trashed" | "removed" | "gone"> {
+  discard(record: BackupRecord): Promise<"trashed" | "localTrashed" | "stillThere" | "gone"> {
     return this.queue(async () => {
       const { path } = record;
       if (!path.startsWith(`${this.folder}/`) || path.slice(this.folder.length + 1).includes("/")) return "gone";
       if (!await this.exists(path)) return "gone";
       let text: string;
-      try { text = await this.adapter.read(path); } catch { return "gone"; }
+      try { text = await this.adapter.read(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
       const read = readExitBackup(text);
       if (!read || backupText(read) !== backupText(record.backup)) return "gone";
-      let trashed: boolean;
-      try { trashed = await this.adapter.trashSystem(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
+      // The system trash first; where it cannot (none there, or it refused), the vault's own.
+      let trashed = false;
+      try { trashed = await this.adapter.trashSystem(path); } catch { trashed = false; }
       if (!trashed) {
-        try { await this.adapter.remove(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
+        try { await this.adapter.trashLocal(path); } catch (error) { throw new ExitBackupError("unsaved", message(error)); }
       }
-      if (await this.exists(path)) throw new ExitBackupError("unsaved", path);
-      return trashed ? "trashed" : "removed";
+      if (await this.exists(path)) return "stillThere";
+      return trashed ? "trashed" : "localTrashed";
     });
   }
 

@@ -12,8 +12,8 @@ import { ExitBackupError, ExitBackupStore, exitBackupFolder, type BackupAdapter 
  * file (S1), renamed to `<id>.prepared.json` and read back (S2), then renamed to `<id>.applied.json` once the note is
  * written (S4). The rows are each step × how it fails (refused, the disk full, read back changed, the name taken) and
  * the folder × what is in it (nothing, temporary, broken or unknown files, a folder, a file in its place). Nothing is
- * deleted but by `discard` (LEV-310, the last block): the fake adapter logs every trash and remove, and a rename onto a
- * name that is there is counted.
+ * deleted but by `discard` (LEV-310, the last block), which moves a file to a trash: the fake adapter logs every
+ * move to one, and a rename onto a name that is there is counted.
  */
 const PLUGIN = 'cfg/plugins/mappy';
 const FOLDER = exitBackupFolder(PLUGIN);
@@ -24,7 +24,7 @@ const draft: PlannedExitDraft = {
   path: 'Notes/退避.md', title: '新しい名前', at: 1_791_265_000_000, before: textFingerprint(SOURCE), after: textFingerprint(AFTER), edits, source: SOURCE,
 };
 
-type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir' | 'trashSystem' | 'remove';
+type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir' | 'trashSystem' | 'trashLocal';
 
 /** The plugin's folder on disk as the adapter shows it, with the faults a row asks for. */
 class Disk {
@@ -41,8 +41,9 @@ class Disk {
   size = (_path: string, text: string): number | null => utf8Bytes(text);
   /** Whether the system trash takes a file (`trashSystem` answers false where there is none). */
   trashWorks = true;
-  /** The files moved to the system trash, with what they held. */
+  /** The files moved to the system trash, and to the vault's `.trash/`, with what they held. */
   readonly trash = new Map<string, string>();
+  readonly localTrash = new Map<string, string>();
 
   private step(step: Step, path: string, to = ''): void {
     this.calls.push(`${step} ${path}${to ? ` ${to}` : ''}`);
@@ -89,9 +90,12 @@ class Disk {
       this.trash.set(path, text);
       return true;
     }),
-    remove: (path: string) => this.run(() => {
-      this.step('remove', path);
-      if (!this.files.delete(path)) throw new Error(`ENOENT: ${path}`);
+    trashLocal: (path: string) => this.run(() => {
+      this.step('trashLocal', path);
+      const text = this.files.get(path);
+      if (text === undefined) throw new Error(`ENOENT: ${path}`);
+      this.files.delete(path);
+      this.localTrash.set(path, text);
     }),
   } satisfies Pick<DataAdapter, Step>;
 
@@ -360,7 +364,7 @@ describe('discarding a backup (LEV-310)', () => {
     if (finish) await store.markApplied(await backupId(draft));
     return (await store.survey()).records.get(await backupId(draft))![finish ? 'applied' : 'prepared']!;
   }
-  const taking = (disk: Disk): string[] => disk.calls.filter(call => /^(trashSystem|remove) /u.test(call));
+  const taking = (disk: Disk): string[] => disk.calls.filter(call => /^trash(System|Local) /u.test(call));
 
   it('moves only the file the record was read from to the system trash', async () => {
     const disk = new Disk();
@@ -376,14 +380,19 @@ describe('discarding a backup (LEV-310)', () => {
     expect(taking(disk)).toEqual([`trashSystem ${record.path}`]);
   });
 
-  it('removes it where there is no system trash', async () => {
-    const disk = new Disk();
-    disk.trashWorks = false;
-    const record = await madeOn(disk, false);
-    expect(await storeOn(disk).discard(record)).toBe('removed');
-    expect(disk.files.has(record.path)).toBe(false);
-    expect(taking(disk)).toEqual([`trashSystem ${record.path}`, `remove ${record.path}`]);
-  });
+  // Review 1: where the system trash does not take it, the file went for good; it goes to the vault's own trash.
+  it.each([['answers no', () => null], ['throws', (step: Step) => step === 'trashSystem' ? new Error('EPERM') : null]])(
+    'moves it to the vault\'s own trash where the system trash %s, and deletes nothing', async (_case, fault) => {
+      const disk = new Disk();
+      disk.trashWorks = false;
+      disk.fault = fault;
+      const record = await madeOn(disk, false);
+      const text = disk.files.get(record.path)!;
+      expect(await storeOn(disk).discard(record)).toBe('localTrashed');
+      expect(disk.files.has(record.path)).toBe(false);
+      expect([...disk.localTrash]).toEqual([[record.path, text]]);
+      expect(taking(disk)).toEqual([`trashSystem ${record.path}`, `trashLocal ${record.path}`]);
+    });
 
   it.each([
     ['renamed since it was read', async (disk: Disk) => { await storeOn(disk).markApplied(await backupId(draft)); }],
@@ -414,20 +423,33 @@ describe('discarding a backup (LEV-310)', () => {
     expect(taking(disk)).toEqual([]);
   });
 
-  it('fails, and the file stays, when the trash refuses it or it is still there after', async () => {
+  it('fails with the reason, and the file stays, when neither trash takes it', async () => {
     const disk = new Disk();
     const record = await madeOn(disk);
     const files = new Map(disk.files);
-    disk.fault = step => step === 'trashSystem' ? new Error('EPERM') : null;
-    expect(await failureOf(storeOn(disk).discard(record))).toBe('unsaved');
-    disk.fault = () => null;
-    disk.trashWorks = false;
-    disk.fault = step => step === 'remove' ? new Error('EBUSY') : null;
-    expect(await failureOf(storeOn(disk).discard(record))).toBe('unsaved');
-    disk.fault = () => null;
-    disk.adapter.trashSystem = () => Promise.resolve(true);
-    expect(await failureOf(storeOn(disk).discard(record))).toBe('unsaved');
+    disk.fault = step => step === 'trashSystem' ? new Error('EPERM') : step === 'trashLocal' ? new Error('EBUSY') : null;
+    await expect(storeOn(disk).discard(record)).rejects.toThrow('unsaved: EBUSY');
     expect(disk.files).toEqual(files);
+  });
+
+  // Review 1: a read that failed was told as the backup gone or changed, and the person did not try again.
+  it('fails with the reason when the file is there but cannot be read, and takes nothing away', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    const files = new Map(disk.files);
+    disk.fault = (step, path) => step === 'read' && path === record.path ? new Error('EACCES') : null;
+    await expect(storeOn(disk).discard(record)).rejects.toThrow('unsaved: EACCES');
+    expect(disk.files).toEqual(files);
+    expect(taking(disk)).toEqual([]);
+  });
+
+  // Review 1: a file still there after the trash said it took it was told by its path as the reason.
+  it('says the file is still there when the trash said it took it but the folder still has it', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    disk.adapter.trashSystem = () => Promise.resolve(true);
+    expect(await storeOn(disk).discard(record)).toBe('stillThere');
+    expect(disk.files.has(record.path)).toBe(true);
   });
 
   it('runs on the chain, after what was asked before it', async () => {

@@ -41,7 +41,7 @@ const renamed = (title: string, from = SOURCE): string => from.replace('  - 子�
 /** The plugin's folder, where the backups go (`exit-backups/`). */
 const PLUGIN = '.config/plugins/mappy';
 const BACKUPS = exitBackupFolder(PLUGIN);
-type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir' | 'trashSystem' | 'remove';
+type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir' | 'trashSystem' | 'trashLocal';
 
 /**
  * The disk under the plugin's folder, kept across a reload as the vault's files are, through the adapter's part the
@@ -85,7 +85,7 @@ class Disk {
       this.trash.set(path, text);
       return true;
     }),
-    remove: path => this.run('remove', path, () => { if (!this.files.delete(path)) throw new Error('ENOENT'); }),
+    trashLocal: path => this.run('trashLocal', path, () => { if (!this.files.delete(path)) throw new Error('ENOENT'); }),
   };
   /** The files moved to the system trash, with what they held. */
   readonly trash = new Map<string, string>();
@@ -1109,6 +1109,8 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     expect(Notice.log[0]).toContain(`（${BACKUPS}）`);
     // LEV-310: by discarding the backups not needed in the rescue command, named there.
     expect(Notice.log[0]).toContain(`コマンド「${t().cmdRescueDrafts}」で必要な控えを救出してから、要らない控えを破棄すると空きます`);
+    // Review 1 of LEV-310: what the list cannot discard is still the person's to delete in the folder.
+    expect(Notice.log[0]).toContain('一覧で破棄できないファイル（確かめられないファイル）は、そのフォルダで確かめて自分で消してください');
     expect(Object.keys(window.localStorage).sort()).toEqual(keys);
     expect(window.localStorage.getItem(`mappy-harness-${EXIT_DRAFTS_KEY}`)).toBe(entry);
   }, 30_000);
@@ -1263,6 +1265,7 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     const line = Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item[data-mappy-rescue="applied"]'))
       .find(row => row.querySelector('.setting-item-description')?.textContent?.includes(t().rescueTitleLine('前の下書き')));
     line!.querySelector<HTMLButtonElement>('button[data-mappy-rescue-action="discard"]')!.click();
+    await vi.waitFor(() => { expect(document.querySelector('.modal-title')?.textContent).toBe(t().discardBackupTitle); });
     Array.from(document.querySelectorAll<HTMLButtonElement>('.modal button')).find(item => item.textContent === t().discardConfirm)!.click();
     await vi.waitFor(() => { expect(Notice.log).toEqual([t().discardedBackupTrash]); }, { timeout: 20_000 });
     expect(disk.files.has(full)).toBe(false);

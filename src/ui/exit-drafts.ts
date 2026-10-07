@@ -80,33 +80,37 @@ export type DraftDiscard = "discarded" | "gone" | "failed" | "unknown";
 
 /**
  * LEV-310: `draft` taken out of the entry at the person's explicit request (the rescue list's 破棄, confirmed), and
- * nothing else: the other items stay as they are and where they are, those that do not read as drafts included, and
- * no note is read or written. Done once no pass is applying the kept drafts, so a pass that read the draft already
- * does not write it after it was discarded. Said discarded only when the entry read back holds one fewer of it.
+ * nothing else: the first item of it goes as a load's write takes one out (`saveWithout`), the other items stay as they
+ * are and where they are, those that do not read as drafts included, and no note is read or written. Done once no
+ * pass is applying the kept drafts, so a pass that read the draft already does not write it after it was discarded.
+ * Said discarded only when the entry read back holds one fewer of it.
  */
 export async function discardExitDraft(app: App, draft: ExitDraft): Promise<DraftDiscard> {
   await passesOver();
-  const key = draftKey(draft);
-  const isIt = (item: unknown): boolean => readExitDrafts([item]).some(read => draftKey(read) === key);
-  const count = (raw: unknown): number => Array.isArray(raw) ? (raw as unknown[]).filter(isIt).length : 0;
-  let items: unknown[];
-  try {
-    const raw: unknown = app.loadLocalStorage(EXIT_DRAFTS_KEY);
-    items = Array.isArray(raw) ? (raw as unknown[]).slice() : [];
-  } catch { return "failed"; }
-  const held = items.filter(isIt).length;
-  if (held === 0) return "gone";
-  items.splice(items.findIndex(isIt), 1);
-  try { app.saveLocalStorage(EXIT_DRAFTS_KEY, items.length > 0 ? items : null); } catch { /* Read back below. */ }
-  try { return count(app.loadLocalStorage(EXIT_DRAFTS_KEY)) < held ? "discarded" : "failed"; } catch { return "unknown"; }
+  const held = (): number => readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).filter(item => sameDraft(item, draft)).length;
+  let before: number;
+  try { before = held(); } catch { return "failed"; }
+  if (before === 0) return "gone";
+  // The first item of it out, as a load takes out a draft it wrote; storage refusing it is told by the read back.
+  saveWithout(app, draft);
+  try { return held() < before ? "discarded" : "failed"; } catch { return "unknown"; }
 }
 
 /**
- * What became of a backup the person discarded (LEV-310): moved to the system trash, removed (no trash there), not
- * there as it was read (`gone`), refused because a kept draft is of it (`draftKept`), or refused because the entry
- * could not be read to tell (`unread`). Nothing is taken away in the last three.
+ * The ids of the kept drafts' backups (`backupId`, the SHA-256 of each `draftKey`): a backup of one of them holds that
+ * draft back and is not discarded (LEV-310). Null when the entry or a hash cannot be had: no backup is discarded then.
  */
-export type BackupDiscard = "trashed" | "removed" | "gone" | "draftKept" | "unread";
+export async function keptBackupIds(app: App): Promise<Set<string> | null> {
+  try { return new Set(await Promise.all(readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).map(draft => backupId(draft)))); } catch { return null; }
+}
+
+/**
+ * What became of a backup the person discarded (LEV-310): moved to the system trash, moved to the vault's own trash
+ * (`.trash/`, where the system's cannot take it), still in the folder after it was moved (`stillThere`), not there as
+ * it was read (`gone`), refused because a kept draft is of it (`draftKept`), or refused because the kept drafts could
+ * not be told (`unread`). Nothing is taken away in the last three; nothing is ever deleted outright.
+ */
+export type BackupDiscard = "trashed" | "localTrashed" | "stillThere" | "gone" | "draftKept" | "unread";
 
 /**
  * LEV-310: the backup `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
@@ -117,11 +121,10 @@ export type BackupDiscard = "trashed" | "removed" | "gone" | "draftKept" | "unre
  */
 export async function discardExitBackup(app: App, backups: ExitBackupStore, record: BackupRecord): Promise<BackupDiscard> {
   await passesOver();
-  let drafts: ExitDraft[];
-  try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { return "unread"; }
   // The entry only loses drafts from here on (no page goes while the rescue runs), so one not kept now stays not kept.
-  const kept = await Promise.all(drafts.map(draft => backupId(draft)));
-  if (kept.includes(record.backup.id)) return "draftKept";
+  const kept = await keptBackupIds(app);
+  if (!kept) return "unread";
+  if (kept.has(record.backup.id)) return "draftKept";
   return backups.discard(record);
 }
 

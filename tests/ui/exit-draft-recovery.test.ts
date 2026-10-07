@@ -21,7 +21,7 @@ import {
 import { applyEdits } from '../../src/core/commands';
 import { textFingerprint } from '../../src/core/exit-drafts';
 import { appliedName, backupId, backupText, utf8Bytes } from '../../src/core/exit-backup';
-import { discardExitBackup } from '../../src/ui/exit-drafts';
+import { discardExitBackup, keptBackupIds } from '../../src/ui/exit-drafts';
 import { ExitBackupStore, exitBackupFolder, type BackupAdapter, type BackupRecord } from '../../src/obsidian/exit-backup-store';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -105,8 +105,13 @@ class Disk {
   /** Whether the system trash takes a file (`trashSystem` answers false where there is none), or what it throws. */
   trashWorks = true;
   trashFails: Error | null = null;
-  /** The files moved to the system trash, with what they held, and the calls that took a file away. */
+  /** What the vault's own trash (`trashLocal`) throws, if anything. */
+  localTrashFails: Error | null = null;
+  /** What a read of a path throws, if anything. */
+  readFails: (path: string) => Error | null = () => null;
+  /** The files moved to the system trash and to the vault's `.trash/`, with what they held, and the calls that moved one. */
   readonly trash = new Map<string, string>();
+  readonly localTrash = new Map<string, string>();
   readonly taken: string[] = [];
   private run<T>(body: () => T): Promise<T> {
     try { return Promise.resolve(body()); } catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
@@ -120,7 +125,13 @@ class Disk {
       const under = (item: string) => item.startsWith(`${path}/`) && !item.slice(path.length + 1).includes('/');
       return { files: [...this.files.keys()].filter(under), folders: [...this.folders].filter(under) };
     }),
-    read: path => this.run(() => { const text = this.files.get(path); if (text === undefined) throw new Error('ENOENT'); return text; }),
+    read: path => this.run(() => {
+      const failure = this.readFails(path);
+      if (failure) throw failure;
+      const text = this.files.get(path);
+      if (text === undefined) throw new Error('ENOENT');
+      return text;
+    }),
     write: (path, data) => this.run(() => { this.files.set(path, data); }),
     rename: (from, to) => this.run(() => {
       const text = this.files.get(from);
@@ -138,7 +149,14 @@ class Disk {
       this.trash.set(path, text);
       return true;
     }),
-    remove: path => this.run(() => { this.taken.push(`remove ${path}`); if (!this.files.delete(path)) throw new Error('ENOENT'); }),
+    trashLocal: path => this.run(() => {
+      this.taken.push(`trashLocal ${path}`);
+      if (this.localTrashFails) throw this.localTrashFails;
+      const text = this.files.get(path);
+      if (text === undefined) throw new Error('ENOENT');
+      this.files.delete(path);
+      this.localTrash.set(path, text);
+    }),
   };
 }
 const storeOn = (disk = new Disk(), now = () => AT) => new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6', undefined, now);
@@ -784,8 +802,8 @@ describe('discarding a kept draft from the list (LEV-310)', () => {
     const reader = app as unknown as { loadLocalStorage(key: string): unknown };
     const load = reader.loadLocalStorage.bind(reader);
     let reads = 0;
-    // The list's read and the discard's own, then the read back fails.
-    reader.loadLocalStorage = (key: string): unknown => { reads += 1; if (reads > 2) throw new Error('SecurityError'); return load(key); };
+    // The list's read, the discard's own and the one before taking the draft out, then the read back fails.
+    reader.loadLocalStorage = (key: string): unknown => { reads += 1; if (reads > 3) throw new Error('SecurityError'); return load(key); };
     await rescueExitDrafts(app, storeOn());
     press(lineOf('draft', '入力中の題名'), 'discard');
     button(t().discardConfirm).click();
@@ -804,6 +822,7 @@ describe('discarding a backup from the list (LEV-310)', () => {
     const entry = stored();
     await rescueExitDrafts(app, storeOn(disk));
     press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
     expect(document.querySelector('.modal-title')?.textContent).toBe(t().discardBackupTitle);
     expect(shownTexts()).toEqual([t().discardBackupWhat('書いた題名', NOTE, localTime(record.backup.createdAt)),
       t().discardBackupLost(String(before.length)), t().discardUnchanged]);
@@ -830,6 +849,7 @@ describe('discarding a backup from the list (LEV-310)', () => {
     const entry = stored();
     await rescueExitDrafts(app, storeOn(disk));
     press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
     button(t().discardConfirm).click();
     await settle();
     files.delete(done.path);
@@ -842,18 +862,22 @@ describe('discarding a backup from the list (LEV-310)', () => {
     expect(Notice.log).toEqual([t().discardedBackupTrash]);
   });
 
-  it('deletes it where there is no system trash, and says so', async () => {
+  // Review 1: where the system trash could not take it, the backup was deleted for good.
+  it('moves it to the vault\'s .trash where the system trash cannot take it, and says so', async () => {
     const disk = new Disk();
     disk.trashWorks = false;
     const record = await backUp(disk, planned('書いた題名'), MAP, true);
+    const text = disk.files.get(record.path)!;
     await rescueExitDrafts(appWith(null).app, storeOn(disk));
     press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
     button(t().discardConfirm).click();
     await settle();
     expect(disk.files.has(record.path)).toBe(false);
     expect(disk.trash.size).toBe(0);
-    expect(disk.taken).toEqual([`trashSystem ${record.path}`, `remove ${record.path}`]);
-    expect(Notice.log).toEqual([t().discardedBackupRemoved]);
+    expect([...disk.localTrash]).toEqual([[record.path, text]]);
+    expect(disk.taken).toEqual([`trashSystem ${record.path}`, `trashLocal ${record.path}`]);
+    expect(Notice.log).toEqual([t().discardedBackupLocalTrash]);
   });
 
   // The record is what keeps its kept draft from being written again (a write that did not finish): taking it away
@@ -867,6 +891,7 @@ describe('discarding a backup from the list (LEV-310)', () => {
     const entry = stored();
     await rescueExitDrafts(app, storeOn(disk));
     press(lineOf('prepared', '途中の題名'), 'discard');
+    await settle();
     expect(shownTexts()).toEqual([t().discardBackupWhat('途中の題名', NOTE, localTime(record.backup.createdAt)),
       t().discardBackupDraftKept, t().discardUnchanged]);
     expect(button(t().discardConfirm).disabled).toBe(true);
@@ -882,6 +907,7 @@ describe('discarding a backup from the list (LEV-310)', () => {
     const record = await backUp(disk, draft, MAP, false);
     await rescueExitDrafts(appWith(null).app, storeOn(disk));
     press(lineOf('prepared', '途中の題名'), 'discard');
+    await settle();
     if (change === 'renamed to the applied name') await storeOn(disk).markApplied(await backupId(draft));
     else if (change === 'changed') disk.files.set(record.path, backupText({ ...record.backup, createdAt: AT + 1 }));
     else disk.files.delete(record.path);
@@ -893,18 +919,74 @@ describe('discarding a backup from the list (LEV-310)', () => {
     expect(Notice.log).toEqual([t().discardBackupGone]);
   });
 
-  it('says why when the backup could not be taken away, and leaves it', async () => {
+  it('says why when neither trash takes the backup, and leaves it', async () => {
     const disk = new Disk();
     const record = await backUp(disk, planned('書いた題名'), MAP, true);
     const files = new Map(disk.files);
     disk.trashFails = new Error('EPERM: operation not permitted');
+    disk.localTrashFails = new Error('EBUSY: resource busy or locked');
     await rescueExitDrafts(appWith(null).app, storeOn(disk));
     press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
     button(t().discardConfirm).click();
     await settle();
     expect(disk.files).toEqual(files);
     expect(disk.files.has(record.path)).toBe(true);
-    expect(Notice.log).toEqual([t().discardBackupFailed('EPERM: operation not permitted')]);
+    expect(Notice.log).toEqual([t().discardBackupFailed('EBUSY: resource busy or locked')]);
+  });
+
+  // Review 1: a backup that could not be read was told as gone or changed.
+  it('says why when the backup cannot be read, and takes nothing away', async () => {
+    const disk = new Disk();
+    const record = await backUp(disk, planned('書いた題名'), MAP, true);
+    const files = new Map(disk.files);
+    await rescueExitDrafts(appWith(null).app, storeOn(disk));
+    disk.readFails = path => path === record.path ? new Error('EACCES: permission denied') : null;
+    press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
+    button(t().discardConfirm).click();
+    await settle();
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+    expect(Notice.log).toEqual([t().discardBackupFailed('EACCES: permission denied')]);
+  });
+
+  // Review 1: the list hashed every kept draft before it opened, and a hash that failed left the command with nothing.
+  it('opens the list when the kept drafts cannot be hashed, and offers no discard of a backup then', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true);
+    const { app } = appWith([withSource()]);
+    const digest = vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(new Error('OperationError'));
+    await rescueExitDrafts(app, storeOn(disk));
+    expect(Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item'), row => row.dataset.mappyRescue)).toEqual(['draft', 'unchecked']);
+    digest.mockRestore();
+    document.body.replaceChildren();
+    // The list read, then the hashes fail as 破棄 is pressed: nothing is offered.
+    await rescueExitDrafts(app, storeOn(disk));
+    vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(new Error('OperationError'));
+    press(lineOf('applied', '書いた題名'), 'discard');
+    await settle();
+    expect(shownTexts()[1]).toBe(t().discardBackupDraftsUnread);
+    expect(button(t().discardConfirm).disabled).toBe(true);
+    expect(await keptBackupIds(app)).toBeNull();
+    expect(disk.taken).toEqual([]);
+  });
+
+  // Review 1: whether the draft held the backup back was read when the list opened, not when 破棄 was pressed.
+  it('offers the discard of a backup whose draft was written after the list was read', async () => {
+    const disk = new Disk();
+    const draft = planned('途中の題名');
+    const record = await backUp(disk, draft, MAP, false);
+    const { app } = appWith([draft]);
+    await rescueExitDrafts(app, storeOn(disk));
+    (app as unknown as { saveLocalStorage(key: string, data: unknown): void }).saveLocalStorage(EXIT_DRAFTS_KEY, null);
+    press(lineOf('prepared', '途中の題名'), 'discard');
+    await settle();
+    expect(shownTexts()[1]).toBe(t().discardBackupLost(String(record.backup.note.beforeLength)));
+    button(t().discardConfirm).click();
+    await settle();
+    expect(disk.files.has(record.path)).toBe(false);
+    expect(Notice.log).toEqual([t().discardedBackupTrash]);
   });
 
   it('refuses when the kept drafts cannot be read, and takes nothing away', async () => {
