@@ -12,7 +12,8 @@ import { ExitBackupError, ExitBackupStore, exitBackupFolder, type BackupAdapter 
  * file (S1), renamed to `<id>.prepared.json` and read back (S2), then renamed to `<id>.applied.json` once the note is
  * written (S4). The rows are each step × how it fails (refused, the disk full, read back changed, the name taken) and
  * the folder × what is in it (nothing, temporary, broken or unknown files, a folder, a file in its place). Nothing is
- * ever deleted: the fake adapter has no way to, and a rename onto a name that is there is counted.
+ * deleted but by `discard` (LEV-310, the last block): the fake adapter logs every trash and remove, and a rename onto a
+ * name that is there is counted.
  */
 const PLUGIN = 'cfg/plugins/mappy';
 const FOLDER = exitBackupFolder(PLUGIN);
@@ -23,7 +24,7 @@ const draft: PlannedExitDraft = {
   path: 'Notes/退避.md', title: '新しい名前', at: 1_791_265_000_000, before: textFingerprint(SOURCE), after: textFingerprint(AFTER), edits, source: SOURCE,
 };
 
-type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir';
+type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir' | 'trashSystem' | 'remove';
 
 /** The plugin's folder on disk as the adapter shows it, with the faults a row asks for. */
 class Disk {
@@ -38,6 +39,10 @@ class Disk {
   readBack = (_path: string, text: string): string => text;
   /** The size `stat` reports for a file, or null for one it cannot measure. */
   size = (_path: string, text: string): number | null => utf8Bytes(text);
+  /** Whether the system trash takes a file (`trashSystem` answers false where there is none). */
+  trashWorks = true;
+  /** The files moved to the system trash, with what they held. */
+  readonly trash = new Map<string, string>();
 
   private step(step: Step, path: string, to = ''): void {
     this.calls.push(`${step} ${path}${to ? ` ${to}` : ''}`);
@@ -76,6 +81,18 @@ class Disk {
       this.files.set(to, text);
     }),
     mkdir: (path: string) => this.run(() => { this.step('mkdir', path); this.folders.add(path); }),
+    trashSystem: (path: string) => this.run(() => {
+      this.step('trashSystem', path);
+      const text = this.files.get(path);
+      if (!this.trashWorks || text === undefined) return false;
+      this.files.delete(path);
+      this.trash.set(path, text);
+      return true;
+    }),
+    remove: (path: string) => this.run(() => {
+      this.step('remove', path);
+      if (!this.files.delete(path)) throw new Error(`ENOENT: ${path}`);
+    }),
   } satisfies Pick<DataAdapter, Step>;
 
   private run<T>(body: () => T): Promise<T> {
@@ -327,5 +344,107 @@ describe('one chain for every step', () => {
     release();
     await Promise.all([first, survey, failing, after]);
     expect(order).toEqual(['write starts', 'write ends', 'prepare done', 'survey done', 'mark failed', 'second survey done']);
+  });
+});
+
+/**
+ * LEV-310: the one file the store takes away, a backup the person discarded in the rescue command (confirmed): the file
+ * its record was read from, moved to the system trash or, where there is none, removed. Only while it is still that
+ * file in this folder holding what was read; every other file stays.
+ */
+describe('discarding a backup (LEV-310)', () => {
+  /** This draft's backup made on `disk`, marked applied unless `finish` is false, as the survey reads it. */
+  async function madeOn(disk: Disk, finish = true) {
+    const store = storeOn(disk);
+    await prepare(store);
+    if (finish) await store.markApplied(await backupId(draft));
+    return (await store.survey()).records.get(await backupId(draft))![finish ? 'applied' : 'prepared']!;
+  }
+  const taking = (disk: Disk): string[] => disk.calls.filter(call => /^(trashSystem|remove) /u.test(call));
+
+  it('moves only the file the record was read from to the system trash', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    disk.files.set(`${FOLDER}/memo.txt`, 'x');
+    disk.files.set(`${FOLDER}/${'a'.repeat(64)}.tmp-000000000000.json`, '{');
+    const text = disk.files.get(record.path)!;
+    const files = new Map(disk.files);
+    files.delete(record.path);
+    expect(await storeOn(disk).discard(record)).toBe('trashed');
+    expect(disk.files).toEqual(files);
+    expect([...disk.trash]).toEqual([[record.path, text]]);
+    expect(taking(disk)).toEqual([`trashSystem ${record.path}`]);
+  });
+
+  it('removes it where there is no system trash', async () => {
+    const disk = new Disk();
+    disk.trashWorks = false;
+    const record = await madeOn(disk, false);
+    expect(await storeOn(disk).discard(record)).toBe('removed');
+    expect(disk.files.has(record.path)).toBe(false);
+    expect(taking(disk)).toEqual([`trashSystem ${record.path}`, `remove ${record.path}`]);
+  });
+
+  it.each([
+    ['renamed since it was read', async (disk: Disk) => { await storeOn(disk).markApplied(await backupId(draft)); }],
+    ['changed since it was read', async (disk: Disk) => {
+      const path = `${FOLDER}/${preparedName(await backupId(draft))}`;
+      disk.files.set(path, backupText(await makeExitBackup({ draft, path: draft.path, before: SOURCE, after: AFTER, edits, mappyVersion: '0.4.6', createdAt: 8 })));
+    }],
+    ['removed since it was read', async (disk: Disk) => { disk.files.delete(`${FOLDER}/${preparedName(await backupId(draft))}`); }],
+    ['that does not read any more', async (disk: Disk) => { disk.files.set(`${FOLDER}/${preparedName(await backupId(draft))}`, '{ broken'); }],
+  ])('leaves a backup %s, and every other file', async (_case, change) => {
+    const disk = new Disk();
+    const record = await madeOn(disk, false);
+    await change(disk);
+    const files = new Map(disk.files);
+    expect(await storeOn(disk).discard(record)).toBe('gone');
+    expect(disk.files).toEqual(files);
+    expect(taking(disk)).toEqual([]);
+  });
+
+  it('takes nothing outside the folder, nor in a folder inside it', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    const text = disk.files.get(record.path)!;
+    for (const path of [`${PLUGIN}/data.json`, `${FOLDER}/inner/${appliedName(record.backup.id)}`, `${FOLDER}-other/${appliedName(record.backup.id)}`]) {
+      disk.files.set(path, text);
+      expect(await storeOn(disk).discard({ ...record, path })).toBe('gone');
+    }
+    expect(taking(disk)).toEqual([]);
+  });
+
+  it('fails, and the file stays, when the trash refuses it or it is still there after', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    const files = new Map(disk.files);
+    disk.fault = step => step === 'trashSystem' ? new Error('EPERM') : null;
+    expect(await failureOf(storeOn(disk).discard(record))).toBe('unsaved');
+    disk.fault = () => null;
+    disk.trashWorks = false;
+    disk.fault = step => step === 'remove' ? new Error('EBUSY') : null;
+    expect(await failureOf(storeOn(disk).discard(record))).toBe('unsaved');
+    disk.fault = () => null;
+    disk.adapter.trashSystem = () => Promise.resolve(true);
+    expect(await failureOf(storeOn(disk).discard(record))).toBe('unsaved');
+    expect(disk.files).toEqual(files);
+  });
+
+  it('runs on the chain, after what was asked before it', async () => {
+    const disk = new Disk();
+    const record = await madeOn(disk);
+    const store = storeOn(disk);
+    const order: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const read = disk.adapter.read;
+    disk.adapter.read = async (path: string) => { order.push('survey reads'); await held; return read(path); };
+    const survey = store.survey().then(() => order.push('survey done'));
+    const discard = store.discard(record).then(outcome => order.push(`discard ${outcome}`));
+    await Promise.resolve();
+    release();
+    await Promise.all([survey, discard]);
+    expect(order.slice(0, 1)).toEqual(['survey reads']);
+    expect(order.indexOf('survey done')).toBeLessThan(order.indexOf('discard trashed'));
   });
 });

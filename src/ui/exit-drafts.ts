@@ -5,7 +5,7 @@ import {
   EXIT_DRAFT_TTL, draftKey, readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint, withoutSources, type ExitDraft,
 } from "../core/exit-drafts";
 import type { DocumentStore } from "../obsidian/document-store";
-import { ExitBackupError, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
+import { ExitBackupError, type BackupRecord, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
 import { messagesFor, t } from "../i18n";
 import type { MindmapView } from "./mindmap-view";
 
@@ -26,7 +26,8 @@ export const EXIT_DRAFTS_KEY = "mappy-exit-drafts";
  * the command 保存できなかった下書きを救出 saves what it holds to a separate file (`src/ui/exit-draft-recovery.ts`).
  * Every write of a kept draft leaves a backup of the whole note first, read back before the note is written
  * (LEV-309, `src/obsidian/exit-backup-store.ts`); what the backups say at the next load decides which drafts may be
- * written at all, and nothing that is unclear is written, taken out of the entry or deleted.
+ * written at all, and nothing that is unclear is written, taken out of the entry or deleted. A draft or a backup goes
+ * only when the person discards it in the rescue command, confirmed (LEV-310: `discardExitDraft`, `discardExitBackup`).
  *
  * Not `workspace.on("quit")`'s tasks, though Obsidian waits for them: waiting cancels the quit, and on macOS only the
  * window closes after them, leaving Obsidian running with no window (1.14.2's `main.js`: `window-all-closed` does not
@@ -64,6 +65,65 @@ export function installExitDrafts(
 
 /** The pass running now: one at a time, and one asked for meanwhile is that one. */
 let applying: Promise<void> | null = null;
+
+/** Resolves once no pass is applying the kept drafts, one started meanwhile included (LEV-310). */
+async function passesOver(): Promise<void> {
+  while (applying) await applying.catch(() => undefined);
+}
+
+/**
+ * What became of a kept draft the person discarded (LEV-310): taken out of the entry (`discarded`), not in it
+ * (`gone`: written or discarded meanwhile; nothing done), not taken out (`failed`: the entry could not be read, or
+ * still holds it after the write), or not known (`unknown`: the entry could not be read back).
+ */
+export type DraftDiscard = "discarded" | "gone" | "failed" | "unknown";
+
+/**
+ * LEV-310: `draft` taken out of the entry at the person's explicit request (the rescue list's 破棄, confirmed), and
+ * nothing else: the other items stay as they are and where they are, those that do not read as drafts included, and
+ * no note is read or written. Done once no pass is applying the kept drafts, so a pass that read the draft already
+ * does not write it after it was discarded. Said discarded only when the entry read back holds one fewer of it.
+ */
+export async function discardExitDraft(app: App, draft: ExitDraft): Promise<DraftDiscard> {
+  await passesOver();
+  const key = draftKey(draft);
+  const isIt = (item: unknown): boolean => readExitDrafts([item]).some(read => draftKey(read) === key);
+  const count = (raw: unknown): number => Array.isArray(raw) ? (raw as unknown[]).filter(isIt).length : 0;
+  let items: unknown[];
+  try {
+    const raw: unknown = app.loadLocalStorage(EXIT_DRAFTS_KEY);
+    items = Array.isArray(raw) ? (raw as unknown[]).slice() : [];
+  } catch { return "failed"; }
+  const held = items.filter(isIt).length;
+  if (held === 0) return "gone";
+  items.splice(items.findIndex(isIt), 1);
+  try { app.saveLocalStorage(EXIT_DRAFTS_KEY, items.length > 0 ? items : null); } catch { /* Read back below. */ }
+  try { return count(app.loadLocalStorage(EXIT_DRAFTS_KEY)) < held ? "discarded" : "failed"; } catch { return "unknown"; }
+}
+
+/**
+ * What became of a backup the person discarded (LEV-310): moved to the system trash, removed (no trash there), not
+ * there as it was read (`gone`), refused because a kept draft is of it (`draftKept`), or refused because the entry
+ * could not be read to tell (`unread`). Nothing is taken away in the last three.
+ */
+export type BackupDiscard = "trashed" | "removed" | "gone" | "draftKept" | "unread";
+
+/**
+ * LEV-310: the backup `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
+ * confirmed), once no pass is applying the kept drafts, through the backups' own chain (`ExitBackupStore.discard`).
+ * Refused while a draft of it is kept: its record is what keeps that draft from being written again (a write that did
+ * not finish, or one that did while the draft stayed), so taking it away could let a load write the draft once more.
+ * The note, the kept drafts and the other files in the folder are not touched.
+ */
+export async function discardExitBackup(app: App, backups: ExitBackupStore, record: BackupRecord): Promise<BackupDiscard> {
+  await passesOver();
+  let drafts: ExitDraft[];
+  try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { return "unread"; }
+  // The entry only loses drafts from here on (no page goes while the rescue runs), so one not kept now stays not kept.
+  const kept = await Promise.all(drafts.map(draft => backupId(draft)));
+  if (kept.includes(record.backup.id)) return "draftKept";
+  return backups.discard(record);
+}
 
 /**
  * Each kept draft in turn. The entry keeps a draft until its write is done, so a page that goes meanwhile (the write
@@ -254,7 +314,7 @@ function backupReason(error: unknown, backups: ExitBackupStore): string {
   const text = t();
   if (!(error instanceof ExitBackupError)) return text.exitBackupNotSaved(error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
   switch (error.failure) {
-    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`, backups.folder);
+    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`, backups.folder, text.cmdRescueDrafts);
     case "unmeasured": return text.exitBackupUnmeasured;
     case "unsaved": return text.exitBackupNotSaved(error.detail || text.rescueUnknownReason);
     case "mismatch": return text.exitBackupMismatch;

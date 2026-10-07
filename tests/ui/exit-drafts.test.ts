@@ -19,7 +19,7 @@ import { HarnessApp } from '../browser-harness/app';
 import { Component, Notice } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
-import { installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
+import { discardExitDraft, installExitDrafts, EXIT_DRAFTS_KEY } from '../../src/ui/exit-drafts';
 import { applyEdits } from '../../src/core/commands';
 import { textFingerprint, type ExitDraft } from '../../src/core/exit-drafts';
 import {
@@ -41,11 +41,12 @@ const renamed = (title: string, from = SOURCE): string => from.replace('  - 子�
 /** The plugin's folder, where the backups go (`exit-backups/`). */
 const PLUGIN = '.config/plugins/mappy';
 const BACKUPS = exitBackupFolder(PLUGIN);
-type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir';
+type Step = 'exists' | 'stat' | 'list' | 'read' | 'write' | 'rename' | 'mkdir' | 'trashSystem' | 'remove';
 
 /**
  * The disk under the plugin's folder, kept across a reload as the vault's files are, through the adapter's part the
- * backups use (`HarnessApp` has no adapter). A row can make a step fail, and nothing on it is ever deleted.
+ * backups use (`HarnessApp` has no adapter). A row can make a step fail, and nothing on it is deleted but a backup the
+ * person discards (LEV-310), moved to `trash`.
  */
 class Disk {
   readonly files = new Map<string, string>();
@@ -77,7 +78,17 @@ class Disk {
       this.files.set(to, text);
     }),
     mkdir: path => this.run('mkdir', path, () => { this.folders.add(path); }),
+    trashSystem: path => this.run('trashSystem', path, () => {
+      const text = this.files.get(path);
+      if (text === undefined) return false;
+      this.files.delete(path);
+      this.trash.set(path, text);
+      return true;
+    }),
+    remove: path => this.run('remove', path, () => { if (!this.files.delete(path)) throw new Error('ENOENT'); }),
   };
+  /** The files moved to the system trash, with what they held. */
+  readonly trash = new Map<string, string>();
   /** The names in the backup folder. */
   names(): string[] { return [...this.files.keys()].filter(path => path.startsWith(`${BACKUPS}/`)).map(path => path.slice(BACKUPS.length + 1)).sort(); }
 }
@@ -1092,11 +1103,12 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     expect(noteOf(app)).toBe(NOTE);
     expect(disk.files).toEqual(files);
     expect(disk.calls).not.toContain('applyOver');
-    expect(Notice.log).toEqual([changed('入らない下書き', t().exitBackupFull('10 MiB', BACKUPS))]);
+    expect(Notice.log).toEqual([changed('入らない下書き', t().exitBackupFull('10 MiB', BACKUPS, t().cmdRescueDrafts))]);
     // Review of e5745d1 (L3): where the folder is, and that the person makes room by deleting files there (nothing is
     // deleted for them).
     expect(Notice.log[0]).toContain(`（${BACKUPS}）`);
-    expect(Notice.log[0]).toContain('救出してから、そのフォルダのファイルを自分で消すと空きます');
+    // LEV-310: by discarding the backups not needed in the rescue command, named there.
+    expect(Notice.log[0]).toContain(`コマンド「${t().cmdRescueDrafts}」で必要な控えを救出してから、要らない控えを破棄すると空きます`);
     expect(Object.keys(window.localStorage).sort()).toEqual(keys);
     expect(window.localStorage.getItem(`mappy-harness-${EXIT_DRAFTS_KEY}`)).toBe(entry);
   }, 30_000);
@@ -1197,4 +1209,64 @@ describe('a backup before each write of a kept draft (LEV-309)', () => {
     expect(keptOf(app)).toEqual([unreadable]);
     expect(Object.keys(window.localStorage).filter(key => key.includes('backup'))).toEqual([]);
   });
+
+  // LEV-310: a discard asked for while a load applies the kept drafts waits for it, so a draft that load had read
+  // already is not said to be discarded while the load writes it.
+  it('discards a draft only once no load is applying the kept drafts, and does not say one written meanwhile was discarded', async () => {
+    const backups = new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6');
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const write = disk.adapter.write;
+    disk.adapter.write = async (path: string, data: string) => { disk.calls.push('write held'); await held; return write(path, data); };
+    const draft = keptDraft('書いている下書き');
+    const app = vaultWith(NOTE, [draft]);
+    const loading = load(app, { backups });
+    await vi.waitFor(() => { expect(disk.calls).toContain('write held'); });
+    let answered = false;
+    const discarding = discardExitDraft(app.asApp<App>(), draft).then(outcome => { answered = true; return outcome; });
+    for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(answered).toBe(false);
+    expect(keptOf(app)).toEqual([draft]);
+    release();
+    await loading;
+    expect(await discarding).toBe('gone');
+    expect(noteOf(app)).toBe(NOTE.replace('子ノード', '書いている下書き'));
+    expect(keptOf(app)).toBeNull();
+  });
+
+  // LEV-310: a full folder stops every write until the person makes room; discarding a backup there in the rescue
+  // command does, and the draft held back is written at the next load (nothing is deleted for them).
+  it('writes a draft held back by a full folder at the next load once the person discards a backup there', async () => {
+    const other = keptDraft('前の下書き') as Exclude<ExitDraft, { refused: string }>;
+    const fill = async (length: number) => backupText(await makeExitBackup({
+      draft: other, path: PATH, before: 'x'.repeat(length), after: 'y', edits: other.edits, mappyVersion: '0.4.6', createdAt: 1,
+    }));
+    const target = EXIT_BACKUP_LIMIT - 100;
+    let length = target - utf8Bytes(await fill(0));
+    length += target - utf8Bytes(await fill(length));
+    const full = `${BACKUPS}/${appliedName(await backupId(other))}`;
+    disk.folders.add(BACKUPS);
+    disk.files.set(full, await fill(length));
+    const draft = keptDraft('入らない下書き');
+    const app = vaultWith(NOTE, [draft]);
+    await load(app);
+    await vi.waitFor(() => { expect(Notice.log).toHaveLength(1); }, { timeout: 20_000 });
+    expect(Notice.log).toEqual([changed('入らない下書き', t().exitBackupFull('10 MiB', BACKUPS, t().cmdRescueDrafts))]);
+    expect(noteOf(app)).toBe(NOTE);
+    Notice.log.length = 0;
+    await rescueExitDrafts(app.asApp<App>(), new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6'));
+    const line = Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item[data-mappy-rescue="applied"]'))
+      .find(row => row.querySelector('.setting-item-description')?.textContent?.includes(t().rescueTitleLine('前の下書き')));
+    line!.querySelector<HTMLButtonElement>('button[data-mappy-rescue-action="discard"]')!.click();
+    Array.from(document.querySelectorAll<HTMLButtonElement>('.modal button')).find(item => item.textContent === t().discardConfirm)!.click();
+    await vi.waitFor(() => { expect(Notice.log).toEqual([t().discardedBackupTrash]); }, { timeout: 20_000 });
+    expect(disk.files.has(full)).toBe(false);
+    expect(disk.trash.has(full)).toBe(true);
+    expect(keptOf(app)).toEqual([draft]);
+    Notice.log.length = 0;
+    await load(app);
+    await vi.waitFor(() => { expect(Notice.log).toEqual([wrote('入らない下書き')]); }, { timeout: 20_000 });
+    expect(noteOf(app)).toBe(NOTE.replace('子ノード', '入らない下書き'));
+    expect(keptOf(app)).toBeNull();
+  }, 60_000);
 });

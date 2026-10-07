@@ -20,7 +20,8 @@ import {
 } from '../../src/ui/exit-draft-recovery';
 import { applyEdits } from '../../src/core/commands';
 import { textFingerprint } from '../../src/core/exit-drafts';
-import { appliedName, backupId, utf8Bytes } from '../../src/core/exit-backup';
+import { appliedName, backupId, backupText, utf8Bytes } from '../../src/core/exit-backup';
+import { discardExitBackup } from '../../src/ui/exit-drafts';
 import { ExitBackupStore, exitBackupFolder, type BackupAdapter, type BackupRecord } from '../../src/obsidian/exit-backup-store';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -101,6 +102,12 @@ class Disk {
   readonly files = new Map<string, string>();
   readonly folders = new Set<string>([PLUGIN]);
   listFails = false;
+  /** Whether the system trash takes a file (`trashSystem` answers false where there is none), or what it throws. */
+  trashWorks = true;
+  trashFails: Error | null = null;
+  /** The files moved to the system trash, with what they held, and the calls that took a file away. */
+  readonly trash = new Map<string, string>();
+  readonly taken: string[] = [];
   private run<T>(body: () => T): Promise<T> {
     try { return Promise.resolve(body()); } catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
   }
@@ -122,6 +129,16 @@ class Disk {
       this.files.set(to, text);
     }),
     mkdir: path => this.run(() => { this.folders.add(path); }),
+    trashSystem: path => this.run(() => {
+      this.taken.push(`trashSystem ${path}`);
+      if (this.trashFails) throw this.trashFails;
+      const text = this.files.get(path);
+      if (!this.trashWorks || text === undefined) return false;
+      this.files.delete(path);
+      this.trash.set(path, text);
+      return true;
+    }),
+    remove: path => this.run(() => { this.taken.push(`remove ${path}`); if (!this.files.delete(path)) throw new Error('ENOENT'); }),
   };
 }
 const storeOn = (disk = new Disk(), now = () => AT) => new ExitBackupStore(disk.adapter, BACKUPS, '0.4.6', undefined, now);
@@ -156,6 +173,9 @@ const button = (label: string): HTMLButtonElement => {
   if (!found) throw new Error(`no button ${label}: ${buttons().map(item => item.textContent).join(', ')}`);
   return found;
 };
+/** The list's buttons that do `action` (`pick` or `discard`, LEV-310), a line's in its order. */
+const actions = (action: 'pick' | 'discard'): HTMLButtonElement[] =>
+  Array.from(document.querySelectorAll<HTMLButtonElement>(`.modal button[data-mappy-rescue-action="${action}"]`));
 const settle = async (): Promise<void> => { for (let round = 0; round < 5; round += 1) await new Promise(resolve => setTimeout(resolve, 0)); };
 
 describe('the rescued note (LEV-240)', () => {
@@ -441,7 +461,7 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
     const { app, vault, stored } = appWith([withoutSource(), draft]);
     const before = stored();
     await rescueExitDrafts(app, storeOn());
-    buttons()[1]!.click();
+    actions('pick')[1]!.click();
     const path = `${RECOVERY_FOLDER}/${rescuedFileBase(draft)}.md`;
     const shown = Array.from(document.querySelectorAll('.modal p'), item => item.textContent);
     expect(shown).toEqual([t().rescueConfirmPath(path), t().rescueConfirmSource(String(SOURCE.length)), t().rescueConfirmUnchanged]);
@@ -540,21 +560,24 @@ describe('the command 保存できなかった下書きを救出 (LEV-240)', () 
  * file in the backup folder that does not read as one, or the folder itself when it cannot be read, is shown by its
  * path alone, with nothing to save. The backups are not changed by the rescue.
  */
+/** The map note the backups' rows write into (LEV-309, LEV-310). */
+const MAP = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '- 別のノード', ''].join('\n');
+/** A draft renaming 「子ノード」 in `MAP` to `title`, as `pagehide` keeps it. */
+const planned = (title: string, withSource = true): Exclude<ExitDraft, { refused: string }> => {
+  const edits = [{ from: MAP.indexOf('子ノード'), to: MAP.indexOf('子ノード') + 4, text: title }];
+  return { path: NOTE, title, at: AT, before: textFingerprint(MAP), after: textFingerprint(applyEdits(MAP, edits)), edits, ...(withSource ? { source: MAP } : {}) };
+};
+/** A backup made by the store on `disk` of writing `draft` into the note holding `before`, marked applied when `finish`. */
+async function backUp(disk: Disk, draft: Exclude<ExitDraft, { refused: string }>, before: string, finish: boolean, at = AT): Promise<BackupRecord> {
+  const store = storeOn(disk, () => at);
+  await store.prepare(draft, draft.path, before, applyEdits(before, draft.edits), draft.edits);
+  if (finish) await store.markApplied(await backupId(draft));
+  const survey = await store.survey();
+  const entry = survey.records.get(await backupId(draft))!;
+  return (finish ? entry.applied : entry.prepared)!;
+}
+
 describe('the backups the writes of kept drafts left (LEV-309)', () => {
-  const MAP = ['---', 'mappy: true', '---', '## 下書き', '', '- 親', '  - 子ノード', '- 別のノード', ''].join('\n');
-  const planned = (title: string, withSource = true): Exclude<ExitDraft, { refused: string }> => {
-    const edits = [{ from: MAP.indexOf('子ノード'), to: MAP.indexOf('子ノード') + 4, text: title }];
-    return { path: NOTE, title, at: AT, before: textFingerprint(MAP), after: textFingerprint(applyEdits(MAP, edits)), edits, ...(withSource ? { source: MAP } : {}) };
-  };
-  /** A backup made by the store on `disk` of writing `draft` into the note holding `before`, marked applied when `finish`. */
-  async function backUp(disk: Disk, draft: Exclude<ExitDraft, { refused: string }>, before: string, finish: boolean, at = AT): Promise<BackupRecord> {
-    const store = storeOn(disk, () => at);
-    await store.prepare(draft, draft.path, before, applyEdits(before, draft.edits), draft.edits);
-    if (finish) await store.markApplied(await backupId(draft));
-    const survey = await store.survey();
-    const entry = survey.records.get(await backupId(draft))!;
-    return (finish ? entry.applied : entry.prepared)!;
-  }
   const rows = () => Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item'), row => ({
     kind: row.dataset.mappyRescue, name: row.querySelector('.setting-item-name')?.textContent,
     desc: row.querySelector('.setting-item-description')?.textContent, pick: row.querySelector('button') !== null,
@@ -639,5 +662,275 @@ describe('the backups the writes of kept drafts left (LEV-309)', () => {
     button(t().rescuePick).click();
     expect(button(t().rescueSave).disabled).toBe(true);
     expect(disk.files).toEqual(files);
+  });
+});
+
+/**
+ * LEV-310: 破棄 on a line of the list takes that one kept draft or backup away, after a confirmation saying what goes;
+ * キャンセル changes nothing. Nothing is discarded otherwise. The rows are what is discarded (a kept draft, a finished or
+ * unfinished backup) × the answer (cancel, confirm) × what changed since the list was read (nothing, the draft written,
+ * the backup renamed, changed or removed, storage or the trash refusing) × what must stay (the other drafts, an item
+ * that does not read, the other files in the backup folder, the note).
+ */
+const lineOf = (kind: string, title: string): HTMLElement => {
+  const line = Array.from(document.querySelectorAll<HTMLElement>(`.modal .setting-item[data-mappy-rescue="${kind}"]`))
+    .find(row => row.querySelector('.setting-item-description')?.textContent?.includes(t().rescueTitleLine(title)));
+  if (!line) throw new Error(`no ${kind} line for ${title}`);
+  return line;
+};
+const press = (line: HTMLElement, action: 'pick' | 'discard'): void => {
+  line.querySelector<HTMLButtonElement>(`button[data-mappy-rescue-action="${action}"]`)!.click();
+};
+const shownTexts = (): (string | null)[] => Array.from(document.querySelectorAll('.modal p'), item => item.textContent);
+
+describe('discarding a kept draft from the list (LEV-310)', () => {
+  const other = (): ExitDraft => ({ ...withSource(), title: '残す下書き', at: AT + 1000 });
+  const unreadable = { path: 'Fixtures/読めない.md', title: 1 };
+  /** The entry: a draft of another note, an item that does not read, the draft to discard, another of the same note. */
+  const entry = (): unknown[] => [{ ...withoutSource(), path: 'Fixtures/別のノート.md' }, unreadable, withSource(), other()];
+
+  it('offers 破棄 beside 選ぶ on each draft and backup line, and nothing on a line that does not read', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true);
+    disk.files.set(`${BACKUPS}/${'a'.repeat(64)}.tmp-000000000000.json`, '{');
+    await rescueExitDrafts(appWith([withSource(), refused()]).app, storeOn(disk));
+    const offered = Array.from(document.querySelectorAll<HTMLElement>('.modal .setting-item'), row => [row.dataset.mappyRescue,
+      Array.from(row.querySelectorAll('button'), item => `${item.dataset.mappyRescueAction}:${item.textContent}`)]);
+    const both = [`pick:${t().rescuePick}`, `discard:${t().rescueDiscard}`];
+    expect(offered).toEqual([['draft', both], ['draft', both], ['applied', both], ['unchecked', []]]);
+    expect(document.querySelector('.modal p')?.textContent).toBe(t().rescueLead);
+  });
+
+  it('says what goes before anything is discarded, and changes nothing on キャンセル', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true);
+    const files = new Map(disk.files);
+    const { app, vault, stored } = appWith(entry() as ExitDraft[]);
+    const before = stored();
+    await rescueExitDrafts(app, storeOn(disk));
+    press(lineOf('draft', '入力中の題名'), 'discard');
+    expect(document.querySelector('.modal-title')?.textContent).toBe(t().discardDraftTitle);
+    expect(shownTexts()).toEqual([t().discardDraftWhat('入力中の題名', NOTE), t().discardDraftLost, t().discardUnchanged]);
+    expect(button(t().discardConfirm).classList.contains('mod-warning')).toBe(true);
+    expect(stored()).toBe(before);
+    button(t().rescueCancel).click();
+    await settle();
+    expect(document.querySelector('.modal')).toBeNull();
+    expect(stored()).toBe(before);
+    expect(vault.calls).toEqual([]);
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('takes out only that draft on 破棄する: the other drafts, an item that does not read, the backups and the note stay', async () => {
+    const disk = new Disk();
+    await backUp(disk, planned('書いた題名'), MAP, true);
+    const files = new Map(disk.files);
+    const { app, vault, stored } = appWith(entry() as ExitDraft[]);
+    await rescueExitDrafts(app, storeOn(disk));
+    press(lineOf('draft', '入力中の題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    expect(document.querySelector('.modal')).toBeNull();
+    const [another, , , kept] = entry();
+    expect(JSON.parse(stored()!)).toEqual([another, unreadable, kept]);
+    // The entry written once, and nothing else: no note read or written, no backup touched.
+    expect(vault.calls).toEqual([`saveLocalStorage ${EXIT_DRAFTS_KEY}`]);
+    expect(vault.contents.get(NOTE)).toBe('元のノートの本文\n');
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+    expect(Notice.log).toEqual([t().discardedDraft('入力中の題名')]);
+  });
+
+  it('leaves no entry when the last kept draft is discarded', async () => {
+    const { app, stored } = appWith([refused()]);
+    await rescueExitDrafts(app, storeOn());
+    press(lineOf('draft', '拒否された題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    expect(stored()).toBe('null');
+    expect(Notice.log).toEqual([t().discardedDraft('拒否された題名')]);
+  });
+
+  it('discards nothing and says so when the draft is no longer kept (written while the confirmation was open)', async () => {
+    const { app, vault, stored } = appWith([withSource(), other()]);
+    await rescueExitDrafts(app, storeOn());
+    press(lineOf('draft', '入力中の題名'), 'discard');
+    (app as unknown as { saveLocalStorage(key: string, data: unknown): void }).saveLocalStorage(EXIT_DRAFTS_KEY, [other()]);
+    const before = stored();
+    vault.calls.length = 0;
+    button(t().discardConfirm).click();
+    await settle();
+    expect(stored()).toBe(before);
+    expect(vault.calls).toEqual([]);
+    expect(Notice.log).toEqual([t().discardDraftGone]);
+  });
+
+  it('says it could not discard when storage refuses the write, and the draft stays', async () => {
+    const { app, stored } = appWith([withSource(), other()]);
+    const before = stored();
+    (app as unknown as { saveLocalStorage(): void }).saveLocalStorage = () => { throw new Error('QuotaExceededError'); };
+    await rescueExitDrafts(app, storeOn());
+    press(lineOf('draft', '入力中の題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    expect(stored()).toBe(before);
+    expect(Notice.log).toEqual([t().discardDraftFailed]);
+  });
+
+  it('does not say the draft was discarded when the entry cannot be read back', async () => {
+    const { app } = appWith([withSource(), other()]);
+    const reader = app as unknown as { loadLocalStorage(key: string): unknown };
+    const load = reader.loadLocalStorage.bind(reader);
+    let reads = 0;
+    // The list's read and the discard's own, then the read back fails.
+    reader.loadLocalStorage = (key: string): unknown => { reads += 1; if (reads > 2) throw new Error('SecurityError'); return load(key); };
+    await rescueExitDrafts(app, storeOn());
+    press(lineOf('draft', '入力中の題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    expect(Notice.log).toEqual([t().discardDraftUnconfirmed]);
+  });
+});
+
+describe('discarding a backup from the list (LEV-310)', () => {
+  it('says what goes before anything is discarded, and changes nothing on キャンセル', async () => {
+    const disk = new Disk();
+    const before = `${MAP}- 書く前にあった行\n`;
+    const record = await backUp(disk, planned('書いた題名'), before, true);
+    const files = new Map(disk.files);
+    const { app, vault, stored } = appWith([withSource()]);
+    const entry = stored();
+    await rescueExitDrafts(app, storeOn(disk));
+    press(lineOf('applied', '書いた題名'), 'discard');
+    expect(document.querySelector('.modal-title')?.textContent).toBe(t().discardBackupTitle);
+    expect(shownTexts()).toEqual([t().discardBackupWhat('書いた題名', NOTE, localTime(record.backup.createdAt)),
+      t().discardBackupLost(String(before.length)), t().discardUnchanged]);
+    expect(button(t().discardConfirm).disabled).toBe(false);
+    expect(button(t().discardConfirm).classList.contains('mod-warning')).toBe(true);
+    button(t().rescueCancel).click();
+    await settle();
+    expect(document.querySelector('.modal')).toBeNull();
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+    expect(stored()).toBe(entry);
+    expect(vault.calls).toEqual([]);
+    expect(Notice.log).toEqual([]);
+  });
+
+  it('moves only that backup to the system trash on 破棄する: the other files, the drafts and the note stay', async () => {
+    const disk = new Disk();
+    const done = await backUp(disk, planned('書いた題名'), MAP, true);
+    const pending = await backUp(disk, planned('途中の題名'), MAP, false, AT + 60_000);
+    disk.files.set(`${BACKUPS}/memo.txt`, 'x');
+    const files = new Map(disk.files);
+    const text = files.get(done.path)!;
+    const { app, vault, stored } = appWith([withSource()]);
+    const entry = stored();
+    await rescueExitDrafts(app, storeOn(disk));
+    press(lineOf('applied', '書いた題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    files.delete(done.path);
+    expect(disk.files).toEqual(files);
+    expect(disk.files.has(pending.path)).toBe(true);
+    expect([...disk.trash]).toEqual([[done.path, text]]);
+    expect(disk.taken).toEqual([`trashSystem ${done.path}`]);
+    expect(stored()).toBe(entry);
+    expect(vault.calls).toEqual([]);
+    expect(Notice.log).toEqual([t().discardedBackupTrash]);
+  });
+
+  it('deletes it where there is no system trash, and says so', async () => {
+    const disk = new Disk();
+    disk.trashWorks = false;
+    const record = await backUp(disk, planned('書いた題名'), MAP, true);
+    await rescueExitDrafts(appWith(null).app, storeOn(disk));
+    press(lineOf('applied', '書いた題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    expect(disk.files.has(record.path)).toBe(false);
+    expect(disk.trash.size).toBe(0);
+    expect(disk.taken).toEqual([`trashSystem ${record.path}`, `remove ${record.path}`]);
+    expect(Notice.log).toEqual([t().discardedBackupRemoved]);
+  });
+
+  // The record is what keeps its kept draft from being written again (a write that did not finish): taking it away
+  // could let the next load write the draft once more, so a discard never does.
+  it.each([['with its note text', true], ['kept again without it', false]])('offers no discard of a backup whose draft is kept (%s), and refuses one asked for', async (_shape, withText) => {
+    const disk = new Disk();
+    const draft = planned('途中の題名');
+    const record = await backUp(disk, draft, MAP, false);
+    const files = new Map(disk.files);
+    const { app, stored } = appWith([withText ? draft : planned('途中の題名', false)]);
+    const entry = stored();
+    await rescueExitDrafts(app, storeOn(disk));
+    press(lineOf('prepared', '途中の題名'), 'discard');
+    expect(shownTexts()).toEqual([t().discardBackupWhat('途中の題名', NOTE, localTime(record.backup.createdAt)),
+      t().discardBackupDraftKept, t().discardUnchanged]);
+    expect(button(t().discardConfirm).disabled).toBe(true);
+    expect(await discardExitBackup(app, storeOn(disk), record)).toBe('draftKept');
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+    expect(stored()).toBe(entry);
+  });
+
+  it.each(['renamed to the applied name', 'changed', 'removed'])('discards nothing and says so when the backup was %s while the confirmation was open', async change => {
+    const disk = new Disk();
+    const draft = planned('途中の題名');
+    const record = await backUp(disk, draft, MAP, false);
+    await rescueExitDrafts(appWith(null).app, storeOn(disk));
+    press(lineOf('prepared', '途中の題名'), 'discard');
+    if (change === 'renamed to the applied name') await storeOn(disk).markApplied(await backupId(draft));
+    else if (change === 'changed') disk.files.set(record.path, backupText({ ...record.backup, createdAt: AT + 1 }));
+    else disk.files.delete(record.path);
+    const files = new Map(disk.files);
+    button(t().discardConfirm).click();
+    await settle();
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+    expect(Notice.log).toEqual([t().discardBackupGone]);
+  });
+
+  it('says why when the backup could not be taken away, and leaves it', async () => {
+    const disk = new Disk();
+    const record = await backUp(disk, planned('書いた題名'), MAP, true);
+    const files = new Map(disk.files);
+    disk.trashFails = new Error('EPERM: operation not permitted');
+    await rescueExitDrafts(appWith(null).app, storeOn(disk));
+    press(lineOf('applied', '書いた題名'), 'discard');
+    button(t().discardConfirm).click();
+    await settle();
+    expect(disk.files).toEqual(files);
+    expect(disk.files.has(record.path)).toBe(true);
+    expect(Notice.log).toEqual([t().discardBackupFailed('EPERM: operation not permitted')]);
+  });
+
+  it('refuses when the kept drafts cannot be read, and takes nothing away', async () => {
+    const disk = new Disk();
+    const record = await backUp(disk, planned('書いた題名'), MAP, true);
+    const files = new Map(disk.files);
+    const { app } = appWith(null);
+    (app as unknown as { loadLocalStorage(): unknown }).loadLocalStorage = () => { throw new Error('SecurityError'); };
+    expect(await discardExitBackup(app, storeOn(disk), record)).toBe('unread');
+    expect(disk.files).toEqual(files);
+    expect(disk.taken).toEqual([]);
+  });
+
+  it('says it in English too', async () => {
+    setLanguage('en');
+    try {
+      const disk = new Disk();
+      await backUp(disk, planned('書いた題名'), MAP, true);
+      await rescueExitDrafts(appWith([withSource()]).app, storeOn(disk));
+      const labels = Array.from(document.querySelectorAll('.modal button'), item => item.textContent);
+      expect(labels).toEqual(['Choose', 'Discard', 'Choose', 'Discard']);
+      press(lineOf('draft', '入力中の題名'), 'discard');
+      expect(document.querySelector('.modal-title')?.textContent).toBe('Discard draft');
+      expect(Array.from(document.querySelectorAll('.modal button'), item => item.textContent)).toEqual(['Discard', 'Cancel']);
+      // The draft's own title and note path are Japanese; nothing else is.
+      for (const shown of shownTexts()) expect(shown?.replaceAll('入力中の題名', '').replaceAll(NOTE, '')).not.toMatch(/[ぁ-んァ-ン]/u);
+    } finally { setLanguage('ja'); }
   });
 });
