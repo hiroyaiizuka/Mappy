@@ -7,9 +7,9 @@
  * Rows: the setting 新規マップの既定レイアウト (all four) × the language (the test Obsidian's Japanese, then English
  * switched as E63 does, then back). Each row sets the layout and a folder of its own through the plugin's settings, runs
  * the command, reads the file's name, the note and the root the map draws, then selects the root with a real click and
- * presses Tab, Enter on the untouched draft, the same on the new node, and compares the whole note. The command is the
- * only way a new map is made: the ribbon opens the active note, and the file menu turns an existing note into a map
- * (src/main.ts); neither writes a note.
+ * presses Tab, Enter on the untouched draft, the same on the new node, and compares the whole note. The ribbon makes a
+ * new map through the same route as the command when the active note is not a map (LEV-300; E82 covers that route),
+ * and the file menu turns an existing note into a map without writing a new one (src/main.ts).
  *
  * The names are written out here, not read from src/i18n: the case must fail if the table changes them by accident.
  * The settings as the run found them are put back at the end, and the folder is removed.

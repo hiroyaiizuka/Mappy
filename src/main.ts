@@ -10,18 +10,21 @@ import type { AiServices } from "./ui/ai/services";
 import { setLanguage, t, textLanguage } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
+import { ExitBackupStore, exitBackupFolder } from "./obsidian/exit-backup-store";
 import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
 import { canSaveAttachments } from "./obsidian/image-export";
-import { createMindmapFile } from "./obsidian/map-files";
+import { createMindmapFile, newMapSourcePath } from "./obsidian/map-files";
 import { MapSearchModal } from "./obsidian/map-search";
+import { runRibbon } from "./obsidian/ribbon";
 import { DEFAULT_SETTINGS, normalizeSettings, showDefaultLayout, type MappySettings } from "./obsidian/settings";
 import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
 import { ViewRouter } from "./obsidian/view-routing";
 import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
+import { rescueExitDrafts } from "./ui/exit-draft-recovery";
 import { installExitDrafts } from "./ui/exit-drafts";
 import { HOVER_SOURCE } from "./ui/link-preview";
 import { MapEmbeds } from "./ui/map-embed";
@@ -105,8 +108,11 @@ export default class MappyPlugin extends Plugin {
       view.setAi(this.aiServices);
       return view;
     });
-    // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230).
-    installExitDrafts(this, this.app, store, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
+    // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230); each
+    // write of one leaves a backup of the note first, in the plugin's own folder (LEV-309).
+    const pluginFolder = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    const backups = new ExitBackupStore(this.app.vault.adapter, exitBackupFolder(pluginFolder), this.manifest.version);
+    installExitDrafts(this, this.app, store, backups, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
       .map(leaf => leaf.view).filter((view): view is MindmapView => view instanceof MindmapView));
     // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is
     // unregistered first and the release below puts the plain embeds back without a new map taking over.
@@ -115,17 +121,7 @@ export default class MappyPlugin extends Plugin {
     this.registerMarkdownPostProcessor(embeds.processor);
     this.addCommand({
       id: "create-mindmap", name: t().cmdCreateMap,
-      callback: () => {
-        this.run(async () => {
-          // "Same folder as current file" counts from the map's own note when a map is active (`activeFile()` asks
-          // the map first; `getActiveFile()` finds it too now that the map is a FileView — LEV-89 — except for a map
-          // in a sidebar, which is not a navigation view).
-          const sourcePath = this.activeFile()?.path ?? "";
-          const { defaultLayout: layout, newMapFolder: folder } = this.settings;
-          const file = await createMindmapFile(this.app, sourcePath, { layout, folder });
-          await this.open(file, false, layout);
-        }, t().createFailed);
-      },
+      callback: () => { this.createMap(); },
     });
     this.addCommand({
       id: "convert-note-to-mindmap", name: t().cmdConvertNote,
@@ -217,12 +213,19 @@ export default class MappyPlugin extends Plugin {
         return true;
       },
     });
+    // A draft kept at a reload or quit that could not be written stays kept; this saves it, or a backup a write of one
+    // left (LEV-309), to a separate file (LEV-240).
+    this.addCommand({
+      id: "rescue-exit-drafts", name: t().cmdRescueDrafts,
+      callback: () => { void rescueExitDrafts(this.app, backups); },
+    });
     this.addRibbonIcon("git-fork", t().cmdOpen, () => {
-      const file = this.activeFile();
-      const layout = file ? readMapLayout(this.app, file) : null;
-      if (file && layout) this.run(() => this.open(file, false, layout), t().openFailed);
-      else if (file && isMappyCandidate(this.app, file)) new Notice(t().convertFirst(t().cmdConvertNote));
-      else new Notice(t().openMarkdownNote);
+      runRibbon(this.app, this.activeFile(), {
+        open: (file, layout) => { this.run(() => this.open(file, false, layout), t().openFailed); },
+        create: () => { this.createMap(); },
+        notReady: () => { new Notice(t().noteNotIndexed); },
+        convertFirst: () => { new Notice(t().convertFirst(t().cmdConvertNote)); },
+      });
     });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       if (!(file instanceof TFile) || !isMappyCandidate(this.app, file)) return;
@@ -237,6 +240,19 @@ export default class MappyPlugin extends Plugin {
       menu.addItem(item => item.setTitle(t().menuRemove).setIcon("file-text")
         .onClick(() => { this.run(() => this.disableMap(file), t().removeFailed); }));
     }));
+  }
+
+  /**
+   * The command's and the ribbon's route (LEV-300): an untitled map in the settings' folder, with their layout.
+   * "Same folder as current file" counts from the active note (`activeFile()` asks the map first, so a map in a
+   * sidebar counts too — LEV-89), else from the active file that is not a note (`newMapSourcePath`).
+   */
+  private createMap(): void {
+    this.run(async () => {
+      const { defaultLayout: layout, newMapFolder: folder } = this.settings;
+      const file = await createMindmapFile(this.app, newMapSourcePath(this.app, this.activeFile()), { layout, folder });
+      await this.open(file, false, layout);
+    }, t().createFailed);
   }
 
   private activeFile(): TFile | null {

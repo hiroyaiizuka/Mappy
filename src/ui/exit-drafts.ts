@@ -1,7 +1,12 @@
 import { Notice, type App, type Component } from "obsidian";
-import { EXIT_DRAFT_TTL, readExitDrafts, rebaseExitEdits, textFingerprint, withoutSources, type ExitDraft } from "../core/exit-drafts";
+import { applyEdits, type TextEdit } from "../core/commands";
+import { backupId, sameBackupGeneration, sha256Hex } from "../core/exit-backup";
+import {
+  EXIT_DRAFT_TTL, draftKey, readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint, withoutSources, type ExitDraft,
+} from "../core/exit-drafts";
 import type { DocumentStore } from "../obsidian/document-store";
-import { t } from "../i18n";
+import { ExitBackupError, type BackupRecord, type BackupSurvey, type ExitBackupStore } from "../obsidian/exit-backup-store";
+import { messagesFor, t } from "../i18n";
 import type { MindmapView } from "./mindmap-view";
 
 /** Where the kept drafts wait for the next load: the vault's own `localStorage` entry (`App.saveLocalStorage`). */
@@ -15,16 +20,28 @@ export const EXIT_DRAFTS_KEY = "mappy-exit-drafts";
  * the edit its save would make and kept in the vault's `localStorage`, which writes at once. When Mappy loads again
  * and the layout is ready, each is applied through the store, only to the note it was planned on; a note that has the
  * edit already is left as it is, one changed elsewhere takes a plain rename where the change stays clear of it
- * (`rebaseExitEdits`), and any other is left, with a Notice naming the draft; so is one kept longer than a day.
+ * (`rebaseExitEdits`), and any other is left, with a Notice naming the draft; so is one kept longer than a day. A draft
+ * not written stays kept as it is, and is tried and reported again at every load until it is written or the note has
+ * it (LEV-240: a write cut off as the page went left a note empty, and the draft holding its text was then dropped);
+ * the command 保存できなかった下書きを救出 saves what it holds to a separate file (`src/ui/exit-draft-recovery.ts`).
+ * Every write of a kept draft leaves a backup of the whole note first, read back before the note is written
+ * (LEV-309, `src/obsidian/exit-backup-store.ts`); what the backups say at the next load decides which drafts may be
+ * written at all, and nothing that is unclear is written, taken out of the entry or deleted. A draft or a backup goes
+ * only when the person discards it in the rescue command, confirmed (LEV-310: `discardExitDraft`, `discardExitBackup`).
  *
  * Not `workspace.on("quit")`'s tasks, though Obsidian waits for them: waiting cancels the quit, and on macOS only the
  * window closes after them, leaving Obsidian running with no window (1.14.2's `main.js`: `window-all-closed` does not
  * quit on darwin; seen on the real app).
  */
-export function installExitDrafts(owner: Component, app: App, store: DocumentStore, views: () => readonly MindmapView[]): void {
+export function installExitDrafts(
+  owner: Component, app: App, store: DocumentStore, backups: ExitBackupStore, views: () => readonly MindmapView[],
+): () => Promise<void> {
   let unloaded = false;
   owner.register(() => { unloaded = true; });
-  const apply = (): void => { if (!unloaded) void applyExitDrafts(app, store, () => unloaded); };
+  // The drafts this load has reported already: `pageshow` and the layout's readiness can both apply in one load, and a
+  // draft not written is reported once per load, not once per pass (review 1 of LEV-240).
+  const reported = new Set<string>();
+  const apply = (): void => { if (!unloaded) void applyExitDrafts(app, store, backups, () => unloaded, reported); };
   owner.registerDomEvent(window, "pagehide", (event: PageTransitionEvent) => {
     // A page kept for coming back to (a WebView's back／forward cache) keeps its drafts open.
     if (event.persisted) return;
@@ -42,50 +59,303 @@ export function installExitDrafts(owner: Component, app: App, store: DocumentSto
   // A page that was not unloaded after all (a WebView that sends `pagehide` and keeps the page) applies them at once.
   owner.registerDomEvent(window, "pageshow", apply);
   app.workspace.onLayoutReady(apply);
+  // When the pass running now (if any) is over: for the tests, which cannot see the backups' hashing settle otherwise.
+  return () => applying ?? Promise.resolve();
 }
 
-let applying = false;
+/** The pass running now: one at a time, and one asked for meanwhile is that one. */
+let applying: Promise<void> | null = null;
+
+/** How long a discard waits for a pass applying the kept drafts before it gives up (ms, LEV-310). */
+export const DISCARD_WAIT = 10_000;
+
+/** Whether a pass is applying the kept drafts now: a discard then waits, and the rescue says so first (review 3). */
+export const exitDraftsApplying = (): boolean => applying !== null;
+
+/**
+ * Whether no pass is applying the kept drafts, one started meanwhile included, within `wait` ms (LEV-310): false when
+ * one is still running then (a write held up), so a discard says so rather than wait without a word (review 2).
+ */
+async function passesOver(wait: number): Promise<boolean> {
+  const until = Date.now() + wait;
+  while (applying) {
+    const left = until - Date.now();
+    if (left <= 0) return false;
+    let timer = 0;
+    const late = new Promise<"late">(resolve => { timer = window.setTimeout(() => { resolve("late"); }, left); });
+    const settled = await Promise.race([applying.then(() => "over" as const, () => "over" as const), late]);
+    window.clearTimeout(timer);
+    if (settled === "late") return false;
+  }
+  return true;
+}
+
+/** How many times the entry holds `draft` (`sameDraft`); throws when the entry cannot be read. */
+export function keptCount(app: Pick<App, "loadLocalStorage">, draft: ExitDraft): number {
+  return readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).filter(item => sameDraft(item, draft)).length;
+}
+
+/**
+ * What became of a kept draft the person discarded (LEV-310): taken out of the entry (`discarded`), not in it
+ * (`gone`: written or discarded meanwhile; nothing done), not taken out (`failed`: the entry could not be read, or
+ * still holds it after the write; `busy`: a pass was still applying the drafts), or not known (`unknown`: the entry
+ * could not be read back).
+ */
+export type DraftDiscard = "discarded" | "gone" | "failed" | "busy" | "unknown";
+
+/**
+ * LEV-310: `draft` taken out of the entry at the person's explicit request (the rescue list's 破棄, confirmed), and
+ * nothing else: the very item pressed goes (its note text as it is too), or else the first item of the same draft
+ * (`saveWithout`, as a load's write takes one out), the other items stay as they are and where they are, those that
+ * do not read as drafts included, and no note is read or written. Done once no pass is applying the kept drafts, so a
+ * pass that read the draft already does not write it after it was discarded. Said discarded only when the entry read
+ * back holds one fewer of it.
+ */
+export async function discardExitDraft(app: App, draft: ExitDraft, wait = DISCARD_WAIT): Promise<DraftDiscard> {
+  if (!await passesOver(wait)) return "busy";
+  let before: number;
+  try { before = keptCount(app, draft); } catch { return "failed"; }
+  if (before === 0) return "gone";
+  // That very item out, or else the first of the same draft, as a load takes out a draft it wrote; storage refusing it
+  // is told by the read back.
+  saveWithout(app, draft);
+  try { return keptCount(app, draft) < before ? "discarded" : "failed"; } catch { return "unknown"; }
+}
+
+/**
+ * The ids of the kept drafts' backups (`backupId`, the SHA-256 of each `draftKey`): a backup of one of them holds that
+ * draft back and is not discarded (LEV-310). Null when the entry or a hash cannot be had: no backup is discarded then.
+ */
+export async function keptBackupIds(app: App): Promise<Set<string> | null> {
+  try { return new Set(await Promise.all(readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)).map(draft => backupId(draft)))); } catch { return null; }
+}
+
+/**
+ * What became of a backup the person discarded (LEV-310): moved to the system trash, moved to the vault's own trash
+ * (`.trash/`, where the system's cannot take it), out of the folder though no trash said it took it
+ * (`movedUnconfirmed`), still in the folder after it was moved (`stillThere`), not there as
+ * it was read (`gone`), refused because a kept draft is of it (`draftKept`), because the kept drafts could not be told
+ * (`unread`), or because a pass was still applying them (`busy`). Nothing is taken away in the last four; nothing is
+ * ever deleted outright.
+ */
+export type BackupDiscard = "trashed" | "localTrashed" | "movedUnconfirmed" | "stillThere" | "gone" | "draftKept" | "unread" | "busy";
+
+/**
+ * LEV-310: the backup `record` was read from, discarded at the person's explicit request (the rescue list's 破棄,
+ * confirmed), once no pass is applying the kept drafts, through the backups' own chain (`ExitBackupStore.discard`).
+ * Refused while a draft of it is kept: its record is what keeps that draft from being written again (a write that did
+ * not finish, or one that did while the draft stayed), so taking it away could let a load write the draft once more.
+ * The note, the kept drafts and the other files in the folder are not touched.
+ */
+export async function discardExitBackup(app: App, backups: ExitBackupStore, record: BackupRecord, wait = DISCARD_WAIT): Promise<BackupDiscard> {
+  if (!await passesOver(wait)) return "busy";
+  // The entry only loses drafts from here on (no page goes while the rescue runs), so one not kept now stays not kept.
+  const kept = await keptBackupIds(app);
+  if (!kept) return "unread";
+  if (kept.has(record.backup.id)) return "draftKept";
+  return backups.discard(record);
+}
 
 /**
  * Each kept draft in turn. The entry keeps a draft until its write is done, so a page that goes meanwhile (the write
  * cut off) leaves it for the next load, which finds the edit in the note already or applies it; none is written twice
- * (`after`). A Mappy unloaded meanwhile stops: the next load takes the rest.
+ * (`after`). Only a draft written, or one the note has already, leaves the entry: any other stays as it was kept, for
+ * the next load and the rescue command (LEV-240). A Mappy unloaded meanwhile stops: the next load takes the rest.
+ * The backup folder is read first (LEV-309): anything there that is not a backup of this format (a temporary file left
+ * by a write cut off, one that does not read, one of another kind) stops every write of this load, and a draft that
+ * has a backup already (a write that did not finish, or one that did while the draft stayed) is not written again.
  */
-async function applyExitDrafts(app: App, store: DocumentStore, unloaded: () => boolean): Promise<void> {
-  if (applying) return;
-  applying = true;
-  try {
-    // Storage refused (access, quota): what is there stays for a later load.
-    const keep = (rest: readonly ExitDraft[]): void => {
-      try { app.saveLocalStorage(EXIT_DRAFTS_KEY, rest.length > 0 ? rest : null); } catch { /* Left as it is. */ }
-    };
-    let drafts: ExitDraft[] = [];
-    try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { return; }
-    if (drafts.length === 0) keep([]);
-    for (let index = 0; index < drafts.length && !unloaded(); index += 1) {
-      const draft = drafts[index]!;
-      try { await applyExitDraft(app, store, draft); }
-      catch (error) {
-        // Until dismissed: it holds the only copy of what was typed, and shows while the workspace is still loading.
-        new Notice(t().exitDraftNotSaved(draft.title, draft.path, error instanceof Error ? error.message : ""), 0);
-      }
-      keep(drafts.slice(index + 1));
-    }
-  } finally { applying = false; }
+function applyExitDrafts(
+  app: App, store: DocumentStore, backups: ExitBackupStore, unloaded: () => boolean, reported: Set<string>,
+): Promise<void> {
+  if (applying) return applying;
+  const pass = applyEach(app, store, backups, unloaded, reported).finally(() => { applying = null; });
+  applying = pass;
+  return pass;
 }
 
-async function applyExitDraft(app: App, store: DocumentStore, draft: ExitDraft): Promise<void> {
+async function applyEach(
+  app: App, store: DocumentStore, backups: ExitBackupStore, unloaded: () => boolean, reported: Set<string>,
+): Promise<void> {
+  let drafts: ExitDraft[] = [];
+  try { drafts = readExitDrafts(app.loadLocalStorage(EXIT_DRAFTS_KEY)); } catch { return; }
+  // Nothing readable: what is there (not of the drafts' shape) stays as it is (LEV-309; it was taken out before).
+  if (drafts.length === 0) return;
+  // What the backup folder holds; null when it could not be read, which stops every write of this load.
+  let survey: BackupSurvey | null = null;
+  try { survey = await backups.survey(); } catch { survey = null; }
+  // The entry as last written in this pass (undefined: not yet; null: storage refused it). One not written stays as
+  // it is, so the entry is written back once, to tell whether it holds the drafts the Notices say are kept.
+  let written: ExitDraft[] | null | undefined;
+  const known: KnownWrites = new Map();
+  for (let index = 0; index < drafts.length && !unloaded(); index += 1) {
+    const draft = drafts[index]!;
+    let failure: unknown = null;
+    let outcome: Outcome | null = null;
+    try { outcome = await applyExitDraft(app, store, backups, survey, draft, known); } catch (error) { failure = error ?? new Error(""); }
+    if (outcome === "had" || outcome === "written") {
+      written = saveWithout(app, draft);
+      // Once, as it is written: the backup is there for the rescue command.
+      if (outcome === "written") new Notice(t().exitWrittenWithBackup(draft.title, draft.path, t().cmdRescueDrafts));
+      continue;
+    }
+    const key = draftKey(draft);
+    if (outcome === "unmarked" || outcome === "unconfirmed") {
+      // Written, or most likely written, but its backup reads as unfinished: the draft stays, and is not written again.
+      if (!reported.has(key)) {
+        reported.add(key);
+        const said = outcome === "unmarked" ? t().exitWrittenNotMarked : t().exitWrittenUnconfirmed;
+        new Notice(said(draft.title, draft.path, t().cmdRescueDrafts), 0);
+      }
+      continue;
+    }
+    if (written === undefined) written = saveWithout(app, null);
+    // As the entry holds it: a `pagehide` meanwhile may have kept it again without the note's text.
+    const kept = written?.find(item => sameDraft(item, draft)) ?? null;
+    if (reported.has(key)) continue;
+    reported.add(key);
+    // Until dismissed: it holds the only copy of what was typed, and shows while the workspace is still loading.
+    new Notice(exitDraftNotice(kept ?? draft, failure instanceof Error ? failure.message : "", kept !== null), 0);
+  }
+}
+
+/**
+ * The entry without `done` (none: as it is), read again first so a draft a `pagehide` added meanwhile (a page kept
+ * after all) stays: the item that is `done` itself, its note text included, or else the first of the same draft;
+ * what was written, or null when storage refused it (access, quota) and the entry is as it was.
+ * Items that do not read as drafts stay in it as they are (LEV-309: nothing unreadable is dropped here), and an entry
+ * that is not a list is not written at all.
+ */
+function saveWithout(app: App, done: ExitDraft | null): ExitDraft[] | null {
+  try {
+    const raw: unknown = app.loadLocalStorage(EXIT_DRAFTS_KEY);
+    if (!Array.isArray(raw)) return readExitDrafts(raw);
+    const items = (raw as unknown[]).slice();
+    const key = done ? draftKey(done) : null;
+    // That very item first (its note text as it is too), then another of the same draft (one kept again without it).
+    const exact = done ? JSON.stringify(readExitDrafts([done])) : null;
+    const at = key === null ? -1 : [
+      items.findIndex(item => JSON.stringify(readExitDrafts([item])) === exact),
+      items.findIndex(item => readExitDrafts([item]).some(draft => draftKey(draft) === key)),
+    ].find(index => index !== -1) ?? -1;
+    if (at !== -1) items.splice(at, 1);
+    app.saveLocalStorage(EXIT_DRAFTS_KEY, items.length > 0 ? items : null);
+    return readExitDrafts(items);
+  } catch { return null; }
+}
+
+/**
+ * Whether two kept drafts are the same one: every field but the note's text, which a `pagehide` short of storage
+ * takes off (`withoutSources`) while the draft stays.
+ */
+export function sameDraft(a: ExitDraft, b: ExitDraft): boolean {
+  return draftKey(a) === draftKey(b);
+}
+
+/** What the Notice for a draft not written says is kept: its text and the note's, its edit alone, or only the reason. */
+function exitDraftNotice(draft: ExitDraft, reason: string, kept: boolean): string {
+  const text = t();
+  const command = text.cmdRescueDrafts;
+  const tail = !kept ? text.exitKeepUnconfirmed : "refused" in draft ? text.exitKeptRefused(command)
+    : draft.source === undefined ? text.exitKeptEdits(command) : text.exitKeptSource(command);
+  return joinSentences(text.exitDraftNotWritten(draft.title, draft.path), reason, tail);
+}
+
+/**
+ * Sentences of a Notice in a row, by the table's language: in the Japanese one none between after a full-width stop or
+ * closing bracket, a space otherwise; in the English one always a space, whatever ends the sentence before (a reason
+ * from elsewhere can end in 「。」). An empty one (a reason without a message) adds nothing.
+ */
+export function joinSentences(...sentences: string[]): string {
+  const japanese = t() === messagesFor("ja");
+  return sentences.filter(sentence => sentence !== "").reduce((joined, sentence) => joined === "" ? sentence
+    : japanese && /[。！？」）]$/u.test(joined) ? `${joined}${sentence}` : `${joined} ${sentence}`, "");
+}
+
+/**
+ * The notes this pass wrote kept drafts into from the text they were planned on, by the note and the text each write
+ * left (`path` and its fingerprint, a line apart): that text and the edits written, in order. Only this load's: a
+ * draft whose note another draft was written into at an earlier load (the rest left when Mappy was unloaded midway)
+ * is moved by the diff (`rebaseExitEdits`), as an unread change.
+ */
+type KnownWrites = Map<string, { before: string; steps: TextEdit[][] }>;
+
+/**
+ * What became of a kept draft: in the note already, written (and its backup finished), written with its backup not
+ * marked finished, or found as its write leaves the note with a backup an earlier load did not mark (`unconfirmed`).
+ */
+type Outcome = "had" | "written" | "unmarked" | "unconfirmed";
+
+/**
+ * `draft` written into its note; `known`, what this pass wrote before it, added to when this write is one of them;
+ * throws, with the reason, when it is not written. Before anything is read of the note: the backup folder must hold
+ * nothing unclear (`survey`), and a backup of this draft already there (of its very generation or not) keeps it
+ * unwritten. Every write is backed up first (S1, S2) and the backup marked finished after (S4): a backup not made keeps
+ * the note unwritten, and one not marked keeps the draft in the entry.
+ */
+async function applyExitDraft(
+  app: App, store: DocumentStore, backups: ExitBackupStore, survey: BackupSurvey | null, draft: ExitDraft, known: KnownWrites,
+): Promise<Outcome> {
+  const text = t();
+  // Never written, whatever the folder holds: its own reason is what it says.
   if ("refused" in draft) throw new Error(draft.refused);
+  if (!survey) throw new Error(text.exitBackupUnlisted(backups.folder));
+  if (survey.unchecked.length > 0) throw new Error(text.exitBackupUnverified(backups.folder));
+  const id = await backupId(draft);
+  const record = survey.records.get(id);
+  if (record) {
+    for (const kept of [record.prepared, record.applied]) {
+      if (kept && !await sameBackupGeneration(kept.backup, draft)) throw new Error(text.exitBackupOtherGeneration);
+    }
+    if (record.applied) throw new Error(text.exitBackupAlreadyApplied);
+    // Prepared alone: an earlier load stopped after the backup was checked (S2) and before it was marked (S4). A note
+    // as that write leaves it (the draft's `after`, or the text the backup says the write makes) was most likely
+    // written (S3): said so, not that it was not, and still neither written again nor taken out.
+    const file = app.vault.getFileByPath(draft.path);
+    const now = file ? await store.read(file) : null;
+    if (now !== null && (textFingerprint(now) === draft.after || await sha256Hex(now) === record.prepared?.backup.note.afterSha256)) return "unconfirmed";
+    throw new Error(text.exitBackupPending);
+  }
   const file = app.vault.getFileByPath(draft.path);
-  if (!file) throw new Error(t().exitNoteGone);
+  if (!file) throw new Error(text.exitNoteGone);
   const current = await store.read(file);
   const found = textFingerprint(current);
-  if (found === draft.after) return;
-  if (Date.now() - draft.at > EXIT_DRAFT_TTL) throw new Error(t().exitDraftExpired);
-  // The note the draft was planned on, or one changed elsewhere since (a change the map had not read, another kept
-  // draft of the same note applied first) whose change stays clear of a plain rename.
-  const edits = found === draft.before ? draft.edits : draft.source === undefined ? null : rebaseExitEdits(draft.source, current, draft.edits);
-  if (!edits) throw new Error(t().exitNoteChanged);
-  // Refused by the store if the note moved on since the read above.
-  await store.applyOver(file, current, edits);
+  // Written already (at an earlier load, the page gone before the entry let it go): its edits are in the note as they
+  // were planned, for another draft of the note to move over (review 3 of LEV-309).
+  if (found === draft.after) { known.set(`${draft.path}\n${found}`, { before: draft.before, steps: [draft.edits] }); return "had"; }
+  if (Date.now() - draft.at > EXIT_DRAFT_TTL) throw new Error(text.exitDraftExpired);
+  // The note the draft was planned on; one that other kept drafts planned on the same text left this pass (two maps
+  // of the note), whose edits are known (LEV-309); or one changed elsewhere since (a change the map had not read) whose
+  // change stays clear of a plain rename and does not look cut off.
+  const over = known.get(`${draft.path}\n${found}`);
+  const steps = found === draft.before ? [] : over?.before === draft.before ? over.steps : null;
+  const edits = found === draft.before ? draft.edits : steps ? rebaseOverDrafts(draft.edits, steps)
+    : draft.source === undefined ? null : rebaseExitEdits(draft.source, current, draft.edits);
+  if (!edits) throw new Error(text.exitNoteChanged);
+  // S1, S2: the whole note as it is now, backed up and read back, before it is written.
+  try { await backups.prepare(draft, draft.path, current, applyEdits(current, edits), edits); } catch (error) { throw new Error(backupReason(error, backups)); }
+  // S3: refused by the store if the note moved on since the read above; the prepared backup then stays (the next
+  // load does not write this draft again).
+  let write;
+  try { write = await store.applyOver(file, current, edits); } catch (error) {
+    throw new Error(joinSentences(error instanceof Error ? error.message : "", text.exitBackupLeftPrepared));
+  }
+  if (steps && write.before === current) known.set(`${draft.path}\n${textFingerprint(write.after)}`, { before: draft.before, steps: [...steps, write.edits] });
+  // S4: the backup marked finished; until it is, the draft stays in the entry.
+  try { await backups.markApplied(id); } catch { return "unmarked"; }
+  return "written";
+}
+
+/** Why a backup was not made, in the Notice's words. */
+function backupReason(error: unknown, backups: ExitBackupStore): string {
+  const text = t();
+  if (!(error instanceof ExitBackupError)) return text.exitBackupNotSaved(error instanceof Error && error.message ? error.message : text.rescueUnknownReason);
+  switch (error.failure) {
+    case "full": return text.exitBackupFull(`${backups.limit / (1024 * 1024)} MiB`, backups.folder, text.cmdRescueDrafts);
+    case "unmeasured": return text.exitBackupUnmeasured;
+    case "unsaved": return text.exitBackupNotSaved(error.detail || text.rescueUnknownReason);
+    case "mismatch": return text.exitBackupMismatch;
+    case "taken": return text.exitBackupTaken;
+    case "unverified": return text.exitBackupUnlisted(backups.folder);
+  }
 }

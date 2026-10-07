@@ -36,6 +36,9 @@
  *    page's error collector was installed again would leave it). Notices of others at launch are not counted. On
  *    0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit passes there too (the window's
  *    blur after `unload` saves it), so row 9 uses a held one. The quit comes last.
+ * Since LEV-240 a draft the next load cannot write stays kept: 8b also checks that its draft is still in the entry,
+ * then takes it out so 9 starts from none. "Used up" and "no Notice" look at this note's drafts only (another case's,
+ * or another note's, may be kept); this note's drafts left by an earlier run are taken out before row 8 and at the end.
  *
  * Usage: npm run harness:e2e:close-draft -- [--reload] [--json <out.json>] [--keep] [--exits]
  */
@@ -60,8 +63,24 @@ const renamed = (title, from = SOURCE) => from.replace('  - 子ノード\n', `  
 const REFRESHED = 'Markdown が更新されました。もう一度確定すると新しい内容に適用し、取り消すと閉じます。';
 const NOT_SAVED = '編集中の内容を保存できませんでした';
 const EXIT_NOT_SAVED = '再読込・終了のときに';
-/** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`: empty once the plugin has applied what the page before kept. */
+/**
+ * What only the Notice of a draft not written says (src/i18n/ja.ts's `exitDraftNotWritten`). Since LEV-309 the Notice
+ * of a draft that was written begins the same way (`exitWrittenWithBackup`), and does not say the draft was not saved.
+ */
+const EXIT_NOT_WRITTEN = '書き込めませんでした';
+/** src/ui/exit-drafts.ts's `EXIT_DRAFTS_KEY`: without this note's drafts once the plugin has applied what the page before kept. */
 const EXIT_KEY = 'mappy-exit-drafts';
+/** Script: the kept drafts of this note (a draft not written stays kept since LEV-240; other notes' may be there). */
+const KEPT_HERE = `(Array.isArray(app.loadLocalStorage(${JSON.stringify(EXIT_KEY)})) ? app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) : [])
+  .filter(item => item?.path === ${JSON.stringify(NOTE)})`;
+/** Takes this note's kept drafts out of the entry, leaving the others; resolves to how many went. */
+const dropKeptHere = () => evaluate(`const all = app.loadLocalStorage(${JSON.stringify(EXIT_KEY)});
+  if (!Array.isArray(all)) return 0;
+  const rest = all.filter(item => item?.path !== ${JSON.stringify(NOTE)});
+  app.saveLocalStorage(${JSON.stringify(EXIT_KEY)}, rest.length > 0 ? rest : null);
+  return all.length - rest.length;`);
+/** A Notice saying a draft of this note was not written at the reload or quit. */
+const notSavedHere = item => item.includes(EXIT_NOT_SAVED) && item.includes(EXIT_NOT_WRITTEN) && item.includes(NOTE);
 
 /** Row 9 launches Obsidian again after its quit, with the profile the harness names (docs/harness.md 実機検証). */
 const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
@@ -351,8 +370,9 @@ try {
       await wait(1500);
       return evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
         notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
-        errors: [...(window.__mappyE2EErrors ?? [])], kept: app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) };`);
+        errors: [...(window.__mappyE2EErrors ?? [])], kept: ${KEPT_HERE} };`);
     };
+    await step('exits-setup', async () => ({ dropped: await dropKeptHere() }));
     await step('8-reload', async () => {
       await reset();
       await open();
@@ -361,8 +381,8 @@ try {
       await detachAll();
       check(after.errors.length === 0, `8-reload: page errors after the reload: ${JSON.stringify(after.errors).slice(0, 1500)}`);
       check(after.source === renamed('再読込の前の下書き'), `8-reload: the reload lost the draft: ${JSON.stringify(after.source)}`);
-      check(!after.notices.some(item => item.includes(EXIT_NOT_SAVED)), `8-reload: a Notice said the draft was not saved: ${JSON.stringify(after.notices)}`);
-      check(after.kept === null, `8-reload: the kept drafts were not used up after the reload: ${JSON.stringify(after.kept)}`);
+      check(!after.notices.some(notSavedHere), `8-reload: a Notice said the draft was not saved: ${JSON.stringify(after.notices)}`);
+      check(after.kept.length === 0, `8-reload: the kept drafts were not used up after the reload: ${JSON.stringify(after.kept)}`);
       return { outcome: after.source === renamed('再読込の前の下書き') ? 'saved' : after.source === SOURCE ? 'dropped' : 'other', ...after };
     });
     await step('8b-reload-held-own-node', async () => {
@@ -380,9 +400,13 @@ try {
       await detachAll();
       check(after.errors.length === 0, `8b-reload-held-own-node: page errors after the reload: ${JSON.stringify(after.errors).slice(0, 1500)}`);
       check(after.source === external, `8b-reload-held-own-node: the reload wrote over the outside change: ${JSON.stringify(after.source)}`);
-      check(after.notices.some(item => item.includes(EXIT_NOT_SAVED) && item.includes('再読込で保存できない下書き')),
+      check(after.notices.some(item => item.includes(EXIT_NOT_SAVED) && item.includes(EXIT_NOT_WRITTEN) && item.includes('再読込で保存できない下書き')),
         `8b-reload-held-own-node: no Notice after the reload named the draft that was not saved: ${JSON.stringify(after.notices)}`);
-      return { held, ...after };
+      // LEV-240: the draft not written stays kept (for the rescue command); taken out here so row 9 starts from none.
+      check(after.kept.length === 1 && after.kept[0].title === '再読込で保存できない下書き',
+        `8b-reload-held-own-node: the draft not written is not kept after the reload: ${JSON.stringify(after.kept).slice(0, 600)}`);
+      const dropped = await dropKeptHere();
+      return { held, dropped, ...after };
     });
     // A held draft: its blur does not save it (LEV-202), so only the draft kept at `pagehide` can. A plain draft passes on
     // 0.3.9 too, saved by the window's blur after `unload` (artifacts/lev-230), and would not tell the two apart.
@@ -422,10 +446,10 @@ try {
       await wait(2000);
       const after = await evaluate(`return { source: await app.vault.read(app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)})),
         notices: Array.from(document.querySelectorAll('.notice'), item => item.textContent.trim()),
-        errors: [...(window.__mappyE2EErrors ?? [])], kept: app.loadLocalStorage(${JSON.stringify(EXIT_KEY)}) };`);
+        errors: [...(window.__mappyE2EErrors ?? [])], kept: ${KEPT_HERE} };`);
       check(after.source === renamed('終了の前の下書き', other), `9-quit: the next launch did not apply the held draft over the change: ${JSON.stringify(after.source)}`);
-      check(!after.notices.some(item => item.includes(EXIT_NOT_SAVED)), `9-quit: a Notice after the launch said the draft was not saved: ${JSON.stringify(after.notices)}`);
-      check(after.kept === null, `9-quit: the kept drafts were not used up after the launch: ${JSON.stringify(after.kept)}`);
+      check(!after.notices.some(notSavedHere), `9-quit: a Notice after the launch said the draft was not saved: ${JSON.stringify(after.notices)}`);
+      check(after.kept.length === 0, `9-quit: the kept drafts were not used up after the launch: ${JSON.stringify(after.kept)}`);
       check(after.errors.length === 0, `9-quit: page errors after the launch: ${JSON.stringify(after.errors).slice(0, 1500)}`);
       return { held, onDisk, outcome: after.source === renamed('終了の前の下書き', other) ? 'saved' : after.source === other ? 'dropped' : 'other', ...after };
     });
@@ -439,6 +463,8 @@ try {
     if (record.steps.setup && !record.steps.setup.error && !flag('--keep')) {
       await wait(300);
       await step('clean', makeDeleteNote(evaluate, NOTE));
+      // A draft of this note a failed row left kept (LEV-240) would show its Notice at every later load.
+      if (flag('--exits')) await step('clean-kept', async () => ({ dropped: await dropKeptHere() }));
     }
     cdp.close();
   }

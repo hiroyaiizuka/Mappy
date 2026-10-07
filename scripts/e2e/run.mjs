@@ -7,7 +7,8 @@
  * `npm run harness:e2e:<name>`) run here as its own child process, not imported into this one: a case
  * that hangs or crashes mid-CDP-call then only takes down its own process and connection, not the run's
  * (or the next case's). This file only sequences them and points `--json`/`--shot` at per-case paths so
- * a full run does not have every case overwrite the same file.
+ * a full run does not have every case overwrite the same file. A case with `args` runs its file with
+ * them first (one script behind two named cases, as its `npm run` script does).
  *
  * Usage: npm run harness:e2e -- [--case <name>] [--reload] [--json <dir>] [--shot <dir>] [--keep]
  *   --case   run only the named case (see CASES below) instead of all of them; no `summary.json` then,
@@ -59,12 +60,15 @@ export const CASES = [
   { name: 'reread-own-writes', file: 'reread-own-writes.mjs', description: 'E58 変わらない原文の再読込の最中に記録された書き込み（このマップのボタン・⌥↑・⌘Z、別のマップのボタン・移動・⌘Z）× Markdown エディタの有無 × ウォッチャーが遅れて届く場合で、空題名・同名の折りたたみが保たれること', shot: false },
   { name: 'english-ui', file: 'english-ui.mjs', description: 'E63 英語の Obsidian での表示（コマンド・ボタン・ポップオーバー・右クリック・設定・拒否の行）と Markdown に書く仮の名前、日本語へ戻したあと', shot: true },
   { name: 'main-topic', file: 'main-topic.mjs', description: 'E69 新しいノードの仮の名前が追加先の深さで決まる（ルートの直下はメイントピック、その下はサブトピック）× リスト・見出し × タイムライン・通常マップ × 日本語・英語', shot: true },
+  { name: 'file-root', file: 'file-root.mjs', description: 'E83 見出しの無いノートのファイル名の根: ダブルクリック・F2 で名前を変えると `## <名前>` が根になり、Tab で `## <ファイル名>` と右のメイントピックが 1 回で書かれる。⌘Z 1 回で戻る・Enter は書かない・変換中の Enter は確定しない × 4 つの形', shot: true },
   { name: 'central-topic', file: 'central-topic.mjs', description: 'E71 新しいマップのルートが中心トピック（ファイル名は無題のマインドマップのまま）、そこで Tab → メイントピック → サブトピック × 既定レイアウト 4 種 × 日本語・英語', shot: true },
   { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語', shot: true },
   { name: 'view-padding', file: 'view-padding.mjs', description: 'E70 マップの容器にペインの余白が付かない（!important なし）× 本体・別ウィンドウ・埋め込み × 明色・暗色', shot: true },
   { name: 'reread-conflict-line', file: 'reread-conflict-line.mjs', description: 'E76 再読込がノートを読んでいる最中に確定して衝突で拒否された下書き（本文モーダル・インライン編集）のエラー行が、拒否のあとのマップの再読込で「更新されました」に変わり、次の確定で適用される', shot: false },
   { name: 'draft-own-write', file: 'draft-own-write.mjs', description: 'E77 OS のクリップボードから下書きに貼る（画像・文字・画像と文字）、エラー行の無い下書きは右ボタンで閉じる、保持した下書きの上の右クリックの「元に戻す」は下書きを拒否させず、拒否される「子を追加」は何も書かない', shot: false },
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
+  { name: 'exit-draft-recovery', file: 'exit-draft-recovery.mjs', description: 'E84 再読込のときに書き込めなかった下書き（人工の故障でノートを 0 バイトにする）が残り、知らせが出て、救出コマンドで Mappy Recovery/ に別ファイルとして保存される。元のノートは 0 バイトのまま、下書きも残る。一覧の「破棄」は確かめてからその下書き・控えだけを消し、キャンセルでは何も変わらない（LEV-310）', shot: false },
+  { name: 'exit-draft-cut', file: 'exit-draft-recovery.mjs', args: ['--cut'], description: 'E84 の --cut（LEV-309）: 人工の故障でノートを前半だけにしても、題名の下書きを書かずに原文ごと残し、知らせが出て、救出できる。元のノートは前半のまま。一覧の「破棄」は確かめてからその下書きだけを消す（LEV-310）', shot: false },
 ];
 
 const args = process.argv.slice(2);
@@ -97,7 +101,7 @@ if (jsonDir) await mkdir(jsonDir, { recursive: true });
 if (shotDir) await mkdir(shotDir, { recursive: true });
 
 const run = testCase => new Promise(resolve => {
-  const caseArgs = [...passthrough];
+  const caseArgs = [...(testCase.args ?? []), ...passthrough];
   if (jsonDir) caseArgs.push('--json', join(jsonDir, `${testCase.name}.json`));
   if (shotDir && testCase.shot) caseArgs.push('--shot', join(shotDir, `${testCase.name}.png`));
   console.log(`\n=== ${testCase.name}: ${testCase.description} ===`);

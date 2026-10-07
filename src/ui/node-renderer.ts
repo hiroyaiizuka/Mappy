@@ -303,6 +303,24 @@ export class NodeRenderer extends Component {
    * stands in for — and nothing else: its images stay on screen, so one pasted during the edit appears where the
    * user pasted it instead of when the draft is confirmed.
    */
+  /**
+   * Draw the node `to` with the element drawn for `from`, the one dropped (LEV-301: the file-name root, whose draft's save
+   * wrote the heading that is the root now; the inline editor stays in the element it was opened in).
+   */
+  rekey(from: string, to: string): void {
+    const entry = this.entries.get(from);
+    if (!entry || from === to) return;
+    const replaced = this.entries.get(to);
+    if (replaced) {
+      this.removeChild(replaced.component);
+      replaced.element.remove();
+      this.rendering.delete(to);
+    }
+    this.entries.delete(from);
+    entry.element.dataset.nodeId = to;
+    this.entries.set(to, entry);
+  }
+
   editing(id: string, editing: boolean): void {
     const entry = this.entries.get(id);
     if (!entry || entry.editing === editing) return;

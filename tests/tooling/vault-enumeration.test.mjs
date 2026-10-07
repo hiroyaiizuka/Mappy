@@ -54,6 +54,9 @@ const ALLOWED = {
   // The AI input's attachment (LEV-271, docs/architecture.md §11.2): the candidates are the notes and PDFs, read only
   // when the license is active and the user presses 添付. README's disclosure of the AI (#41〜#48) comes with LEV-272.
   "src/ui/ai/ai-controller.ts": ["getFiles"],
+  // The backups kept drafts leave before they are written (LEV-309): the plugin's own `exit-backups/` folder is listed
+  // to add up its size and to find temporary, broken or unknown files in it. It does not list the vault's notes.
+  "src/obsidian/exit-backup-store.ts": ["adapter.list"],
 };
 
 async function sources(dir) {

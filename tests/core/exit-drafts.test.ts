@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyEdits } from '../../src/core/commands';
-import { readExitDrafts, rebaseExitEdits, textFingerprint } from '../../src/core/exit-drafts';
+import { readExitDrafts, rebaseExitEdits, rebaseOverDrafts, textFingerprint } from '../../src/core/exit-drafts';
 
 // LEV-230: a draft kept as the page went is applied at the next load to the note as it is then.
 describe('rebaseExitEdits', () => {
@@ -51,6 +51,136 @@ describe('rebaseExitEdits', () => {
     // Unambiguous text around it still moves.
     const current = '- 前\n' + twins;
     expect(applyEdits(current, rebaseExitEdits(twins, current, [{ from: 6, to: 7, text: 'B' }])!)).toBe('- 前\n- A\n- B\n');
+  });
+
+  // LEV-309: a write cut off as the page went can leave the first part of what it was writing, not 0 bytes. The change
+  // is then the lost end, clear of a rename before it, and the rename was written over what was left; the draft, which
+  // held the note's text, went with it. In each fixture a line stands between the edit and the cut (cut just after the
+  // edited line, the change touches the edit, which was refused already).
+  describe('a note cut off', () => {
+    // No two lines end alike, so nothing but a line break is a common end.
+    const long = '- 親\n  - 子ノード\n- 一\n- 二\n- 別の項目\n';
+    const last = long.indexOf('- 別の項目');
+    // The last line's title again higher up, at the same depth and at another.
+    const same = '- 親\n  - 子ノード\n- 一\n- メモ\n- 別\n- メモ\n';
+    const deeper = '- 親\n  - 子ノード\n- 別\n  - メモ\n- メモ\n';
+
+    it.each([
+      ['at the end of a line', long.slice(0, long.indexOf('- 二'))],
+      ['inside its last line', long.slice(0, last + 3)],
+    ])('refuses the first part of the note itself, cut %s', (_shape, current) => {
+      expect(rebaseExitEdits(long, current, rename)).toBeNull();
+    });
+
+    // Review 1 of LEV-309: what is left can end with a whole line the same as the last one; the change placed as early
+    // as it goes then stops short of the last line.
+    it('refuses the first part of the note itself ending with a line the same as the last one', () => {
+      expect(rebaseExitEdits(same, same.slice(0, same.indexOf('- 別')), rename)).toBeNull();
+    });
+
+    // Another write was changing the note after the edit when the page went: what is left is not the first part of the
+    // note the draft was planned on, but its end is gone all the same.
+    const putIn = long.replace('- 二\n', '- 足した\n- 二\n');
+    const renamedLine = long.replace('- 一\n', '- 一つ\n');
+    const renamedDeeper = deeper.replace('- 別\n', '- 別2\n');
+    it.each([
+      ['with a line put in (more is left than the note had)', long, putIn.slice(0, -2)],
+      ['with a line renamed, at the end of a line', long, renamedLine.slice(0, renamedLine.indexOf('- 別の項目'))],
+      // Review 1 of LEV-309: the text left ends like the last line (a same-titled node at another depth), not with it.
+      ['with a line renamed, just after a same-titled node at another depth', deeper, renamedDeeper.slice(0, renamedDeeper.lastIndexOf('- メモ'))],
+    ])('refuses what is left of a write %s', (_shape, source, current) => {
+      expect(source.startsWith(current)).toBe(false);
+      expect(rebaseExitEdits(source, current, rename)).toBeNull();
+    });
+
+    it('refuses a note without a final line break cut inside its last line by a write that changed it', () => {
+      const bare = long.slice(0, -1);
+      expect(rebaseExitEdits(bare, bare.replace('別の項目', '別の名'), rename)).toBeNull();
+    });
+  });
+
+  // Passes without LEV-309 too: the guards leave LEV-230's move over a change of the last line alone, when it keeps its
+  // line break and the note's length.
+  it('still moves over a change of the last line that keeps its line break and does not shorten the note', () => {
+    const last = before.replace('- 別のノード\n', '- 別のノードです\n');
+    expect(applyEdits(last, rebaseExitEdits(before, last, rename)!)).toBe(last.replace('子ノード', '新しい名前'));
+  });
+
+  // The owner's decision of 2026-10-06 (LEV-309, round 4): a note shorter than the one the draft was planned on is not
+  // written into, whatever made it shorter. A cut can end like the note did (the last node moved up, a line above it
+  // changed): the person's own deletion, or a shorter title, is stopped with it (told and kept, as E05).
+  it('refuses a note shorter than the one the draft was planned on, a change of the person included', () => {
+    expect(rebaseExitEdits(before, before.replace('- 別のノード\n', '- 別\n'), rename)).toBeNull();
+    const longer = before.replace('- 別のノード\n', '- 一\n- 真ん中\n- 別のノード\n');
+    expect(rebaseExitEdits(longer, longer.replace('- 真ん中\n', ''), rename)).toBeNull();
+    expect(rebaseExitEdits(before, before.slice(0, -1), rename)).toBeNull();
+    expect(rebaseExitEdits(`${before}\n`, before, rename)).toBeNull();
+  });
+
+  it('refuses a cut that ends like the note did: the last node moved up, a line above it changed', () => {
+    const moving = '- 親\n  - 子ノード\n- 一\n- 二\n- 末\n';
+    // The write moving 「- 末」 above 「- 二」 stopped after it: what is left ends with the last line, and is shorter.
+    const moved = moving.replace('- 二\n- 末\n', '- 末\n- 二\n');
+    expect(rebaseExitEdits(moving, moved.slice(0, moved.indexOf('- 二')), rename)).toBeNull();
+    const same = '- 親\n  - 子ノード\n- 一\n- メモ\n- 別\n- メモ\n';
+    expect(rebaseExitEdits(same, '- 親\n  - 子ノード\n- 一つ\n- メモ\n', rename)).toBeNull();
+  });
+
+  // Review 1 of LEV-309: blank text taken from the end loses nothing; with the length kept, it still moves.
+  it('still moves over a change that replaces only blank text at the very end', () => {
+    const spaced = `${before.slice(0, -1)}  `;
+    const current = `${before.slice(0, -1)}xx`;
+    expect(applyEdits(current, rebaseExitEdits(spaced, current, rename)!)).toBe(current.replace('子ノード', '新しい名前'));
+  });
+
+  // Passes without LEV-309 too: text only added at the very end leaves all of the note there, and still moves.
+  it('still moves over text added at the very end of a note without a final line break', () => {
+    const bare = before.slice(0, -1);
+    const added = `${bare}\n- 足した`;
+    expect(applyEdits(added, rebaseExitEdits(bare, added, rename)!)).toBe(added.replace('子ノード', '新しい名前'));
+  });
+
+  // What the guard cannot tell from a cut, refused the same way (told and kept, as E05): the person's change of the last
+  // line of a note without a final line break, to its very end; and taking the last node out.
+  it('refuses a change of the person of the same shape as a cut', () => {
+    const bare = before.slice(0, -1);
+    expect(rebaseExitEdits(bare, bare.replace('別のノード', '別の名前'), rename)).toBeNull();
+    const three = `${before}- 三\n`;
+    expect(rebaseExitEdits(three, before, rename)).toBeNull();
+  });
+});
+
+// LEV-309, review 1: two maps of a note, each with a draft. The first written leaves a note whose change the second
+// knows exactly (the first's edits), where a diff would guess, and saw the last line renamed to the very end as a cut.
+describe('rebaseOverDrafts', () => {
+  const bare = '- 親\n  - 子ノード\n- 別のノード';
+  const rename = [{ from: bare.indexOf('子ノード'), to: bare.indexOf('子ノード') + 4, text: '新しい名前' }];
+  const lastLine = [{ from: bare.indexOf('別のノード'), to: bare.length, text: '別の名前' }];
+  const parent = [{ from: bare.indexOf('親'), to: bare.indexOf('親') + 1, text: '上' }];
+
+  it('moves a rename over the edits of another draft of the note', () => {
+    const first = applyEdits(bare, lastLine);
+    expect(rebaseExitEdits(bare, first, rename)).toBeNull();
+    expect(applyEdits(first, rebaseOverDrafts(rename, [lastLine])!)).toBe('- 親\n  - 新しい名前\n- 別の名前');
+    const other = applyEdits(bare, rename);
+    expect(applyEdits(other, rebaseOverDrafts(lastLine, [rename])!)).toBe('- 親\n  - 新しい名前\n- 別の名前');
+  });
+
+  // Review 2: with a third draft the note matched neither earlier draft's `after`, and the diff refused it again.
+  it('moves over the edits of several drafts in order, each in the text the one before left', () => {
+    const first = applyEdits(bare, lastLine);
+    const second = rebaseOverDrafts(rename, [lastLine])!;
+    const both = applyEdits(first, second);
+    expect(applyEdits(both, rebaseOverDrafts(parent, [lastLine, second])!)).toBe('- 上\n  - 新しい名前\n- 別の名前');
+  });
+
+  // Review 2: `rebaseEdits` moves an edit over one that only touches it; `rebaseExitEdits` refuses that.
+  it('refuses a plan of more edits, and one over edits that reach or touch it', () => {
+    expect(rebaseOverDrafts([...lastLine, { from: 0, to: 0, text: '---\nmappy: true\n---\n' }], [rename])).toBeNull();
+    const { from, to } = rename[0]!;
+    expect(rebaseOverDrafts(rename, [[{ from, to, text: '外' }]])).toBeNull();
+    expect(rebaseOverDrafts(rename, [[{ from: to, to, text: 'X' }]])).toBeNull();
+    expect(rebaseOverDrafts(rename, [[{ from: from - 1, to: from, text: '' }]])).toBeNull();
   });
 });
 
