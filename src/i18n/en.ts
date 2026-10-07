@@ -233,7 +233,7 @@ export const en = {
   rescueConfirmBackup: (length: string) => `Contents: the whole note just before the write (${length} UTF-16 units), the draft's original text if it was kept, the title and the change written`,
   rescueSavedBackup: (path: string) => `Saved to ${path}. The original note and the backup weren't changed.`,
   rescueUnknownReason: "The reason is unknown.",
-  // Discarding a kept draft or a backup from the list (LEV-310; the wording is provisional, the owner's to decide).
+  // Discarding a kept draft or a backup from the list (LEV-310; the wording is the owner's decision of 2026-10-07).
   rescueDiscard: "Discard",
   discardDraftTitle: "Discard draft",
   discardDraftWhat: (title: string, note: string) => `Discard the draft of "${title}" in ${note}, which was being edited when Obsidian reloaded or quit.`,

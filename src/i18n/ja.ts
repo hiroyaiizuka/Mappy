@@ -206,7 +206,7 @@ export const ja: Messages = {
   rescueConfirmBackup: (length: string) => `入れる内容: 書き込む直前のノートの全文（${length} 字、UTF-16 単位）・退避していた原文（あれば）・入力中の題名・書き込んだ変更`,
   rescueSavedBackup: (path: string) => `${path} に保存しました。元のノートと控えは変更していません。`,
   rescueUnknownReason: "理由は分かりません。",
-  // Discarding a kept draft or a backup from the list (LEV-310; the wording is provisional, the owner's to decide).
+  // Discarding a kept draft or a backup from the list (LEV-310; the wording is the owner's decision of 2026-10-07).
   rescueDiscard: "破棄",
   discardDraftTitle: "下書きを破棄",
   discardDraftWhat: (title: string, note: string) => `再読込・終了のときに ${note} で編集していた「${title}」の下書きを破棄します。`,
