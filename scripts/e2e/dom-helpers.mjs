@@ -6,6 +6,7 @@
  * ~60 lines of identical script string every case repeated, not the per-case connection.
  */
 import { installedVersion, wait } from './cdp.mjs';
+import { until } from './case-runner.mjs';
 
 /**
  * Read out of the view under test: its nodes, its inline editor, every message on screen, and its source. `root` (script)
@@ -148,6 +149,39 @@ export function makePress(cdp, evaluate) {
     }
     await wait(250);
     return { x: box.x, y: box.y };
+  };
+}
+
+/**
+ * The map's AI card (案 A, LEV-271) for the AI cases (ai-fake-engine, ai-free-state `--detect`): what it shows, its dotted
+ * draft, its buttons, and the input opened on a node. `button` and `last` are `makePress` scripts; a case passes its own
+ * `select` and `press` when it has them.
+ */
+export function makeAiCard(cdp, evaluate, { select = makeSelect(cdp, evaluate), press = makePress(cdp, evaluate) } = {}) {
+  /** The card's phase (`input`, `running`, `draft`, `failed`) and text, or null when none is shown. */
+  const card = () => evaluate(`${VIEW}
+    const card = el.querySelector('.mappy-ai-card');
+    return card && !card.hidden ? { phase: card.dataset.phase, text: card.textContent } : null;`);
+  return {
+    card,
+    /** The labels of the dotted draft nodes. */
+    draft: () => evaluate(`${VIEW} return Array.from(el.querySelectorAll('.mappy-ai-draft'), item => item.textContent);`),
+    /** The card's button with this text. */
+    button: text => `const node = Array.from(el.querySelectorAll('.mappy-ai-card button')).find(item => item.textContent === ${JSON.stringify(text)});`,
+    /**
+     * The last button of the card's actions, in any language: the one that ends what the card shows (捨てる on a draft,
+     * 閉じる on a failure, 取り消す on a run, its only button; src/ui/ai/ai-controller.ts `renderCard`).
+     */
+    last: `const node = el.querySelector('.mappy-ai-card .mappy-ai-actions button:last-of-type');`,
+    /** Selects `title`, presses the AI button, waits for the input and puts the focus in the request; the input's engine. */
+    open: async title => {
+      await select(title);
+      await press(`const node = el.querySelector('.mappy-ai-button:not([hidden])');`);
+      await until(async () => (await card())?.phase === 'input', 3000, 'the input did not open');
+      return evaluate(`${VIEW}
+        el.querySelector('[data-ai-field="instruction"]').focus();
+        return el.querySelector('[data-ai-field="engine"]')?.value ?? null;`);
+    },
   };
 }
 

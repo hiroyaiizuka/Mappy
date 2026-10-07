@@ -68,13 +68,14 @@ const KEYS = {
  * With `appless` as well, the popout has no `app` of its own to name its vault (Obsidian 1.14's settings window,
  * E72): the mark alone identifies it, so the case makes the mark its own run's (another vault's Obsidian may share the port).
  *
- * `build`: the build the vault must hold (`HARNESS_BUILD`); only the AI cases ask for `ai-dev`.
+ * `build`: the build the vault must hold (`HARNESS_BUILD`); only the AI cases ask for `ai-dev`, and `null` takes either
+ * (a case that does not run Mappy's build, such as ai-runner's probe plugin).
  *
  * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, E69 and E71, which switch it (language.mjs), pass the
  * one they switched to, and `null` to take the window in whatever language it is (to put it back).
  */
 export async function connect({ popout, appless = false, language: expected = LANGUAGE, build = 'release' } = {}) {
-  if (build !== HARNESS_BUILD) {
+  if (build !== null && build !== HARNESS_BUILD) {
     throw new Error(`${VAULT} holds the ${HARNESS_BUILD} build, not ${build}; run ${prepareCommand[build]} and reload the plugin. No action taken.`);
   }
   // Several vault windows can share the port (another project's test vault in the same profile), and the

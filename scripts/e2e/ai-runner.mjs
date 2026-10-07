@@ -160,7 +160,9 @@ async function runThroughMappy() {
   if (flag('--question-only') || flag('--no-default') || youtube || long || repeat > 0) {
     throw new Error('--mappy runs the question to map alone: leave out the other flags');
   }
-  connection = await connect();
+  // The development unlock's build is the one whose license is active: a vault holding it is refused by the default
+  // `connect()` (which asks for the release build), as ai-fake-engine.mjs was before #165.
+  connection = await connect({ build: 'ai-dev' });
   const ready = await step('Mappy, wired, with the license active', () => connection.evaluate(`(async () => {
     await app.plugins.setEnable(true);
     if (app.plugins.enabledPlugins.has(${JSON.stringify(PLUGIN)})) await app.plugins.disablePlugin(${JSON.stringify(PLUGIN)});
@@ -219,7 +221,9 @@ async function runThroughMappy() {
 async function probeRuns() {
 await step('install the probe plugin', async () => {
     await install();
-    connection = await connect();
+    // The probe plugin brings src/ai itself and leaves Mappy out: the build the vault holds for Mappy (release, or the
+    // development unlock --mappy needs) does not matter here, so either is taken (the record names which).
+    connection = await connect({ build: null });
     const ytdlp = value('--ytdlp') ?? '';
     return connection.evaluate(`(async () => {
       localStorage.setItem('mappy-ai-paths', JSON.stringify({ claude: '', codex: '', 'yt-dlp': ${JSON.stringify(ytdlp)} }));
