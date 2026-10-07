@@ -42,11 +42,10 @@
  *
  * Usage: npm run harness:e2e:close-draft -- [--reload] [--json <out.json>] [--keep] [--exits]
  */
-import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { connect, PORT, VAULT, wait } from './cdp.mjs';
-import { relaunchProfile } from './instance.mjs';
+import { launchObsidian, portAnswers, QUIT, relaunchProfile } from './instance.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
 import { ERRORS } from './window-helpers.mjs';
@@ -82,12 +81,11 @@ const dropKeptHere = () => evaluate(`const all = app.loadLocalStorage(${JSON.str
 /** A Notice saying a draft of this note was not written at the reload or quit. */
 const notSavedHere = item => item.includes(EXIT_NOT_SAVED) && item.includes(EXIT_NOT_WRITTEN) && item.includes(NOTE);
 
-/**
+/*
  * Row 9 launches Obsidian again after its quit, with the profile the window ran with (instance.mjs's `relaunchProfile`).
  * Until LEV-327 it was `artifacts/obsidian-profile` unless `MAPPY_E2E_PROFILE` said otherwise: a second instance on
  * another profile was then launched back as the first one's (or, that one running, only handed it the arguments).
  */
-const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
 /** Set while Obsidian is down after row 9's quit: nothing is left to tidy or to reach. */
 let quitDone = false;
 
@@ -430,21 +428,20 @@ try {
       if (!held?.editing || held.error !== REFRESHED) throw new Error(`the draft was not held for the re-read note (the step would prove nothing): ${JSON.stringify(held)}`);
       // Read before the quit: the relaunch must bring back this instance, not start another profile's.
       const profile = relaunchProfile(await evaluate(`return require('electron').remote.app.getPath('userData');`));
-      await evaluate(`window.__mappyE2E = null; setTimeout(() => require('electron').remote.app.quit(), 0); return true;`);
+      await evaluate(`window.__mappyE2E = null; ${QUIT} return true;`);
       cdp.close();
       // The process itself must end, not only the vault's window: a quit that waits for a task ends on macOS with
       // Obsidian running and no window (LEV-230's first build). The CDP port closes with the process.
       let running = true;
       for (let started = Date.now(); running && Date.now() - started < 20000; await wait(500)) {
-        running = await fetch(`http://127.0.0.1:${PORT}/json/version`).then(() => true, () => false);
+        running = await portAnswers(PORT);
       }
       if (running) throw new Error('Obsidian was still running 20 s after app.quit() (its window may have closed)');
       quitDone = true;
       const onDisk = await readFile(join(VAULT, NOTE), 'utf8');
       // The draft is kept for the next launch, not written as the page went (nothing half-written).
       check(onDisk === other, `9-quit: the note on disk after the quit is not the note before it: ${JSON.stringify(onDisk)}`);
-      const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
-      if (launched.status !== 0) throw new Error(`open could not launch Obsidian again (${launched.status}): ${launched.stderr || launched.error}`);
+      launchObsidian({ profile, port: PORT });
       // Obsidian is up again: the cleanup runs even if reaching it fails below (and records that it could not).
       quitDone = false;
       await reconnect();

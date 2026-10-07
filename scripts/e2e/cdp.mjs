@@ -21,7 +21,8 @@ import { canonical, claimInstance, noteShared, PORT, VAULT } from './instance.mj
 export { PORT, VAULT };
 /** The window targets this process has seen on its instance, across its connections (reloads reconnect). */
 const seenWindows = new Set();
-let watching = false;
+/** Off until the first connection, and for good when windows were open before the case (a reload brings them back as new targets). */
+let watching = null;
 /** A window the instance opened (a popout, the settings window, the vault picker), as opposed to its main window. */
 const opened = target => target.type === 'page' && !String(target.url ?? '').startsWith('app://obsidian.md/index.html');
 /**
@@ -141,9 +142,15 @@ export async function connect({ popout, appless = false, language: expected = LA
         seenWindows.add(id);
         if (watching) noteShared(`opened a window (${url || 'about:blank'}) on port ${port}`);
       };
-      // The first connection's windows were there before the case; a main window is never counted.
-      for (const target of targets) if (opened(target)) note(target.id, target.url);
-      watching = true;
+      // The first connection's windows were there before the case; a main window is never counted. A popout left in the
+      // workspace comes back after a reload under a new target id, which would read as opened by the case: with one there
+      // at the start, the watch stays off (said once), rather than failing a case that opened nothing.
+      const before = targets.filter(opened);
+      for (const target of before) note(target.id, target.url);
+      if (watching === null) {
+        watching = before.length === 0;
+        if (!watching) console.error(`${before.length} window(s) besides the main one were open on port ${port} before the case; windows it opens are not watched (docs/harness.md「専用の Obsidian を並べる」).`);
+      }
       socket.addEventListener('message', event => {
         const message = JSON.parse(event.data);
         const info = message.method === 'Target.targetCreated' ? message.params?.targetInfo : null;

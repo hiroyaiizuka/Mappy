@@ -22,7 +22,6 @@
  * Both run alone (instance.mjs's `solo`): an Obsidian coming up or going away moves the OS focus, which every instance
  * shares, so they wait for the cases on the other instances to finish, and those wait for them.
  */
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -30,14 +29,20 @@ import { fileURLToPath } from 'node:url';
 import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault, isInside } from '../preflight.mjs';
 import { connect, wait } from './cdp.mjs';
 import {
-  canonical, claimInstance, describeEntry, exportLine, freePort, liveEntries, lockDir, PORT, portFree, PORT_RANGE, profileHolder,
-  profilesWithVault, shellWord, VAULT,
+  canonical, claimInstance, describeEntry, exportLine, freePort, launchObsidian, liveEntries, lockDir, PORT, portAnswers, portFree, portFromFlag,
+  PORT_RANGE, profileHolder, profilesWithVault, QUIT, shellWord, VAULT,
 } from './instance.mjs';
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
-const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
 const [command, ...rest] = process.argv.slice(2);
-const value = name => { const at = rest.indexOf(name); return at === -1 ? undefined : rest[at + 1]; };
+/** The value after `name`, or undefined without the flag; a flag with no value (or another flag after it) is refused. */
+const value = name => {
+  const at = rest.indexOf(name);
+  if (at === -1) return undefined;
+  const given = rest[at + 1];
+  if (given === undefined || given.startsWith('--')) throw new Error(`${name} needs a value. No action taken.`);
+  return given;
+};
 
 /**
  * `path` resolved, if it lies inside this checkout's `artifacts/` with its links resolved; otherwise it throws. `start`
@@ -49,16 +54,6 @@ function inArtifacts(path) {
     throw new Error(`The profile must be inside ${join(root, 'artifacts')}, not ${resolved}. No action taken.`);
   }
   return resolved;
-}
-
-/** `--port`, if given, as one of PORT_RANGE: 9231 (the default instance) and 9222 (Kioku's) are never launched on. */
-function requestedPort(given) {
-  if (given === undefined) return null;
-  const port = Number(given);
-  if (!Number.isInteger(port) || port < PORT_RANGE[0] || port > PORT_RANGE[1]) {
-    throw new Error(`--port must be in ${PORT_RANGE[0]}–${PORT_RANGE[1]}, not ${given}. No action taken.`);
-  }
-  return String(port);
 }
 
 /** A stable vault id for the profile's `obsidian.json`, so a relaunch keeps the vault's own local storage. */
@@ -76,10 +71,8 @@ function writeVaultList(profile, vault) {
   writeFileSync(file, `${JSON.stringify(next)}\n`);
 }
 
-const portOpen = port => fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false);
-
 async function start() {
-  const requested = requestedPort(value('--port'));
+  const requested = portFromFlag(value('--port'));
   if (process.platform !== 'darwin') throw new Error('harness:obsidian launches with open -na, on macOS only. No action taken.');
   const vault = harnessVault(root, value('--vault') ?? process.env.MAPPY_E2E_VAULT);
   assertGeneratedVault(harnessPaths(root, vault));
@@ -96,8 +89,7 @@ async function start() {
   const holder = profileHolder(profile);
   if (holder !== null) throw new Error(`The profile ${profile} is in use by pid ${holder}; stop that Obsidian first (or give another --profile). No action taken.`);
   writeVaultList(profile, vault);
-  const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`], { encoding: 'utf8' });
-  if (launched.status !== 0) throw new Error(`open could not launch Obsidian (${launched.status}): ${launched.stderr || launched.error}`);
+  launchObsidian({ profile, port });
 
   // What the launched Obsidian is left as when the start fails: quit if its window answered, else named for a hand quit
   // (nothing here signals a process).
@@ -141,7 +133,7 @@ async function start() {
   } catch (error) {
     // The window is this start's (its profile): quit it rather than leave an instance no one will use.
     if (ours) {
-      await cdp.evaluate("(() => { setTimeout(() => require('electron').remote.app.quit(), 0); return true; })()").catch(() => undefined);
+      await cdp.evaluate(`(() => { ${QUIT} return true; })()`).catch(() => undefined);
       error.message += ' The Obsidian it launched was quit (app.quit()).';
     }
     throw error;
@@ -154,12 +146,16 @@ async function stop() {
   const port = value('--port') ?? PORT;
   const vault = value('--vault') ? harnessVault(root, value('--vault')) : VAULT;
   const cdp = await connect({ port, vault, language: null, solo: 'quits an Obsidian, after which another window comes to the front' });
-  const userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')");
-  try { inArtifacts(userData); } catch (error) { cdp.close(); throw error; }
-  await cdp.evaluate("(() => { setTimeout(() => require('electron').remote.app.quit(), 0); return true; })()");
-  cdp.close();
+  let userData;
+  try {
+    userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')");
+    inArtifacts(userData);
+    await cdp.evaluate(`(() => { ${QUIT} return true; })()`);
+  } finally {
+    cdp.close();
+  }
   for (const started = Date.now(); Date.now() - started < 20000; await wait(500)) {
-    if (!(await portOpen(port))) {
+    if (!(await portAnswers(port))) {
       console.log(`Quit the Obsidian on port ${port} (profile ${userData}).`);
       return;
     }

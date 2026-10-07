@@ -15,6 +15,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { toolingDir } from '../handoff.mjs';
@@ -51,10 +52,15 @@ export function waitSeconds(value = process.env.MAPPY_E2E_WAIT) {
 /** Ports `npm run harness:obsidian -- start` picks from (and the only ones `--port` takes): away from 9231 (the default) and 9222 (Kioku's). */
 export const PORT_RANGE = [9241, 9299];
 
-/** `.tooling/e2e-instances/` in the primary checkout (handoff.mjs's `toolingDir`), the same place from every worktree. */
+/**
+ * `.tooling/e2e-instances/` in the primary checkout (handoff.mjs's `toolingDir`), the same place from every worktree.
+ * Without git to find it, nothing is driven: a register of this checkout's own would not see the other worktrees'.
+ */
 export function lockDir() {
   if (process.env.MAPPY_E2E_LOCK_DIR) return resolve(process.env.MAPPY_E2E_LOCK_DIR);
-  try { return join(toolingDir(root), 'e2e-instances'); } catch { return join(root, '.tooling', 'e2e-instances'); }
+  try { return join(toolingDir(root), 'e2e-instances'); } catch (error) {
+    throw new Error(`Could not find the primary checkout with git (${error.message.split('\n')[0]}), so the register shared by every worktree is out of reach; set MAPPY_E2E_LOCK_DIR to it. No action taken.`);
+  }
 }
 
 /** The run.mjs this process is a case of (`MAPPY_E2E_RUN`), only when that run is this process's parent. */
@@ -78,6 +84,8 @@ export function processStarts(pids) {
   const starts = new Map();
   if (pids.length === 0) return starts;
   const result = spawnSync('ps', ['-p', pids.join(','), '-o', 'pid=,lstart='], { encoding: 'utf8', env: psEnv() });
+  // ps that did not run says nothing about the processes: every entry would read as dead (and be removed).
+  if (result.error || result.status === null) throw new Error(`Could not run ps (${result.error?.message ?? result.signal}), so who holds the register cannot be read. No action taken.`);
   // One pid ps refuses (macOS: "process id too large") makes it print none of the others: ask for each one then.
   if (result.status !== 0 && result.stderr && pids.length > 1) {
     for (const pid of pids) for (const [found, start] of processStarts([pid])) starts.set(found, start);
@@ -91,6 +99,8 @@ export function processStarts(pids) {
 }
 
 const samePath = (a, b) => typeof a === 'string' && typeof b === 'string' && canonical(a) === canonical(b);
+/** Vaults in entries, which `claimInstance` writes with their real paths (`canonical`): compared as text, each poll. */
+const sameVault = (a, b) => typeof a === 'string' && a === b;
 
 /**
  * Whether `other` keeps `mine` from starting. Two processes on one instance (port) or one vault would drive the same
@@ -102,7 +112,7 @@ const samePath = (a, b) => typeof a === 'string' && typeof b === 'string' && can
  */
 export function blocks(mine, other) {
   if (mine.run != null && other.pid === mine.run) return false;
-  const shares = (mine.port !== null && String(other.port) === String(mine.port)) || samePath(other.vault, mine.vault);
+  const shares = (mine.port !== null && String(other.port) === String(mine.port)) || sameVault(other.vault, mine.vault);
   if (mine.kind === 'run' || other.kind === 'run') return shares;
   if (mine.solo || other.solo) return true;
   return shares;
@@ -176,7 +186,8 @@ export async function claimInstance(options = {}) {
   let told = 0;
   for (;;) {
     writeFileSync(file, `${JSON.stringify(entry)}\n`);
-    const others = liveEntries(dir, process.pid, { starts });
+    let others;
+    try { others = liveEntries(dir, process.pid, { starts }); } catch (error) { unlinkSync(file); throw error; }
     const blocking = others.filter(other => blocks(entry, other));
     if (blocking.length === 0) break;
     const keep = entry.solo && !others.some(other => other.solo && before(other, entry));
@@ -231,6 +242,30 @@ export function whatRuns(argv = process.argv) {
   return [basename(argv[1] ?? 'node'), ...argv.slice(2).filter(arg => arg.startsWith('--') && arg !== '--json' && arg !== '--shot')].join(' ');
 }
 
+/** `--port` of `harness:obsidian -- start`, if given, as one of PORT_RANGE: 9231 (the default) and 9222 (Kioku's) are never launched on. */
+export function portFromFlag(given) {
+  if (given === undefined) return null;
+  const port = Number(given);
+  if (!Number.isInteger(port) || port < PORT_RANGE[0] || port > PORT_RANGE[1]) {
+    throw new Error(`--port must be in ${PORT_RANGE[0]}–${PORT_RANGE[1]}, not ${given}. No action taken.`);
+  }
+  return String(port);
+}
+
+export const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
+
+/** Launches Obsidian with `profile` and the CDP `port` (macOS `open -na`); throws when `open` fails. Used by start and E59. */
+export function launchObsidian({ profile, port, app = OBSIDIAN_APP }) {
+  const launched = spawnSync('open', ['-na', app, '--args', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`], { encoding: 'utf8' });
+  if (launched.status !== 0) throw new Error(`open could not launch Obsidian (${launched.status}): ${launched.stderr || launched.error}`);
+}
+
+/** Script quitting the window's Obsidian after the evaluate has answered (`app.quit()`, no signal). */
+export const QUIT = "setTimeout(() => require('electron').remote.app.quit(), 0);";
+
+/** Whether the DevTools server on `port` answers (the instance is up). */
+export const portAnswers = port => fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false);
+
 /** Whether nothing listens on 127.0.0.1:`port` (Obsidian's DevTools server binds there). */
 export function portFree(port) {
   return new Promise(resolve_ => {
@@ -263,6 +298,9 @@ export function profileHolder(profile, { starts = processStarts } = {}) {
   return Number.isInteger(pid) && pid > 0 && starts([pid]).has(pid) ? pid : null;
 }
 
+/** The everyday Obsidian's profile, which the harness neither reads nor launches. */
+export const EVERYDAY_PROFILE = canonical(join(homedir(), 'Library', 'Application Support', 'obsidian'));
+
 /** The `--user-data-dir` of every running Obsidian process, read from `ps` (the arguments only). */
 export function runningProfiles() {
   const result = spawnSync('ps', ['-axo', 'args='], { encoding: 'utf8', env: psEnv() });
@@ -276,15 +314,15 @@ export function runningProfiles() {
 }
 
 /**
- * The running profiles inside `within` (this checkout) whose `obsidian.json` opens `vault`: another Obsidian already has
- * it open, and a second one would watch and write the same files. Profiles outside the checkout (the everyday one,
- * another worktree's) are not read.
+ * The running profiles whose `obsidian.json` opens `vault`: another Obsidian already has it open (this checkout's, or
+ * another worktree's driving it through `MAPPY_E2E_VAULT`), and a second one would watch and write the same files. The
+ * everyday profile is not read: it runs without `--user-data-dir` (its helpers name it) and is skipped by its path.
  */
-export function profilesWithVault(vault, { within = root, profiles = runningProfiles(), read = path => readFileSync(path, 'utf8') } = {}) {
-  const base = canonical(within);
+export function profilesWithVault(vault, { profiles = runningProfiles(), everyday = EVERYDAY_PROFILE, read = path => readFileSync(path, 'utf8') } = {}) {
   const wanted = canonical(vault);
+  const daily = canonical(everyday);
   return profiles.filter(profile => {
-    if (!isInside(base, profile)) return false;
+    if (canonical(profile) === daily || isInside(daily, canonical(profile))) return false;
     let list;
     try { list = JSON.parse(read(join(profile, 'obsidian.json'))); } catch { return false; }
     return Object.values(list?.vaults ?? {}).some(item => item?.open && typeof item.path === 'string' && canonical(item.path) === wanted);
@@ -293,13 +331,19 @@ export function profilesWithVault(vault, { within = root, profiles = runningProf
 
 /**
  * The profile a case launches Obsidian again with after quitting it (E59's row 9): the one the window runs with
- * (`app.getPath('userData')`), so a second instance comes back as itself, not as another one's profile. With
- * `MAPPY_E2E_PROFILE` set, a window that runs with another profile is refused before anything is quit.
+ * (`app.getPath('userData')`), so a second instance comes back as itself, not as another one's profile. Only a profile
+ * inside this checkout's `artifacts/` is launched again, or the one `MAPPY_E2E_PROFILE` names; with `MAPPY_E2E_PROFILE`
+ * set, a window that runs with another profile is refused. Both before anything is quit (never the everyday profile).
  */
-export function relaunchProfile(running, expected = PROFILE) {
+export function relaunchProfile(running, expected = PROFILE, { artifacts = join(root, 'artifacts'), everyday = EVERYDAY_PROFILE } = {}) {
   if (typeof running !== 'string' || running === '') throw new Error('The window did not say which profile it runs with. No action taken.');
   if (expected !== null && !samePath(expected, running)) {
     throw new Error(`The Obsidian on port ${PORT} runs with the profile ${running}, not ${expected} (MAPPY_E2E_PROFILE). No action taken.`);
+  }
+  const real = canonical(running);
+  const daily = canonical(everyday);
+  if (real === daily || isInside(daily, real) || (expected === null && !isInside(canonical(artifacts), real))) {
+    throw new Error(`The Obsidian on port ${PORT} runs with the profile ${running}, not one inside ${artifacts} (or MAPPY_E2E_PROFILE); it is not quit and launched again. No action taken.`);
   }
   return running;
 }

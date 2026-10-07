@@ -2,10 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  blocks, canonical, claimInstance, exportLine, freePort, liveEntries, noteShared, parentRun, processStarts, profileHolder,
+  blocks, canonical, claimInstance, exportLine, freePort, liveEntries, lockDir, noteShared, parentRun, portFromFlag, processStarts, profileHolder,
   profilesWithVault, relaunchProfile, releaseInstance, waitSeconds,
 } from '../../scripts/e2e/instance.mjs';
 import { createRecord, finish } from '../../scripts/e2e/case-runner.mjs';
@@ -209,15 +208,43 @@ describe('the register', () => {
     symlinkSync(real, join(dir, 'link'));
     writeOther(dir, { port: '9241', vault: join(real, 'test-vault') });
     expect(canonical(join(dir, 'link', 'test-vault'))).toBe(join(real, 'test-vault'));
-    // Through the link here, directly in the other entry: the entry is written with the real path.
+    // Through the link here, directly in the other entry: entries hold real paths, compared as text (review 3-9).
     await expect(claim(dir, { vault: join(dir, 'link', 'test-vault') })).rejects.toThrow(/Not run/u);
-    // Directly here, through the link in the other entry (one not written by claimInstance): compared through links too.
-    writeOther(dir, { port: '9241', vault: join(dir, 'link', 'test-vault') });
-    await expect(claim(dir, { vault: join(real, 'test-vault') })).rejects.toThrow(/Not run/u);
     // And the entry (and the record after it) names the vault by its real path, however it was reached.
     rmSync(join(dir, `${OTHER}.json`));
     const held = await claim(dir, { vault: join(dir, 'link', 'test-vault') });
     expect(JSON.parse(readFileSync(held.file, 'utf8')).vault).toBe(join(real, 'test-vault'));
+  });
+
+  it('stops, rather than reading every entry as dead, when ps cannot run', async () => {
+    // Review 3-1: a ps that failed to start gave an empty list, every entry read as dead and was removed.
+    const dir = tempDir();
+    writeOther(dir, { port: '9242' });
+    const path = process.env.PATH;
+    try {
+      process.env.PATH = '/nowhere';
+      expect(() => processStarts([process.pid])).toThrow(/Could not run ps/u);
+      expect(() => liveEntries(dir, process.pid)).toThrow(/Could not run ps/u);
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(existsSync(join(dir, `${OTHER}.json`))).toBe(true);
+    const failing = pids => { if (pids.includes(OTHER)) throw new Error('Could not run ps'); return startedWith()(pids); };
+    await expect(claim(dir, { starts: failing })).rejects.toThrow(/Could not run ps/u);
+    expect(readdirSync(dir)).toEqual([`${OTHER}.json`]);
+  });
+
+  it('stops, rather than keeping a register of its own, when git cannot find the primary checkout', () => {
+    // Review 3-3: lockDir fell back to this checkout's .tooling/, where the other worktrees do not look.
+    const saved = { PATH: process.env.PATH, MAPPY_E2E_LOCK_DIR: process.env.MAPPY_E2E_LOCK_DIR };
+    try {
+      process.env.PATH = '/nowhere';
+      delete process.env.MAPPY_E2E_LOCK_DIR;
+      expect(() => lockDir()).toThrow(/Could not find the primary checkout with git/u);
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.MAPPY_E2E_LOCK_DIR !== undefined) process.env.MAPPY_E2E_LOCK_DIR = saved.MAPPY_E2E_LOCK_DIR;
+    }
   });
 
   it('skips entries it cannot read and lists only the others', () => {
@@ -288,14 +315,15 @@ describe('the line start prints', () => {
     expect(shell.stdout).toBe("9241|/My Projects/it's $HOME/test-vault-b|/p q/artifacts/obsidian-profile-9241");
   });
 
-  it('refuses a --port outside 9241–9299 before anything else', () => {
-    // Review 2-4: --port 9222 (Kioku's) or 9231 (the default) was taken when nothing listened there.
-    const script = fileURLToPath(new URL('../../scripts/e2e/obsidian.mjs', import.meta.url));
-    for (const port of ['9222', '9231', '9300', 'x']) {
-      const result = spawnSync(process.execPath, [script, 'start', '--port', port], { encoding: 'utf8', env: { ...process.env, MAPPY_E2E_LOCK_DIR: tempDir() } });
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain(`--port must be in 9241–9299, not ${port}.`);
-    }
+  it('takes a --port only in 9241–9299', () => {
+    // Review 2-4: --port 9222 (Kioku's) or 9231 (the default) was taken when nothing listened there. Tested on the
+    // function, not by running start (review 3-7: a unit test must not be one refactor away from launching Obsidian).
+    expect(portFromFlag(undefined)).toBe(null);
+    expect(portFromFlag('9241')).toBe('9241');
+    expect(portFromFlag('9299')).toBe('9299');
+    for (const port of ['9222', '9231', '9240', '9300', 'x', '9241.5']) expect(() => portFromFlag(port)).toThrow(`--port must be in 9241–9299, not ${port}.`);
+    const text = readFileSync(new URL('../../scripts/e2e/obsidian.mjs', import.meta.url), 'utf8');
+    expect(text).toContain("const requested = portFromFlag(value('--port'));");
   });
 
   it('run.mjs enters the register for the run and tells its cases which run they belong to', () => {
@@ -306,38 +334,58 @@ describe('the line start prints', () => {
 });
 
 describe('one vault, one instance', () => {
-  const checkout = '/w';
+  const everyday = '/u/Library/Application Support/obsidian';
   const lists = {
     '/w/artifacts/obsidian-profile-9241/obsidian.json': { vaults: { a: { path: '/w/test-vault', open: true } } },
     '/w/artifacts/obsidian-profile-9242/obsidian.json': { vaults: { b: { path: '/w/test-vault-b', open: false } } },
-    '/elsewhere/profile/obsidian.json': { vaults: { c: { path: '/w/test-vault-b', open: true } } },
+    '/w2/artifacts/obsidian-profile/obsidian.json': { vaults: { c: { path: '/w/test-vault-c', open: true } } },
+    [`${everyday}/obsidian.json`]: { vaults: { d: { path: '/w/test-vault-d', open: true } } },
   };
   const read = path => { if (!(path in lists)) throw new Error('ENOENT'); return JSON.stringify(lists[path]); };
-  const profiles = ['/w/artifacts/obsidian-profile-9241', '/w/artifacts/obsidian-profile-9242', '/elsewhere/profile'];
+  const profiles = ['/w/artifacts/obsidian-profile-9241', '/w/artifacts/obsidian-profile-9242', '/w2/artifacts/obsidian-profile', everyday];
 
-  it('finds the running profile of this checkout that has the vault open', () => {
-    // Review 2: start launched a second Obsidian on a vault another one had open.
-    expect(profilesWithVault('/w/test-vault', { within: checkout, profiles, read })).toEqual(['/w/artifacts/obsidian-profile-9241']);
+  it('finds the running profile that has the vault open, in this checkout or another worktree', () => {
+    // Review 2-2: start launched a second Obsidian on a vault another one had open; review 3-5: one of another checkout too.
+    expect(profilesWithVault('/w/test-vault', { profiles, everyday, read })).toEqual(['/w/artifacts/obsidian-profile-9241']);
+    expect(profilesWithVault('/w/test-vault-c', { profiles, everyday, read })).toEqual(['/w2/artifacts/obsidian-profile']);
   });
 
-  it('does not count a vault listed but not open, nor read a profile outside the checkout', () => {
-    expect(profilesWithVault('/w/test-vault-b', { within: checkout, profiles, read })).toEqual([]);
+  it('does not count a vault listed but not open, and never reads the everyday profile', () => {
+    expect(profilesWithVault('/w/test-vault-b', { profiles, everyday, read })).toEqual([]);
+    expect(profilesWithVault('/w/test-vault-d', { profiles, everyday, read })).toEqual([]);
   });
 });
 
 describe('the profile', () => {
+  const where = { artifacts: '/w/artifacts', everyday: '/u/Library/Application Support/obsidian' };
   it('relaunches the profile the window ran with, and refuses one that is not MAPPY_E2E_PROFILE', () => {
-    expect(relaunchProfile('/w/artifacts/obsidian-profile-9242', null)).toBe('/w/artifacts/obsidian-profile-9242');
-    expect(relaunchProfile('/w/artifacts/obsidian-profile-9242', '/w/artifacts/obsidian-profile-9242')).toBe('/w/artifacts/obsidian-profile-9242');
-    expect(() => relaunchProfile('/w/artifacts/obsidian-profile-9242', '/w/artifacts/obsidian-profile')).toThrow(/not \/w\/artifacts\/obsidian-profile \(MAPPY_E2E_PROFILE\)/u);
-    expect(() => relaunchProfile('', null)).toThrow(/did not say/u);
+    expect(relaunchProfile('/w/artifacts/obsidian-profile-9242', null, where)).toBe('/w/artifacts/obsidian-profile-9242');
+    expect(relaunchProfile('/w/artifacts/obsidian-profile-9242', '/w/artifacts/obsidian-profile-9242', where)).toBe('/w/artifacts/obsidian-profile-9242');
+    expect(() => relaunchProfile('/w/artifacts/obsidian-profile-9242', '/w/artifacts/obsidian-profile', where)).toThrow(/not \/w\/artifacts\/obsidian-profile \(MAPPY_E2E_PROFILE\)/u);
+    expect(() => relaunchProfile('', null, where)).toThrow(/did not say/u);
+  });
+
+  it('relaunches only a profile inside artifacts/ (or the one MAPPY_E2E_PROFILE names), never the everyday one', () => {
+    // Review 3-2: an instance on the everyday profile would have been quit and launched again with a CDP port.
+    expect(() => relaunchProfile(where.everyday, null, where)).toThrow(/not one inside \/w\/artifacts/u);
+    expect(() => relaunchProfile(where.everyday, where.everyday, where)).toThrow(/not one inside/u);
+    expect(() => relaunchProfile('/elsewhere/profile', null, where)).toThrow(/not one inside/u);
+    expect(relaunchProfile('/elsewhere/profile', '/elsewhere/profile', where)).toBe('/elsewhere/profile');
+  });
+
+  it('takes MAPPY_E2E_PROFILE through a link as the profile the window names by its real path', () => {
+    const artifacts = join(tempDir(), 'artifacts');
+    mkdirSync(join(artifacts, 'obsidian-profile-9242'), { recursive: true });
+    const link = join(tempDir(), 'link');
+    symlinkSync(join(artifacts, 'obsidian-profile-9242'), link);
+    expect(relaunchProfile(join(artifacts, 'obsidian-profile-9242'), link, { ...where, artifacts })).toBe(join(artifacts, 'obsidian-profile-9242'));
   });
 
   it('E59 relaunches with what the window says, not a profile of its own', () => {
     // Text, as the case runs when loaded: the launch takes `profile`, read from the window before the quit.
     const text = readFileSync(new URL('../../scripts/e2e/close-draft.mjs', import.meta.url), 'utf8');
     expect(text).toContain("const profile = relaunchProfile(await evaluate(`return require('electron').remote.app.getPath('userData');`));");
-    expect(text).toContain('`--user-data-dir=${profile}`');
+    expect(text).toContain('launchObsidian({ profile, port: PORT });');
     expect(text).not.toMatch(/artifacts', 'obsidian-profile'/u);
   });
 
@@ -368,9 +416,30 @@ describe('cases that act on what every instance shares run alone', () => {
   const files = [...new Set(Object.entries(scripts).filter(([name]) => name.startsWith('harness:e2e:'))
     .map(([, command]) => /scripts\/e2e\/([\w-]+\.mjs)/u.exec(command)?.[1]).filter(Boolean))];
 
-  it.each(files)('%s asks to run alone on its first connect() if it does any of them', file => {
+  /**
+   * The code of `file` and of the local modules it imports, all the way down (review 3-6: a helper doing it counts for
+   * every case that imports it), without comment lines. instance.mjs and cdp.mjs are the harness's own (they quit and
+   * watch windows for the launcher and E59).
+   */
+  const OWN = new Set(['instance.mjs', 'cdp.mjs', 'case-runner.mjs', 'provenance.mjs']);
+  const code = (file, seen = new Set()) => {
+    if (seen.has(file) || OWN.has(file)) return '';
+    seen.add(file);
     const text = readFileSync(new URL(`../../scripts/e2e/${file}`, import.meta.url), 'utf8');
-    const shared = SHARED.filter(pattern => pattern.test(text));
+    const imported = [...text.matchAll(/from '\.\/([\w-]+\.mjs)'/gu)].map(match => match[1]);
+    const own = text.split('\n').filter(line => !/^\s*(?:\*|\/\*|\/\/)/u.test(line)).join('\n');
+    return [own, ...imported.map(name => code(name, seen))].join('\n');
+  };
+
+  it('reads what a case imports, and not comments', () => {
+    expect(code('draft-own-write.mjs')).toMatch(/clipboard\.write\(/u);
+    expect(code('dom-helpers.mjs')).not.toMatch(/OS clipboard/u);
+    expect(code('main-topic.mjs')).toContain(readFileSync(new URL('../../scripts/e2e/language.mjs', import.meta.url), 'utf8').split('\n').find(line => line.includes('app:reload')));
+  });
+
+  it.each(files)('%s asks to run alone on its first connect() if it, or a helper it imports, does any of them', file => {
+    const text = readFileSync(new URL(`../../scripts/e2e/${file}`, import.meta.url), 'utf8');
+    const shared = SHARED.filter(pattern => pattern.test(code(file)));
     const first = /await connect\(([^)]*)\)/u.exec(text)?.[1] ?? null;
     if (shared.length > 0) expect(first, `${file}: ${shared.join(', ')}`).toMatch(/solo:/u);
   });
