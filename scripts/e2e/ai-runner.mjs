@@ -37,7 +37,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { build } from 'esbuild';
-import { HARNESS_BUILD, VAULT, connect } from './cdp.mjs';
+import { VAULT, connect } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, until } from './case-runner.mjs';
 
 const { flag, value } = parseArgs();
@@ -222,8 +222,8 @@ async function probeRuns() {
 await step('install the probe plugin', async () => {
     await install();
     // The probe plugin brings src/ai itself and leaves Mappy out: the build the vault holds for Mappy (release, or the
-    // development unlock --mappy needs) does not matter here, so either is taken.
-    connection = await connect({ build: HARNESS_BUILD });
+    // development unlock --mappy needs) does not matter here, so either is taken (the record names which).
+    connection = await connect({ build: null });
     const ytdlp = value('--ytdlp') ?? '';
     return connection.evaluate(`(async () => {
       localStorage.setItem('mappy-ai-paths', JSON.stringify({ claude: '', codex: '', 'yt-dlp': ${JSON.stringify(ytdlp)} }));

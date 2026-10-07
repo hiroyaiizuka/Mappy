@@ -72,8 +72,9 @@ const WRAP = `
   // wrap is always this one, installed once.
   const left = window.__mappyAiFreeState;
   if (left) {
-    window.require = left.original;
-    Storage.prototype.getItem = left.getItem;
+    // Only what it holds: an older version kept no getItem, and putting back undefined would break localStorage.
+    if (typeof left.original === 'function') window.require = left.original;
+    if (typeof left.getItem === 'function') Storage.prototype.getItem = left.getItem;
     if (left.ipc) for (const [method, original] of Object.entries(left.ipc.originals)) left.ipc.ipc[method] = original;
     delete window.__mappyAiFreeState;
   }
@@ -99,7 +100,8 @@ const WRAP = `
       if (!mappy || name !== 'child_process') return module;
       return new Proxy(module, {
         get: (target, key) => key !== 'spawn' ? Reflect.get(target, key) : (...args) => {
-          seen.spawns.push({ file: String(args[0]).split('/').pop(), at: Date.now() });
+          // The file and the head of its arguments (the request goes on stdin, never in them).
+          seen.spawns.push({ file: String(args[0]).split('/').pop(), args: Array.isArray(args[1]) ? args[1].slice(0, 4).map(String) : [], at: Date.now() });
           return target.spawn(...args);
         },
       });
@@ -143,6 +145,7 @@ async function runAiOnce() {
   let end = null;
   let labels = [];
   let started = Infinity;
+  let ms = null;
   let failure = null;
   try {
     engine = await ai.open('話題');
@@ -157,6 +160,7 @@ async function runAiOnce() {
       const now = await ai.card();
       return now && (now.phase === 'draft' || now.phase === 'failed') ? now : null;
     }, 5 * 60_000, 'the AI run did not end');
+    ms = Date.now() - started;
     labels = await ai.draft();
   } catch (error) {
     failure = error;
@@ -164,22 +168,25 @@ async function runAiOnce() {
   let closing = null;
   try {
     const shown = await ai.card();
-    if (shown?.phase === 'input') await cdp.realKey('Escape');
-    else if (shown) await press(ai.last);
+    // Escape closes the input only from the card's own keys: the focus is put back in the request first.
+    if (shown?.phase === 'input') {
+      await evaluate(`${VIEW} el.querySelector('[data-ai-field="instruction"]')?.focus(); return true;`);
+      await cdp.realKey('Escape');
+    } else if (shown) await press(ai.last);
     if (shown) await until(async () => (await ai.card()) === null, 5000, `the ${shown.phase} card did not close`);
   } catch (error) {
     closing = String(error);
   }
   if (failure) throw new Error(closing ? `${failure} (ending its card: ${closing})` : String(failure));
   if (closing) throw new Error(closing);
-  const ms = Date.now() - started;
   if (end.phase !== 'draft') throw new Error(`the AI run ended in ${end.phase}: ${end.text}`);
-  // The run reached Node: the engine's process was started through the child_process Mappy took, after ⌘↵ (codex may
-  // be started as node with its codex.js, §11.3).
+  // The run reached Node: the engine was started through the child_process Mappy took, after ⌘↵. Known by its
+  // arguments, not the file's name: either CLI may be started as node with its script (§11.3, launch.ts), or by a path
+  // of another name set in the settings. claude runs as `-p`, codex as `exec`.
   const after = await watched();
-  const files = engine === 'claude' ? ['claude'] : ['codex', 'node'];
-  const spawned = after.spawns.filter(item => item.at >= started && files.includes(item.file));
-  if (spawned.length === 0) throw new Error(`the run started no ${files.join('/')} process through the child_process Mappy took: ${JSON.stringify(after.spawns)}`);
+  const mode = engine === 'claude' ? '-p' : 'exec';
+  const spawned = after.spawns.filter(item => item.at >= started && item.args.includes(mode));
+  if (spawned.length === 0) throw new Error(`the run started no ${engine} process (${mode}) through the child_process Mappy took: ${JSON.stringify(after.spawns)}`);
   return { engine, question: QUESTION, ms, labels, spawned, nodeCalls: after.calls };
 }
 
@@ -241,8 +248,8 @@ try {
     return names;`)));
   if (detect) {
     // Within the steps the free state counts (reload, open, edit, settings), before AI is run: Mappy's child_process.
-    const before = await step('Node calls before the run', () => evaluate(`return window.__mappyAiFreeState.seen.mappy.map(call => call.name);`));
-    if (!Array.isArray(before) || !before.includes('child_process')) {
+    const before = required(record, 'Node calls before the run', await step('Node calls before the run', () => evaluate(`return window.__mappyAiFreeState.seen.mappy.map(call => call.name);`)));
+    if (!before.includes('child_process')) {
       record.failures.push(`--detect: within the free state's steps Mappy's Node calls were ${JSON.stringify(before)}, expected child_process among them (the counter or the frame match is broken)`);
       // A run would show nothing more and spend one of the person's runs: stop before it.
       record.stopped = 'the counter did not see Mappy take child_process; AI was not run';
@@ -291,8 +298,8 @@ try {
   if (!detect) {
     check(counted && seen.mappy === 0, `Mappy reached Node ${seen?.mappy} times in the free state`);
     check(licenseCalls === 0, `Mappy sent ${licenseCalls} requests to ${LICENSE_HOST} in the free state (IPC and Network)`);
+    check(probe !== null && typeof probe === 'object' && !('error' in probe), 'the license counter could not be shown to see requestUrl; its 0 shows nothing');
   }
-  if (!detect) check(probe !== null && typeof probe === 'object' && !('error' in probe), 'the license counter could not be shown to see requestUrl; its 0 shows nothing');
   check(nodeProbe === true, 'the Node counter could not be shown to count Mappy-named calls; its 0 shows nothing');
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(String(error));
