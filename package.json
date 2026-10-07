@@ -26,6 +26,7 @@
     "harness:handoff": "node scripts/handoff.mjs",
     "harness:gate": "node scripts/harness-gate.mjs",
     "harness:view-teardown": "node scripts/check-view-teardown.mjs",
+    "harness:obsidian": "node scripts/e2e/obsidian.mjs",
     "harness:e2e": "node scripts/e2e/run.mjs",
     "harness:e2e:add-delete": "node scripts/e2e/add-delete.mjs",
     "harness:e2e:delete-selection": "node scripts/e2e/delete-selection.mjs",

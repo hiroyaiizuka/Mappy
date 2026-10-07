@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -56,8 +56,11 @@ function addScripts(...filenames) {
   }
 }
 
-function runScript(filename) {
-  return spawnSync(process.execPath, [join('scripts', filename)], { cwd: root, encoding: 'utf8' });
+/** Runs a harness script from the temporary root, with `MAPPY_E2E_VAULT` only when `env` gives it. */
+function runScript(filename, env = {}) {
+  const inherited = { ...process.env };
+  delete inherited.MAPPY_E2E_VAULT;
+  return spawnSync(process.execPath, [join('scripts', filename)], { cwd: root, encoding: 'utf8', env: { ...inherited, ...env } });
 }
 
 beforeEach(() => {
@@ -157,6 +160,31 @@ describe('prepare-test-vault CLI', () => {
     const result = runScript('prepare-test-vault.mjs');
     expect(result.status, result.stderr).toBe(0);
     expect(readEnabled()).toEqual(['mappy', excalidraw]);
+  });
+
+  it('prepares the second vault MAPPY_E2E_VAULT names, and leaves test-vault alone (LEV-327)', () => {
+    const result = runScript('prepare-test-vault.mjs', { MAPPY_E2E_VAULT: 'test-vault-b' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Prepared test-vault-b with mappy 0.1.0.');
+    const second = harnessPaths(root, join(root, 'test-vault-b'));
+    expect(readFileSync(second.marker, 'utf8')).toBe(markerContents);
+    expect(readFileSync(join(second.installed, 'main.js'), 'utf8')).toBe('module.exports = {};\n');
+    expect(existsSync(paths.vault)).toBe(false);
+    const preflight = runScript('preflight.mjs', { MAPPY_E2E_VAULT: join(root, 'test-vault-b') });
+    expect(preflight.status, preflight.stderr).toBe(0);
+    expect(preflight.stdout).toContain('(source = dist = test-vault-b)');
+  });
+
+  it('refuses a MAPPY_E2E_VAULT outside the project, and writes nothing there', () => {
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'mappy-outside-')));
+    try {
+      const result = runScript('prepare-test-vault.mjs', { MAPPY_E2E_VAULT: join(outside, 'test-vault-b') });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('MAPPY_E2E_VAULT must be test-vault or test-vault-<name> directly in');
+      expect(readdirSync(outside)).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('refuses a generated vault whose community-plugins.json is not a list of plugin IDs', () => {

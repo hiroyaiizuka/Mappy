@@ -46,7 +46,8 @@ const IMAGES = (SOURCE.match(/!\[\[sample-image\.svg|\]\(sample-image\.svg\)/gu)
 
 const record = createRecord(VAULT, NOTE);
 record.budget = BUDGET;
-const cdp = await connect();
+// Frame times are judged: another instance's load would show in them (LEV-327), so run alone.
+const cdp = await connect({ solo: 'judges frame times' });
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

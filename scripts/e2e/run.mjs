@@ -1,7 +1,9 @@
 /**
- * Runs the real-Obsidian e2e cases (docs/harness.md 実機検証) registered below, one Obsidian instance
- * at a time (only one to drive: docs/linear-workflow.md「Obsidian 実機は1台なので、実機を使うチケットは
- * 同時に1本にする」), each case connecting to it in turn.
+ * Runs the real-Obsidian e2e cases (docs/harness.md 実機検証) registered below on one dedicated Obsidian (the
+ * instance `MAPPY_E2E_PORT`/`MAPPY_E2E_VAULT` name), one case after another, each connecting to it in turn: they
+ * share its window. Another instance (its own port, profile and test vault) can have a run of its own beside this one
+ * (LEV-327, docs/harness.md「専用の Obsidian を並べる」); each case enters instance.mjs's register as it connects, so
+ * two runs never drive one instance at once, and a case marked `solo` there waits for the other instances' cases.
  *
  * Each case stays a standalone script (`node scripts/e2e/<file>.mjs`, wired to its own
  * `npm run harness:e2e:<name>`) run here as its own child process, not imported into this one: a case
@@ -20,6 +22,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PORT, VAULT } from './instance.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -112,6 +115,7 @@ const run = testCase => new Promise(resolve => {
 });
 
 const startedAt = new Date().toISOString();
+console.log(`Instance: port ${PORT}, vault ${VAULT}`);
 const results = [];
 for (const testCase of targets) {
   // A stale <case>.json from an earlier run in the same --json dir must not be mistaken for this run's
@@ -127,7 +131,7 @@ const passed = results.every(result => result.passed);
 // Only a full run (no --case) writes summary.json: a single-case run must not silently replace a
 // previous full run's summary with just that one case's result under the same name.
 if (jsonDir && !caseName) {
-  const summary = { startedAt, passed, results };
+  const summary = { startedAt, instance: { port: PORT, vault: VAULT }, passed, results };
   for (const result of summary.results) {
     try {
       result.record = JSON.parse(await readFile(join(jsonDir, `${result.name}.json`), 'utf8'));

@@ -90,9 +90,9 @@ try {
   }
   const result = runPreflight(paths);
   console.info(`Prepared ${relative(paths.root, paths.vault)} with ${result.id} ${result.version}.`);
-  console.info(`Copied ${fixtures.length} fixtures and generated ${performanceFixtures.length} performance documents in test-vault/Fixtures.`);
+  console.info(`Copied ${fixtures.length} fixtures and generated ${performanceFixtures.length} performance documents in ${relative(paths.root, paths.fixtureTarget)}.`);
   console.info(`Enabled community plugins: ${result.enabledPlugins.join(', ')}.`);
-  console.info('Obsidian was not started. Open test-vault as a separate vault for manual checks.');
+  console.info(`Obsidian was not started. Open ${relative(paths.root, paths.vault)} as a separate vault for manual checks (npm run harness:obsidian -- start).`);
 } catch (error) {
   console.error(`Harness preparation failed: ${error.message}`);
   process.exitCode = 1;

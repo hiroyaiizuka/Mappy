@@ -31,7 +31,7 @@
  *    blur does not save it) → Obsidian quit (`app.quit()`): the process ends (not only the window: a quit that waits
  *    for a task leaves Obsidian running with no window on macOS), the note on disk is as before the quit (kept, not
  *    written as the page went), and once the case has launched Obsidian again (macOS only: `open -na`, the profile
- *    `MAPPY_E2E_PROFILE`, default `artifacts/obsidian-profile`, and the same port) the note has the draft over the
+ *    the window ran with — `MAPPY_E2E_PROFILE`, when set, must be that one — and the same port) the note has the draft over the
  *    change, with no Notice saying otherwise, and the kept entry is used up (8 too: an apply that threw before the
  *    page's error collector was installed again would leave it). Notices of others at launch are not counted. On
  *    0.3.9, 8 and 9 lose the draft and 8b shows no Notice; a plain draft at the quit passes there too (the window's
@@ -44,9 +44,9 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { connect, PORT, VAULT, wait } from './cdp.mjs';
+import { relaunchProfile } from './instance.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required } from './case-runner.mjs';
 import { VIEW, makeSelect, makePluginStep, makeNoteStep, makeDeleteNote } from './dom-helpers.mjs';
 import { ERRORS } from './window-helpers.mjs';
@@ -82,14 +82,18 @@ const dropKeptHere = () => evaluate(`const all = app.loadLocalStorage(${JSON.str
 /** A Notice saying a draft of this note was not written at the reload or quit. */
 const notSavedHere = item => item.includes(EXIT_NOT_SAVED) && item.includes(EXIT_NOT_WRITTEN) && item.includes(NOTE);
 
-/** Row 9 launches Obsidian again after its quit, with the profile the harness names (docs/harness.md 実機検証). */
+/**
+ * Row 9 launches Obsidian again after its quit, with the profile the window ran with (instance.mjs's `relaunchProfile`).
+ * Until LEV-327 it was `artifacts/obsidian-profile` unless `MAPPY_E2E_PROFILE` said otherwise: a second instance on
+ * another profile was then launched back as the first one's (or, that one running, only handed it the arguments).
+ */
 const OBSIDIAN_APP = process.env.MAPPY_E2E_OBSIDIAN_APP ?? '/Applications/Obsidian.app';
-const PROFILE = process.env.MAPPY_E2E_PROFILE ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'artifacts', 'obsidian-profile');
 /** Set while Obsidian is down after row 9's quit: nothing is left to tidy or to reach. */
 let quitDone = false;
 
 const record = createRecord(VAULT, NOTE);
-let cdp = await connect();
+// Row 9 quits this instance and launches it again, which takes the OS focus from every other window.
+let cdp = await connect({ solo: flag('--exits') ? 'quits Obsidian and launches it again (row 9)' : null });
 let evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);
@@ -424,6 +428,8 @@ try {
         if (held.error === REFRESHED) break;
       }
       if (!held?.editing || held.error !== REFRESHED) throw new Error(`the draft was not held for the re-read note (the step would prove nothing): ${JSON.stringify(held)}`);
+      // Read before the quit: the relaunch must bring back this instance, not start another profile's.
+      const profile = relaunchProfile(await evaluate(`return require('electron').remote.app.getPath('userData');`));
       await evaluate(`window.__mappyE2E = null; setTimeout(() => require('electron').remote.app.quit(), 0); return true;`);
       cdp.close();
       // The process itself must end, not only the vault's window: a quit that waits for a task ends on macOS with
@@ -437,7 +443,7 @@ try {
       const onDisk = await readFile(join(VAULT, NOTE), 'utf8');
       // The draft is kept for the next launch, not written as the page went (nothing half-written).
       check(onDisk === other, `9-quit: the note on disk after the quit is not the note before it: ${JSON.stringify(onDisk)}`);
-      const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
+      const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
       if (launched.status !== 0) throw new Error(`open could not launch Obsidian again (${launched.status}): ${launched.stderr || launched.error}`);
       // Obsidian is up again: the cleanup runs even if reaching it fails below (and records that it could not).
       quitDone = false;

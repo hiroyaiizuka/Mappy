@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const pluginFiles = ['main.js', 'manifest.json', 'styles.css'];
@@ -8,8 +8,13 @@ export const markerContents = 'Mappy generated test vault v1\n';
 /** Community plugins a generated vault may enable: mappy, and Excalidraw for the M6 cases (E23–E27, E30, E33). */
 export const allowedCommunityPlugins = ['mappy', 'obsidian-excalidraw-plugin'];
 
-export function harnessPaths(root) {
-  const vault = join(root, 'test-vault');
+/**
+ * The generated vaults a checkout may hold, directly in it: `test-vault`, and `test-vault-<name>` for each further
+ * dedicated Obsidian run beside the first (LEV-327, docs/harness.md「専用の Obsidian を並べる」).
+ */
+export const vaultName = /^test-vault(?:-[a-z0-9]+)*$/u;
+
+export function harnessPaths(root, vault = join(root, 'test-vault')) {
   return {
     root,
     vault,
@@ -22,12 +27,26 @@ export function harnessPaths(root) {
   };
 }
 
-export function getHarnessPaths() {
+/**
+ * The paths for the vault `MAPPY_E2E_VAULT` names (the one the e2e cases drive, scripts/e2e/instance.mjs), or
+ * `test-vault`. Only a vault named by `vaultName` directly in this project is accepted (AGENTS.md: 自動準備はプロジェクト配下のみ).
+ */
+export function getHarnessPaths({ env = process.env } = {}) {
   const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
   if (realpathSync(process.cwd()) !== root) {
     throw new Error('Run this command from the Mappy project root.');
   }
-  return harnessPaths(root);
+  return harnessPaths(root, harnessVault(root, env.MAPPY_E2E_VAULT));
+}
+
+/** `requested` (a path, absolute or from `root`) as a vault this project may prepare, or `root/test-vault` when unset. */
+export function harnessVault(root, requested) {
+  if (!requested) return join(root, 'test-vault');
+  const vault = resolve(root, requested);
+  if (dirname(vault) !== root || !vaultName.test(basename(vault))) {
+    throw new Error(`MAPPY_E2E_VAULT must be test-vault or test-vault-<name> directly in ${root}, not ${vault}.`);
+  }
+  return vault;
 }
 
 /** Check every path component, so a symlinked parent cannot redirect a write. */
@@ -69,7 +88,7 @@ export function readSafeFile(root, filename) {
 export function assertGeneratedVault(paths) {
   assertSafePath(paths.root, paths.vault, 'directory');
   if (readSafeFile(paths.root, paths.marker).toString('utf8') !== markerContents) {
-    throw new Error('test-vault is not a recognized Mappy generated vault.');
+    throw new Error(`${basename(paths.vault)} is not a recognized Mappy generated vault.`);
   }
 }
 
@@ -147,7 +166,7 @@ export function runPreflight(paths) {
   }
   const installedManifest = parseManifest(
     readSafeFile(paths.root, join(paths.installed, 'manifest.json')),
-    'test-vault manifest.json',
+    `${basename(paths.vault)} manifest.json`,
   );
   if (installedManifest.version !== build.manifest.version) {
     throw new Error('Installed and packaged manifest versions differ.');
@@ -165,10 +184,11 @@ if (invokedAsScript) {
     if (process.argv.length !== 2) {
       throw new Error('Usage: node scripts/preflight.mjs (no arguments).');
     }
-    const result = runPreflight(getHarnessPaths());
+    const paths = getHarnessPaths();
+    const result = runPreflight(paths);
     console.info(`Preflight passed: ${result.id} ${result.version}.`);
     for (const [filename, hash] of Object.entries(result.sha256)) {
-      console.info(`${filename}: ${hash} (source = dist = test-vault)`);
+      console.info(`${filename}: ${hash} (source = dist = ${basename(paths.vault)})`);
     }
     console.info(`Enabled community plugins: ${result.enabledPlugins.join(', ')}.`);
   } catch (error) {
