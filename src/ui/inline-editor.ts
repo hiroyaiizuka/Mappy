@@ -10,14 +10,17 @@ export interface InlineSuggestion {
 export interface InlineEditorOptions {
   initial: string;
   save: (text: string) => Promise<void>;
-  /** `draft`: the text in the editor as it closed (on Escape, the text given up). */
-  finish: (next: "none" | "child", cancelled: boolean, draft: string) => void;
+  /**
+   * `draft`: the text in the editor as it closed (on Escape, the text given up). `byUndo`: the draft was given up by ⌘Z
+   * (`undoCancels`, LEV-331) rather than Escape.
+   */
+  finish: (next: "none" | "child", cancelled: boolean, draft: string, byUndo?: boolean) => void;
   resize: () => void;
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
   /**
-   * ⌘Z in the draft of a node just added is Escape while the draft holds the provisional name untouched (LEV-331): the
-   * view decides, as for Escape, whether the node is taken back. Without it ⌘Z stays the textarea's.
+   * ⌘Z in the draft of a node just added gives the draft up as Escape does while it holds the provisional name untouched
+   * (LEV-331), telling the view it was ⌘Z (`finish`'s `byUndo`). Without it ⌘Z stays the textarea's.
    */
   undoCancels?: boolean;
 }
@@ -215,9 +218,9 @@ export class InlineEditor {
 
   /**
    * ⌘Z in the draft of a node just added (LEV-331): while it holds the provisional name the node was written with, it has
-   * nothing of its own to lose, and ⌘Z is Escape — the view takes the node back as Escape would. Text typed is the
-   * textarea's to take back first, as its own Undo does; once that Undo has brought the provisional name back, the next
-   * ⌘Z is Escape. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's,
+   * nothing of its own to lose, so ⌘Z gives it up as Escape does, and the view takes the node back as a step Redo can
+   * bring back. Text typed is the textarea's to take back first, as its own Undo does; once that Undo has brought the
+   * provisional name back, the next ⌘Z gives the draft up. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's,
    * and so does a draft held with a reason (only its own Enter saves it). While Enter's or Tab's save runs (the draft is
    * read-only) the key is cancelled and dropped: the save goes on to close the draft or to add a child.
    */
@@ -227,13 +230,13 @@ export class InlineEditor {
     const initial = this.options.initial;
     if (this.input.value !== initial || this.written !== initial) return;
     event.preventDefault();
-    this.cancel();
+    this.cancel(true);
   }
 
-  /** The draft is given up (Escape): the editor goes, then the view hears the text it held. */
-  private cancel(): void {
+  /** The draft is given up (Escape, or ⌘Z: `byUndo`): the editor goes, then the view hears the text it held. */
+  private cancel(byUndo = false): void {
     this.dispose();
-    this.options.finish("none", true, this.input.value);
+    this.options.finish("none", true, this.input.value, byUndo);
   }
 
   /** The draft is done with: the editor goes, then the view hears how it ended (`next`; never a cancel). */

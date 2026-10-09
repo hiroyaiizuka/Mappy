@@ -16,8 +16,8 @@
  * and the menu never sees it. The row that types into the draft expects the key to be left to the textarea: the guard
  * stops the menu's Undo there too, so `document.execCommand('undo')` stands in for it (the textarea's own Undo).
  *
- * ⌘Z there is Escape: the node is taken back (nothing is left to redo); when Escape would not (something else was
- * written since the addition), only the draft closes. That second branch is jsdom's only. The rows that leave ⌘Z to
+ * ⌘Z there gives the draft up as Escape does: the node is taken back, as an Undo that ⌘⇧Z brings back; when Escape
+ * would not take it back (something else was written since the addition), only the draft closes. That second branch is jsdom's only. The rows that leave ⌘Z to
  * the textarea see only that the map did not take it: what the app menu then does with the key is not observed.
  *
  * Usage: npm run harness:e2e:undo-draft -- [--reload] [--json <out.json>] [--keep]
@@ -161,7 +161,8 @@ try {
 
   for (const layout of LAYOUTS) {
     // The report's rows: ⌘Z in the draft right after the addition takes the node back as Escape does (review 2 of
-    // LEV-331): the note as before the addition, nothing left to redo, and the selection, folds and viewport as before.
+    // LEV-331): the note as before the addition, and the selection, folds and viewport as before. Unlike Escape it is an
+    // Undo: ⌘⇧Z brings the node back (the person's answer, 2026-10-09).
     // `fold`: the target folded first, so the addition opens it and the take-back closes it again.
     for (const shape of [...SHAPES, { ...SHAPES[0], id: 'tab-subtopic-folded', target: '温泉旅行', fold: true, written: LIST.replace('  - 予約\n', `  - 予約\n  - ${SUB}\n`) }]) {
       const label = `${layout}/${shape.id}`;
@@ -172,8 +173,7 @@ try {
         await wait(300);
         const after = await shown();
         const redoKey = await press(true);
-        await wait(800);
-        const redone = await look();
+        const redone = await settled(shape.written);
         return { before, undoKey, undone, after, redoKey, redone };
       });
       check(result?.undoKey?.[0]?.handled === true, `${label}: ⌘Z in the draft was not taken (${JSON.stringify(result?.undoKey)})`);
@@ -184,7 +184,7 @@ try {
       check(JSON.stringify(result?.after?.folded) === JSON.stringify(result?.before?.folded), `${label}: folded after ⌘Z ${JSON.stringify(result?.after?.folded)}, before ${JSON.stringify(result?.before?.folded)}`);
       check(JSON.stringify(result?.after?.viewport) === JSON.stringify(result?.before?.viewport), `${label}: viewport after ⌘Z ${JSON.stringify(result?.after?.viewport)}, before ${JSON.stringify(result?.before?.viewport)}`);
       if (shape.fold) check(result?.before?.folded?.includes(shape.target), `${label}: ${shape.target} was not folded before the addition (the row's premise)`);
-      check(result?.redoKey?.[0]?.handled === true && result?.redone?.source === shape.source, `${label}: ⌘⇧Z after it brought something back (${JSON.stringify(result?.redoKey)}, ${JSON.stringify(result?.redone?.source)})`);
+      check(result?.redoKey?.[0]?.handled === true && result?.redone?.source === shape.written, `${label}: ⌘⇧Z after it did not bring the node back (${JSON.stringify(result?.redoKey)}, ${JSON.stringify(result?.redone?.source)})`);
       check((result?.undone?.messages ?? []).length === 0 && (result?.redone?.messages ?? []).length === 0, `${label}: messages ${JSON.stringify([result?.undone?.messages, result?.redone?.messages])}`);
     }
 

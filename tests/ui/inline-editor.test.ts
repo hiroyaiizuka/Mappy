@@ -268,7 +268,7 @@ describe('InlineEditor DOM interactions', () => {
     input.value = '保存しない下書き';
     expect(key(input, 'Escape').defaultPrevented).toBe(true);
     expect(options.save).not.toHaveBeenCalled();
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, '保存しない下書き');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, '保存しない下書き', false);
     expect(options.restore).toHaveBeenCalledTimes(1);
     expect(host.querySelector('textarea')).toBeNull();
     editor.dispose();
@@ -671,11 +671,11 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
-  it('is Escape on the untouched draft: it closes, writes nothing, and the view hears a cancel', () => {
+  it('gives the untouched draft up as Escape does, telling the view it was ⌘Z', () => {
     const { host, options, input } = withUndo();
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
     expect(options.save).not.toHaveBeenCalled();
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック', true);
     expect(options.restore).toHaveBeenCalledTimes(1);
     expect(host.querySelector('textarea')).toBeNull();
   });
@@ -683,7 +683,7 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
   it('reads Ctrl+Z as ⌘Z, as the canvas does', () => {
     const { options, input } = withUndo();
     expect(key(input, 'z', { ctrlKey: true }).defaultPrevented).toBe(true);
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック', true);
   });
 
   it('leaves ⌘⇧Z, ⌘⌥Z and a plain z to the textarea', () => {
@@ -707,7 +707,7 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     expect(options.finish).not.toHaveBeenCalled();
     type(input, 'サブトピック');
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック', true);
   });
 
   // Review 1 of LEV-331: after a save in place the typed name is the note's, and ⌘Z closed the draft and undid that

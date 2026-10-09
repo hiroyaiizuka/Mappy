@@ -75,10 +75,10 @@ const SHAPES = [
   { id: '見出しの Enter', source: HEADINGS, target: '温泉旅行', key: 'Enter', name: t().mainTopicTitle, written: HEADINGS.replace('本文\n', `本文\n\n## ${t().mainTopicTitle}\n`) },
 ] as const;
 
-describe('⌘Z in the draft a new node opened takes the node back, as Escape does (LEV-331)', () => {
+describe('⌘Z in the draft a new node opened takes the node back as Escape does, as a step ⌘⇧Z brings back (LEV-331)', () => {
   for (const layout of LAYOUTS) {
     for (const shape of SHAPES) {
-      it(`${layout}: ${shape.id} — ⌘Z right away`, async () => {
+      it(`${layout}: ${shape.id} — ⌘Z right away, then ⌘⇧Z`, async () => {
         const mounted = await mount(shape.source, layout);
         mounted.key(mounted.select(shape.target), shape.key);
         await mounted.settle();
@@ -89,11 +89,16 @@ describe('⌘Z in the draft a new node opened takes the node back, as Escape doe
         expect(mounted.editor()).toBeNull();
         expect(mounted.source()).toBe(shape.source);
         expect(nodeElements(mounted, shape.name)).toHaveLength(0);
-        // Escape's take-back (review 2): no step is left, and the node the addition was made from has the keyboard.
+        // Escape's take-back (review 2), the node the addition was made from with the keyboard, but as an Undo: the
+        // addition is the step left for Redo (the person's answer, 2026-10-09).
         expect(mounted.store.canUndo(mounted.file)).toBe(false);
-        expect(mounted.store.canRedo(mounted.file)).toBe(false);
+        expect(mounted.store.canRedo(mounted.file)).toBe(true);
         expect(selectedNames(mounted)).toEqual([shape.target]);
         expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.node(shape.target));
+        mounted.key(mounted.node(shape.target), 'z', { metaKey: true, shiftKey: true });
+        await mounted.settle();
+        expect(mounted.source()).toBe(shape.written);
+        expect(nodeElements(mounted, shape.name)).toHaveLength(1);
       });
     }
   }
@@ -122,9 +127,13 @@ describe('⌘Z in the draft a new node opened takes the node back, as Escape doe
     await mounted.settle();
     expect(mounted.editor()).toBeNull();
     expect(mounted.source()).toBe(LIST);
-    expect(mounted.store.canRedo(mounted.file)).toBe(false);
     // Found on the real Obsidian (E85): the removed draft left the keyboard on the page, and the next ⌘Z reached nothing.
     expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.canvas);
+    // ⌘⇧Z brings the section back. The pressed point is not in it: a topic's position is written with its name, which
+    // the draft never confirmed, so it comes back where a topic with no position goes.
+    mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: true });
+    await mounted.settle();
+    expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
   });
 
   // Review 3: what Escape would not take back (something was written since the addition), ⌘Z does not either: only the

@@ -2241,13 +2241,14 @@ export class MindmapView extends FileView {
    * nothing else is being written; the store still refuses (the node stays, a Notice says why) if a change
    * lands in between: then the node stays as after any Escape, with no error. A topic keeps the point it was
    * pressed at until the section is really gone. The folds the addition opened and the viewport it panned come
-   * back too.
+   * back too. `redoable` (⌘Z on the draft, LEV-331): the addition is undone as a step Redo brings back, not taken back
+   * from the history; everything else is the same.
    */
-  private async retract(file: TFile, created: Created, nodeId: string): Promise<void> {
+  private async retract(file: TFile, created: Created, nodeId: string, redoable = false): Promise<void> {
     if (file !== this.file || this.closed || this.saving) { this.draw(); return; }
     try {
       await this.writeOwn(created.write.after, file, async target => {
-        const write = await this.store.retract(target, created.write);
+        const write = await this.store.retract(target, created.write, { redoable });
         if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
         // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
         if (!created.previous) this.deselect();
@@ -2323,7 +2324,7 @@ export class MindmapView extends FileView {
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
-      finish: (next, cancelled, text) => {
+      finish: (next, cancelled, text, byUndo) => {
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
         this.renderer.editing(draft.nodeId, false);
@@ -2337,7 +2338,7 @@ export class MindmapView extends FileView {
           // The removed draft left the keyboard on the page: the map has it at once, so a key pressed while the take-back
           // is written (a second ⌘Z, LEV-331) reaches the map.
           this.canvas.focus({ preventScroll: true });
-          this.run(() => this.retract(file, created, node.id));
+          this.run(() => this.retract(file, created, node.id, byUndo));
           return;
         }
         this.draw();
@@ -2353,9 +2354,9 @@ export class MindmapView extends FileView {
       },
       resize: () => { this.scheduleLayout(); },
       restore: () => { this.renderer.editing(draft.nodeId, false); },
-      // ⌘Z in the draft of a node just added, its provisional name untouched, is Escape (LEV-331): the node is taken back
-      // when Escape would take it back, and otherwise only the draft closes. Never a step of the history: that could be
-      // another map's edit of the note, or an image pasted onto the draft.
+      // ⌘Z in the draft of a node just added, its provisional name untouched (LEV-331), gives it up as Escape does: when
+      // Escape would take the node back, ⌘Z takes it back as an Undo that ⌘⇧Z brings back (`byUndo`), and otherwise only
+      // the draft closes. It never takes another step of the history: that could be another map's edit of the note.
       undoCancels: created !== undefined,
     });
   }
