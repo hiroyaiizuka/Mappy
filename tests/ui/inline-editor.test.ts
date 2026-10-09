@@ -672,25 +672,27 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
-  it('closes the untouched draft, writes nothing and hands the step to the map, after the close', () => {
+  it('closes the untouched draft as Escape does, writes nothing and hands the key to the map, after the close', () => {
     const { host, options, undo, input } = withUndo();
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
     expect(options.save).not.toHaveBeenCalled();
-    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, 'サブトピック');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
     expect(undo).toHaveBeenCalledOnce();
     expect(host.querySelector('textarea')).toBeNull();
     expect(options.finish.mock.invocationCallOrder[0]).toBeLessThan(undo.mock.invocationCallOrder[0] ?? 0);
   });
 
-  it.each([{ ctrlKey: true }, { metaKey: true, altKey: true }])('reads %o as ⌘Z, as the canvas does', (init) => {
+  it('reads Ctrl+Z as ⌘Z, as the canvas does', () => {
+    const init = { ctrlKey: true };
     const { undo, input } = withUndo();
     expect(key(input, 'z', init).defaultPrevented).toBe(true);
     expect(undo).toHaveBeenCalledOnce();
   });
 
-  it('leaves ⌘⇧Z and a plain z to the textarea', () => {
+  it('leaves ⌘⇧Z, ⌘⌥Z and a plain z to the textarea', () => {
     const { undo, options, input } = withUndo();
     expect(key(input, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    expect(key(input, 'z', { metaKey: true, altKey: true }).defaultPrevented).toBe(false);
     expect(key(input, 'z').defaultPrevented).toBe(false);
     expect(undo).not.toHaveBeenCalled();
     expect(options.finish).not.toHaveBeenCalled();

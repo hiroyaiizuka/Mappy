@@ -16,8 +16,8 @@ export interface InlineEditorOptions {
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
   /**
-   * ⌘Z in the draft of a node just added, handed to the map (LEV-331): called once the editor has closed (`finish` as a
-   * confirm with nothing to write). Without it ⌘Z stays the textarea's.
+   * ⌘Z in the draft of a node just added, handed to the map (LEV-331): called once the editor has closed as Escape closes
+   * it (`finish` with `cancelled`), whose take-back of the node the view decides. Without it ⌘Z stays the textarea's.
    */
   undo?: () => void;
 }
@@ -216,7 +216,7 @@ export class InlineEditor {
 
   /**
    * ⌘Z in the draft of a node just added (LEV-331): while it holds the provisional name the node was written with, it has
-   * nothing of its own to lose, so it closes and the map takes the step — the addition. Text typed is the textarea's to
+   * nothing of its own to lose, so it closes as Escape closes it and the map takes the rest (`undo`). Text typed is the textarea's to
    * take back first, as its own Undo does; once that Undo has brought the provisional name back, the next ⌘Z is the
    * map's. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's, and so
    * does a draft held with a reason (only its own Enter saves it). While Enter's save runs (the draft is read-only) the
@@ -230,7 +230,8 @@ export class InlineEditor {
     const initial = this.options.initial;
     if (this.input.value !== initial || this.written !== initial) return;
     event.preventDefault();
-    this.close("none");
+    this.dispose();
+    this.options.finish("none", true, this.input.value);
     undo();
   }
 

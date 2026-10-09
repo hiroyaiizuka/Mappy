@@ -16,6 +16,9 @@
  * and the menu never sees it. The row that types into the draft expects the key to be left to the textarea: the guard
  * stops the menu's Undo there too, so `document.execCommand('undo')` stands in for it (the textarea's own Undo).
  *
+ * ⌘Z there takes the node back as Escape does (nothing is left to redo); when Escape would not (something else was
+ * written since the addition), it closes the draft and undoes the last step. That second branch is jsdom's only.
+ *
  * Usage: npm run harness:e2e:undo-draft -- [--reload] [--json <out.json>] [--keep]
  */
 import { VAULT, connect, wait } from './cdp.mjs';
@@ -111,18 +114,29 @@ const press = async (shift = false) => {
   return guardLog();
 };
 
-/** Opens the shape's note afresh in `layout` and adds its node; the draft is then open on the provisional name. */
-async function add(shape, layout) {
+/** The view's selection, folds and viewport: what Escape's take-back puts back, and so ⌘Z's (LEV-331). */
+const shown = () => evaluate(`${VIEW}
+  return { selected: nodes().filter(node => node.classList.contains('is-selected')).map(label), folded: nodes().filter(node => node.classList.contains('is-collapsed')).map(label), viewport: view.getState().viewport };`);
+
+/**
+ * Opens the shape's note afresh in `layout` and adds its node; the draft is then open on the provisional name. With
+ * `fold`, the target is folded first (Space), so the addition opens it. Answers what the map showed just before the key.
+ */
+async function add(shape, layout, { fold = false } = {}) {
   await detachMaps();
   await makeOpenStep(evaluate, { note: shape.note, source: shape.source, layout })();
   await installGuard();
   await markSeen();
+  let before;
   if (shape.key) {
     await select(shape.target);
+    if (fold) { await cdp.realKey(' ', 0, ' '); await wait(500); await select(shape.target); }
+    before = await shown();
     await cdp.realKey(shape.key, 0, shape.key === 'Enter' ? '\r' : undefined);
   } else {
     // The empty canvas near its top-left corner, away from the fixture's nodes (as E43's double click).
     const point = await evaluate(`${VIEW} const rect = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: rect.left + 40, y: rect.top + 40 };`);
+    before = await shown();
     for (const clickCount of [1, 2]) {
       for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount });
     }
@@ -131,7 +145,7 @@ async function add(shape, layout) {
   if (opened.source !== shape.written || opened.draft !== shape.name) {
     throw new Error(`the addition left ${JSON.stringify(opened)}, not the draft 「${shape.name}」 on ${JSON.stringify(shape.written)}`);
   }
-  return opened;
+  return before;
 }
 
 const cleanList = makeDeleteNote(evaluate, LIST_NOTE);
@@ -141,24 +155,31 @@ try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
 
   for (const layout of LAYOUTS) {
-    // The report's rows: ⌘Z in the draft right after the addition takes the node back; ⌘⇧Z brings it back.
-    for (const shape of SHAPES) {
+    // The report's rows: ⌘Z in the draft right after the addition takes the node back as Escape does (review 2 of
+    // LEV-331): the note as before the addition, nothing left to redo, and the selection, folds and viewport as before.
+    // `fold`: the target folded first, so the addition opens it and the take-back closes it again.
+    for (const shape of [...SHAPES, { ...SHAPES[0], id: 'tab-subtopic-folded', target: '温泉旅行', fold: true, written: LIST.replace('  - 予約\n', `  - 予約\n  - ${SUB}\n`) }]) {
       const label = `${layout}/${shape.id}`;
       const result = await step(label, async () => {
-        await add(shape, layout);
+        const before = await add(shape, layout, { fold: shape.fold });
         const undoKey = await press();
         const undone = await settled(shape.source);
+        await wait(300);
+        const after = await shown();
         const redoKey = await press(true);
-        const redone = await settled(shape.written);
-        return { undoKey, undone, redoKey, redone };
+        await wait(800);
+        const redone = await look();
+        return { before, undoKey, undone, after, redoKey, redone };
       });
       check(result?.undoKey?.[0]?.handled === true, `${label}: ⌘Z in the draft was not taken (${JSON.stringify(result?.undoKey)})`);
       check(result?.undone?.draft === null, `${label}: the draft is still open after ⌘Z (${JSON.stringify(result?.undone?.draft)})`);
       check(result?.undone?.source === shape.source, `${label}: ⌘Z left ${JSON.stringify(result?.undone?.source)}, not the note before the addition`);
       check(result?.undone?.inCanvas === true, `${label}: the keyboard is not on the map after ⌘Z`);
-      if (shape.target) check(JSON.stringify(result?.undone?.selected) === JSON.stringify([shape.target]), `${label}: ⌘Z selected ${JSON.stringify(result?.undone?.selected)}, not the node the addition was made from`);
-      check(result?.redoKey?.[0]?.handled === true, `${label}: ⌘⇧Z after it was not taken (${JSON.stringify(result?.redoKey)})`);
-      check(result?.redone?.source === shape.written, `${label}: ⌘⇧Z left ${JSON.stringify(result?.redone?.source)}, not the node back`);
+      check(JSON.stringify(result?.after?.selected) === JSON.stringify(result?.before?.selected), `${label}: ⌘Z selected ${JSON.stringify(result?.after?.selected)}, not ${JSON.stringify(result?.before?.selected)} as before the addition`);
+      check(JSON.stringify(result?.after?.folded) === JSON.stringify(result?.before?.folded), `${label}: folded after ⌘Z ${JSON.stringify(result?.after?.folded)}, before ${JSON.stringify(result?.before?.folded)}`);
+      check(JSON.stringify(result?.after?.viewport) === JSON.stringify(result?.before?.viewport), `${label}: viewport after ⌘Z ${JSON.stringify(result?.after?.viewport)}, before ${JSON.stringify(result?.before?.viewport)}`);
+      if (shape.fold) check(result?.before?.folded?.includes(shape.target), `${label}: ${shape.target} was not folded before the addition (the row's premise)`);
+      check(result?.redoKey?.[0]?.handled === true && result?.redone?.source === shape.source, `${label}: ⌘⇧Z after it brought something back (${JSON.stringify(result?.redoKey)}, ${JSON.stringify(result?.redone?.source)})`);
       check((result?.undone?.messages ?? []).length === 0 && (result?.redone?.messages ?? []).length === 0, `${label}: messages ${JSON.stringify([result?.undone?.messages, result?.redone?.messages])}`);
     }
 

@@ -75,10 +75,10 @@ const SHAPES = [
   { id: '見出しの Enter', source: HEADINGS, target: '温泉旅行', key: 'Enter', name: t().mainTopicTitle, written: HEADINGS.replace('本文\n', `本文\n\n## ${t().mainTopicTitle}\n`) },
 ] as const;
 
-describe('⌘Z in the draft a new node opened takes the node back as a step of the history (LEV-331)', () => {
+describe('⌘Z in the draft a new node opened takes the node back, as Escape does (LEV-331)', () => {
   for (const layout of LAYOUTS) {
     for (const shape of SHAPES) {
-      it(`${layout}: ${shape.id} — ⌘Z right away, then ⌘⇧Z brings it back`, async () => {
+      it(`${layout}: ${shape.id} — ⌘Z right away`, async () => {
         const mounted = await mount(shape.source, layout);
         mounted.key(mounted.select(shape.target), shape.key);
         await mounted.settle();
@@ -89,13 +89,11 @@ describe('⌘Z in the draft a new node opened takes the node back as a step of t
         expect(mounted.editor()).toBeNull();
         expect(mounted.source()).toBe(shape.source);
         expect(nodeElements(mounted, shape.name)).toHaveLength(0);
-        // An undo, not Escape's take-back: the step is there to redo, and the keyboard is on the map for it.
-        expect(mounted.store.canRedo(mounted.file)).toBe(true);
-        const focused = mounted.canvas.ownerDocument.activeElement;
-        expect(focused instanceof Node && mounted.canvas.contains(focused)).toBe(true);
-        mounted.key(focused ?? mounted.canvas, 'z', { metaKey: true, shiftKey: true });
-        await mounted.settle();
-        expect(mounted.source()).toBe(shape.written);
+        // Escape's take-back (review 2): no step is left, and the node the addition was made from has the keyboard.
+        expect(mounted.store.canUndo(mounted.file)).toBe(false);
+        expect(mounted.store.canRedo(mounted.file)).toBe(false);
+        expect(selectedNames(mounted)).toEqual([shape.target]);
+        expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.node(shape.target));
       });
     }
   }
@@ -109,7 +107,7 @@ describe('⌘Z in the draft a new node opened takes the node back as a step of t
     expect(mounted.source()).toBe(LIST);
   });
 
-  it('a free topic from a double click on the empty canvas goes too, its pressed point with it', async () => {
+  it('a free topic from a double click on the empty canvas goes too', async () => {
     const mounted = await mount(LIST);
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
@@ -118,7 +116,25 @@ describe('⌘Z in the draft a new node opened takes the node back as a step of t
     await mounted.settle();
     expect(mounted.editor()).toBeNull();
     expect(mounted.source()).toBe(LIST);
-    expect(mounted.store.canRedo(mounted.file)).toBe(true);
+    expect(mounted.store.canRedo(mounted.file)).toBe(false);
+  });
+
+  // Review 2: what Escape would not take back (something was written since the addition), ⌘Z does not either: the draft
+  // closes and the last step of the history goes, as ⌘Z on the map after a click on the empty canvas.
+  it('after another write since the addition, closes the draft and undoes that write; the node stays', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    const added = mounted.source();
+    const at = added.indexOf('温泉旅行');
+    await mounted.store.apply(mounted.file, added, [{ from: at, to: at + '温泉旅行'.length, text: '湯治' }]);
+    await mounted.settle();
+    expect(mounted.source()).toBe(added.replace('温泉旅行', '湯治'));
+    expect(mounted.key(draft(mounted, t().newNodeTitle), 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    await mounted.settle();
+    expect(mounted.editor()).toBeNull();
+    expect(mounted.source()).toBe(added);
+    expect(nodeElements(mounted, t().newNodeTitle)).toHaveLength(1);
   });
 
   it('a second ⌘Z goes on through the history: the node before the last one goes too', async () => {
