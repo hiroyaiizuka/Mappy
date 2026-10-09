@@ -278,6 +278,27 @@ describe('the register', () => {
     expect([...instance.processStarts([4321], { run: said('') }).keys()]).toEqual([]);
   });
 
+  it('writes its entry under another name first, which the others do not read, and leaves only the entry', async () => {
+    // Review 3, finding 4: an entry written in place could be read half-written (and skipped) by another process.
+    const dir = tempDir();
+    // A whole entry of a live process, under the name an entry is written to first: not read.
+    writeFileSync(join(dir, `${OTHER}.json.${OTHER}.tmp`), JSON.stringify({ pid: OTHER, started: 'other', port: '9242', vault: '/b/test-vault', solo: null, what: 'other.mjs', claimedAt: '2026-10-07T00:00:00.000Z' }));
+    expect(liveEntries(dir, process.pid, { starts: startedWith() })).toEqual([]);
+    const held = await claim(dir);
+    expect(readdirSync(dir).sort()).toEqual([`${OTHER}.json.${OTHER}.tmp`, `${process.pid}.json`].sort());
+    held.release();
+  });
+
+  it('tells a JSON of another instance from this run\'s (two runs given one --json folder)', () => {
+    // Review 3, finding 2: run.mjs took a case JSON another instance's run had written over as its own.
+    expect(instance.otherInstance({ instance: { port: '9241', vault: '/a/test-vault' } }, { port: '9241', vault: '/a/test-vault' })).toBe(null);
+    expect(instance.otherInstance({ instance: { port: '9242', vault: '/b/test-vault' } }, { port: '9241', vault: '/a/test-vault' })).toMatch(/^the JSON is the case's on port 9242 with \/b\/test-vault, not this run's \(port 9241/u);
+    expect(instance.otherInstance({ instance: { port: '9241', vault: '/b/test-vault' } }, { port: '9241', vault: '/a/test-vault' })).toMatch(/not this run's/u);
+    expect(instance.otherInstance({ instance: null }, { port: '9241', vault: '/a/test-vault' })).toBe(null);
+    const run = readFileSync(new URL('../../scripts/e2e/run.mjs', import.meta.url), 'utf8');
+    expect(run.indexOf('const other = otherInstance(record);')).toBeLessThan(run.indexOf('const passed = results.every(result => result.passed);'));
+  });
+
   it('skips entries it cannot read and lists only the others', () => {
     const dir = tempDir();
     writeOther(dir, {});
@@ -362,10 +383,12 @@ describe('the launcher\'s arguments', () => {
     expect(() => instance.launcherArgs(['launch'])).toThrow(/^Usage/u);
   });
 
-  it('takes stop\'s port, given or from MAPPY_E2E_PORT, only in 9241–9299', () => {
+  it('takes stop\'s port, given or from MAPPY_E2E_PORT, only in 9241–9299, and says which it was', () => {
     expect(instance.launcherArgs(['stop'], { fallbackPort: '9242' }).values['--port']).toBe('9242');
     expect(() => instance.launcherArgs(['stop', '--port', '9222'])).toThrow(/--port must be in 9241–9299, not 9222/u);
-    expect(() => instance.launcherArgs(['stop'], { fallbackPort: '9231' })).toThrow(/--port must be in 9241–9299, not 9231/u);
+    // Review 3 of the rebased PR, finding 5: a bare stop blamed a --port it was not given.
+    expect(() => instance.launcherArgs(['stop'], { fallbackPort: '9231', fallbackFrom: 'the default port' })).toThrow(/^stop was given no --port, and the default port 9231 is not in 9241–9299/u);
+    expect(() => instance.launcherArgs(['stop'], { fallbackPort: '9300', fallbackFrom: 'MAPPY_E2E_PORT' })).toThrow(/^stop was given no --port, and MAPPY_E2E_PORT 9300/u);
   });
 });
 

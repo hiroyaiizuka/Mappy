@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { claimInstance, PORT, VAULT } from './instance.mjs';
+import { claimInstance, otherInstance, PORT, VAULT } from './instance.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -135,18 +135,25 @@ for (const testCase of targets) {
   results.push({ name: testCase.name, description: testCase.description, exitCode, passed: exitCode === 0 });
 }
 
+// Each case's JSON is read back (for a single case too): one another instance's run wrote over it is not this run's
+// (two runs given one --json folder), and its case does not pass here.
+if (jsonDir) {
+  for (const result of results) {
+    let record;
+    try {
+      record = JSON.parse(await readFile(join(jsonDir, `${result.name}.json`), 'utf8'));
+    } catch {
+      continue; // The case did not write its own JSON (it failed before `finish()`, or never ran); the exit code stands.
+    }
+    const other = otherInstance(record);
+    if (other) { result.passed = false; result.notThisRun = other; console.error(`${result.name}: ${other}`); } else result.record = record;
+  }
+}
 const passed = results.every(result => result.passed);
 // Only a full run (no --case) writes summary.json: a single-case run must not silently replace a
 // previous full run's summary with just that one case's result under the same name.
 if (jsonDir && !caseName) {
   const summary = { startedAt, instance: { port: PORT, vault: VAULT }, passed, results };
-  for (const result of summary.results) {
-    try {
-      result.record = JSON.parse(await readFile(join(jsonDir, `${result.name}.json`), 'utf8'));
-    } catch {
-      // The case did not write its own JSON (it failed before `finish()`, or never ran); the exit code stands.
-    }
-  }
   await writeFile(join(jsonDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
 }
 

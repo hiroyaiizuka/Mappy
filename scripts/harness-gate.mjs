@@ -105,6 +105,11 @@ function caseReasons(label, record, { head, build, sha256 }) {
   const thrown = Object.entries(record.steps ?? {})
     .filter(([, value]) => value && typeof value === 'object' && Object.keys(value).length === 1 && 'error' in value);
   if (thrown.length > 0) add('FAIL', `step(s) threw: ${thrown.map(([name]) => name).join(', ')}`);
+  // LEV-327: the instance the case entered for, and whether the windows it opened were watched. A record without it is
+  // from before the register; one whose watch was off (windows were open before it) could have opened a window beside
+  // another instance unseen, so it does not count as a check that ran.
+  if (!Object.hasOwn(record, 'instance')) add('INCOMPLETE', 'no instance (port, vault, whether its windows were watched): a run before LEV-327');
+  else if (typeof record.instance?.windows === 'string' && record.instance.windows.startsWith('not watched')) add('INCOMPLETE', `the windows it opened were ${record.instance.windows}`);
 
   const harness = record.harness;
   if (!harness || typeof harness !== 'object') { add('INCOMPLETE', 'no harness (HEAD, build, sha256): a run before LEV-306'); return reasons; }

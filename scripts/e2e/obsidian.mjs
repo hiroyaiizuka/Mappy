@@ -41,9 +41,7 @@ const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..',
  * `path` resolved, if it lies inside this checkout's `artifacts/` with its links resolved; otherwise it throws. `start`
  * also checks every component with `assertSafePath` (no link anywhere), before it writes the profile's `obsidian.json`.
  */
-function inArtifacts(path) {
-  return testProfile(resolve(root, path));
-}
+
 
 /** A stable vault id for the profile's `obsidian.json`, so a relaunch keeps the vault's own local storage. */
 const vaultId = vault => createHash('sha256').update(vault).digest('hex').slice(0, 16);
@@ -71,7 +69,7 @@ async function start(values) {
   if (open.length > 0) throw new Error(`${vault} is already open in the Obsidian with the profile ${open.join(', ')}; one vault, one instance. No action taken.`);
   if (requested !== null && !(await portFree(requested))) throw new Error(`Port ${requested} is in use. No action taken.`);
   const port = requested ?? await freePort();
-  const profile = inArtifacts(values['--profile'] ?? join('artifacts', `obsidian-profile-${port}`));
+  const profile = testProfile(resolve(root, values['--profile'] ?? join('artifacts', `obsidian-profile-${port}`)));
   assertSafePath(root, profile, 'directory', { optional: true });
   mkdirSync(profile, { recursive: true });
   assertSafePath(root, profile, 'directory');
@@ -94,7 +92,10 @@ async function start(values) {
   if (!cdp) throw new Error(`Obsidian did not open ${vault} on port ${port} within 90 s: ${refused}.${leftover()}`);
   let ours = false;
   try {
-    const userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')");
+    let userData;
+    try { userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')"); } catch (error) {
+      throw new Error(`The window on port ${port} did not say which profile it runs with (${error.message}).${leftover()}`);
+    }
     if (canonical(userData) !== canonical(profile)) throw new Error(`The window on port ${port} runs with the profile ${userData}, not ${profile}: another Obsidian has the port.${leftover()}`);
     ours = true;
     const state = await cdp.evaluate(`(async () => {
@@ -138,7 +139,7 @@ async function stop(values) {
   let userData;
   try {
     userData = await cdp.evaluate("require('electron').remote.app.getPath('userData')");
-    inArtifacts(userData);
+    testProfile(userData);
     await cdp.evaluate(`(() => { ${QUIT} return true; })()`);
   } finally {
     cdp.close();

@@ -32,6 +32,7 @@ const receiptAt = (headSha, overrides = {}) => ({
 });
 const caseJson = (overrides = {}) => ({
   vault: '/v', note: 'Fixtures/E2E', steps: { open: { ok: true } }, failures: [], passed: true,
+  instance: { port: '9241', vault: '/v', solo: null, windows: 'watched' },
   harness: {
     head: HEAD, dirty: false, build: { kind: 'release', marked: true }, sha256: { ...SHA }, recordedAt: '2026-10-03T02:00:00Z',
     start: { head: HEAD, dirty: false, build: { kind: 'release', marked: true }, sha256: { ...SHA }, recordedAt: '2026-10-03T01:58:00Z' },
@@ -255,6 +256,20 @@ describe('evidence gate', () => {
     const result = evaluateGate(green({ pr: { ...prWith(SUCCESS), state: 'MERGED' }, prAfter: { ...IDENTITY, state: 'MERGED' } }));
     expect(result.verdict).toBe('STALE');
     expect(result.reasons.map(reason => reason.message)).toEqual(['the PR is MERGED, not open']);
+  });
+
+  it('does not count a JSON from before the register, nor one whose windows were not watched (LEV-327)', () => {
+    // Review 3 of the rebased PR, finding 1: a record whose solo check had been off passed the gate.
+    const before = caseJson();
+    delete before.instance;
+    const old = evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: before }] }));
+    expect(old.verdict).toBe('INCOMPLETE');
+    expect(old.reasons.map(reason => reason.message)).toEqual(['ribbon-new-map.json: no instance (port, vault, whether its windows were watched): a run before LEV-327']);
+    const unwatched = caseJson({ instance: { port: '9241', vault: '/v', solo: null, windows: 'not watched: 1 window(s) besides the main one were open before the case' } });
+    const off = evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: unwatched }] }));
+    expect(off.verdict).toBe('INCOMPLETE');
+    expect(off.reasons.map(reason => reason.message)).toEqual(['ribbon-new-map.json: the windows it opened were not watched: 1 window(s) besides the main one were open before the case']);
+    expect(evaluateGate(green({ e2e: [{ path: 'ribbon-new-map.json', json: caseJson({ instance: { port: '9241', vault: '/v', solo: 'opens a popout window', windows: null } }) }] })).verdict).toBe('PASS');
   });
 
   it('refuses a JSON whose case started on a tree with uncommitted changes, though it ended clean', () => {

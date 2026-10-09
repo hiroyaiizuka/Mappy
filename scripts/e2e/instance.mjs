@@ -13,7 +13,7 @@
  * Nothing here talks to Obsidian, so it loads without a vault (case-runner.mjs reads the entry from here).
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { connect as connectTcp, createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -201,8 +201,11 @@ export async function claimInstance(options = {}) {
   const entry = { pid: process.pid, started: own, kind, run, port: port === null ? null : String(port), vault: vault === null ? null : canonical(vault), solo: solo || null, what, claimedAt: new Date().toISOString() };
   const deadline = Date.now() + Math.max(0, wait) * 1000;
   let told = 0;
+  // Written to a name `liveEntries` does not read and renamed into place, so a reader never sees it half-written (a
+  // waiting solo process writes its entry again each round).
+  const write = () => { const temporary = `${file}.${process.pid}.tmp`; writeFileSync(temporary, `${JSON.stringify(entry)}\n`); renameSync(temporary, file); };
   for (;;) {
-    writeFileSync(file, `${JSON.stringify(entry)}\n`);
+    write();
     let others;
     try { others = liveEntries(dir, process.pid, { starts }); } catch (error) { unlinkSync(file); throw error; }
     const blocking = others.filter(other => blocks(entry, other));
@@ -309,8 +312,10 @@ export async function watchWindows({ socket, send, targets, port, list = () => f
   }
   socket.addEventListener('message', event => {
     if (!watch.on || watch.closed || typeof event.data !== 'string') return;
-    const changed = event.data.includes('"Target.targetInfoChanged"');
-    if (!changed && !event.data.includes('"Target.targetCreated"')) return;
+    // An event names its method first (`{"method":…`); a reply (a screenshot's megabytes) is never searched through.
+    const head = event.data.slice(0, 64);
+    const changed = head.includes('"Target.targetInfoChanged"');
+    if (!changed && !head.includes('"Target.targetCreated"')) return;
     const info = JSON.parse(event.data).params?.targetInfo;
     if (info?.type !== 'page' || !info.targetId) return;
     if (info.url) watch.urls.set(info.targetId, info.url);
@@ -352,6 +357,17 @@ export const shellWord = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 /** The line `harness:obsidian -- start` prints for the cases to run against the instance it launched. */
 export const exportLine = ({ port, vault, profile }) => `export MAPPY_E2E_PORT=${shellWord(port)} MAPPY_E2E_VAULT=${shellWord(vault)} MAPPY_E2E_PROFILE=${shellWord(profile)}`;
+
+/**
+ * Why `record` (a case's JSON read back by run.mjs) is not this run's: another instance's (its `instance` names another
+ * port or vault; two runs given one `--json` folder write over each other's), or null when it is.
+ */
+export function otherInstance(record, { port = PORT, vault = VAULT } = {}) {
+  const instance = record?.instance;
+  if (!instance) return null;
+  if (String(instance.port) !== String(port) || canonical(instance.vault) !== canonical(vault)) return `the JSON is the case's on port ${instance.port} with ${instance.vault}, not this run's (port ${port}, ${vault})`;
+  return null;
+}
 
 /** The script and its flags, as the entry names who holds it. */
 export function whatRuns(argv = process.argv) {
@@ -494,7 +510,7 @@ export const LAUNCHER_USAGE = 'Usage: npm run harness:obsidian -- start [--vault
  * `harness:obsidian`'s arguments as `{ command, values }`. Each flag once, with a value; `--port` (and, for stop, the
  * port it falls back to) only in PORT_RANGE, which is where start launches: 9231 and Kioku's 9222 are never driven.
  */
-export function launcherArgs(argv, { fallbackPort = PORT } = {}) {
+export function launcherArgs(argv, { fallbackPort = PORT, fallbackFrom = process.env.MAPPY_E2E_PORT === undefined ? 'the default port' : 'MAPPY_E2E_PORT' } = {}) {
   const [command, ...rest] = argv;
   if (!Object.hasOwn(LAUNCHER_FLAGS, command ?? '')) throw new Error(LAUNCHER_USAGE);
   const values = {};
@@ -507,6 +523,10 @@ export function launcherArgs(argv, { fallbackPort = PORT } = {}) {
     values[flag] = given;
   }
   if (values['--port'] !== undefined) values['--port'] = portFromFlag(values['--port']);
-  if (command === 'stop' && values['--port'] === undefined) values['--port'] = portFromFlag(fallbackPort);
+  if (command === 'stop' && values['--port'] === undefined) {
+    try { values['--port'] = portFromFlag(fallbackPort); } catch {
+      throw new Error(`stop was given no --port, and ${fallbackFrom} ${fallbackPort} is not in ${PORT_RANGE[0]}–${PORT_RANGE[1]}, where start launches: give --port or MAPPY_E2E_PORT. No action taken.`);
+    }
+  }
   return { command, values };
 }
