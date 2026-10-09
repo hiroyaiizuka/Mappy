@@ -78,6 +78,7 @@
     "harness:e2e:panzoom-frames": "node scripts/e2e/panzoom-frames.mjs",
     "harness:e2e:ribbon-new-map": "node scripts/e2e/ribbon-new-map.mjs",
     "harness:e2e:undo-draft": "node scripts/e2e/undo-draft.mjs",
+    "harness:e2e:parallel-focus": "node scripts/e2e/parallel-focus.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",

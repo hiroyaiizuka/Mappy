@@ -112,6 +112,52 @@ describe('the windows a case opens', () => {
     cdp.close();
   });
 
+  it('does not count a target gone before it said what it was, nor one that said it was DevTools before it went', async () => {
+    // Review 2 of the rebased PR, finding 1: a short-lived target was counted from its empty creation info.
+    fake = await fakeCdp({ vault });
+    const cdp = await connect({ port: fake.port, vault });
+    created('brief');
+    fake.emit('Target.targetInfoChanged', { targetInfo: { targetId: 'tools', type: 'page', url: '' } });
+    created('tools');
+    fake.emit('Target.targetInfoChanged', { targetInfo: { targetId: 'tools', type: 'page', url: 'devtools://devtools/bundled/devtools_app.html' } });
+    await wait(100);
+    const { code, record } = await recordNow();
+    expect(record.failures).toEqual([]);
+    expect(code).toBe(0);
+    cdp.close();
+  });
+
+  it('counts a window that said it was one (about:blank) before it went', async () => {
+    fake = await fakeCdp({ vault });
+    const cdp = await connect({ port: fake.port, vault });
+    created('brief');
+    fake.emit('Target.targetInfoChanged', { targetInfo: { targetId: 'brief', type: 'page', url: 'about:blank' } });
+    await wait(100);
+    const { record } = await recordNow();
+    expect(record.failures).toEqual([expect.stringMatching(/^opened a window \(about:blank\)/u)]);
+    cdp.close();
+  });
+
+  it('counts a window opened just before finish, without waiting first', async () => {
+    // Review 2, finding 2: finish waited only on the checks that existed when it began.
+    fake = await fakeCdp({ vault });
+    const cdp = await connect({ port: fake.port, vault });
+    fake.state.targets.push({ id: 'popout', type: 'page', url: 'about:blank' });
+    created('popout');
+    const { record } = await recordNow();
+    expect(record.failures).toEqual([expect.stringMatching(/^opened a window \(about:blank\)/u)]);
+    cdp.close();
+  });
+
+  it('counts a window still open at finish that no connection heard of (the case had closed it)', async () => {
+    fake = await fakeCdp({ vault });
+    (await connect({ port: fake.port, vault })).close();
+    await wait(100);
+    fake.state.targets.push({ id: 'popout', type: 'page', url: 'about:blank' });
+    const { record } = await recordNow();
+    expect(record.failures).toEqual([expect.stringMatching(/^opened a window \(about:blank\)/u)]);
+  });
+
   it('counts a window once, however many connections hear of it', async () => {
     fake = await fakeCdp({ vault });
     const first = await connect({ port: fake.port, vault });
@@ -147,13 +193,19 @@ describe('the windows a case opens', () => {
     cdp.close();
   });
 
-  it('counts a second main window, and not the main window coming back from a reload', async () => {
-    // Review finding 7: every index.html target was left out, so another vault window went unseen.
+  it('does not count the main window coming back from a reload (the same target)', async () => {
     fake = await fakeCdp({ vault });
     const cdp = await connect({ port: fake.port, vault });
     created('main', 'app://obsidian.md/index.html');
     await wait(100);
     expect((await recordNow()).record.failures).toEqual([]);
+    cdp.close();
+  });
+
+  it('counts a second main window', async () => {
+    // Review finding 7: every index.html target was left out, so another vault window went unseen.
+    fake = await fakeCdp({ vault });
+    const cdp = await connect({ port: fake.port, vault });
     fake.state.targets.push({ id: 'second', type: 'page', url: 'app://obsidian.md/index.html' });
     created('second');
     await wait(100);

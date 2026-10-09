@@ -48,7 +48,8 @@ export const VAULT = resolveVault(process.env.MAPPY_E2E_VAULT);
 export function resolveVault(value) {
   return canonical(value ? resolve(root, value) : join(root, 'test-vault'));
 }
-export const PROFILE = process.env.MAPPY_E2E_PROFILE ? canonical(process.env.MAPPY_E2E_PROFILE) : null;
+/** `MAPPY_E2E_PROFILE` as a path, a relative one from the project (as `MAPPY_E2E_VAULT`), or null when unset. */
+export const PROFILE = process.env.MAPPY_E2E_PROFILE ? canonical(resolve(root, process.env.MAPPY_E2E_PROFILE)) : null;
 /** Seconds `MAPPY_E2E_WAIT` gives (default 1800); anything but a number of seconds is refused, not waited for ever. */
 export function waitSeconds(value = process.env.MAPPY_E2E_WAIT) {
   if (value === undefined) return 1800;
@@ -179,11 +180,14 @@ let held = null;
 export async function claimInstance(options = {}) {
   if (held) {
     if (options.solo && !held.entry.solo) throw new Error(`This process entered for ${describeEntry(held.entry)} without asking to run alone; ask on its first connect().`);
-    // One process, one instance: a second instance would be driven without an entry of its own.
+    // One process, one instance: a second instance would be driven without an entry of its own. A solo process runs with
+    // nothing beside it, so it may drive more than one (parallel-focus.mjs drives two).
     const port = options.port === undefined ? PORT : options.port;
     const vault = options.vault === undefined ? VAULT : options.vault;
-    if ((held.entry.port !== null && port !== null && String(port) !== held.entry.port) || (held.entry.vault !== null && vault !== null && canonical(vault) !== held.entry.vault)) {
-      throw new Error(`This process entered for ${describeEntry(held.entry)}, not port ${port} and ${vault}; one process drives one instance. No action taken.`);
+    const otherPort = held.entry.port !== null && port !== null && String(port) !== held.entry.port;
+    const otherVault = held.entry.vault !== null && vault !== null && canonical(vault) !== held.entry.vault;
+    if (!held.entry.solo && (otherPort || otherVault)) {
+      throw new Error(`This process entered for ${describeEntry(held.entry)}, not port ${port} and ${vault}; one process drives one instance (unless it runs alone). No action taken.`);
     }
     return held;
   }
@@ -224,7 +228,7 @@ export async function claimInstance(options = {}) {
   };
   process.on('exit', release);
   // `watch`: what cdp.mjs has seen of the instance's windows for this entry (its connections share it; a reload reconnects).
-  held = { file, entry, release, shared: [], watch: { on: null, seen: new Set(), mains: 0, pending: [] } };
+  held = { file, entry, release, shared: [], watch: { on: null, seen: new Set(), urls: new Map(), mains: 0, pending: [], list: null, port: null, closed: false } };
   return held;
 }
 
@@ -250,17 +254,94 @@ export function markWindowWatch(state) {
   if (held) held.windows = state;
 }
 
-/** What cdp.mjs keeps of the windows it has seen for this process's entry, or null without one. */
-export const windowWatchState = () => held?.watch ?? null;
+/** A main window of an instance (a vault's), which a reload keeps under its target id. */
+export const isMain = target => String(target?.url ?? '').startsWith('app://obsidian.md/index.html');
+/** DevTools, which someone may open on the test Obsidian while a case runs: not a window the case opened. */
+export const isDevtools = target => String(target?.url ?? '').startsWith('devtools://');
+const mainCount = list => list.filter(target => target.type === 'page' && isMain(target)).length;
+const sleep = ms => new Promise(resolve_ => { setTimeout(resolve_, ms); });
 
-/** A check cdp.mjs runs on a new window (its url comes a moment after it is created), for `finish` to wait for. */
-export function trackWindowCheck(check) {
-  held?.watch.pending.push(check);
+/**
+ * Whether the new page target `id` is a window the case opened, read a moment after it is created (a target has no url
+ * then; DevTools neither: artifacts/lev-327/devtools-probe.json, and parallel-focus.mjs's `devtools-has-no-url-at-first`).
+ * DevTools is not; a main window only when there are more of them than at the start (a reload keeps its target); one
+ * gone before it said what it was is not counted (it was not there long enough to be a window that took the focus).
+ */
+async function checkWindow(watch, id) {
+  await sleep(300);
+  const now = await watch.list().catch(() => []);
+  const found = now.find(item => item.id === id);
+  const target = { url: found?.url || watch.urls.get(id) || '' };
+  if (!found && !target.url) return;
+  if (isDevtools(target) || (isMain(target) && mainCount(now) <= watch.mains)) return;
+  noteShared(`opened a window (${target.url || 'about:blank'}) on port ${watch.port}`);
 }
 
-/** Waits for the window checks still running, so a window the case opened just before its end is counted. */
+/**
+ * Watches the windows the instance opens for a process that did not ask to run alone: a popout or the settings window
+ * takes the OS focus from every other instance's window (parallel-focus.mjs), so a case that opens one without saying
+ * so fails (`noteShared`). The state is the entry's: every connection of the process shares it (a window is counted
+ * once), and the first connection's windows were there before the case. With one besides the main window there at the
+ * start (a popout left in the workspace comes back after a reload under a new target id, which would read as opened by
+ * the case), the watch stays off, said once and in the record. A window that came while no connection was open (a
+ * reload) is in the next connection's targets.
+ */
+export async function watchWindows({ socket, send, targets, port, list = () => fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json()) }) {
+  if (!held || held.entry.solo) return;
+  const watch = held.watch;
+  watch.port = port;
+  watch.list = list;
+  const pages = targets.filter(target => target.type === 'page');
+  if (watch.on === null) {
+    for (const target of pages) watch.seen.add(target.id);
+    watch.mains = mainCount(pages);
+    const left = pages.filter(target => !isMain(target) && !isDevtools(target)).length;
+    watch.on = left === 0;
+    markWindowWatch(watch.on ? 'watched' : `not watched: ${left} window(s) besides the main one were open before the case`);
+    if (!watch.on) console.error(`${left} window(s) besides the main one were open on port ${port} before the case; windows it opens are not watched (docs/harness.md「専用の Obsidian を並べる」).`);
+  } else if (watch.on) {
+    for (const target of pages) {
+      if (watch.seen.has(target.id)) continue;
+      watch.seen.add(target.id);
+      if (target.url) watch.urls.set(target.id, target.url);
+      watch.pending.push(checkWindow(watch, target.id));
+    }
+  }
+  socket.addEventListener('message', event => {
+    if (!watch.on || watch.closed || typeof event.data !== 'string') return;
+    const changed = event.data.includes('"Target.targetInfoChanged"');
+    if (!changed && !event.data.includes('"Target.targetCreated"')) return;
+    const info = JSON.parse(event.data).params?.targetInfo;
+    if (info?.type !== 'page' || !info.targetId) return;
+    if (info.url) watch.urls.set(info.targetId, info.url);
+    if (changed || watch.seen.has(info.targetId)) return;
+    watch.seen.add(info.targetId);
+    watch.pending.push(checkWindow(watch, info.targetId));
+  });
+  await send('Target.setDiscoverTargets', { discover: true });
+}
+
+/**
+ * Waits for the window checks until no more come (one may be added while it waits), then looks at the instance's
+ * targets once more for a window no event told of (one opened after the case closed its connection), and closes the
+ * watch: `finish` calls it before it judges the record.
+ */
 export async function settleWindowChecks() {
-  await Promise.allSettled(held?.watch.pending ?? []);
+  const watch = held?.watch;
+  if (!watch || watch.closed) return;
+  const drain = async () => { for (let count = -1; count !== watch.pending.length;) { count = watch.pending.length; await Promise.allSettled(watch.pending.slice()); } };
+  await drain();
+  if (watch.on && watch.list) {
+    const now = await watch.list().catch(() => []);
+    for (const target of now) {
+      if (target.type !== 'page' || watch.seen.has(target.id)) continue;
+      watch.seen.add(target.id);
+      if (target.url) watch.urls.set(target.id, target.url);
+      watch.pending.push(checkWindow(watch, target.id));
+    }
+    await drain();
+  }
+  watch.closed = true;
 }
 
 /** What `markWindowWatch` said, or null (a solo process, or one that never reached a main window). */
@@ -344,6 +425,10 @@ export function profileHolder(profile, { starts = processStarts } = {}) {
 
 /** The everyday Obsidian's profile, which the harness neither reads nor launches. */
 export const EVERYDAY_PROFILE = canonical(join(homedir(), 'Library', 'Application Support', 'obsidian'));
+/** Whether `path` is (inside) the everyday profile, with links resolved. */
+const isEveryday = (path, everyday) => { const real = canonical(path); const daily = canonical(everyday); return real === daily || isInside(daily, real); };
+/** Whether `path` is inside `artifacts`, with links resolved. */
+const inArtifacts = (path, artifacts) => isInside(canonical(artifacts), canonical(path));
 
 /** The `--user-data-dir` of every running Obsidian process, read from `ps` (the arguments only). */
 export function runningProfiles() {
@@ -366,9 +451,8 @@ export function runningProfiles() {
  */
 export function profilesWithVault(vault, { profiles = runningProfiles(), everyday = EVERYDAY_PROFILE, read = path => readFileSync(path, 'utf8') } = {}) {
   const wanted = canonical(vault);
-  const daily = canonical(everyday);
   return profiles.filter(profile => {
-    if (canonical(profile) === daily || isInside(daily, canonical(profile))) return false;
+    if (isEveryday(profile, everyday)) return false;
     let list;
     try { list = JSON.parse(read(join(profile, 'obsidian.json'))); } catch { return false; }
     return Object.values(list?.vaults ?? {}).some(item => item?.open && typeof item.path === 'string' && canonical(item.path) === wanted);
@@ -386,15 +470,11 @@ export function relaunchProfile(running, expected = PROFILE, { artifacts = join(
   if (expected !== null && !samePath(expected, running)) {
     throw new Error(`The Obsidian on port ${port} runs with the profile ${running}, not ${expected} (MAPPY_E2E_PROFILE). No action taken.`);
   }
-  try {
-    if (expected === null) testProfile(running, { artifacts, everyday }); else if (isEveryday(running, everyday)) throw new Error('everyday');
-  } catch {
-    throw new Error(`The Obsidian on port ${port} runs with the profile ${running}, not one inside ${artifacts} (or MAPPY_E2E_PROFILE); it is not quit and launched again. No action taken.`);
-  }
+  const refuse = why => new Error(`The Obsidian on port ${port} runs with the profile ${running}, ${why}; it is not quit and launched again. No action taken.`);
+  if (isEveryday(running, everyday)) throw refuse("the everyday Obsidian's, which the harness never launches or quits");
+  if (expected === null && !inArtifacts(running, artifacts)) throw refuse(`not one inside ${artifacts} (or MAPPY_E2E_PROFILE)`);
   return running;
 }
-
-const isEveryday = (path, everyday) => { const real = canonical(path); const daily = canonical(everyday); return real === daily || isInside(daily, real); };
 
 /**
  * `path` if it is a profile the harness may launch and quit (start, stop, E59's relaunch): inside this checkout's
@@ -402,6 +482,31 @@ const isEveryday = (path, everyday) => { const real = canonical(path); const dai
  */
 export function testProfile(path, { artifacts = join(root, 'artifacts'), everyday = EVERYDAY_PROFILE } = {}) {
   if (isEveryday(path, everyday)) throw new Error(`The profile ${path} is the everyday Obsidian's, which the harness never launches or quits. No action taken.`);
-  if (!isInside(canonical(artifacts), canonical(path))) throw new Error(`The profile must be inside ${artifacts}, not ${path}. No action taken.`);
+  if (!inArtifacts(path, artifacts)) throw new Error(`The profile must be inside ${artifacts}, not ${path}. No action taken.`);
   return path;
+}
+
+/** The flags each `harness:obsidian` command takes; any other is refused, so a misspelt one does not fall back to a default. */
+const LAUNCHER_FLAGS = { start: ['--vault', '--port', '--profile'], stop: ['--vault', '--port'], list: [] };
+export const LAUNCHER_USAGE = 'Usage: npm run harness:obsidian -- start [--vault <v>] [--port <n>] [--profile <p>] | stop [--vault <v>] [--port <n>] | list';
+
+/**
+ * `harness:obsidian`'s arguments as `{ command, values }`. Each flag once, with a value; `--port` (and, for stop, the
+ * port it falls back to) only in PORT_RANGE, which is where start launches: 9231 and Kioku's 9222 are never driven.
+ */
+export function launcherArgs(argv, { fallbackPort = PORT } = {}) {
+  const [command, ...rest] = argv;
+  if (!Object.hasOwn(LAUNCHER_FLAGS, command ?? '')) throw new Error(LAUNCHER_USAGE);
+  const values = {};
+  for (let at = 0; at < rest.length; at += 2) {
+    const flag = rest[at];
+    if (!LAUNCHER_FLAGS[command].includes(flag)) throw new Error(`${command} does not take ${flag}. ${LAUNCHER_USAGE}`);
+    if (Object.hasOwn(values, flag)) throw new Error(`${flag} is given twice. No action taken.`);
+    const given = rest[at + 1];
+    if (given === undefined || given.startsWith('--')) throw new Error(`${flag} needs a value. No action taken.`);
+    values[flag] = given;
+  }
+  if (values['--port'] !== undefined) values['--port'] = portFromFlag(values['--port']);
+  if (command === 'stop' && values['--port'] === undefined) values['--port'] = portFromFlag(fallbackPort);
+  return { command, values };
 }

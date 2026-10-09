@@ -168,6 +168,12 @@ describe('the register', () => {
     await expect(claim(dir, { vault: '/c/test-vault' })).rejects.toThrow(/one process drives one instance/u);
   });
 
+  it('lets a solo process drive a second instance (it runs with nothing beside it), as E86 does', async () => {
+    const dir = tempDir();
+    const held = await claim(dir, { solo: 'takes the OS focus from one instance and opens windows on the other' });
+    expect(await claim(dir, { port: '9243', vault: '/c/test-vault' })).toBe(held);
+  });
+
   it('removes the entry of a process that is gone, but not one rewritten since it was read', () => {
     const dir = tempDir();
     writeOther(dir, { port: '9242' });
@@ -344,6 +350,25 @@ describe('choosing a port', () => {
   });
 });
 
+describe('the launcher\'s arguments', () => {
+  it('refuses a flag the command does not take, a flag given twice or without a value', () => {
+    // Review 2, finding 3: a misspelt --prot or --valut fell back to the defaults and launched another instance.
+    expect(instance.launcherArgs(['start', '--vault', 'test-vault-b', '--port', '9245'])).toEqual({ command: 'start', values: { '--vault': 'test-vault-b', '--port': '9245' } });
+    expect(() => instance.launcherArgs(['start', '--prot', '9245'])).toThrow(/^start does not take --prot/u);
+    expect(() => instance.launcherArgs(['stop', '--profile', 'x'])).toThrow(/^stop does not take --profile/u);
+    expect(() => instance.launcherArgs(['start', '--port', '9245', '--port', '9246'])).toThrow(/--port is given twice/u);
+    expect(() => instance.launcherArgs(['start', '--vault', '--port', '9245'])).toThrow(/--vault needs a value/u);
+    expect(() => instance.launcherArgs(['list', '--port', '9245'])).toThrow(/^list does not take --port/u);
+    expect(() => instance.launcherArgs(['launch'])).toThrow(/^Usage/u);
+  });
+
+  it('takes stop\'s port, given or from MAPPY_E2E_PORT, only in 9241–9299', () => {
+    expect(instance.launcherArgs(['stop'], { fallbackPort: '9242' }).values['--port']).toBe('9242');
+    expect(() => instance.launcherArgs(['stop', '--port', '9222'])).toThrow(/--port must be in 9241–9299, not 9222/u);
+    expect(() => instance.launcherArgs(['stop'], { fallbackPort: '9231' })).toThrow(/--port must be in 9241–9299, not 9231/u);
+  });
+});
+
 describe('the line start prints', () => {
   it('keeps a path with a space, a quote or a $ as one word', () => {
     // Review 2-5: the paths were printed bare, and a space split them.
@@ -360,7 +385,7 @@ describe('the line start prints', () => {
     expect(portFromFlag('9299')).toBe('9299');
     for (const port of ['9222', '9231', '9240', '9300', 'x', '9241.5']) expect(() => portFromFlag(port)).toThrow(`--port must be in 9241–9299, not ${port}.`);
     const text = readFileSync(new URL('../../scripts/e2e/obsidian.mjs', import.meta.url), 'utf8');
-    expect(text).toContain("const requested = portFromFlag(value('--port'));");
+    expect(text).toContain('const { command, values } = launcherArgs(process.argv.slice(2));');
   });
 
 });
@@ -410,9 +435,10 @@ describe('the profile', () => {
 
   it('relaunches only a profile inside artifacts/ (or the one MAPPY_E2E_PROFILE names), never the everyday one', () => {
     // Review 3-2: an instance on the everyday profile would have been quit and launched again with a CDP port.
-    expect(() => relaunchProfile(where.everyday, null, where)).toThrow(/not one inside \/w\/artifacts/u);
-    expect(() => relaunchProfile(where.everyday, where.everyday, where)).toThrow(/not one inside/u);
-    expect(() => relaunchProfile('/elsewhere/profile', null, where)).toThrow(/not one inside/u);
+    // The rule that refused is named (review 2 of the rebased PR, finding 7: one generic message hid which).
+    expect(() => relaunchProfile(where.everyday, null, where)).toThrow(/the everyday Obsidian's/u);
+    expect(() => relaunchProfile(where.everyday, where.everyday, where)).toThrow(/the everyday Obsidian's/u);
+    expect(() => relaunchProfile('/elsewhere/profile', null, where)).toThrow(/not one inside \/w\/artifacts/u);
     expect(relaunchProfile('/elsewhere/profile', '/elsewhere/profile', where)).toBe('/elsewhere/profile');
   });
 
@@ -465,7 +491,7 @@ describe('cases that act on what every instance shares run alone', () => {
    */
   const SHARED = [
     /\bclipboard\b/u, // the OS clipboard, read or written (Electron's or navigator's)
-    /remote\.app\.focus\(|steal: true|\bBrowserWindow\b|getCurrentWindow\(\)\.(?:focus|blur|show)\(/u, // the OS focus
+    /remote\.app\.focus\(|steal: true|\bBrowserWindow\b|getCurrentWindow\(\)\.(?:focus|blur|show)\(|bringToFront|getCurrentWebContents\(\)\.focus\(|getFocusedWindow\(/u, // the OS focus
     /openPopoutLeaf|moveLeafToPopout|getLeaf\(\s*['"]window['"]|new-window/u, // a popout window
     /app\.setting\.open\(|app:open-settings|openTabById/u, // the settings window
     /app\.quit\(|app\.relaunch\(|'open', \['-n|\bQUIT\b|launchObsidian\(/u, // Obsidian quitting or launching (instance.mjs's helpers too)
@@ -520,10 +546,18 @@ describe('cases that act on what every instance shares run alone', () => {
     }
   });
 
-  it('finds the nine that do', () => {
-    const solo = files.filter(file => /await connect\(\{ solo:/u.test(readFileSync(new URL(`../../scripts/e2e/${file}`, import.meta.url), 'utf8')));
-    expect(solo.sort()).toEqual(['close-draft.mjs', 'draft-own-write.mjs', 'english-ui.mjs', 'panzoom-frames.mjs', 'popout.mjs', 'theme.mjs',
+  it('finds the ten that do', () => {
+    const solo = files.filter(file => /await connect\(\{ (?:language: null, )?solo:/u.test(readFileSync(new URL(`../../scripts/e2e/${file}`, import.meta.url), 'utf8')));
+    expect(solo.sort()).toEqual(['close-draft.mjs', 'draft-own-write.mjs', 'english-ui.mjs', 'panzoom-frames.mjs', 'parallel-focus.mjs', 'popout.mjs', 'theme.mjs',
       'view-padding.mjs', 'visible-layouts.mjs', 'window-blur-draft.mjs']);
+  });
+
+  it('counts focus APIs besides app.focus as shared work', () => {
+    // Review 2 of the rebased PR, finding 9 (the patterns named there; see docs/harness.md for what is not caught).
+    const flagged = text => SHARED.some(pattern => pattern.test(text));
+    expect(flagged("await cdp.send('Page.bringToFront');")).toBe(true);
+    expect(flagged("require('electron').remote.getCurrentWebContents().focus();")).toBe(true);
+    expect(flagged("require('electron').remote.BrowserWindow.getFocusedWindow();")).toBe(true);
   });
 });
 
@@ -532,11 +566,12 @@ describe('a second vault in one checkout', () => {
     // Review finding 3: the cases resolved it from the working directory, preflight from the project.
     const project = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
     expect(instance.resolveVault?.('test-vault-b')).toBe(join(project, 'test-vault-b'));
-    // From another working directory, in a process of its own (the tests run from the project).
+    // From another working directory, in a process of its own (the tests run from the project). MAPPY_E2E_PROFILE too
+    // (review 2 of the rebased PR, finding 4).
     const elsewhere = tempDir();
-    const script = `import(${JSON.stringify(new URL('../../scripts/e2e/instance.mjs', import.meta.url).href)}).then(m => process.stdout.write(m.resolveVault('test-vault-b') + '|' + m.VAULT))`;
-    const read = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: elsewhere, encoding: 'utf8', env: { ...process.env, MAPPY_E2E_VAULT: 'test-vault-b' } });
-    expect(read.stdout).toBe(`${join(project, 'test-vault-b')}|${join(project, 'test-vault-b')}`);
+    const script = `import(${JSON.stringify(new URL('../../scripts/e2e/instance.mjs', import.meta.url).href)}).then(m => process.stdout.write(m.resolveVault('test-vault-b') + '|' + m.VAULT + '|' + m.PROFILE))`;
+    const read = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: elsewhere, encoding: 'utf8', env: { ...process.env, MAPPY_E2E_VAULT: 'test-vault-b', MAPPY_E2E_PROFILE: 'artifacts/obsidian-profile-9242' } });
+    expect(read.stdout).toBe(`${join(project, 'test-vault-b')}|${join(project, 'test-vault-b')}|${join(project, 'artifacts', 'obsidian-profile-9242')}`);
     expect(instance.resolveVault('/elsewhere/test-vault')).toBe('/elsewhere/test-vault');
     expect(instance.resolveVault(undefined)).toBe(join(project, 'test-vault'));
   });

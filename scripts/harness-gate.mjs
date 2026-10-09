@@ -140,13 +140,6 @@ function caseReasons(label, record, { head, build, sha256 }) {
 }
 
 /**
- * The verdict for one PR. `pr`: `PR_FIELDS` from `gh pr view`, `baseTip`, and `headContainsBase` (whether the head has
- * the base's tip in its history), read before the evidence; `prAfter`: `PR_FIELDS_AFTER` and `baseTip` read again
- * after it. `cases`: the case names (`--require-case`) the PR needs, each among the JSONs. `receipt`, `ack`: the handoff files at that head (or null). `e2e`: `[{ path, json }]` with
- * `json` null when unreadable. `expected`: `{ build, sha256 }`, `sha256` null when this checkout cannot vouch for a
- * build.
- */
-/**
  * The packaged build's files (dist/mappy, checked against the root build): the build only. The vault `MAPPY_E2E_VAULT`
  * names (perhaps another checkout's) is not this gate's to check, so it is not read (LEV-327).
  */
@@ -154,6 +147,13 @@ export function packagedBuild() {
   return readHarnessBuild(getHarnessPaths({ env: {} })).files;
 }
 
+/**
+ * The verdict for one PR. `pr`: `PR_FIELDS` from `gh pr view`, `baseTip`, and `headContainsBase` (whether the head has
+ * the base's tip in its history), read before the evidence; `prAfter`: `PR_FIELDS_AFTER` and `baseTip` read again
+ * after it. `cases`: the case names (`--require-case`) the PR needs, each among the JSONs. `receipt`, `ack`: the handoff files at that head (or null). `e2e`: `[{ path, json }]` with
+ * `json` null when unreadable. `expected`: `{ build, sha256 }`, `sha256` null when this checkout cannot vouch for a
+ * build.
+ */
 export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, cases = [], ci = {} }) {
   const required = [...new Set([...ALWAYS_REQUIRED, ...(ci.required ?? [])])];
   const skippable = ci.skippable ?? [];

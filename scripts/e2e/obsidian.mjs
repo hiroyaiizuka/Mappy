@@ -17,8 +17,9 @@
  * written to open the vault alone, with updates off; restricted mode is turned off in the window (the vault's own
  * `community-plugins.json` says what loads). It prints the variables the cases read.
  *
- * stop: quits (`app.quit()` over CDP, no signal) the instance on `--port`/`MAPPY_E2E_PORT` whose window has the vault and
- * whose profile is inside this checkout's `artifacts/`, and waits for its port to close.
+ * stop: quits (`app.quit()` over CDP, no signal) the instance on `--port`/`MAPPY_E2E_PORT` (only in 9241–9299, where start
+ * launches) whose window has the vault and whose profile is inside this checkout's `artifacts/`, and waits for its port
+ * to close. Any flag a command does not take is refused before anything is read (instance.mjs's `launcherArgs`).
  *
  * Both run alone (instance.mjs's `solo`): an Obsidian coming up or going away moves the OS focus, which every instance
  * shares, so they wait for the cases on the other instances to finish, and those wait for them.
@@ -30,20 +31,11 @@ import { fileURLToPath } from 'node:url';
 import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault } from '../preflight.mjs';
 import { connect, wait } from './cdp.mjs';
 import {
-  canonical, claimInstance, describeEntry, exportLine, freePort, launchObsidian, liveEntries, lockDir, PORT, portAnswers, portFree, portFromFlag,
+  canonical, claimInstance, describeEntry, exportLine, freePort, launcherArgs, launchObsidian, liveEntries, lockDir, portAnswers, portFree,
   PORT_RANGE, profileHolder, profilesWithVault, QUIT, shellWord, testProfile, VAULT,
 } from './instance.mjs';
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
-const [command, ...rest] = process.argv.slice(2);
-/** The value after `name`, or undefined without the flag; a flag with no value (or another flag after it) is refused. */
-const value = name => {
-  const at = rest.indexOf(name);
-  if (at === -1) return undefined;
-  const given = rest[at + 1];
-  if (given === undefined || given.startsWith('--')) throw new Error(`${name} needs a value. No action taken.`);
-  return given;
-};
 
 /**
  * `path` resolved, if it lies inside this checkout's `artifacts/` with its links resolved; otherwise it throws. `start`
@@ -68,10 +60,10 @@ function writeVaultList(profile, vault) {
   writeFileSync(file, `${JSON.stringify(next)}\n`);
 }
 
-async function start() {
-  const requested = portFromFlag(value('--port'));
+async function start(values) {
+  const requested = values['--port'] ?? null;
   if (process.platform !== 'darwin') throw new Error('harness:obsidian launches with open -na, on macOS only. No action taken.');
-  const vault = harnessVault(root, value('--vault') ?? process.env.MAPPY_E2E_VAULT);
+  const vault = harnessVault(root, values['--vault'] ?? process.env.MAPPY_E2E_VAULT);
   assertGeneratedVault(harnessPaths(root, vault));
   // Alone: no case runs while it does, so the ports to keep clear of are the listening ones (instance.mjs's freePort).
   await claimInstance({ port: requested, vault, solo: 'launches an Obsidian, which comes to the front', what: 'obsidian.mjs start' });
@@ -79,7 +71,7 @@ async function start() {
   if (open.length > 0) throw new Error(`${vault} is already open in the Obsidian with the profile ${open.join(', ')}; one vault, one instance. No action taken.`);
   if (requested !== null && !(await portFree(requested))) throw new Error(`Port ${requested} is in use. No action taken.`);
   const port = requested ?? await freePort();
-  const profile = inArtifacts(value('--profile') ?? join('artifacts', `obsidian-profile-${port}`));
+  const profile = inArtifacts(values['--profile'] ?? join('artifacts', `obsidian-profile-${port}`));
   assertSafePath(root, profile, 'directory', { optional: true });
   mkdirSync(profile, { recursive: true });
   assertSafePath(root, profile, 'directory');
@@ -139,9 +131,9 @@ async function start() {
   }
 }
 
-async function stop() {
-  const port = value('--port') ?? PORT;
-  const vault = value('--vault') ? harnessVault(root, value('--vault')) : VAULT;
+async function stop(values) {
+  const port = values['--port'];
+  const vault = values['--vault'] ? harnessVault(root, values['--vault']) : VAULT;
   const cdp = await connect({ port, vault, language: null, solo: 'quits an Obsidian, after which another window comes to the front' });
   let userData;
   try {
@@ -167,10 +159,11 @@ function list() {
 }
 
 try {
-  if (command === 'start') await start();
-  else if (command === 'stop') await stop();
-  else if (command === 'list') list();
-  else throw new Error('Usage: npm run harness:obsidian -- start [--vault <v>] [--port <n>] [--profile <p>] | stop [--vault <v>] [--port <n>] | list');
+  // Every flag is checked before anything is read or launched (instance.mjs's launcherArgs).
+  const { command, values } = launcherArgs(process.argv.slice(2));
+  if (command === 'start') await start(values);
+  else if (command === 'stop') await stop(values);
+  else list();
   process.exit(0);
 } catch (error) {
   console.error(String(error?.message ?? error));
