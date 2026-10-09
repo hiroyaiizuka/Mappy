@@ -27,11 +27,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault, isInside } from '../preflight.mjs';
+import { assertGeneratedVault, assertSafePath, harnessPaths, harnessVault } from '../preflight.mjs';
 import { connect, wait } from './cdp.mjs';
 import {
   canonical, claimInstance, describeEntry, exportLine, freePort, launchObsidian, liveEntries, lockDir, PORT, portAnswers, portFree, portFromFlag,
-  PORT_RANGE, profileHolder, profilesWithVault, QUIT, shellWord, VAULT,
+  PORT_RANGE, profileHolder, profilesWithVault, QUIT, shellWord, testProfile, VAULT,
 } from './instance.mjs';
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
@@ -50,11 +50,7 @@ const value = name => {
  * also checks every component with `assertSafePath` (no link anywhere), before it writes the profile's `obsidian.json`.
  */
 function inArtifacts(path) {
-  const resolved = resolve(root, path);
-  if (!isInside(join(root, 'artifacts'), canonical(resolved))) {
-    throw new Error(`The profile must be inside ${join(root, 'artifacts')}, not ${resolved}. No action taken.`);
-  }
-  return resolved;
+  return testProfile(resolve(root, path));
 }
 
 /** A stable vault id for the profile's `obsidian.json`, so a relaunch keeps the vault's own local storage. */

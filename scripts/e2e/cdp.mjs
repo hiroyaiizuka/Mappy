@@ -16,15 +16,13 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { canonical, claimInstance, markWindowWatch, noteShared, PORT, VAULT } from './instance.mjs';
+import { canonical, claimInstance, markWindowWatch, noteShared, PORT, trackWindowCheck, VAULT, windowWatchState } from './instance.mjs';
 
 export { PORT, VAULT };
-/** The window targets this process has seen on its instance, across its connections (reloads reconnect). */
-const seenWindows = new Set();
-/** Off until the first connection, and for good when windows were open before the case (a reload brings them back as new targets). */
-let watching = null;
-/** A window the instance opened (a popout, the settings window, the vault picker), as opposed to its main window. */
-const opened = target => target.type === 'page' && !String(target.url ?? '').startsWith('app://obsidian.md/index.html');
+/** A main window of the instance (a vault's), which a reload keeps under its target id. */
+const isMain = target => String(target.url ?? '').startsWith('app://obsidian.md/index.html');
+/** DevTools, which someone may open on the test Obsidian while a case runs: not a window the case opened. */
+const isDevtools = target => String(target.url ?? '').startsWith('devtools://');
 /**
  * The plugin's text follows Obsidian's language (src/i18n: Japanese for `ja`, English otherwise), and the cases find
  * buttons and read notices by their Japanese text. A window in another language is refused rather than driven, so a
@@ -136,26 +134,44 @@ export async function connect({ popout, appless = false, language: expected = LA
     // (artifacts/lev-327/focus-probe*.json): a process that did not ask to run alone has it noted, and its record fails.
     // Seen once per process (every connection hears the event); one that came while no connection was open (a reload)
     // is in the target list of the next one.
+    // Its state is the entry's (instance.mjs's `windowWatchState`): every connection of the process shares it, so a window
+    // is counted once however many connections hear of it.
     if (popout === undefined && !entry.solo) {
-      const note = (id, url) => {
-        if (seenWindows.has(id)) return;
-        seenWindows.add(id);
-        if (watching) noteShared(`opened a window (${url || 'about:blank'}) on port ${port}`);
-      };
-      // The first connection's windows were there before the case; a main window is never counted. A popout left in the
-      // workspace comes back after a reload under a new target id, which would read as opened by the case: with one there
-      // at the start, the watch stays off (said once), rather than failing a case that opened nothing.
-      const before = targets.filter(opened);
-      for (const target of before) note(target.id, target.url);
-      if (watching === null) {
-        watching = before.length === 0;
-        markWindowWatch(watching ? 'watched' : `not watched: ${before.length} window(s) besides the main one were open before the case`);
-        if (!watching) console.error(`${before.length} window(s) besides the main one were open on port ${port} before the case; windows it opens are not watched (docs/harness.md「専用の Obsidian を並べる」).`);
+      const watch = windowWatchState();
+      const pages = targets.filter(target => target.type === 'page');
+      const mains = list => list.filter(target => target.type === 'page' && isMain(target)).length;
+      if (watch.on === null) {
+        // The first connection's windows were there before the case. A popout left in the workspace comes back after a
+        // reload under a new target id, which would read as opened by the case: with one there at the start, the watch
+        // stays off (said once, and in the record), rather than failing a case that opened nothing.
+        for (const target of pages) watch.seen.add(target.id);
+        watch.mains = mains(pages);
+        const left = pages.filter(target => !isMain(target) && !isDevtools(target)).length;
+        watch.on = left === 0;
+        markWindowWatch(watch.on ? 'watched' : `not watched: ${left} window(s) besides the main one were open before the case`);
+        if (!watch.on) console.error(`${left} window(s) besides the main one were open on port ${port} before the case; windows it opens are not watched (docs/harness.md「専用の Obsidian を並べる」).`);
+      } else if (watch.on) {
+        // Windows that came while no connection was open (a reload): a main window only if there are more of them now.
+        for (const target of pages) {
+          if (watch.seen.has(target.id)) continue;
+          watch.seen.add(target.id);
+          if (!isDevtools(target) && (!isMain(target) || mains(pages) > watch.mains)) noteShared(`opened a window (${target.url || 'about:blank'}) on port ${port}`);
+        }
       }
       socket.addEventListener('message', event => {
-        const message = JSON.parse(event.data);
-        const info = message.method === 'Target.targetCreated' ? message.params?.targetInfo : null;
-        if (info && opened(info)) note(info.targetId, info.url);
+        if (!watch.on || typeof event.data !== 'string' || !event.data.includes('"Target.targetCreated"')) return;
+        const info = JSON.parse(event.data).params?.targetInfo;
+        if (info?.type !== 'page' || watch.seen.has(info.targetId)) return;
+        watch.seen.add(info.targetId);
+        // A target has no url when it is created (DevTools neither, artifacts/lev-327/devtools-probe.json): it is read
+        // from the list a moment later, and `finish` waits for the check.
+        trackWindowCheck((async () => {
+          await wait(300);
+          const now = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json()).catch(() => []);
+          const target = now.find(item => item.id === info.targetId) ?? info;
+          if (isDevtools(target) || (isMain(target) && mains(now) <= watch.mains)) return;
+          noteShared(`opened a window (${target.url || 'about:blank'}) on port ${port}`);
+        })());
       });
       await send('Target.setDiscoverTargets', { discover: true });
     }

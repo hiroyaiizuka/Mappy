@@ -14,7 +14,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { connect as connectTcp, createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +40,14 @@ export const PORT = process.env.MAPPY_E2E_PORT ?? '9231';
  * second instance, or another checkout's own test vault); cdp.mjs refuses one without the marker `prepare-test-vault`
  * leaves (AGENTS.md: 本番 Vault をテスト対象にしない).
  */
-export const VAULT = canonical(process.env.MAPPY_E2E_VAULT || join(root, 'test-vault'));
+export const VAULT = resolveVault(process.env.MAPPY_E2E_VAULT);
+/**
+ * `MAPPY_E2E_VAULT` as a path: a relative one from the project, as `harness:prepare` and `harness:preflight` read it
+ * (scripts/preflight.mjs's `harnessVault`), wherever the case runs from; unset, the project's `test-vault`.
+ */
+export function resolveVault(value) {
+  return canonical(value ? resolve(root, value) : join(root, 'test-vault'));
+}
 export const PROFILE = process.env.MAPPY_E2E_PROFILE ? canonical(process.env.MAPPY_E2E_PROFILE) : null;
 /** Seconds `MAPPY_E2E_WAIT` gives (default 1800); anything but a number of seconds is refused, not waited for ever. */
 export function waitSeconds(value = process.env.MAPPY_E2E_WAIT) {
@@ -80,16 +87,21 @@ const psEnv = () => ({ ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' });
  * process's start, so a pid the system has given to a new process since does not keep a dead entry alive. One `ps` for
  * all of them; nothing is signalled.
  */
-export function processStarts(pids) {
+export function processStarts(pids, { run = spawnSync } = {}) {
   const starts = new Map();
   if (pids.length === 0) return starts;
-  const result = spawnSync('ps', ['-p', pids.join(','), '-o', 'pid=,lstart='], { encoding: 'utf8', env: psEnv() });
+  const result = run('ps', ['-p', pids.join(','), '-o', 'pid=,lstart='], { encoding: 'utf8', env: psEnv() });
   // ps that did not run says nothing about the processes: every entry would read as dead (and be removed).
   if (result.error || result.status === null) throw new Error(`Could not run ps (${result.error?.message ?? result.signal}), so who holds the register cannot be read. No action taken.`);
-  // One pid ps refuses (macOS: "process id too large") makes it print none of the others: ask for each one then.
-  if (result.status !== 0 && result.stderr && pids.length > 1) {
-    for (const pid of pids) for (const [found, start] of processStarts([pid])) starts.set(found, start);
-    return starts;
+  if (result.status !== 0 && result.stderr) {
+    // One pid ps refuses (macOS: "process id too large") makes it print none of the others: ask for each one then.
+    if (pids.length > 1) {
+      for (const pid of pids) for (const [found, start] of processStarts([pid], { run })) starts.set(found, start);
+      return starts;
+    }
+    // A pid no process can have is not running; any other refusal says nothing about the process (it may be running).
+    if (/process id too large|invalid process id/iu.test(result.stderr)) return starts;
+    throw new Error(`Could not run ps for pid ${pids[0]} (${result.stderr.trim()}), so who holds the register cannot be read. No action taken.`);
   }
   for (const line of (result.stdout ?? '').split('\n')) {
     const match = /^\s*(\d+)\s+(\S.*?)\s*$/u.exec(line);
@@ -211,7 +223,8 @@ export async function claimInstance(options = {}) {
     held = null;
   };
   process.on('exit', release);
-  held = { file, entry, release, shared: [] };
+  // `watch`: what cdp.mjs has seen of the instance's windows for this entry (its connections share it; a reload reconnects).
+  held = { file, entry, release, shared: [], watch: { on: null, seen: new Set(), mains: 0, pending: [] } };
   return held;
 }
 
@@ -235,6 +248,19 @@ export const sharedUses = () => [...(held?.shared ?? [])];
 /** Whether cdp.mjs watches the windows this process opens (`watched`, or `not watched: <why>`), for the record. */
 export function markWindowWatch(state) {
   if (held) held.windows = state;
+}
+
+/** What cdp.mjs keeps of the windows it has seen for this process's entry, or null without one. */
+export const windowWatchState = () => held?.watch ?? null;
+
+/** A check cdp.mjs runs on a new window (its url comes a moment after it is created), for `finish` to wait for. */
+export function trackWindowCheck(check) {
+  held?.watch.pending.push(check);
+}
+
+/** Waits for the window checks still running, so a window the case opened just before its end is counted. */
+export async function settleWindowChecks() {
+  await Promise.allSettled(held?.watch.pending ?? []);
 }
 
 /** What `markWindowWatch` said, or null (a solo process, or one that never reached a main window). */
@@ -275,8 +301,17 @@ export const QUIT = "setTimeout(() => require('electron').remote.app.quit(), 0);
 /** Whether the DevTools server on `port` answers (the instance is up). */
 export const portAnswers = port => fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false);
 
-/** Whether nothing listens on 127.0.0.1:`port` (Obsidian's DevTools server binds there). */
-export function portFree(port) {
+/**
+ * Whether nothing listens on 127.0.0.1:`port` (Obsidian's DevTools server binds there): nothing answers a connection
+ * there (a listener on every address does; binding 127.0.0.1 alone can succeed beside it on macOS), and the port binds.
+ */
+export async function portFree(port) {
+  const answered = await new Promise(resolve_ => {
+    const socket = connectTcp({ port: Number(port), host: '127.0.0.1' });
+    socket.once('connect', () => { socket.destroy(); resolve_(true); });
+    socket.once('error', () => resolve_(false));
+  });
+  if (answered) return false;
   return new Promise(resolve_ => {
     const server = createServer();
     server.once('error', () => resolve_(false));
@@ -346,15 +381,27 @@ export function profilesWithVault(vault, { profiles = runningProfiles(), everyda
  * inside this checkout's `artifacts/` is launched again, or the one `MAPPY_E2E_PROFILE` names; with `MAPPY_E2E_PROFILE`
  * set, a window that runs with another profile is refused. Both before anything is quit (never the everyday profile).
  */
-export function relaunchProfile(running, expected = PROFILE, { artifacts = join(root, 'artifacts'), everyday = EVERYDAY_PROFILE } = {}) {
+export function relaunchProfile(running, expected = PROFILE, { artifacts = join(root, 'artifacts'), everyday = EVERYDAY_PROFILE, port = PORT } = {}) {
   if (typeof running !== 'string' || running === '') throw new Error('The window did not say which profile it runs with. No action taken.');
   if (expected !== null && !samePath(expected, running)) {
-    throw new Error(`The Obsidian on port ${PORT} runs with the profile ${running}, not ${expected} (MAPPY_E2E_PROFILE). No action taken.`);
+    throw new Error(`The Obsidian on port ${port} runs with the profile ${running}, not ${expected} (MAPPY_E2E_PROFILE). No action taken.`);
   }
-  const real = canonical(running);
-  const daily = canonical(everyday);
-  if (real === daily || isInside(daily, real) || (expected === null && !isInside(canonical(artifacts), real))) {
-    throw new Error(`The Obsidian on port ${PORT} runs with the profile ${running}, not one inside ${artifacts} (or MAPPY_E2E_PROFILE); it is not quit and launched again. No action taken.`);
+  try {
+    if (expected === null) testProfile(running, { artifacts, everyday }); else if (isEveryday(running, everyday)) throw new Error('everyday');
+  } catch {
+    throw new Error(`The Obsidian on port ${port} runs with the profile ${running}, not one inside ${artifacts} (or MAPPY_E2E_PROFILE); it is not quit and launched again. No action taken.`);
   }
   return running;
+}
+
+const isEveryday = (path, everyday) => { const real = canonical(path); const daily = canonical(everyday); return real === daily || isInside(daily, real); };
+
+/**
+ * `path` if it is a profile the harness may launch and quit (start, stop, E59's relaunch): inside this checkout's
+ * `artifacts/` with its links resolved, and never the everyday Obsidian's. Otherwise it throws.
+ */
+export function testProfile(path, { artifacts = join(root, 'artifacts'), everyday = EVERYDAY_PROFILE } = {}) {
+  if (isEveryday(path, everyday)) throw new Error(`The profile ${path} is the everyday Obsidian's, which the harness never launches or quits. No action taken.`);
+  if (!isInside(canonical(artifacts), canonical(path))) throw new Error(`The profile must be inside ${artifacts}, not ${path}. No action taken.`);
+  return path;
 }

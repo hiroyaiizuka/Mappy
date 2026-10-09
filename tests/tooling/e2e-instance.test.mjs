@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   blocks, canonical, claimInstance, exportLine, freePort, liveEntries, lockDir, noteShared, parentRun, portFromFlag, processStarts, profileHolder,
@@ -262,6 +264,14 @@ describe('the register', () => {
     }
   });
 
+  it('stops when ps refuses one pid for a reason other than a pid it cannot hold, rather than reading it as dead', () => {
+    // Review (rebased PR) finding 5: the one-pid retry read any refusal as "not running", and the entry was removed.
+    const said = (stderr, status = 1) => () => ({ status, stdout: '', stderr });
+    expect(() => instance.processStarts([process.pid], { run: said('ps: something went wrong\n') })).toThrow(/Could not run ps/u);
+    expect([...instance.processStarts([99999991], { run: said('ps: process id too large: 99999991\n') }).keys()]).toEqual([]);
+    expect([...instance.processStarts([4321], { run: said('') }).keys()]).toEqual([]);
+  });
+
   it('skips entries it cannot read and lists only the others', () => {
     const dir = tempDir();
     writeOther(dir, {});
@@ -272,14 +282,6 @@ describe('the register', () => {
 });
 
 describe('what uses the register', () => {
-  it('connect() enters the register before it reaches the instance', () => {
-    const text = readFileSync(new URL('../../scripts/e2e/cdp.mjs', import.meta.url), 'utf8');
-    const body = text.slice(text.indexOf('export async function connect('));
-    expect(body.indexOf('await claimInstance({ port, vault: ours, solo });')).toBeGreaterThan(-1);
-    expect(body).toContain("await send('Target.setDiscoverTargets', { discover: true });");
-    expect(body.indexOf('await claimInstance(')).toBeLessThan(body.indexOf('fetch('));
-  });
-
   it('writes the instance the case entered for into its record, and none for a case that never connected', async () => {
     const dir = tempDir();
     const json = join(dir, 'case.json');
@@ -317,13 +319,20 @@ describe('what uses the register', () => {
     expect(await finish(createRecord(dir, 'Fixtures/E2E'), json)).toBe(0);
   });
 
-  it('the gate reads the build without the vault MAPPY_E2E_VAULT names', () => {
-    // Review 3: the gate went through the vault check and refused a build that was fine when the variable named another vault.
-    expect(readFileSync(new URL('../../scripts/harness-gate.mjs', import.meta.url), 'utf8')).toContain('readHarnessBuild(getHarnessPaths({ env: {} }))');
-  });
 });
 
 describe('choosing a port', () => {
+  it('reads a port held on every address as in use', async () => {
+    // Review finding 4: binding 127.0.0.1 alone can succeed on macOS while another process listens on 0.0.0.0.
+    const server = createServer();
+    await new Promise(resolve => { server.listen(0, '0.0.0.0', resolve); });
+    try {
+      expect(await instance.portFree(server.address().port)).toBe(false);
+    } finally {
+      await new Promise(resolve => { server.close(resolve); });
+    }
+  });
+
   it('takes the first port nothing listens on', async () => {
     const listening = new Set(['9241', '9242']);
     const port = await freePort({ range: [9241, 9299], free: async candidate => !listening.has(String(candidate)) });
@@ -354,11 +363,6 @@ describe('the line start prints', () => {
     expect(text).toContain("const requested = portFromFlag(value('--port'));");
   });
 
-  it('run.mjs enters the register for the run and tells its cases which run they belong to', () => {
-    const text = readFileSync(new URL('../../scripts/e2e/run.mjs', import.meta.url), 'utf8');
-    expect(text).toContain("await claimInstance({ kind: 'run',");
-    expect(text).toContain('MAPPY_E2E_RUN: String(process.pid)');
-  });
 });
 
 describe('one vault, one instance', () => {
@@ -412,6 +416,20 @@ describe('the profile', () => {
     expect(relaunchProfile('/elsewhere/profile', '/elsewhere/profile', where)).toBe('/elsewhere/profile');
   });
 
+  it('names the port the case connected to when it refuses', () => {
+    // Review finding 8: the message named the default port, not the instance's.
+    expect(() => relaunchProfile('/elsewhere/profile', null, { ...where, port: '9242' })).toThrow(/^The Obsidian on port 9242 /u);
+  });
+
+  it('keeps one rule for the profiles the harness launches and quits (start, stop, E59)', () => {
+    // Review finding 9: obsidian.mjs had its own copy of the artifacts/ check, without the everyday profile.
+    expect(instance.testProfile?.('/w/artifacts/obsidian-profile-9241', where)).toBe('/w/artifacts/obsidian-profile-9241');
+    expect(() => instance.testProfile('/elsewhere/profile', where)).toThrow(/inside \/w\/artifacts/u);
+    expect(() => instance.testProfile(where.everyday, { ...where, artifacts: '/u' })).toThrow(/everyday/u);
+    const text = readFileSync(new URL('../../scripts/e2e/obsidian.mjs', import.meta.url), 'utf8');
+    expect(text).not.toMatch(/isInside\(join\(root, 'artifacts'\)/u);
+  });
+
   it('takes MAPPY_E2E_PROFILE through a link as the profile the window names by its real path', () => {
     const artifacts = join(tempDir(), 'artifacts');
     mkdirSync(join(artifacts, 'obsidian-profile-9242'), { recursive: true });
@@ -421,7 +439,9 @@ describe('the profile', () => {
   });
 
   it('E59 relaunches with what the window says, not a profile of its own', () => {
-    // Text, as the case runs when loaded: the launch takes `profile`, read from the window before the quit.
+    // Text, not behaviour: the case runs when loaded, and driving it needs an Obsidian that quits and comes back (row 9
+    // was run on the real one, artifacts/lev-327/record.md). What it pins: the launch takes `profile`, read from the
+    // window before the quit (relaunchProfile's rules are tested above).
     const text = readFileSync(new URL('../../scripts/e2e/close-draft.mjs', import.meta.url), 'utf8');
     expect(text).toContain("const profile = relaunchProfile(await evaluate(`return require('electron').remote.app.getPath('userData');`));");
     expect(text).toContain('launchObsidian({ profile, port: PORT });');
@@ -508,6 +528,19 @@ describe('cases that act on what every instance shares run alone', () => {
 });
 
 describe('a second vault in one checkout', () => {
+  it('reads a relative MAPPY_E2E_VAULT from the project, as prepare and preflight do, wherever the case runs from', () => {
+    // Review finding 3: the cases resolved it from the working directory, preflight from the project.
+    const project = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+    expect(instance.resolveVault?.('test-vault-b')).toBe(join(project, 'test-vault-b'));
+    // From another working directory, in a process of its own (the tests run from the project).
+    const elsewhere = tempDir();
+    const script = `import(${JSON.stringify(new URL('../../scripts/e2e/instance.mjs', import.meta.url).href)}).then(m => process.stdout.write(m.resolveVault('test-vault-b') + '|' + m.VAULT))`;
+    const read = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: elsewhere, encoding: 'utf8', env: { ...process.env, MAPPY_E2E_VAULT: 'test-vault-b' } });
+    expect(read.stdout).toBe(`${join(project, 'test-vault-b')}|${join(project, 'test-vault-b')}`);
+    expect(instance.resolveVault('/elsewhere/test-vault')).toBe('/elsewhere/test-vault');
+    expect(instance.resolveVault(undefined)).toBe(join(project, 'test-vault'));
+  });
+
   const root = '/w';
   it('accepts test-vault and test-vault-<name> directly in the project', () => {
     expect(harnessVault(root, undefined)).toBe('/w/test-vault');

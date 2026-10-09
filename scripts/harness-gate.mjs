@@ -146,6 +146,14 @@ function caseReasons(label, record, { head, build, sha256 }) {
  * `json` null when unreadable. `expected`: `{ build, sha256 }`, `sha256` null when this checkout cannot vouch for a
  * build.
  */
+/**
+ * The packaged build's files (dist/mappy, checked against the root build): the build only. The vault `MAPPY_E2E_VAULT`
+ * names (perhaps another checkout's) is not this gate's to check, so it is not read (LEV-327).
+ */
+export function packagedBuild() {
+  return readHarnessBuild(getHarnessPaths({ env: {} })).files;
+}
+
 export function evaluateGate({ issue, pr, prAfter, receipt, ack, e2e, expected, cases = [], ci = {} }) {
   const required = [...new Set([...ALWAYS_REQUIRED, ...(ci.required ?? [])])];
   const skippable = ci.skippable ?? [];
@@ -281,8 +289,7 @@ function collect(options, pr) {
   if (build !== 'release') local.push(`only the release build (dist/mappy) is compared here, not ${build}`);
   if (local.length === 0) {
     try {
-      // The build only: the vault MAPPY_E2E_VAULT names (perhaps another checkout's) is not this gate's to check.
-      const { files } = readHarnessBuild(getHarnessPaths({ env: {} }));
+      const files = packagedBuild();
       sha = Object.fromEntries(pluginFiles.map(file => [file, createHash('sha256').update(files.get(file)).digest('hex')]));
     } catch (error) { local.push(`no packaged build to compare with: ${error.message}`); }
   }

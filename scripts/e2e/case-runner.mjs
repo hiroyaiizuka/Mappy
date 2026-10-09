@@ -7,7 +7,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { heldEntry, sharedUses, windowWatch } from './instance.mjs';
+import { heldEntry, settleWindowChecks, sharedUses, windowWatch } from './instance.mjs';
 import { provenance } from './provenance.mjs';
 
 /**
@@ -67,6 +67,7 @@ export async function finish(record, jsonPath) {
   // The instance the case entered for (instance.mjs, LEV-327), so records of instances run side by side tell which is
   // which; null for a case that never connected (memory-procedure). A case that opened a window without asking to run
   // alone (cdp.mjs) took the OS focus from whatever ran beside it: it fails, so its `solo` gets written.
+  await settleWindowChecks();
   const entry = heldEntry();
   // `windows`: whether the windows it opened were watched (cdp.mjs stops when some were open before the case).
   record.instance = entry ? { port: entry.port, vault: entry.vault, solo: entry.solo, windows: windowWatch() } : null;
