@@ -174,17 +174,21 @@ try {
         const after = await shown();
         const redoKey = await press(true);
         const redone = await settled(shape.written);
-        return { before, undoKey, undone, after, redoKey, redone };
+        const shownAgain = await evaluate(`${VIEW} return nodes().map(label).filter(title => title === ${JSON.stringify(shape.name)}).length;`);
+        return { before, undoKey, undone, after, redoKey, redone, shownAgain };
       });
       check(result?.undoKey?.[0]?.handled === true, `${label}: ⌘Z in the draft was not taken (${JSON.stringify(result?.undoKey)})`);
       check(result?.undone?.draft === null, `${label}: the draft is still open after ⌘Z (${JSON.stringify(result?.undone?.draft)})`);
       check(result?.undone?.source === shape.source, `${label}: ⌘Z left ${JSON.stringify(result?.undone?.source)}, not the note before the addition`);
       check(result?.undone?.inCanvas === true, `${label}: the keyboard is not on the map after ⌘Z`);
       check(JSON.stringify(result?.after?.selected) === JSON.stringify(result?.before?.selected), `${label}: ⌘Z selected ${JSON.stringify(result?.after?.selected)}, not ${JSON.stringify(result?.before?.selected)} as before the addition`);
-      check(JSON.stringify(result?.after?.folded) === JSON.stringify(result?.before?.folded), `${label}: folded after ⌘Z ${JSON.stringify(result?.after?.folded)}, before ${JSON.stringify(result?.before?.folded)}`);
+      // The fold the addition opened stays open, so that ⌘⇧Z shows the node it brings back (review 4).
+      const folded = (result?.before?.folded ?? []).filter(title => !shape.fold || title !== shape.target);
+      check(JSON.stringify(result?.after?.folded) === JSON.stringify(folded), `${label}: folded after ⌘Z ${JSON.stringify(result?.after?.folded)}, not ${JSON.stringify(folded)}`);
       check(JSON.stringify(result?.after?.viewport) === JSON.stringify(result?.before?.viewport), `${label}: viewport after ⌘Z ${JSON.stringify(result?.after?.viewport)}, before ${JSON.stringify(result?.before?.viewport)}`);
       if (shape.fold) check(result?.before?.folded?.includes(shape.target), `${label}: ${shape.target} was not folded before the addition (the row's premise)`);
       check(result?.redoKey?.[0]?.handled === true && result?.redone?.source === shape.written, `${label}: ⌘⇧Z after it did not bring the node back (${JSON.stringify(result?.redoKey)}, ${JSON.stringify(result?.redone?.source)})`);
+      check(result?.shownAgain === 1, `${label}: ⌘⇧Z brought the node back into the note but the map shows ${result?.shownAgain} of it`);
       check((result?.undone?.messages ?? []).length === 0 && (result?.redone?.messages ?? []).length === 0, `${label}: messages ${JSON.stringify([result?.undone?.messages, result?.redone?.messages])}`);
     }
 

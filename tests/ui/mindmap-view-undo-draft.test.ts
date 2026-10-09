@@ -190,7 +190,7 @@ describe('⌘Z in the draft a new node opened takes the node back as Escape does
     expect(mounted.source()).toBe(LIST);
   });
 
-  it('puts back the fold the addition opened, the selection and the viewport, as Escape does (review 1)', async () => {
+  it('puts back the selection and the viewport as Escape does, and keeps the fold open so ⌘⇧Z shows the node (review 4)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('温泉旅行'), ' ');
     await mounted.settle();
@@ -204,10 +204,29 @@ describe('⌘Z in the draft a new node opened takes the node back as Escape does
     mounted.key(draft(mounted, t().newNodeTitle), 'z', { metaKey: true });
     await mounted.settle();
     expect(mounted.source()).toBe(LIST);
-    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(true);
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(false);
     expect(selectedNames(mounted)).toEqual(['温泉旅行']);
     expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.node('温泉旅行'));
     expect(mounted.view.getState().viewport).toEqual(viewport);
+    mounted.key(mounted.node('温泉旅行'), 'z', { metaKey: true, shiftKey: true });
+    await mounted.settle();
+    expect(nodeElements(mounted, t().newNodeTitle)).toHaveLength(1);
+  });
+
+  it('leaves the view to a second ⌘Z pressed while the take-back is written (review 4)', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'F2');
+    type(draft(mounted, '持ち物'), '荷物');
+    mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
+    await mounted.settle();
+    mounted.key(mounted.select('温泉旅行'), 'Tab');
+    await mounted.settle();
+    mounted.key(draft(mounted, t().newNodeTitle), 'z', { metaKey: true });
+    // The second ⌘Z, before the take-back has settled: it undoes the rename, whose node it selects.
+    mounted.key(mounted.canvas.ownerDocument.activeElement ?? mounted.canvas, 'z', { metaKey: true });
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST);
+    expect(selectedNames(mounted)).not.toEqual(['温泉旅行']);
   });
 });
 

@@ -290,6 +290,8 @@ export class MindmapView extends FileView {
    * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
    */
   private pendingTopic: { id: string; layout: LayoutMode; position: TopicPosition } | null = null;
+  /** How many ⌘Z／⌘⇧Z this view has been asked for: a take-back that a later one overtook leaves the view to it (`retract`). */
+  private historySteps = 0;
   private refreshTimer: number | undefined;
   /** The refresh running now, if any: what the export waits for when the debounce has already fired. */
   private refreshing: Promise<void> | undefined;
@@ -2246,14 +2248,18 @@ export class MindmapView extends FileView {
    */
   private async retract(file: TFile, created: Created, nodeId: string, redoable = false): Promise<void> {
     if (file !== this.file || this.closed || this.saving) { this.draw(); return; }
+    // A ⌘Z／⌘⇧Z taken after this one (the keyboard is the map's from the draft's close) shows its own step: the selection
+    // and the viewport from before the addition are not put back over it (review 4 of LEV-331).
+    const steps = this.historySteps;
     try {
       await this.writeOwn(created.write.after, file, async target => {
         const write = await this.store.retract(target, created.write, { redoable });
         if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
         // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
         if (!created.previous) this.deselect();
-        // The folds the addition opened close again (the ids are carried over the re-read).
-        this.collapsed = new Set(created.collapsed);
+        // The folds the addition opened close again (the ids are carried over the re-read). Not after ⌘Z: ⌘⇧Z brings the
+        // node back where it is still in sight, instead of inside a closed fold (review 4 of LEV-331).
+        if (!redoable) this.collapsed = new Set(created.collapsed);
         return { ...write, carried: [] };
       });
     } catch (error) {
@@ -2263,7 +2269,7 @@ export class MindmapView extends FileView {
       if (this.file === file && !this.closed) this.draw();
       return;
     }
-    if (this.file !== file || this.closed || !this.document) return;
+    if (this.file !== file || this.closed || !this.document || this.historySteps !== steps) return;
     if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
     // Nothing was selected (a topic added by a double click on the empty canvas): the canvas took the keyboard when the
     // draft closed (`editTitle`); it is given back only if the re-read dropped it, not taken from where the user moved it.
@@ -2272,7 +2278,7 @@ export class MindmapView extends FileView {
     // (that frame keeps what is on screen in place, and would pan it again): no reveal is left for later either.
     this.revealId = null;
     if (this.layoutFrame !== undefined) await this.nextFrame();
-    if (this.file !== file || this.closed) return;
+    if (this.file !== file || this.closed || this.historySteps !== steps) return;
     this.viewport.set(created.viewport);
   }
 
@@ -2479,6 +2485,7 @@ export class MindmapView extends FileView {
   private history(direction: "undo" | "redo"): void {
     const file = this.file;
     if (!file) return;
+    this.historySteps += 1;
     this.run(async () => {
       // An open draft is measured against the step as against any write of the map's own (`writeOwn`, LEV-141): the
       // step is the user's, and saving the draft must not tell them the note changed under it. Read before the step, so
