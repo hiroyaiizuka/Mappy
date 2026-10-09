@@ -105,6 +105,11 @@ function caseReasons(label, record, { head, build, sha256 }) {
   const thrown = Object.entries(record.steps ?? {})
     .filter(([, value]) => value && typeof value === 'object' && Object.keys(value).length === 1 && 'error' in value);
   if (thrown.length > 0) add('FAIL', `step(s) threw: ${thrown.map(([name]) => name).join(', ')}`);
+  // LEV-327: the instance the case entered for, and whether the windows it opened were watched. A record without it is
+  // from before the register; one whose watch was off (windows were open before it) could have opened a window beside
+  // another instance unseen, so it does not count as a check that ran.
+  if (!Object.hasOwn(record, 'instance')) add('INCOMPLETE', 'no instance (port, vault, whether its windows were watched): a run before LEV-327');
+  else if (typeof record.instance?.windows === 'string' && record.instance.windows.startsWith('not watched')) add('INCOMPLETE', `the windows it opened were ${record.instance.windows}`);
 
   const harness = record.harness;
   if (!harness || typeof harness !== 'object') { add('INCOMPLETE', 'no harness (HEAD, build, sha256): a run before LEV-306'); return reasons; }
@@ -137,6 +142,14 @@ function caseReasons(label, record, { head, build, sha256 }) {
     else if (start.dirty !== false) add('INCOMPLETE', 'whether the tree was clean at the start is not recorded');
   }
   return reasons;
+}
+
+/**
+ * The packaged build's files (dist/mappy, checked against the root build): the build only. The vault `MAPPY_E2E_VAULT`
+ * names (perhaps another checkout's) is not this gate's to check, so it is not read (LEV-327).
+ */
+export function packagedBuild() {
+  return readHarnessBuild(getHarnessPaths({ env: {} })).files;
 }
 
 /**
@@ -281,7 +294,7 @@ function collect(options, pr) {
   if (build !== 'release') local.push(`only the release build (dist/mappy) is compared here, not ${build}`);
   if (local.length === 0) {
     try {
-      const { files } = readHarnessBuild(getHarnessPaths());
+      const files = packagedBuild();
       sha = Object.fromEntries(pluginFiles.map(file => [file, createHash('sha256').update(files.get(file)).digest('hex')]));
     } catch (error) { local.push(`no packaged build to compare with: ${error.message}`); }
   }

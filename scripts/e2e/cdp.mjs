@@ -6,25 +6,19 @@
  * same failure shipped twice (LEV-142 → LEV-146); this file and the cases beside it are committed so
  * every session runs the same steps.
  *
- * The port and the vault are the ones the harness document names, overridable for a second instance:
+ * The instance (port, vault, profile) comes from instance.mjs, overridable to run several side by side (LEV-327):
  *   MAPPY_E2E_PORT      CDP port (default 9231)
  *   MAPPY_E2E_VAULT     absolute path of the vault the window must have open (default: this project's test-vault)
  *   MAPPY_E2E_LANGUAGE  the app language the window must run in (default ja; LEV-226)
+ * `connect()` enters the process in instance.mjs's register before it touches the window, so two runs never drive one
+ * instance or one vault at once, and a case that acts on what every instance shares runs alone (`solo`).
  */
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { canonical, claimInstance, isMain, PORT, VAULT, watchWindows } from './instance.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-
-export const PORT = process.env.MAPPY_E2E_PORT ?? '9231';
-/**
- * The vault a case may drive. `MAPPY_E2E_VAULT` is for a second checkout's own test vault, not for a vault
- * with anything in it: the marker `prepare-test-vault` leaves is required, so a case that writes and deletes
- * notes can only reach a generated one (AGENTS.md: 本番 Vault をテスト対象にしない).
- */
-export const VAULT = process.env.MAPPY_E2E_VAULT ?? resolve(root, 'test-vault');
+export { PORT, VAULT };
 /**
  * The plugin's text follows Obsidian's language (src/i18n: Japanese for `ja`, English otherwise), and the cases find
  * buttons and read notices by their Japanese text. A window in another language is refused rather than driven, so a
@@ -39,9 +33,6 @@ export const LANGUAGE = process.env.MAPPY_E2E_LANGUAGE ?? 'ja';
  * new profile on a Japanese Mac starts in Japanese, LEV-235).
  */
 export const APP_LANGUAGE = "[window.moment?.locale?.() ?? null, window.localStorage.getItem('language'), !!window.app?.workspace?.layoutReady]";
-if (!existsSync(join(VAULT, '.mappy-generated'))) {
-  throw new Error(`${VAULT} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
-}
 
 /** modifier bits of Input.dispatchKeyEvent: Alt=1, Ctrl=2, Meta=4, Shift=8 */
 const KEYS = {
@@ -62,15 +53,26 @@ const KEYS = {
  *
  * `language`: the language the window must run in (default `MAPPY_E2E_LANGUAGE`); E63, E69 and E71, which switch it (language.mjs), pass the
  * one they switched to, and `null` to take the window in whatever language it is (to put it back).
+ *
+ * `solo`: why the case acts on what every instance shares (the OS clipboard, the OS focus, an Obsidian quitting or
+ * launching, frame times); it then waits until no other instance runs anything and holds the others back while it runs
+ * (instance.mjs's `claimInstance`). Given on the case's first `connect()`: the process enters the register once.
+ *
+ * `port`, `vault`: the instance, `MAPPY_E2E_PORT`/`MAPPY_E2E_VAULT` unless given (`npm run harness:obsidian` passes the
+ * one it launched). Only a generated vault is driven: the marker `prepare-test-vault` leaves is required.
  */
-export async function connect({ popout, appless = false, language: expected = LANGUAGE } = {}) {
+export async function connect({ popout, appless = false, language: expected = LANGUAGE, solo = null, port = PORT, vault: ours = VAULT } = {}) {
+  if (!existsSync(join(ours, '.mappy-generated'))) {
+    throw new Error(`${ours} is not a generated test vault (no .mappy-generated). Run npm run harness:prepare there first.`);
+  }
+  await claimInstance({ port, vault: ours, solo });
   // Several vault windows can share the port (another project's test vault in the same profile), and the
   // vault picker (`starter.html`) is a target too: take the index.html window whose vault is ours, and
   // refuse rather than drive someone else's vault.
-  const targets = await fetch(`http://127.0.0.1:${PORT}/json/list`).then(response => response.json());
+  const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json());
   const pages = targets.filter(target => target.type === 'page'
-    && (popout === undefined ? target.url.startsWith('app://obsidian.md/index.html') : target.url === 'about:blank'));
-  if (pages.length === 0) throw new Error(`No Obsidian ${popout === undefined ? 'window' : 'popout window'} on port ${PORT}. See docs/harness.md 実機検証.`);
+    && (popout === undefined ? isMain(target) : target.url === 'about:blank'));
+  if (pages.length === 0) throw new Error(`No Obsidian ${popout === undefined ? 'window' : 'popout window'} on port ${port}. See docs/harness.md 実機検証.`);
 
   const open = async target => {
     const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -105,7 +107,8 @@ export async function connect({ popout, appless = false, language: expected = LA
     const vault = await connection.evaluate('app.vault.adapter.basePath').catch(() => null);
     const marked = popout === undefined
       || await connection.evaluate(`document.body?.dataset.mappyE2ePopout === ${JSON.stringify(String(popout))}`).catch(() => false);
-    if ((vault !== VAULT && !(appless && popout !== undefined)) || !marked) { connection.socket.close(); continue; }
+    const other = typeof vault !== 'string' || canonical(vault) !== canonical(ours);
+    if ((other && !(appless && popout !== undefined)) || !marked) { connection.socket.close(); continue; }
     const { socket, send, evaluate } = connection;
     // A popout shares its app (and language) with the main window: every case connects to that window first.
     // `language`: the cases that switch the app's language (E63, E69, E71) connect in the language they switched to.
@@ -113,16 +116,19 @@ export async function connect({ popout, appless = false, language: expected = LA
     // moment writes region variants in lower case (`zh-tw` for `zh-TW`).
     if (expected !== null && !ready) {
       socket.close();
-      throw new Error(`The Obsidian for ${VAULT} is still loading (its language is not settled yet); retry once it has opened. No action taken.`);
+      throw new Error(`The Obsidian for ${ours} is still loading (its language is not settled yet); retry once it has opened. No action taken.`);
     }
     if (expected !== null && ((loaded ?? '').toLowerCase() !== expected.toLowerCase() || (stored !== null && stored !== expected))) {
       socket.close();
-      throw new Error(`The Obsidian for ${VAULT} runs in "${loaded}" (stored "${stored}"), not "${expected}" (MAPPY_E2E_LANGUAGE). `
+      throw new Error(`The Obsidian for ${ours} runs in "${loaded}" (stored "${stored}"), not "${expected}" (MAPPY_E2E_LANGUAGE). `
         + `Set it in Settings → General → Language, or run localStorage.setItem('language', '${expected}'), then reload the app. No action taken.`);
     }
     // A window behind another (or a locked screen) stops requestAnimationFrame, and with it the map's layout
     // frames and every screenshot; keep it running while the case does its steps (LEV-64, LEV-72).
     await evaluate(`(() => { try { require('electron').remote.getCurrentWebContents().setBackgroundThrottling(false); return true; } catch { return false; } })()`);
+    // A window the instance opens (a popout, the settings window) takes the OS focus from every other instance's window:
+    // a process that did not ask to run alone has it noted, and its record fails (instance.mjs's `watchWindows`).
+    if (popout === undefined) await watchWindows({ socket, send, targets, port });
     return {
       send, evaluate, vault,
       /** The next CDP event named `method` (e.g. `Input.dragIntercepted`), or a rejection after `ms`. */
@@ -163,7 +169,7 @@ export async function connect({ popout, appless = false, language: expected = LA
       get closed() { return socket.readyState !== WebSocket.OPEN; },
     };
   }
-  throw new Error(`No Obsidian ${popout === undefined ? 'window' : `popout window marked ${popout}`} for ${VAULT} on port ${PORT}. No action taken.`);
+  throw new Error(`No Obsidian ${popout === undefined ? 'window' : `popout window marked ${popout}`} for ${ours} on port ${port}. No action taken.`);
 }
 
 /** The plugin build the window is actually running, so a case cannot report on a stale install. */

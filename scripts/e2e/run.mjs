@@ -1,7 +1,11 @@
 /**
- * Runs the real-Obsidian e2e cases (docs/harness.md 実機検証) registered below, one Obsidian instance
- * at a time (only one to drive: docs/linear-workflow.md「Obsidian 実機は1台なので、実機を使うチケットは
- * 同時に1本にする」), each case connecting to it in turn.
+ * Runs the real-Obsidian e2e cases (docs/harness.md 実機検証) registered below on one dedicated Obsidian (the
+ * instance `MAPPY_E2E_PORT`/`MAPPY_E2E_VAULT` name), one case after another, each connecting to it in turn: they
+ * share its window. Another instance (its own port, profile and test vault) can have a run of its own beside this one
+ * (LEV-327, docs/harness.md「専用の Obsidian を並べる」). The run enters instance.mjs's register for its instance and
+ * vault before its first case and holds it to its end (`kind: 'run'`), so another run's cases do not come in between;
+ * each case enters too as it connects (`MAPPY_E2E_RUN` tells it the run it belongs to), and a case marked `solo` waits
+ * for the other instances' cases, not for their runs.
  *
  * Each case stays a standalone script (`node scripts/e2e/<file>.mjs`, wired to its own
  * `npm run harness:e2e:<name>`) run here as its own child process, not imported into this one: a case
@@ -20,6 +24,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { claimInstance, otherInstance, PORT, VAULT } from './instance.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -106,12 +111,19 @@ const run = testCase => new Promise(resolve => {
   if (jsonDir) caseArgs.push('--json', join(jsonDir, `${testCase.name}.json`));
   if (shotDir && testCase.shot) caseArgs.push('--shot', join(shotDir, `${testCase.name}.png`));
   console.log(`\n=== ${testCase.name}: ${testCase.description} ===`);
-  const child = spawn(process.execPath, [join(here, testCase.file), ...caseArgs], { stdio: 'inherit' });
+  const child = spawn(process.execPath, [join(here, testCase.file), ...caseArgs], { stdio: 'inherit', env: { ...process.env, MAPPY_E2E_RUN: String(process.pid) } });
   child.on('exit', code => resolve(code ?? 1));
   child.on('error', error => { console.error(error); resolve(1); });
 });
 
+try {
+  await claimInstance({ kind: 'run', what: `run.mjs${caseName ? ` --case ${caseName}` : ''}` });
+} catch (error) {
+  console.error(error.message);
+  process.exit(2);
+}
 const startedAt = new Date().toISOString();
+console.log(`Instance: port ${PORT}, vault ${VAULT}`);
 const results = [];
 for (const testCase of targets) {
   // A stale <case>.json from an earlier run in the same --json dir must not be mistaken for this run's
@@ -123,18 +135,25 @@ for (const testCase of targets) {
   results.push({ name: testCase.name, description: testCase.description, exitCode, passed: exitCode === 0 });
 }
 
+// Each case's JSON is read back (for a single case too): one another instance's run wrote over it is not this run's
+// (two runs given one --json folder), and its case does not pass here.
+if (jsonDir) {
+  for (const result of results) {
+    let record;
+    try {
+      record = JSON.parse(await readFile(join(jsonDir, `${result.name}.json`), 'utf8'));
+    } catch {
+      continue; // The case did not write its own JSON (it failed before `finish()`, or never ran); the exit code stands.
+    }
+    const other = otherInstance(record);
+    if (other) { result.passed = false; result.notThisRun = other; console.error(`${result.name}: ${other}`); } else result.record = record;
+  }
+}
 const passed = results.every(result => result.passed);
 // Only a full run (no --case) writes summary.json: a single-case run must not silently replace a
 // previous full run's summary with just that one case's result under the same name.
 if (jsonDir && !caseName) {
-  const summary = { startedAt, passed, results };
-  for (const result of summary.results) {
-    try {
-      result.record = JSON.parse(await readFile(join(jsonDir, `${result.name}.json`), 'utf8'));
-    } catch {
-      // The case did not write its own JSON (it failed before `finish()`, or never ran); the exit code stands.
-    }
-  }
+  const summary = { startedAt, instance: { port: PORT, vault: VAULT }, passed, results };
   await writeFile(join(jsonDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
 }
 

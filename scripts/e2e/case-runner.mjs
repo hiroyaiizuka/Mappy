@@ -7,6 +7,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { heldEntry, settleWindowChecks, sharedUses, windowWatch } from './instance.mjs';
 import { provenance } from './provenance.mjs';
 
 /**
@@ -63,6 +64,14 @@ export function makeCheck(record) {
  * same read at `createRecord` as `harness.start`; the gate refuses a record whose two reads differ.
  */
 export async function finish(record, jsonPath) {
+  // The instance the case entered for (instance.mjs, LEV-327), so records of instances run side by side tell which is
+  // which; null for a case that never connected (memory-procedure). A case that opened a window without asking to run
+  // alone (cdp.mjs) took the OS focus from whatever ran beside it: it fails, so its `solo` gets written.
+  await settleWindowChecks();
+  const entry = heldEntry();
+  // `windows`: whether the windows it opened were watched (cdp.mjs stops when some were open before the case).
+  record.instance = entry ? { port: entry.port, vault: entry.vault, solo: entry.solo, windows: windowWatch() } : null;
+  for (const use of sharedUses()) record.failures.push(`${use} without connect({ solo }): another instance's case may have lost the OS focus (docs/harness.md「専用の Obsidian を並べる」)`);
   record.passed = record.failures.length === 0;
   record.harness = { ...provenance(record.vault), start: record.harnessAtStart ?? null };
   if (jsonPath) await writeFile(jsonPath, `${JSON.stringify(record, null, 2)}\n`);

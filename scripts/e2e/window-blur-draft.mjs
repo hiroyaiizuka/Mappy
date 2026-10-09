@@ -38,7 +38,8 @@ const SOURCE = [
 ].join('\n');
 
 const record = createRecord(VAULT, NOTE);
-const main = await connect();
+// The OS focus is every instance's (LEV-327): taking it from this window would blur another instance's too.
+const main = await connect({ solo: 'takes the OS focus from the window and gives it back, and opens a popout window' });
 const evaluate = expression => main.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

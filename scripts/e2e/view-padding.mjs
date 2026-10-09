@@ -40,7 +40,8 @@ const SCHEMES = ['light', 'dark'];
 const TOLERANCE = 0.5;
 
 const record = createRecord(VAULT, NOTE);
-const main = await connect();
+// A popout window takes the OS focus from every other window (LEV-327): run alone.
+const main = await connect({ solo: 'opens a popout window' });
 const evaluate = expression => main.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

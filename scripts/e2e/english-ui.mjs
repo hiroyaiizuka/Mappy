@@ -47,7 +47,8 @@ const POPOVER = ['Switch to Markdown', 'Search and insert a map', 'Export'];
 if (LANGUAGE !== 'ja') throw new Error('E63 starts from the Japanese test Obsidian (MAPPY_E2E_LANGUAGE unset or ja); it switches to English itself.');
 
 const record = createRecord(VAULT, NOTE);
-let cdp = await connect();
+// The settings window takes the OS focus from every other window (LEV-327): run alone.
+let cdp = await connect({ solo: 'opens the settings window' });
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

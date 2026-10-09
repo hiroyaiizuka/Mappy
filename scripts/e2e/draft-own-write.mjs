@@ -36,7 +36,8 @@ const SOURCE = [
 ].join('\n');
 
 const record = createRecord(VAULT, NOTE);
-const cdp = await connect();
+// The OS clipboard is every instance's (LEV-327): run alone.
+const cdp = await connect({ solo: 'puts images and text on the OS clipboard' });
 const evaluate = expression => cdp.evaluate(`(async () => { ${expression} })()`);
 const step = makeStep(record);
 const check = makeCheck(record);

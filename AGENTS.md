@@ -20,7 +20,7 @@
 - runtime はブラウザ互換。Node/Electron や個人パスを持ち込まない。公開 API と scoped CSS を使う。例外は M9 の AI 機能の `src/ai/host/node-host.ts` だけで、`Platform.isDesktopApp` の内側で実行時に Node のモジュールを取りに行く（静的 import はしない。範囲と lint は `docs/architecture.md` §11.1）。
 - ランタイム依存を追加する前に、必要性・バンドル増分を記録する。Mappy はデスクトップ専用（2026-10-02 の本人の決定）なので、モバイル互換性は記録しない（デスクトップの Electron で動くことは確かめる）。
 - 他プラグインは仕様の参考。MarkMind の非公開コードを流用しない。
-- 本番 Vault をテスト対象にしない。自動準備はプロジェクト配下の `test-vault/` のみ。
+- 本番 Vault をテスト対象にしない。自動準備はプロジェクト配下の `test-vault/`（専用の Obsidian を並べるときの 2 つ目からは `test-vault-<名前>/`。`docs/harness.md`「専用の Obsidian を並べる」）のみ。
 - プライマリー（`projects/Mappy` のチェックアウト）は常に `main` に置く。ブランチ作業は `orca worktree create` で作った worktree で行い、プライマリーで `git checkout -b`／`git switch` を実行しない。
 - 1 チケット＝1 worktree＝1 エージェント（`docs/linear-workflow.md`）。**worktree を作る前に `ListAgents` と `orca worktree list` でそのチケットの先客を確認する。いれば新しく作らず、そこにも入らない。** 共有された作業ツリーでは「自分の変更だけを戻す」が成立しない（相手の削除を自分の復元が打ち消す）。触ってしまったら、状態を保存して相手に渡す。
 - 1 セッションで複数のチケットを渡り歩かない。長いセッションほど、序盤に読んだ規約が行動の直前に思い出されなくなる。

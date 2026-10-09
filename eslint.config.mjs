@@ -36,7 +36,7 @@ function nodeOnlyGlobalsOff() {
 
 export default defineConfig(
   globalIgnores([
-    "node_modules/**", "dist/**", "coverage/**", "artifacts/**", "test-vault/**",
+    "node_modules/**", "dist/**", "coverage/**", "artifacts/**", "test-vault/**", "test-vault-*/**",
     "main.js", "build-meta.json", "package-lock.json",
   ]),
   {

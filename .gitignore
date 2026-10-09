@@ -9,6 +9,8 @@ coverage/
 /artifacts/
 /memory/
 /test-vault/
+# 専用の Obsidian を並べるときの 2 つ目からの Vault（LEV-327、scripts/preflight.mjs の vaultName）。
+/test-vault-*/
 # 完了の受領記録と ACK（scripts/handoff.mjs、LEV-306）。プライマリーの直下に置き、worktree からも同じ場所に書く。
 /.tooling/
 .vitest/
