@@ -227,9 +227,10 @@ export class DocumentStore {
    * before it, neither Undo nor Redo has a step for it, and the Redo steps the write dropped are back. For a node the map added and the user dismissed at
    * once (LEV-203: Escape on the new node's draft), which is no edit of theirs to undo or redo. Refused, with the
    * note left as it is, when anything has come after the write (another step, a change from outside). Returns
-   * the write that took it back.
+   * the write that took it back. With `redoable` (⌘Z on that draft, LEV-331) it is an Undo of that one step instead:
+   * checked the same way, it leaves the step for Redo, and the Redo steps the write dropped stay dropped.
    */
-  retract(file: TFile, write: LatestWrite): Promise<LatestWrite> {
+  retract(file: TFile, write: LatestWrite, options: { redoable?: boolean } = {}): Promise<LatestWrite> {
     return this.enqueue(file, async (session) => {
       const current = await this.readCurrent(file);
       if (this.observe(session, current)) throw new ConflictError();
@@ -240,7 +241,9 @@ export class DocumentStore {
       await this.writeSafely(file, session, entry.after, entry.before, entry.inverse);
       session.latest = [];
       session.past.pop();
-      session.future = entry.dropped ?? [];
+      // An Undo of the step pushes it onto `future`, which holds nothing else: every write `retract` takes back (`applyOver`)
+      // emptied it, and nothing has come after it (checked above).
+      session.future = options.redoable ? [entry] : entry.dropped ?? [];
       delete entry.dropped;
       const taken = { before: entry.after, after: entry.before, edits: entry.inverse.map((edit) => ({ ...edit })) };
       this.tell(file, taken);

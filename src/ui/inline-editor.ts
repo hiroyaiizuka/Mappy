@@ -1,5 +1,6 @@
 import { RefusalLine } from "./refusal-line";
 import { t } from "../i18n";
+import { historyKey } from "./history-key";
 
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
@@ -9,11 +10,19 @@ export interface InlineSuggestion {
 export interface InlineEditorOptions {
   initial: string;
   save: (text: string) => Promise<void>;
-  /** `draft`: the text in the editor as it closed (on Escape, the text given up). */
-  finish: (next: "none" | "child", cancelled: boolean, draft: string) => void;
+  /**
+   * `draft`: the text in the editor as it closed (on Escape, the text given up). `byUndo`: the draft was given up by ⌘Z
+   * (`undoCancels`, LEV-331) rather than Escape.
+   */
+  finish: (next: "none" | "child", cancelled: boolean, draft: string, byUndo?: boolean) => void;
   resize: () => void;
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
+  /**
+   * ⌘Z in the draft of a node just added gives the draft up as Escape does while it holds the provisional name untouched
+   * (LEV-331), telling the view it was ⌘Z (`finish`'s `byUndo`). Without it ⌘Z stays the textarea's.
+   */
+  undoCancels?: boolean;
 }
 
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
@@ -87,8 +96,7 @@ export class InlineEditor {
       if (this.suggestion?.handleKey(event)) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        this.dispose();
-        this.options.finish("none", true, this.input.value);
+        this.cancel();
       } else if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         // A line break inside the node (LEV-202), as XMind's Shift+Enter: the textarea's own insertion, which its
         // Undo knows. The save writes it as `<br>` in the title's one line (core/title-breaks).
@@ -96,6 +104,8 @@ export class InlineEditor {
       } else if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         void this.commit(event.key === "Tab" ? "child" : "none");
+      } else if (historyKey(event) === "undo") {
+        this.undo(event);
       }
     });
     this.input.addEventListener("blur", () => {
@@ -206,6 +216,35 @@ export class InlineEditor {
     return task;
   }
 
+  /**
+   * ⌘Z in the draft of a node just added (LEV-331): while it holds the provisional name the node was written with, it has
+   * nothing of its own to lose, so ⌘Z gives it up as Escape does, and the view takes the node back as a step Redo can
+   * bring back. Text typed is the textarea's to take back first, as its own Undo does; once that Undo has brought the
+   * provisional name back, the next ⌘Z gives the draft up. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's,
+   * and so does a draft held with a reason (only its own Enter saves it). While Enter's or Tab's save runs (the draft is
+   * read-only) the key is cancelled and dropped: the save goes on to close the draft or to add a child.
+   */
+  private undo(event: KeyboardEvent): void {
+    if (!this.options.undoCancels || this.held() || this.inPlace) return;
+    if (this.busy) { event.preventDefault(); return; }
+    const initial = this.options.initial;
+    if (this.input.value !== initial || this.written !== initial) return;
+    event.preventDefault();
+    this.cancel(true);
+  }
+
+  /** The draft is given up (Escape, or ⌘Z: `byUndo`): the editor goes, then the view hears the text it held. */
+  private cancel(byUndo = false): void {
+    this.dispose();
+    this.options.finish("none", true, this.input.value, byUndo);
+  }
+
+  /** The draft is done with: the editor goes, then the view hears how it ended (`next`; never a cancel). */
+  private close(next: "none" | "child"): void {
+    this.dispose();
+    this.options.finish(next, false, this.input.value);
+  }
+
   /** One save: the editor closes on success, keeps the draft with the error on refusal. */
   private async settle(next: "none" | "child"): Promise<void> {
     this.busy = true;
@@ -213,8 +252,7 @@ export class InlineEditor {
     try {
       await this.options.save(this.input.value);
       if (this.disposed) return;
-      this.dispose();
-      this.options.finish(next, false, this.input.value);
+      this.close(next);
     } catch (error) {
       if (this.disposed) return;
       this.refusal.show(error);
@@ -241,8 +279,7 @@ export class InlineEditor {
     try {
       await this.options.save(this.input.value);
       if (this.disposed) return;
-      this.dispose();
-      this.options.finish("none", false, this.input.value);
+      this.close("none");
     } finally {
       this.busy = false;
       this.input.readOnly = false;

@@ -339,6 +339,25 @@ describe('DocumentStore', () => {
     expect(store.canRedo(file)).toBe(false);
   });
 
+  // LEV-331: ⌘Z on a new node's untouched draft takes it back as Escape does, but as an Undo that Redo brings back.
+  it('with redoable, takes back the last write as an Undo of it: Redo brings it back, the Redo steps it dropped stay dropped', async () => {
+    const { store, file, disk } = harness('a');
+    await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }]);
+    await store.undo(file);
+    const added = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'c' }], { retractable: true });
+    await expect(store.retract(file, added, { redoable: true })).resolves.toEqual({ before: 'ac', after: 'a', edits: [{ from: 1, to: 2, text: '' }] });
+    expect(disk.get(file.path)).toBe('a');
+    expect(store.canUndo(file)).toBe(false);
+    expect((await store.redo(file)).after).toBe('ac');
+    expect(store.canRedo(file)).toBe(false);
+    expect((await store.undo(file)).after).toBe('a');
+    // Refused as retract is, when something came after the write.
+    const again = await store.applyOver(file, 'a', [{ from: 1, to: 1, text: 'd' }], { retractable: true });
+    await store.apply(file, 'ad', [{ from: 2, to: 2, text: 'e' }]);
+    await expect(store.retract(file, again, { redoable: true })).rejects.toBeInstanceOf(ConflictError);
+    expect(disk.get(file.path)).toBe('ade');
+  });
+
   it('lets the dropped Redo steps go once a write that changes nothing has come after (review 3)', async () => {
     const { store, file } = harness('a');
     await store.apply(file, 'a', [{ from: 1, to: 1, text: 'b' }]);

@@ -290,6 +290,8 @@ export class MindmapView extends FileView {
    * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
    */
   private pendingTopic: { id: string; layout: LayoutMode; position: TopicPosition } | null = null;
+  /** How many ⌘Z／⌘⇧Z this view has been asked for: a take-back that a later one overtook leaves the view to it (`retract`). */
+  private historySteps = 0;
   private refreshTimer: number | undefined;
   /** The refresh running now, if any: what the export waits for when the debounce has already fired. */
   private refreshing: Promise<void> | undefined;
@@ -2241,18 +2243,23 @@ export class MindmapView extends FileView {
    * nothing else is being written; the store still refuses (the node stays, a Notice says why) if a change
    * lands in between: then the node stays as after any Escape, with no error. A topic keeps the point it was
    * pressed at until the section is really gone. The folds the addition opened and the viewport it panned come
-   * back too.
+   * back too. `redoable` (⌘Z on the draft, LEV-331): the addition is undone as a step Redo brings back, not taken back
+   * from the history; everything else is the same.
    */
-  private async retract(file: TFile, created: Created, nodeId: string): Promise<void> {
+  private async retract(file: TFile, created: Created, nodeId: string, redoable = false): Promise<void> {
     if (file !== this.file || this.closed || this.saving) { this.draw(); return; }
+    // A ⌘Z／⌘⇧Z taken after this one (the keyboard is the map's from the draft's close) shows its own step: the selection
+    // and the viewport from before the addition are not put back over it (review 4 of LEV-331).
+    const steps = this.historySteps;
     try {
       await this.writeOwn(created.write.after, file, async target => {
-        const write = await this.store.retract(target, created.write);
+        const write = await this.store.retract(target, created.write, { redoable });
         if (this.pendingTopic?.id === nodeId) this.pendingTopic = null;
         // Nothing selected before the addition stays so: the re-read would otherwise select the first node.
         if (!created.previous) this.deselect();
-        // The folds the addition opened close again (the ids are carried over the re-read).
-        this.collapsed = new Set(created.collapsed);
+        // The folds the addition opened close again (the ids are carried over the re-read). Not after ⌘Z: ⌘⇧Z brings the
+        // node back where it is still in sight, instead of inside a closed fold (review 4 of LEV-331).
+        if (!redoable) this.collapsed = new Set(created.collapsed);
         return { ...write, carried: [] };
       });
     } catch (error) {
@@ -2262,13 +2269,16 @@ export class MindmapView extends FileView {
       if (this.file === file && !this.closed) this.draw();
       return;
     }
-    if (this.file !== file || this.closed || !this.document) return;
+    if (this.file !== file || this.closed || !this.document || this.historySteps !== steps) return;
     if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
+    // Nothing was selected (a topic added by a double click on the empty canvas): the canvas took the keyboard when the
+    // draft closed (`editTitle`); it is given back only if the re-read dropped it, not taken from where the user moved it.
+    else if (this.canvas.ownerDocument.activeElement === this.canvas.ownerDocument.body) this.canvas.focus({ preventScroll: true });
     // The viewport as it was, which showed the node selected then, once the layout of the closed folds is on screen
     // (that frame keeps what is on screen in place, and would pan it again): no reveal is left for later either.
     this.revealId = null;
     if (this.layoutFrame !== undefined) await this.nextFrame();
-    if (this.file !== file || this.closed) return;
+    if (this.file !== file || this.closed || this.historySteps !== steps) return;
     this.viewport.set(created.viewport);
   }
 
@@ -2320,7 +2330,7 @@ export class MindmapView extends FileView {
         renamedOffset = plan.selectionOffset;
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
-      finish: (next, cancelled, text) => {
+      finish: (next, cancelled, text, byUndo) => {
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
         this.renderer.editing(draft.nodeId, false);
@@ -2331,7 +2341,10 @@ export class MindmapView extends FileView {
         // outside), Escape only closes the draft, as on any node.
         if (cancelled && created && text === created.name && !this.saving && this.prepared === 0
           && this.document?.source === created.write.after) {
-          this.run(() => this.retract(file, created, node.id));
+          // The removed draft left the keyboard on the page: the map has it at once, so a key pressed while the take-back
+          // is written (a second ⌘Z, LEV-331) reaches the map.
+          this.canvas.focus({ preventScroll: true });
+          this.run(() => this.retract(file, created, node.id, byUndo));
           return;
         }
         this.draw();
@@ -2347,6 +2360,10 @@ export class MindmapView extends FileView {
       },
       resize: () => { this.scheduleLayout(); },
       restore: () => { this.renderer.editing(draft.nodeId, false); },
+      // ⌘Z in the draft of a node just added, its provisional name untouched (LEV-331), gives it up as Escape does: when
+      // Escape would take the node back, ⌘Z takes it back as an Undo that ⌘⇧Z brings back (`byUndo`), and otherwise only
+      // the draft closes. It never takes another step of the history: that could be another map's edit of the note.
+      undoCancels: created !== undefined,
     });
   }
 
@@ -2468,6 +2485,7 @@ export class MindmapView extends FileView {
   private history(direction: "undo" | "redo"): void {
     const file = this.file;
     if (!file) return;
+    this.historySteps += 1;
     this.run(async () => {
       // An open draft is measured against the step as against any write of the map's own (`writeOwn`, LEV-141): the
       // step is the user's, and saving the draft must not tell them the note changed under it. Read before the step, so
