@@ -107,8 +107,14 @@ describe('⌘Z in the draft a new node opened takes the node back, as Escape doe
     expect(mounted.source()).toBe(LIST);
   });
 
-  it('a free topic from a double click on the empty canvas goes too', async () => {
+  it('a free topic from a double click on the empty canvas goes too, the keyboard left on the map', async () => {
     const mounted = await mount(LIST);
+    // The double click's first click clears the selection: nothing is selected when the topic is added.
+    for (const type of ['pointerdown', 'pointerup'] as const) {
+      mounted.canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    }
+    mounted.canvas.dispatchEvent(new MouseEvent('click', { button: 0, bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    expect(selectedNames(mounted)).toEqual([]);
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
     expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
@@ -117,6 +123,8 @@ describe('⌘Z in the draft a new node opened takes the node back, as Escape doe
     expect(mounted.editor()).toBeNull();
     expect(mounted.source()).toBe(LIST);
     expect(mounted.store.canRedo(mounted.file)).toBe(false);
+    // Found on the real Obsidian (E85): the removed draft left the keyboard on the page, and the next ⌘Z reached nothing.
+    expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.canvas);
   });
 
   // Review 2: what Escape would not take back (something was written since the addition), ⌘Z does not either: the draft

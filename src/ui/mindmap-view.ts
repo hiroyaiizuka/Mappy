@@ -2264,6 +2264,9 @@ export class MindmapView extends FileView {
     }
     if (this.file !== file || this.closed || !this.document) return true;
     if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
+    // Nothing was selected (a topic added by a double click on the empty canvas): the keyboard stays on the map, not on
+    // the page the removed draft left it to, so the next ⌘Z still reaches the map (LEV-331).
+    else this.canvas.focus({ preventScroll: true });
     // The viewport as it was, which showed the node selected then, once the layout of the closed folds is on screen
     // (that frame keeps what is on screen in place, and would pan it again): no reveal is left for later either.
     this.revealId = null;

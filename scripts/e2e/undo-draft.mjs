@@ -124,6 +124,9 @@ const shown = () => evaluate(`${VIEW}
  */
 async function add(shape, layout, { fold = false } = {}) {
   await detachMaps();
+  // A new file each row: the map's history is kept per note while the note reads as the map left it, and a step left to
+  // redo by an earlier row would come back with Escape's take-back (it gives back the Redo steps the addition dropped).
+  await makeDeleteNote(evaluate, shape.note)();
   await makeOpenStep(evaluate, { note: shape.note, source: shape.source, layout })();
   await installGuard();
   await markSeen();
@@ -136,7 +139,8 @@ async function add(shape, layout, { fold = false } = {}) {
   } else {
     // The empty canvas near its top-left corner, away from the fixture's nodes (as E43's double click).
     const point = await evaluate(`${VIEW} const rect = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: rect.left + 40, y: rect.top + 40 };`);
-    before = await shown();
+    // The double click's first click clears the selection: nothing is selected when the topic is added.
+    before = { ...await shown(), selected: [] };
     for (const clickCount of [1, 2]) {
       for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount });
     }
@@ -207,6 +211,7 @@ try {
     const f2Label = `${layout}/f2-untouched`;
     const f2 = await step(f2Label, async () => {
       await detachMaps();
+      await makeDeleteNote(evaluate, LIST_NOTE)();
       await makeOpenStep(evaluate, { note: LIST_NOTE, source: LIST, layout })();
       await installGuard();
       await select('持ち物');
