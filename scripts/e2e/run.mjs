@@ -69,6 +69,7 @@ export const CASES = [
   { name: 'close-draft', file: 'close-draft.mjs', description: 'E59 下書きを開いたままタブを閉じる・プラグインを無効化する × 下書きの形（ふつう・変換中・エラー行つき 2 形・新しいノード）で、下書きが保存される（保存できないものは Notice で知らせる）', shot: false },
   { name: 'exit-draft-recovery', file: 'exit-draft-recovery.mjs', description: 'E84 再読込のときに書き込めなかった下書き（人工の故障でノートを 0 バイトにする）が残り、知らせが出て、救出コマンドで Mappy Recovery/ に別ファイルとして保存される。元のノートは 0 バイトのまま、下書きも残る。一覧の「破棄」は確かめてからその下書き・控えだけを消し、キャンセルでは何も変わらない（LEV-310）', shot: false },
   { name: 'exit-draft-cut', file: 'exit-draft-recovery.mjs', args: ['--cut'], description: 'E84 の --cut（LEV-309）: 人工の故障でノートを前半だけにしても、題名の下書きを書かずに原文ごと残し、知らせが出て、救出できる。元のノートは前半のまま。一覧の「破棄」は確かめてからその下書きだけを消す（LEV-310）', shot: false },
+  { name: 'undo-draft', file: 'undo-draft.mjs', description: 'E85 ノードを作った直後（入力欄が開いたまま）の ⌘Z で作る前に戻り、⌘⇧Z で戻る（Tab のサブトピック・Enter のメイントピック・ルートの Tab・深い Enter・見出し・空白のダブルクリック × 通常マップ・タイムライン）。打った文字は先に入力欄の取り消し、Enter で確定したあとの ⌘Z（LEV-331）', shot: false },
 ];
 
 const args = process.argv.slice(2);

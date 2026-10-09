@@ -643,3 +643,98 @@ describe('InlineEditor DOM interactions', () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 });
+
+// LEV-331: ⌘Z right after Tab／Enter did nothing — the textarea's Undo had nothing (the provisional name was set from
+// outside), and the canvas, which takes ⌘Z for the map, leaves keys in the draft alone. mindmap-view-undo-draft.test.ts
+// has the rows by the shape of the node; these are the editor's own edges.
+describe('⌘Z／⌘⇧Z in the draft (LEV-331)', () => {
+  function withHistory(initial = 'サブトピック') {
+    const history = vi.fn<NonNullable<InlineEditorOptions['history']>>();
+    const host = createHost();
+    const options = {
+      initial,
+      save: vi.fn<InlineEditorOptions['save']>().mockResolvedValue(undefined),
+      finish: vi.fn<InlineEditorOptions['finish']>(),
+      resize: vi.fn<InlineEditorOptions['resize']>(),
+      restore: vi.fn<InlineEditorOptions['restore']>(),
+      history,
+    } satisfies InlineEditorOptions;
+    const editor = new InlineEditor(host, options);
+    editors.add(editor);
+    const input = host.querySelector('textarea');
+    const error = host.querySelector<HTMLDivElement>('[role="alert"]');
+    if (!input || !error) throw new Error('Editor did not create its input and error UI');
+    return { host, options, history, input, error };
+  }
+
+  it('closes a draft holding only what the note has, writes nothing and hands the step to the map', () => {
+    const { host, options, history, input } = withHistory();
+    expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    expect(options.save).not.toHaveBeenCalled();
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, 'サブトピック');
+    expect(history).toHaveBeenCalledExactlyOnceWith('undo');
+    expect(host.querySelector('textarea')).toBeNull();
+    // The finish comes first: the map's step must not meet the draft still open.
+    expect(options.finish.mock.invocationCallOrder[0]).toBeLessThan(history.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('hands ⌘⇧Z to the map while nothing has been typed', () => {
+    const { history, input } = withHistory();
+    expect(key(input, 'Z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true);
+    expect(history).toHaveBeenCalledExactlyOnceWith('redo');
+  });
+
+  it.each([{ altKey: true }, {}])('leaves ⌘⌥Z and a plain z to the textarea (%o)', (init) => {
+    const { history, input } = withHistory();
+    const modifiers = Object.keys(init).length ? { metaKey: true, ...init } : {};
+    expect(key(input, 'z', modifiers).defaultPrevented).toBe(false);
+    expect(history).not.toHaveBeenCalled();
+  });
+
+  it('leaves the keys to a draft without the option, as before', () => {
+    const { options, input } = fixture('サブトピック');
+    expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(false);
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
+  it('keeps the keys in a draft held with a reason: only its own Enter saves it', async () => {
+    const { options, history, input, error } = withHistory();
+    options.save.mockRejectedValueOnce(new Error('外部変更との競合'));
+    key(input, 'Enter');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(error.textContent).toBe('外部変更との競合');
+    expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(false);
+    expect(history).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+
+  it('takes the step after the save Enter started, once that save has closed the draft', async () => {
+    const { options, history, input } = withHistory();
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    input.value = '水着';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    key(input, 'Enter');
+    expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    expect(history).not.toHaveBeenCalled();
+    pending.resolve();
+    await vi.waitFor(() => { expect(history).toHaveBeenCalledExactlyOnceWith('undo'); });
+    expect(options.save).toHaveBeenCalledExactlyOnceWith('水着');
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', false, '水着');
+  });
+
+  it('drops the step when that save is refused and keeps the draft', async () => {
+    const { options, history, input } = withHistory();
+    const pending = pendingSave();
+    options.save.mockReturnValue(pending.promise);
+    key(input, 'Enter');
+    key(input, 'z', { metaKey: true });
+    pending.reject(new Error('外部変更との競合'));
+    await pending.promise.catch(() => undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(history).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
+  });
+});

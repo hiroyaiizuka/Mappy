@@ -2347,6 +2347,9 @@ export class MindmapView extends FileView {
       },
       resize: () => { this.scheduleLayout(); },
       restore: () => { this.renderer.editing(draft.nodeId, false); },
+      // ⌘Z／⌘⇧Z in a draft with nothing typed is the map's (LEV-331): ⌘Z right after Tab／Enter takes the new node back
+      // as one step of the history, which ⌘⇧Z brings back (Escape instead takes it back with no step left).
+      history: direction => { this.history(direction); },
     });
   }
 

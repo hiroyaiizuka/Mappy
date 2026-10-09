@@ -14,6 +14,11 @@ export interface InlineEditorOptions {
   resize: () => void;
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
+  /**
+   * ⌘Z／⌘⇧Z the draft hands to the map (LEV-331): called once the editor has closed (`finish` as a confirm with
+   * nothing to write), with the step the map is to take. Without it the keys stay the textarea's.
+   */
+  history?: (direction: "undo" | "redo") => void;
 }
 
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
@@ -38,6 +43,8 @@ export class InlineEditor {
   private inPlace: Promise<void> | undefined;
   /** The text the note has for this draft: the title it opened on, then what a save in place wrote. */
   private written: string;
+  /** Whether anything was typed into the draft (an `input` event): from then on the textarea has steps of its own to redo. */
+  private typed = false;
   private readonly suggestion: InlineSuggestion | undefined;
   /** Whether the stylesheet sizes the draft to its text (`field-sizing: content`); if not, `measure` does. */
   private readonly sizesItself: boolean;
@@ -70,7 +77,7 @@ export class InlineEditor {
         else if (!doc.hasFocus()) void this.saveInPlace();
       }, 0);
     });
-    this.input.addEventListener("input", () => { this.resize(); });
+    this.input.addEventListener("input", () => { this.typed = true; this.resize(); });
     this.input.addEventListener("pointerdown", event => { event.stopPropagation(); });
     this.input.addEventListener("click", event => { event.stopPropagation(); });
     this.input.addEventListener("dblclick", event => { event.stopPropagation(); });
@@ -96,6 +103,8 @@ export class InlineEditor {
       } else if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         void this.commit(event.key === "Tab" ? "child" : "none");
+      } else if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "z") {
+        this.history(event, event.shiftKey ? "redo" : "undo");
       }
     });
     this.input.addEventListener("blur", () => {
@@ -204,6 +213,30 @@ export class InlineEditor {
     this.inPlace = task;
     this.pending = task;
     return task;
+  }
+
+  /**
+   * ⌘Z／⌘⇧Z in the draft (LEV-331). Text typed and not yet written is the textarea's to take back first, as its own
+   * Undo does; a draft holding only what the note has (a new node's provisional name, a title opened with F2 and left
+   * as it was) has nothing of its own to lose, so it closes and the map takes the step — the node just added goes, as
+   * ⌘Z on the map would take it. ⌘⇧Z goes to the map only while nothing has been typed: after typing, the textarea
+   * may have a step of its own to redo. A draft held with a reason keeps the keys (only its own Enter saves it). While
+   * a save is under way (Enter pressed just before) the draft is read-only and its text is being written: the step
+   * follows the save once it has closed the draft, and is dropped if the save keeps it open.
+   */
+  private history(event: KeyboardEvent, direction: "undo" | "redo"): void {
+    const history = this.options.history;
+    if (!history || this.held()) return;
+    if (this.pending) {
+      event.preventDefault();
+      void this.pending.then(() => { if (this.disposed) history(direction); });
+      return;
+    }
+    if (this.input.value !== this.written || (direction === "redo" && this.typed)) return;
+    event.preventDefault();
+    this.dispose();
+    this.options.finish("none", false, this.input.value);
+    history(direction);
   }
 
   /** One save: the editor closes on success, keeps the draft with the error on refusal. */
