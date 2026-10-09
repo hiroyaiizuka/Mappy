@@ -29,9 +29,11 @@ export type EditCommand =
   /**
    * Append a top-level section at the end of the document: a new free topic (§5 M7). Empty by default
    * (the inline editor names it); `title` writes the heading's text in the same edit, so a map called
-   * with nothing selected (`## ![[map]]`, §5 M12) is one step, as the empty topic is.
+   * with nothing selected (`## ![[map]]`, §5 M12) is one step, as the empty topic is. `position` stores where the
+   * canvas was pressed under the new topic's key in that step too, so Undo and Redo take the point with the section
+   * (LEV-332); a section that becomes the body root (the note's first heading) has no position, and none is written.
    */
-  | { type: 'add-topic'; title?: string }
+  | { type: 'add-topic'; title?: string; position?: TopicPlacement }
   /** Detach a branch into a new top-level section at the end: a free topic placed at `position` (§5 M7 切り離し). */
   | { type: 'detach'; nodeId: string; position?: TopicPlacement }
   | MoveCommand;
@@ -394,8 +396,8 @@ type TopicRole =
  * whose key (`topicKeys`) changes moves to the new key in the same edit set: the second topic of a heading
  * takes the plain key when the first leaves, a renamed topic keeps its position under its new key, a
  * reordered pair swaps. The entry of a topic that leaves the top level (deleted, joined) goes with it, so
- * Undo restores both, and `place` stores the pressed point under the node's key afterwards (a topic named
- * or detached on the map). A plan that changes hands between the body and its topics is left alone rather
+ * Undo restores both, and `place` stores the pressed point under the node's key afterwards (a topic added,
+ * named or detached on the map). A plan that changes hands between the body and its topics is left alone rather
  * than guessed; so is one that moves no entry.
  */
 function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode | undefined, role: TopicRole, place?: TopicPlacement): EditPlan {
@@ -479,7 +481,7 @@ function planFileRootCommand(doc: MindDocument, type: 'rename' | 'add-child', te
 
 export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   // A new section whose text is an ordinal key (`A (2)`) renumbers the topics of that heading: their entries follow.
-  if (command.type === 'add-topic') return withTopicKeys(doc, addTopic(doc, command.title), undefined, 'adds');
+  if (command.type === 'add-topic') return withTopicKeys(doc, addTopic(doc, command.title), undefined, 'adds', command.position);
   const node = getNode(doc, command.nodeId);
   // The file name the map shows for a note without a heading section is named by a heading, never written over (LEV-301).
   if (node.kind === 'root' && standsForFileName(doc) && (command.type === 'rename' || command.type === 'add-child')) {
