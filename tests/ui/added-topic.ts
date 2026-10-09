@@ -7,7 +7,9 @@ import type { MindmapView } from '../../src/ui/mindmap-view';
  */
 export function pressedPoint(view: MindmapView, x: number, y: number): TopicPosition {
   const viewport = view.getState().viewport as { x: number; y: number; scale: number };
-  const origin = (view as unknown as { layout?: { origin: TopicPosition } }).layout?.origin ?? { x: 0, y: 0 };
+  // The body root's top-left on the map, as the view measures the point from it (`topicPoint`): no layout, no measure.
+  const origin = (view as unknown as { layout?: { origin: TopicPosition } }).layout?.origin;
+  if (!origin) throw new Error('The view has not laid the map out: there is no body root to measure the point from');
   return { x: Math.round((x - viewport.x) / viewport.scale - origin.x), y: Math.round((y - viewport.y) / viewport.scale - origin.y) };
 }
 

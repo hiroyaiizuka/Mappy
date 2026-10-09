@@ -63,19 +63,22 @@ const PRESS = { x: 40, y: 40 };
 
 /**
  * The note a double click on the empty canvas leaves (LEV-332): the section at the end and, in the same step, the point it
- * was pressed at under the topic's key (`key`) for `layout`, as a new `mappy-topics` at the end of the front matter, or in
- * a front matter of its own when the note has none (the fixtures hold no `mappy-topics`). The point is read back from
- * `written`, since it depends on the viewport; the rest is spelled out. Null when `written` holds no point for the key.
+ * was pressed at under the topic's key (`key`) for `layout`: at the end of the `mappy-topics` block when the front matter
+ * has one, else as a new key at the end of the front matter, or in a front matter of its own when the note has none (as
+ * `withAddedTopic` in tests/ui/added-topic.ts). The point is read back from `written`, since it depends on the viewport;
+ * the rest is spelled out. Null when `written` holds no point for the key.
  */
 const withTopic = (source, written, layout, key) => {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   const point = new RegExp(`\\n  ${escaped}: \\{ ${layout}: \\[(-?\\d+), (-?\\d+)\\] \\}\\n`, 'u').exec(written);
   if (!point) return null;
-  const entry = `mappy-topics:\n  ${key}: { ${layout}: [${point[1]}, ${point[2]}] }\n`;
+  const entry = `  ${key}: { ${layout}: [${point[1]}, ${point[2]}] }\n`;
   const body = `${source}\n## ${TOPIC}\n`;
-  if (!source.startsWith('---\n')) return `---\n${entry}---\n${body}`;
+  if (!source.startsWith('---\n')) return `---\nmappy-topics:\n${entry}---\n${body}`;
   const closing = source.indexOf('\n---\n', 3) + 1;
-  return `${body.slice(0, closing)}${entry}${body.slice(closing)}`;
+  const block = /^mappy-topics:\n(?: {2}.*\n)*/mu.exec(source.slice(0, closing));
+  const at = block ? block.index + block[0].length : closing;
+  return `${body.slice(0, at)}${block ? '' : 'mappy-topics:\n'}${entry}${body.slice(at)}`;
 };
 
 /** Where the map draws the note's last section of that name (the one added), in map coordinates (its transform): the viewport does not move it. */
@@ -186,12 +189,13 @@ async function add(shape, layout, { fold = false } = {}) {
   }
   let written = shape.written;
   if (!shape.key) {
-    // The section is written with the point; without one (the build before LEV-332) the row goes on, and fails on it.
+    // The section is written with the point. A note without it (the build before LEV-332), or with it spelled otherwise,
+    // is taken as it is, so the row goes on and its LEV-332 checks say what is missing (review 2 of LEV-332).
     const now = await until(async () => {
       const text = await evaluate(`${VIEW} return await source();`);
       return text.endsWith(`\n## ${TOPIC}\n`) ? text : null;
     }, 3000, 'the topic').catch(() => null);
-    written = (now && withTopic(shape.source, now, layout, shape.topic)) ?? shape.written;
+    written = (now && withTopic(shape.source, now, layout, shape.topic)) ?? now ?? shape.written;
   }
   const opened = await settled(written);
   if (opened.source !== written || opened.draft !== shape.name) {
@@ -245,7 +249,7 @@ try {
         const near = result?.place && result?.pressed && Math.abs(result.place.x - result.pressed.x) <= 1 && Math.abs(result.place.y - result.pressed.y) <= 1;
         check(near === true, `${label}: the topic was drawn at ${JSON.stringify(result?.place)}, not where the canvas was pressed ${JSON.stringify(result?.pressed)} (the row's premise)`);
         check(withTopic(shape.source, result?.written ?? '', layout, shape.topic) !== null, `${label}: the addition did not write the pressed point: ${JSON.stringify(result?.written)}`);
-        check(JSON.stringify(result?.placeAgain) === JSON.stringify(result?.place), `${label}: after ⌘⇧Z the topic is drawn at ${JSON.stringify(result?.placeAgain)}, not where it was pressed ${JSON.stringify(result?.place)}`);
+        check(!!result?.placeAgain && JSON.stringify(result.placeAgain) === JSON.stringify(result.place), `${label}: after ⌘⇧Z the topic is drawn at ${JSON.stringify(result?.placeAgain)}, not where it was pressed ${JSON.stringify(result?.place)}`);
       }
       check((result?.undone?.messages ?? []).length === 0 && (result?.redone?.messages ?? []).length === 0, `${label}: messages ${JSON.stringify([result?.undone?.messages, result?.redone?.messages])}`);
     }
