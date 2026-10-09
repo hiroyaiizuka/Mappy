@@ -163,7 +163,7 @@ try {
     // The report's rows: ⌘Z in the draft right after the addition takes the node back as Escape does (review 2 of
     // LEV-331): the note as before the addition, and the selection, folds and viewport as before. Unlike Escape it is an
     // Undo: ⌘⇧Z brings the node back (the person's answer, 2026-10-09).
-    // `fold`: the target folded first, so the addition opens it and the take-back closes it again.
+    // `fold`: the target folded first, so the addition opens it; the take-back by ⌘Z leaves it open (review 4 of LEV-331).
     for (const shape of [...SHAPES, { ...SHAPES[0], id: 'tab-subtopic-folded', target: '温泉旅行', fold: true, written: LIST.replace('  - 予約\n', `  - 予約\n  - ${SUB}\n`) }]) {
       const label = `${layout}/${shape.id}`;
       const result = await step(label, async () => {
