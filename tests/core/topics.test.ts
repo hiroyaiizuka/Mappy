@@ -461,6 +461,45 @@ describe('add-topic appends an empty top-level section at the end of the documen
   });
 });
 
+// LEV-332: the point a topic was added at is written by the addition, so the step Undo takes and Redo brings back holds it.
+describe('add-topic with a position stores the pressed point under the new topic\'s key in the same step', () => {
+  const place = { layout: 'mindmap', x: 40, y: -20 };
+
+  it('makes the header, or adds a key to the one there, with the section in one edit set', () => {
+    const bare = parse('## Root\n- A\n');
+    expect(applyEdits(bare.source, planEdit(bare, { type: 'add-topic', title: 'T', position: place }).edits))
+      .toBe(`---\n${TOPICS_KEY}:\n  T: { mindmap: [40, -20] }\n---\n## Root\n- A\n\n## T\n`);
+    const header = parse('---\nmappy: true\n---\n## Root\n- A\n');
+    const plan = planEdit(header, { type: 'add-topic', title: 'T', position: place });
+    const result = applyEdits(header.source, plan.edits);
+    expect(result).toBe(`---\nmappy: true\n${TOPICS_KEY}:\n  T: { mindmap: [40, -20] }\n---\n## Root\n- A\n\n## T\n`);
+    // The selection is the new title, shifted past the header the same edit set grew.
+    expect(parse(result).nodes.find((node) => node.titleFrom === plan.selectionOffset)?.title).toBe('T');
+    const crlf = parse('## Root\r\n- A\r\n');
+    expect(applyEdits(crlf.source, planEdit(crlf, { type: 'add-topic', title: 'T', position: place }).edits))
+      .toBe(`---\r\n${TOPICS_KEY}:\r\n  T: { mindmap: [40, -20] }\r\n---\r\n## Root\r\n- A\r\n\r\n## T\r\n`);
+  });
+
+  it('stores it under the key the new section takes: a second topic of a heading is `<heading> (2)`, the first keeps its entry', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  T: { mindmap: [1, 1] }\n---\n## Root\n\n## T\n`);
+    const result = applyEdits(doc.source, planEdit(doc, { type: 'add-topic', title: 'T', position: place }).edits);
+    expect(result).toBe(`---\n${TOPICS_KEY}:\n  T: { mindmap: [1, 1] }\n  T (2): { mindmap: [40, -20] }\n---\n## Root\n\n## T\n\n## T\n`);
+  });
+
+  it('takes the layout of an entry its key had already (an orphan) and keeps the others', () => {
+    const doc = parse(`---\n${TOPICS_KEY}:\n  T: { mindmap: [1, 1], timeline: [2, 2] }\n---\n## Root\n`);
+    expect(readTopicPositions(applyEdits(doc.source, planEdit(doc, { type: 'add-topic', title: 'T', position: place }).edits)).get('T'))
+      .toEqual({ mindmap: { x: 40, y: -20 }, timeline: { x: 2, y: 2 } });
+  });
+
+  // A guard (it passes without the position too): the point goes only to a topic's key.
+  it('writes none where the section becomes the body root (the first heading of an empty map)', () => {
+    const empty = parse('---\nmappy: true\n---\n');
+    const plan = planEdit(empty, { type: 'add-topic', title: 'T', position: place });
+    expect(applyEdits(empty.source, plan.edits)).toBe('---\nmappy: true\n---\n\n## T\n');
+  });
+});
+
 describe('rename with a position places a new topic in the same edit set', () => {
   const note = `---\nmappy: true\n---\n## Root\n- Child\n\n## \n`;
 

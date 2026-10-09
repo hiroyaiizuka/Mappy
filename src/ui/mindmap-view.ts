@@ -286,8 +286,9 @@ export class MindmapView extends FileView {
    */
   private snapIndexStale = true;
   /**
-   * Where a topic added on the map was pressed, until a save stores it: the first rename writes it
-   * with the title, a drag replaces it. Kept in the view only, so Escape leaves the topic in place.
+   * Where a topic added on the map was pressed, until its draft is saved or a drag replaces it. The addition writes the
+   * point for the layout it was pressed in (LEV-332); this holds it through a layout switch before the name is saved
+   * (LEV-129), and the rename writes it for the layout then shown.
    */
   private pendingTopic: { id: string; layout: LayoutMode; position: TopicPosition } | null = null;
   /** How many ⌘Z／⌘⇧Z this view has been asked for: a take-back that a later one overtook leaves the view to it (`retract`). */
@@ -1896,9 +1897,10 @@ export class MindmapView extends FileView {
   /**
    * A new top-level section at the end of the note under its provisional name (「トピック」, selected in the
    * draft: LEV-203), edited in place where the canvas was pressed (§5 M7). The position is stored by the edit
-   * that names it, so the title and the `mappy-topics` entry are one step of the history; Escape takes the
-   * section back (no step left for Undo), Undo after a confirmed name removes the name, then the section.
-   * Without a point no position is kept or stored: the topic takes the default place of a topic with
+   * that adds it, so the section and its `mappy-topics` entry are one step of the history: ⌘⇧Z after ⌘Z in the
+   * draft brings the topic back where it was pressed (LEV-332), and Undo after a confirmed name leaves it there.
+   * Escape takes the section back (no step left for Undo), Undo after a confirmed name removes the name, then the
+   * section. Without a point no position is kept or stored: the topic takes the default place of a topic with
    * no `mappy-topics` entry until it is dragged (the 操作 menu of LEV-77 added topics this way; no caller
    * does now, the popover of LEV-81 having no such item).
    */
@@ -1922,7 +1924,7 @@ export class MindmapView extends FileView {
     const position = point ? this.topicPoint(point) : null;
     const before = this.shownState();
     // As a child's provisional name: written into the note, in the app's language (src/i18n).
-    const plan = planEdit(document, { type: "add-topic", title: t().newTopicTitle });
+    const plan = planEdit(document, { type: "add-topic", title: t().newTopicTitle, ...(position ? { position: { layout: this.mode, ...position } } : {}) });
     const write = await this.commit(document.source, plan.edits, file, true);
     if (this.file !== file || this.closed) return;
     const created = this.document ? nodeAt(this.document, plan.selectionOffset) : undefined;

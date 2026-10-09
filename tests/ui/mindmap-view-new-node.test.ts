@@ -15,11 +15,13 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HarnessApp } from '../browser-harness/app';
 import { installObsidianDom } from '../browser-harness/dom';
 import type { MindDocument } from '../../src/core/markdown';
+import { readTopicPositions } from '../../src/core/topics';
 import type { LayoutMode } from '../../src/layout/layout';
 import { ConflictError } from '../../src/obsidian/conflict-error';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
 import { accessibleName } from './accessible-name';
+import { withAddedTopic } from './added-topic';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -97,7 +99,7 @@ describe('the provisional names in an English app', () => {
     expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'));
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
-    expect(mounted.source()).toBe(`${LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n')}\n## Topic\n`);
+    expect(mounted.source()).toBe(withAddedTopic(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'), mounted.source(), { heading: '## Topic', key: 'Topic', layout: 'mindmap' }));
   });
 });
 
@@ -169,7 +171,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
       const mounted = await mount(LIST, layout);
       mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
       await mounted.settle();
-      expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
+      expect(mounted.source()).toBe(withAddedTopic(LIST, mounted.source(), { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout }));
       mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
       await mounted.settle();
       expect(mounted.source()).toBe(LIST);
@@ -377,13 +379,15 @@ describe('a node added on the map opens under its provisional name, selected (LE
     await mounted.settle();
     // A change the view could not see before the store's turn (a race): the store refuses, the section stays.
     mounted.store.retract = () => Promise.reject(new ConflictError());
+    const added = mounted.source();
     mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
     await mounted.settle();
-    expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
+    expect(mounted.source()).toBe(added);
+    expect(added).toBe(withAddedTopic(LIST, added, { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout: 'mindmap' }));
     // A change from outside inside the refresh's debounce is not the user's error to be told about on Escape.
     expect(document.querySelector('.notice')).toBeNull();
     expect(mounted.editor()).toBeNull();
-    // Named later, the topic is stored where it was pressed.
+    // Named later, the topic keeps the point it was pressed at under its new name.
     mounted.key(mounted.select(t().newTopicTitle), 'F2');
     const input = mounted.editor();
     if (!input) throw new Error('F2 did not open the editor');
@@ -392,6 +396,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
     mounted.key(input, 'Enter');
     await mounted.settle();
     expect(mounted.source()).toMatch(/\n {2}後で付けた名前: \{ mindmap: \[-?\d+, -?\d+\] \}\n/u);
+    expect(readTopicPositions(mounted.source()).get('後で付けた名前')).toEqual(readTopicPositions(added).get(t().newTopicTitle));
   });
 });
 

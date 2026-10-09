@@ -20,6 +20,11 @@
  * would not take it back (something else was written since the addition), only the draft closes. That second branch is jsdom's only. The rows that leave ⌘Z to
  * the textarea see only that the map did not take it: what the app menu then does with the key is not observed.
  *
+ * LEV-332: the double click's topic came back with ⌘⇧Z where a topic with no position goes, not where the canvas was
+ * pressed (the point was written with the name, which the draft never confirmed). The addition writes the point now: that
+ * row reads the point back from the note, checks the topic is drawn where it was pressed before ⌘Z, and drawn there again
+ * after ⌘⇧Z, the note holding the point.
+ *
  * Usage: npm run harness:e2e:undo-draft -- [--reload] [--json <out.json>] [--keep]
  */
 import { VAULT, connect, wait } from './cdp.mjs';
@@ -45,8 +50,28 @@ const SHAPES = [
   { id: 'root-tab-main-topic', note: LIST_NOTE, source: LIST, target: '旅の計画', key: 'Tab', name: MAIN, written: LIST.replace('- 持ち物\n', `- 持ち物\n- ${MAIN}\n`) },
   { id: 'enter-subtopic', note: LIST_NOTE, source: LIST, target: '予約', key: 'Enter', name: SUB, written: LIST.replace('  - 予約\n', `  - 予約\n  - ${SUB}\n`) },
   { id: 'headings-enter', note: HEADINGS_NOTE, source: HEADINGS, target: '温泉旅行', key: 'Enter', name: MAIN, written: HEADINGS.replace('本文\n', `本文\n\n## ${MAIN}\n`) },
+  // `written` is the note without the point; the row expects it with the point, as `withTopic` spells it (LEV-332).
   { id: 'double-click-topic', note: LIST_NOTE, source: LIST, target: null, key: null, name: TOPIC, written: `${LIST}\n## ${TOPIC}\n` },
 ];
+
+/** Where the double click lands, from the canvas's top-left corner: the empty canvas, away from the fixture's nodes (as E43's). */
+const PRESS = { x: 40, y: 40 };
+
+/**
+ * The note a double click on the empty canvas leaves (LEV-332): the section at the end and, in the same step, the point it
+ * was pressed at under its key for `layout`. The point is read back from `written`, since it depends on the viewport;
+ * the rest is spelled out. Null when `written` holds no point for the topic.
+ */
+const withTopic = (source, written, layout) => {
+  const point = new RegExp(`\\n  ${TOPIC}: \\{ ${layout}: \\[(-?\\d+), (-?\\d+)\\] \\}\\n`, 'u').exec(written);
+  return point ? `${source.replace('mappy: true\n', `mappy: true\nmappy-topics:\n  ${TOPIC}: { ${layout}: [${point[1]}, ${point[2]}] }\n`)}\n## ${TOPIC}\n` : null;
+};
+
+/** Where the map draws the note's last topic, in map coordinates (its transform): the viewport does not move it. */
+const topicPlace = () => evaluate(`${VIEW}
+  const topic = Array.from(el.querySelectorAll('.mappy-node.is-topic')).at(-1);
+  const match = /translate\\((-?[\\d.]+)px, (-?[\\d.]+)px\\)/u.exec(topic?.style.transform ?? '');
+  return match ? { x: Number(match[1]), y: Number(match[2]) } : null;`);
 
 const record = createRecord(VAULT, LIST_NOTE);
 const cdp = await connect();
@@ -121,7 +146,9 @@ const shown = () => evaluate(`${VIEW}
 
 /**
  * Opens the shape's note afresh in `layout` and adds its node; the draft is then open on the provisional name. With
- * `fold`, the target is folded first (Space), so the addition opens it. Answers what the map showed just before the key.
+ * `fold`, the target is folded first (Space), so the addition opens it. Answers what the map showed just before the key
+ * (`before`), the note the addition left (`written`) and, for a double click, where the topic is drawn (`place`) and the
+ * point pressed in map coordinates (`pressed`).
  */
 async function add(shape, layout, { fold = false } = {}) {
   await detachMaps();
@@ -138,19 +165,29 @@ async function add(shape, layout, { fold = false } = {}) {
     before = await shown();
     await cdp.realKey(shape.key, 0, shape.key === 'Enter' ? '\r' : undefined);
   } else {
-    // The empty canvas near its top-left corner, away from the fixture's nodes (as E43's double click).
-    const point = await evaluate(`${VIEW} const rect = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: rect.left + 40, y: rect.top + 40 };`);
+    const point = await evaluate(`${VIEW} const rect = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: rect.left + ${PRESS.x}, y: rect.top + ${PRESS.y} };`);
     // The double click's first click (which clears the selection) comes first: what the map shows after it is what the
     // take-back must put back (review 5: measured, not assumed).
     for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount: 1 });
     before = await shown();
     for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount: 2 });
   }
-  const opened = await settled(shape.written);
-  if (opened.source !== shape.written || opened.draft !== shape.name) {
-    throw new Error(`the addition left ${JSON.stringify(opened)}, not the draft 「${shape.name}」 on ${JSON.stringify(shape.written)}`);
+  let written = shape.written;
+  if (!shape.key) {
+    // The section is written with the point; without one (the build before LEV-332) the row goes on, and fails on it.
+    const now = await until(async () => {
+      const text = await evaluate(`${VIEW} return await source();`);
+      return text.endsWith(`\n## ${TOPIC}\n`) ? text : null;
+    }, 3000, 'the topic').catch(() => null);
+    written = (now && withTopic(shape.source, now, layout)) ?? shape.written;
   }
-  return before;
+  const opened = await settled(written);
+  if (opened.source !== written || opened.draft !== shape.name) {
+    throw new Error(`the addition left ${JSON.stringify(opened)}, not the draft 「${shape.name}」 on ${JSON.stringify(written)}`);
+  }
+  if (shape.key) return { before, written };
+  const view = before.viewport;
+  return { before, written, place: await topicPlace(), pressed: { x: (PRESS.x - view.x) / view.scale, y: (PRESS.y - view.y) / view.scale } };
 }
 
 const cleanList = makeDeleteNote(evaluate, LIST_NOTE);
@@ -167,15 +204,16 @@ try {
     for (const shape of [...SHAPES, { ...SHAPES[0], id: 'tab-subtopic-folded', target: '温泉旅行', fold: true, written: LIST.replace('  - 予約\n', `  - 予約\n  - ${SUB}\n`) }]) {
       const label = `${layout}/${shape.id}`;
       const result = await step(label, async () => {
-        const before = await add(shape, layout, { fold: shape.fold });
+        const { before, written, place, pressed } = await add(shape, layout, { fold: shape.fold });
         const undoKey = await press();
         const undone = await settled(shape.source);
         await wait(300);
         const after = await shown();
         const redoKey = await press(true);
-        const redone = await settled(shape.written);
+        const redone = await settled(written);
         const shownAgain = await evaluate(`${VIEW} return nodes().map(label).filter(title => title === ${JSON.stringify(shape.name)}).length;`);
-        return { before, undoKey, undone, after, redoKey, redone, shownAgain };
+        const placeAgain = shape.key ? undefined : await topicPlace();
+        return { before, written, place, pressed, undoKey, undone, after, redoKey, redone, shownAgain, placeAgain };
       });
       check(result?.undoKey?.[0]?.handled === true, `${label}: ⌘Z in the draft was not taken (${JSON.stringify(result?.undoKey)})`);
       check(result?.undone?.draft === null, `${label}: the draft is still open after ⌘Z (${JSON.stringify(result?.undone?.draft)})`);
@@ -187,8 +225,16 @@ try {
       check(JSON.stringify(result?.after?.folded) === JSON.stringify(folded), `${label}: folded after ⌘Z ${JSON.stringify(result?.after?.folded)}, not ${JSON.stringify(folded)}`);
       check(JSON.stringify(result?.after?.viewport) === JSON.stringify(result?.before?.viewport), `${label}: viewport after ⌘Z ${JSON.stringify(result?.after?.viewport)}, before ${JSON.stringify(result?.before?.viewport)}`);
       if (shape.fold) check(result?.before?.folded?.includes(shape.target), `${label}: ${shape.target} was not folded before the addition (the row's premise)`);
-      check(result?.redoKey?.[0]?.handled === true && result?.redone?.source === shape.written, `${label}: ⌘⇧Z after it did not bring the node back (${JSON.stringify(result?.redoKey)}, ${JSON.stringify(result?.redone?.source)})`);
+      check(result?.redoKey?.[0]?.handled === true && result?.redone?.source === result?.written, `${label}: ⌘⇧Z after it did not bring the node back (${JSON.stringify(result?.redoKey)}, ${JSON.stringify(result?.redone?.source)})`);
       check(result?.shownAgain === 1, `${label}: ⌘⇧Z brought the node back into the note but the map shows ${result?.shownAgain} of it`);
+      if (!shape.key) {
+        // LEV-332: drawn where it was pressed (the stored point is whole pixels from the body root: within one of the press),
+        // the point in the note, and drawn there again after ⌘Z and ⌘⇧Z.
+        const near = result?.place && result?.pressed && Math.abs(result.place.x - result.pressed.x) <= 1 && Math.abs(result.place.y - result.pressed.y) <= 1;
+        check(near === true, `${label}: the topic was drawn at ${JSON.stringify(result?.place)}, not where the canvas was pressed ${JSON.stringify(result?.pressed)} (the row's premise)`);
+        check(withTopic(shape.source, result?.written ?? '', layout) !== null, `${label}: the addition did not write the pressed point: ${JSON.stringify(result?.written)}`);
+        check(JSON.stringify(result?.placeAgain) === JSON.stringify(result?.place), `${label}: after ⌘⇧Z the topic is drawn at ${JSON.stringify(result?.placeAgain)}, not where it was pressed ${JSON.stringify(result?.place)}`);
+      }
       check((result?.undone?.messages ?? []).length === 0 && (result?.redone?.messages ?? []).length === 0, `${label}: messages ${JSON.stringify([result?.undone?.messages, result?.redone?.messages])}`);
     }
 

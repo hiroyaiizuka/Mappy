@@ -15,6 +15,7 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView } from '../../src/ui/mindmap-view';
 import { closeOpenViews, closeView } from '../mocks/open-views';
+import { withAddedTopic } from './added-topic';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and store run against a real DOM.
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -340,7 +341,7 @@ describe('MindmapView with free topics', () => {
 });
 
 describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
-  it('double-clicking empty canvas appends `## トピック`, edits it in place where pressed, and Enter stores title and position as one step', async () => {
+  it('double-clicking empty canvas appends `## トピック` with where it was pressed, edits it in place there, and Enter names it with its entry as one step', async () => {
     const source = fixtureSource();
     const mounted = await mount(source);
     const { view, canvas, store, file, layout, transform, nodes, source: current, settle, dblclick, key, editor, undo, redo } = mounted;
@@ -350,8 +351,14 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     // Press 300 px right of and 500 px below the canvas corner, in screen pixels.
     dblclick(canvas, CANVAS.left + 300, CANVAS.top + 500);
     await settle();
-    // Written under its provisional name, which the draft holds selected, so typing replaces it (LEV-203).
-    expect(current()).toBe(`${source}\n## トピック\n`);
+    const expected = {
+      x: Math.round((300 - viewport.x) / viewport.scale - origin.x), y: Math.round((500 - viewport.y) / viewport.scale - origin.y),
+    };
+    // Written under its provisional name, which the draft holds selected, so typing replaces it (LEV-203), with the point
+    // pressed in the same step (LEV-332).
+    const created = current();
+    expect(created).toBe(withAddedTopic(source, created, { heading: '## トピック', key: 'トピック', layout: 'mindmap' }));
+    expect(readTopicPositions(created).get('トピック')).toEqual({ mindmap: expected });
     const added = projectMap(documentOf(view)).topics.at(-1);
     if (!added) throw new Error('No topic was added');
     expect(added.title).toBe('トピック');
@@ -361,9 +368,6 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(input).not.toBeNull();
     expect(nodes().get(added.id)?.contains(input)).toBe(true);
     expect([input?.value, input?.selectionStart, input?.selectionEnd]).toEqual(['トピック', 0, 'トピック'.length]);
-    const expected = {
-      x: Math.round((300 - viewport.x) / viewport.scale - origin.x), y: Math.round((500 - viewport.y) / viewport.scale - origin.y),
-    };
     expect(transform(added.id)).toEqual({ x: origin.x + expected.x, y: origin.y + expected.y });
     expect(store.canUndo(file)).toBe(true);
     if (!input) return;
@@ -382,10 +386,13 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     if (!named) throw new Error('The named topic is missing');
     expect(nodes().get(named.id)?.classList.contains('is-selected')).toBe(true);
     expect(transform(named.id)).toEqual({ x: origin.x + expected.x, y: origin.y + expected.y });
-    // One history step names and places the topic; the previous one added the section under its provisional name.
+    // One history step names the topic and carries its entry to the name; the previous one added the section under its
+    // provisional name, where it was pressed: undoing the name leaves it there.
     await undo();
-    expect(current()).toBe(`${source}\n## トピック\n`);
-    expect(projectMap(documentOf(view)).topics.at(-1)?.title).toBe('トピック');
+    expect(current()).toBe(created);
+    const unnamed = projectMap(documentOf(view)).topics.at(-1);
+    expect(unnamed?.title).toBe('トピック');
+    expect(transform(unnamed?.id ?? '')).toEqual({ x: origin.x + expected.x, y: origin.y + expected.y });
     await undo();
     expect(current()).toBe(source);
     expect(store.canUndo(file)).toBe(false);
@@ -448,7 +455,7 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     const before = documentOf(view).nodes.length;
     dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
     await settle();
-    expect(current()).toBe(`${source}\n## トピック\n`);
+    expect(current()).toBe(withAddedTopic(source, current(), { heading: '## トピック', key: 'トピック', layout: 'mindmap' }));
     const input = editor();
     if (!input) throw new Error('No inline editor');
     key(input, 'Escape');
@@ -475,7 +482,7 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     key(input, 'Escape');
     await settle();
-    expect(current()).toBe(`${source}\n## トピック\n`);
+    expect(current()).toBe(withAddedTopic(source, current(), { heading: '## トピック', key: 'トピック', layout: 'mindmap' }));
     const kept = projectMap(documentOf(view)).topics.at(-1);
     if (!kept) throw new Error('No topic');
     expect(transform(kept.id)).toEqual(pressed);
@@ -490,29 +497,30 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(transform(kept.id)).toEqual({ x: pressed.x + 50, y: pressed.y + 30 });
   });
 
-  it('Enter on the untouched draft keeps 「トピック」 where it was pressed, as one step with its position', async () => {
+  it('Enter on the untouched draft keeps 「トピック」 where it was pressed: the addition stored the point, so Enter writes no step of its own', async () => {
     const source = fixtureSource();
-    const { view, canvas, layout, transform, source: current, settle, dblclick, key, editor, undo } = await mount(source);
+    const { view, canvas, store, file, layout, transform, source: current, settle, dblclick, key, editor, undo } = await mount(source);
     const origin = layout().origin;
     const viewport = view.getState().viewport as { x: number; y: number; scale: number };
     // World coordinates of the pressed point: the topic root's top-left lands exactly there.
     const pressed = { x: (700 - viewport.x) / viewport.scale, y: (600 - viewport.y) / viewport.scale };
     dblclick(canvas, CANVAS.left + 700, CANVAS.top + 600);
     await settle();
+    const created = current();
     const input = editor();
     if (!input) throw new Error('No inline editor');
     key(input, 'Enter');
     await settle();
     expect(editor()).toBeNull();
+    expect(current()).toBe(created);
     expect(current().endsWith('\n## トピック\n')).toBe(true);
     expect(readTopicPositions(current()).get('トピック')).toEqual({ mindmap: { x: Math.round(pressed.x - origin.x), y: Math.round(pressed.y - origin.y) } });
     const named = projectMap(documentOf(view)).topics.at(-1);
     if (!named) throw new Error('No topic');
     expect(transform(named.id)).toEqual(pressed);
     await undo();
-    expect(current()).toBe(`${source}\n## トピック\n`);
-    await undo();
     expect(current()).toBe(source);
+    expect(store.canUndo(file)).toBe(false);
   });
 
   it('keeps a just-added, unnamed topic where it was pressed when the layout switches by button before it is named (LEV-129)', async () => {
@@ -590,7 +598,7 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     expect(items).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
     menuItem('トピックを追加').click();
     await settle();
-    expect(current()).toBe(`${source}\n## トピック\n`);
+    expect(current()).toBe(withAddedTopic(source, current(), { heading: '## トピック', key: 'トピック', layout: 'mindmap' }));
     expect(editor()).not.toBeNull();
     const added = projectMap(documentOf(view)).topics.at(-1);
     if (!added) throw new Error('No topic');

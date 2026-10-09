@@ -15,6 +15,7 @@ import { Notice } from '../browser-harness/obsidian';
 import { setLanguage, t } from '../../src/i18n';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { accessibleName } from './accessible-name';
+import { withAddedTopic } from './added-topic';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -142,7 +143,7 @@ describe('a refusal is told by its kind, not its wording (LEV-234)', () => {
     if (!input) throw new Error('No draft on the new topic');
     mounted.key(input, 'Escape');
     await mounted.settle();
-    expect(mounted.source()).toBe(`${SOURCE}\n## ${t().newTopicTitle}\n`);
+    expect(mounted.source()).toBe(withAddedTopic(SOURCE, mounted.source(), { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout: 'mindmap' }));
     expect(Notice.log).toEqual([]);
     expect(mounted.editor()).toBeNull();
   });

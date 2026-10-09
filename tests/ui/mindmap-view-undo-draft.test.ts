@@ -10,11 +10,18 @@
  * ノードの入力欄だけ（レビュー 1 回目: F2 の入力欄の ⌘Z が見えない所の編集を戻しうる）。保存中・保持・ウィンドウを離れたときの
  * 保存は `inline-editor.test.ts`。
  * 実機は E85（`npm run harness:e2e:undo-draft`）。
+ *
+ * LEV-332: 空白のダブルクリックのトピックは、⌘Z → ⌘⇧Z で押した位置ではなく位置の無いトピックの場所に戻った。押した位置を
+ * 名前の確定で書いていたため。作成の書き込みで位置も書くようにしたので、その行を 4 レイアウト × ノートの形（リスト・
+ * frontmatter の無い見出しのノート・同じ名前のトピックがすでにある）で回し、戻ったトピックの描画位置が ⌘Z の前と同じで、
+ * ノートに位置があることを見る。修正を戻すと 12 行とも描画位置で落ちる（`artifacts/lev-332/`）。
  */
 import type { App } from 'obsidian';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HarnessApp } from '../browser-harness/app';
 import { installObsidianDom } from '../browser-harness/dom';
+import { projectMap, type MindDocument } from '../../src/core/markdown';
+import { readTopicPositions } from '../../src/core/topics';
 import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
@@ -75,6 +82,42 @@ const SHAPES = [
   { id: '見出しの Enter', source: HEADINGS, target: '温泉旅行', key: 'Enter', name: t().mainTopicTitle, written: HEADINGS.replace('本文\n', `本文\n\n## ${t().mainTopicTitle}\n`) },
 ] as const;
 
+/**
+ * The notes a topic is added to: front matter or none, a list or headings, and a topic of the same name already there (the
+ * new one's key in `mappy-topics` is then `トピック (2)`).
+ */
+const TOPIC_SHAPES = [
+  { id: 'list', source: LIST, key: t().newTopicTitle },
+  { id: 'headings, no front matter', source: HEADINGS, key: t().newTopicTitle },
+  { id: 'a topic of that name already', source: `${LIST}\n## ${t().newTopicTitle}\n\n- 下見\n`, key: `${t().newTopicTitle} (2)` },
+] as const;
+
+/** A double click on the empty canvas; its first click clears the selection, so nothing is selected when the topic is added. */
+function doubleClickCanvas(mounted: MountedMapView): void {
+  for (const type of ['pointerdown', 'pointerup'] as const) {
+    mounted.canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+  }
+  mounted.canvas.dispatchEvent(new MouseEvent('click', { button: 0, bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+  expect(selectedNames(mounted)).toEqual([]);
+  mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+}
+
+/** The note's last topic, the one a double click adds. */
+function lastTopic(mounted: MountedMapView): string {
+  const document = (mounted.view as unknown as { document: MindDocument | undefined }).document;
+  const topic = document ? projectMap(document).topics.at(-1) : undefined;
+  if (!topic) throw new Error('The note has no topic');
+  return topic.id;
+}
+
+/** Where a node is drawn on the map. */
+function place(mounted: MountedMapView, id: string): { x: number; y: number } {
+  const element = mounted.view.containerEl.querySelector<HTMLElement>(`.mappy-node[data-node-id="${id}"]`);
+  const match = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)/u.exec(element?.style.transform ?? '');
+  if (!match) throw new Error(`No transform for ${id}`);
+  return { x: Number(match[1]), y: Number(match[2]) };
+}
+
 describe('⌘Z in the draft a new node opened takes the node back as Escape does, as a step ⌘⇧Z brings back (LEV-331)', () => {
   for (const layout of LAYOUTS) {
     for (const shape of SHAPES) {
@@ -112,28 +155,48 @@ describe('⌘Z in the draft a new node opened takes the node back as Escape does
     expect(mounted.source()).toBe(LIST);
   });
 
-  it('a free topic from a double click on the empty canvas goes too, the keyboard left on the map', async () => {
-    const mounted = await mount(LIST);
-    // The double click's first click clears the selection: nothing is selected when the topic is added.
-    for (const type of ['pointerdown', 'pointerup'] as const) {
-      mounted.canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, button: 0, bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+  // LEV-332: the section came back without the pressed point, where a topic with no position goes. The point was written
+  // with the name, which the draft never confirmed; the addition writes it now, so the step ⌘⇧Z brings back holds it.
+  for (const layout of LAYOUTS) {
+    for (const topicShape of TOPIC_SHAPES) {
+      it(`${layout}: a free topic from a double click on the empty canvas (${topicShape.id}) goes too, the keyboard left on the map, and ⌘⇧Z brings it back where it was pressed`, async () => {
+        const mounted = await mount(topicShape.source, layout);
+        doubleClickCanvas(mounted);
+        await mounted.settle();
+        const written = mounted.source();
+        expect(written.endsWith(`# ${t().newTopicTitle}\n`)).toBe(true);
+        const pressed = place(mounted, lastTopic(mounted));
+        mounted.key(draft(mounted, t().newTopicTitle), 'z', { metaKey: true });
+        await mounted.settle();
+        expect(mounted.editor()).toBeNull();
+        expect(mounted.source()).toBe(topicShape.source);
+        // Found on the real Obsidian (E85): the removed draft left the keyboard on the page, and the next ⌘Z reached nothing.
+        expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.canvas);
+        mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: true });
+        await mounted.settle();
+        expect(mounted.source()).toBe(written);
+        expect(place(mounted, lastTopic(mounted))).toEqual(pressed);
+        // Where it was pressed is in the note, so it holds where the view's own memory of it does not reach (a reload).
+        expect(readTopicPositions(mounted.source()).get(topicShape.key)?.[layout]).toBeDefined();
+      });
     }
-    mounted.canvas.dispatchEvent(new MouseEvent('click', { button: 0, bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
-    expect(selectedNames(mounted)).toEqual([]);
-    mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+  }
+
+  // A guard, passing with or without LEV-332's fix: what it pins is that the point is written only for a topic, so a fix that
+  // wrote it for any addition would fail here.
+  it('the first heading of an empty map is its body root, not a topic: ⌘⇧Z brings it back with no position', async () => {
+    const source = ['---', 'mappy: true', '---', ''].join('\n');
+    const mounted = await mount(source);
+    doubleClickCanvas(mounted);
     await mounted.settle();
-    expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
+    const written = mounted.source();
+    expect(readTopicPositions(written).size).toBe(0);
     mounted.key(draft(mounted, t().newTopicTitle), 'z', { metaKey: true });
     await mounted.settle();
-    expect(mounted.editor()).toBeNull();
-    expect(mounted.source()).toBe(LIST);
-    // Found on the real Obsidian (E85): the removed draft left the keyboard on the page, and the next ⌘Z reached nothing.
-    expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.canvas);
-    // ⌘⇧Z brings the section back. The pressed point is not in it: a topic's position is written with its name, which
-    // the draft never confirmed, so it comes back where a topic with no position goes.
+    expect(mounted.source()).toBe(source);
     mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: true });
     await mounted.settle();
-    expect(mounted.source()).toBe(`${LIST}\n## ${t().newTopicTitle}\n`);
+    expect(mounted.source()).toBe(written);
   });
 
   // Review 3: what Escape would not take back (something was written since the addition), ⌘Z does not either: only the
