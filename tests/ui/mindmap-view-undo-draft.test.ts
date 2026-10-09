@@ -6,7 +6,9 @@
  * キーが macOS のメニューまで抜けていた。
  *
  * 行列は本人の操作（⌘Z・⌘⇧Z）× 入力欄の形（Tab の「サブトピック」・Enter の「メイントピック」・ルートの Tab・見出しの
- * ノート・空白のダブルクリックの「トピック」・F2 で開いた既存ノード・打った文字がある・変換中・拒否で保持された）。
+ * ノート・空白のダブルクリックの「トピック」・F2 で開いた既存ノード・打った文字がある・変換中）。⌘Z をマップに渡すのは追加したばかりの
+ * ノードの入力欄だけ（レビュー 1 回目: F2 の入力欄の ⌘Z が見えない所の編集を戻しうる）。保存中・保持・ウィンドウを離れたときの
+ * 保存は `inline-editor.test.ts`。
  * 実機は E85（`npm run harness:e2e:undo-draft`）。
  */
 import type { App } from 'obsidian';
@@ -45,6 +47,10 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
 
 function nodeElements(mounted: MountedMapView, title: string): HTMLElement[] {
   return Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node')).filter(element => accessibleName(element) === title);
+}
+
+function selectedNames(mounted: MountedMapView): string[] {
+  return Array.from(mounted.view.containerEl.querySelectorAll<HTMLElement>('.mappy-node.is-selected'), element => accessibleName(element));
 }
 
 function draft(mounted: MountedMapView, value: string): HTMLTextAreaElement {
@@ -133,35 +139,53 @@ describe('⌘Z in the draft a new node opened takes the node back as a step of t
     expect(mounted.source()).toBe(LIST);
   });
 
-  it('a draft opened with F2 and left as it was hands ⌘Z to the map: the last step goes, the draft closes', async () => {
+  it('puts back the fold the addition opened, the selection and the viewport, as Escape does (review 1)', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('温泉旅行'), ' ');
+    await mounted.settle();
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(true);
+    const selected = mounted.select('温泉旅行');
+    const viewport = mounted.view.getState().viewport;
+    mounted.key(selected, 'Tab');
+    await mounted.settle();
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(false);
+    (mounted.view as unknown as { viewport: { set(value: object): void } }).viewport.set({ x: 11, y: 22, scale: 1 });
+    mounted.key(draft(mounted, t().newNodeTitle), 'z', { metaKey: true });
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST);
+    expect(mounted.node('温泉旅行').classList.contains('is-collapsed')).toBe(true);
+    expect(selectedNames(mounted)).toEqual(['温泉旅行']);
+    expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.node('温泉旅行'));
+    expect(mounted.view.getState().viewport).toEqual(viewport);
+  });
+});
+
+describe('⌘Z stays the textarea\'s where the draft is not a node just added, or has text of its own (LEV-331)', () => {
+  it('a draft opened with F2 and left as it was: the draft and the note are left as they are (review 1)', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
     mounted.key(draft(mounted, t().newNodeTitle), 'Enter');
     await mounted.settle();
+    const written = mounted.source();
     mounted.key(mounted.select('温泉旅行'), 'F2');
-    expect(mounted.key(draft(mounted, '温泉旅行'), 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    const input = draft(mounted, '温泉旅行');
+    expect(mounted.key(input, 'z', { metaKey: true }).defaultPrevented).toBe(false);
     await mounted.settle();
-    expect(mounted.editor()).toBeNull();
-    expect(mounted.source()).toBe(LIST);
+    expect(mounted.editor()).toBe(input);
+    expect(mounted.source()).toBe(written);
   });
 
-  it('⌘⇧Z in a draft left as it was redoes the step ⌘Z took', async () => {
+  it('⌘⇧Z in a new node\'s draft is the textarea\'s', async () => {
     const mounted = await mount(LIST);
-    mounted.key(mounted.select('持ち物'), 'F2');
-    type(draft(mounted, '持ち物'), '荷物');
-    mounted.key(mounted.editor() ?? mounted.canvas, 'Enter');
+    mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
-    const renamed = LIST.replace('- 持ち物\n', '- 荷物\n');
-    expect(mounted.source()).toBe(renamed);
-    mounted.key(mounted.canvas.ownerDocument.activeElement ?? mounted.canvas, 'z', { metaKey: true });
+    const written = mounted.source();
+    const input = draft(mounted, t().newNodeTitle);
+    expect(mounted.key(input, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
     await mounted.settle();
-    expect(mounted.source()).toBe(LIST);
-    mounted.key(mounted.select('持ち物'), 'F2');
-    expect(mounted.key(draft(mounted, '持ち物'), 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true);
-    await mounted.settle();
-    expect(mounted.editor()).toBeNull();
-    expect(mounted.source()).toBe(renamed);
+    expect(mounted.editor()).toBe(input);
+    expect(mounted.source()).toBe(written);
   });
 });
 
@@ -190,20 +214,6 @@ describe('text typed in the draft is the textarea\'s to take back first (LEV-331
     expect(mounted.key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
     await mounted.settle();
     expect(mounted.source()).toBe(LIST);
-  });
-
-  it('⌘⇧Z after typing stays in the textarea, which may have a step of its own to redo', async () => {
-    const mounted = await mount(LIST);
-    mounted.key(mounted.select('持ち物'), 'Tab');
-    await mounted.settle();
-    const written = mounted.source();
-    const input = draft(mounted, t().newNodeTitle);
-    type(input, '水着');
-    type(input, t().newNodeTitle);
-    expect(mounted.key(input, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
-    await mounted.settle();
-    expect(mounted.editor()).toBe(input);
-    expect(mounted.source()).toBe(written);
   });
 
   it('⌘Z while the IME composes is the IME\'s', async () => {

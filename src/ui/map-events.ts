@@ -1,4 +1,5 @@
 import { Component } from "obsidian";
+import { historyKey } from "./history-key";
 import type { EditCommand } from "../core/commands";
 import type { MindNode } from "../core/markdown";
 
@@ -160,10 +161,11 @@ export class MapEvents extends Component {
       || this.element(event.targetNode)?.closest("input,textarea,button,a,select,[contenteditable]:not([contenteditable='false'])")) return false;
     const modifier = event.metaKey || event.ctrlKey;
     // The map's history is not bound to a node: it answers with nothing selected too.
-    if (modifier && event.key.toLowerCase() === "z") {
+    const history = historyKey(event);
+    if (history) {
       event.preventDefault();
       event.stopPropagation();
-      this.actions.history(event.shiftKey ? "redo" : "undo");
+      this.actions.history(history);
       return true;
     }
     const node = this.actions.selected();

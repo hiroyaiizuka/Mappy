@@ -6,7 +6,8 @@
  *
  * Rows: the operation (real keys on a real click's selection, real ⌘Z／⌘⇧Z) × the draft (Tab's subtopic, Enter's main
  * topic, the root's Tab, Enter deeper down, Enter on a section of a headings note, a free topic from a double click on
- * the empty canvas; text typed into the draft; the draft confirmed with Enter, untouched and typed over) × the layout
+ * the empty canvas; text typed into the draft; an F2 draft on a node that was there, which keeps ⌘Z; the draft confirmed
+ * with Enter, untouched and typed over) × the layout
  * (mindmap, timeline). Each row opens the fixture afresh and compares the whole note after each key.
  *
  * A ⌘Z the page leaves alone goes on to the app menu (Electron's accelerator for an unhandled key), which stalled the
@@ -55,24 +56,30 @@ const detachMaps = () => evaluate('app.workspace.getLeavesOfType("mappy-map").fo
 /**
  * The guard (see the header): installed once per window, it records every ⌘Z／⌘⇧Z as handled (something cancelled it)
  * or unhandled (it cancels it itself). It reads the key after the draft's own listener on the textarea, or after the
- * canvas's on the canvas (both stop the key there), or on the window for a key elsewhere.
+ * canvas's on the canvas (both stop the key there), or on the window for a key elsewhere. A key that never reaches that
+ * listener (stopped earlier) stays `handled: null`, which no row accepts.
  */
 const installGuard = () => evaluate(`
   if (!window.__mappyE2EUndoGuard) {
     window.__mappyE2EUndoGuard = { log: [] };
     window.addEventListener('keydown', event => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return;
-      const settle = () => {
-        if (event.__mappyE2ESeen) return;
-        event.__mappyE2ESeen = true;
-        const handled = event.defaultPrevented;
-        if (!handled) event.preventDefault();
-        window.__mappyE2EUndoGuard.log.push({ handled, shift: event.shiftKey, target: event.target?.tagName ?? null });
-      };
+      const guard = window.__mappyE2EUndoGuard;
+      // A listener left by an earlier key that something stopped before it (review 1): it must not read this one.
+      guard.drop?.();
       // Listeners added now run after the ones already on that element, whatever stops the key going further up.
       const target = event.target;
       const last = target instanceof HTMLTextAreaElement ? target : target?.closest?.('.mappy-canvas') ?? window;
-      last.addEventListener('keydown', settle, { once: true });
+      const entry = { handled: null, shift: event.shiftKey, target: target?.tagName ?? null };
+      guard.log.push(entry);
+      const settle = seen => {
+        if (seen !== event) return;
+        guard.drop();
+        entry.handled = event.defaultPrevented;
+        if (!entry.handled) event.preventDefault();
+      };
+      guard.drop = () => { last.removeEventListener('keydown', settle); guard.drop = null; };
+      last.addEventListener('keydown', settle);
     }, true);
   }
   window.__mappyE2EUndoGuard.log = [];
@@ -83,7 +90,7 @@ const guardLog = () => evaluate('return window.__mappyE2EUndoGuard.log.splice(0)
 /** What the map shows now: the draft (its value), where the keyboard is, its messages and the note. */
 const look = () => evaluate(`${VIEW}
   const active = document.activeElement;
-  return { draft: input()?.value ?? null, inCanvas: !!active && !!el.querySelector('.mappy-canvas')?.contains(active), messages: messages(), source: await source() };`);
+  return { draft: input()?.value ?? null, selected: nodes().filter(node => node.classList.contains('is-selected')).map(label), inCanvas: !!active && !!el.querySelector('.mappy-canvas')?.contains(active), messages: messages(), source: await source() };`);
 
 /** The note once it is `expected` and the map has re-read it (or as it is after `timeout`, for the check to compare). */
 const settled = async (expected, timeout = 3000) => {
@@ -149,6 +156,7 @@ try {
       check(result?.undone?.draft === null, `${label}: the draft is still open after ⌘Z (${JSON.stringify(result?.undone?.draft)})`);
       check(result?.undone?.source === shape.source, `${label}: ⌘Z left ${JSON.stringify(result?.undone?.source)}, not the note before the addition`);
       check(result?.undone?.inCanvas === true, `${label}: the keyboard is not on the map after ⌘Z`);
+      if (shape.target) check(JSON.stringify(result?.undone?.selected) === JSON.stringify([shape.target]), `${label}: ⌘Z selected ${JSON.stringify(result?.undone?.selected)}, not the node the addition was made from`);
       check(result?.redoKey?.[0]?.handled === true, `${label}: ⌘⇧Z after it was not taken (${JSON.stringify(result?.redoKey)})`);
       check(result?.redone?.source === shape.written, `${label}: ⌘⇧Z left ${JSON.stringify(result?.redone?.source)}, not the node back`);
       check((result?.undone?.messages ?? []).length === 0 && (result?.redone?.messages ?? []).length === 0, `${label}: messages ${JSON.stringify([result?.undone?.messages, result?.redone?.messages])}`);
@@ -173,6 +181,27 @@ try {
     check(typed?.first?.draft === '水着' && typed?.first?.source === SHAPES[0].written, `${typedLabel}: ⌘Z with typed text changed ${JSON.stringify(typed?.first)}`);
     check(typed?.restored === SUB, `${typedLabel}: the textarea's Undo left ${JSON.stringify(typed?.restored)}, not 「${SUB}」 (the row's premise)`);
     check(typed?.secondKey?.[0]?.handled === true && typed?.second?.draft === null && typed?.second?.source === LIST, `${typedLabel}: the next ⌘Z left ${JSON.stringify(typed?.second)} (${JSON.stringify(typed?.secondKey)})`);
+
+    // A draft F2 opened on a node that was there is not an addition: ⌘Z stays the textarea's (review 1 of LEV-331).
+    const f2Label = `${layout}/f2-untouched`;
+    const f2 = await step(f2Label, async () => {
+      await detachMaps();
+      await makeOpenStep(evaluate, { note: LIST_NOTE, source: LIST, layout })();
+      await installGuard();
+      await select('持ち物');
+      await cdp.realKey('F2');
+      await wait(400);
+      const opened = await look();
+      const key = await press();
+      await wait(600);
+      const after = await look();
+      await cdp.realKey('Escape');
+      await wait(300);
+      return { opened, key, after };
+    });
+    check(f2?.opened?.draft === '持ち物', `${f2Label}: F2 opened ${JSON.stringify(f2?.opened?.draft)}`);
+    check(f2?.key?.[0]?.handled === false, `${f2Label}: ⌘Z in an F2 draft was taken (${JSON.stringify(f2?.key)})`);
+    check(f2?.after?.draft === '持ち物' && f2?.after?.source === LIST, `${f2Label}: ⌘Z changed ${JSON.stringify(f2?.after)}`);
 
     // Confirmed with Enter, the draft is closed and ⌘Z is the canvas's, as before the fix: untouched, one step takes the
     // node back; typed over, the first takes the name back to the provisional one and the second takes the node.

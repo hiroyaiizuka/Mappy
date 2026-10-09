@@ -1,5 +1,6 @@
 import { RefusalLine } from "./refusal-line";
 import { t } from "../i18n";
+import { historyKey } from "./history-key";
 
 export interface InlineSuggestion {
   handleKey: (event: KeyboardEvent) => boolean;
@@ -15,10 +16,10 @@ export interface InlineEditorOptions {
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
   /**
-   * ⌘Z／⌘⇧Z the draft hands to the map (LEV-331): called once the editor has closed (`finish` as a confirm with
-   * nothing to write), with the step the map is to take. Without it the keys stay the textarea's.
+   * ⌘Z in the draft of a node just added, handed to the map (LEV-331): called once the editor has closed (`finish` as a
+   * confirm with nothing to write). Without it ⌘Z stays the textarea's.
    */
-  history?: (direction: "undo" | "redo") => void;
+  undo?: () => void;
 }
 
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
@@ -43,8 +44,6 @@ export class InlineEditor {
   private inPlace: Promise<void> | undefined;
   /** The text the note has for this draft: the title it opened on, then what a save in place wrote. */
   private written: string;
-  /** Whether anything was typed into the draft (an `input` event): from then on the textarea has steps of its own to redo. */
-  private typed = false;
   private readonly suggestion: InlineSuggestion | undefined;
   /** Whether the stylesheet sizes the draft to its text (`field-sizing: content`); if not, `measure` does. */
   private readonly sizesItself: boolean;
@@ -77,7 +76,7 @@ export class InlineEditor {
         else if (!doc.hasFocus()) void this.saveInPlace();
       }, 0);
     });
-    this.input.addEventListener("input", () => { this.typed = true; this.resize(); });
+    this.input.addEventListener("input", () => { this.resize(); });
     this.input.addEventListener("pointerdown", event => { event.stopPropagation(); });
     this.input.addEventListener("click", event => { event.stopPropagation(); });
     this.input.addEventListener("dblclick", event => { event.stopPropagation(); });
@@ -103,8 +102,8 @@ export class InlineEditor {
       } else if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         void this.commit(event.key === "Tab" ? "child" : "none");
-      } else if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "z") {
-        this.history(event, event.shiftKey ? "redo" : "undo");
+      } else if (historyKey(event) === "undo") {
+        this.undo(event);
       }
     });
     this.input.addEventListener("blur", () => {
@@ -216,27 +215,29 @@ export class InlineEditor {
   }
 
   /**
-   * ⌘Z／⌘⇧Z in the draft (LEV-331). Text typed and not yet written is the textarea's to take back first, as its own
-   * Undo does; a draft holding only what the note has (a new node's provisional name, a title opened with F2 and left
-   * as it was) has nothing of its own to lose, so it closes and the map takes the step — the node just added goes, as
-   * ⌘Z on the map would take it. ⌘⇧Z goes to the map only while nothing has been typed: after typing, the textarea
-   * may have a step of its own to redo. A draft held with a reason keeps the keys (only its own Enter saves it). While
-   * a save is under way (Enter pressed just before) the draft is read-only and its text is being written: the step
-   * follows the save once it has closed the draft, and is dropped if the save keeps it open.
+   * ⌘Z in the draft of a node just added (LEV-331): while it holds the provisional name the node was written with, it has
+   * nothing of its own to lose, so it closes and the map takes the step — the addition. Text typed is the textarea's to
+   * take back first, as its own Undo does; once that Undo has brought the provisional name back, the next ⌘Z is the
+   * map's. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's, and so
+   * does a draft held with a reason (only its own Enter saves it). While Enter's save runs (the draft is read-only) the
+   * key is cancelled and dropped: the save goes on to close the draft or, after Tab, to add a child, and a step taken
+   * after it would land in the middle of that (`MindmapView.run` does not queue).
    */
-  private history(event: KeyboardEvent, direction: "undo" | "redo"): void {
-    const history = this.options.history;
-    if (!history || this.held()) return;
-    if (this.pending) {
-      event.preventDefault();
-      void this.pending.then(() => { if (this.disposed) history(direction); });
-      return;
-    }
-    if (this.input.value !== this.written || (direction === "redo" && this.typed)) return;
+  private undo(event: KeyboardEvent): void {
+    const undo = this.options.undo;
+    if (!undo || this.held() || this.inPlace) return;
+    if (this.busy) { event.preventDefault(); return; }
+    const initial = this.options.initial;
+    if (this.input.value !== initial || this.written !== initial) return;
     event.preventDefault();
+    this.close("none");
+    undo();
+  }
+
+  /** The draft is done with: the editor goes, then the view hears how it ended (`next`; never a cancel). */
+  private close(next: "none" | "child"): void {
     this.dispose();
-    this.options.finish("none", false, this.input.value);
-    history(direction);
+    this.options.finish(next, false, this.input.value);
   }
 
   /** One save: the editor closes on success, keeps the draft with the error on refusal. */
@@ -246,8 +247,7 @@ export class InlineEditor {
     try {
       await this.options.save(this.input.value);
       if (this.disposed) return;
-      this.dispose();
-      this.options.finish(next, false, this.input.value);
+      this.close(next);
     } catch (error) {
       if (this.disposed) return;
       this.refusal.show(error);
@@ -274,8 +274,7 @@ export class InlineEditor {
     try {
       await this.options.save(this.input.value);
       if (this.disposed) return;
-      this.dispose();
-      this.options.finish("none", false, this.input.value);
+      this.close("none");
     } finally {
       this.busy = false;
       this.input.readOnly = false;

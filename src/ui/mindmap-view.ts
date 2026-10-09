@@ -2347,9 +2347,9 @@ export class MindmapView extends FileView {
       },
       resize: () => { this.scheduleLayout(); },
       restore: () => { this.renderer.editing(draft.nodeId, false); },
-      // ⌘Z／⌘⇧Z in a draft with nothing typed is the map's (LEV-331): ⌘Z right after Tab／Enter takes the new node back
+      // ⌘Z in the draft of a node just added, its provisional name untouched, is the map's (LEV-331): the addition goes
       // as one step of the history, which ⌘⇧Z brings back (Escape instead takes it back with no step left).
-      history: direction => { this.history(direction); },
+      ...(created ? { undo: () => { this.history("undo", created); } } : {}),
     });
   }
 
@@ -2467,8 +2467,12 @@ export class MindmapView extends FileView {
     new Notice(t().convertedToList);
   }
 
-  /** Undo／Redo: the store tells every map of the note what the step wrote (`recordWrite`). */
-  private history(direction: "undo" | "redo"): void {
+  /**
+   * Undo／Redo: the store tells every map of the note what the step wrote (`recordWrite`). `created`: ⌘Z in the draft of
+   * a node just added (LEV-331); a step that took the note back to before the addition also puts back what the addition
+   * changed on screen — the folds it opened, the selection and the viewport — as Escape's take-back does (`retract`).
+   */
+  private history(direction: "undo" | "redo", created?: Created): void {
     const file = this.file;
     if (!file) return;
     this.run(async () => {
@@ -2504,7 +2508,25 @@ export class MindmapView extends FileView {
       // and whether this view or its re-read shows the step.
       if (write.edits.length > 0) this.tellKeptDrafts();
       await this.refresh(shown);
+      if (created && write.edits.length > 0 && write.after === created.write.before) await this.restoreShown(file, created);
     });
+  }
+
+  /**
+   * What the map showed before `created`'s addition, once the note is back to its text before it: the folds the addition
+   * opened close again (the ids are carried over the re-read), the node selected then is selected again (nothing, if
+   * nothing was), and the viewport is set back once the layout of the closed folds is on screen.
+   */
+  private async restoreShown(file: TFile, created: Created): Promise<void> {
+    if (file !== this.file || this.closed || !this.document) return;
+    this.collapsed = new Set(created.collapsed);
+    this.draw();
+    if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
+    else { this.deselect(); this.canvas.focus({ preventScroll: true }); }
+    this.revealId = null;
+    if (this.layoutFrame !== undefined) await this.nextFrame();
+    if (this.file !== file || this.closed) return;
+    this.viewport.set(created.viewport);
   }
 
   /**
