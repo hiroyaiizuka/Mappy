@@ -127,9 +127,9 @@ describe('⌘Z in the draft a new node opened takes the node back, as Escape doe
     expect(mounted.canvas.ownerDocument.activeElement).toBe(mounted.canvas);
   });
 
-  // Review 2: what Escape would not take back (something was written since the addition), ⌘Z does not either: the draft
-  // closes and the last step of the history goes, as ⌘Z on the map after a click on the empty canvas.
-  it('after another write since the addition, closes the draft and undoes that write; the node stays', async () => {
+  // Review 3: what Escape would not take back (something was written since the addition), ⌘Z does not either: only the
+  // draft closes, and no step of the history goes — it could be another map's edit of the note.
+  it('after another write since the addition, only closes the draft: the node and that write stay', async () => {
     const mounted = await mount(LIST);
     mounted.key(mounted.select('持ち物'), 'Tab');
     await mounted.settle();
@@ -137,12 +137,30 @@ describe('⌘Z in the draft a new node opened takes the node back, as Escape doe
     const at = added.indexOf('温泉旅行');
     await mounted.store.apply(mounted.file, added, [{ from: at, to: at + '温泉旅行'.length, text: '湯治' }]);
     await mounted.settle();
-    expect(mounted.source()).toBe(added.replace('温泉旅行', '湯治'));
+    const other = added.replace('温泉旅行', '湯治');
+    expect(mounted.source()).toBe(other);
     expect(mounted.key(draft(mounted, t().newNodeTitle), 'z', { metaKey: true }).defaultPrevented).toBe(true);
     await mounted.settle();
     expect(mounted.editor()).toBeNull();
-    expect(mounted.source()).toBe(added);
+    expect(mounted.source()).toBe(other);
     expect(nodeElements(mounted, t().newNodeTitle)).toHaveLength(1);
+  });
+
+  // Review 3: the keyboard is the map's as soon as the draft closes, not once the take-back is written.
+  it('has the keyboard on the map at once: a second ⌘Z pressed before the take-back is written still reaches the map', async () => {
+    const mounted = await mount(LIST);
+    mounted.key(mounted.select('持ち物'), 'Tab');
+    await mounted.settle();
+    mounted.key(draft(mounted, t().newNodeTitle), 'Enter');
+    await mounted.settle();
+    mounted.key(mounted.select(t().newNodeTitle), 'Enter');
+    await mounted.settle();
+    mounted.key(draft(mounted, t().newNodeTitle), 'z', { metaKey: true });
+    const focused = mounted.canvas.ownerDocument.activeElement;
+    expect(focused instanceof Node && mounted.canvas.contains(focused)).toBe(true);
+    mounted.key(focused ?? mounted.canvas, 'z', { metaKey: true });
+    await mounted.settle();
+    expect(mounted.source()).toBe(LIST);
   });
 
   it('a second ⌘Z goes on through the history: the node before the last one goes too', async () => {

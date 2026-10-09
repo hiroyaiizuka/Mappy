@@ -16,10 +16,10 @@ export interface InlineEditorOptions {
   restore: () => void;
   suggest?: (input: HTMLTextAreaElement) => InlineSuggestion;
   /**
-   * ⌘Z in the draft of a node just added, handed to the map (LEV-331): called once the editor has closed as Escape closes
-   * it (`finish` with `cancelled`), whose take-back of the node the view decides. Without it ⌘Z stays the textarea's.
+   * ⌘Z in the draft of a node just added is Escape while the draft holds the provisional name untouched (LEV-331): the
+   * view decides, as for Escape, whether the node is taken back. Without it ⌘Z stays the textarea's.
    */
-  undo?: () => void;
+  undoCancels?: boolean;
 }
 
 /** Pixels past the measured text width: scrollWidth is rounded, and a row that fits must not wrap on a fraction. */
@@ -93,8 +93,7 @@ export class InlineEditor {
       if (this.suggestion?.handleKey(event)) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        this.dispose();
-        this.options.finish("none", true, this.input.value);
+        this.cancel();
       } else if (event.key === "Enter" && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         // A line break inside the node (LEV-202), as XMind's Shift+Enter: the textarea's own insertion, which its
         // Undo knows. The save writes it as `<br>` in the title's one line (core/title-breaks).
@@ -216,23 +215,25 @@ export class InlineEditor {
 
   /**
    * ⌘Z in the draft of a node just added (LEV-331): while it holds the provisional name the node was written with, it has
-   * nothing of its own to lose, so it closes as Escape closes it and the map takes the rest (`undo`). Text typed is the textarea's to
-   * take back first, as its own Undo does; once that Undo has brought the provisional name back, the next ⌘Z is the
-   * map's. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's, and so
-   * does a draft held with a reason (only its own Enter saves it). While Enter's save runs (the draft is read-only) the
-   * key is cancelled and dropped: the save goes on to close the draft or, after Tab, to add a child, and a step taken
-   * after it would land in the middle of that (`MindmapView.run` does not queue).
+   * nothing of its own to lose, and ⌘Z is Escape — the view takes the node back as Escape would. Text typed is the
+   * textarea's to take back first, as its own Undo does; once that Undo has brought the provisional name back, the next
+   * ⌘Z is Escape. A name saved in place (the window was left, LEV-216) is the note's now and keeps ⌘Z the textarea's,
+   * and so does a draft held with a reason (only its own Enter saves it). While Enter's or Tab's save runs (the draft is
+   * read-only) the key is cancelled and dropped: the save goes on to close the draft or to add a child.
    */
   private undo(event: KeyboardEvent): void {
-    const undo = this.options.undo;
-    if (!undo || this.held() || this.inPlace) return;
+    if (!this.options.undoCancels || this.held() || this.inPlace) return;
     if (this.busy) { event.preventDefault(); return; }
     const initial = this.options.initial;
     if (this.input.value !== initial || this.written !== initial) return;
     event.preventDefault();
+    this.cancel();
+  }
+
+  /** The draft is given up (Escape): the editor goes, then the view hears the text it held. */
+  private cancel(): void {
     this.dispose();
     this.options.finish("none", true, this.input.value);
-    undo();
   }
 
   /** The draft is done with: the editor goes, then the view hears how it ended (`next`; never a cancel). */

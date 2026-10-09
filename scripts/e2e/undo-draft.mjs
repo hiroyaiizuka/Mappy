@@ -16,8 +16,9 @@
  * and the menu never sees it. The row that types into the draft expects the key to be left to the textarea: the guard
  * stops the menu's Undo there too, so `document.execCommand('undo')` stands in for it (the textarea's own Undo).
  *
- * ⌘Z there takes the node back as Escape does (nothing is left to redo); when Escape would not (something else was
- * written since the addition), it closes the draft and undoes the last step. That second branch is jsdom's only.
+ * ⌘Z there is Escape: the node is taken back (nothing is left to redo); when Escape would not (something else was
+ * written since the addition), only the draft closes. That second branch is jsdom's only. The rows that leave ⌘Z to
+ * the textarea see only that the map did not take it: what the app menu then does with the key is not observed.
  *
  * Usage: npm run harness:e2e:undo-draft -- [--reload] [--json <out.json>] [--keep]
  */

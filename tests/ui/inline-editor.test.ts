@@ -649,7 +649,6 @@ describe('InlineEditor DOM interactions', () => {
 // has the rows by the shape of the node; these are the editor's own edges.
 describe('⌘Z in the draft of a node just added (LEV-331)', () => {
   function withUndo(initial = 'サブトピック') {
-    const undo = vi.fn<NonNullable<InlineEditorOptions['undo']>>();
     const host = createHost();
     const options = {
       initial,
@@ -657,14 +656,14 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
       finish: vi.fn<InlineEditorOptions['finish']>(),
       resize: vi.fn<InlineEditorOptions['resize']>(),
       restore: vi.fn<InlineEditorOptions['restore']>(),
-      undo,
+      undoCancels: true,
     } satisfies InlineEditorOptions;
     const editor = new InlineEditor(host, options);
     editors.add(editor);
     const input = host.querySelector('textarea');
     const error = host.querySelector<HTMLDivElement>('[role="alert"]');
     if (!input || !error) throw new Error('Editor did not create its input and error UI');
-    return { host, options, undo, input, error };
+    return { host, options, input, error };
   }
 
   function type(input: HTMLTextAreaElement, value: string): void {
@@ -672,29 +671,26 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
-  it('closes the untouched draft as Escape does, writes nothing and hands the key to the map, after the close', () => {
-    const { host, options, undo, input } = withUndo();
+  it('is Escape on the untouched draft: it closes, writes nothing, and the view hears a cancel', () => {
+    const { host, options, input } = withUndo();
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
     expect(options.save).not.toHaveBeenCalled();
     expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
-    expect(undo).toHaveBeenCalledOnce();
+    expect(options.restore).toHaveBeenCalledTimes(1);
     expect(host.querySelector('textarea')).toBeNull();
-    expect(options.finish.mock.invocationCallOrder[0]).toBeLessThan(undo.mock.invocationCallOrder[0] ?? 0);
   });
 
   it('reads Ctrl+Z as ⌘Z, as the canvas does', () => {
-    const init = { ctrlKey: true };
-    const { undo, input } = withUndo();
-    expect(key(input, 'z', init).defaultPrevented).toBe(true);
-    expect(undo).toHaveBeenCalledOnce();
+    const { options, input } = withUndo();
+    expect(key(input, 'z', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
   });
 
   it('leaves ⌘⇧Z, ⌘⌥Z and a plain z to the textarea', () => {
-    const { undo, options, input } = withUndo();
+    const { options, input } = withUndo();
     expect(key(input, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(false);
     expect(key(input, 'z', { metaKey: true, altKey: true }).defaultPrevented).toBe(false);
     expect(key(input, 'z').defaultPrevented).toBe(false);
-    expect(undo).not.toHaveBeenCalled();
     expect(options.finish).not.toHaveBeenCalled();
   });
 
@@ -704,20 +700,20 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     expect(options.finish).not.toHaveBeenCalled();
   });
 
-  it('leaves ⌘Z with typed text to the textarea, and takes the step once its Undo has brought the name back', () => {
-    const { undo, input } = withUndo();
+  it('leaves ⌘Z with typed text to the textarea, and is Escape once its Undo has brought the name back', () => {
+    const { options, input } = withUndo();
     type(input, '水着');
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(false);
-    expect(undo).not.toHaveBeenCalled();
+    expect(options.finish).not.toHaveBeenCalled();
     type(input, 'サブトピック');
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(true);
-    expect(undo).toHaveBeenCalledOnce();
+    expect(options.finish).toHaveBeenCalledExactlyOnceWith('none', true, 'サブトピック');
   });
 
   // Review 1 of LEV-331: after a save in place the typed name is the note's, and ⌘Z closed the draft and undid that
   // half-typed rename on the map instead of the textarea's last keystroke.
   it('leaves ⌘Z to the textarea once a name was saved in place (the window was left), during that save and after', async () => {
-    const { options, undo, input } = withUndo();
+    const { options, input } = withUndo();
     const pending = pendingSave();
     options.save.mockReturnValue(pending.promise);
     type(input, '水着の準');
@@ -732,23 +728,21 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     await Promise.resolve();
     type(input, 'サブトピック');
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(false);
-    expect(undo).not.toHaveBeenCalled();
     expect(options.finish).not.toHaveBeenCalled();
   });
 
   it('keeps ⌘Z the textarea\'s in a draft held with a reason: only its own Enter saves it', async () => {
-    const { options, undo, input, error } = withUndo();
+    const { options, input, error } = withUndo();
     options.save.mockRejectedValueOnce(new Error('外部変更との競合'));
     key(input, 'Enter');
     await vi.waitFor(() => { expect(error.textContent).toBe('外部変更との競合'); });
     expect(key(input, 'z', { metaKey: true }).defaultPrevented).toBe(false);
-    expect(undo).not.toHaveBeenCalled();
     expect(options.finish).not.toHaveBeenCalled();
   });
 
   // Review 1 of LEV-331: a step taken after Tab's save would land in the middle of the child it goes on to add.
-  it.each(['Enter', 'Tab'])('cancels and drops ⌘Z while the save %s started runs: no step follows it', async (start) => {
-    const { options, undo, input } = withUndo();
+  it.each(['Enter', 'Tab'])('cancels and drops ⌘Z while the save %s started runs: the save closes the draft as it would', async (start) => {
+    const { options, input } = withUndo();
     const pending = pendingSave();
     options.save.mockReturnValue(pending.promise);
     type(input, '水着');
@@ -757,6 +751,5 @@ describe('⌘Z in the draft of a node just added (LEV-331)', () => {
     pending.resolve();
     await vi.waitFor(() => { expect(options.finish).toHaveBeenCalledOnce(); });
     expect(options.finish).toHaveBeenCalledWith(start === 'Tab' ? 'child' : 'none', false, '水着');
-    expect(undo).not.toHaveBeenCalled();
   });
 });

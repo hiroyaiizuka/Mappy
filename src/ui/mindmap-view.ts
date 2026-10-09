@@ -2241,10 +2241,10 @@ export class MindmapView extends FileView {
    * nothing else is being written; the store still refuses (the node stays, a Notice says why) if a change
    * lands in between: then the node stays as after any Escape, with no error. A topic keeps the point it was
    * pressed at until the section is really gone. The folds the addition opened and the viewport it panned come
-   * back too. Answers whether the node was taken back (⌘Z in the draft goes on to the history when not: LEV-331).
+   * back too.
    */
-  private async retract(file: TFile, created: Created, nodeId: string): Promise<boolean> {
-    if (file !== this.file || this.closed || this.saving) { this.draw(); return false; }
+  private async retract(file: TFile, created: Created, nodeId: string): Promise<void> {
+    if (file !== this.file || this.closed || this.saving) { this.draw(); return; }
     try {
       await this.writeOwn(created.write.after, file, async target => {
         const write = await this.store.retract(target, created.write);
@@ -2260,20 +2260,19 @@ export class MindmapView extends FileView {
       // the node stays, and Escape is what it is on any node — the draft given up — rather than an error.
       if (!(error instanceof ConflictError)) throw error;
       if (this.file === file && !this.closed) this.draw();
-      return false;
+      return;
     }
-    if (this.file !== file || this.closed || !this.document) return true;
+    if (this.file !== file || this.closed || !this.document) return;
     if (created.previous && findNode(this.document, created.previous)) this.select(created.previous, true);
-    // Nothing was selected (a topic added by a double click on the empty canvas): the keyboard stays on the map, not on
-    // the page the removed draft left it to, so the next ⌘Z still reaches the map (LEV-331).
-    else this.canvas.focus({ preventScroll: true });
+    // Nothing was selected (a topic added by a double click on the empty canvas): the canvas took the keyboard when the
+    // draft closed (`editTitle`); it is given back only if the re-read dropped it, not taken from where the user moved it.
+    else if (this.canvas.ownerDocument.activeElement === this.canvas.ownerDocument.body) this.canvas.focus({ preventScroll: true });
     // The viewport as it was, which showed the node selected then, once the layout of the closed folds is on screen
     // (that frame keeps what is on screen in place, and would pan it again): no reveal is left for later either.
     this.revealId = null;
     if (this.layoutFrame !== undefined) await this.nextFrame();
-    if (this.file !== file || this.closed) return true;
+    if (this.file !== file || this.closed) return;
     this.viewport.set(created.viewport);
-    return true;
   }
 
   /** `created`: the draft names a node just added (its provisional name selected); Escape then takes the node back. */
@@ -2310,8 +2309,6 @@ export class MindmapView extends FileView {
     // A popover showing over the node would cover the input (F2 is the view scope's, so the canvas never hears it).
     this.linkPreview?.close();
     let renamedOffset: number | null = null;
-    // The take-back the draft's close started (`retract`), if any: ⌘Z goes on to the history unless it took the node back (LEV-331).
-    let takeBack: Promise<boolean> | undefined;
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
     this.inlineEditor = new InlineEditor(entry.element, {
@@ -2337,9 +2334,10 @@ export class MindmapView extends FileView {
         // outside), Escape only closes the draft, as on any node.
         if (cancelled && created && text === created.name && !this.saving && this.prepared === 0
           && this.document?.source === created.write.after) {
-          const taking = this.retract(file, created, node.id);
-          takeBack = taking;
-          this.run(async () => { await taking; });
+          // The removed draft left the keyboard on the page: the map has it at once, so a key pressed while the take-back
+          // is written (a second ⌘Z, LEV-331) reaches the map.
+          this.canvas.focus({ preventScroll: true });
+          this.run(() => this.retract(file, created, node.id));
           return;
         }
         this.draw();
@@ -2355,18 +2353,10 @@ export class MindmapView extends FileView {
       },
       resize: () => { this.scheduleLayout(); },
       restore: () => { this.renderer.editing(draft.nodeId, false); },
-      // ⌘Z in the draft of a node just added, its provisional name untouched (LEV-331), closes it as Escape does — the
-      // node taken back, with what the addition changed on screen, when Escape would take it back — and otherwise (something
-      // else was written since the addition, the store refused the take-back), with the draft closed, takes the last step
-      // of the history, as ⌘Z on the map after a click on the empty canvas does.
-      ...(created ? {
-        undo: () => {
-          this.run(async () => {
-            // A take-back that failed was told by its own run: no step is taken on top of it.
-            if (!await (takeBack?.catch(() => true) ?? false)) this.history("undo");
-          });
-        },
-      } : {}),
+      // ⌘Z in the draft of a node just added, its provisional name untouched, is Escape (LEV-331): the node is taken back
+      // when Escape would take it back, and otherwise only the draft closes. Never a step of the history: that could be
+      // another map's edit of the note, or an image pasted onto the draft.
+      undoCancels: created !== undefined,
     });
   }
 
