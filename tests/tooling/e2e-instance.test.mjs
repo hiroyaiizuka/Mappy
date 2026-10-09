@@ -491,6 +491,15 @@ describe('cases that act on what every instance shares run alone', () => {
     if (shared.length > 0) expect(first, `${file}: ${shared.join(', ')}`).toMatch(/solo:/u);
   });
 
+  it('reads the cases main added since, and leaves E84, exit-draft-cut and E85 beside other instances', () => {
+    // E85 (LEV-331) sends its clicks and keys to its own page; a ⌘Z the page leaves goes to its own app's menu (and its
+    // guard stops it). E84 and exit-draft-cut reload the window, which moves no other instance's focus (focus-probe-reload.json).
+    expect(files).toEqual(expect.arrayContaining(['undo-draft.mjs', 'exit-draft-recovery.mjs']));
+    for (const file of ['undo-draft.mjs', 'exit-draft-recovery.mjs']) {
+      expect(SHARED.filter(pattern => pattern.test(code(file))), file).toEqual([]);
+    }
+  });
+
   it('finds the nine that do', () => {
     const solo = files.filter(file => /await connect\(\{ solo:/u.test(readFileSync(new URL(`../../scripts/e2e/${file}`, import.meta.url), 'utf8')));
     expect(solo.sort()).toEqual(['close-draft.mjs', 'draft-own-write.mjs', 'english-ui.mjs', 'panzoom-frames.mjs', 'popout.mjs', 'theme.mjs',
