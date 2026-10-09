@@ -240,7 +240,7 @@ LEV-136（2026-09-27）。本人の決定: **コミュニティプラグイン�
 | Behavior | Recommendation: `Vault Enumeration: Enumerates all files in the vault (vault.getFiles, getMarkdownFiles, etc.). Gives the plugin access to every file path in the vault.` | #40。作成先フォルダの解決から列挙を外し、補完と検索の 2 か所は残して README に書いた |
 
 - Build verification の Pass は、スキャナーのビルドが tag の木と一致したことしか言えない（HEAD も同じ木だった。§4.6 の 2）
-- 直した結果は、版を上げた Release を出して Request review で再走査するまで一覧の結果に出ない（§4.6 の 5）。LEV-253 は版を切らない。対応は 0.4.2 に入った（LEV-254 の merge のあとに tag を打ち、2026-09-28T14:27:09Z に公開。再走査の結果はこの節に版の小見出しを足して書き、0.4.1 の表は書き換えない。LEV-303 の時点で 0.4.2〜0.4.5 とも記録は無い。LEV-333 の時点〔0.4.7 は 2026-10-07 に公開、0.4.8 を出す前〕で 0.4.2〜0.4.7 とも記録は無い）。merge すると `main` の HEAD が 0.4.1 の tag から離れるので、スキャナーが HEAD をビルドする場合は次の Release まで Build verification が合わなくなりうる（§4.6 の 2 の論点がそのまま効く）。
+- 直した結果は、版を上げた Release を出して Request review で再走査するまで一覧の結果に出ない（§4.6 の 5）。LEV-253 は版を切らない。対応は 0.4.2 に入った（LEV-254 の merge のあとに tag を打ち、2026-09-28T14:27:09Z に公開。再走査の結果はこの節に版の小見出しを足して書き、0.4.1 の表は書き換えない。LEV-303 の時点で 0.4.2〜0.4.5 とも記録は無い。LEV-333 の時点〔0.4.8 は 2026-10-09 に公開した直後〕で 0.4.2〜0.4.8 とも記録は無い）。merge すると `main` の HEAD が 0.4.1 の tag から離れるので、スキャナーが HEAD をビルドする場合は次の Release まで Build verification が合わなくなりうる（§4.6 の 2 の論点がそのまま効く）。
 
 ## 5. M9（AI 機能）を入れる版の開示（LEV-267、2026-10-01）
 
