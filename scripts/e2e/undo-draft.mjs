@@ -23,8 +23,9 @@
  * LEV-332: the double click's topic came back with ⌘⇧Z where a topic with no position goes, not where the canvas was
  * pressed (the point was written with the name, which the draft never confirmed). The addition writes the point now: the
  * double-click rows read the point back from the note, check the topic is drawn where it was pressed before ⌘Z, and drawn
- * there again after ⌘⇧Z, the note holding the point. The notes: the list with front matter (the key goes into it), one
- * with no front matter (the addition makes it), and one with a topic of that name already (the key is `トピック (2)`).
+ * there again after ⌘⇧Z, the note holding the point. The notes: the list (the key goes into its front matter) and the
+ * list with a topic of that name already (the key is `トピック (2)`). A note with no front matter, whose header the addition
+ * makes, is jsdom's only: Obsidian opens a note as a map only once it has `mappy: true` (`readMapLayout`, the view router).
  *
  * Usage: npm run harness:e2e:undo-draft -- [--reload] [--json <out.json>] [--keep]
  */
@@ -36,7 +37,6 @@ const { flag, value } = parseArgs();
 
 const LIST_NOTE = 'Fixtures/E2E-undo-draft.md';
 const HEADINGS_NOTE = 'Fixtures/E2E-undo-draft-headings.md';
-const BARE_NOTE = 'Fixtures/E2E-undo-draft-bare.md';
 const LIST = ['---', 'mappy: true', '---', '## 旅の計画', '', '- 温泉旅行', '  - 予約', '- 持ち物', ''].join('\n');
 const HEADINGS = ['---', 'mappy: true', '---', '# 旅の計画', '', '## 温泉旅行', '', '本文', '', '## 持ち物', ''].join('\n');
 const LAYOUTS = ['mindmap', 'timeline'];
@@ -55,7 +55,6 @@ const SHAPES = [
   // `written` is the note without the point; the row expects it with the point under `topic`, as `withTopic` spells it (LEV-332).
   // `others`: the nodes of that name the note has already.
   { id: 'double-click-topic', note: LIST_NOTE, source: LIST, target: null, key: null, name: TOPIC, topic: TOPIC, others: 0, written: `${LIST}\n## ${TOPIC}\n` },
-  { id: 'double-click-topic-bare', note: BARE_NOTE, source: LIST.replace('---\nmappy: true\n---\n', ''), target: null, key: null, name: TOPIC, topic: TOPIC, others: 0, written: `${LIST.replace('---\nmappy: true\n---\n', '')}\n## ${TOPIC}\n` },
   { id: 'double-click-topic-second', note: LIST_NOTE, source: `${LIST}\n## ${TOPIC}\n\n- 下見\n`, target: null, key: null, name: TOPIC, topic: `${TOPIC} (2)`, others: 1, written: `${LIST}\n## ${TOPIC}\n\n- 下見\n\n## ${TOPIC}\n` },
 ];
 
@@ -205,7 +204,6 @@ async function add(shape, layout, { fold = false } = {}) {
 
 const cleanList = makeDeleteNote(evaluate, LIST_NOTE);
 const cleanHeadings = makeDeleteNote(evaluate, HEADINGS_NOTE);
-const cleanBare = makeDeleteNote(evaluate, BARE_NOTE);
 let exitCode = 1;
 try {
   required(record, 'plugin', await step('plugin', makePluginStep(cdp, evaluate, flag)));
@@ -321,7 +319,7 @@ try {
 } finally {
   if (!cdp.closed) {
     await detachMaps().catch(() => null);
-    if (!flag('--keep')) { await step('clean', cleanList); await step('clean-headings', cleanHeadings); await step('clean-bare', cleanBare); }
+    if (!flag('--keep')) { await step('clean', cleanList); await step('clean-headings', cleanHeadings); }
   }
   exitCode = await finish(record, value('--json'));
   cdp.close();
