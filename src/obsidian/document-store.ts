@@ -241,6 +241,8 @@ export class DocumentStore {
       await this.writeSafely(file, session, entry.after, entry.before, entry.inverse);
       session.latest = [];
       session.past.pop();
+      // An Undo of the step pushes it onto `future`, which holds nothing else: every write `retract` takes back (`applyOver`)
+      // emptied it, and nothing has come after it (checked above).
       session.future = options.redoable ? [entry] : entry.dropped ?? [];
       delete entry.dropped;
       const taken = { before: entry.after, after: entry.before, edits: entry.inverse.map((edit) => ({ ...edit })) };

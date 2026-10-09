@@ -140,11 +140,11 @@ async function add(shape, layout, { fold = false } = {}) {
   } else {
     // The empty canvas near its top-left corner, away from the fixture's nodes (as E43's double click).
     const point = await evaluate(`${VIEW} const rect = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: rect.left + 40, y: rect.top + 40 };`);
-    // The double click's first click clears the selection: nothing is selected when the topic is added.
-    before = { ...await shown(), selected: [] };
-    for (const clickCount of [1, 2]) {
-      for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount });
-    }
+    // The double click's first click (which clears the selection) comes first: what the map shows after it is what the
+    // take-back must put back (review 5: measured, not assumed).
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount: 1 });
+    before = await shown();
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', clickCount: 2 });
   }
   const opened = await settled(shape.written);
   if (opened.source !== shape.written || opened.draft !== shape.name) {
