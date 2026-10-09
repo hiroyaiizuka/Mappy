@@ -21,7 +21,7 @@ import { ConflictError } from '../../src/obsidian/conflict-error';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { setLanguage, t } from '../../src/i18n';
 import { accessibleName } from './accessible-name';
-import { withAddedTopic } from './added-topic';
+import { pressedPoint, withAddedTopic } from './added-topic';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -97,9 +97,10 @@ describe('the provisional names in an English app', () => {
     mounted.key(provisionalDraft(mounted, 'Subtopic'), 'Enter');
     await mounted.settle();
     expect(mounted.source()).toBe(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'));
+    const point = pressedPoint(mounted.view, 5, 5);
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
-    expect(mounted.source()).toBe(withAddedTopic(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'), mounted.source(), { heading: '## Topic', key: 'Topic', layout: 'mindmap' }));
+    expect(mounted.source()).toBe(withAddedTopic(LIST.replace('- 持ち物\n', '- 持ち物\n  - Subtopic\n'), { heading: '## Topic', key: 'Topic', layout: 'mindmap', point }));
   });
 });
 
@@ -169,9 +170,10 @@ describe('a node added on the map opens under its provisional name, selected (LE
 
     it(`${layout}: a free topic is written as 「${t().newTopicTitle}」 and Escape takes it back`, async () => {
       const mounted = await mount(LIST, layout);
+      const point = pressedPoint(mounted.view, 5, 5);
       mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
       await mounted.settle();
-      expect(mounted.source()).toBe(withAddedTopic(LIST, mounted.source(), { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout }));
+      expect(mounted.source()).toBe(withAddedTopic(LIST, { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout, point }));
       mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
       await mounted.settle();
       expect(mounted.source()).toBe(LIST);
@@ -375,6 +377,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
 
   it('a topic whose taking back the store refuses stays, as after any Escape: no error, and the point it was pressed at kept (reviews 1 and 3)', async () => {
     const mounted = await mount(LIST);
+    const point = pressedPoint(mounted.view, 5, 5);
     mounted.canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
     await mounted.settle();
     // A change the view could not see before the store's turn (a race): the store refuses, the section stays.
@@ -383,7 +386,7 @@ describe('a node added on the map opens under its provisional name, selected (LE
     mounted.key(provisionalDraft(mounted, t().newTopicTitle), 'Escape');
     await mounted.settle();
     expect(mounted.source()).toBe(added);
-    expect(added).toBe(withAddedTopic(LIST, added, { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout: 'mindmap' }));
+    expect(added).toBe(withAddedTopic(LIST, { heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle, layout: 'mindmap', point }));
     // A change from outside inside the refresh's debounce is not the user's error to be told about on Escape.
     expect(document.querySelector('.notice')).toBeNull();
     expect(mounted.editor()).toBeNull();

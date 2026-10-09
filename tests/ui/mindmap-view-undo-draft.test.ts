@@ -26,6 +26,7 @@ import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { t } from '../../src/i18n';
 import { accessibleName } from './accessible-name';
+import { pressedPoint, withAddedTopic } from './added-topic';
 import { mountMapView, type MountedMapView } from './map-view-mount';
 import { closeOpenViews } from '../mocks/open-views';
 
@@ -87,9 +88,9 @@ const SHAPES = [
  * new one's key in `mappy-topics` is then `トピック (2)`).
  */
 const TOPIC_SHAPES = [
-  { id: 'list', source: LIST, key: t().newTopicTitle },
-  { id: 'headings, no front matter', source: HEADINGS, key: t().newTopicTitle },
-  { id: 'a topic of that name already', source: `${LIST}\n## ${t().newTopicTitle}\n\n- 下見\n`, key: `${t().newTopicTitle} (2)` },
+  { id: 'list', source: LIST, heading: `## ${t().newTopicTitle}`, key: t().newTopicTitle },
+  { id: 'headings, no front matter', source: HEADINGS, heading: `# ${t().newTopicTitle}`, key: t().newTopicTitle },
+  { id: 'a topic of that name already', source: `${LIST}\n## ${t().newTopicTitle}\n\n- 下見\n`, heading: `## ${t().newTopicTitle}`, key: `${t().newTopicTitle} (2)` },
 ] as const;
 
 /** A double click on the empty canvas; its first click clears the selection, so nothing is selected when the topic is added. */
@@ -161,10 +162,12 @@ describe('⌘Z in the draft a new node opened takes the node back as Escape does
     for (const topicShape of TOPIC_SHAPES) {
       it(`${layout}: a free topic from a double click on the empty canvas (${topicShape.id}) goes too, the keyboard left on the map, and ⌘⇧Z brings it back where it was pressed`, async () => {
         const mounted = await mount(topicShape.source, layout);
+        const point = pressedPoint(mounted.view, 5, 5);
         doubleClickCanvas(mounted);
         await mounted.settle();
         const written = mounted.source();
-        expect(written.endsWith(`# ${t().newTopicTitle}\n`)).toBe(true);
+        // Where it was pressed is in the note, so it holds where the view's own memory of it does not reach (a reload).
+        expect(written).toBe(withAddedTopic(topicShape.source, { heading: topicShape.heading, key: topicShape.key, layout, point }));
         const pressed = place(mounted, lastTopic(mounted));
         mounted.key(draft(mounted, t().newTopicTitle), 'z', { metaKey: true });
         await mounted.settle();
@@ -176,8 +179,6 @@ describe('⌘Z in the draft a new node opened takes the node back as Escape does
         await mounted.settle();
         expect(mounted.source()).toBe(written);
         expect(place(mounted, lastTopic(mounted))).toEqual(pressed);
-        // Where it was pressed is in the note, so it holds where the view's own memory of it does not reach (a reload).
-        expect(readTopicPositions(mounted.source()).get(topicShape.key)?.[layout]).toBeDefined();
       });
     }
   }

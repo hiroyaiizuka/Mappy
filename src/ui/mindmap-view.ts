@@ -288,7 +288,7 @@ export class MindmapView extends FileView {
   /**
    * Where a topic added on the map was pressed, until its draft is saved or a drag replaces it. The addition writes the
    * point for the layout it was pressed in (LEV-332); this holds it through a layout switch before the name is saved
-   * (LEV-129), and the rename writes it for the layout then shown.
+   * (LEV-129), and the rename writes it for the layout then shown when the note holds none for that layout.
    */
   private pendingTopic: { id: string; layout: LayoutMode; position: TopicPosition } | null = null;
   /** How many ⌘Z／⌘⇧Z this view has been asked for: a take-back that a later one overtook leaves the view to it (`retract`). */
@@ -2371,15 +2371,18 @@ export class MindmapView extends FileView {
 
   /**
    * The rename a title draft's save makes, planned on the note as the map shows it now. A topic added on the map is
-   * placed where it was pressed by the same edit set that names it (`pending`).
+   * placed where it was pressed by the same edit set that names it (`pending`), for a layout the note holds no point
+   * for: the addition wrote the one it was pressed in (LEV-332), and a point the note holds may be newer than the press
+   * (a drag in another map of the note, which this one shows: review 1 of LEV-332).
    */
   private planTitle(file: TFile, draft: DraftBase, text: string): { current: MindDocument; plan: EditPlan; pending: MindmapView["pendingTopic"] } {
     const pending = this.pendingTopic?.id === draft.nodeId ? this.pendingTopic : null;
     // The draft outlives an external change that refreshed the map (E05): plan against the note as it is now.
     const { document: current, node: target } = this.draftTarget(file, draft);
+    const place = pending && !storedTopicPosition(readTopicPositions(current.source), topicKeys(current), target, pending.layout) ? pending : null;
     const plan = planEdit(current, {
       type: "rename", nodeId: target.id, title: text,
-      ...(pending ? { position: { layout: pending.layout, x: pending.position.x, y: pending.position.y } } : {}),
+      ...(place ? { position: { layout: place.layout, x: place.position.x, y: place.position.y } } : {}),
     });
     return { current, plan, pending };
   }
