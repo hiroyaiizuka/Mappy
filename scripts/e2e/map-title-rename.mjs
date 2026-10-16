@@ -375,11 +375,14 @@ try {
     await wait(200);
     await press(`const node = app.workspace.getLeavesOfType('markdown').find(item => item.view.file?.path === ${JSON.stringify(NOTE)})?.view.contentEl.querySelector('.cm-content');`);
     await wait(1200);
+    // The note is open in an editor, so the map's save is an Editor edit, on disk only at Obsidian's debounce: read the editor.
     const where = await evaluate(`${VIEW} const active = document.activeElement;
-      return { inMap: el.contains(active), markdown: !!active?.closest?.('.cm-editor'), leaf: app.workspace.activeLeaf?.view?.getViewType() ?? null };`);
+      const markdown = app.workspace.getLeavesOfType('markdown').find(item => item.view.file?.path === ${JSON.stringify(NOTE)});
+      return { inMap: el.contains(active), markdown: !!active?.closest?.('.cm-editor'), leaf: app.workspace.activeLeaf?.view?.getViewType() ?? null,
+        text: markdown?.view.editor?.getValue() ?? null };`);
     return { where, after: await look() };
   });
-  check(away?.after?.editing === false && away.after.source === drafted, `draft-markdown: the press left ${JSON.stringify(away?.after && { editing: away.after.editing, source: away.after.source })}`);
+  check(away?.after?.editing === false && away.where?.text === drafted, `draft-markdown: the press left ${JSON.stringify({ editing: away?.after?.editing, text: away?.where?.text })}`);
   check(away?.where?.markdown === true && away.where.inMap === false && away.where.leaf === 'markdown', `draft-markdown: the focus is ${JSON.stringify(away?.where)}`);
 
   // Another note links to the map's: Obsidian asks (its default) and, told to update this once, rewrites the link.
@@ -405,17 +408,6 @@ try {
   checkRenamed('links', links, RENAMED, folderPath(RENAMED), SOURCE, /^1 ファイル の 1 リンク を更新しました。$/u);
   check(links?.dialog?.buttons?.length === 3, `links: Obsidian's dialog was ${JSON.stringify(links?.dialog)}`);
   check(links?.linking === `[[${RENAMED}]]\n`, `links: the linking note reads ${JSON.stringify(links?.linking)}`);
-
-  // For the record (not checked): the view's ⋯ menu, now Obsidian's menu for a file view whose title renames.
-  await step('more-options', async () => {
-    await open();
-    await press('const node = view.moreOptionsButtonEl;');
-    await wait(500);
-    const items = await evaluate(`return Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent.trim());`);
-    await cdp.realKey('Escape');
-    await wait(300);
-    return { items };
-  });
 
   const errors = await step('page-errors', () => evaluate('return window.__mappyE2EErrors ?? null;'));
   check(Array.isArray(errors) && errors.length === 0, `page errors: ${JSON.stringify(errors)}`);
