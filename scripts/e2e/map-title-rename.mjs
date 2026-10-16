@@ -169,7 +169,7 @@ try {
   // The labels: the tab, the header and the window say the note's name, nothing else; the title is editable.
   const labels = await step('labels', async () => { await open(); return look(); });
   check(labels?.title === NAME && labels.tab === NAME, `labels: the header reads ${JSON.stringify(labels?.title)} and the tab ${JSON.stringify(labels?.tab)}, not ${NAME}`);
-  check(!SUFFIXES.some(suffix => labels?.window?.includes(suffix)), `labels: the window title is ${JSON.stringify(labels?.window)}`);
+  check(typeof labels?.window === 'string' && !SUFFIXES.some(suffix => labels.window.includes(suffix)), `labels: the window title is ${JSON.stringify(labels?.window)}`);
   check(labels?.editable === true, 'labels: the header title is not editable');
 
   // Click, type, Enter: the report's operation on a note in a folder (the shape of 「…/Mail/ローンチメールマップ」).
@@ -243,7 +243,7 @@ try {
     if (opened.focused) { await cdp.realKey('Escape'); await wait(400); }
     return { name, offered, chosen, opened, after: await look() };
   });
-  check(palette?.chosen === palette?.name, `palette: the palette offered ${JSON.stringify(palette?.offered)}`);
+  check(typeof palette?.name === 'string' && palette.chosen === palette.name, `palette: the palette offered ${JSON.stringify(palette?.offered)}`);
   check(palette?.opened?.focused === true && palette.opened.selected === NAME, `palette: the title is ${JSON.stringify(palette?.opened && { focused: palette.opened.focused, selected: palette.opened.selected })}`);
   check(palette?.after?.path === NOTE && palette.after.title === NAME, `palette: Escape left ${JSON.stringify(palette?.after && { path: palette.after.path, title: palette.after.title })}`);
 
