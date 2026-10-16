@@ -217,6 +217,14 @@ try {
   check(command?.opened?.focused === true && command.opened.selected === NAME, `command: the title is ${JSON.stringify(command?.opened && { focused: command.opened.focused, selected: command.opened.selected })}`);
   checkRenamed('command', command, RENAMED, folderPath(RENAMED), SOURCE);
 
+  // Obsidian's other `EditableFileView` check: 「現在のビューをブックマーク」 bookmarks the map's note (before, the command
+  // was off on a map: product-plan §5 M2, LEV-89's known issue). Only whether it is offered; nothing is bookmarked.
+  const bookmark = await step('bookmark-view', async () => {
+    await open();
+    return evaluate(`return { available: app.commands.commands['bookmarks:bookmark-current-view']?.checkCallback?.(true) ?? null };`);
+  });
+  check(bookmark?.available === true, `bookmark-view: 「現在のビューをブックマーク」 is ${JSON.stringify(bookmark?.available)} on the map`);
+
   // The same from the command palette: searched by its name and run with a real Enter — only when it is the one selected.
   const palette = await step('palette', async () => {
     await open();
