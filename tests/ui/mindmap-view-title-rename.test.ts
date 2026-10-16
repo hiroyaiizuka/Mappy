@@ -154,6 +154,38 @@ describe('MindmapView header title (LEV-340: rename the note from the map)', () 
     await vi.waitFor(() => { expect(nodeNamed(view.containerEl, '本文（下書き）')).not.toBeNull(); });
   });
 
+  it('leaves the title to the rename when the draft pressed away is unchanged: its save ends while the blur runs', async () => {
+    const { app, view, file, title, key, select, editor, source, settle } = await mount();
+    key(select('本文'), 'F2');
+    await settle();
+    const input = editor() as HTMLTextAreaElement;
+    expect(input.value).toBe('本文');
+    const focused: Element[] = [];
+    view.contentEl.addEventListener('focusin', event => { focused.push(event.target as Element); });
+    // Chromium's order for a press on the title: the input's blur runs, and the microtasks after it, with the body
+    // active and the title as `relatedTarget`; the title is focused only afterwards. Nothing typed, the save writes
+    // nothing and the draft closes within those microtasks (code review of LEV-340). jsdom moves the focus first, so the
+    // order is played here.
+    Object.defineProperty(document, 'activeElement', { configurable: true, get: () => document.body });
+    try {
+      input.dispatchEvent(new FocusEvent('blur', { relatedTarget: title }));
+      for (let round = 0; round < 50 && editor(); round += 1) await Promise.resolve();
+      expect(editor()).toBeNull();
+    } finally {
+      delete (document as { activeElement?: unknown }).activeElement;
+    }
+    // The map did not take the focus back for its node: the title gets it, and renames the note.
+    expect(focused).toEqual([]);
+    title.focus();
+    await settle();
+    expect(source()).toBe(SOURCE);
+    expect(document.activeElement).toBe(title);
+    title.textContent = 'ローンチメール改';
+    key(title, 'Enter');
+    await settle();
+    expect(app.vault.getAbstractFileByPath(RENAMED)).toBe(file);
+  });
+
   it('leaves the focus where a press outside the map put it when that press closes a draft; Enter still gives it to the node', async () => {
     const { view, key, select, editor, source, settle, node } = await mount();
     // Another view's editor (the Markdown tab beside, say), outside the map's content.

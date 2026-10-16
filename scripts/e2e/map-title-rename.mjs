@@ -11,7 +11,8 @@
  *         コマンドパレットで検索して実キーの Enter）、ノードの上の実キーの F2、表札の上の実キーの F2、日本語の変換中の Enter
  *   形:   フォルダの中のノート・Vault の直下、日本語の名前、同じ名前のノートがある、空の名前・使えない文字、
  *         同じノートを Markdown の別のタブでも開いている、ファイル名が根になるマップ（LEV-301）、ノードの入力欄を開いたまま
- *         （表札を押す。同じ原因の対照として、隣の Markdown を押す: 下書きの保存がフォーカスをノードへ取り返していた）、
+ *         （表札を押す。打った下書きと、打っていない下書き〔保存が blur の最中に終わる〕。同じ原因の対照として、隣の
+ *         Markdown を押す: 下書きの保存がフォーカスをノードへ取り返していた）、
  *         ほかのノートからリンクされている（リンクの更新は Obsidian の設定どおり。既定の「確かめる」でダイアログ）
  * 表札の文字は、押したあと JS の選択で全体を選んでから `Input.insertText` で打つ（⌘A の実キーは macOS のメニューへ
  * 抜けうるので送らない。docs/harness.md 実機検証）。表札にフォーカスが入らなかった行は、打たずに失敗として残す
@@ -369,6 +370,25 @@ try {
   checkRenamed('draft-open', draft, RENAMED, folderPath(RENAMED), drafted);
   check(draft?.after?.labels?.includes('件名（下書き）'), `draft-open: the map shows ${JSON.stringify(draft?.after?.labels)}`);
 
+  // Nothing typed: the draft's save writes nothing and ends while the blur still runs, before the focus reaches the
+  // title (code review of LEV-340). The title must still get the focus and rename the note.
+  const unchanged = await step('draft-unchanged', async () => {
+    await open();
+    await select('件名');
+    await cdp.realKey('F2');
+    await wait(600);
+    const before = await look();
+    const focused = await clickTitle();
+    await wait(600);
+    const pressed = await look();
+    if (!focused || !pressed.focused) return { before, focused: focused && pressed.focused, pressed, after: pressed };
+    await typeAndFinish(RENAMED, 'Enter');
+    const renamed = await arrived(folderPath(RENAMED));
+    return { before, focused: true, pressed, renamed, after: await look() };
+  });
+  check(unchanged?.before?.editing === true && unchanged.pressed?.editing === false, `draft-unchanged: the node input was ${JSON.stringify([unchanged?.before?.editing, unchanged?.pressed?.editing])}`);
+  checkRenamed('draft-unchanged', unchanged, RENAMED, folderPath(RENAMED), SOURCE);
+
   // The same draft closed by a press in the Markdown editor beside the map: saved, and the press keeps the editor and its
   // leaf (the save used to give the keyboard and the active leaf back to the map's node; same cause as draft-open).
   const away = await step('draft-markdown', async () => {
@@ -413,8 +433,11 @@ try {
     await wait(800);
     return { focused, dialog, renamed, linking: await at(folderPath('リンク元')), after: await look() };
   });
-  checkRenamed('links', links, RENAMED, folderPath(RENAMED), SOURCE, /^1 ファイル の 1 リンク を更新しました。$/u);
-  check(links?.dialog?.buttons?.length === 3, `links: Obsidian's dialog was ${JSON.stringify(links?.dialog)}`);
+  // Obsidian's notice of the links it updated (its own text; the case runs in Japanese, cdp.mjs `LANGUAGE`).
+  checkRenamed('links', links, RENAMED, folderPath(RENAMED), SOURCE, /リンク|link/iu);
+  // The vault's 「内部リンクを常に更新」 decides whether Obsidian asks first (the generated vault leaves it off).
+  if (record.steps.setup?.alwaysUpdateLinks === true) check(links?.dialog === null, `links: Obsidian asked although it always updates: ${JSON.stringify(links?.dialog)}`);
+  else check(links?.dialog?.buttons?.length === 3, `links: Obsidian's dialog was ${JSON.stringify(links?.dialog)}`);
   check(links?.linking === `[[${RENAMED}]]\n`, `links: the linking note reads ${JSON.stringify(links?.linking)}`);
 
   const errors = await step('page-errors', () => evaluate('return window.__mappyE2EErrors ?? null;'));
