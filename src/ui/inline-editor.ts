@@ -50,6 +50,13 @@ export class InlineEditor {
   private readonly suggestion: InlineSuggestion | undefined;
   /** Whether the stylesheet sizes the draft to its text (`field-sizing: content`); if not, `measure` does. */
   private readonly sizesItself: boolean;
+  /**
+   * Where the blur that is closing the draft sent the focus (its `relatedTarget`: null for no element), undefined once the
+   * draft has the focus again or is confirmed by its own keys. Chromium runs a blur's listeners, and a save that writes
+   * nothing, with the body active, before the focus reaches the element pressed: the view's `finish` reads this to leave
+   * the keyboard there (LEV-340).
+   */
+  blurredTo: EventTarget | null | undefined;
 
   constructor(private readonly host: HTMLElement, private readonly options: InlineEditorOptions) {
     host.addClass("is-editing");
@@ -80,6 +87,7 @@ export class InlineEditor {
       }, 0);
     });
     this.input.addEventListener("input", () => { this.resize(); });
+    this.input.addEventListener("focus", () => { this.blurredTo = undefined; });
     this.input.addEventListener("pointerdown", event => { event.stopPropagation(); });
     this.input.addEventListener("click", event => { event.stopPropagation(); });
     this.input.addEventListener("dblclick", event => { event.stopPropagation(); });
@@ -103,12 +111,14 @@ export class InlineEditor {
         return;
       } else if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
+        this.blurredTo = undefined;
         void this.commit(event.key === "Tab" ? "child" : "none");
       } else if (historyKey(event) === "undo") {
         this.undo(event);
       }
     });
-    this.input.addEventListener("blur", () => {
+    this.input.addEventListener("blur", event => {
+      this.blurredTo = event.relatedTarget;
       if (this.composing) { this.blurAfterComposition = true; return; }
       // Keep an invalid/conflicted draft available instead of repeatedly saving on blur.
       if (this.disposed || this.error.textContent) return;

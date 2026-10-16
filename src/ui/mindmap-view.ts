@@ -199,8 +199,6 @@ export class MindmapView extends EditableFileView {
   /** Ids of the called nodes the view has shown; a call new to it starts folded below the called root's children. */
   private knownCalled = new Set<string>();
   private recallTimer: number | undefined;
-  /** Where the focus is going while an element of this view is blurred (its `relatedTarget`), for the rest of that task: `focusTarget`. */
-  private focusGoing: EventTarget | null | undefined;
   /**
    * The trees on the map (§5 M7, M12): the body root and the free topics as written (`split`) and with the called
    * maps grafted in (`calls`), plus the stored topic positions and each topic's key into them (`topicKeys`: the
@@ -624,7 +622,7 @@ export class MindmapView extends EditableFileView {
   getEphemeralState(): Record<string, unknown> {
     const node = this.selected();
     const own = node && this.document && (node.id === "root" || this.document.nodes.includes(node)) ? node : undefined;
-    const focus = this.contentEl.contains(this.focusTarget());
+    const focus = this.contentEl.contains(this.contentEl.ownerDocument.activeElement);
     return { ...(own ? { selection: { from: own.from, title: own.title } } : {}), ...(focus ? { focus: true } : {}) };
   }
 
@@ -638,9 +636,10 @@ export class MindmapView extends EditableFileView {
    * the keys work at once, on the selected node or else the canvas — never while a draft is being typed.
    */
   setEphemeralState(state: unknown): void {
-    // EditableFileView's first: `rename` (`workspace:edit-file-title`) focuses the header's title for the rename.
-    super.setEphemeralState(state);
     const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
+    // EditableFileView's first: `rename` (`workspace:edit-file-title`) focuses the header's title for the rename. It reads
+    // the state without a check, so it gets the object the map reads (any other state is none).
+    super.setEphemeralState(value);
     const document = this.document;
     const selection = value.selection && typeof value.selection === "object" ? value.selection as Record<string, unknown> : null;
     if (document && typeof value.subpath === "string" && value.subpath !== "") {
@@ -657,16 +656,6 @@ export class MindmapView extends EditableFileView {
       if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
       else this.canvas.focus({ preventScroll: true });
     }
-  }
-
-  /**
-   * The element the keyboard is at, or is going to: while an element of this view is blurred the body is active, and
-   * the blur's `relatedTarget` says where the focus is moving (`focusGoing`; nothing when it goes to no element).
-   */
-  private focusTarget(): Element | null {
-    const going = this.focusGoing as Node | null | undefined;
-    if (going?.instanceOf(Element)) return going;
-    return this.contentEl.ownerDocument.activeElement;
   }
 
   /** The innermost node whose section holds the offset: children lie inside their parent's range and follow it. */
@@ -697,13 +686,6 @@ export class MindmapView extends EditableFileView {
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.syncNavigation(); }));
     this.contentEl.empty();
     this.contentEl.addClass("mappy-view");
-    // Chromium runs a blur's listeners, and the microtasks after them, with the body active: the focus reaches the element
-    // pressed only afterwards. A draft closed by that blur (an unchanged one saves within those microtasks) learns here
-    // where the focus is going (`focusTarget`); the note is kept for the rest of that task only.
-    this.registerDomEvent(this.contentEl, "blur", event => {
-      this.focusGoing = event.relatedTarget;
-      this.contentEl.win.setTimeout(() => { this.focusGoing = undefined; }, 0);
-    }, { capture: true });
     this.setTheme(this.theme);
     const modes = this.contentEl.createDiv({ cls: "mappy-modes mappy-floating", attr: { "aria-label": t().layoutsLabel } });
     for (const mode of LAYOUT_MODES) {
@@ -1729,10 +1711,11 @@ export class MindmapView extends EditableFileView {
     return this.document.nodes.find(node => node.id === id) ?? this.projection()?.calls.byId.get(id);
   }
 
-  private select(id: string, focus = false): void {
+  /** `focus`: the node takes the keyboard. `reveal` (with the focus unless said): it is brought on screen. */
+  private select(id: string, focus = false, reveal = focus): void {
     this.selectedId = id; this.deselected = false; this.renderer.select(id);
-    if (focus) {
-      this.renderer.focus(id);
+    if (focus) this.renderer.focus(id);
+    if (reveal) {
       if (this.layout?.nodes.some(node => node.id === id)) this.ensureVisible(id);
       else { this.revealId = id; this.scheduleLayout(); }
     }
@@ -2351,7 +2334,7 @@ export class MindmapView extends EditableFileView {
     let renamedOffset: number | null = null;
     const draft: DraftBase = { nodeId: node.id, value: draftFingerprint(document, node) };
     this.inlineDraft = draft;
-    this.inlineEditor = new InlineEditor(entry.element, {
+    const editor: InlineEditor = new InlineEditor(entry.element, {
       // Its `<br>` tags are line breaks in the draft; the rename writes them back (core/title-breaks, LEV-202).
       initial: displayTitle(node.title),
       suggest: input => new LinkSuggest(this.app, input, file.path),
@@ -2364,6 +2347,7 @@ export class MindmapView extends EditableFileView {
         if (pending && this.pendingTopic === pending) this.pendingTopic = null;
       },
       finish: (next, cancelled, text, byUndo) => {
+        const blurredTo = editor.blurredTo as Node | null | undefined;
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
         this.renderer.editing(draft.nodeId, false);
@@ -2391,14 +2375,15 @@ export class MindmapView extends EditableFileView {
         // The keyboard is not taken back from where a press outside the map moved it either (LEV-340): the header's
         // title to rename the note, the Markdown tab beside, a modal. The blur saved the draft there, and focusing the
         // node after that save undid the press (the title's edit ended at once, the map's leaf was made active again).
-        // Where the press took the focus is `focusTarget`: an unchanged draft writes nothing and ends here while the blur
-        // still runs, with the body active and the focus not yet where it is going.
+        // Where the press took the focus is the blur's `relatedTarget` (`blurredTo`): an unchanged draft writes nothing and
+        // ends here while the blur still runs, with the body active and the focus not yet where it is going. Away or not,
+        // the node is brought on screen, as any closed draft's is.
         // Closed by its own keys (the draft leaves the page, and the focus with it) or by a press in the map, the node
         // takes the keyboard as before.
         const page = this.contentEl.ownerDocument;
-        const at = this.focusTarget();
+        const at = blurredTo?.instanceOf(Element) ? blurredTo : page.activeElement;
         const away = at !== null && at !== page.body && !this.contentEl.contains(at);
-        if (current && !this.deselected) this.select(current.id, !away);
+        if (current && !this.deselected) this.select(current.id, !away, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
@@ -2408,6 +2393,7 @@ export class MindmapView extends EditableFileView {
       // the draft closes. It never takes another step of the history: that could be another map's edit of the note.
       undoCancels: created !== undefined,
     });
+    this.inlineEditor = editor;
   }
 
   /**

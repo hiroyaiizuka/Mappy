@@ -420,14 +420,15 @@ function titleError(title: HTMLElement, message: string | null): void {
  * `setEphemeralState` with `rename` ("all", "start" or "end", `workspace:edit-file-title` asks "all") focuses the
  * title, its name selected or the caret at that end. A save renames the note to the title's trimmed text through the
  * app's `fileManager.renameFile`, unless the name is refused (`nameRefused`), which leaves the text as typed, the
- * error beside it and the focus in it. Left out: the breadcrumbs' animation, the check while typing, paste,
- * ArrowDown, the mobile paths and the pane menu.
+ * error beside it and the focus in it; with no note shown, the save throws as Obsidian's does. Left out: the
+ * breadcrumbs' animation, the check while typing, paste, ArrowDown, the mobile paths and the pane menu.
  */
 export abstract class EditableFileView extends FileView {
   fileBeingRenamed: ObsidianFile | null = null;
   setEphemeralState(state: unknown): void {
     super.setEphemeralState(state);
-    const rename = state && typeof state === "object" ? (state as Record<string, unknown>).rename : undefined;
+    // 1.14.4 reads `rename` off the state without a check: anything but an object throws here, as it does there.
+    const rename = (state as Record<string, unknown>).rename;
     if (!rename) return;
     const title = this.titleEl;
     // Obsidian selects, then focuses; jsdom's `focus()` collapses a selection made before it (Chromium's keeps it), so
@@ -473,8 +474,9 @@ export abstract class EditableFileView extends FileView {
     }
   }
   private async saveTitle(): Promise<boolean> {
-    const file = this.file;
-    if (!file || file !== this.fileBeingRenamed) return true;
+    // As 1.14.4 has it (`n !== i || n.deleted`): a title edited with no note shown reads `deleted` off nothing and throws.
+    const file = this.file as ObsidianFile & { deleted?: boolean };
+    if (file !== this.fileBeingRenamed || file.deleted) return true;
     const name = (this.titleEl.textContent ?? "").trim();
     let error = nameRefused(this.app, file, name);
     const path = renamedPath(file, name);

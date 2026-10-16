@@ -128,6 +128,8 @@ describe('MindmapView header title (LEV-340: rename the note from the map)', () 
     title.focus();
     view.setEphemeralState({ focus: true });
     expect(document.activeElement).toBe(node);
+    // A state that is not an object is none, as before: Obsidian's part reads `rename` off it unchecked, so it gets an object.
+    expect(() => { view.setEphemeralState(undefined); view.setEphemeralState(null); }).not.toThrow();
   });
 
   it('saves a node\'s open input first when the title is pressed, and leaves the title to the rename', async () => {
@@ -190,13 +192,18 @@ describe('MindmapView header title (LEV-340: rename the note from the map)', () 
     const { view, key, select, editor, source, settle, node } = await mount();
     // Another view's editor (the Markdown tab beside, say), outside the map's content.
     const elsewhere = document.body.createDiv({ attr: { contenteditable: 'true', tabindex: '0' } });
+    const revealed = vi.spyOn(view as unknown as { ensureVisible: (id: string) => void }, 'ensureVisible');
     key(select('件名'), 'F2');
     await settle();
     (editor() as HTMLTextAreaElement).value = '件名（外）';
+    revealed.mockClear();
     elsewhere.focus();
     await vi.waitFor(() => { expect(source()).toBe(SOURCE.replace('- 件名', '- 件名（外）')); });
     await settle();
     expect(document.activeElement).toBe(elsewhere);
+    // The node keeps its selection and is brought on screen as any closed draft's is; only the keyboard stays away.
+    expect(view.containerEl.querySelector('.mappy-node.is-selected')).toBe(node('件名（外）'));
+    expect(revealed).toHaveBeenCalled();
     // Confirmed with its own Enter, the draft leaves the page and the node takes the keyboard, as before.
     key(select('件名（外）'), 'F2');
     await settle();
