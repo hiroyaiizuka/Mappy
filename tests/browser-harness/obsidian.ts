@@ -279,14 +279,27 @@ export abstract class View extends Component {
   /** The state and the result are the subclass's to read; the base view keeps nothing. */
   setState(state: unknown, result: ViewStateResult): Promise<void> { void state; void result; return Promise.resolve(); }
   getEphemeralState(): Record<string, unknown> { return {}; }
-  setEphemeralState(): void { /* Not needed in the harness. */ }
+  /** The base view keeps nothing (1.14.4: an empty method); EditableFileView reads `rename`, a subclass its own. */
+  setEphemeralState(state: unknown): void { void state; }
   onResize(): void { /* Subclasses re-measure. */ }
 }
 
+/**
+ * Obsidian 1.14.4's ItemView builds the view header above the content: its title (`titleEl`) after the parent folders'
+ * breadcrumbs (`titleParentEl`), both in `titleContainerEl`. The navigation buttons and the actions are left out.
+ */
 export abstract class ItemView extends View {
   contentEl: HTMLElement;
+  headerEl: HTMLElement;
+  titleContainerEl: HTMLElement;
+  titleParentEl: HTMLElement;
+  titleEl: HTMLElement;
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
+    this.headerEl = this.containerEl.createDiv({ cls: "view-header" });
+    this.titleContainerEl = this.headerEl.createDiv({ cls: "view-header-title-container" });
+    this.titleParentEl = this.titleContainerEl.createDiv({ cls: "view-header-title-parent" });
+    this.titleEl = this.titleContainerEl.createDiv({ cls: "view-header-title" });
     this.contentEl = this.containerEl.createDiv({ cls: "view-content" });
   }
 }
@@ -296,8 +309,9 @@ export abstract class ItemView extends View {
  * `file` (when the key is present) to `loadFile`, which unloads the note shown (`onUnloadFile`, with the note still
  * in `file`) and loads the next (`onLoadFile`; a failure leaves no note and a notice), reports a change as
  * `history` and `layout`, asks the leaf to close when no note is shown and `allowNoFile` is false, and, when the
- * leaf is active, has the workspace fire its active-leaf events (`file-open`). `onload` subscribes to the vault's
- * `rename` (the header) and `delete` (the leaf goes back in its history, else to the empty view; with `allowNoFile`,
+ * leaf is active, has the workspace fire its active-leaf events (`file-open`); then the header's title reads
+ * `getDisplayText()`. `onload` subscribes to the vault's `rename` (the header's title reads the new basename, and the
+ * tab is updated) and `delete` (the leaf goes back in its history, else to the empty view; with `allowNoFile`,
  * the note is unloaded instead). `onClose` empties the content and unloads the note. `getState` adds `file`.
  * `canAcceptExtension` declines. Obsidian leaves `file` unset until the first `loadFile`; here it starts null, so
  * only a first `loadFile(null)` differs (a change there, none here). Breadcrumbs and the group sync are left out.
@@ -352,6 +366,7 @@ export abstract class FileView extends ItemView {
         console.error(error);
       }
     }
+    this.titleEl.setText(this.getDisplayText());
     const workspace = this.app.workspace as HarnessWorkspace;
     if (workspace.activeLeaf === this.leaf) workspace.requestActiveLeafEvents?.();
     this.leaf.updateHeader();
@@ -360,7 +375,10 @@ export abstract class FileView extends ItemView {
   onLoadFile(file: ObsidianFile): Promise<void> { void file; return Promise.resolve(); }
   onUnloadFile(file: ObsidianFile): Promise<void> { void file; return Promise.resolve(); }
   onRename(file: ObsidianFile): Promise<void> {
-    if (file === this.file) this.leaf.updateHeader();
+    if (file === this.file) {
+      this.titleEl.setText(file.basename);
+      this.leaf.updateHeader();
+    }
     return Promise.resolve();
   }
   async onDelete(file: ObsidianFile): Promise<void> {
@@ -373,8 +391,103 @@ export abstract class FileView extends ItemView {
   canAcceptExtension(extension: string): boolean { void extension; return false; }
 }
 
-/** A FileView whose header title renames the note (1.14.2); only the class distinction matters here: `workspace:edit-file-title` wants one. */
-export abstract class EditableFileView extends FileView {}
+/** Obsidian 1.14.4's refusal of a new name (`KL` on macOS): `\\`, `/` or `:`, nothing, a leading dot, or a note of that name in the folder. */
+function nameRefused(app: App, file: ObsidianFile, name: string): string {
+  if (/[\\/:]/u.test(name)) return "File name cannot contain any of the following characters: \\ / :";
+  if (name === "") return "File name cannot be empty.";
+  if (name.startsWith(".")) return "File name cannot start with a dot.";
+  const taken = app.vault.getAbstractFileByPath(renamedPath(file, name));
+  return taken && taken !== file ? "A file with this name already exists." : "";
+}
+
+/** `TFile.getNewPathAfterRename`: the same folder and extension, the new name. */
+function renamedPath(file: ObsidianFile, name: string): string {
+  const folder = file.parent?.path ?? "/";
+  return `${folder === "/" ? "" : `${folder}/`}${name}${file.extension ? `.${file.extension}` : ""}`;
+}
+
+/** The error tooltip Obsidian shows beside the title (`.tooltip.mod-error`), one at a time; `null` hides it. */
+function titleError(title: HTMLElement, message: string | null): void {
+  title.ownerDocument.body.querySelectorAll(".tooltip.mod-error").forEach(element => { element.remove(); });
+  if (message) title.ownerDocument.body.createDiv({ cls: "tooltip mod-wide mod-error", text: message });
+}
+
+/**
+ * Obsidian 1.14.4's EditableFileView (app.js), as far as a view built on it depends on it. `onOpen` makes the view
+ * header's title editable: its focus marks the note being renamed, its blur saves (a refused name goes back to the
+ * note's), Enter saves and, saved, hands the focus back to the view (`setEphemeralState({ focus: true })`), Escape puts
+ * the note's name back and hands the focus back, Tab hands it back; a key of an IME's composition does nothing.
+ * `setEphemeralState` with `rename` ("all", "start" or "end", `workspace:edit-file-title` asks "all") focuses the
+ * title, its name selected or the caret at that end. A save renames the note to the title's trimmed text through the
+ * app's `fileManager.renameFile`, unless the name is refused (`nameRefused`), which leaves the text as typed, the
+ * error beside it and the focus in it; with no note shown, the save throws as Obsidian's does. Left out: the
+ * breadcrumbs' animation, the check while typing, paste, ArrowDown, the mobile paths and the pane menu.
+ */
+export abstract class EditableFileView extends FileView {
+  fileBeingRenamed: ObsidianFile | null = null;
+  setEphemeralState(state: unknown): void {
+    super.setEphemeralState(state);
+    // 1.14.4 reads `rename` off the state without a check: anything but an object throws here, as it does there.
+    const rename = (state as Record<string, unknown>).rename;
+    if (!rename) return;
+    const title = this.titleEl;
+    // Obsidian selects, then focuses; jsdom's `focus()` collapses a selection made before it (Chromium's keeps it), so
+    // here the focus comes first and the state left is the same.
+    title.focus({ preventScroll: true });
+    const range = title.ownerDocument.createRange();
+    range.selectNodeContents(title);
+    if (rename === "start" || rename === "end") range.collapse(rename === "start");
+    const selection = title.ownerDocument.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+  onOpen(): Promise<void> {
+    const title = this.titleEl;
+    title.tabIndex = -1;
+    title.contentEditable = "true";
+    title.addEventListener("focus", () => { this.fileBeingRenamed = this.file; });
+    title.addEventListener("blur", () => { void this.onTitleBlur(); });
+    title.addEventListener("keydown", event => { this.onTitleKeydown(event); });
+    return Promise.resolve();
+  }
+  private async onTitleBlur(): Promise<void> {
+    if (!await this.saveTitle()) this.titleEl.setText(this.file?.basename ?? "");
+    titleError(this.titleEl, null);
+    this.fileBeingRenamed = null;
+  }
+  private onTitleKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    const title = this.titleEl;
+    const leave = (): void => { title.blur(); this.setEphemeralState({ focus: true, focusOnMobile: false }); };
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.fileBeingRenamed = null;
+      title.setText(this.file?.basename ?? "");
+      leave();
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void this.saveTitle().then(saved => { if (saved) leave(); });
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      leave();
+    }
+  }
+  private async saveTitle(): Promise<boolean> {
+    // As 1.14.4 has it (`n !== i || n.deleted`): a title edited with no note shown reads `deleted` off nothing and throws.
+    const file = this.file as ObsidianFile & { deleted?: boolean };
+    if (file !== this.fileBeingRenamed || file.deleted) return true;
+    const name = (this.titleEl.textContent ?? "").trim();
+    let error = nameRefused(this.app, file, name);
+    const path = renamedPath(file, name);
+    if (!error && path !== file.path) {
+      try { await this.app.fileManager.renameFile(file, path); }
+      catch (failure) { error = String(failure); }
+    }
+    if (error) { titleError(this.titleEl, error); return false; }
+    return true;
+  }
+}
 
 /** Only used for `instanceof` checks; the harness never opens a Markdown editor. */
 export class MarkdownView extends EditableFileView {

@@ -258,6 +258,11 @@ export class HarnessApp {
       return Promise.resolve(`Attachments/${this.attachmentCount}-${name}`);
     },
     generateMarkdownLink: (file: TFile): string => `[[${file.name}]]`,
+    /** Obsidian's rename (`vault.rename` under it), the links left as they are: the note moves and the vault says so. */
+    renameFile: (file: TFile, path: string): Promise<void> => {
+      this.rename(file.path, path);
+      return Promise.resolve();
+    },
   };
 
   /**

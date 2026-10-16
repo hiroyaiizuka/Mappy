@@ -70,6 +70,7 @@ export const CASES = [
   { name: 'exit-draft-recovery', file: 'exit-draft-recovery.mjs', description: 'E84 再読込のときに書き込めなかった下書き（人工の故障でノートを 0 バイトにする）が残り、知らせが出て、救出コマンドで Mappy Recovery/ に別ファイルとして保存される。元のノートは 0 バイトのまま、下書きも残る。一覧の「破棄」は確かめてからその下書き・控えだけを消し、キャンセルでは何も変わらない（LEV-310）', shot: false },
   { name: 'exit-draft-cut', file: 'exit-draft-recovery.mjs', args: ['--cut'], description: 'E84 の --cut（LEV-309）: 人工の故障でノートを前半だけにしても、題名の下書きを書かずに原文ごと残し、知らせが出て、救出できる。元のノートは前半のまま。一覧の「破棄」は確かめてからその下書きだけを消す（LEV-310）', shot: false },
   { name: 'undo-draft', file: 'undo-draft.mjs', description: 'E85 ノードを作った直後（入力欄が開いたまま）の ⌘Z が Escape と同じく作成を取り消し（選択・折りたたみ・表示位置も戻る）、⌘⇧Z で戻る（Tab のサブトピック・Enter のメイントピック・ルートの Tab・深い Enter・見出し・空白のダブルクリック × 通常マップ・タイムライン）。打った文字は先に入力欄の取り消し、Enter で確定したあとの ⌘Z（LEV-331）', shot: false },
+  { name: 'map-title-rename', file: 'map-title-rename.mjs', description: 'E87 マップの表札（view header のノート名）からの改名: 表札の実クリック → Enter／空白のクリック／Escape、コマンド（直接・パレット）、ノードの上と表札の上の F2、変換中の Enter × フォルダ・Vault の直下・同名がある・空・使えない文字・Markdown の別タブ・ファイル名の根・ノードの入力欄を開いたまま・リンクされている。タブと表札はノート名だけ（LEV-340）', shot: true },
 ];
 
 const args = process.argv.slice(2);

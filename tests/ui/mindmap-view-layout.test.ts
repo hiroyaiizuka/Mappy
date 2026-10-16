@@ -44,7 +44,10 @@ vi.mock("obsidian", async () => {
     onUnloadFile(): Promise<void> { return Promise.resolve(); }
     onRename(): Promise<void> { return Promise.resolve(); }
   }
+  /** What the map extends (LEV-340); its header title is Obsidian's, and nothing here reaches it. */
+  class EditableFileView extends FileView {}
   return {
+    EditableFileView,
     FileView,
     MarkdownView: class {},
     Menu: class {},

@@ -23,7 +23,9 @@ const SOURCE = ['---', 'mappy: true', '---', '## 講座の構成', '', '- はじ
  * E02 / LEV-48: a real F2 is consumed by Obsidian's default hotkey `workspace:edit-file-title` at the window's capture
  * phase unless the active view's scope takes it first. jsdom has no Obsidian keymap, so this fixes what the view
  * registers and how the handler answers, and routes keydowns through the harness Scope's copy of Obsidian's
- * `handleKey`; the real key goes through CDP on the test vault (artifacts/lev-48-f2-scope).
+ * `handleKey`; the real key goes through CDP on the test vault (artifacts/lev-48-f2-scope, E87 for the header's title).
+ * Since LEV-340 the map is an EditableFileView, so that default would rename its note: F2 off the map's content (the
+ * header's title) is meant to reach it, as on a Markdown note.
  */
 async function mount() {
   const mounted = await mountMapView(PATH, SOURCE);
@@ -44,11 +46,13 @@ function installKeymap(view: MindmapView): () => void {
 }
 
 describe('MindmapView keyboard scope (E02: F2 against the default hotkey)', () => {
-  it('registers F2 without modifiers on its own scope under the app scope', async () => {
+  it('registers one catch-all on its own scope under the app scope, so a key it declines goes on to the app scope', async () => {
     const { app, scope } = await mount();
     expect(scope).toBeInstanceOf(Scope);
     expect(scope.parent).toBe(app.scope);
-    expect(scope.keys.map(handler => ({ modifiers: handler.modifiers, key: handler.key }))).toEqual([{ modifiers: '', key: 'F2' }]);
+    // A handler for F2 itself would end the search when it declines (1.14.4 `Scope.handleKey`), and F2 off the canvas
+    // would reach nothing — the header title's rename included (LEV-340).
+    expect(scope.keys.map(handler => ({ modifiers: handler.modifiers, key: handler.key }))).toEqual([{ modifiers: null, key: null }]);
   });
 
   it('opens the inline editor once when the keymap hands F2 to the scope, and Escape closes it without a write', async () => {
@@ -76,7 +80,7 @@ describe('MindmapView keyboard scope (E02: F2 against the default hotkey)', () =
     } finally { uninstall(); }
   });
 
-  it('takes F2 anywhere in the view — editing on the canvas, idle on a floating control — and declines it outside', async () => {
+  it('takes F2 anywhere in the view — editing on the canvas, idle on a floating control — and passes it on outside', async () => {
     const { view, settle, key, editor, node, scope, offered } = await mount();
     // The H2 is selected when the map opens; the focused node is where a real F2 lands after Tab into the canvas.
     const selected = keyAt(node('講座の構成'), 'F2');
@@ -92,14 +96,17 @@ describe('MindmapView keyboard scope (E02: F2 against the default hotkey)', () =
     expect(scope.handleKey(keyAt(button, 'F2'))).toBe(false);
     await settle();
     expect(editor()).toBeNull();
-    // Outside the view (the leaf is active, the focus is elsewhere): declined. Obsidian 1.14.2 then runs no other
-    // handler for a key the view registered, which the harness Scope copies, so the default is not offered either.
-    expect(scope.handleKey(keyAt(document.body, 'F2'))).toBeUndefined();
     expect(offered).toEqual([]);
-    // Any other key passes the view's scope by and reaches the root scope, where Obsidian's hotkeys live.
+    // Outside the view (the leaf is active, the focus on the header's title or elsewhere): declined, and F2 goes on to
+    // the root scope, where Obsidian's hotkeys live — by default the title's rename, as on a Markdown note (LEV-340).
+    const title = (view as unknown as { titleEl: HTMLElement }).titleEl;
+    expect(scope.handleKey(keyAt(title, 'F2'))).toBeUndefined();
+    expect(scope.handleKey(keyAt(document.body, 'F2'))).toBeUndefined();
+    expect(offered).toEqual(['F2', 'F2']);
+    // Any other key passes the view's scope by and reaches the root scope too.
     expect(scope.handleKey(keyAt(node('講座の構成'), 'Enter'))).toBeUndefined();
     expect(scope.handleKey(keyAt(node('講座の構成'), 'F2', { shiftKey: true }))).toBeUndefined();
-    expect(offered).toEqual(['Enter', 'F2']);
+    expect(offered).toEqual(['F2', 'F2', 'Enter', 'F2']);
     expect(editor()).toBeNull();
   });
 });

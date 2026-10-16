@@ -5,8 +5,9 @@
  * sees and what is written to the note, and switches back to Japanese, checking that too.
  *
  * In English:
- * - the commands (the palette's names), the layout, zoom and gear buttons, the gear popover's items, the tab's title,
- *   the settings tab's names, the right-click menu of a node: all English, no Japanese character anywhere in them;
+ * - the commands (the palette's names), the layout, zoom and gear buttons, the gear popover's items, the settings tab's
+ *   names, the right-click menu of a node: all English, no Japanese character anywhere in them;
+ * - the tab's title: the note's name and nothing else (LEV-340: no ` · map`, which is no longer a translated string);
  * - Tab on a node writes the English provisional name (`- Subtopic`) into the note, and Enter keeps it;
  * - a name the map refuses (a task marker) shows core's English reason on the draft's error line.
  * Back in Japanese: the layout buttons and the provisional name are Japanese again (`サブトピック`).
@@ -89,8 +90,9 @@ try {
   check(en.layouts.length > 0 && JSON.stringify(en.layouts) === JSON.stringify(LAYOUTS.filter(name => en.layouts.includes(name))), `layout buttons: ${JSON.stringify(en.layouts)}`);
   check(en.zoom.includes('Zoom in') && en.zoom.includes('Zoom out') && en.zoom.includes('Fit to view'), `zoom buttons: ${JSON.stringify(en.zoom)}`);
   check(JSON.stringify(en.gear) === JSON.stringify(['Actions']), `gear: ${JSON.stringify(en.gear)}`);
-  check(en.title === 'E2E-english-ui · map', `tab title: ${en.title}`);
-  const japanese = [...Object.values(en.commands), ...en.layouts, ...en.zoom, ...en.gear, ...en.regions, en.title].filter(text => JAPANESE.test(text));
+  // The note's name only (LEV-340): the header's title is what a rename from it takes, so nothing is added to it.
+  check(en.title === 'E2E-english-ui', `tab title: ${en.title}`);
+  const japanese = [...Object.values(en.commands), ...en.layouts, ...en.zoom, ...en.gear, ...en.regions].filter(text => JAPANESE.test(text));
   check(japanese.length === 0, `Japanese in the English UI: ${JSON.stringify(japanese)}`);
 
   const clickIn = makeClickIn(cdp, evaluate);
