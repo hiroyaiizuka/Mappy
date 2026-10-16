@@ -172,7 +172,6 @@ export const en = {
   exportDragging: "Finish dragging before exporting.",
   exportMapChanged: "The map was closed or switched to another note. Open it again, then export.",
   exportNoLayout: "Wait for the map to finish laying out before exporting.",
-  viewTitle: (name: string) => `${name} · map`,
   viewTitleEmpty: "Mind map",
   draftNotSaved: (reason: string) => `Couldn't save the text being edited. ${reason}`,
   // A draft left open when the window reloaded or Obsidian quit, applied when Mappy loads again (src/ui/exit-drafts.ts).

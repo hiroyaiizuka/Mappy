@@ -149,7 +149,6 @@ export const ja: Messages = {
   exportDragging: "ドラッグを終えてから書き出してください。",
   exportMapChanged: "マップが閉じられたか、別のノートに変わりました。開き直してから書き出してください。",
   exportNoLayout: "マップの配置が終わってから書き出してください。",
-  viewTitle: (name: string) => `${name} · マップ`,
   viewTitleEmpty: "マインドマップ",
   draftNotSaved: (reason: string) => `編集中の内容を保存できませんでした。${reason}`,
   exitDraftNotWritten: (title: string, note: string) => `再読込・終了のときに ${note} で編集していた「${title}」を書き込めませんでした。`,

@@ -34,7 +34,8 @@ const ROOTLESS = ['---', 'mappy: true', '---', '- はじめに', '- 記録する
  * The core commands whose `checkCallback` (1.14.2) is decided by the current file — `getActiveFile()`, which is the
  * active editor's file, else the active file view's (`getActiveFileView()`: the active leaf's view when it
  * navigates and is a FileView). Two more want a particular view: `workspace:edit-file-title` an `EditableFileView`
- * (the Markdown editor; it then starts renaming in the view header), `markdown:toggle-preview` the active editor.
+ * (the Markdown editor, and the map since LEV-340; it then starts renaming in the view header),
+ * `markdown:toggle-preview` the active editor.
  */
 const FILE_COMMANDS = [
   'workspace:copy-path', 'workspace:copy-full-path', 'workspace:copy-url', 'app:delete-file', 'file-explorer:move-file',
@@ -223,14 +224,17 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect(workspace.getActiveFile()).toBe(file);
   });
 
-  it('makes the core file commands address the map\'s note; the two that want an editor still decline', async () => {
-    const { workspace, beside, map } = await mount();
+  it('makes the core file commands address the map\'s note, the header-title rename included; only the preview toggle wants an editor', async () => {
+    const { view, workspace, beside, map } = await mount();
     // The eleven decided by `getActiveFile()` (LEV-74 made them decline on the map: an ItemView had no file).
     const onMap = workspace.commands();
     for (const id of FILE_COMMANDS) expect(onMap[id], id).toBe(true);
-    // `workspace:edit-file-title` wants an EditableFileView (the header-title rename) and `markdown:toggle-preview` the
-    // active editor: neither is the map, so F2's default stays off here and the palette leaves both out.
-    for (const id of VIEW_COMMANDS) expect(onMap[id], id).toBe(false);
+    // `workspace:edit-file-title` wants an EditableFileView, the header-title rename: the map is one since LEV-340, so
+    // the palette offers it on the map (F2 on the map stays the map's: its scope, below). `markdown:toggle-preview`
+    // wants the active editor, which the map is not.
+    expect(view).toBeInstanceOf(EditableFileView);
+    expect(onMap['workspace:edit-file-title']).toBe(true);
+    expect(onMap['markdown:toggle-preview']).toBe(false);
     workspace.setActiveLeaf(beside);
     const onMarkdown = workspace.commands();
     for (const id of [...FILE_COMMANDS, ...VIEW_COMMANDS]) expect(onMarkdown[id], id).toBe(true);
@@ -259,7 +263,7 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect(workspace.getActiveFile()).toBe(other);
   });
 
-  it('keeps F2 the map\'s key through its scope, with the default rename declining on the map either way', async () => {
+  it('keeps F2 on a node the map\'s key through its scope, though the default rename is available on the map', async () => {
     const { view, workspace, select, settle, editor, key } = await mount();
     const node = select('学ぶこと');
     const event = new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true });
@@ -268,7 +272,7 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect((view.scope as Scope).handleKey(event)).toBe(false);
     await settle();
     expect(editor()?.value).toBe('学ぶこと');
-    expect(workspace.commands()['workspace:edit-file-title']).toBe(false);
+    expect(workspace.commands()['workspace:edit-file-title']).toBe(true);
     key(editor() as HTMLTextAreaElement, 'Escape');
     await settle();
     expect(editor()).toBeNull();
@@ -292,15 +296,18 @@ describe('MindmapView as a FileView (LEV-89: the current file, its events and th
     expect(workspace.openFile(map, other, router)).toEqual({ type: VIEW_TYPE, state: { file: OTHER } });
   });
 
-  it('follows a rename of its note: the tab title, the root node, the state and the saved layout', async () => {
+  it('follows a rename of its note: the tab title, the header, the root node, the state and the saved layout', async () => {
     const { app, view, file, map, settle } = await mount(ROOTLESS);
-    expect(map.leaf.headerText).toBe('navigation · マップ');
+    // The note's name only (LEV-340): the header's title is what a rename from it takes.
+    expect(map.leaf.headerText).toBe('navigation');
+    expect(view.getDisplayText()).toBe('navigation');
     expect(nodeNamed(view.containerEl, 'navigation')).not.toBeNull();
     const saved = app.activity.filter(entry => entry.kind === 'layout-saved').length;
     app.rename(PATH, 'Fixtures/renamed.md');
-    // FileView's own subscription: the same note under its new name, the tab title at once.
+    // FileView's own subscription: the same note under its new name, the tab and the header's title at once.
     expect(view.file).toBe(file);
-    expect(map.leaf.headerText).toBe('renamed · マップ');
+    expect(map.leaf.headerText).toBe('renamed');
+    expect((view as unknown as { titleEl: HTMLElement }).titleEl.textContent).toBe('renamed');
     // The map's: a debounced re-read, since the root node is the basename.
     await vi.waitFor(() => { expect(nodeNamed(view.containerEl, 'renamed')).not.toBeNull(); });
     await settle();

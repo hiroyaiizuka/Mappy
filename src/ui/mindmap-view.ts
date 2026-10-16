@@ -1,4 +1,4 @@
-import { FileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { EditableFileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type EditPlan, type MoveCommand, type TextEdit } from "../core/commands";
 import { EXIT_SOURCE_LIMIT, textFingerprint, type ExitDraft } from "../core/exit-drafts";
@@ -180,10 +180,15 @@ const POPOVER_MARGIN = 16;
  * opened into a map leaf and remember that leaf as a Markdown one. Declining, every open goes through Markdown's
  * registration and the router decides (§8), as for any other leaf: a map note opens as a map, a note that is no
  * longer one as Markdown, and a leaf switched to Markdown on purpose stays there (E22), with nothing new recorded.
- * Not an `EditableFileView`: 1.14.2 makes the view header's title editable there and renames the note to whatever
- * it shows, which the ` · マップ`／` · map` suffix (`viewTitle`, src/i18n) would end up in.
+ * An `EditableFileView` (LEV-340, the person's decision of 2026-10-16), as the Markdown editor is: the view header's
+ * title is the note's name, which a click edits and Enter or a blur renames (Obsidian's own, through the file manager,
+ * so the links follow the vault's setting), and `workspace:edit-file-title` (its F2 off the map, the command palette,
+ * the tab's menu) starts that edit. The tab and the header say the note's name only (`getDisplayText`): the title is
+ * what the rename takes, and a map is told from a Markdown tab by its icon. `onOpen` and `setEphemeralState` hand
+ * Obsidian's part on first. Until then (LEV-89) the map was a plain FileView titled `<name> · マップ`, and a note could
+ * only be renamed from Markdown or the explorer.
  */
-export class MindmapView extends FileView {
+export class MindmapView extends EditableFileView {
   /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
   file: TFile | null = null;
   private document: MindDocument | undefined;
@@ -365,20 +370,22 @@ export class MindmapView extends FileView {
     // instead of a neighbouring tab or a new one. ⌘-click still opens a tab. A map moved into a sidebar is the
     // exception (`syncNavigation`). FileView's other default, `allowNoFile = false`, is the map's too (see the class).
     this.reader = new CallReader(this.app, store);
-    // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys, so
-    // F2 pressed on the map reaches the map instead of the default `workspace:edit-file-title`, which otherwise consumes
-    // it before the canvas listener (E02, LEV-48). Its `checkCallback` (1.14.2) wants `getActiveFileView()` to be an
-    // `EditableFileView`, which the map is not, so the default declines here even without this scope (before LEV-74
-    // it found the most recently active Markdown tab, whose file it then started renaming); the scope stays because
-    // it does not hinge on that class distinction and keeps F2 the map's key when a user assigns it to another
-    // command. While the focus is in this view, F2 is the map's key: on the canvas it edits the selected node, in the
-    // inline editor or on a floating control it does nothing, and either way `false` (Obsidian's "consumed":
-    // preventDefault and stopPropagation) keeps that default from running. With the focus outside the view the
-    // handler declines (`undefined`); what Obsidian then does with F2 is its own affair (1.14.2 runs no other handler
-    // for a key the active view registered, so the default stays off while the map is active). Only F2 is registered:
-    // no other map key has a default hotkey. The workspace reads `view.scope` on each key, so there is nothing to undo.
+    // Obsidian's keymap consults the active view's scope at the window's capture phase, before its global hotkeys (a
+    // catch-all of the root scope), so F2 pressed on the map reaches the map instead of the default
+    // `workspace:edit-file-title`, which would otherwise consume it before the canvas listener (E02, LEV-48) and, the
+    // map being an `EditableFileView` (LEV-340), start renaming the note in the view header. While the focus is in this
+    // view, F2 is the map's key: on the canvas it edits the selected node, in the inline editor or on a floating
+    // control it does nothing, and either way `false` (Obsidian's "consumed": preventDefault and stopPropagation)
+    // keeps the default from running. With the focus outside the view (the header's title) the handler declines
+    // (`undefined`) and F2 goes on to the root scope, to whatever it is assigned to, as on a Markdown note: by default
+    // the title's name is selected for a rename. The handler is a catch-all (`null`, `null`) because only a catch-all
+    // that declines lets the parent scope see the key — 1.14.4's `Scope.handleKey` ends the search at a handler
+    // registered for that key, so F2 there did nothing at all off the canvas while the map was active (before LEV-340).
+    // Every key but a bare F2 passes it by, as it did a scope with only F2. No other map key has a default hotkey. The
+    // workspace reads `view.scope` on each key, so there is nothing to undo.
     this.scope = new Scope(this.app.scope);
-    this.scope.register([], "F2", event => {
+    this.scope.register(null, null, (event, context) => {
+      if (context.modifiers !== "" || (context.vkey !== "F2" && context.key?.toLowerCase() !== "f2")) return undefined;
       const target = event.targetNode;
       if (!target || !this.contentEl.contains(target)) return undefined;
       this.events?.hotkey(event);
@@ -448,7 +455,8 @@ export class MindmapView extends FileView {
   }
 
   getViewType(): string { return VIEW_TYPE; }
-  getDisplayText(): string { return this.file ? t().viewTitle(this.file.basename) : t().viewTitleEmpty; }
+  /** The note's name only, as the header's title is what a rename from it takes (LEV-340); without a note, 「マインドマップ」. */
+  getDisplayText(): string { return this.file ? this.file.basename : t().viewTitleEmpty; }
   getIcon(): string { return "git-fork"; }
 
   /**
@@ -626,6 +634,8 @@ export class MindmapView extends FileView {
    * the keys work at once, on the selected node or else the canvas — never while a draft is being typed.
    */
   setEphemeralState(state: unknown): void {
+    // EditableFileView's first: `rename` (`workspace:edit-file-title`) focuses the header's title for the rename.
+    super.setEphemeralState(state);
     const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
     const document = this.document;
     const selection = value.selection && typeof value.selection === "object" ? value.selection as Record<string, unknown> : null;
@@ -666,6 +676,8 @@ export class MindmapView extends FileView {
   }
 
   onOpen(): Promise<void> {
+    // EditableFileView's: the header's title becomes the note's name to edit (LEV-340). It sets up before it resolves.
+    const header = super.onOpen();
     this.closed = false; this.closing = false;
     this.syncNavigation();
     this.registerEvent(this.app.workspace.on("layout-change", () => { this.syncNavigation(); }));
@@ -833,7 +845,7 @@ export class MindmapView extends FileView {
     // The settings may have reached the view before it had buttons (src/main.ts sets them at construction).
     this.syncModeButtons();
     this.ready = true;
-    return this.refresh();
+    return Promise.all([header, this.refresh()]).then(() => undefined);
   }
 
   /**
@@ -2355,7 +2367,14 @@ export class MindmapView extends FileView {
             ?? (!cancelled && this.document ? nodeAt(this.document, renamedOffset) : undefined)
             ?? (!cancelled ? this.document?.nodes.find(item => item.from === node.from) : undefined);
         // A click on the empty canvas that ended the edit (the blur saved it) leaves nothing selected; the node is not taken back.
-        if (current && !this.deselected) this.select(current.id, true);
+        // The keyboard is not taken back from where a press outside the map moved it either (LEV-340): the header's
+        // title to rename the note, the Markdown tab beside, a modal. The blur saved the draft there, and focusing the
+        // node after that save undid the press (the title's edit ended at once, the map's leaf was made active again).
+        // Closed by its own keys (the draft leaves the page, and the focus with it) or by a press in the map, the node
+        // takes the keyboard as before.
+        const page = this.contentEl.ownerDocument;
+        const away = page.activeElement !== null && page.activeElement !== page.body && !this.contentEl.contains(page.activeElement);
+        if (current && !this.deselected) this.select(current.id, !away);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
