@@ -98,6 +98,12 @@ const CARDS = `const canvasLeaf = window.__mappyE2ECanvas;
   };
   const mapLeaves = path => app.workspace.getLeavesOfType('mappy-map').filter(leaf => leaf.getViewState().state?.file === path);`;
 
+/**
+ * Script: `leaf`, a new tab for the canvas. Obsidian's `getLeaf('tab')` throws when no leaf of the main area has been
+ * active yet (a workspace whose only tab is the empty one the previous run's close left); the unpinned leaf then.
+ */
+const NEW_TAB = `const leaf = (() => { try { return app.workspace.getLeaf('tab'); } catch { return app.workspace.getLeaf(false); } })();`;
+
 /** A card's labels once the map has drawn them (the first frame can be empty). */
 const settledCard = (id, wanted, timeout = 4000) => until(async () => {
   const shown = await evaluate(`${CARDS} return shows(${JSON.stringify(id)});`);
@@ -203,7 +209,7 @@ try {
 
   // 置く: the canvas opens with its four cards.
   await step('place', async () => {
-    await evaluate(`const leaf = app.workspace.getLeaf('tab');
+    await evaluate(`${NEW_TAB}
       window.__mappyE2ECanvas = leaf;
       await leaf.openFile(app.vault.getAbstractFileByPath(${JSON.stringify(BOARD)}), { active: true });
       // Fit the four cards on screen at a zoom where Canvas keeps their content (above its breakpoint).
@@ -414,7 +420,7 @@ try {
 
   // Mappy を無効化: the card is Obsidian's again, with the note as it is now.
   await step('disable', async () => {
-    await evaluate(`const leaf = app.workspace.getLeaf('tab'); window.__mappyE2ECanvas = leaf;
+    await evaluate(`${NEW_TAB} window.__mappyE2ECanvas = leaf;
       await leaf.openFile(app.vault.getAbstractFileByPath(${JSON.stringify(BOARD)}), { active: true });
       await new Promise(resolve => setTimeout(resolve, 800));
       const canvas = leaf.view.canvas; canvas.zoomToFit(); await new Promise(resolve => setTimeout(resolve, 600));
