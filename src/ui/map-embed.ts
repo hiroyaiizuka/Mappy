@@ -8,6 +8,7 @@ import { readTopicPositions, type TopicPositionMap } from "../core/topics";
 import { WriteRecord } from "../core/write-record";
 import { fitToBounds } from "../interaction/viewport";
 import { layoutTree, type LayoutBounds, type LayoutMode } from "../layout/layout";
+import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside, type CanvasCard } from "../obsidian/canvas-card";
 import type { DocumentStore } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -15,6 +16,7 @@ import { EdgeLayer } from "./edge-layer";
 import { LinkPreview } from "./link-preview";
 import { mapClick } from "./map-events";
 import { NodeRenderer } from "./node-renderer";
+import { VIEW_TYPE } from "./mindmap-view";
 import { t } from "../i18n";
 
 /** Obsidian's embed container whose content a map replaced; its own children are hidden by CSS while the map shows. */
@@ -39,6 +41,8 @@ const REFRESH_DEBOUNCE = 45;
 export interface MapEmbedSource extends EmbedTarget {
   /** The note the embed is written in; the "open" action resolves from it. */
   hostPath: string;
+  /** The Canvas card the map is drawn on (LEV-348): opening the note puts its map beside the canvas instead. */
+  card?: Pick<CanvasCard, "el" | "leaf">;
 }
 
 /**
@@ -110,8 +114,24 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerDomEvent(open, "click", event => {
       event.preventDefault();
       event.stopPropagation();
-      void this.app.workspace.openLinkText(this.source.file.path, this.source.hostPath, event.metaKey || event.ctrlKey);
+      if (this.source.card) this.openBeside();
+      else void this.app.workspace.openLinkText(this.source.file.path, this.source.hostPath, event.metaKey || event.ctrlKey);
     });
+    const card = this.source.card;
+    if (card) {
+      el.addClass("mappy-embed-card");
+      // Canvas edits a card's Markdown on a double click on the card that nobody prevented (its listener sits on the
+      // card, above the content and the cover that takes the clicks of an unselected card), and on a single click inside
+      // the content of a selected one unless that click was prevented by then (Obsidian 1.14.4 app.js). On a map card
+      // the double click opens the map beside the canvas and a click is the map's alone. While Canvas does edit it
+      // (its menu's Edit), the card is its editor's (styles.css shows the editor then).
+      this.registerDomEvent(card.el, "dblclick", event => {
+        if (card.el.closest(".canvas-node")?.hasClass("is-editing")) return;
+        event.preventDefault();
+        this.openBeside();
+      }, { capture: true });
+      this.registerDomEvent(el, "click", event => { event.preventDefault(); });
+    }
     this.renderer = this.addChild(new NodeRenderer(this.app, this.nodes, () => { this.scheduleLayout(); }));
     this.registerDomEvent(this.nodes, "load", () => { this.scheduleLayout(); }, true);
     this.registerDomEvent(this.canvas, "click", event => { this.click(event); });
@@ -148,6 +168,12 @@ export class MapEmbed extends MarkdownRenderChild {
     this.drawnSource = null;
     this.frame.empty();
     this.release();
+  }
+
+  /** The note as a map beside the canvas the card is on, where it is edited (LEV-348). */
+  private openBeside(): void {
+    const card = this.source.card;
+    if (card) void openMapBeside(this.app, { file: this.source.file, subpath: this.source.subpath, leaf: card.leaf }, VIEW_TYPE);
   }
 
   /** The reader's folds and the links; nothing else reacts. A link is followed here and goes no further. */
@@ -335,7 +361,7 @@ interface Watcher {
 
 /**
  * The Markdown post processor for map embeds and the registry of the embeds it
- * created. Two ways an embed reaches it:
+ * created. Three ways an embed reaches it:
  *
  * - Reading view and hover previews render the host note's sections, where the
  *   `.internal-embed` span for `![[map]]` is still Obsidian's placeholder. The span
@@ -347,8 +373,12 @@ interface Watcher {
  *   with an anchor inside the section carrying the lifecycle. A section that
  *   arrives before its container is on the document waits for it (an embed below the
  *   fold gets its container only when scrolled to) until Obsidian drops the section.
+ * - A Canvas file card renders its note with the same embed (LEV-348) into the card's
+ *   `.canvas-node-content`, claimed the same way. The card's heading path comes from the
+ *   canvas (`canvasCard`), and a double click on the card opens the note as a map beside
+ *   the canvas instead of Canvas's Markdown editor.
  *
- * In both cases the component is handed to the renderer (`ctx.addChild`) so it
+ * In every case the component is handed to the renderer (`ctx.addChild`) so it
  * unloads with the section, and every live embed is released when the plugin
  * unloads, so disabling Mappy leaves the ordinary embeds behind.
  */
@@ -471,21 +501,29 @@ export class MapEmbeds {
     this.watchers.delete(doc);
   }
 
-  /** The section is on the document: claim the container around it, unless it is the note's own view, inside a map, or in a container already claimed. */
+  /**
+   * The section is on the document: claim the container around it — the nearest, an embed's or a Canvas card's —
+   * unless it is the note's own view, inside a map, or in a container already claimed.
+   */
   private claimAround(el: HTMLElement, ctx: MarkdownPostProcessorContext, own: TFile): void {
-    const span = el.closest<HTMLElement>(".internal-embed");
+    const span = el.closest<HTMLElement>(`.${CANVAS_CONTENT_CLASS}, .internal-embed`);
     // The section itself may have landed inside a map (a node label) since `process` looked; the check covers the whole way up.
     if (!span || el.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
-    const { subpath } = parseLinktext(span.getAttribute("src") ?? "");
+    // A Canvas card names its heading in the canvas, not in the DOM; a card no open canvas holds stays Obsidian's.
+    const card = span.hasClass(CANVAS_CONTENT_CLASS) ? canvasCard(this.app, span) : undefined;
+    if (card === null || (card && card.file !== own)) return;
+    const subpath = card ? card.subpath : parseLinktext(span.getAttribute("src") ?? "").subpath;
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
+    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, leaf: card.leaf } } : {}) };
     // The frame goes on the container, outside this section; the anchor inside the section keeps the lifecycle honest.
-    this.claim(ctx, span, { ...target, hostPath: ctx.sourcePath }, el.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
+    this.claim(ctx, span, source, el.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
   }
 
   /** Hide what Obsidian rendered into the container and draw the map beside it; `anchor` null means the frame is inside the section. */
   private claim(ctx: MarkdownPostProcessorContext, span: HTMLElement, source: MapEmbedSource, anchor: HTMLElement | null): void {
-    const removed = OBSIDIAN_EMBED_CLASSES.filter(name => span.hasClass(name));
+    // A card has no embed chrome to take off, and Canvas styles the editor its menu opens by `markdown-embed`.
+    const removed = source.card ? [] : OBSIDIAN_EMBED_CLASSES.filter(name => span.hasClass(name));
     span.removeClass(...removed);
     span.addClass(EMBED_HOST_CLASS);
     const frame = span.createDiv();

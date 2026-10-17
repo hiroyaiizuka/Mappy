@@ -440,6 +440,11 @@
 /* Live preview renders the map inside Obsidian's own embed container: its rendered note stays hidden while the map is shown. */
 .internal-embed.mappy-embed-host { display: block; }
 .internal-embed.mappy-embed-host > :not(.mappy-embed) { display: none; }
+/* A Canvas card showing a map note (LEV-348): the map fills the card, which draws its own border, and the card's rendered
+   note stays hidden behind it, except while Canvas edits the card's Markdown (its menu's Edit): the editor shows then. */
+.canvas-node:not(.is-editing) .canvas-node-content.mappy-embed-host > :not(.mappy-embed) { display: none; }
+.canvas-node.is-editing .canvas-node-content.mappy-embed-host > .mappy-embed { display: none; }
+.mappy-embed.mappy-view.mappy-embed-card { height: 100%; margin: 0; border: none; border-radius: 0; }
 /* A map drawn off screen for Excalidraw's own "Insert image / Insert as embeddable" (§5 M6): on the document so the
    SVG capture can read computed styles and sizes, but a pixel large, invisible and inert. Nodes are `max-content`
    wide, so the host's size does not change how they wrap. */
