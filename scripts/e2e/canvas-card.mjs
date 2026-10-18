@@ -560,16 +560,19 @@ try {
       win.document.body.dataset.mappyE2ePopout = ${JSON.stringify(mark)};
       ${forwardErrors('win', mark)}
       window.__mappyE2EPopout = win;
-      await leaf.openFile(file, { active: true });
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      win.__mappyE2ECanvas = leaf;
+      window.__mappyE2EPopoutLeaf = leaf;
+      window.__mappyE2EPopoutFile = file;
       return true;`);
+    // Connected before the canvas opens there: connecting turns the window's background throttling off, so its first
+    // frames (the maps' layout) are not held while it is behind the main window.
     const pop = await connect({ popout: mark });
     const inPop = expression => pop.evaluate(`(async () => { ${expression} })()`);
     const there = driver(pop, inPop);
     try {
+      await evaluate(`const leaf = window.__mappyE2EPopoutLeaf; await leaf.openFile(window.__mappyE2EPopoutFile, { active: true });
+        await new Promise(resolve => setTimeout(resolve, 1500)); leaf.getContainer().win.__mappyE2ECanvas = leaf; return true;`);
       await there.fit();
-      const shown = await there.settledCard('map', item => item.labels.length >= MAP_LABELS.length).catch(error => ({ error: String(error) }));
+      const shown = await there.settledCard('map', item => item.labels.length >= MAP_LABELS.length, 8000).catch(error => ({ error: String(error) }));
       const before = await inPop(`${CARDS} return app.workspace.getLeavesOfType('mappy-map').length;`);
       await there.selectCard('map');
       await there.doubleClickAt(await inPop(`${CARDS} const part = card('map').contentEl.querySelector(':scope > .mappy-embed .mappy-node.is-collapsed .mappy-node-toggle');
@@ -595,7 +598,8 @@ try {
     } finally {
       pop.close();
       await evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) leaf.detach();
-        window.__mappyE2EPopout?.close(); window.__mappyE2EPopout = null; await new Promise(resolve => setTimeout(resolve, 800)); return true;`);
+        window.__mappyE2EPopout?.close(); window.__mappyE2EPopout = null; window.__mappyE2EPopoutLeaf = null;
+        await new Promise(resolve => setTimeout(resolve, 800)); return true;`);
     }
   });
 
