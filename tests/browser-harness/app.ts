@@ -22,6 +22,12 @@ export interface HarnessActivity {
   at: number;
 }
 
+/** A window of the workspace as a leaf's `getContainer()` names it. */
+export interface HarnessWindow {
+  win: Window;
+  doc: Document;
+}
+
 /** A top-level key and its colon: the key part of yaml-lite's `mappingEntry`, copied because yaml-lite does not export it. */
 const TOP_LEVEL_KEY = /^(?!-(?:[ \t]|$))("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'#{}[\],][^:]*?)[ \t]*:(?:[ \t]|$)/u;
 
@@ -158,6 +164,8 @@ export class HarnessApp {
   /** The root scope a view's own scope names as its parent; no keymap consults it in this page. */
   readonly scope = new Scope();
   readonly activity: HarnessActivity[] = [];
+  /** Popout windows the workspace has besides the page's own (none unless a test opens one). */
+  readonly popouts: HarnessWindow[] = [];
   private readonly entries = new Map<string, VaultEntry>();
   private attachmentCount = 0;
 
@@ -199,6 +207,13 @@ export class HarnessApp {
     leftSplit: { side: "left" },
     rightSplit: { side: "right" },
     getLeavesOfType: (): { view: unknown }[] => [],
+    /**
+     * One leaf per window, for what reads a leaf's window (`getContainer()`): the page's own, and each popout a test
+     * opened (`popouts`; it triggers `window-open` and `window-close` itself, as Obsidian's workspace does).
+     */
+    iterateAllLeaves: (callback: (leaf: { getContainer: () => HarnessWindow }) => unknown): void => {
+      for (const container of [{ win: window, doc: document }, ...this.popouts]) callback({ getContainer: () => container });
+    },
     /** The page's layout is ready as soon as it exists: the callback runs at once, as Obsidian's does once ready. */
     onLayoutReady: (callback: () => unknown): void => { callback(); },
     requestSaveLayout: (): void => { this.record("layout-saved", "requestSaveLayout（ページ内で記録のみ）"); },

@@ -2,7 +2,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, MarkdownPostProcessorContext, TFile } from 'obsidian';
 import { installObsidianDom } from '../browser-harness/dom';
-import { HarnessApp } from '../browser-harness/app';
+import { HarnessApp, type HarnessWindow } from '../browser-harness/app';
 import { Component, MarkdownRenderer, MarkdownView, WorkspaceLeaf } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
 import { accessibleName } from './accessible-name';
@@ -803,5 +803,166 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     embeds.process(span.querySelector('.markdown-preview-view')?.firstElementChild as HTMLElement, context(renderer, 'Map.md'));
     await settle();
     expect(embeds.size).toBe(0);
+  });
+
+  /**
+   * A popout window of the workspace: another window and document (an iframe here), opened and closed with the
+   * workspace's `window-open` and `window-close`, as Obsidian's are.
+   */
+  function openPopout(app: HarnessApp): HarnessWindow & { close: () => void } {
+    const frame = document.body.createEl('iframe');
+    const win = frame.contentWindow;
+    const doc = frame.contentDocument;
+    if (!win || !doc) throw new Error('no popout document');
+    const popout: HarnessWindow = { win, doc };
+    app.popouts.push(popout);
+    app.workspace.trigger('window-open', popout, popout.win);
+    return {
+      ...popout,
+      close: () => {
+        app.popouts.splice(app.popouts.indexOf(popout), 1);
+        app.workspace.trigger('window-close', popout, popout.win);
+        frame.remove();
+      },
+    };
+  }
+
+  /** The main window's own DOM changes from now on (the frames of a popout are not its). */
+  function mainChanges(): { count: () => number; stop: () => void } {
+    let count = 0;
+    const observer = new MutationObserver(records => { count += records.length; });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    return { count: () => count, stop: () => { observer.disconnect(); } };
+  }
+
+  it("claims a section built in the main window's document once it joins a popout's, with nothing changing in the main window (LEV-359)", async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const popout = openPopout(app);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
+    const renderer = loadedRenderer();
+    // Obsidian 1.14.4 builds a popout's container and its sections off the document, in the main window's.
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    embeds.process(late, context(renderer, 'Map.md'));
+    span.querySelector('.markdown-preview-view')?.append(late);
+    expect(late.doc).toBe(document);
+    expect(embeds.pending).toBe(1);
+    const changes = mainChanges();
+    try {
+      popout.doc.body.append(block);
+      await settle();
+      expect(span.doc).toBe(popout.doc);
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
+      sameTitles(span, ['講座', '回復する', '記録する', '葉']);
+      expect(embeds.pending).toBe(0);
+      expect(changes.count()).toBe(0);
+    } finally { changes.stop(); }
+    // And back: a section built in the popout's document that joins the main window's.
+    const back = popout.doc.adoptNode(createDiv({ cls: 'cm-embed-block' }));
+    const other = await container(app, 'Map#講座', 'Map.md', back);
+    const again = popout.doc.adoptNode(createDiv());
+    expect(again.doc).toBe(popout.doc);
+    await MarkdownRenderer.render(app.asApp<App>(), '- 葉', again, 'Map.md');
+    embeds.process(again, context(renderer, 'Map.md'));
+    other.span.querySelector('.markdown-preview-view')?.append(again);
+    expect(embeds.pending).toBe(1);
+    document.body.append(back);
+    await settle();
+    expect(other.span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+    expect(embeds.pending).toBe(0);
+    expect(embeds.size).toBe(2);
+    popout.close();
+  });
+
+  it('claims in a popout opened while a section waits, whether the section joins it before or after it is announced', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    // The new window's frame is put on the page first: that is a change of the main window's document, which would claim on its own.
+    const frame = document.body.createEl('iframe');
+    const doc = frame.contentDocument;
+    const win = frame.contentWindow;
+    if (!doc || !win) throw new Error('no popout document');
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
+    const renderer = loadedRenderer();
+    const blocks = [createDiv({ cls: 'cm-embed-block' }), createDiv({ cls: 'cm-embed-block' })];
+    const spans: HTMLElement[] = [];
+    for (const block of blocks) {
+      const { span } = await container(app, 'Map', 'Map.md', block);
+      const late = createDiv();
+      await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      spans.push(span);
+    }
+    expect(embeds.pending).toBe(2);
+    // The first section is in the new window's document already when the workspace announces the window.
+    doc.body.append(blocks[0] ?? '');
+    await settle();
+    expect(spans[0]?.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    const popout: HarnessWindow = { win, doc };
+    app.popouts.push(popout);
+    app.workspace.trigger('window-open', popout, popout.win);
+    await settle();
+    expect(spans[0]?.hasClass(EMBED_HOST_CLASS)).toBe(true);
+    expect(embeds.pending).toBe(1);
+    doc.body.append(blocks[1] ?? '');
+    await settle();
+    expect(spans[1]?.hasClass(EMBED_HOST_CLASS)).toBe(true);
+    expect(embeds.pending).toBe(0);
+    expect(embeds.size).toBe(2);
+  });
+
+  it("keeps watching only while a section waits: a closed popout's observer goes at once, the rest and the window events with the last section, and the hold is cleared on the window it was set on", async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const first = openPopout(app);
+    const second = openPopout(app);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
+    const renderer = loadedRenderer();
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const timers = timerTracker();
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+    try {
+      expect(app.workspaceEvents.count()).toBe(0);
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      // The main window's document and both popouts', one observer each; the hold is one timer of the main window.
+      expect(observe.mock.calls.map(call => call[0])).toEqual([document.documentElement, first.doc.documentElement, second.doc.documentElement]);
+      expect(app.workspaceEvents.count()).toBe(2);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      second.close();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      first.doc.body.append(block);
+      // The main window changing as well (its status bar, its title): the section is claimed once, by whichever saw it first.
+      document.body.createDiv().remove();
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
+      expect(embeds.size).toBe(1);
+      expect(embeds.pending).toBe(0);
+      // The anchor is in the popout's document now; its hold was the main window's timer, and it is gone.
+      expect(late.win).toBe(first.win);
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
+      expect(disconnect).toHaveBeenCalledTimes(3);
+      // What is left on the workspace is the map's own (`editor-change`), not the wait's.
+      expect(app.workspaceEvents.count()).toBe(1);
+      first.close();
+      renderer.unload();
+      expect(embeds.size).toBe(0);
+      expect(app.workspaceEvents.count()).toBe(0);
+      expect(app.vaultEvents.count()).toBe(0);
+    } finally {
+      observe.mockRestore();
+      disconnect.mockRestore();
+      timers.restore();
+    }
   });
 });
