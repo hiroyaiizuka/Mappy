@@ -8,7 +8,7 @@ import { readTopicPositions, type TopicPositionMap } from "../core/topics";
 import { WriteRecord } from "../core/write-record";
 import { fitToBounds } from "../interaction/viewport";
 import { layoutTree, type LayoutBounds, type LayoutMode } from "../layout/layout";
-import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside } from "../obsidian/canvas-card";
+import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside, type CanvasCard } from "../obsidian/canvas-card";
 import type { DocumentStore } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -132,7 +132,7 @@ export class MapEmbed extends MarkdownRenderChild {
         if (card.el.closest(".canvas-node")?.hasClass("is-editing")) return;
         event.preventDefault();
         const target = event.target instanceof Element ? event.target : null;
-        if (target && el.contains(target) && target.closest("a, button, .mappy-node-toggle")) return;
+        if (target && el.contains(target) && target.closest("a, button, input, .mappy-node-toggle")) return;
         card.open();
       }, { capture: true });
       this.registerDomEvent(el, "click", event => {
@@ -525,8 +525,9 @@ export class MapEmbeds {
     const subpath = card ? card.subpath : parseLinktext(span.getAttribute("src") ?? "").subpath;
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
-    const open = (): void => { if (card) void openMapBeside(this.app, card, this.mapViewType); };
-    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, open } } : {}) };
+    // A failed open (the canvas's tab closed under it) is logged, not left as an unhandled rejection.
+    const open = (opened: CanvasCard) => (): void => { openMapBeside(this.app, opened, this.mapViewType).catch(error => { console.error(error); }); };
+    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, open: open(card) } } : {}) };
     // The frame goes on the container, outside this section; the anchor inside the section keeps the lifecycle honest.
     this.claim(ctx, span, source, el.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
   }

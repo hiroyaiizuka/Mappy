@@ -40,12 +40,25 @@ function fileCards(view: TextFileView): CanvasFileData[] {
   return cards;
 }
 
+/** A CSS number as the style reads it back: Chromium keeps about 6 significant digits and writes `1e+06` for a million. */
+const CSS_NUMBER = String.raw`(-?\d*\.?\d+(?:e[+-]?\d+)?)`;
+const TRANSLATE = new RegExp(String.raw`translate\(${CSS_NUMBER}px,\s*${CSS_NUMBER}px\)`, 'iu');
+
 /** Where Canvas placed a card: the numbers of its inline style, which Canvas writes from the node's own. */
 function placed(node: HTMLElement): { x: number; y: number; width: number; height: number } | null {
-  const at = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/u.exec(node.style.transform);
+  const at = TRANSLATE.exec(node.style.transform);
   const width = parseFloat(node.style.width);
   const height = parseFloat(node.style.height);
   return at && Number.isFinite(width) && Number.isFinite(height) ? { x: Number(at[1]), y: Number(at[2]), width, height } : null;
+}
+
+/**
+ * Whether a number of the canvas's data is the one the style reads back: Canvas rounds a node's place and size to whole
+ * pixels (a `.canvas` written by another tool can hold fractions until Canvas saves it), and the style keeps about 6
+ * significant digits.
+ */
+function same(data: number, shown: number): boolean {
+  return Math.abs(data - shown) <= Math.max(1, Math.abs(data) * 1e-5);
 }
 
 /**
@@ -67,14 +80,14 @@ export function canvasCard(app: App, content: HTMLElement, note: TFile): CanvasC
     const subpaths = new Set(cards.map(card => card.subpath ?? ''));
     if (subpaths.size === 1) return { file: note, subpath: [...subpaths][0] ?? '', el, leaf };
     const at = placed(node);
-    const here = at ? cards.filter(card => card.x === at.x && card.y === at.y && card.width === at.width && card.height === at.height) : [];
+    const here = at ? cards.filter(card => same(card.x, at.x) && same(card.y, at.y) && same(card.width, at.width) && same(card.height, at.height)) : [];
     const subpath = here.length > 0 && new Set(here.map(card => card.subpath ?? '')).size === 1 ? here[0]?.subpath ?? '' : null;
     return subpath === null ? null : { file: note, subpath, el, leaf };
   }
   return null;
 }
 
-/** The note being opened beside a canvas right now, by path: a second call while it opens is the same open. */
+/** The card (note and heading) being opened beside a canvas right now: a second call for it while it opens is the same open. */
 const opening = new Map<string, Promise<void>>();
 
 /**
@@ -82,10 +95,11 @@ const opening = new Map<string, Promise<void>>();
  * tab group is brought forward, else a new split to the canvas's right opens it (the router makes a `mappy: true`
  * note a map, architecture.md §8). A `#heading` card selects that heading's node, as a link to it does (the view's
  * `subpath`), and the keys go to the map. Two calls for the same note before the first has opened it (the two clicks of
- * a double click on the open button) open it once: the new split has no map to be found by until it does.
+ * a double click on the open button, two quick double clicks on the card) open it once: the new split has no map to be
+ * found by until it does. Another heading of the note is its own open.
  */
 export function openMapBeside(app: App, card: Pick<CanvasCard, 'file' | 'subpath' | 'leaf'>, mapViewType: string): Promise<void> {
-  const key = card.file.path;
+  const key = `${card.file.path}${card.subpath}`;
   const pending = opening.get(key);
   if (pending) return pending;
   const run = openBeside(app, card, mapViewType).finally(() => { opening.delete(key); });

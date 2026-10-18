@@ -13,11 +13,11 @@
  * added later (`createFileNode`, the call Canvas's drop and its 「保管庫からノートを追加」 make), edit in the map beside
  * (real click, Enter, typed title, Enter), Canvas's own 「編集」 (real click on its card menu, then on the board), zoom
  * out past the point where Canvas takes the cards' content off and back (real ⌘+wheel, real click on Canvas's own
- * "reset zoom"), move and resize the card (real drags), the read-only canvas (Canvas's menu item `setReadonly(true)`,
+ * "reset zoom"), move and resize the card (real drags), move the heading card and open the canvas again, the read-only canvas (Canvas's menu item `setReadonly(true)`,
  * real double click, real click on the lock to leave it), the light and dark themes (contrast of what the card shows),
  * close the canvas (the handlers on Obsidian's event hubs back to where they were before it opened, as E34 counts them)
  * and disable Mappy (the card is Obsidian's again, with the text as it is now). Throughout: the source notes and the
- * `.canvas` file are written only by the edit row and Canvas's own saves (the added card, the move and the resize), and
+ * `.canvas` file are written only by the edit row and Canvas's own saves (the added card, the moves and the resize), and
  * the page has no uncaught error. The web link row catches `window.open` for its click, so no browser starts.
  *
  * Not covered here: OS IME text input in the map beside (E01 covers the view), a canvas embedded in a note or shown in a
@@ -459,6 +459,32 @@ try {
     return { before: { data: before.data, scale: before.scale }, smaller: { data: smaller.data, scale: smaller.scale }, restored: { data: restored.data, scale: restored.scale } };
   });
 
+  // Two cards of one note, one of them moved, then the canvas opened again: each card is told apart by the place the
+  // canvas saved for it (the path the single-card note above never takes).
+  await step('reopen-moved', async () => {
+    // Nothing selected (a selected card's resize handles reach over its neighbours), then every card on screen.
+    await clickAt(await blank());
+    await fit();
+    const before = await evaluate(`${CARDS} return shows('heading').data;`);
+    let from = null;
+    for (const [fx, fy] of [[0.15, 0.85], [0.85, 0.85], [0.15, 0.2]]) {
+      from = await onCard('heading', fx, fy).catch(() => null);
+      if (from) break;
+    }
+    if (!from) throw new Error('no free point on the heading card to drag it by');
+    await drag(from, { x: from.x + 70, y: from.y + 40 });
+    const moved = await evaluate(`${CARDS} return shows('heading').data;`);
+    await evaluate(`${CARDS} const file = canvasLeaf.view.file; await canvasLeaf.setViewState({ type: 'empty' });
+      await canvasLeaf.openFile(file, { active: true }); await new Promise(resolve => setTimeout(resolve, 1200)); return true;`);
+    await fit();
+    const heading = await settledCard('heading', item => item.labels.length >= 2).catch(error => ({ error: String(error) }));
+    const whole = await settledCard('whole', item => item.labels.length >= 3).catch(error => ({ error: String(error) }));
+    check(moved.x !== before.x || moved.y !== before.y, `the heading card did not move: ${JSON.stringify([before, moved])}`);
+    check(heading.frame && JSON.stringify([...(heading.labels ?? [])].sort()) === JSON.stringify(['準備', '荷物'].sort()), `the moved heading card shows ${JSON.stringify(heading.labels ?? heading)}`);
+    check(whole.frame && JSON.stringify([...(whole.labels ?? [])].sort()) === JSON.stringify(['計画', '準備', '当日'].sort()), `the whole-plan card shows ${JSON.stringify(whole.labels ?? whole)}`);
+    return { before, moved, heading: heading.labels, whole: whole.labels };
+  });
+
   // 読み取り専用の Canvas: the double click still only opens the map.
   await step('readonly', async () => {
     await evaluate(`${CARDS} for (const leaf of mapLeaves(${JSON.stringify(MAP)})) leaf.detach(); window.__mappyE2E = null;
@@ -550,7 +576,7 @@ try {
     const original = JSON.parse(BOARD_SOURCE);
     for (const node of original.nodes) {
       const saved = board.nodes?.find(item => item.id === node.id);
-      const keys = node.id === 'map' ? ['type', 'file', 'subpath'] : Object.keys(node);
+      const keys = node.id === 'map' || node.id === 'heading' ? ['type', 'file', 'subpath'] : Object.keys(node);
       if (!saved || keys.some(key => saved[key] !== node[key])) changed.push(`${BOARD}: card ${node.id} is ${JSON.stringify(saved)}`);
     }
     check(changed.length === 0, `the notes or the canvas file changed: ${changed.join('; ')}`);

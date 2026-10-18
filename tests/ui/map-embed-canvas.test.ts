@@ -65,6 +65,8 @@ interface CardOptions {
   at?: Place;
   /** Where the canvas's data says it sits, if not where the card is (data saved before a move). */
   saved?: Place;
+  /** The card's `transform` as the style reads it back, if not the plain `translate(xpx, ypx)` of `at`. */
+  transform?: string;
 }
 
 /** Obsidian 1.14.4's Canvas view: a TextFileView whose data is the `.canvas` JSON. */
@@ -84,6 +86,8 @@ interface Board {
   calls: { split: unknown[][]; open: unknown[][]; reveal: unknown[]; active: unknown[][] };
   /** Lets the next `openFile` of a split wait until the returned function is called (an open that takes time). */
   holdOpen: () => () => void;
+  /** Makes the next `openFile` of a split fail, as when the canvas's tab closes under it. */
+  failOpen: () => void;
 }
 
 function board(files: Record<string, string>): Board {
@@ -103,11 +107,16 @@ function board(files: Record<string, string>): Board {
   const calls: Board['calls'] = { split: [], open: [], reveal: [], active: [] };
   const mapLeaves: unknown[] = [];
   let held: Promise<void> | null = null;
+  let failing = false;
   app.workspace.getLeavesOfType = ((type: string) => type === 'canvas' ? [leaf] : type === 'mappy-map' ? mapLeaves : []) as never;
   Object.assign(app.workspace, {
     createLeafBySplit: (...args: unknown[]) => {
       calls.split.push(args);
-      return { openFile: (...open: unknown[]) => { calls.open.push(open); return held ?? Promise.resolve(); } };
+      return { openFile: (...open: unknown[]) => {
+        calls.open.push(open);
+        if (failing) { failing = false; return Promise.reject(new Error('the canvas tab is gone')); }
+        return held ?? Promise.resolve();
+      } };
     },
     revealLeaf: (target: unknown) => { calls.reveal.push(target); return Promise.resolve(); },
     setActiveLeaf: (...args: unknown[]) => { calls.active.push(args); },
@@ -118,10 +127,11 @@ function board(files: Record<string, string>): Board {
     held = new Promise<void>(resolve => { release = () => { held = null; resolve(); }; });
     return () => { release(); };
   };
-  const card: Board['card'] = async (path, subpath = '', { listed = true, at, saved } = {}) => {
+  const failOpen = (): void => { failing = true; };
+  const card: Board['card'] = async (path, subpath = '', { listed = true, at, saved, transform } = {}) => {
     const place = at ?? { x: nodes.length * 500, y: 0, width: 480, height: 320 };
     const node = canvasEl.createDiv({ cls: 'canvas-node' });
-    node.style.transform = `translate(${place.x}px, ${place.y}px)`;
+    node.style.transform = transform ?? `translate(${place.x}px, ${place.y}px)`;
     node.style.width = `${place.width}px`;
     node.style.height = `${place.height}px`;
     const container = node.createDiv({ cls: 'canvas-node-container' });
@@ -143,7 +153,7 @@ function board(files: Record<string, string>): Board {
     await settle();
     return { node, container, content, blocker, sections };
   };
-  return { app, embeds, renderer, leaf, card, calls, holdOpen };
+  return { app, embeds, renderer, leaf, card, calls, holdOpen, failOpen };
 }
 
 function doubleClick(target: HTMLElement): MouseEvent {
@@ -218,6 +228,54 @@ describe('MapEmbeds on a Canvas card (LEV-348)', () => {
     (leaf as { view: unknown }).view = Object.assign(Object.create(null) as object, { containerEl: leaf.view.containerEl, getViewData });
     expect((await card('Map.md')).content.hasClass(EMBED_HOST_CLASS)).toBe(false);
     expect(embeds.size).toBe(1);
+  });
+
+  it("reads a card's place as the style gives it back: a fraction rounded to 6 digits, a million as 1e+06", async () => {
+    const { card } = board({ 'Plan.md': HEADINGS });
+    // A fraction (a canvas written by another tool, before Canvas saves its whole pixels): the style keeps 6 digits.
+    const fraction = await card('Plan.md', '#準備', { at: { x: 1234.5678, y: 0, width: 400, height: 300 }, transform: 'translate(1234.57px, 0px)' });
+    // Far out on the board: 1,000,000 reads back as 1e+06.
+    const far = await card('Plan.md', '', { at: { x: 1_000_000, y: 0, width: 400, height: 300 }, transform: 'translate(1e+06px, 0px)' });
+    expect(titles(fraction.content)).toEqual(['準備', '荷物'].sort());
+    expect(titles(far.content)).toEqual(['計画', '準備', '当日'].sort());
+  });
+
+  it('opens another heading of the note that is asked for while the first is still opening, each with its own heading', async () => {
+    const { app, card, calls, holdOpen } = board({ 'Plan.md': HEADINGS });
+    const heading = await card('Plan.md', '#準備', { at: { x: 0, y: 0, width: 400, height: 300 } });
+    const whole = await card('Plan.md', '', { at: { x: 600, y: 0, width: 400, height: 300 } });
+    const release = holdOpen();
+    doubleClick(heading.blocker);
+    doubleClick(whole.blocker);
+    await settle();
+    release();
+    await settle();
+    expect(calls.open).toEqual([
+      [fileOf(app, 'Plan.md'), { active: true, eState: { subpath: '#準備', focus: true } }],
+      [fileOf(app, 'Plan.md'), { active: true, eState: { focus: true } }],
+    ]);
+  });
+
+  it('logs an open that fails (the canvas tab closed under it) instead of leaving it unhandled, and opens again after', async () => {
+    const { card, calls, failOpen } = board({ 'Map.md': MAP });
+    const { blocker } = await card('Map.md');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      failOpen();
+      doubleClick(blocker);
+      await settle();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(logged).toHaveBeenCalledWith(expect.objectContaining({ message: 'the canvas tab is gone' }));
+      expect(unhandled).not.toHaveBeenCalled();
+      doubleClick(blocker);
+      await settle();
+      expect(calls.split).toHaveLength(2);
+    } finally {
+      process.off('unhandledRejection', unhandled);
+      logged.mockRestore();
+    }
   });
 
   it('opens once for the two clicks and the double click of a double click on the open button, while the split is still opening', async () => {
