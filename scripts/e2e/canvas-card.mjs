@@ -5,19 +5,23 @@
  * Canvas renders a file card's note with the same embed as `![[…]]` (Obsidian 1.14.4 app.js), so before LEV-348 a map
  * note's card showed the note's title, properties and bullets, and a double click opened Canvas's Markdown editor.
  *
- * Rows are the person's operations × the card's shape, on one canvas (`ボード.canvas`) holding four file cards: the
- * map note (`マップ`), a heading of a map note (`計画#準備`), a note that is not a map (`ふつう`) and a missing note
- * (`ない`). Operations: place (open the canvas), a real double click (twice on the map card, once on the heading card,
- * once on the plain card), edit in the map beside (real click, Enter, typed title, Enter), zoom out past the point
- * where Canvas takes the cards' content off and back (real ⌘+wheel, real click on Canvas's own "reset zoom"), move and
- * resize the card (real drags), the read-only canvas (Canvas's menu item `setReadonly(true)`, real double click, real
- * click on the lock to leave it), the light and dark themes (contrast of what the card shows), close the canvas (the
- * handlers on Obsidian's event hubs back to where they were before it opened, as E34 counts them) and disable Mappy
- * (the card is Obsidian's again, with the text as it is now). Throughout: the source notes and the `.canvas` file are
- * written only by the edit row, and the page has no uncaught error.
+ * Rows are the person's operations × the card's shape, on one canvas (`ボード.canvas`) holding five file cards: the
+ * map note (`マップ`, with a web link), a heading of a map note (`計画#準備`), the same note whole (`計画`: two cards of
+ * one note, told apart by their place in the canvas's data), a note that is not a map (`ふつう`) and a missing note
+ * (`ない`). Operations: place (open the canvas), a real double click (on the plain card, twice on the map card, on the
+ * heading card, on a fold of the map and on the open button of a selected card), a real click on the web link, a card
+ * added later (`createFileNode`, the call Canvas's drop and its 「保管庫からノートを追加」 make), edit in the map beside
+ * (real click, Enter, typed title, Enter), Canvas's own 「編集」 (real click on its card menu, then on the board), zoom
+ * out past the point where Canvas takes the cards' content off and back (real ⌘+wheel, real click on Canvas's own
+ * "reset zoom"), move and resize the card (real drags), the read-only canvas (Canvas's menu item `setReadonly(true)`,
+ * real double click, real click on the lock to leave it), the light and dark themes (contrast of what the card shows),
+ * close the canvas (the handlers on Obsidian's event hubs back to where they were before it opened, as E34 counts them)
+ * and disable Mappy (the card is Obsidian's again, with the text as it is now). Throughout: the source notes and the
+ * `.canvas` file are written only by the edit row and Canvas's own saves (the added card, the move and the resize), and
+ * the page has no uncaught error. The web link row catches `window.open` for its click, so no browser starts.
  *
  * Not covered here: OS IME text input in the map beside (E01 covers the view), a canvas embedded in a note or shown in a
- * hover preview (its cards stay Obsidian's: no canvas leaf holds their nodes, architecture.md §5b), and re-enabling
+ * hover preview (its cards stay Obsidian's: no canvas leaf holds their data, architecture.md §5b), and re-enabling
  * Mappy with the canvas open (its cards stay Obsidian's until the canvas is opened again; recorded, not checked).
  *
  * Usage (see docs/harness.md 実機検証 for the Obsidian instance):
@@ -37,7 +41,8 @@ const PLAN = `${DIR}/計画.md`;
 const PLAIN = `${DIR}/ふつう.md`;
 const MISSING = `${DIR}/ない.md`;
 const BOARD = `${DIR}/ボード.canvas`;
-const MAP_SOURCE = ['---', 'mappy: true', '---', '## 講座の案内', '- 回復する', '  - 睡眠', '  - 運動', '- 記録する', '  - 日誌', ''].join('\n');
+const WEB = 'https://example.com/mappy-e2e';
+const MAP_SOURCE = ['---', 'mappy: true', '---', '## 講座の案内', '- 回復する', '  - 睡眠', '  - 運動', '- 記録する', '  - 日誌', `- [サイト](${WEB})`, ''].join('\n');
 const PLAN_SOURCE = ['---', 'mappy: true', '---', '# 計画', '', '## 準備', '### 荷物', '#### 服', '## 当日', '### 出発', ''].join('\n');
 const PLAIN_SOURCE = '# ふつう\n\n- 項目\n';
 const BOARD_SOURCE = `${JSON.stringify({
@@ -46,11 +51,14 @@ const BOARD_SOURCE = `${JSON.stringify({
     { id: 'heading', type: 'file', file: PLAN, subpath: '#準備', x: 560, y: 0, width: 400, height: 300 },
     { id: 'plain', type: 'file', file: PLAIN, x: 0, y: 400, width: 400, height: 240 },
     { id: 'missing', type: 'file', file: MISSING, x: 560, y: 400, width: 320, height: 200 },
+    // The plan note a second time, whole: two cards of one note with different headings (told apart by their place).
+    { id: 'whole', type: 'file', file: PLAN, x: 0, y: 700, width: 400, height: 260 },
   ],
   edges: [],
 }, null, '\t')}\n`;
 const FILES = { [MAP]: MAP_SOURCE, [PLAN]: PLAN_SOURCE, [PLAIN]: PLAIN_SOURCE, [BOARD]: BOARD_SOURCE };
 const NEW_TOPIC = 'ふりかえり';
+const MAP_LABELS = ['講座の案内', '回復する', '記録する', 'サイト'];
 // theme.mjs: WCAG AA for text, and 3:1 for lines and borders.
 const TEXT = 4.5;
 const NON_TEXT = 3;
@@ -87,7 +95,8 @@ const CARDS = `const canvasLeaf = window.__mappyE2ECanvas;
     const within = inside !== null && nodes.length > 0 && nodes.every(r => r.left >= inside.left - 1 && r.right <= inside.right + 1 && r.top >= inside.top - 1 && r.bottom <= inside.bottom + 1);
     return {
       mounted: !!content?.isConnected, placeholder: !!node.placeholderEl?.isConnected,
-      frame: !!frame, frameId: frame?.dataset.mappyE2eFrame ?? null, host: !!content?.classList.contains('mappy-embed-host'),
+      frame: !!frame, frameShown: !!frame && getComputedStyle(frame).display !== 'none', frameId: frame?.dataset.mappyE2eFrame ?? null,
+      host: !!content?.classList.contains('mappy-embed-host'),
       labels, within, editing: node.nodeEl.classList.contains('is-editing'),
       renderedShown: rendered ? getComputedStyle(rendered).display !== 'none' : false,
       text: content?.innerText.trim().slice(0, 200) ?? '',
@@ -111,8 +120,7 @@ const settledCard = (id, wanted, timeout = 4000) => until(async () => {
 }, timeout, `card ${id} did not show what was expected`);
 
 /** A real double click (two presses, the second with clickCount 2: Chromium then fires dblclick) at a point of a card. */
-const doubleClick = async (id, fx = 0.3, fy = 0.8) => {
-  const at = await onCard(id, fx, fy).catch(async () => { await fit(); return onCard(id, fx, fy); });
+const doubleClickAt = async at => {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y });
   for (const clickCount of [1, 2]) {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', buttons: 1, clickCount });
@@ -121,6 +129,24 @@ const doubleClick = async (id, fx = 0.3, fy = 0.8) => {
   }
   await wait(1200);
   return at;
+};
+const doubleClick = async (id, fx = 0.3, fy = 0.8) => doubleClickAt(await onCard(id, fx, fy).catch(async () => { await fit(); return onCard(id, fx, fy); }));
+
+/** The centre of the first element matching `selector` in a card's map, once it is what is on top there. */
+const onMapPart = (id, selector) => evaluate(`${CARDS} const part = card(${JSON.stringify(id)}).contentEl.querySelector(':scope > .mappy-embed ' + ${JSON.stringify(selector)});
+  if (!part) throw new Error('no ' + ${JSON.stringify(selector)} + ' on the card');
+  const r = part.getBoundingClientRect(); const x = r.left + r.width / 2; const y = r.top + r.height / 2;
+  const top = document.elementFromPoint(x, y);
+  if (!part.contains(top)) throw new Error('something else is on ' + ${JSON.stringify(selector)} + ': ' + (top?.className?.baseVal ?? top?.className ?? 'nothing'));
+  return { x, y };`);
+
+/**
+ * A real click near a card's lower left corner (the middle of each edge holds Canvas's connection handle once the card
+ * is hovered): Canvas selects the card and takes the cover off its content. A card already selected is left as it is.
+ */
+const selectCard = async id => {
+  if (await evaluate(`${CARDS} return card(${JSON.stringify(id)}).nodeEl.classList.contains('is-focused');`)) return;
+  await clickAt(await onCard(id, 0.08, 0.92).catch(async () => { await fit(); return onCard(id, 0.08, 0.92); }));
 };
 
 /**
@@ -217,21 +243,23 @@ try {
       const canvas = leaf.view.canvas; canvas.zoomToFit(); await new Promise(resolve => setTimeout(resolve, 600));
       if (canvas.zoom <= canvas.zoomBreakpoint) canvas.setViewport(canvas.tx, canvas.ty, 0);
       return true;`);
-    const map = await settledCard('map', shown => shown.labels.length >= 3).catch(error => ({ error: String(error) }));
+    const map = await settledCard('map', shown => shown.labels.length >= MAP_LABELS.length).catch(error => ({ error: String(error) }));
     const heading = await settledCard('heading', shown => shown.labels.length >= 2).catch(error => ({ error: String(error) }));
+    const whole = await settledCard('whole', shown => shown.labels.length >= 3).catch(error => ({ error: String(error) }));
     const result = await evaluate(`${CARDS}
       const frame = card('map').contentEl.querySelector(':scope > .mappy-embed'); if (frame) frame.dataset.mappyE2eFrame = 'first';
       return { plain: shows('plain'), missing: shows('missing'), zoom: canvas.zoom, breakpoint: canvas.zoomBreakpoint };`);
     await shot('place');
     check(map.frame && !map.renderedShown, `the map card is not a map: ${JSON.stringify(map)}`);
-    check(JSON.stringify([...(map.labels ?? [])].sort()) === JSON.stringify(['回復する', '記録する', '講座の案内'].sort()), `the map card shows ${JSON.stringify(map.labels)}`);
+    check(JSON.stringify([...(map.labels ?? [])].sort()) === JSON.stringify([...MAP_LABELS].sort()), `the map card shows ${JSON.stringify(map.labels)}`);
     check(map.within, 'the map card draws nodes outside the card');
     check(map.frameBox && Math.abs(map.frameBox.width - map.cardBox.width) <= 2 && Math.abs(map.frameBox.height - map.cardBox.height) <= 2, `the map does not fill the card: ${JSON.stringify([map.frameBox, map.cardBox])}`);
     check(map.scale > 0 && map.scale <= 1, `the map's fit is ${map.scale}`);
     check(heading.frame && JSON.stringify([...(heading.labels ?? [])].sort()) === JSON.stringify(['準備', '荷物'].sort()), `the heading card shows ${JSON.stringify(heading.labels)}`);
     check(!result.plain.frame && !result.plain.host && result.plain.renderedShown && result.plain.text.includes('項目'), `the plain card is not Obsidian's: ${JSON.stringify(result.plain)}`);
     check(!result.missing.frame && !result.missing.host, `the missing card is not Obsidian's: ${JSON.stringify(result.missing)}`);
-    return { map, heading, ...result };
+    check(whole.frame && JSON.stringify([...(whole.labels ?? [])].sort()) === JSON.stringify(['計画', '準備', '当日'].sort()), `the whole-plan card shows ${JSON.stringify(whole.labels)}`);
+    return { map, heading, whole, ...result };
   });
 
   // The plain card keeps Canvas's own double click: its Markdown editor.
@@ -280,12 +308,50 @@ try {
     check(result.opened && result.otherGroup && result.selected === '準備' && !result.editing, `the heading card's double click: ${JSON.stringify(result)}`);
     return result;
   });
+  // A double click on a fold of the map on a selected card: its two clicks work the fold, and nothing opens beside.
+  await step('dblclick-fold', async () => {
+    await selectCard('map');
+    const before = await evaluate(`${CARDS} return { maps: app.workspace.getLeavesOfType('mappy-map').length, labels: shows('map').labels };`);
+    await doubleClickAt(await onMapPart('map', '.mappy-node.is-collapsed .mappy-node-toggle'));
+    const after = await evaluate(`${CARDS} return { maps: app.workspace.getLeavesOfType('mappy-map').length, labels: shows('map').labels, editing: shows('map').editing };`);
+    check(after.maps === before.maps && !after.editing, `a double click on a fold opened something or started Canvas's editor: ${JSON.stringify({ before, after })}`);
+    return { before, after };
+  });
+
+  // A web link in the map on a selected card opens (the case catches window.open, so no browser starts) and Canvas
+  // does not start its editor.
+  await step('web-link', async () => {
+    await evaluate(`window.__mappyE2EOpen = window.open; window.__mappyE2EOpened = [];
+      window.open = (...args) => { window.__mappyE2EOpened.push(String(args[0])); return null; }; return true;`);
+    let result;
+    try {
+      await selectCard('map');
+      await clickAt(await onMapPart('map', 'a.external-link'));
+      await wait(500);
+      result = await evaluate(`${CARDS} return { opened: window.__mappyE2EOpened.slice(), editing: shows('map').editing };`);
+    } finally {
+      await evaluate('window.open = window.__mappyE2EOpen; return true;');
+    }
+    check(JSON.stringify(result.opened) === JSON.stringify([WEB]) && !result.editing, `the web link on the card: ${JSON.stringify(result)}`);
+    return result;
+  });
+
   // 描画で書き換えない: up to here the case has only shown, opened and double-clicked; nothing is written.
   await step('untouched', async () => {
     const now = await disk();
     const changed = Object.entries(written).filter(([path, before]) => now[path]?.text !== before.text || now[path]?.mtime !== before.mtime).map(([path]) => path);
     check(changed.length === 0, `showing the cards wrote ${changed.join(', ')}`);
     return { changed };
+  });
+
+  // 新しく置く: a card the person adds (the call Canvas's drop and 「保管庫からノートを追加」 make) is a map at once.
+  await step('add-card', async () => {
+    const id = await evaluate(`${CARDS} const node = canvas.createFileNode({ pos: { x: 560, y: 700 }, size: { width: 400, height: 260 },
+      file: app.vault.getAbstractFileByPath(${JSON.stringify(MAP)}) }); return node.id;`);
+    await fit();
+    const shown = await settledCard(id, item => item.labels.length >= MAP_LABELS.length).catch(error => ({ error: String(error) }));
+    check(shown.frame && shown.frameShown && !shown.renderedShown && shown.within, `the added card is not a map: ${JSON.stringify(shown)}`);
+    return { id, shown: { frame: shown.frame, labels: shown.labels, within: shown.within } };
   });
 
   // 横の画面で直す: a new main topic in the map beside, by real keys; the card follows.
@@ -298,6 +364,26 @@ try {
     check(added.source.includes(`- ${NEW_TOPIC}`), `the map beside did not write the new topic: ${added.source}`);
     check(card.frame && card.labels?.includes(NEW_TOPIC) && !card.renderedShown && card.frameId === 'first', `the card did not follow the edit as the same map: ${JSON.stringify(card)}`);
     return { added: { labels: added.labels, waited: added.waited }, card };
+  });
+
+  // Canvas のメニューの「編集」: the card's Markdown editor shows instead of the map, and the map comes back after it.
+  await step('menu-edit', async () => {
+    await selectCard('map');
+    const button = await evaluate(`${CARDS} const item = Array.from(canvas.wrapperEl.querySelectorAll('.canvas-menu .clickable-icon')).find(each => each.getAttribute('aria-label') === '編集');
+      if (!item) throw new Error('no 編集 in the canvas menu'); return box(item);`);
+    await clickAt({ x: button.left + button.width / 2, y: button.top + button.height / 2 });
+    await wait(800);
+    const during = await evaluate(`${CARDS} const content = card('map').contentEl;
+      const editor = Array.from(content.querySelectorAll(':scope > .markdown-embed-content')).find(each => getComputedStyle(each).display !== 'none' && each.offsetHeight > 0);
+      return { ...shows('map'), editorShown: !!editor, editorText: editor?.innerText.slice(0, 120) ?? '' };`);
+    await shot('menu-edit');
+    await clickAt(await blank());
+    const after = await settledCard('map', item => !item.editing && item.frameShown && item.labels.length > 0).catch(error => ({ error: String(error) }));
+    // The later rows tell the map apart by this mark: put it on the frame shown now.
+    await evaluate(`${CARDS} const frame = card('map').contentEl.querySelector(':scope > .mappy-embed'); const same = frame?.dataset.mappyE2eFrame === 'first'; if (frame) frame.dataset.mappyE2eFrame = 'first'; return same;`);
+    check(during.editing && !during.frameShown && during.editorShown, `Canvas's Edit did not show the editor in place of the map: ${JSON.stringify({ editing: during.editing, frameShown: during.frameShown, editorShown: during.editorShown })}`);
+    check(after.frame && after.frameShown && !after.renderedShown && after.labels?.includes(NEW_TOPIC), `the map did not come back after the editor: ${JSON.stringify(after)}`);
+    return { during: { editing: during.editing, frameShown: during.frameShown, editorShown: during.editorShown }, after: { frameShown: after.frameShown, frameId: after.frameId, labels: after.labels } };
   });
 
   // ズームで縮小して戻す: past Canvas's breakpoint the cards' content is taken off; the map comes back with it.
@@ -323,6 +409,17 @@ try {
     await shot('zoomed-back');
     check(back.frame && back.frameId === 'first' && back.within && back.labels?.includes(NEW_TOPIC) && !back.renderedShown, `the map did not come back with the card: ${JSON.stringify(back)}`);
     return { out: { zoom: out.zoom, breakpoint: out.breakpoint, mounted: out.card.mounted }, back, zoom };
+  });
+
+  // 開くボタンのダブルクリック: its two clicks and the double click open the map once.
+  await step('open-button', async () => {
+    await evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) leaf.detach(); window.__mappyE2E = null; await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
+    await fit();
+    await selectCard('map');
+    await doubleClickAt(await onMapPart('map', '.mappy-embed-open'));
+    const result = await evaluate(`${CARDS} return { leaves: mapLeaves(${JSON.stringify(MAP)}).length, all: app.workspace.getLeavesOfType('mappy-map').length, editing: shows('map').editing };`);
+    check(result.leaves === 1 && result.all === 1 && !result.editing, `a double click on the open button: ${JSON.stringify(result)}`);
+    return result;
   });
 
   // 付箋の移動と大きさの変更: real drags of the card body and of its corner.

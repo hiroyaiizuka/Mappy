@@ -3,8 +3,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App, MarkdownPostProcessorContext, TFile } from 'obsidian';
 import { installObsidianDom } from '../browser-harness/dom';
 import { HarnessApp } from '../browser-harness/app';
-import { Component, MarkdownRenderer } from '../browser-harness/obsidian';
+import { Component, MarkdownRenderer, TextFileView, WorkspaceLeaf } from '../browser-harness/obsidian';
 import { DocumentStore } from '../../src/obsidian/document-store';
+import { closeOpenViews } from '../mocks/open-views';
 import { EMBED_ANCHOR_CLASS, EMBED_HOST_CLASS, MapEmbeds } from '../../src/ui/map-embed';
 
 // The browser-harness stand-in for `obsidian`, so the shipped post processor, embed component and renderer run against a real DOM.
@@ -12,8 +13,10 @@ vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
 const renderers: Component[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const renderer of renderers.splice(0)) renderer.unload();
+  // The Canvas view stand-ins each test builds (tests/mocks/open-views.ts).
+  await closeOpenViews();
   document.body.replaceChildren();
 });
 
@@ -52,47 +55,84 @@ interface Card {
   sections: HTMLElement[];
 }
 
+/** Where a card sits on the board, as Canvas keeps it in its data and writes it into the card's inline style. */
+interface Place { x: number; y: number; width: number; height: number }
+
+interface CardOptions {
+  /** Whether the canvas's data has the card (false: a card no canvas leaf names, as in a canvas embedded in a note). */
+  listed?: boolean;
+  /** Where the card sits; the next free place along the board otherwise. */
+  at?: Place;
+  /** Where the canvas's data says it sits, if not where the card is (data saved before a move). */
+  saved?: Place;
+}
+
+/** Obsidian 1.14.4's Canvas view: a TextFileView whose data is the `.canvas` JSON. */
+class CanvasStandIn extends TextFileView {
+  getViewType(): string { return 'canvas'; }
+  getDisplayText(): string { return 'ボード'; }
+}
+
 interface Board {
   app: HarnessApp;
   embeds: MapEmbeds;
   renderer: Component;
-  /** The canvas's leaf as `getLeavesOfType('canvas')` returns it, with the node list Canvas keeps. */
-  leaf: { view: { containerEl: HTMLElement; canvas: { nodes: Map<string, unknown> } }; parent: object };
+  /** The canvas's leaf as `getLeavesOfType('canvas')` returns it. */
+  leaf: { view: TextFileView; parent: object };
   /** A card as Canvas 1.14.4 builds a file node: the content (the embed's container) and its cover in the card, the note rendered inside. */
-  card: (path: string, subpath?: string, options?: { listed?: boolean; entry?: (node: Record<string, unknown>) => unknown }) => Promise<Card>;
-  calls: { split: unknown[][]; open: unknown[][]; reveal: unknown[]; active: unknown[][]; eState: unknown[] };
+  card: (path: string, subpath?: string, options?: CardOptions) => Promise<Card>;
+  calls: { split: unknown[][]; open: unknown[][]; reveal: unknown[]; active: unknown[][] };
+  /** Lets the next `openFile` of a split wait until the returned function is called (an open that takes time). */
+  holdOpen: () => () => void;
 }
 
 function board(files: Record<string, string>): Board {
   const app = new HarnessApp();
   for (const [path, content] of Object.entries(files)) app.put(path, content);
-  const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+  const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
   const renderer = new Component();
   renderer.load();
   renderers.push(renderer);
-  const containerEl = document.body.createDiv({ cls: 'workspace-leaf-content', attr: { 'data-type': 'canvas' } });
-  const canvasEl = containerEl.createDiv({ cls: 'canvas' });
-  const leaf = { view: { containerEl, canvas: { nodes: new Map<string, unknown>() } }, parent: {} };
-  const calls: Board['calls'] = { split: [], open: [], reveal: [], active: [], eState: [] };
+  const view = new CanvasStandIn(new WorkspaceLeaf(app.asApp<App>()));
+  document.body.append(view.containerEl);
+  const canvasEl = view.containerEl.createDiv({ cls: 'canvas' });
+  const nodes: Record<string, unknown>[] = [];
+  const save = (): void => { view.data = JSON.stringify({ nodes, edges: [] }); };
+  save();
+  const leaf = { view, parent: {} };
+  const calls: Board['calls'] = { split: [], open: [], reveal: [], active: [] };
   const mapLeaves: unknown[] = [];
+  let held: Promise<void> | null = null;
   app.workspace.getLeavesOfType = ((type: string) => type === 'canvas' ? [leaf] : type === 'mappy-map' ? mapLeaves : []) as never;
   Object.assign(app.workspace, {
     createLeafBySplit: (...args: unknown[]) => {
       calls.split.push(args);
-      return { openFile: (...open: unknown[]) => { calls.open.push(open); return Promise.resolve(); } };
+      return { openFile: (...open: unknown[]) => { calls.open.push(open); return held ?? Promise.resolve(); } };
     },
     revealLeaf: (target: unknown) => { calls.reveal.push(target); return Promise.resolve(); },
     setActiveLeaf: (...args: unknown[]) => { calls.active.push(args); },
     mapLeaves,
   });
-  const card: Board['card'] = async (path, subpath = '', { listed = true, entry = (node: Record<string, unknown>): unknown => node } = {}) => {
+  const holdOpen = (): (() => void) => {
+    let release = (): void => undefined;
+    held = new Promise<void>(resolve => { release = () => { held = null; resolve(); }; });
+    return () => { release(); };
+  };
+  const card: Board['card'] = async (path, subpath = '', { listed = true, at, saved } = {}) => {
+    const place = at ?? { x: nodes.length * 500, y: 0, width: 480, height: 320 };
     const node = canvasEl.createDiv({ cls: 'canvas-node' });
+    node.style.transform = `translate(${place.x}px, ${place.y}px)`;
+    node.style.width = `${place.width}px`;
+    node.style.height = `${place.height}px`;
     const container = node.createDiv({ cls: 'canvas-node-container' });
     const content = container.createDiv({ cls: 'canvas-node-content markdown-embed is-loaded' });
     const blocker = container.createDiv({ cls: 'canvas-node-content-blocker' });
     const preview = content.createDiv({ cls: 'markdown-embed-content' }).createDiv({ cls: 'markdown-preview-view markdown-rendered' });
     content.createDiv({ cls: 'markdown-embed-link' });
-    if (listed) leaf.view.canvas.nodes.set(`n${leaf.view.canvas.nodes.size}`, entry({ contentEl: content, file: fileOf(app, path), subpath, nodeEl: node }));
+    if (listed) {
+      nodes.push({ id: `n${nodes.length}`, type: 'file', file: path, ...(subpath ? { subpath } : {}), ...(saved ?? place) });
+      save();
+    }
     const sections: HTMLElement[] = [];
     for (const block of app.content(fileOf(app, path)).split(/\n{2,}/u)) {
       const section = preview.createDiv();
@@ -103,7 +143,7 @@ function board(files: Record<string, string>): Board {
     await settle();
     return { node, container, content, blocker, sections };
   };
-  return { app, embeds, renderer, leaf, card, calls };
+  return { app, embeds, renderer, leaf, card, calls, holdOpen };
 }
 
 function doubleClick(target: HTMLElement): MouseEvent {
@@ -155,21 +195,78 @@ describe('MapEmbeds on a Canvas card (LEV-348)', () => {
     expect(embeds.size).toBe(1);
   });
 
-  it('leaves the card to Obsidian when the canvas does not keep its nodes the way 1.14.4 does', async () => {
+  it("tells two cards of one note apart by the place the canvas's data gives each, and leaves a card that sits nowhere it says", async () => {
+    const { embeds, card } = board({ 'Plan.md': HEADINGS });
+    const whole = await card('Plan.md', '', { at: { x: 0, y: 0, width: 480, height: 320 } });
+    const heading = await card('Plan.md', '#準備', { at: { x: 600, y: 0, width: 400, height: 300 } });
+    expect(titles(whole.content)).toEqual(['計画', '準備', '当日'].sort());
+    expect(titles(heading.content)).toEqual(['準備', '荷物'].sort());
+    // Data saved before the card moved: two headings for this note and none of them here, so the heading is unknown.
+    const moved = await card('Plan.md', '#当日', { at: { x: 0, y: 500, width: 400, height: 300 }, saved: { x: 0, y: 900, width: 400, height: 300 } });
+    expect(moved.content.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    expect(embeds.size).toBe(2);
+  });
+
+  it("leaves the card to Obsidian when the canvas's view is not a text file view or its data is not the canvas JSON", async () => {
     const { leaf, embeds, card } = board({ 'Map.md': MAP });
-    // Kept the 1.14.4 way, the card is the map's.
     expect((await card('Map.md')).content.hasClass(EMBED_HOST_CLASS)).toBe(true);
-    // The file as a path instead of a TFile.
-    const byPath = await card('Map.md', '', { entry: node => ({ ...node, file: 'Map.md' }) });
-    expect(byPath.content.hasClass(EMBED_HOST_CLASS)).toBe(false);
-    // The nodes in another collection than a Map.
-    const kept: unknown[] = [];
-    (leaf.view.canvas as { nodes: unknown }).nodes = { size: 0, set: (_key: string, node: unknown) => { kept.push(node); }, values: () => kept };
-    const { content } = await card('Map.md');
-    expect(kept).toHaveLength(1);
-    expect(content.hasClass(EMBED_HOST_CLASS)).toBe(false);
-    expect(content.querySelector('.mappy-embed')).toBeNull();
+    const getViewData = leaf.view.getViewData.bind(leaf.view);
+    leaf.view.getViewData = () => '{ not json';
+    expect((await card('Map.md', '', { listed: false })).content.hasClass(EMBED_HOST_CLASS)).toBe(false);
+    leaf.view.getViewData = getViewData;
+    // A view of another kind (a later Obsidian whose Canvas is not a text file view): the card's heading is unknown.
+    (leaf as { view: unknown }).view = Object.assign(Object.create(null) as object, { containerEl: leaf.view.containerEl, getViewData });
+    expect((await card('Map.md')).content.hasClass(EMBED_HOST_CLASS)).toBe(false);
     expect(embeds.size).toBe(1);
+  });
+
+  it('opens once for the two clicks and the double click of a double click on the open button, while the split is still opening', async () => {
+    const { card, calls, holdOpen } = board({ 'Map.md': MAP });
+    const { content } = await card('Map.md');
+    const button = content.querySelector<HTMLElement>('.mappy-embed-open');
+    if (!button) throw new Error('no open button');
+    const release = holdOpen();
+    button.click();
+    button.click();
+    // The double click lands on the button, which its two clicks already worked: Canvas does not edit, nothing else opens.
+    expect(doubleClick(button).defaultPrevented).toBe(true);
+    await settle();
+    expect(calls.split).toHaveLength(1);
+    release();
+    await settle();
+    expect(calls.split).toHaveLength(1);
+  });
+
+  it("leaves a double click on a fold or a link to the map's own clicks: Canvas does not edit and nothing opens beside", async () => {
+    const { card, calls } = board({ 'Map.md': MAP.replace('  - 日誌\n', '  - 日誌\n- 葉 [[Other]]\n'), 'Other.md': '# Other' });
+    const { content } = await card('Map.md');
+    const toggle = Array.from(content.querySelectorAll<HTMLElement>('.mappy-node')).find(item => item.textContent?.includes('回復する'))?.querySelector<HTMLElement>('.mappy-node-toggle');
+    if (!toggle) throw new Error('no toggle');
+    expect(doubleClick(toggle).defaultPrevented).toBe(true);
+    const link = content.querySelector<HTMLElement>('.mappy-node a.internal-link');
+    if (!link) throw new Error('no link');
+    expect(doubleClick(link).defaultPrevented).toBe(true);
+    await settle();
+    expect(calls.split).toEqual([]);
+  });
+
+  it("follows a web link itself, since the click's default is cancelled to keep Canvas from editing the card", async () => {
+    const { card } = board({ 'Map.md': MAP.replace('  - 日誌\n', '  - 日誌\n- [サイト](https://example.com/page)\n') });
+    const { content } = await card('Map.md');
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      const link = content.querySelector<HTMLElement>('.mappy-node a.external-link');
+      if (!link) throw new Error('no web link');
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+      link.dispatchEvent(click);
+      expect(click.defaultPrevented).toBe(true);
+      expect(open).toHaveBeenCalledWith('https://example.com/page', '_blank');
+      // A click on anything else is only prevented.
+      content.querySelector<HTMLElement>('.mappy-canvas')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      open.mockRestore();
+    }
   });
 
   it("opens the note as a map in a split beside the canvas on a double click on the card, instead of Canvas's editor", async () => {

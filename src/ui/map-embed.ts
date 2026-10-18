@@ -8,7 +8,7 @@ import { readTopicPositions, type TopicPositionMap } from "../core/topics";
 import { WriteRecord } from "../core/write-record";
 import { fitToBounds } from "../interaction/viewport";
 import { layoutTree, type LayoutBounds, type LayoutMode } from "../layout/layout";
-import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside, type CanvasCard } from "../obsidian/canvas-card";
+import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside } from "../obsidian/canvas-card";
 import type { DocumentStore } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -16,7 +16,6 @@ import { EdgeLayer } from "./edge-layer";
 import { LinkPreview } from "./link-preview";
 import { mapClick } from "./map-events";
 import { NodeRenderer } from "./node-renderer";
-import { VIEW_TYPE } from "./mindmap-view";
 import { t } from "../i18n";
 
 /** Obsidian's embed container whose content a map replaced; its own children are hidden by CSS while the map shows. */
@@ -41,8 +40,11 @@ const REFRESH_DEBOUNCE = 45;
 export interface MapEmbedSource extends EmbedTarget {
   /** The note the embed is written in; the "open" action resolves from it. */
   hostPath: string;
-  /** The Canvas card the map is drawn on (LEV-348): opening the note puts its map beside the canvas instead. */
-  card?: Pick<CanvasCard, "el" | "leaf">;
+  /**
+   * The Canvas card the map is drawn on (LEV-348): `el` is the card element (`.canvas-node-container`), and `open`
+   * opens the note as a map beside the canvas, which a double click on the card and the open button do instead.
+   */
+  card?: { el: HTMLElement; open: () => void };
 }
 
 /**
@@ -114,7 +116,7 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerDomEvent(open, "click", event => {
       event.preventDefault();
       event.stopPropagation();
-      if (this.source.card) this.openBeside();
+      if (this.source.card) this.source.card.open();
       else void this.app.workspace.openLinkText(this.source.file.path, this.source.hostPath, event.metaKey || event.ctrlKey);
     });
     const card = this.source.card;
@@ -123,14 +125,23 @@ export class MapEmbed extends MarkdownRenderChild {
       // Canvas edits a card's Markdown on a double click on the card that nobody prevented (its listener sits on the
       // card, above the content and the cover that takes the clicks of an unselected card), and on a single click inside
       // the content of a selected one unless that click was prevented by then (Obsidian 1.14.4 app.js). On a map card
-      // the double click opens the map beside the canvas and a click is the map's alone. While Canvas does edit it
-      // (its menu's Edit), the card is its editor's (styles.css shows the editor then).
+      // the double click opens the map beside the canvas — unless it was on something of the map's own that its two
+      // clicks already worked (a fold, a link, the open button) — and a click is the map's alone. While Canvas does edit
+      // it (its menu's Edit), the card is its editor's (styles.css shows the editor then).
       this.registerDomEvent(card.el, "dblclick", event => {
         if (card.el.closest(".canvas-node")?.hasClass("is-editing")) return;
         event.preventDefault();
-        this.openBeside();
+        const target = event.target instanceof Element ? event.target : null;
+        if (target && el.contains(target) && target.closest("a, button, .mappy-node-toggle")) return;
+        card.open();
       }, { capture: true });
-      this.registerDomEvent(el, "click", event => { event.preventDefault(); });
+      this.registerDomEvent(el, "click", event => {
+        if (event.defaultPrevented) return;
+        event.preventDefault();
+        // A web link is not the map's to follow (`mapClick` leaves it to the browser), and its default went with the rest.
+        const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a.external-link[href]") : null;
+        if (link) el.win.open(link.href, "_blank");
+      });
     }
     this.renderer = this.addChild(new NodeRenderer(this.app, this.nodes, () => { this.scheduleLayout(); }));
     this.registerDomEvent(this.nodes, "load", () => { this.scheduleLayout(); }, true);
@@ -168,12 +179,6 @@ export class MapEmbed extends MarkdownRenderChild {
     this.drawnSource = null;
     this.frame.empty();
     this.release();
-  }
-
-  /** The note as a map beside the canvas the card is on, where it is edited (LEV-348). */
-  private openBeside(): void {
-    const card = this.source.card;
-    if (card) void openMapBeside(this.app, { file: this.source.file, subpath: this.source.subpath, leaf: card.leaf }, VIEW_TYPE);
   }
 
   /** The reader's folds and the links; nothing else reacts. A link is followed here and goes no further. */
@@ -389,7 +394,12 @@ export class MapEmbeds {
   private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
-  constructor(private readonly app: App, private readonly store: DocumentStore) {}
+  constructor(
+    private readonly app: App,
+    private readonly store: DocumentStore,
+    /** The map view's type, which a Canvas card opens its note in beside the canvas. */
+    private readonly mapViewType: string,
+  ) {}
 
   process(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     // Node labels of a map (view or embed) are rendered Markdown too; they never host embeds.
@@ -509,13 +519,14 @@ export class MapEmbeds {
     const span = el.closest<HTMLElement>(`.${CANVAS_CONTENT_CLASS}, .internal-embed`);
     // The section itself may have landed inside a map (a node label) since `process` looked; the check covers the whole way up.
     if (!span || el.closest(`.${EMBED_HOST_CLASS}, .mappy-view`)) return;
-    // A Canvas card names its heading in the canvas, not in the DOM; a card no open canvas holds stays Obsidian's.
-    const card = span.hasClass(CANVAS_CONTENT_CLASS) ? canvasCard(this.app, span) : undefined;
-    if (card === null || (card && card.file !== own)) return;
+    // A Canvas card names its heading in the canvas's data, not in the DOM; a card no open canvas holds stays Obsidian's.
+    const card = span.hasClass(CANVAS_CONTENT_CLASS) ? canvasCard(this.app, span, own) : undefined;
+    if (card === null) return;
     const subpath = card ? card.subpath : parseLinktext(span.getAttribute("src") ?? "").subpath;
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
-    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, leaf: card.leaf } } : {}) };
+    const open = (): void => { if (card) void openMapBeside(this.app, card, this.mapViewType); };
+    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, open } } : {}) };
     // The frame goes on the container, outside this section; the anchor inside the section keeps the lifecycle honest.
     this.claim(ctx, span, source, el.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
   }

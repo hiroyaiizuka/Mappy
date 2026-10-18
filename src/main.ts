@@ -79,7 +79,7 @@ export default class MappyPlugin extends Plugin {
       .map(leaf => leaf.view).filter((view): view is MindmapView => view instanceof MindmapView));
     // `![[map]]` in other notes (§5 M10). Cleanups run last-in-first-out, so on unload the processor is
     // unregistered first and the release below puts the plain embeds back without a new map taking over.
-    const embeds = new MapEmbeds(this.app, store);
+    const embeds = new MapEmbeds(this.app, store, VIEW_TYPE);
     this.register(() => { embeds.dispose(); });
     this.registerMarkdownPostProcessor(embeds.processor);
     this.addCommand({

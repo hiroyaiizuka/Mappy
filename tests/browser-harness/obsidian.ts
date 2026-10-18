@@ -489,6 +489,17 @@ export abstract class EditableFileView extends FileView {
   }
 }
 
+/**
+ * `TextFileView`: a file view whose text is `getViewData()`. Obsidian 1.14.4's Canvas view is one, and its data is the
+ * `.canvas` JSON it saves (LEV-348 reads a card's heading path from it); a test sets `data` as Canvas would.
+ */
+export abstract class TextFileView extends EditableFileView {
+  data = "";
+  getViewData(): string { return this.data; }
+  setViewData(data: string): void { this.data = data; }
+  clear(): void { this.data = ""; }
+}
+
 /** Only used for `instanceof` checks; the harness never opens a Markdown editor. */
 export class MarkdownView extends EditableFileView {
   getViewType(): string { return "markdown"; }
