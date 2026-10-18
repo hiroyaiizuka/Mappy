@@ -53,12 +53,17 @@ const check = makeCheck(record);
 /** Script: `leaf`, a new tab of the main window (the unpinned leaf when no tab group has been active yet). */
 const NEW_TAB = `const leaf = (() => { try { return app.workspace.getLeaf('tab'); } catch { return app.workspace.getLeaf(false); } })();`;
 
-/** Script: what the embeds of the leaf `window.__mappyE2EEmbedLeaf` show — map frames with their node count, and Obsidian's own embeds left. */
-const SHOWN = `const leaf = window.__mappyE2EEmbedLeaf; const root = leaf?.view?.containerEl;
-  if (!root) throw new Error('no leaf under test');
+/**
+ * Script: what the embeds of the leaf `window.__mappyE2EEmbedLeaf` show in the mode on screen — map frames with their node
+ * count, and Obsidian's own embeds left. Only the mode on screen: a note opened in the reading view keeps its hidden
+ * editor, whose live-preview embeds stay Obsidian's until the editor is shown (in the main window too).
+ */
+const SHOWN = `const leaf = window.__mappyE2EEmbedLeaf; const view = leaf?.view;
+  if (!view?.containerEl) throw new Error('no leaf under test');
+  const root = view.getMode?.() === 'preview' ? view.previewMode.containerEl : view.containerEl.querySelector('.markdown-source-view') ?? view.containerEl;
   const spans = Array.from(root.querySelectorAll('.internal-embed'));
   const frames = Array.from(root.querySelectorAll('.mappy-embed'), frame => frame.querySelectorAll('.mappy-node').length);
-  return { window: leaf.getContainer().win === window ? 'main' : 'popout', mode: leaf.view.getMode?.() ?? null,
+  return { window: leaf.getContainer().win === window ? 'main' : 'popout', mode: view.getMode?.() ?? null,
     maps: frames.filter(count => count >= 2).length, frames, embeds: spans.length,
     obsidian: spans.filter(span => !span.classList.contains('mappy-embed-host') && span.querySelector('.markdown-embed-content')).length };`;
 
@@ -163,6 +168,9 @@ try {
       const file = app.vault.getAbstractFileByPath(path);
       if (file) await app.vault.modify(file, text); else await app.vault.create(path, text);
     }
+    await new Promise(resolve => setTimeout(resolve, 800));
+    // The main area as the case leaves it (a tab opened and closed: Obsidian's own new empty tab), so the handlers compare.
+    ${NEW_TAB} await leaf.openFile(app.vault.getAbstractFileByPath(${JSON.stringify(MAP)}), { active: true }); leaf.detach();
     await new Promise(resolve => setTimeout(resolve, 800));
     window.__mappyE2EBaseline = ${HANDLERS};
     return { obsidian: require('electron').ipcRenderer.sendSync('version') };`)));
