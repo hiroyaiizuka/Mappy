@@ -22,6 +22,8 @@ export interface ExcalidrawElement {
   isDeleted?: boolean;
   /** Excalidraw's edit counter: a merge of two copies of an element keeps the higher. */
   version?: number;
+  /** An image element's key into the drawing's files. */
+  fileId?: string | null;
 }
 
 export interface ExcalidrawStyle {
@@ -82,6 +84,9 @@ export interface ExcalidrawAutomate {
    * `cloneElement` in 2.27.3–2.29.0 also makes each one version newer; the bridge does not rely on it).
    */
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[], copyImages?: boolean): void;
+  /** The workbench `addElementsToView` commits, by element id, and the image files it carries, by file id. */
+  elementsDict: Record<string, ExcalidrawElement>;
+  imagesDict: Record<string, unknown>;
   reset(): void;
   clear(): void;
   destroy?(): void;

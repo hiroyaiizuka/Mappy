@@ -100,6 +100,15 @@ const readPanes = () => evaluate(`${READ_PANE}
   const E = window.__mappyExcalidrawE2E;
   return [E.leaf, E.other].filter(Boolean).map(leaf => leaf.view?.excalidrawAPI ? readPane(leaf) : null);`);
 
+/**
+ * Whether `file` is the map image's attachment of `note`: `<note>.svg` beside the drawing, or `<note> 1.svg` and on when
+ * an earlier row's attachment of the same note is still there (`--keep`).
+ */
+const isMapAttachment = (file, note) => {
+  const name = noteName(note).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`^${name}( \\d+)?\\.svg$`, 'u').test(file?.replace(/^.*\//u, '') ?? '');
+};
+
 /** Whether a pane is what the row expects; returns the reasons it is not (empty when it is). */
 function verdict(row, pane, svgs) {
   if (!pane) return ['the pane has no drawing'];
@@ -109,7 +118,7 @@ function verdict(row, pane, svgs) {
     for (const note of row.notes) {
       const name = noteName(note);
       if (images.some(element => element.file === note)) reasons.push(`${name}: the Markdown image is still in the drawing`);
-      const mapped = images.filter(element => element.file && element.file.replace(/^.*\//u, '') === `${name}.svg`);
+      const mapped = images.filter(element => isMapAttachment(element.file, note));
       if (mapped.length !== 1) { reasons.push(`${name}: ${mapped.length} map images, not 1`); continue; }
       const [image] = mapped;
       if (image.link !== `[[${name}]]`) reasons.push(`${name}: the map image links ${image.link}, not [[${name}]]`);
@@ -123,9 +132,8 @@ function verdict(row, pane, svgs) {
       }
     }
     // Any other image is a leftover too, also one whose file Excalidraw does not name (yet).
-    const known = new Set(row.notes.flatMap(note => [note, `${noteName(note)}.svg`]));
     for (const element of images) {
-      if (!element.file || (!known.has(element.file) && !known.has(element.file.replace(/^.*\//u, '')))) reasons.push(`an image that is not a map image: ${element.file ?? 'no file'}`);
+      if (!row.notes.some(note => element.file === note || isMapAttachment(element.file, note))) reasons.push(`an image that is not a map image: ${element.file ?? 'no file'}`);
     }
   } else if (row.expect === 'embeddable') {
     const frames = pane.filter(element => element.type === 'embeddable');
@@ -159,8 +167,7 @@ function done(row, panes) {
     if (!pane) return false;
     if (row.expect === 'embeddable') return pane.some(element => element.type === 'embeddable' && element.strokeColor === 'transparent');
     if (row.expect !== 'map-image') return pane.length > 0;
-    return row.notes.every(note => !pane.some(element => element.file === note)
-      && pane.some(element => element.file?.replace(/^.*\//u, '') === `${noteName(note)}.svg`));
+    return row.notes.every(note => !pane.some(element => element.file === note) && pane.some(element => isMapAttachment(element.file, note)));
   });
 }
 
@@ -332,6 +339,8 @@ try {
     } finally {
       // The dialog of a row that stopped early would sit over the next row's drop.
       await evaluate(`document.querySelectorAll('.modal-container .modal-close-button').forEach(button => button.click()); return true;`).catch(() => {});
+      // A row that ended in StopCase has no entry yet.
+      record.rows[row.name] ??= { stopped: true };
       if (!flag('--keep')) record.rows[row.name].cleaned = await cleanRow().catch(error => String(error));
     }
     console.log(row.name, JSON.stringify(record.rows[row.name]).slice(0, 600));

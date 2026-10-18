@@ -44,6 +44,12 @@ class FakeAutomate implements ExcalidrawAutomate {
   copyBumps = true;
   /** Ids this EA does not copy for editing, so `getElement` has none to edit. */
   copySkips = new Set<string>();
+  /** EA's workbench by id, over `elements`: an element deleted from it is not committed. */
+  readonly elementsDict: Record<string, ExcalidrawElement> = new Proxy({}, {
+    get: (_target, id) => this.elements.get(String(id)),
+    deleteProperty: (_target, id) => { this.elements.delete(String(id)); return true; },
+  });
+  imagesDict: Record<string, unknown> = {};
   private counter = 0;
 
   constructor(
@@ -77,7 +83,9 @@ class FakeAutomate implements ExcalidrawAutomate {
     return { getAppState: () => ({ currentItemFontFamily: 5 }) };
   }
 
-  getViewElements(): ExcalidrawElement[] { return this.getElements(); }
+  /** The drawing's scene; `elements` is EA's workbench, which `clear()` empties and a commit writes into the scene. */
+  view = new Map<string, FakeElement>();
+  getViewElements(): ExcalidrawElement[] { return [...this.view.values()].filter(element => !element.isDeleted); }
   getViewFileForImageElement(element: ExcalidrawElement): TFile | null {
     const fileId = (element as FakeElement).fileId;
     return fileId ? this.imageFiles.get(fileId) ?? null : null;
@@ -151,6 +159,7 @@ class FakeAutomate implements ExcalidrawAutomate {
   addElementsToView(...args: unknown[]): Promise<boolean> {
     this.calls.push('addElementsToView');
     this.added.push({ args, elements: this.getElements().map(element => ({ ...element })) as FakeElement[] });
+    for (const element of this.getElements() as FakeElement[]) this.view.set(element.id, { ...element });
     return Promise.resolve(true);
   }
 
@@ -304,7 +313,7 @@ describe('ExcalidrawBridge.ensureHook', () => {
     expect(automate?.onDropHook?.(ordinary)).toBe(false);
     const ea = automate?.instances[0];
     expect(ea).toBeDefined();
-    ea?.elements.set('embed-1', {
+    ea?.view.set('embed-1', {
       id: 'embed-1', type: 'embeddable', x: 0, y: 0, width: 500, height: 300,
       link: '[[Note.md]]', strokeColor: '#000000', style: {},
     });
@@ -355,7 +364,7 @@ describe('ExcalidrawBridge default drop', () => {
 
   /** What Excalidraw's "Insert image" of a Markdown note leaves in the view: the note's text as an SVG image, its file the note. */
   function markdownImage(ea: FakeAutomate, id: string, note: TFile, x = 40, y = 60): void {
-    ea.elements.set(id, {
+    ea.view.set(id, {
       id, type: 'image', x, y, width: 500, height: 800, fileId: `md:${note.path}`, style: {}, version: 3,
       customData: { markdownImage: { source: 'external', schemaVersion: 1, version: 1 } },
     });
@@ -363,7 +372,7 @@ describe('ExcalidrawBridge default drop', () => {
   }
 
   function embeddable(ea: FakeAutomate, id: string, link: string, x = 0, y = 0, strokeColor = '#000000'): void {
-    ea.elements.set(id, { id, type: 'embeddable', x, y, width: 500, height: 500, link, strokeColor, style: {} });
+    ea.view.set(id, { id, type: 'embeddable', x, y, width: 500, height: 500, link, strokeColor, style: {} });
   }
 
   it('replaces the Markdown image of "Insert image" with the map drawn as an SVG attachment, linked to the note', async () => {
@@ -498,16 +507,50 @@ describe('ExcalidrawBridge default drop', () => {
     const { ea, note, created, removed, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
     ea.copySkips.add('md-image');
     markdownImage(ea, 'md-image', note);
+    embeddable(ea, 'embed-1', '[[Note.md]]', 600, 0);
 
     await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
     expect(reports).toEqual([t().excalidrawOriginalLocked('Note')]);
     expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg']);
     expect(removed).toEqual(['attachments/Note.svg']);
-    // Nothing else changed, so nothing is committed: the Markdown image stays as Excalidraw made it.
-    expect(ea.added).toHaveLength(0);
+    // The frame is still fitted; the commit carries no image at all, not even a deleted one pointing at the removed file.
+    expect(ea.added).toHaveLength(1);
+    expect(ea.added[0]?.elements.map(element => element.id)).toEqual(['embed-1']);
     expect(ea.selected).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
+  });
+
+  it('bases the deletion on the Markdown image as it is just before the commit, not as the paint found it (LEV-352)', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    markdownImage(ea, 'md-image', note);
+    // While the attachment is written, Excalidraw (or the user) changes the Markdown image: a new element object, version 7.
+    const addImage = ea.addImage.bind(ea);
+    ea.addImage = (...args) => {
+      const markdown = ea.view.get('md-image');
+      if (markdown) ea.view.set('md-image', { ...markdown, x: 90, version: 7 });
+      return addImage(...args);
+    };
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    expect(ea.added[0]?.elements.find(element => element.id === 'md-image')).toMatchObject({ isDeleted: true, version: 8 });
+  });
+
+  it('adds no map for a Markdown image removed while its attachment was written, and removes the attachment', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note, removed, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    markdownImage(ea, 'md-image', note);
+    const addImage = ea.addImage.bind(ea);
+    ea.addImage = (...args) => { ea.view.delete('md-image'); return addImage(...args); };
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    expect(ea.added).toHaveLength(0);
+    expect(removed).toEqual(['attachments/Note.svg']);
+    expect(reports).toEqual([]);
+    expect(ea.selected).toEqual([]);
   });
 
   it('leaves images and embeddables of other notes, and other new elements, alone', async () => {
@@ -519,7 +562,7 @@ describe('ExcalidrawBridge default drop', () => {
     if (!plain) throw new Error('no plain note');
     markdownImage(ea, 'plain-image', plain);
     embeddable(ea, 'plain-embed', '[[Plain.md]]');
-    ea.elements.set('rect', { id: 'rect', type: 'rectangle', x: 0, y: 0, width: 10, height: 10, strokeColor: '#000000', style: {} });
+    ea.view.set('rect', { id: 'rect', type: 'rectangle', x: 0, y: 0, width: 10, height: 10, strokeColor: '#000000', style: {} });
 
     await vi.advanceTimersByTimeAsync(800);
 
@@ -596,10 +639,10 @@ describe('ExcalidrawBridge default drop', () => {
 
     await vi.advanceTimersByTimeAsync(SETTLE_MS);
     expect(paint).toHaveBeenCalledTimes(1);
-    const moved = ea.elements.get('embed-1');
+    const moved = ea.view.get('embed-1');
     if (moved) { moved.x = 250; moved.y = 125; }
     // The user removed the Markdown image (or undid the insert) while the map was being painted.
-    ea.elements.delete('md-image');
+    ea.view.delete('md-image');
     release(painted('Note', { x: 0, y: 0, width: 100, height: 50 }));
     await vi.advanceTimersByTimeAsync(0);
 
