@@ -8,7 +8,7 @@ import { readTopicPositions, type TopicPositionMap } from "../core/topics";
 import { WriteRecord } from "../core/write-record";
 import { fitToBounds } from "../interaction/viewport";
 import { layoutTree, type LayoutBounds, type LayoutMode } from "../layout/layout";
-import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside, type CanvasCard } from "../obsidian/canvas-card";
+import { CANVAS_CONTENT_CLASS, canvasCard, openMapBeside } from "../obsidian/canvas-card";
 import type { DocumentStore } from "../obsidian/document-store";
 import { resolveEmbedTarget, type EmbedTarget } from "../obsidian/embed-target";
 import { readMapLayout } from "../obsidian/frontmatter";
@@ -116,7 +116,8 @@ export class MapEmbed extends MarkdownRenderChild {
     this.registerDomEvent(open, "click", event => {
       event.preventDefault();
       event.stopPropagation();
-      if (this.source.card) this.source.card.open();
+      // ⌘／Ctrl keeps its meaning on a card: a new tab, as from any other embed.
+      if (this.source.card && !(event.metaKey || event.ctrlKey)) this.source.card.open();
       else void this.app.workspace.openLinkText(this.source.file.path, this.source.hostPath, event.metaKey || event.ctrlKey);
     });
     const card = this.source.card;
@@ -125,21 +126,30 @@ export class MapEmbed extends MarkdownRenderChild {
       // Canvas edits a card's Markdown on a double click on the card that nobody prevented (its listener sits on the
       // card, above the content and the cover that takes the clicks of an unselected card), and on a single click inside
       // the content of a selected one unless that click was prevented by then (Obsidian 1.14.4 app.js). On a map card
-      // the double click opens the map beside the canvas — unless it was on something of the map's own that its two
+      // the double click opens the map beside the canvas — unless it began on something of the map's own that its two
       // clicks already worked (a fold, a link, the open button) — and a click is the map's alone. While Canvas does edit
       // it (its menu's Edit), the card is its editor's (styles.css shows the editor then).
+      // Where it began is the first press of the pair: a fold's first click re-fits the map, so the second press (and
+      // the double click's own target) can land beside the fold.
+      const ownControl = (target: Node | null): boolean =>
+        // `targetNode.instanceOf`, not `instanceof`: a canvas in a popout window has that window's elements.
+        !!target?.instanceOf(Element) && el.contains(target) && !!target.closest("a, button, input, .mappy-node-toggle");
+      let startedOnControl = false;
+      this.registerDomEvent(card.el, "mousedown", event => {
+        if (event.detail <= 1) startedOnControl = ownControl(event.targetNode);
+      }, { capture: true });
       this.registerDomEvent(card.el, "dblclick", event => {
         if (card.el.closest(".canvas-node")?.hasClass("is-editing")) return;
         event.preventDefault();
-        const target = event.target instanceof Element ? event.target : null;
-        if (target && el.contains(target) && target.closest("a, button, input, .mappy-node-toggle")) return;
+        if (startedOnControl || ownControl(event.targetNode)) return;
         card.open();
       }, { capture: true });
       this.registerDomEvent(el, "click", event => {
         if (event.defaultPrevented) return;
         event.preventDefault();
         // A web link is not the map's to follow (`mapClick` leaves it to the browser), and its default went with the rest.
-        const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a.external-link[href]") : null;
+        const target = event.targetNode;
+        const link = target?.instanceOf(Element) ? target.closest<HTMLAnchorElement>("a.external-link[href]") : null;
         if (link) el.win.open(link.href, "_blank");
       });
     }
@@ -526,8 +536,9 @@ export class MapEmbeds {
     const target = resolveEmbedTarget(this.app, own.path + subpath, ctx.sourcePath);
     if (!target) return;
     // A failed open (the canvas's tab closed under it) is logged, not left as an unhandled rejection.
-    const open = (opened: CanvasCard) => (): void => { openMapBeside(this.app, opened, this.mapViewType).catch(error => { console.error(error); }); };
-    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, open: open(card) } } : {}) };
+    const source = { ...target, hostPath: ctx.sourcePath, ...(card ? { card: { el: card.el, open: (): void => {
+      openMapBeside(this.app, card, this.mapViewType).catch(error => { console.error(error); });
+    } } } : {}) };
     // The frame goes on the container, outside this section; the anchor inside the section keeps the lifecycle honest.
     this.claim(ctx, span, source, el.createDiv({ cls: EMBED_ANCHOR_CLASS, attr: { hidden: "" } }));
   }

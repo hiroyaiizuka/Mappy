@@ -306,6 +306,22 @@ describe('MapEmbeds on a Canvas card (LEV-348)', () => {
     expect(doubleClick(link).defaultPrevented).toBe(true);
     await settle();
     expect(calls.split).toEqual([]);
+    // The fold's first click re-fits the map, so the second press — and the double click — can land on the blank
+    // map beside it: the double click is judged by where it began.
+    const blank = content.querySelector<HTMLElement>('.mappy-canvas');
+    if (!blank) throw new Error('no canvas');
+    const press = (target: HTMLElement, detail: number): void => { target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, detail })); };
+    press(toggle, 1);
+    press(blank, 2);
+    expect(doubleClick(blank).defaultPrevented).toBe(true);
+    await settle();
+    expect(calls.split).toEqual([]);
+    // A double click that begins on the blank map opens it beside.
+    press(blank, 1);
+    press(blank, 2);
+    doubleClick(blank);
+    await settle();
+    expect(calls.split).toHaveLength(1);
   });
 
   it("follows a web link itself, since the click's default is cancelled to keep Canvas from editing the card", async () => {
@@ -398,12 +414,18 @@ describe('MapEmbeds on a Canvas card (LEV-348)', () => {
     expect(titles(content)).toContain('睡眠');
   });
 
-  it('opens beside the canvas from the open button as well', async () => {
-    const { leaf, card, calls } = board({ 'Map.md': MAP });
+  it('opens beside the canvas from the open button as well, and in a new tab with ⌘ as from any other embed', async () => {
+    const { app, leaf, card, calls } = board({ 'Map.md': MAP });
     const { content } = await card('Map.md');
-    content.querySelector<HTMLElement>('.mappy-embed-open')?.click();
+    const button = content.querySelector<HTMLElement>('.mappy-embed-open');
+    if (!button) throw new Error('no open button');
+    button.click();
     await settle();
     expect(calls.split).toEqual([[leaf, 'vertical']]);
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, metaKey: true }));
+    await settle();
+    expect(calls.split).toHaveLength(1);
+    expect(app.activity.at(-1)).toMatchObject({ kind: 'link', detail: 'Map.md（Map.md から、新しいペイン）' });
   });
 
   it('puts every card back when the plugin unloads', async () => {
