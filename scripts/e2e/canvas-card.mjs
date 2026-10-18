@@ -124,11 +124,18 @@ const NEW_TAB = `const leaf = (() => { try { return app.workspace.getLeaf('tab')
  * elements are its own. `link` sends its CDP input events and `run` evaluates a script in it.
  */
 function driver(link, run) {
-  /** A card's labels once the map has drawn them (the first frame can be empty). */
-  const settledCard = (id, wanted, timeout = 4000) => until(async () => {
-    const shown = await run(`${CARDS} return shows(${JSON.stringify(id)});`);
-    return wanted(shown) ? shown : null;
-  }, timeout, `card ${id} did not show what was expected`);
+  /** A card's labels once the map has drawn them (the first frame can be empty). A timeout names what was seen last. */
+  const settledCard = async (id, wanted, timeout = 4000) => {
+    let last = null;
+    try {
+      return await until(async () => {
+        last = await run(`${CARDS} return shows(${JSON.stringify(id)});`);
+        return wanted(last) ? last : null;
+      }, timeout, `card ${id} did not show what was expected`);
+    } catch (error) {
+      throw new Error(`${error.message}; last seen: ${JSON.stringify(last)}`);
+    }
+  };
 
   /** A real double click (two presses, the second with clickCount 2: Chromium then fires dblclick) at a point of a card. */
   const doubleClickAt = async at => {
