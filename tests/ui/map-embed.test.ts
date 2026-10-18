@@ -121,7 +121,7 @@ async function render(files: Record<string, string>, hostPath: string): Promise<
   const app = new HarnessApp();
   for (const [path, content] of Object.entries(files)) app.put(path, content);
   const store = new DocumentStore(app.asApp<App>());
-  const embeds = new MapEmbeds(app.asApp<App>(), store);
+  const embeds = new MapEmbeds(app.asApp<App>(), store, 'mappy-map');
   const renderer = loadedRenderer();
   const section = document.body.createDiv({ cls: 'markdown-preview-section' });
   await MarkdownRenderer.render(app.asApp<App>(), files[hostPath] ?? '', section, hostPath);
@@ -331,7 +331,7 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     const app = new HarnessApp();
     app.put('Host.md', '![[Map]]');
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const section = document.body.createDiv({ cls: 'markdown-preview-section' });
     await MarkdownRenderer.render(app.asApp<App>(), '![[Map]]', section, 'Host.md');
@@ -459,7 +459,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it("claims the container once from any of its sections, hides Obsidian's rendering and appends the map", async () => {
     const app = new HarnessApp();
     app.put('Map.md', HEADINGS);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const { span, sections } = await container(app, 'Map#記録する', 'Map.md');
     for (const section of sections) embeds.process(section, context(renderer, 'Map.md'));
@@ -488,7 +488,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
     app.put('Plain.md', '# Plain\n\n![[Map]]\n');
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     // Obsidian rendering Plain inside the host's `![[Plain]]` container: its section carries the map's placeholder.
     const { sections } = await container(app, 'Plain', 'Plain.md');
@@ -512,7 +512,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it("leaves the note's own reading view alone and stops waiting once a detached section joins it", async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const view = document.body.createDiv({ cls: 'markdown-preview-view' });
     const own = view.createDiv();
@@ -543,7 +543,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it('claims a section that arrives detached and whose container joins the document two frames later, as Obsidian 1.6.7 attaches it 17–28 ms after the section (LEV-91)', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     // The section reaches the processor on its own; the container it will sit in is not on the document yet.
     const block = createDiv({ cls: 'cm-embed-block' });
@@ -581,7 +581,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it('waits without polling, through one watcher of the document for every section, for a container that joins seconds later (an embed below the fold is attached when scrolled to)', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const first = createDiv({ cls: 'cm-embed-block' });
     const second = createDiv({ cls: 'cm-embed-block' });
@@ -628,7 +628,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it('keeps a section past the hold only through Obsidian: a container that joins later is still claimed, and an unloaded section is let go', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const block = createDiv({ cls: 'cm-embed-block' });
     const { span } = await container(app, 'Map', 'Map.md', block);
@@ -681,7 +681,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it('waits and claims even when the renderer never loads its component, since nothing depends on onload', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     // Another plugin's `MarkdownRenderer.render(…, component)` with a component it never loads: `addChild` does not load the child.
     const unloaded = new Component();
     const block = createDiv({ cls: 'cm-embed-block' });
@@ -707,7 +707,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
     app.put('Plain.md', '# Plain\n\n![[Map]]\n');
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     // Host embeds Plain (an ordinary note) whose section holds the map's placeholder: the map is drawn inside Plain's container.
     const { span, sections } = await container(app, 'Plain', 'Plain.md');
@@ -732,7 +732,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it('stops waiting when the section is unloaded before its container joins the document, and the watcher goes with the last one', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const block = createDiv({ cls: 'cm-embed-block' });
     const { span } = await container(app, 'Map', 'Map.md', block);
@@ -768,7 +768,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
   it('does not claim anything after the plugin unloaded, even from a section that was still waiting', async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
-    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()));
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
     const renderer = loadedRenderer();
     const { span } = await container(app, 'Map', 'Map.md');
     const late = createDiv();

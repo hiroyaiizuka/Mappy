@@ -61,7 +61,7 @@ async function open(): Promise<Opened> {
   app.put('Host.md', '![[Fixtures/undo-ids]]');
   const map = await mountMapView(PATH, SOURCE, 'mindmap', app);
   const store = (map.view as unknown as { store: DocumentStore }).store;
-  const embeds = new MapEmbeds(app.asApp<App>(), store);
+  const embeds = new MapEmbeds(app.asApp<App>(), store, 'mappy-map');
   const renderer = new Component();
   renderer.load();
   const section = document.body.createDiv({ cls: 'markdown-preview-section' });

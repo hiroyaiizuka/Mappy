@@ -258,7 +258,7 @@ describe('link hover preview (LEV-265)', () => {
     const files: Record<string, string> = { 'Host.md': '![[Sub/Map]]', 'Sub/Map.md': ['---', 'mappy: true', '---', '## 講座', '- [[Inner]]', ''].join('\n'), 'Sub/Inner.md': '' };
     for (const [path, content] of Object.entries(files)) app.put(path, content);
     const store = new DocumentStore(app.asApp<App>());
-    const embeds = new MapEmbeds(app.asApp<App>(), store);
+    const embeds = new MapEmbeds(app.asApp<App>(), store, 'mappy-map');
     const renderer = new Component();
     renderer.load();
     renderers.push(renderer);

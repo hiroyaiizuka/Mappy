@@ -29,7 +29,7 @@ import { isMapTheme, readVisibleLayouts, type MapTheme } from "../../src/obsidia
 import type { ViewRouter } from "../../src/obsidian/view-routing";
 import { MapEmbeds } from "../../src/ui/map-embed";
 import { nodeOf } from "../../src/ui/map-events";
-import { MindmapView, type MapMenuAction } from "../../src/ui/mindmap-view";
+import { MindmapView, VIEW_TYPE, type MapMenuAction } from "../../src/ui/mindmap-view";
 import { paintMap } from "../../src/ui/offscreen-map";
 
 declare const __MAPPY_HARNESS_BUILD__: { commit: string; builtAt: string };
@@ -56,7 +56,7 @@ for (const host of EMBED_HOSTS) app.put(host.path, host.source);
 app.put(SAMPLE_IMAGE.path, "", SAMPLE_IMAGE.url);
 const store = new DocumentStore(app.asApp<App>());
 /** The shipped post processor for `![[map]]` (§5 M10); the page plays Obsidian's renderer around it. */
-const embeds = new MapEmbeds(app.asApp<App>(), store);
+const embeds = new MapEmbeds(app.asApp<App>(), store, VIEW_TYPE);
 /** Markdown editors do not exist here; the router only reports the request. */
 const router = {
   openMarkdown(): Promise<void> {
