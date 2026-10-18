@@ -318,13 +318,16 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     renderer.unload();
     expect(embeds.size).toBe(0);
     expect(app.vaultEvents.count()).toBe(0);
-    expect(app.workspaceEvents.count()).toBe(0);
+    // Only the embeds' `window-open`／`window-close` are left, and they go when the plugin unloads.
+    expect(app.workspaceEvents.count()).toBe(2);
     expect(writeListeners.size).toBe(0);
     expect(section.querySelector('.mappy-node')).toBeNull();
     // A later change of the source is nobody's business any more.
     app.put('Map.md', MAP.replace('- 葉', '- 後で'));
     await refreshed();
     expect(section.querySelector('.mappy-node')).toBeNull();
+    embeds.dispose();
+    expect(app.workspaceEvents.count()).toBe(0);
   });
 
   it('claims a span Obsidian loaded first instead of swapping it out, and its inner sections do not mount a second map', async () => {
@@ -914,6 +917,11 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(spans[1]?.hasClass(EMBED_HOST_CLASS)).toBe(true);
     expect(embeds.pending).toBe(0);
     expect(embeds.size).toBe(2);
+    renderer.unload();
+    app.popouts.splice(app.popouts.indexOf(popout), 1);
+    app.workspace.trigger('window-close', popout, popout.win);
+    frame.remove();
+    embeds.dispose();
   });
 
   it("holds a section built in a popout's document on the main window's clock, so closing that popout does not keep it held for good", async () => {
@@ -960,7 +968,8 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const observe = vi.spyOn(MutationObserver.prototype, 'observe');
     const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
     try {
-      expect(app.workspaceEvents.count()).toBe(0);
+      // The embeds' `window-open`／`window-close`, for as long as the plugin runs; the wait adds no listener of its own.
+      expect(app.workspaceEvents.count()).toBe(2);
       embeds.process(late, context(renderer, 'Map.md'));
       span.querySelector('.markdown-preview-view')?.append(late);
       // The main window's document and both popouts', one observer each; the hold is one timer of the main window.
@@ -981,17 +990,100 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
       expect(late.win).toBe(first.win);
       expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
       expect(disconnect).toHaveBeenCalledTimes(3);
-      // What is left on the workspace is the map's own (`editor-change`), not the wait's.
-      expect(app.workspaceEvents.count()).toBe(1);
+      // The map's own listener (`editor-change`) beside the embeds' two.
+      expect(app.workspaceEvents.count()).toBe(3);
       first.close();
       renderer.unload();
       expect(embeds.size).toBe(0);
-      expect(app.workspaceEvents.count()).toBe(0);
+      expect(app.workspaceEvents.count()).toBe(2);
       expect(app.vaultEvents.count()).toBe(0);
+      embeds.dispose();
+      expect(app.workspaceEvents.count()).toBe(0);
     } finally {
       observe.mockRestore();
       disconnect.mockRestore();
       timers.restore();
     }
+  });
+
+  it('claims in a popout the workspace announced before anything waited and before its leaves are in the workspace (a popout restored at startup)', async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
+    const renderer = loadedRenderer();
+    // Obsidian 1.14.4 restores a popout by announcing the window first and putting its leaves in after an await.
+    const frame = document.body.createEl('iframe');
+    const doc = frame.contentDocument;
+    const win = frame.contentWindow;
+    if (!doc || !win) throw new Error('no popout document');
+    const popout: HarnessWindow = { win, doc };
+    app.workspace.trigger('window-open', popout, popout.win);
+    const block = createDiv({ cls: 'cm-embed-block' });
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = createDiv();
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    embeds.process(late, context(renderer, 'Map.md'));
+    span.querySelector('.markdown-preview-view')?.append(late);
+    expect(embeds.pending).toBe(1);
+    doc.body.append(block);
+    await settle();
+    expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+    expect(embeds.pending).toBe(0);
+    app.workspace.trigger('window-close', popout, popout.win);
+    frame.remove();
+  });
+
+  it("does not watch a closed popout's document, even for a section left in it", async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const popout = openPopout(app);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
+    const renderer = loadedRenderer();
+    const late = popout.doc.adoptNode(createDiv());
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    // The window is closing: the workspace has announced it, and the window says it is closed (Electron's `closed`),
+    // while a last rendering of it still reaches the processor.
+    app.popouts.splice(app.popouts.findIndex(item => item.doc === popout.doc), 1);
+    app.workspace.trigger('window-close', popout, popout.win);
+    Object.defineProperty(popout.win, 'closed', { configurable: true, value: true });
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      expect(embeds.pending).toBe(1);
+      expect(observe.mock.calls.map(call => call[0])).toEqual([document.documentElement]);
+    } finally { observe.mockRestore(); }
+    renderer.unload();
+    expect(embeds.pending).toBe(0);
+  });
+
+  it('clears the refresh it asked of one window once its frame is in another, as when its leaf moves to a new window', async () => {
+    const { app, renderer, section } = await render({ 'Host.md': '![[Map]]', 'Map.md': MAP }, 'Host.md');
+    const popout = openPopout(app);
+    const timers = timerTracker();
+    try {
+      // A save of the source: the refresh waits out its 45 ms debounce on the main window's clock, where the map is.
+      app.put('Map.md', MAP.replace('- 葉', '- 後で'));
+      expect(timers.pending(45)).toBe(1);
+      // 「新規ウィンドウに移動」 moves the leaf's elements to the popout's document, and the section goes there.
+      popout.doc.body.append(section);
+      expect(section.querySelector<HTMLElement>('.mappy-embed')?.win).toBe(popout.win);
+      renderer.unload();
+      expect(timers.pending(45)).toBe(0);
+    } finally { timers.restore(); }
+    popout.close();
+  });
+
+  it('lays out on the window it is in now when the frame it asked of another never comes (that window closed)', async () => {
+    const { app, section } = await render({ 'Host.md': '![[Map]]', 'Map.md': MAP }, 'Host.md');
+    const popout = openPopout(app);
+    popout.doc.body.append(section);
+    // A fold in the popout asks the popout's window for a frame; the leaf goes back and the popout closes before it comes.
+    nodeByTitle(section, '回復する').querySelector<HTMLElement>('.mappy-node-toggle')?.click();
+    document.body.append(section);
+    popout.close();
+    nodeByTitle(section, '記録する').querySelector<HTMLElement>('.mappy-node-toggle')?.click();
+    await settle();
+    expect(nodeByTitle(section, '日誌').style.transform).toContain('translate');
+    expect(nodeByTitle(section, '睡眠').style.transform).toContain('translate');
   });
 });

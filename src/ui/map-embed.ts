@@ -83,8 +83,13 @@ export class MapEmbed extends MarkdownRenderChild {
    */
   private readonly writes = new WriteRecord();
   private epoch = 0;
-  private refreshTimer: number | undefined;
-  private layoutFrame: number | undefined;
+  /**
+   * The refresh's debounce and the layout's frame, each with the window it was asked of: the frame moves to another
+   * window with its leaf (「新規ウィンドウに移動」), whose `clearTimeout`／`cancelAnimationFrame` would not stop them, and a
+   * frame asked of a window that has closed never comes (LEV-359).
+   */
+  private refreshTimer: { win: Window; id: number } | undefined;
+  private layoutFrame: { win: Window; id: number } | undefined;
   private observer: ResizeObserver | undefined;
 
   constructor(
@@ -176,9 +181,8 @@ export class MapEmbed extends MarkdownRenderChild {
 
   onunload(): void {
     this.epoch += 1;
-    const win = this.frame.win;
-    if (this.refreshTimer !== undefined) win.clearTimeout(this.refreshTimer);
-    if (this.layoutFrame !== undefined) win.cancelAnimationFrame(this.layoutFrame);
+    if (this.refreshTimer) this.refreshTimer.win.clearTimeout(this.refreshTimer.id);
+    if (this.layoutFrame) this.layoutFrame.win.cancelAnimationFrame(this.layoutFrame.id);
     this.refreshTimer = undefined;
     this.layoutFrame = undefined;
     this.observer?.disconnect();
@@ -209,12 +213,12 @@ export class MapEmbed extends MarkdownRenderChild {
 
   private scheduleRefresh(): void {
     this.epoch += 1;
+    if (this.refreshTimer) this.refreshTimer.win.clearTimeout(this.refreshTimer.id);
     const win = this.frame.win;
-    if (this.refreshTimer !== undefined) win.clearTimeout(this.refreshTimer);
-    this.refreshTimer = win.setTimeout(() => {
+    this.refreshTimer = { win, id: win.setTimeout(() => {
       this.refreshTimer = undefined;
       void this.refresh();
-    }, REFRESH_DEBOUNCE);
+    }, REFRESH_DEBOUNCE) };
   }
 
   private async refresh(): Promise<void> {
@@ -289,8 +293,11 @@ export class MapEmbed extends MarkdownRenderChild {
   }
 
   private scheduleLayout(): void {
-    if (this.layoutFrame !== undefined) return;
-    this.layoutFrame = this.frame.win.requestAnimationFrame(() => {
+    const win = this.frame.win;
+    // A frame already asked of this window comes; one asked of a window the map has left may never come.
+    if (this.layoutFrame?.win === win) return;
+    if (this.layoutFrame) this.layoutFrame.win.cancelAnimationFrame(this.layoutFrame.id);
+    this.layoutFrame = { win, id: win.requestAnimationFrame(() => {
       this.layoutFrame = undefined;
       const trees = this.trees;
       const document = this.document;
@@ -300,7 +307,7 @@ export class MapEmbed extends MarkdownRenderChild {
       this.edges.update(layout.edges);
       this.bounds = layout.bounds;
       this.fit(layout.bounds);
-    });
+    }) };
   }
 
   /** The whole map in the frame, never magnified past its own size. */
@@ -371,14 +378,13 @@ class PendingClaim extends MarkdownRenderChild {
  * always built in the document it joins (Obsidian 1.14.4 builds a popout's sections in the
  * main window's document and attaches them to the popout's, LEV-359), so one observer per
  * window's document — the main window's, every popout's, and one opened meanwhile — checks
- * every section on any change. It exists only while a section waits: the observers and the
- * workspace's window events go with the last one. `held` are the plugin's own for
+ * every section on any change that adds nodes. It exists only while a section waits: the
+ * observers go with the last one. `held` are the plugin's own for
  * `EMBED_CLAIM_HOLD_MS`; `kept` are then only as long as Obsidian keeps them (their
  * section's component still holds them).
  */
 interface Watcher {
   observers: Map<Document, MutationObserver>;
-  windows: EventRef[];
   held: Set<PendingClaim>;
   kept: Set<WeakRef<PendingClaim>>;
 }
@@ -411,6 +417,13 @@ export class MapEmbeds {
   private readonly live = new Set<MapEmbed>();
   /** Sections waiting for their container; null while none waits. */
   private waiting: Watcher | null = null;
+  /**
+   * The popout windows' documents the workspace announced and has not closed, for as long as the plugin runs: a popout
+   * restored at startup is announced (`window-open`) before its leaves are in the workspace, which is where a watcher
+   * starting meanwhile would otherwise look for it.
+   */
+  private readonly popouts = new Set<Document>();
+  private readonly windowEvents: EventRef[];
   private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
@@ -419,7 +432,23 @@ export class MapEmbeds {
     private readonly store: DocumentStore,
     /** The map view's type, which a Canvas card opens its note in beside the canvas. */
     private readonly mapViewType: string,
-  ) {}
+  ) {
+    const workspace = app.workspace;
+    this.windowEvents = [
+      // A popout opened while a section waits can be where it joins; the section may already be in it.
+      workspace.on("window-open", win => {
+        this.popouts.add(win.doc);
+        if (!this.waiting) return;
+        this.observe(this.waiting, win.doc);
+        this.check(this.waiting);
+      }),
+      workspace.on("window-close", win => {
+        this.popouts.delete(win.doc);
+        this.waiting?.observers.get(win.doc)?.disconnect();
+        this.waiting?.observers.delete(win.doc);
+      }),
+    ];
+  }
 
   process(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     // Node labels of a map (view or embed) are rendered Markdown too; they never host embeds.
@@ -442,6 +471,8 @@ export class MapEmbeds {
       for (const ref of Array.from(watcher.kept)) ref.deref()?.settle(false);
       this.stop(watcher);
     }
+    for (const ref of this.windowEvents.splice(0)) this.app.workspace.offref(ref);
+    this.popouts.clear();
     const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
@@ -500,31 +531,26 @@ export class MapEmbeds {
     ctx.addChild(claim);
   }
 
-  /** The watcher of every window's document, started on the first waiting section. */
+  /**
+   * The watcher of every window's document, started on the first waiting section: the windows the leaves are in (the
+   * main window, and popouts opened before the plugin), and the popouts announced since.
+   */
   private watcher(): Watcher {
     if (this.waiting) return this.waiting;
-    const workspace = this.app.workspace;
-    const watcher: Watcher = { observers: new Map(), windows: [], held: new Set(), kept: new Set() };
+    const watcher: Watcher = { observers: new Map(), held: new Set(), kept: new Set() };
     this.waiting = watcher;
-    watcher.windows.push(
-      // A popout opened while a section waits can be where it joins; the section may already be in it.
-      workspace.on("window-open", win => {
-        this.observe(watcher, win.doc);
-        this.check(watcher);
-      }),
-      workspace.on("window-close", win => {
-        watcher.observers.get(win.doc)?.disconnect();
-        watcher.observers.delete(win.doc);
-      }),
-    );
-    workspace.iterateAllLeaves(leaf => { this.observe(watcher, leaf.getContainer().doc); });
+    this.app.workspace.iterateAllLeaves(leaf => { this.observe(watcher, leaf.getContainer().doc); });
+    for (const doc of this.popouts) this.observe(watcher, doc);
     return watcher;
   }
 
-  /** Watches one more document's DOM changes for the waiting sections. */
+  /** Watches one more document's DOM changes for the waiting sections; a closed window's never (nothing joins it). */
   private observe(watcher: Watcher, doc: Document): void {
     if (watcher.observers.has(doc) || this.waiting !== watcher) return;
-    const observer = new MutationObserver(() => { this.check(watcher); });
+    const view = doc.defaultView;
+    if (!view || view.closed) return;
+    // Only an added node can put a section on the document.
+    const observer = new MutationObserver(records => { if (records.some(record => record.addedNodes.length > 0)) this.check(watcher); });
     observer.observe(doc.documentElement, { childList: true, subtree: true });
     watcher.observers.set(doc, observer);
   }
@@ -547,11 +573,10 @@ export class MapEmbeds {
     this.stop(watcher);
   }
 
-  /** Disconnects every observer and the window events; harmless once stopped. */
+  /** Disconnects every observer; harmless once stopped. */
   private stop(watcher: Watcher): void {
     for (const observer of watcher.observers.values()) observer.disconnect();
     watcher.observers.clear();
-    for (const ref of watcher.windows.splice(0)) this.app.workspace.offref(ref);
     if (this.waiting === watcher) this.waiting = null;
   }
 

@@ -181,6 +181,9 @@ describe('MapEmbeds on a Canvas card (LEV-348)', () => {
     expect(content.hasClass('markdown-embed')).toBe(true);
     expect(content.querySelector('.mappy-embed')).toBeNull();
     expect(app.vaultEvents.count()).toBe(0);
+    // Only the embeds' `window-open`／`window-close` are left, and they go when the plugin unloads.
+    expect(app.workspaceEvents.count()).toBe(2);
+    embeds.dispose();
     expect(app.workspaceEvents.count()).toBe(0);
   });
 
