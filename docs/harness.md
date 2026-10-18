@@ -90,7 +90,7 @@ view の片付け（LEV-239）: ブラウザ検証ページの `View`（と `tes
 ### Obsidian 実機の初回準備
 
 1. まだ試用していない専用環境で `npm run harness:prepare` を実行する。生成するのはこのプロジェクト内の `test-vault/` のみ。
-2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。M6 のケース（E23〜E27・E30・E33）には Excalidraw（`obsidian-excalidraw-plugin`）をこの Vault にインストールして有効にする。Obsidian 1.14.4 で新しいプロファイルの制限モードを「作成者を信頼しプラグインを有効化」で解くと、Obsidian は設定を別の窓で開き、閉じるまで残る。Excalidraw を新しく入れた Vault では、Excalidraw の最初のリリースノート（「Welcome to Excalidraw」）がメインの窓ではなくその設定の窓の中に出て、閉じないとアプリを再読込したときにメインの窓に出る（1.14.4 の画面の右上の閉じるボタンは `.modal-header-button`。押すと Excalidraw の設定の `previousRelease` が保存され、次からは出ない。2026-10-18、LEV-353）。手で閉じなくて済む形は子チケット LEV-362。
+2. Obsidian でそのフォルダを Vault として開く。必要な初回の制限モード設定はテスト環境で行う。M6 のケース（E23〜E27・E30・E33）には Excalidraw（`obsidian-excalidraw-plugin`）をこの Vault にインストールして有効にする。Obsidian 1.14.4 で新しいプロファイルの制限モードを「作成者を信頼しプラグインを有効化」で解くと、Obsidian は設定を別の窓で開き、閉じるかアプリを再読込するまで残る（LEV-353 の 0.4.10 の 7 本では、前の読み取りで開いていて後の読み取りで閉じていた。7 本で再読込するのは E63 だけで、いつ閉じたかは記録していない）。Excalidraw を新しく入れた Vault では、Excalidraw の最初のリリースノート（「Welcome to Excalidraw」）がメインの窓ではなくその設定の窓の中に出て、閉じないとアプリを再読込したときにメインの窓に出る（1.14.4 の画面の右上の閉じるボタンは `.modal-header-button`。押すと Excalidraw の設定の `previousRelease` が保存され、次からは出ない。2026-10-18、LEV-353）。手で閉じなくて済む形は子チケット LEV-362。
 3. `npm run harness:preflight` を実行する。これはファイルと設定の検査であり、実行中プラグインが最新である証明ではない。有効プラグインは mappy と Excalidraw（M6 用）だけを有効にする。それ以外が有効なら preflight は失敗し、実機確認の条件に含めない。
 4. プラグインを再読込し、対象 Vault と機能の挙動を画面で確認する。将来は表示する build ID も照合する。
 5. 下記ケースを再現し、UI の状態と変更後の Markdown を両方保存する。
