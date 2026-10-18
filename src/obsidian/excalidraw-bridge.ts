@@ -97,8 +97,9 @@ function mappyImageSource(app: App, ea: ExcalidrawAutomate, element: ExcalidrawE
 /** Takes an element this edit added back out of the EA workbench, with its image file, so the commit does not carry it. */
 function forget(ea: ExcalidrawAutomate, id: string): void {
   const fileId = ea.getElement(id)?.fileId;
-  if (fileId) Reflect.deleteProperty(ea.imagesDict, fileId);
   Reflect.deleteProperty(ea.elementsDict, id);
+  // Two map images of one note can share a file id: the file stays while another element in the workbench shows it.
+  if (fileId && !ea.getElements().some(element => element.fileId === fileId)) Reflect.deleteProperty(ea.imagesDict, fileId);
 }
 
 /** Excalidraw stores the visible outer frame as the embeddable element's stroke. */
@@ -262,9 +263,9 @@ export class ExcalidrawBridge {
    * lists as deleted, so a Markdown image taken out of the scene after the save came back
    * (LEV-352); a Markdown image the EA cannot edit stays, without its map image. The view is
    * read again after the paint, and once more just before the commit: an element moved
-   * meanwhile is edited where it is now, one deleted meanwhile is left deleted (an image with
-   * no map in its place), and an unloaded plugin changes nothing. An attachment the edit
-   * could not use is removed again.
+   * meanwhile is edited where it is now (a map image goes where its Markdown image is now),
+   * one deleted meanwhile is left deleted (an image with no map in its place), and a plugin
+   * unloaded meanwhile changes nothing. An attachment the edit could not use is removed again.
    */
   private async fitDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, dropped: DroppedMaps): Promise<void> {
     const maps = await this.paintMaps(dropped);
@@ -278,14 +279,6 @@ export class ExcalidrawBridge {
     const images = dropped.images.map(still).filter((item): item is DroppedMap => item !== null && maps.get(item.file.path)?.svg != null);
     if (!embeds.some(({ element }) => isBordered(element)) && !embeds.some(({ file }) => maps.has(file.path)) && images.length === 0) return;
     ea.clear();
-    ea.copyViewElementsToEAforEditing(embeds.map(({ element }) => element));
-    for (const { element, file } of embeds) {
-      const copy = ea.getElement(element.id);
-      if (!copy) continue;
-      copy.strokeColor = 'transparent';
-      const map = maps.get(file.path);
-      if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
-    }
     const attachments: TFile[] = [];
     /** Attachments written for a map image that was taken back before the commit. */
     const unused: TFile[] = [];
@@ -307,17 +300,35 @@ export class ExcalidrawBridge {
         image.link = `[[${this.app.metadataCache.fileToLinktext(file, drawing.path)}]]`;
         added.push({ original: element, id, file, attachment });
       }
-      // Read once more, with no wait between here and the commit: while the attachments were written the Markdown
-      // image may have changed (Excalidraw or the user gives it a newer version) or been removed.
+      if (this.disposed) {
+        unused.push(...attachments.splice(0));
+        return;
+      }
+      // Read once more, with no wait between here and the commit: while the attachments were written the user or
+      // Excalidraw may have moved, changed (a newer version) or removed what the drop made.
       const live = new Map(ea.getViewElements().map(element => [element.id, element]));
-      ea.copyViewElementsToEAforEditing(added.flatMap(({ original }) => live.get(original.id) ?? []));
+      const frames = embeds.flatMap(({ element, file }) => {
+        const now = live.get(element.id);
+        return now ? [{ element: now, file }] : [];
+      });
+      ea.copyViewElementsToEAforEditing([...frames.map(({ element }) => element), ...added.flatMap(({ original }) => live.get(original.id) ?? [])]);
+      for (const { element, file } of frames) {
+        const copy = ea.getElement(element.id);
+        if (!copy) continue;
+        copy.strokeColor = 'transparent';
+        const map = maps.get(file.path);
+        if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
+      }
       for (const { original, id, file, attachment } of added) {
         const now = live.get(original.id);
         const copy = now ? ea.getElement(now.id) : null;
-        if (now && copy) {
+        const image = ea.getElement(id);
+        if (now && copy && image) {
           copy.isDeleted = true;
           // Newer than the live one whatever this EA's copy did, or a merge keeps the live one.
           copy.version = Math.max(copy.version ?? 0, (now.version ?? 0) + 1);
+          image.x = now.x;
+          image.y = now.y;
           replaced.push(id);
           continue;
         }
@@ -327,7 +338,7 @@ export class ExcalidrawBridge {
         attachments.splice(attachments.indexOf(attachment), 1);
         unused.push(attachment);
       }
-      if (embeds.length > 0 || replaced.length > 0) {
+      if (frames.length > 0 || replaced.length > 0) {
         if (!await ea.addElementsToView(false, true, true)) throw new Error(t().excalidrawUpdateFailed);
       }
     } catch (error: unknown) {

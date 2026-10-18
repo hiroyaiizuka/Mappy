@@ -22,7 +22,7 @@
  *   --reload  re-enable Mappy first, so a build made after Obsidian started is the one under test
  *   --rows    run only these rows (names below)
  *   --shot    the screen with both panes of row image-dialog-two-panes just after the save (nothing without that row)
- *   --keep    leave the notes, drawings and attachments in the vault
+ *   --keep    leave the notes, drawings and attachments in the vault (each row's tabs are still closed)
  */
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
@@ -302,13 +302,17 @@ async function runRow(row) {
   return result;
 }
 
-/** Closes the row's drawing and deletes it with the attachments made during the row (only the case's own `E2E-insert-image*` files). */
-const cleanRow = () => evaluate(`const E = window.__mappyExcalidrawE2E;
+/**
+ * Closes the row's drawing and takes its listeners off; without `--keep` also deletes it with the attachments made during
+ * the row (only the case's own `E2E-insert-image*` files).
+ */
+const cleanRow = keepFiles => evaluate(`const E = window.__mappyExcalidrawE2E;
   if (!E) return null;
   try {
     app.workspace.getLeavesOfType('excalidraw').filter(leaf => leaf.view.file?.path === E.drawing).forEach(leaf => leaf.detach());
     await new Promise(resolve => setTimeout(resolve, 400));
     const removed = [];
+    if (${keepFiles}) return removed;
     // A row that stopped before it listed the vault's files (E.files) still has its drawing to remove, and nothing else.
     for (const file of app.vault.getFiles()) {
       if (file.path !== E.drawing && (!E.files || E.files.has(file.path) || !file.name.startsWith('E2E-insert-image'))) continue;
@@ -341,7 +345,7 @@ try {
       await evaluate(`document.querySelectorAll('.modal-container .modal-close-button').forEach(button => button.click()); return true;`).catch(() => {});
       // A row that ended in StopCase has no entry yet.
       record.rows[row.name] ??= { stopped: true };
-      if (!flag('--keep')) record.rows[row.name].cleaned = await cleanRow().catch(error => String(error));
+      record.rows[row.name].cleaned = await cleanRow(flag('--keep')).catch(error => String(error));
     }
     console.log(row.name, JSON.stringify(record.rows[row.name]).slice(0, 600));
   }

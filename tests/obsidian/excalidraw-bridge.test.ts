@@ -35,7 +35,8 @@ class FakeAutomate implements ExcalidrawAutomate {
   targetView: ExcalidrawViewLike | null = null;
   calls: string[] = [];
   elements = new Map<string, FakeElement>();
-  added: { args: unknown[]; elements: FakeElement[] }[] = [];
+  /** Each commit: its arguments, the workbench's elements, and the ids of the image files it carries. */
+  added: { args: unknown[]; elements: FakeElement[]; files: string[] }[] = [];
   selected: unknown[] = [];
   instances: FakeAutomate[] = [];
   /** The vault file behind each image file id, as Excalidraw's own mapping answers for the view. */
@@ -143,6 +144,7 @@ class FakeAutomate implements ExcalidrawAutomate {
     const factor = scale ? Math.min(1, 500 / Math.max(size.width, size.height)) : 1;
     const element = this.create('image', topX, topY, size.width * factor, size.height * factor);
     element.fileId = `file:${path}`;
+    this.imagesDict[element.fileId] = { path };
     if (typeof imageFile !== 'string') this.imageFiles.set(element.fileId, imageFile);
     return Promise.resolve(element.id);
   }
@@ -158,7 +160,7 @@ class FakeAutomate implements ExcalidrawAutomate {
 
   addElementsToView(...args: unknown[]): Promise<boolean> {
     this.calls.push('addElementsToView');
-    this.added.push({ args, elements: this.getElements().map(element => ({ ...element })) as FakeElement[] });
+    this.added.push({ args, elements: this.getElements().map(element => ({ ...element })) as FakeElement[], files: Object.keys(this.imagesDict) });
     for (const element of this.getElements() as FakeElement[]) this.view.set(element.id, { ...element });
     return Promise.resolve(true);
   }
@@ -536,6 +538,59 @@ describe('ExcalidrawBridge default drop', () => {
     await vi.advanceTimersByTimeAsync(SETTLE_MS);
 
     expect(ea.added[0]?.elements.find(element => element.id === 'md-image')).toMatchObject({ isDeleted: true, version: 8 });
+    // The map goes where the Markdown image is now.
+    expect(ea.added[0]?.elements.find(element => element.type === 'image' && !element.isDeleted)).toMatchObject({ x: 90, y: 60 });
+  });
+
+  it('edits the frames as they are just before the commit: a moved one where it is now, a removed one not at all', async () => {
+    const paint = vi.fn(painter({ x: 0, y: 0, width: 100, height: 50 }));
+    const { ea, note } = watched({ paint, images: { 'attachments/Note.svg': { width: 148, height: 98 } } });
+    embeddable(ea, 'embed-1', '[[Note.md]]');
+    embeddable(ea, 'embed-2', '[[Note.md]]', 900, 0);
+    markdownImage(ea, 'md-image', note, 700, 0);
+    const addImage = ea.addImage.bind(ea);
+    ea.addImage = (...args) => {
+      const frame = ea.view.get('embed-1');
+      if (frame) ea.view.set('embed-1', { ...frame, x: 250, y: 125 });
+      ea.view.delete('embed-2');
+      return addImage(...args);
+    };
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    const elements = ea.added[0]?.elements ?? [];
+    expect(elements.find(element => element.id === 'embed-1')).toMatchObject({ x: 250, y: 125, width: 220, height: 170, strokeColor: 'transparent' });
+    expect(elements.some(element => element.id === 'embed-2')).toBe(false);
+  });
+
+  it('commits nothing and removes the attachment when the plugin is disposed while the attachment is written', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note, bridge, removed } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    markdownImage(ea, 'md-image', note);
+    const addImage = ea.addImage.bind(ea);
+    ea.addImage = (...args) => { bridge.dispose(); return addImage(...args); };
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    expect(ea.added).toHaveLength(0);
+    expect(removed).toEqual(['attachments/Note.svg']);
+    expect(ea.selected).toEqual([]);
+  });
+
+  it('keeps the image file a kept map image shares with one taken back', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    // Two Markdown images of one note: both map images get the same attachment name here, so the same file id.
+    markdownImage(ea, 'md-a', note);
+    markdownImage(ea, 'md-b', note, 600, 0);
+    const addImage = ea.addImage.bind(ea);
+    ea.addImage = (...args) => { ea.view.delete('md-a'); return addImage(...args); };
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    const commit = ea.added[0];
+    expect(commit?.elements.filter(element => element.type === 'image' && !element.isDeleted)).toHaveLength(1);
+    expect(commit?.files).toEqual(['file:attachments/Note.svg']);
   });
 
   it('adds no map for a Markdown image removed while its attachment was written, and removes the attachment', async () => {
