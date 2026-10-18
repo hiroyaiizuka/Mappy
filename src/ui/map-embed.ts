@@ -1,6 +1,6 @@
 import {
   MarkdownRenderChild, MarkdownView, parseLinktext, setIcon,
-  type App, type MarkdownPostProcessor, type MarkdownPostProcessorContext, type TFile,
+  type App, type EventRef, type MarkdownPostProcessor, type MarkdownPostProcessorContext, type TFile,
 } from "obsidian";
 import { embedTopicLayouts, embedTrees, initialFolds, readMapFromSource, visibleNodes, type EmbedTrees } from "../core/embed";
 import { parseMarkdown, type MindDocument } from "../core/markdown";
@@ -83,8 +83,13 @@ export class MapEmbed extends MarkdownRenderChild {
    */
   private readonly writes = new WriteRecord();
   private epoch = 0;
-  private refreshTimer: number | undefined;
-  private layoutFrame: number | undefined;
+  /**
+   * The refresh's debounce and the layout's frame, each with the window it was asked of: the frame moves to another
+   * window with its leaf (「新規ウィンドウに移動」), whose `clearTimeout`／`cancelAnimationFrame` would not stop them, and a
+   * frame asked of a window that has closed never comes (LEV-359).
+   */
+  private refreshTimer: { win: Window; id: number } | undefined;
+  private layoutFrame: { win: Window; id: number } | undefined;
   private observer: ResizeObserver | undefined;
 
   constructor(
@@ -176,9 +181,8 @@ export class MapEmbed extends MarkdownRenderChild {
 
   onunload(): void {
     this.epoch += 1;
-    const win = this.frame.win;
-    if (this.refreshTimer !== undefined) win.clearTimeout(this.refreshTimer);
-    if (this.layoutFrame !== undefined) win.cancelAnimationFrame(this.layoutFrame);
+    if (this.refreshTimer) this.refreshTimer.win.clearTimeout(this.refreshTimer.id);
+    if (this.layoutFrame) this.layoutFrame.win.cancelAnimationFrame(this.layoutFrame.id);
     this.refreshTimer = undefined;
     this.layoutFrame = undefined;
     this.observer?.disconnect();
@@ -209,12 +213,12 @@ export class MapEmbed extends MarkdownRenderChild {
 
   private scheduleRefresh(): void {
     this.epoch += 1;
+    if (this.refreshTimer) this.refreshTimer.win.clearTimeout(this.refreshTimer.id);
     const win = this.frame.win;
-    if (this.refreshTimer !== undefined) win.clearTimeout(this.refreshTimer);
-    this.refreshTimer = win.setTimeout(() => {
+    this.refreshTimer = { win, id: win.setTimeout(() => {
       this.refreshTimer = undefined;
       void this.refresh();
-    }, REFRESH_DEBOUNCE);
+    }, REFRESH_DEBOUNCE) };
   }
 
   private async refresh(): Promise<void> {
@@ -289,8 +293,11 @@ export class MapEmbed extends MarkdownRenderChild {
   }
 
   private scheduleLayout(): void {
-    if (this.layoutFrame !== undefined) return;
-    this.layoutFrame = this.frame.win.requestAnimationFrame(() => {
+    const win = this.frame.win;
+    // A frame already asked of this window comes; one asked of a window the map has left may never come.
+    if (this.layoutFrame?.win === win) return;
+    if (this.layoutFrame) this.layoutFrame.win.cancelAnimationFrame(this.layoutFrame.id);
+    this.layoutFrame = { win, id: win.requestAnimationFrame(() => {
       this.layoutFrame = undefined;
       const trees = this.trees;
       const document = this.document;
@@ -300,7 +307,7 @@ export class MapEmbed extends MarkdownRenderChild {
       this.edges.update(layout.edges);
       this.bounds = layout.bounds;
       this.fit(layout.bounds);
-    });
+    }) };
   }
 
   /** The whole map in the frame, never magnified past its own size. */
@@ -317,14 +324,18 @@ export class MapEmbed extends MarkdownRenderChild {
 
 /**
  * A section of an embedded note that reached the processor before its container joined
- * the document. It lives in the section like a map would (`ctx.addChild`, on a hidden
+ * a document. It lives in the section like a map would (`ctx.addChild`, on a hidden
  * anchor inside the section, which is what Obsidian watches) and reports once: attached
- * (the watcher of the document found the anchor in it), or not, because the section was
+ * (a watcher of a window's document found the anchor in it), or not, because the section was
  * unloaded (Obsidian discarded that rendering, or the host closed) or the plugin unloaded.
  * The anchor goes with the report, and nothing else is registered, so giving up leaves
- * nothing behind. Nothing here polls: the document's own changes drive `check`.
+ * nothing behind. Nothing here polls: the documents' own changes drive `check`.
  */
 class PendingClaim extends MarkdownRenderChild {
+  /**
+   * The hold's timer, on the main window's clock: the anchor can be built in a popout's document or move to one, and a
+   * popout's timers go with it (the hold would never end) and are not cleared by another window's `clearTimeout`.
+   */
   private timer: number | undefined;
   /** The weak handle the watcher keeps once the hold is over; on the claim itself so it can be dropped without a strong reference. */
   ref: WeakRef<PendingClaim> | undefined;
@@ -335,7 +346,7 @@ class PendingClaim extends MarkdownRenderChild {
 
   onunload(): void { this.settle(false); }
 
-  /** Reports attached once the anchor is in the document. */
+  /** Reports attached once the anchor is in a document. */
   check(): boolean {
     if (!this.containerEl.isConnected) return false;
     this.settle(true);
@@ -344,7 +355,7 @@ class PendingClaim extends MarkdownRenderChild {
 
   /** Runs `release` after `ms` unless the wait has ended by then. */
   hold(ms: number, release: () => void): void {
-    this.timer = this.containerEl.win.setTimeout(() => {
+    this.timer = window.setTimeout(() => {
       this.timer = undefined;
       release();
     }, ms);
@@ -352,7 +363,7 @@ class PendingClaim extends MarkdownRenderChild {
 
   /** Ends the wait; harmless once it has ended. */
   settle(attached: boolean): void {
-    if (this.timer !== undefined) this.containerEl.win.clearTimeout(this.timer);
+    if (this.timer !== undefined) window.clearTimeout(this.timer);
     this.timer = undefined;
     const settled = this.settled;
     if (!settled) return;
@@ -363,13 +374,17 @@ class PendingClaim extends MarkdownRenderChild {
 }
 
 /**
- * The sections of one document waiting for their container: one observer of the document's
- * DOM changes serves them all, checking each on every change and disconnected while none
- * waits. `held` are the plugin's own for `EMBED_CLAIM_HOLD_MS`; `kept` are then only as
- * long as Obsidian keeps them (their section's component still holds them).
+ * The sections waiting for their container, in whichever window it joins: a section is not
+ * always built in the document it joins (Obsidian 1.14.4 builds a popout's sections in the
+ * main window's document and attaches them to the popout's, LEV-359), so one observer per
+ * window's document — the main window's, every popout's, and one opened meanwhile — checks
+ * every section on any change that adds nodes. It exists only while a section waits: the
+ * observers go with the last one. `held` are the plugin's own for
+ * `EMBED_CLAIM_HOLD_MS`; `kept` are then only as long as Obsidian keeps them (their
+ * section's component still holds them).
  */
 interface Watcher {
-  observer: MutationObserver;
+  observers: Map<Document, MutationObserver>;
   held: Set<PendingClaim>;
   kept: Set<WeakRef<PendingClaim>>;
 }
@@ -386,8 +401,9 @@ interface Watcher {
  *   embed container (the host paragraph is a CodeMirror widget, never a section).
  *   The container is claimed once: its own content is hidden and a map appended,
  *   with an anchor inside the section carrying the lifecycle. A section that
- *   arrives before its container is on the document waits for it (an embed below the
- *   fold gets its container only when scrolled to) until Obsidian drops the section.
+ *   arrives before its container is on a document waits for it (an embed below the
+ *   fold gets its container only when scrolled to, a popout's only after it is built)
+ *   until Obsidian drops the section.
  * - A Canvas file card renders its note with the same embed (LEV-348) into the card's
  *   `.canvas-node-content`, claimed the same way. The card's heading path comes from the
  *   canvas (`canvasCard`), and a double click on the card opens the note as a map beside
@@ -399,8 +415,15 @@ interface Watcher {
  */
 export class MapEmbeds {
   private readonly live = new Set<MapEmbed>();
-  /** Sections waiting for their container, by the document they will join. */
-  private readonly watchers = new Map<Document, Watcher>();
+  /** Sections waiting for their container; null while none waits. */
+  private waiting: Watcher | null = null;
+  /**
+   * The popout windows' documents the workspace announced and has not closed, for as long as the plugin runs: a popout
+   * restored at startup is announced (`window-open`) before its leaves are in the workspace, which is where a watcher
+   * starting meanwhile would otherwise look for it.
+   */
+  private readonly popouts = new Set<Document>();
+  private readonly windowEvents: EventRef[];
   private disposed = false;
   readonly processor: MarkdownPostProcessor = (el, ctx) => { this.process(el, ctx); };
 
@@ -409,7 +432,23 @@ export class MapEmbeds {
     private readonly store: DocumentStore,
     /** The map view's type, which a Canvas card opens its note in beside the canvas. */
     private readonly mapViewType: string,
-  ) {}
+  ) {
+    const workspace = app.workspace;
+    this.windowEvents = [
+      // A popout opened while a section waits can be where it joins; the section may already be in it.
+      workspace.on("window-open", win => {
+        this.popouts.add(win.doc);
+        if (!this.waiting) return;
+        this.observe(this.waiting, win.doc);
+        this.check(this.waiting);
+      }),
+      workspace.on("window-close", win => {
+        this.popouts.delete(win.doc);
+        this.waiting?.observers.get(win.doc)?.disconnect();
+        this.waiting?.observers.delete(win.doc);
+      }),
+    ];
+  }
 
   process(el: HTMLElement, ctx: MarkdownPostProcessorContext): void {
     // Node labels of a map (view or embed) are rendered Markdown too; they never host embeds.
@@ -420,22 +459,20 @@ export class MapEmbeds {
 
   get size(): number { return this.live.size; }
 
-  /** Sections of embedded notes still waiting for their container to join the document, within the hold. */
-  get pending(): number {
-    let count = 0;
-    for (const watcher of this.watchers.values()) count += watcher.held.size;
-    return count;
-  }
+  /** Sections of embedded notes still waiting for their container to join a document, within the hold. */
+  get pending(): number { return this.waiting?.held.size ?? 0; }
 
   /** Plugin unload: every map goes back to the ordinary embed, and the reading views that showed one are redrawn. */
   dispose(): void {
     this.disposed = true;
-    for (const watcher of Array.from(this.watchers.values())) {
+    const watcher = this.waiting;
+    if (watcher) {
       for (const claim of Array.from(watcher.held)) claim.settle(false);
       for (const ref of Array.from(watcher.kept)) ref.deref()?.settle(false);
-      watcher.observer.disconnect();
+      this.stop(watcher);
     }
-    this.watchers.clear();
+    for (const ref of this.windowEvents.splice(0)) this.app.workspace.offref(ref);
+    this.popouts.clear();
     const views = new Set<MarkdownView>();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
@@ -474,13 +511,15 @@ export class MapEmbeds {
       this.claimAround(el, ctx, own);
       return;
     }
-    // A section can reach the processor before its container is on the document, and Obsidian attaches it a few
-    // frames later, when the embed scrolls into view, or never (a discarded rendering); wait for it.
-    const watcher = this.watcher(el.doc);
+    // A section can reach the processor before its container is on a document, and Obsidian attaches it a few
+    // frames later, when the embed scrolls into view, or never (a discarded rendering); wait for it, in whichever
+    // window it joins (a popout's section is built in the main window's document, LEV-359).
+    const watcher = this.watcher();
+    this.observe(watcher, el.doc);
     const claim = new PendingClaim(el, attached => {
       watcher.held.delete(claim);
       if (claim.ref) watcher.kept.delete(claim.ref);
-      this.prune(el.doc, watcher);
+      this.prune(watcher);
       if (attached && !this.disposed) this.claimAround(el, ctx, own);
     });
     watcher.held.add(claim);
@@ -492,33 +531,53 @@ export class MapEmbeds {
     ctx.addChild(claim);
   }
 
-  /** The watcher of a document, started on its first waiting section. */
-  private watcher(doc: Document): Watcher {
-    const existing = this.watchers.get(doc);
-    if (existing) return existing;
-    const held = new Set<PendingClaim>();
-    const kept = new Set<WeakRef<PendingClaim>>();
-    const observer = new MutationObserver(() => {
-      for (const claim of Array.from(held)) claim.check();
-      for (const ref of Array.from(kept)) {
-        const claim = ref.deref();
-        // Obsidian dropped the section without unloading it: gone with it.
-        if (!claim) kept.delete(ref);
-        else claim.check();
-      }
-      this.prune(doc, watcher);
-    });
-    const watcher: Watcher = { observer, held, kept };
-    observer.observe(doc.documentElement, { childList: true, subtree: true });
-    this.watchers.set(doc, watcher);
+  /**
+   * The watcher of every window's document, started on the first waiting section: the windows the leaves are in (the
+   * main window, and popouts opened before the plugin), and the popouts announced since.
+   */
+  private watcher(): Watcher {
+    if (this.waiting) return this.waiting;
+    const watcher: Watcher = { observers: new Map(), held: new Set(), kept: new Set() };
+    this.waiting = watcher;
+    this.app.workspace.iterateAllLeaves(leaf => { this.observe(watcher, leaf.getContainer().doc); });
+    for (const doc of this.popouts) this.observe(watcher, doc);
     return watcher;
   }
 
-  /** Stops a document's watcher once nothing waits in it. */
-  private prune(doc: Document, watcher: Watcher): void {
-    if (watcher.held.size > 0 || watcher.kept.size > 0 || this.watchers.get(doc) !== watcher) return;
-    watcher.observer.disconnect();
-    this.watchers.delete(doc);
+  /** Watches one more document's DOM changes for the waiting sections; a closed window's never (nothing joins it). */
+  private observe(watcher: Watcher, doc: Document): void {
+    if (watcher.observers.has(doc) || this.waiting !== watcher) return;
+    const view = doc.defaultView;
+    if (!view || view.closed) return;
+    // Only an added node can put a section on the document.
+    const observer = new MutationObserver(records => { if (records.some(record => record.addedNodes.length > 0)) this.check(watcher); });
+    observer.observe(doc.documentElement, { childList: true, subtree: true });
+    watcher.observers.set(doc, observer);
+  }
+
+  /** Every waiting section looks whether it is on a document now. */
+  private check(watcher: Watcher): void {
+    for (const claim of Array.from(watcher.held)) claim.check();
+    for (const ref of Array.from(watcher.kept)) {
+      const claim = ref.deref();
+      // Obsidian dropped the section without unloading it: gone with it.
+      if (!claim) watcher.kept.delete(ref);
+      else claim.check();
+    }
+    this.prune(watcher);
+  }
+
+  /** Stops the watcher once nothing waits. */
+  private prune(watcher: Watcher): void {
+    if (watcher.held.size > 0 || watcher.kept.size > 0) return;
+    this.stop(watcher);
+  }
+
+  /** Disconnects every observer; harmless once stopped. */
+  private stop(watcher: Watcher): void {
+    for (const observer of watcher.observers.values()) observer.disconnect();
+    watcher.observers.clear();
+    if (this.waiting === watcher) this.waiting = null;
   }
 
   /**

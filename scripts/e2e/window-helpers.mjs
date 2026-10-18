@@ -207,3 +207,57 @@ export const COLOR = `const paint = document.createElement('canvas'); paint.widt
   };
   const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return Math.round((x + 0.05) / (y + 0.05) * 100) / 100; };
   const css = color => 'rgb(' + color.slice(0, 3).join(', ') + ')';`;
+
+/**
+ * Script: from the main window, the order in which three things happen in one popout leaf's view (LEV-359), kept in
+ * `window.__mappyE2EClaimOrder` until `CLAIM_ORDER` reads it: the number of map sections Mappy waits on there (their
+ * hidden `.mappy-embed-anchor` outside a claimed container is on the popout's document), the number of map frames
+ * there, and every change of the main window's DOM. Obsidian 1.14.4 builds a popout's sections in the main window's
+ * document; a build that watched only the document a section was built in claimed them only once the main window's
+ * DOM changed after they joined the popout's (`claimWaitedOnMain`). Not told apart: a main-window change in the same
+ * task as the one that put the section on the popout's document.
+ */
+export const watchClaimOrder = leafExpression => `{ window.__mappyE2EClaimOrder?.stop();
+  const watched = ${leafExpression}; const popoutDoc = watched.getContainer().doc;
+  if (popoutDoc === document) throw new Error('the leaf to watch is in the main window');
+  const events = []; let waiting = 0; let frames = 0;
+  const count = () => {
+    const root = watched.view?.containerEl;
+    if (!root?.isConnected) return;
+    const nowWaiting = Array.from(root.querySelectorAll('.mappy-embed-anchor')).filter(anchor => !anchor.closest('.mappy-embed-host')).length;
+    const nowFrames = root.querySelectorAll('.mappy-embed').length;
+    if (nowWaiting !== waiting || nowFrames !== frames) events.push({ kind: 'popout', waiting: nowWaiting, frames: nowFrames, at: Math.round(performance.now()) });
+    waiting = nowWaiting; frames = nowFrames;
+  };
+  const mainObserver = new MutationObserver(() => { events.push({ kind: 'main', at: Math.round(performance.now()) }); });
+  const popoutObserver = new MutationObserver(count);
+  mainObserver.observe(document.documentElement, { childList: true, subtree: true });
+  popoutObserver.observe(popoutDoc.documentElement, { childList: true, subtree: true });
+  window.__mappyE2EClaimOrder = { events, started: Math.round(performance.now()), stop: () => { mainObserver.disconnect(); popoutObserver.disconnect(); } }; }`;
+
+/** Script: stops `watchClaimOrder` and returns its events (times from its start), or null if none was watching. */
+export const CLAIM_ORDER = `(() => { const order = window.__mappyE2EClaimOrder; if (!order) return null;
+  order.stop(); window.__mappyE2EClaimOrder = null;
+  return order.events.map(event => ({ ...event, at: event.at - order.started })); })()`;
+
+/**
+ * What `CLAIM_ORDER` tells: `waitedOnMain`, the times of the claims (one more map frame while a section waited in the
+ * popout) with a main-window change since the last claim or the last section let go without one (a rendering Obsidian
+ * discarded): each starts the count again, so each claim is judged on its own; `stillWaiting`, sections waiting
+ * at the end; `mainChanges`, the main window's changes in all; `mainChangesWhileWaiting`, those made while a section waited.
+ */
+export function claimWaitedOnMain(events) {
+  let waiting = 0; let frames = 0; let sinceChange = 0; let whileWaiting = 0;
+  const waitedOnMain = [];
+  for (const event of events ?? []) {
+    if (event.kind === 'main') {
+      if (waiting > 0) { sinceChange += 1; whileWaiting += 1; }
+      continue;
+    }
+    const claimed = waiting > 0 && event.frames > frames;
+    if (claimed && sinceChange > 0) waitedOnMain.push(event.at);
+    if (claimed || event.waiting < waiting) sinceChange = 0;
+    waiting = event.waiting; frames = event.frames;
+  }
+  return { waitedOnMain, stillWaiting: waiting, mainChanges: (events ?? []).filter(event => event.kind === 'main').length, mainChangesWhileWaiting: whileWaiting };
+}

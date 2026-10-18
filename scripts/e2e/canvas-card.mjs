@@ -15,14 +15,16 @@
  * out past the point where Canvas takes the cards' content off and back (real ⌘+wheel, real click on Canvas's own
  * "reset zoom"), move and resize the card (real drags), move the heading card and open the canvas again, the
  * read-only canvas (Canvas's menu item `setReadonly(true)`, real double click, real click on the lock to leave it), the light and dark themes (contrast of what the card shows),
- * a canvas in a popout window (the card's map, a double click on a fold, the web link, a double click on the card),
+ * a canvas in a popout window with the same board open in the main window's tab (the card's map, claimed without the
+ * main window's DOM changing, LEV-359; a double click on a fold, the web link, a double click on the card),
  * close the canvas (the handlers on Obsidian's event hubs back to where they were before it opened, as E34 counts
  * them), and disable Mappy right after an edit in the map beside (the card is Obsidian's again, with the text as it is
  * now, though Obsidian's own rendering of the card was hidden, and not redrawn, while the map showed). Throughout: the
  * source notes and the `.canvas` file are written only by the edits in the map beside and Canvas's own saves (the added
  * card, the moves and the resize), and the page has no uncaught error. The web link rows catch `window.open` for their
  * click, so no browser starts. The popout row does not tell `instanceof Element` from `targetNode.instanceOf(Element)`:
- * on Obsidian 1.14.4 the elements of a popout's canvas pass the main window's `instanceof` too (LEV-348's 3rd review).
+ * on Obsidian 1.14.4 the elements of a popout's canvas pass the main window's `instanceof` too (LEV-348's 3rd review),
+ * as they are built in the main window's document (LEV-359).
  *
  * Not covered here: OS IME text input in the map beside (E01 covers the view), a canvas embedded in a note or shown in a
  * hover preview (its cards stay Obsidian's: no canvas leaf holds their data, architecture.md §5b), and re-enabling
@@ -35,7 +37,7 @@ import { join } from 'node:path';
 import { connect, VAULT, wait } from './cdp.mjs';
 import { parseArgs, createRecord, makeStep, makeCheck, finish, StopCase, required, until } from './case-runner.mjs';
 import { makeSelect, makePluginStep, makeAddNamed, refuseOpenLeaves } from './dom-helpers.mjs';
-import { COLOR, ERRORS, HANDLERS, forwardErrors, handlerDiff, makeAppTheme } from './window-helpers.mjs';
+import { CLAIM_ORDER, COLOR, ERRORS, HANDLERS, claimWaitedOnMain, forwardErrors, handlerDiff, makeAppTheme, watchClaimOrder } from './window-helpers.mjs';
 
 const { flag, value } = parseArgs();
 
@@ -124,11 +126,18 @@ const NEW_TAB = `const leaf = (() => { try { return app.workspace.getLeaf('tab')
  * elements are its own. `link` sends its CDP input events and `run` evaluates a script in it.
  */
 function driver(link, run) {
-  /** A card's labels once the map has drawn them (the first frame can be empty). */
-  const settledCard = (id, wanted, timeout = 4000) => until(async () => {
-    const shown = await run(`${CARDS} return shows(${JSON.stringify(id)});`);
-    return wanted(shown) ? shown : null;
-  }, timeout, `card ${id} did not show what was expected`);
+  /** A card's labels once the map has drawn them (the first frame can be empty). A timeout names what was seen last. */
+  const settledCard = async (id, wanted, timeout = 4000) => {
+    let last = null;
+    try {
+      return await until(async () => {
+        last = await run(`${CARDS} return shows(${JSON.stringify(id)});`);
+        return wanted(last) ? last : null;
+      }, timeout, `card ${id} did not show what was expected`);
+    } catch (error) {
+      throw new Error(`${error.message}; last seen: ${JSON.stringify(last)}`);
+    }
+  };
 
   /** A real double click (two presses, the second with clickCount 2: Chromium then fires dblclick) at a point of a card. */
   const doubleClickAt = async at => {
@@ -550,6 +559,11 @@ try {
 
   // A canvas in a popout window: its cards, events and elements are that window's (another JS realm). The double click
   // on a fold still only works the fold, a web link still opens, and a double click on the card opens the map beside.
+  // The board stays open in the main window's tab, and nothing in the case touches the main window while the popout's
+  // cards draw: Obsidian 1.14.4 builds the popout's card sections in the main window's document, and builds before
+  // LEV-359 claimed them only once the main window's DOM changed after they joined the popout's (with the main window
+  // quiet, never: LEV-353's E88 runs). The order of the popout's waiting sections, its frames and the main window's
+  // changes is recorded (`watchClaimOrder`), so a card claimed by a main-window change fails here too.
   await step('popout', async () => {
     const mark = 'lev348-canvas';
     await evaluate(`${CARDS} for (const leaf of app.workspace.getLeavesOfType('mappy-map')) leaf.detach(); window.__mappyE2E = null;
@@ -569,10 +583,13 @@ try {
     const inPop = expression => pop.evaluate(`(async () => { ${expression} })()`);
     const there = driver(pop, inPop);
     try {
-      await evaluate(`const leaf = window.__mappyE2EPopoutLeaf; await leaf.openFile(window.__mappyE2EPopoutFile, { active: true });
+      await evaluate(`const leaf = window.__mappyE2EPopoutLeaf; ${watchClaimOrder('leaf')}
+        await leaf.openFile(window.__mappyE2EPopoutFile, { active: true });
         await new Promise(resolve => setTimeout(resolve, 1500)); leaf.getContainer().win.__mappyE2ECanvas = leaf; return true;`);
       await there.fit();
       const shown = await there.settledCard('map', item => item.labels.length >= MAP_LABELS.length, 8000).catch(error => ({ error: String(error) }));
+      const order = await evaluate(`return ${CLAIM_ORDER};`);
+      const claims = claimWaitedOnMain(order);
       const before = await inPop(`${CARDS} return app.workspace.getLeavesOfType('mappy-map').length;`);
       await there.selectCard('map');
       await there.doubleClickAt(await inPop(`${CARDS} const part = card('map').contentEl.querySelector(':scope > .mappy-embed .mappy-node.is-collapsed .mappy-node-toggle');
@@ -590,13 +607,15 @@ try {
       // The card is selected: the double click lands on its map (the blank part), not on the cover.
       await there.doubleClick('map');
       const opened = await inPop(`${CARDS} return { leaves: mapLeaves(${JSON.stringify(MAP)}).length, editing: shows('map').editing };`);
-      check(shown.frame && shown.frameShown, `the popout's map card is not a map: ${JSON.stringify(shown)}`);
+      check(shown.frame && shown.frameShown, `the popout's map card is not a map: ${JSON.stringify({ shown, claims })}`);
+      check(claims.waitedOnMain.length === 0 && claims.stillWaiting === 0, `in a popout, the cards waited for the main window's DOM to change (LEV-359): ${JSON.stringify({ claims, order })}`);
       check(afterFold.maps === before && !afterFold.editing, `in a popout, a double click on a fold opened something or started Canvas's editor: ${JSON.stringify({ before, afterFold })}`);
       check(JSON.stringify(web.opened) === JSON.stringify([WEB]) && !web.editing, `in a popout, the web link on the card: ${JSON.stringify(web)}`);
       check(opened.leaves === 1 && !opened.editing, `in a popout, the double click on the card: ${JSON.stringify(opened)}`);
-      return { shown: shown.labels, before, afterFold, web, opened };
+      return { shown: shown.labels, claims, order, before, afterFold, web, opened };
     } finally {
       pop.close();
+      await evaluate(`${CLAIM_ORDER}; return true;`).catch(() => null);
       await evaluate(`for (const leaf of app.workspace.getLeavesOfType('mappy-map')) leaf.detach();
         window.__mappyE2EPopout?.close(); window.__mappyE2EPopout = null; window.__mappyE2EPopoutLeaf = null;
         await new Promise(resolve => setTimeout(resolve, 800)); return true;`);

@@ -72,7 +72,8 @@ export const CASES = [
   { name: 'exit-draft-cut', file: 'exit-draft-recovery.mjs', args: ['--cut'], description: 'E84 の --cut（LEV-309）: 人工の故障でノートを前半だけにしても、題名の下書きを書かずに原文ごと残し、知らせが出て、救出できる。元のノートは前半のまま。一覧の「破棄」は確かめてからその下書きだけを消す（LEV-310）', shot: false },
   { name: 'undo-draft', file: 'undo-draft.mjs', description: 'E85 ノードを作った直後（入力欄が開いたまま）の ⌘Z が Escape と同じく作成を取り消し（選択・折りたたみ・表示位置も戻る）、⌘⇧Z で戻る（Tab のサブトピック・Enter のメイントピック・ルートの Tab・深い Enter・見出し・空白のダブルクリック × 通常マップ・タイムライン）。打った文字は先に入力欄の取り消し、Enter で確定したあとの ⌘Z（LEV-331）', shot: false },
   { name: 'map-title-rename', file: 'map-title-rename.mjs', description: 'E87 マップの表札（view header のノート名）からの改名: 表札の実クリック → Enter／空白のクリック／Escape、コマンド（直接・パレット）、ノードの上と表札の上の F2、変換中の Enter × フォルダ・Vault の直下・同名がある・空・使えない文字・Markdown の別タブ・ファイル名の根・ノードの入力欄を開いたまま・リンクされている。タブと表札はノート名だけ（LEV-340）', shot: true },
-  { name: 'canvas-card', file: 'canvas-card.mjs', description: 'E88 Canvas の付箋のマップ: 置く・実ダブルクリック（2 回・見出し・通常ノート）・横のマップで直す・⌘ホイールで中身が外れる縮小と戻す・付箋の移動と大きさの変更・読み取り専用・明暗テーマ・Canvas を閉じる・Mappy を無効化 × マップ・#見出し・mappy: true のないノート・存在しないノート（LEV-348）', shot: true },
+  { name: 'canvas-card', file: 'canvas-card.mjs', description: 'E88 Canvas の付箋のマップ: 置く・実ダブルクリック（2 回・見出し・通常ノート）・横のマップで直す・⌘ホイールで中身が外れる縮小と戻す・付箋の移動と大きさの変更・読み取り専用・明暗テーマ・別ウィンドウ（メインの窓に同じボードを開いたまま、メインの窓の DOM の変化に頼らない。LEV-359）・Canvas を閉じる・Mappy を無効化 × マップ・#見出し・mappy: true のないノート・存在しないノート（LEV-348）', shot: true },
+  { name: 'popout-embed', file: 'popout-embed.mjs', description: 'E89 別ウィンドウの埋め込み: 別ウィンドウに開く（メインの窓に同じノートを開いたまま・開かずに）・別ウィンドウで画面の下の埋め込みまで実ホイールでスクロール・タブを新規ウィンドウに移動 × ライブプレビュー・閲覧、`![[マップ]]`・`![[マップ#見出し]]`。メインの窓の DOM が変わるのを待たずにマップになる（LEV-359）。閉じたあとハンドラも要素も残らず、ノートは書き換わらない', shot: false },
 ];
 
 const args = process.argv.slice(2);
