@@ -88,9 +88,12 @@ const openPopout = async mark => {
   return connect({ popout: mark });
 };
 
-/** Closes every popout window and every leaf on the case's notes, as the person would, and waits for them to go. */
+/**
+ * Closes every Markdown leaf on the case's notes (a popout goes with its last leaf), as the person would, and waits for
+ * them to go. Markdown leaves only: the sidebar's backlinks and outline name the active note as their file too.
+ */
 const closeAll = () => evaluate(`const paths = ${JSON.stringify(Object.keys(FILES))};
-  const leaves = []; app.workspace.iterateAllLeaves(item => { if (paths.includes(item.view?.file?.path)) leaves.push(item); });
+  const leaves = []; app.workspace.iterateAllLeaves(item => { if (item.getViewState().type === 'markdown' && paths.includes(item.view?.file?.path)) leaves.push(item); });
   for (const item of leaves) item.detach();
   window.__mappyE2EEmbedLeaf?.detach(); window.__mappyE2EEmbedLeaf = null;
   await new Promise(resolve => setTimeout(resolve, 900));
@@ -168,9 +171,6 @@ try {
       const file = app.vault.getAbstractFileByPath(path);
       if (file) await app.vault.modify(file, text); else await app.vault.create(path, text);
     }
-    await new Promise(resolve => setTimeout(resolve, 800));
-    // The main area as the case leaves it (a tab opened and closed: Obsidian's own new empty tab), so the handlers compare.
-    ${NEW_TAB} await leaf.openFile(app.vault.getAbstractFileByPath(${JSON.stringify(MAP)}), { active: true }); leaf.detach();
     await new Promise(resolve => setTimeout(resolve, 800));
     window.__mappyE2EBaseline = ${HANDLERS};
     return { obsidian: require('electron').ipcRenderer.sendSync('version') };`)));
