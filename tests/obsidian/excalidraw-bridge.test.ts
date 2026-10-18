@@ -20,6 +20,8 @@ interface FakeElement extends ExcalidrawElement {
   fontSize?: number;
   /** An image element's key into the drawing's files, as Excalidraw keeps it. */
   fileId?: string;
+  /** Excalidraw's element version; an EA copy for editing is one newer. */
+  version?: number;
 }
 
 function file(path: string): TFile {
@@ -40,7 +42,10 @@ class FakeAutomate implements ExcalidrawAutomate {
   instances: FakeAutomate[] = [];
   /** The vault file behind each image file id, as Excalidraw's own mapping answers for the view. */
   imageFiles = new Map<string, TFile>();
-  /** Ids removed from the view through `deleteViewElements`, one entry per call. */
+  /**
+   * Ids taken out of the view through `deleteViewElements`, one entry per call. The bridge must not use it: an element
+   * removed that way leaves no deleted element behind, and Excalidraw's merge of the file brings it back (LEV-352).
+   */
   deleted: string[][] = [];
   private counter = 0;
 
@@ -86,9 +91,9 @@ class FakeAutomate implements ExcalidrawAutomate {
     for (const element of elements) this.elements.delete(element.id);
     return true;
   }
+  /** As EA: copies join the workbench (nothing is cleared), each one version newer than the view's. */
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[]): void {
-    this.elements.clear();
-    for (const element of elements) this.elements.set(element.id, { ...element, style: {} });
+    for (const element of elements as FakeElement[]) this.elements.set(element.id, { ...element, style: {}, version: (element.version ?? 0) + 1 });
   }
 
   reset(): void { this.calls.push('reset'); this.elements.clear(); this.style = FakeAutomate.defaultStyle(); }
@@ -357,7 +362,7 @@ describe('ExcalidrawBridge default drop', () => {
   /** What Excalidraw's "Insert image" of a Markdown note leaves in the view: the note's text as an SVG image, its file the note. */
   function markdownImage(ea: FakeAutomate, id: string, note: TFile, x = 40, y = 60): void {
     ea.elements.set(id, {
-      id, type: 'image', x, y, width: 500, height: 800, fileId: `md:${note.path}`, style: {},
+      id, type: 'image', x, y, width: 500, height: 800, fileId: `md:${note.path}`, style: {}, version: 3,
       customData: { markdownImage: { source: 'external', schemaVersion: 1, version: 1 } },
     });
     ea.imageFiles.set(`md:${note.path}`, note);
@@ -387,14 +392,14 @@ describe('ExcalidrawBridge default drop', () => {
     expect(ea.added).toHaveLength(1);
     expect(ea.added[0]?.args).toEqual([false, true, true]);
     const elements = ea.added[0]?.elements ?? [];
-    // Only the new image is added, where the Markdown image sat, scaled by EA to 500 on its longer side; the Markdown image is then removed.
-    expect(elements).toHaveLength(1);
-    const image = elements[0];
+    // The new image is added where the Markdown image sat, scaled by EA to 500 on its longer side, and the Markdown image is deleted in the same commit.
+    expect(elements).toHaveLength(2);
+    const image = elements.find(element => !element.isDeleted);
     expect(image).toMatchObject({ type: 'image', x: 40, y: 60, width: 500, fileId: 'file:attachments/Note.svg', link: '[[Note]]' });
     expect(image?.height).toBeCloseTo(500 * (448 / 1048), 6);
     expect(image?.customData).toBeUndefined();
-    expect(ea.deleted).toEqual([['md-image']]);
-    expect(ea.calls.indexOf('deleteViewElements')).toBeGreaterThan(ea.calls.indexOf('addElementsToView'));
+    expect(elements.find(element => element.isDeleted)).toMatchObject({ id: 'md-image', fileId: 'md:Note.md', isDeleted: true, version: 4 });
+    expect(ea.deleted).toEqual([]);
     expect(ea.selected.at(-1)).toEqual([image?.id]);
     expect(reports).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
@@ -414,7 +419,7 @@ describe('ExcalidrawBridge default drop', () => {
     const frame = ea.added[0]?.elements.find(element => element.id === 'embed-1');
     expect(frame).toMatchObject({ x: 600, y: 0, strokeColor: 'transparent', link: '[[Note.md]]', width: 800, height: Math.round(520 * (800 / 1120)) });
     expect(ea.calls).not.toContain('addImage:attachments/Note.svg');
-    expect(ea.deleted).toEqual([]);
+    expect(ea.added[0]?.elements.some(element => element.isDeleted)).toBe(false);
   });
 
   it('resizes an embeddable Excalidraw already made borderless and paints each note once, with the SVG, for several elements', async () => {
@@ -429,8 +434,8 @@ describe('ExcalidrawBridge default drop', () => {
     expect(paint.mock.calls[0]?.[1]).toEqual({ svg: true });
     const elements = ea.added[0]?.elements ?? [];
     expect(elements.find(element => element.id === 'embed-1')).toMatchObject({ width: 220, height: 170, strokeColor: 'transparent' });
-    expect(elements.find(element => element.type === 'image')).toMatchObject({ x: 700, y: 0, width: 148, height: 98 });
-    expect(ea.deleted).toEqual([['md-image']]);
+    expect(elements.find(element => element.type === 'image' && !element.isDeleted)).toMatchObject({ x: 700, y: 0, width: 148, height: 98 });
+    expect(elements.filter(element => element.isDeleted).map(element => element.id)).toEqual(['md-image']);
   });
 
   it('waits for the images of a multi-file drop, which Excalidraw adds one after another', async () => {
@@ -454,8 +459,34 @@ describe('ExcalidrawBridge default drop', () => {
     expect(paint).toHaveBeenCalledTimes(2);
     expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg', 'attachments/Other.svg']);
     expect(ea.added).toHaveLength(1);
-    expect(ea.added[0]?.elements.filter(element => element.type === 'image')).toHaveLength(2);
-    expect(ea.deleted).toEqual([['md-note', 'md-other']]);
+    expect(ea.added[0]?.elements.filter(element => element.type === 'image' && !element.isDeleted)).toHaveLength(2);
+    expect(ea.added[0]?.elements.filter(element => element.isDeleted).map(element => element.id)).toEqual(['md-note', 'md-other']);
+  });
+
+  it('deletes each replaced Markdown image in the commit that saves the map, never afterwards, and keeps one it could not replace (LEV-352)', async () => {
+    const paint = vi.fn(painter({ x: 0, y: 0, width: 100, height: 50 }));
+    // Only Note's SVG loads: Other's Markdown image cannot be replaced and must stay alive.
+    const { ea, files, removed } = watched({
+      paint, sources: { 'Note.md': SOURCE, 'Other.md': SOURCE }, images: { 'attachments/Note.svg': { width: 148, height: 98 } },
+    });
+    const note = files.get('Note.md');
+    const other = files.get('Other.md');
+    if (!note || !other) throw new Error('no notes');
+    markdownImage(ea, 'md-note', note);
+    markdownImage(ea, 'md-other', other, 600, 0);
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    // One commit, saved (`save: true`), carries both the map and the deleted Markdown image: the drawing written to
+    // disk never holds the Markdown image beside the map, and a merge of that file into another view drops it.
+    expect(ea.added).toHaveLength(1);
+    expect(ea.added[0]?.args[1]).toBe(true);
+    const elements = ea.added[0]?.elements ?? [];
+    expect(elements.filter(element => element.isDeleted).map(element => element.id)).toEqual(['md-note']);
+    expect(elements.some(element => element.id === 'md-other')).toBe(false);
+    expect(elements.find(element => !element.isDeleted)).toMatchObject({ fileId: 'file:attachments/Note.svg', link: '[[Note]]' });
+    expect(removed).toEqual(['attachments/Other.svg']);
+    expect(ea.calls).not.toContain('deleteViewElements');
   });
 
   it('leaves images and embeddables of other notes, and other new elements, alone', async () => {
@@ -491,7 +522,6 @@ describe('ExcalidrawBridge default drop', () => {
     const elements = ea.added[0]?.elements ?? [];
     expect(elements.map(element => element.id)).toEqual(['embed-1']);
     expect(elements[0]).toMatchObject({ strokeColor: 'transparent', width: 500, height: 500 });
-    expect(ea.deleted).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
   });
 
@@ -518,7 +548,6 @@ describe('ExcalidrawBridge default drop', () => {
     expect(removed).toEqual(['attachments/Note.svg']);
     expect(reports).toEqual(['Note の画像を Excalidraw に読み込めませんでした。']);
     expect(ea.added).toHaveLength(0);
-    expect(ea.deleted).toEqual([]);
   });
 
   it('removes the attachments again when the edit itself fails, and reports it', async () => {
@@ -532,7 +561,6 @@ describe('ExcalidrawBridge default drop', () => {
     expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg']);
     expect(removed).toEqual(['attachments/Note.svg']);
     expect(reports).toEqual(['Excalidraw の要素を更新できませんでした。']);
-    expect(ea.deleted).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
   });
 
@@ -558,7 +586,6 @@ describe('ExcalidrawBridge default drop', () => {
     expect(elements.map(element => element.id)).toEqual(['embed-1']);
     expect(elements[0]).toMatchObject({ x: 250, y: 125, width: 220, height: 170 });
     expect(created).toHaveLength(0);
-    expect(ea.deleted).toEqual([]);
   });
 
   it('changes nothing once the plugin was disposed while painting', async () => {
@@ -576,22 +603,19 @@ describe('ExcalidrawBridge default drop', () => {
 
     expect(created).toHaveLength(0);
     expect(ea.added).toHaveLength(0);
-    expect(ea.deleted).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
   });
 
-  it('does not treat an image as a map when this Excalidraw cannot name its file or delete an element', async () => {
-    for (const missing of ['getViewFileForImageElement', 'deleteViewElements']) {
-      const paint = vi.fn(painter());
-      const { ea, note } = watched({ paint });
-      markdownImage(ea, 'md-image', note);
-      (ea as unknown as Record<string, unknown>)[missing] = undefined;
+  it('does not treat an image as a map when this Excalidraw cannot name its file', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note } = watched({ paint });
+    markdownImage(ea, 'md-image', note);
+    (ea as unknown as Record<string, unknown>).getViewFileForImageElement = undefined;
 
-      await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(800);
 
-      expect(paint).not.toHaveBeenCalled();
-      expect(ea.added).toHaveLength(0);
-    }
+    expect(paint).not.toHaveBeenCalled();
+    expect(ea.added).toHaveLength(0);
   });
 });
 

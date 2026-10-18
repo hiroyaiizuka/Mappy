@@ -44,6 +44,7 @@ export const CASES = [
   { name: 'ime-keys', file: 'ime-keys.mjs', description: 'E01 変換中の Enter・Tab・Escape（IME が受けた／素通しした）× 通常ノード・本文のルート・トピック・ステージ・新しいノード、Markdown 側の変換中の入力（CDP の変換。OS の IME ではない）', shot: false },
   { name: 'excalidraw-frame', file: 'excalidraw-frame.mjs', description: 'E24 Excalidraw の対話フレームでのライブ表示', shot: true },
   { name: 'excalidraw-lifecycle', file: 'excalidraw-lifecycle.mjs', description: 'E25 Mappy 無効化→Excalidraw 再読込→Mappy 有効化', shot: true },
+  { name: 'excalidraw-insert-image', file: 'excalidraw-insert-image.mjs', description: 'E27 Excalidraw 自身の挿入（Shift のダイアログの as Image・同じ図面を 2 つのペイン・暗色・@100%・2 つのノート・as Embeddable・通常ノート・Option・修飾なし）で Mappy のノートの Markdown の画像が残らない', shot: true },
   { name: 'timeline-stage-gap', file: 'timeline-stage-gap.mjs', description: 'E42 タイムラインの同じ側のステージの間隔', shot: true },
   { name: 'timeline-gap-range', file: 'timeline-gap-range.mjs', description: 'E61 タイムラインの同じ側の間隔を次のステージの高さの範囲で測る', shot: true },
   { name: 'timeline-large', file: 'timeline-large.mjs', description: 'E45 長文・画像・深い枝が混在する大規模タイムライン', shot: true },

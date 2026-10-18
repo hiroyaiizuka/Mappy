@@ -86,11 +86,10 @@ function mappyTarget(app: App, drawing: TFile, element: ExcalidrawElement): TFil
 /**
  * The map note a built-in "Insert image" drew as Markdown text: an image element whose
  * vault file (Excalidraw's own mapping from the element's file id) is a map. Only an EA
- * that exposes the mapping and can delete a view element can replace the image; an older
- * one leaves it as it is.
+ * that exposes the mapping can replace the image; an older one leaves it as it is.
  */
 function mappyImageSource(app: App, ea: ExcalidrawAutomate, element: ExcalidrawElement): TFile | null {
-  if (element.type !== 'image' || typeof ea.getViewFileForImageElement !== 'function' || typeof ea.deleteViewElements !== 'function') return null;
+  if (element.type !== 'image' || typeof ea.getViewFileForImageElement !== 'function') return null;
   const file = ea.getViewFileForImageElement(element);
   return file && readMapLayout(app, file) !== null ? file : null;
 }
@@ -248,10 +247,15 @@ export class ExcalidrawBridge {
    * note, the SVG only for the images; a failure is reported and that element is left as
    * Excalidraw made it), then the embeddables are edited in place and a new image element
    * showing each map's SVG, attached beside the drawing and linked to the note, is added
-   * where its Markdown image sits; the Markdown image is removed once the new one is in.
-   * The view is read again after the paint: an element moved meanwhile is edited where it
-   * is now, one deleted meanwhile is left deleted, and an unloaded plugin changes nothing.
-   * An attachment the edit could not use is removed again.
+   * where its Markdown image sits, the Markdown image marked deleted in the same commit.
+   * One commit is one undo step and one save, so the drawing on disk never holds the
+   * Markdown image beside the map, and the deletion stays in it as a deleted element one
+   * version newer: Excalidraw merges the file into another view of the drawing (and a view
+   * merges a write it did not make) by adding what it lacks and dropping what the file
+   * lists as deleted, so a Markdown image taken out of the scene after the save came back
+   * (LEV-352). The view is read again after the paint: an element moved meanwhile is edited
+   * where it is now, one deleted meanwhile is left deleted, and an unloaded plugin changes
+   * nothing. An attachment the edit could not use is removed again.
    */
   private async fitDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, dropped: DroppedMaps): Promise<void> {
     const maps = await this.paintMaps(dropped);
@@ -274,7 +278,7 @@ export class ExcalidrawBridge {
       if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
     }
     const attachments: TFile[] = [];
-    const replaced: { original: ExcalidrawElement; id: string }[] = [];
+    const replaced: string[] = [];
     try {
       for (const { element, file } of images) {
         const svg = maps.get(file.path)?.svg;
@@ -289,7 +293,10 @@ export class ExcalidrawBridge {
           continue;
         }
         image.link = `[[${this.app.metadataCache.fileToLinktext(file, drawing.path)}]]`;
-        replaced.push({ original: element, id });
+        ea.copyViewElementsToEAforEditing([element]);
+        const original = ea.getElement(element.id);
+        if (original) original.isDeleted = true;
+        replaced.push(id);
       }
       if (embeds.length === 0 && replaced.length === 0) return;
       if (!await ea.addElementsToView(false, true, true)) throw new Error(t().excalidrawUpdateFailed);
@@ -297,10 +304,7 @@ export class ExcalidrawBridge {
       for (const attachment of attachments) await this.discard(attachment);
       throw error;
     }
-    if (replaced.length > 0) {
-      if (!ea.deleteViewElements?.(replaced.map(({ original }) => original))) this.report(t().excalidrawOriginalKept);
-      ea.selectElementsInView?.(replaced.map(({ id }) => id));
-    }
+    if (replaced.length > 0) ea.selectElementsInView?.(replaced);
   }
 
   /** Removes (as the user's deletion setting says) an attachment this edit created and could not use; a failure to remove it is not worth an error of its own. */

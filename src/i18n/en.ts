@@ -101,7 +101,6 @@ export const en = {
   excalidrawFitFailed: "Couldn't fit the Excalidraw embed to the map.",
   excalidrawImageFailed: (name: string) => `Couldn't load the image of ${name} into Excalidraw.`,
   excalidrawUpdateFailed: "Couldn't update the Excalidraw elements.",
-  excalidrawOriginalKept: "Couldn't remove the original Markdown image.",
   excalidrawAttachmentKept: (path: string) => `Couldn't delete an attachment that wasn't used: ${path}`,
   excalidrawDrawFailed: (name: string) => `Couldn't draw the map ${name}.`,
   excalidrawMissing: "The Excalidraw plugin isn't available.",
