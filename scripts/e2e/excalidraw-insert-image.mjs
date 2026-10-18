@@ -21,6 +21,7 @@
  * Usage: npm run harness:e2e:excalidraw-insert-image -- [--reload] [--rows a,b] [--json <out.json>] [--shot <out.png>] [--keep]
  *   --reload  re-enable Mappy first, so a build made after Obsidian started is the one under test
  *   --rows    run only these rows (names below)
+ *   --shot    the screen with both panes of row image-dialog-two-panes just after the save (nothing without that row)
  *   --keep    leave the notes, drawings and attachments in the vault
  */
 import { connect, VAULT, wait } from './cdp.mjs';
@@ -38,8 +39,13 @@ const PICTURE = 'Fixtures/E2E-insert-image-picture.md';
 const NESTED = `${FOLDER}/E2E-insert-image-nested.md`;
 const map = lines => ['---', 'mappy: true', '---', ...lines, ''].join('\n');
 const NOTES = {
-  // The report's shape: root 10X第4期, five first-level branches, children under some, a link.
-  [REPORT]: map(['## 10X第4期', '', '- b1', `  - b1-1 [[${noteName(PLAIN)}]]`, '  - b1-2', '- b2', '  - b2-1', '- b3', '- b4', '  - b4-1', '- b5']),
+  // The report's shape: root 10X第4期, five first-level branches with children, a link. Its Markdown image is taller
+  // than the map's, so a Markdown image left under the map shows below it, as in the report's screenshot (long child
+  // labels make the map wide, so at 500 wide it is shorter).
+  [REPORT]: map(['## 10X第4期', '', '- b1', `  - b1-1 最初の週に決めること [[${noteName(PLAIN)}]]`, '  - b1-2 毎朝の振り返りの時間を取る', '- b2',
+    '  - b2-1 一緒に進める人を三人決める', '  - b2-2 週に一度の共有の場を作る', '- b3', '  - b3-1 数字で測れる目標に言い換える', '- b4',
+    '  - b4-1 月末に結果をまとめて見直す', '  - b4-2 うまくいかなかった理由を書き残す', '- b5', '  - b5-1 次の期に持ち越すことを選ぶ',
+    '  - b5-2 終わったら祝う']),
   [SMALL]: map(['## 小さなマップ', '', '- 枝 1', '- 枝 2']),
   [PICTURE]: map(['## 画像入り', '', '- 図', '  - ![[sample-image.svg]]', '- 文字だけ']),
   [NESTED]: map(['## フォルダの中', '', '- 枝 A', '- 枝 B']),
@@ -225,6 +231,15 @@ async function runRow(row) {
     await E.leaf.view.save();
     await new Promise(resolve => setTimeout(resolve, 2500));
     return [E.leaf, E.other].filter(Boolean).map(readPane);`);
+  // The evidence the report is about: both panes of the drawing just after the save (the shot of row image-dialog-two-panes).
+  const shot = value('--shot');
+  if (shot && row.panes === 2) {
+    await evaluate(`const E = window.__mappyExcalidrawE2E;
+      for (const leaf of [E.leaf, E.other]) leaf.view.zoomToFit(false);
+      await new Promise(resolve => setTimeout(resolve, 600));
+      return true;`);
+    result.shot = await cdp.screenshot(shot);
+  }
   // Reopened: what the file holds.
   result.reopened = await evaluate(`${READ_PANE}
     const E = window.__mappyExcalidrawE2E;
@@ -293,8 +308,6 @@ try {
     }
     console.log(row.name, JSON.stringify(record.rows[row.name]).slice(0, 600));
   }
-  const shot = value('--shot');
-  if (shot) await cdp.screenshot(shot);
 } catch (error) {
   if (!(error instanceof StopCase)) record.failures.push(`stopped: ${error}`);
 } finally {
