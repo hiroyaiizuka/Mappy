@@ -18,7 +18,8 @@
  * in the host (`![[地図]]` and `![[地図#講座の案内]]`). Each popout row records the order of the popout's waiting sections,
  * its map frames and the main window's DOM changes (`watchClaimOrder`): a map claimed only after a main-window change
  * fails as one that never came. Then: everything closed leaves no map element and no handler on Obsidian's event hubs
- * beyond the ones before the case (the wait's window events go with it), the notes are not written, and no page error.
+ * beyond the ones before the case (the maps' own listeners go with them; Mappy's `window-open`／`window-close` are there
+ * from the plugin's start, before the case), the notes are not written, and no page error.
  *
  * Not covered here: dragging a tab out of the window by hand, moving a popout's tab back into the main window (no API;
  * a drag), the Canvas card in a popout (E88), and the main window's own embeds (E55, LEV-354).
@@ -209,8 +210,8 @@ try {
     }
   });
 
-  // Everything closed: no map element in the main window, and the event hubs back to where they were (the wait's
-  // `window-open`／`window-close` and every map's own listeners went with them).
+  // Everything closed: no map element in the main window, and the event hubs back to where they were (every map's own
+  // listeners went with them; Mappy's `window-open`／`window-close` were there before the case, and the wait adds none).
   await step('close', async () => {
     const result = await evaluate(`await new Promise(resolve => setTimeout(resolve, 600));
       const popouts = []; app.workspace.iterateAllLeaves(item => { if (item.getContainer().win !== window) popouts.push(item.getViewState().type); });
