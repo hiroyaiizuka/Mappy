@@ -1031,6 +1031,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(embeds.pending).toBe(0);
     app.workspace.trigger('window-close', popout, popout.win);
     frame.remove();
+    embeds.dispose();
   });
 
   it("does not watch a closed popout's document, even for a section left in it", async () => {
@@ -1042,8 +1043,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     const late = popout.doc.adoptNode(createDiv());
     await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
     // The window is closing: the workspace has announced it, and the window says it is closed (Electron's `closed`),
-    // while a last rendering of it still reaches the processor.
-    app.popouts.splice(app.popouts.findIndex(item => item.doc === popout.doc), 1);
+    // while a last rendering of it still reaches the processor (its leaf is still in the workspace).
     app.workspace.trigger('window-close', popout, popout.win);
     Object.defineProperty(popout.win, 'closed', { configurable: true, value: true });
     const observe = vi.spyOn(MutationObserver.prototype, 'observe');
@@ -1054,6 +1054,8 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     } finally { observe.mockRestore(); }
     renderer.unload();
     expect(embeds.pending).toBe(0);
+    popout.close();
+    embeds.dispose();
   });
 
   it('clears the refresh it asked of one window once its frame is in another, as when its leaf moves to a new window', async () => {
