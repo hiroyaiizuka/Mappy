@@ -85,6 +85,7 @@ export const ja: Messages = {
   excalidrawFitFailed: "Excalidraw の埋め込みをマップに合わせられませんでした。",
   excalidrawImageFailed: (name: string) => `${name} の画像を Excalidraw に読み込めませんでした。`,
   excalidrawUpdateFailed: "Excalidraw の要素を更新できませんでした。",
+  excalidrawOriginalLocked: (name: string) => `${name} の Markdown の画像を編集できなかったので、マップに替えませんでした。`,
   excalidrawAttachmentKept: (path: string) => `使わなかった添付ファイルを消せませんでした: ${path}`,
   excalidrawDrawFailed: (name: string) => `${name} のマップを描けませんでした。`,
   excalidrawMissing: "Excalidraw プラグインが見つかりません。",

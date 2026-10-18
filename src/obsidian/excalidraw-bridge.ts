@@ -253,9 +253,10 @@ export class ExcalidrawBridge {
    * version newer: Excalidraw merges the file into another view of the drawing (and a view
    * merges a write it did not make) by adding what it lacks and dropping what the file
    * lists as deleted, so a Markdown image taken out of the scene after the save came back
-   * (LEV-352). The view is read again after the paint: an element moved meanwhile is edited
-   * where it is now, one deleted meanwhile is left deleted, and an unloaded plugin changes
-   * nothing. An attachment the edit could not use is removed again.
+   * (LEV-352); a Markdown image the EA cannot edit stays, without its map image. The view is
+   * read again after the paint: an element moved meanwhile is edited where it is now, one
+   * deleted meanwhile is left deleted, and an unloaded plugin changes nothing. An attachment
+   * the edit could not use is removed again.
    */
   private async fitDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, dropped: DroppedMaps): Promise<void> {
     const maps = await this.paintMaps(dropped);
@@ -278,6 +279,7 @@ export class ExcalidrawBridge {
       if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
     }
     const attachments: TFile[] = [];
+    const added: { original: ExcalidrawElement; id: string; file: TFile; attachment: TFile }[] = [];
     const replaced: string[] = [];
     try {
       for (const { element, file } of images) {
@@ -293,10 +295,24 @@ export class ExcalidrawBridge {
           continue;
         }
         image.link = `[[${this.app.metadataCache.fileToLinktext(file, drawing.path)}]]`;
-        ea.copyViewElementsToEAforEditing([element]);
-        const original = ea.getElement(element.id);
-        if (original) original.isDeleted = true;
-        replaced.push(id);
+        added.push({ original: element, id, file, attachment });
+      }
+      ea.copyViewElementsToEAforEditing(added.map(({ original }) => original));
+      for (const { original, id, file, attachment } of added) {
+        const copy = ea.getElement(original.id);
+        if (copy) {
+          copy.isDeleted = true;
+          // Newer than the view's whatever this EA's copy did, or a merge keeps the live one.
+          copy.version = Math.max(copy.version ?? 0, (original.version ?? 0) + 1);
+          replaced.push(id);
+          continue;
+        }
+        // A Markdown image this EA cannot edit keeps its place, and the map image is taken back: never both.
+        const image = ea.getElement(id);
+        if (image) image.isDeleted = true;
+        this.report(t().excalidrawOriginalLocked(file.basename));
+        attachments.splice(attachments.indexOf(attachment), 1);
+        await this.discard(attachment);
       }
       if (embeds.length === 0 && replaced.length === 0) return;
       if (!await ea.addElementsToView(false, true, true)) throw new Error(t().excalidrawUpdateFailed);

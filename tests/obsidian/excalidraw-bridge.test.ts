@@ -20,8 +20,6 @@ interface FakeElement extends ExcalidrawElement {
   fontSize?: number;
   /** An image element's key into the drawing's files, as Excalidraw keeps it. */
   fileId?: string;
-  /** Excalidraw's element version; an EA copy for editing is one newer. */
-  version?: number;
 }
 
 function file(path: string): TFile {
@@ -42,11 +40,10 @@ class FakeAutomate implements ExcalidrawAutomate {
   instances: FakeAutomate[] = [];
   /** The vault file behind each image file id, as Excalidraw's own mapping answers for the view. */
   imageFiles = new Map<string, TFile>();
-  /**
-   * Ids taken out of the view through `deleteViewElements`, one entry per call. The bridge must not use it: an element
-   * removed that way leaves no deleted element behind, and Excalidraw's merge of the file brings it back (LEV-352).
-   */
-  deleted: string[][] = [];
+  /** Whether a copy for editing is one version newer than the view's, as EA's `cloneElement` in 2.27.3–2.29.0 makes it. */
+  copyBumps = true;
+  /** Ids this EA does not copy for editing, so `getElement` has none to edit. */
+  copySkips = new Set<string>();
   private counter = 0;
 
   constructor(
@@ -85,15 +82,12 @@ class FakeAutomate implements ExcalidrawAutomate {
     const fileId = (element as FakeElement).fileId;
     return fileId ? this.imageFiles.get(fileId) ?? null : null;
   }
-  deleteViewElements(elements: ExcalidrawElement[]): boolean {
-    this.calls.push('deleteViewElements');
-    this.deleted.push(elements.map(element => element.id));
-    for (const element of elements) this.elements.delete(element.id);
-    return true;
-  }
-  /** As EA: copies join the workbench (nothing is cleared), each one version newer than the view's. */
+  /** As EA: copies join the workbench (nothing is cleared). */
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[]): void {
-    for (const element of elements as FakeElement[]) this.elements.set(element.id, { ...element, style: {}, version: (element.version ?? 0) + 1 });
+    for (const element of elements as FakeElement[]) {
+      if (this.copySkips.has(element.id)) continue;
+      this.elements.set(element.id, { ...element, style: {}, version: (element.version ?? 0) + (this.copyBumps ? 1 : 0) });
+    }
   }
 
   reset(): void { this.calls.push('reset'); this.elements.clear(); this.style = FakeAutomate.defaultStyle(); }
@@ -399,7 +393,6 @@ describe('ExcalidrawBridge default drop', () => {
     expect(image?.height).toBeCloseTo(500 * (448 / 1048), 6);
     expect(image?.customData).toBeUndefined();
     expect(elements.find(element => element.isDeleted)).toMatchObject({ id: 'md-image', fileId: 'md:Note.md', isDeleted: true, version: 4 });
-    expect(ea.deleted).toEqual([]);
     expect(ea.selected.at(-1)).toEqual([image?.id]);
     expect(reports).toEqual([]);
     expect(ea.calls.at(-1)).toBe('destroy');
@@ -486,7 +479,35 @@ describe('ExcalidrawBridge default drop', () => {
     expect(elements.some(element => element.id === 'md-other')).toBe(false);
     expect(elements.find(element => !element.isDeleted)).toMatchObject({ fileId: 'file:attachments/Note.svg', link: '[[Note]]' });
     expect(removed).toEqual(['attachments/Other.svg']);
-    expect(ea.calls).not.toContain('deleteViewElements');
+  });
+
+  it('makes the deleted Markdown image one version newer than the view\'s even where this EA\'s copy keeps the version (LEV-352)', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    ea.copyBumps = false;
+    markdownImage(ea, 'md-image', note);
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    // A deletion at the view's own version 3 would lose a merge with the live copy in another pane.
+    expect(ea.added[0]?.elements.find(element => element.id === 'md-image')).toMatchObject({ isDeleted: true, version: 4 });
+  });
+
+  it('leaves a Markdown image this EA cannot edit, takes its map image back and says so, never leaving both', async () => {
+    const paint = vi.fn(painter());
+    const { ea, note, created, removed, reports } = watched({ paint, images: { 'attachments/Note.svg': { width: 1048, height: 448 } } });
+    ea.copySkips.add('md-image');
+    markdownImage(ea, 'md-image', note);
+
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+
+    expect(reports).toEqual([t().excalidrawOriginalLocked('Note')]);
+    expect(created.map(entry => entry.path)).toEqual(['attachments/Note.svg']);
+    expect(removed).toEqual(['attachments/Note.svg']);
+    // Nothing else changed, so nothing is committed: the Markdown image stays as Excalidraw made it.
+    expect(ea.added).toHaveLength(0);
+    expect(ea.selected).toEqual([]);
+    expect(ea.calls.at(-1)).toBe('destroy');
   });
 
   it('leaves images and embeddables of other notes, and other new elements, alone', async () => {

@@ -122,6 +122,11 @@ function verdict(row, pane, svgs) {
         reasons.push(`${name}: the map image is ${image.width}×${image.height}, not the map's proportions ${svg.width}×${svg.height}`);
       }
     }
+    // Any other image is a leftover too, also one whose file Excalidraw does not name (yet).
+    const known = new Set(row.notes.flatMap(note => [note, `${noteName(note)}.svg`]));
+    for (const element of images) {
+      if (!element.file || (!known.has(element.file) && !known.has(element.file.replace(/^.*\//u, '')))) reasons.push(`an image that is not a map image: ${element.file ?? 'no file'}`);
+    }
   } else if (row.expect === 'embeddable') {
     const frames = pane.filter(element => element.type === 'embeddable');
     if (frames.length !== 1) reasons.push(`${frames.length} frames, not 1`);
@@ -142,6 +147,21 @@ function verdict(row, pane, svgs) {
     if (images.length > 0) reasons.push('a plain drag inserted an image');
   }
   return reasons;
+}
+
+/**
+ * Whether Mappy is done with the drop as far as the panes show: for a map image, each note has its map image and no
+ * Markdown image; for a frame, it lost its border. The settle wait does not stop before that (or its time limit), so a
+ * paint that takes a while is not read half way.
+ */
+function done(row, panes) {
+  return panes.every(pane => {
+    if (!pane) return false;
+    if (row.expect === 'embeddable') return pane.some(element => element.type === 'embeddable' && element.strokeColor === 'transparent');
+    if (row.expect !== 'map-image') return pane.length > 0;
+    return row.notes.every(note => !pane.some(element => element.file === note)
+      && pane.some(element => element.file?.replace(/^.*\//u, '') === `${noteName(note)}.svg`));
+  });
 }
 
 /** Width and height of each SVG attachment the panes show, from the file's root `<svg>`. */
@@ -215,16 +235,20 @@ async function runRow(row) {
       await cdp.send('Input.dispatchMouseEvent', { type, x: button.x, y: button.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
     }
   }
-  // Settled: the panes read the same for three polls in a row (~1.2 s), after the first change.
+  // Settled: Mappy is done (or 15 s passed, which is how a build that leaves the Markdown image is read), and then the
+  // panes read the same for three polls in a row (~1.2 s).
   let panes = await readPanes();
-  for (let last = '', quiet = 0, started = Date.now(); quiet < 3 && Date.now() - started < 20000;) {
+  const started = Date.now();
+  for (let last = '', quiet = 0; Date.now() - started < 25000;) {
     await wait(400);
     panes = await readPanes();
     const now = JSON.stringify(panes);
     quiet = now === last && panes.some(pane => pane?.length) ? quiet + 1 : 0;
     last = now;
+    if (quiet >= 3 && (done(row, panes) || Date.now() - started > 15000)) break;
   }
   result.settled = panes;
+  result.settledAfter = Date.now() - started;
   // Saved as autosave saves it; the other pane gets the file's modify and merges it.
   result.saved = await evaluate(`${READ_PANE}
     const E = window.__mappyExcalidrawE2E;
@@ -274,17 +298,21 @@ async function runRow(row) {
 /** Closes the row's drawing and deletes it with the attachments made during the row (only the case's own `E2E-insert-image*` files). */
 const cleanRow = () => evaluate(`const E = window.__mappyExcalidrawE2E;
   if (!E) return null;
-  app.workspace.getLeavesOfType('excalidraw').filter(leaf => leaf.view.file?.path === E.drawing).forEach(leaf => leaf.detach());
-  await new Promise(resolve => setTimeout(resolve, 400));
-  const removed = [];
-  for (const file of app.vault.getFiles()) {
-    if (file.path !== E.drawing && (E.files.has(file.path) || !file.name.startsWith('E2E-insert-image'))) continue;
-    await app.vault.delete(file, true);
-    removed.push(file.path);
-  }
-  E.off();
-  delete window.__mappyExcalidrawE2E;
-  return removed;`);
+  try {
+    app.workspace.getLeavesOfType('excalidraw').filter(leaf => leaf.view.file?.path === E.drawing).forEach(leaf => leaf.detach());
+    await new Promise(resolve => setTimeout(resolve, 400));
+    const removed = [];
+    // A row that stopped before it listed the vault's files (E.files) still has its drawing to remove, and nothing else.
+    for (const file of app.vault.getFiles()) {
+      if (file.path !== E.drawing && (!E.files || E.files.has(file.path) || !file.name.startsWith('E2E-insert-image'))) continue;
+      await app.vault.delete(file, true);
+      removed.push(file.path);
+    }
+    return removed;
+  } finally {
+    E.off();
+    delete window.__mappyExcalidrawE2E;
+  }`);
 
 try {
   record.steps.versions = await evaluate(`return { obsidian: require('electron').ipcRenderer.sendSync('version'),
