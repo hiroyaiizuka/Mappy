@@ -164,9 +164,9 @@ Excalidraw プラグインが有効なとき、次の 3 通りで使えます。
 | --- | --- |
 | `mappy: true` の `.md` を **Option（Alt）を押しながら**キャンバスへドロップ | マップを Excalidraw のネイティブ要素（矩形・テキスト・線・画像）として挿入。1 グループにまとまり、ルートは元ノートへのリンクを持つ |
 | コマンド「現在のマップを Excalidraw の図面に挿入」 | 直前にアクティブだった図面へ、現在のレイアウトと折りたたみのまま挿入 |
-| Excalidraw の「Insert interactive frame」（Ctrl／Win: Shift+Ctrl を押してドロップ） | `mappy: true` のノートが、生きた Mappy のビューとして枠内に表示・編集できる |
+| Excalidraw の「Insert Interactive-Frame」（既定では Mac は Ctrl、Windows は Shift+Ctrl を押してドロップし、出てくる画面で「as Embeddable」） | `mappy: true` のノートが、生きた Mappy のビューとして枠内に表示・編集できる |
 
-ネイティブ要素として挿入したマップは元ノートと同期しないスナップショットです。修飾キーなしのドロップ（リンクになります）は Excalidraw の既定のままです。Obsidian のファイル一覧から図面へドロップするときの Excalidraw の挿入（Mac の Excalidraw の既定では、Shift を押してドロップし、出てくる画面で「as Image」）で `mappy: true` のノートを画像として入れると、ノートの文字の画像ではなく、マップを描いた SVG 画像になります（図面の添付ファイルの保存先に `<ノート名>.svg` ができ〔同名があれば番号が付くので、入れるたびに 1 つ増えます〕、画像は元ノートへのリンクを持ちます。画像は明色で描きます〔暗色の図面でも読めます〕）。この画像も元ノートと同期しないスナップショットです。埋め込みの枠（上の表の「Insert interactive frame」。Ctrl のドロップでも挿入の画面が出るので、「as Embeddable」を選びます）は、枠がマップの縦横比になり、外枠が消えます。0.4.9 以前は、同じ図面を別のペインでも開いていると、マップの画像の下にノートの文字の画像が残ることがありました。確かめたのは Obsidian 1.14.4・Excalidraw 2.29.0 です。
+ネイティブ要素として挿入したマップは元ノートと同期しないスナップショットです。修飾キーなしのドロップ（リンクになります）は Excalidraw の既定のままです。Obsidian のファイル一覧から図面へドロップしたときの Excalidraw の挿入で `mappy: true` のノートを入れると、Mappy がマップに合わせます。どの修飾キーでどの挿入になるかは Excalidraw の設定で決まり、ドラッグ中に Excalidraw が案内を出します（既定では、Mac は Shift が「Insert Image」、Shift+Ctrl が「Insert Image @100%」、Ctrl が「Insert Interactive-Frame」。Windows は Shift が「Insert Image」、Ctrl+Alt が「Insert Image @100%」、Shift+Ctrl が「Insert Interactive-Frame」）。1 つのノートの「Insert Image」と「Insert Interactive-Frame」では挿入の画面が出るので、それぞれ「as Image」「as Embeddable」を選びます。画像として入れたとき（「Insert Image @100%」と、複数のノートをまとめてドロップしたときも）は、ノートの文字の画像ではなく、マップを描いた SVG 画像になります（図面の添付ファイルの保存先に `<ノート名>.svg` ができ〔同名があれば番号が付くので、入れるたびに 1 つ増えます〕、画像は元ノートへのリンクを持ちます。画像は明色で描きます〔暗色の図面でも読めます〕）。この画像も元ノートと同期しないスナップショットです。「Insert Interactive-Frame」の枠（上の表）は、枠がマップの縦横比になり、外枠が消えます。0.4.9 以前は、同じ図面を別のペインでも開いていると、マップの画像の下にノートの文字の画像が残ることがありました。確かめたのは macOS の Obsidian 1.14.4・Excalidraw 2.29.0 です。
 
 ### SVG／PNG に書き出す
 
