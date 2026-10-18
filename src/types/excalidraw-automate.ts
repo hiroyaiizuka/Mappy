@@ -18,6 +18,12 @@ export interface ExcalidrawElement {
   groupIds?: string[];
   containerId?: string | null;
   boundElements?: { type: string; id: string }[] | null;
+  /** Set on an EA copy and committed with `addElementsToView`, it deletes the element (EA's documented way). */
+  isDeleted?: boolean;
+  /** Excalidraw's edit counter: a merge of two copies of an element keeps the higher. */
+  version?: number;
+  /** An image element's key into the drawing's files. */
+  fileId?: string | null;
 }
 
 export interface ExcalidrawStyle {
@@ -73,9 +79,14 @@ export interface ExcalidrawAutomate {
   getViewElements(): ExcalidrawElement[];
   /** The vault file an image element in the view shows, when it shows one (a Markdown note rendered as an image included). */
   getViewFileForImageElement?(element: ExcalidrawElement): TFile | null;
-  /** Removes elements from the view's scene in one undoable step; false when the view is gone. */
-  deleteViewElements?(elements: ExcalidrawElement[]): boolean;
+  /**
+   * Puts copies of view elements into the workbench, beside what is there, for `getElement(id)` to edit (EA's
+   * `cloneElement` in 2.27.3–2.29.0 also makes each one version newer; the bridge does not rely on it).
+   */
   copyViewElementsToEAforEditing(elements: ExcalidrawElement[], copyImages?: boolean): void;
+  /** The workbench `addElementsToView` commits, by element id, and the image files it carries, by file id. */
+  elementsDict: Record<string, ExcalidrawElement>;
+  imagesDict: Record<string, unknown>;
   reset(): void;
   clear(): void;
   destroy?(): void;

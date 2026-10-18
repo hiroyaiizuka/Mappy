@@ -49,6 +49,7 @@
     "harness:e2e:ime-keys": "node scripts/e2e/ime-keys.mjs",
     "harness:e2e:excalidraw-frame": "node scripts/e2e/excalidraw-frame.mjs",
     "harness:e2e:excalidraw-lifecycle": "node scripts/e2e/excalidraw-lifecycle.mjs",
+    "harness:e2e:excalidraw-insert-image": "node scripts/e2e/excalidraw-insert-image.mjs",
     "harness:e2e:timeline-stage-gap": "node scripts/e2e/timeline-stage-gap.mjs",
     "harness:e2e:timeline-gap-range": "node scripts/e2e/timeline-gap-range.mjs",
     "harness:e2e:timeline-large": "node scripts/e2e/timeline-large.mjs",

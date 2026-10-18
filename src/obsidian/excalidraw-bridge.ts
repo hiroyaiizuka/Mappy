@@ -86,13 +86,20 @@ function mappyTarget(app: App, drawing: TFile, element: ExcalidrawElement): TFil
 /**
  * The map note a built-in "Insert image" drew as Markdown text: an image element whose
  * vault file (Excalidraw's own mapping from the element's file id) is a map. Only an EA
- * that exposes the mapping and can delete a view element can replace the image; an older
- * one leaves it as it is.
+ * that exposes the mapping can replace the image; an older one leaves it as it is.
  */
 function mappyImageSource(app: App, ea: ExcalidrawAutomate, element: ExcalidrawElement): TFile | null {
-  if (element.type !== 'image' || typeof ea.getViewFileForImageElement !== 'function' || typeof ea.deleteViewElements !== 'function') return null;
+  if (element.type !== 'image' || typeof ea.getViewFileForImageElement !== 'function') return null;
   const file = ea.getViewFileForImageElement(element);
   return file && readMapLayout(app, file) !== null ? file : null;
+}
+
+/** Takes an element this edit added back out of the EA workbench, with its image file, so the commit does not carry it. */
+function forget(ea: ExcalidrawAutomate, id: string): void {
+  const fileId = ea.getElement(id)?.fileId;
+  Reflect.deleteProperty(ea.elementsDict, id);
+  // Two map images of one note can share a file id: the file stays while another element in the workbench shows it.
+  if (fileId && !ea.getElements().some(element => element.fileId === fileId)) Reflect.deleteProperty(ea.imagesDict, fileId);
 }
 
 /** Excalidraw stores the visible outer frame as the embeddable element's stroke. */
@@ -248,10 +255,17 @@ export class ExcalidrawBridge {
    * note, the SVG only for the images; a failure is reported and that element is left as
    * Excalidraw made it), then the embeddables are edited in place and a new image element
    * showing each map's SVG, attached beside the drawing and linked to the note, is added
-   * where its Markdown image sits; the Markdown image is removed once the new one is in.
-   * The view is read again after the paint: an element moved meanwhile is edited where it
-   * is now, one deleted meanwhile is left deleted, and an unloaded plugin changes nothing.
-   * An attachment the edit could not use is removed again.
+   * where its Markdown image sits, the Markdown image marked deleted in the same commit.
+   * One commit is one undo step and one save, so the drawing on disk never holds the
+   * Markdown image beside the map, and the deletion stays in it as a deleted element one
+   * version newer: Excalidraw merges the file into another view of the drawing (and a view
+   * merges a write it did not make) by adding what it lacks and dropping what the file
+   * lists as deleted, so a Markdown image taken out of the scene after the save came back
+   * (LEV-352); a Markdown image the EA cannot edit stays, without its map image. The view is
+   * read again after the paint, and once more just before the commit: an element moved
+   * meanwhile is edited where it is now (a map image goes where its Markdown image is now),
+   * one deleted meanwhile is left deleted (an image with no map in its place), and a plugin
+   * unloaded meanwhile changes nothing. An attachment the edit could not use is removed again.
    */
   private async fitDefaultDrop(ea: ExcalidrawAutomate, drawing: TFile, dropped: DroppedMaps): Promise<void> {
     const maps = await this.paintMaps(dropped);
@@ -265,16 +279,11 @@ export class ExcalidrawBridge {
     const images = dropped.images.map(still).filter((item): item is DroppedMap => item !== null && maps.get(item.file.path)?.svg != null);
     if (!embeds.some(({ element }) => isBordered(element)) && !embeds.some(({ file }) => maps.has(file.path)) && images.length === 0) return;
     ea.clear();
-    ea.copyViewElementsToEAforEditing(embeds.map(({ element }) => element));
-    for (const { element, file } of embeds) {
-      const copy = ea.getElement(element.id);
-      if (!copy) continue;
-      copy.strokeColor = 'transparent';
-      const map = maps.get(file.path);
-      if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
-    }
     const attachments: TFile[] = [];
-    const replaced: { original: ExcalidrawElement; id: string }[] = [];
+    /** Attachments written for a map image that was taken back before the commit. */
+    const unused: TFile[] = [];
+    const added: { original: ExcalidrawElement; id: string; file: TFile; attachment: TFile }[] = [];
+    const replaced: string[] = [];
     try {
       for (const { element, file } of images) {
         const svg = maps.get(file.path)?.svg;
@@ -289,18 +298,56 @@ export class ExcalidrawBridge {
           continue;
         }
         image.link = `[[${this.app.metadataCache.fileToLinktext(file, drawing.path)}]]`;
-        replaced.push({ original: element, id });
+        added.push({ original: element, id, file, attachment });
       }
-      if (embeds.length === 0 && replaced.length === 0) return;
-      if (!await ea.addElementsToView(false, true, true)) throw new Error(t().excalidrawUpdateFailed);
+      if (this.disposed) {
+        unused.push(...attachments.splice(0));
+        return;
+      }
+      // Read once more, with no wait between here and the commit: while the attachments were written the user or
+      // Excalidraw may have moved, changed (a newer version) or removed what the drop made.
+      const live = new Map(ea.getViewElements().map(element => [element.id, element]));
+      const frames = embeds.flatMap(({ element, file }) => {
+        const now = live.get(element.id);
+        return now ? [{ element: now, file }] : [];
+      });
+      ea.copyViewElementsToEAforEditing([...frames.map(({ element }) => element), ...added.flatMap(({ original }) => live.get(original.id) ?? [])]);
+      for (const { element, file } of frames) {
+        const copy = ea.getElement(element.id);
+        if (!copy) continue;
+        copy.strokeColor = 'transparent';
+        const map = maps.get(file.path);
+        if (map) Object.assign(copy, embeddableFrameSize(map.bounds));
+      }
+      for (const { original, id, file, attachment } of added) {
+        const now = live.get(original.id);
+        const copy = now ? ea.getElement(now.id) : null;
+        const image = ea.getElement(id);
+        if (now && copy && image) {
+          copy.isDeleted = true;
+          // Newer than the live one whatever this EA's copy did, or a merge keeps the live one.
+          copy.version = Math.max(copy.version ?? 0, (now.version ?? 0) + 1);
+          image.x = now.x;
+          image.y = now.y;
+          replaced.push(id);
+          continue;
+        }
+        // Removed meanwhile: left removed, and no map in its place. Not copied by this EA: kept, and said; never both.
+        if (now) this.report(t().excalidrawOriginalLocked(file.basename));
+        forget(ea, id);
+        attachments.splice(attachments.indexOf(attachment), 1);
+        unused.push(attachment);
+      }
+      if (frames.length > 0 || replaced.length > 0) {
+        if (!await ea.addElementsToView(false, true, true)) throw new Error(t().excalidrawUpdateFailed);
+      }
     } catch (error: unknown) {
       for (const attachment of attachments) await this.discard(attachment);
       throw error;
+    } finally {
+      for (const attachment of unused) await this.discard(attachment);
     }
-    if (replaced.length > 0) {
-      if (!ea.deleteViewElements?.(replaced.map(({ original }) => original))) this.report(t().excalidrawOriginalKept);
-      ea.selectElementsInView?.(replaced.map(({ id }) => id));
-    }
+    if (replaced.length > 0) ea.selectElementsInView?.(replaced);
   }
 
   /** Removes (as the user's deletion setting says) an attachment this edit created and could not use; a failure to remove it is not worth an error of its own. */

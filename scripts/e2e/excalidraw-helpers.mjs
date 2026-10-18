@@ -155,6 +155,39 @@ export const DRAWING_LEAF = `const E = window.__mappyExcalidrawE2E;
   };`;
 
 /**
+ * The pointer part of a file drag: presses on `points.from` (an explorer item), moves until Obsidian's own `dragstart`
+ * runs (intercepted, `Input.setInterceptDrags`), and drops the drag's data on `points.to` holding `modifiers`
+ * (Input.dispatchDragEvent bits: Alt=1, Ctrl=2, Meta=4, Shift=8). Returns the drag data Obsidian put up.
+ */
+export async function dragPointer(cdp, points, modifiers) {
+  const mouse = (type, point) => cdp.send('Input.dispatchMouseEvent', {
+    type, x: point.x, y: point.y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1,
+  });
+  await cdp.send('Input.setInterceptDrags', { enabled: true });
+  let data;
+  let dropped = false;
+  try {
+    const intercepted = cdp.once('Input.dragIntercepted', 8000);
+    // Awaited below; this only keeps its timeout from becoming an unhandled rejection (which ends the process
+    // before the case's finally re-enables the plugins) when a mouse event throws first.
+    intercepted.catch(() => {});
+    await mouse('mousePressed', points.from);
+    for (let step = 1; step <= 5; step += 1) await mouse('mouseMoved', { x: points.from.x + step * 8, y: points.from.y + step * 2 });
+    ({ data } = await intercepted);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await cdp.send('Input.dispatchDragEvent', { type, x: points.to.x, y: points.to.y, data, modifiers });
+    }
+    dropped = true;
+  } finally {
+    // With no drag under way the pointer is still over the explorer item it pressed: let go there, not on the
+    // drawing, where a release would end a tool action or change the selection before the next drag reads it.
+    await mouse('mouseReleased', dropped ? points.to : points.from);
+    await cdp.send('Input.setInterceptDrags', { enabled: false });
+  }
+  return data;
+}
+
+/**
  * Drags `note` from the file explorer onto the drawing's canvas (at `at`, fractions of the canvas box) holding
  * `modifiers` (Input.dispatchDragEvent bits: Alt=1, Ctrl=2, Meta=4, Shift=8), then waits for the drawing to stop
  * changing and returns what the drop added: `kind` is 'map' when it holds the map's root title and its lines,
@@ -192,30 +225,7 @@ export function makeFileDrag(cdp, evaluate) {
       E.before = new Set(leaf.view.excalidrawAPI.getSceneElements().map(element => element.id));
       return { from: { x: from.left + from.width / 2, y: from.top + from.height / 2 },
         to: { x: to.left + to.width * ${at[0]}, y: to.top + to.height * ${at[1]} } };`);
-    const mouse = (type, point) => cdp.send('Input.dispatchMouseEvent', {
-      type, x: point.x, y: point.y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1,
-    });
-    await cdp.send('Input.setInterceptDrags', { enabled: true });
-    let data;
-    let dropped = false;
-    try {
-      const intercepted = cdp.once('Input.dragIntercepted', 8000);
-      // Awaited below; this only keeps its timeout from becoming an unhandled rejection (which ends the process
-      // before the case's finally re-enables the plugins) when a mouse event throws first.
-      intercepted.catch(() => {});
-      await mouse('mousePressed', points.from);
-      for (let step = 1; step <= 5; step += 1) await mouse('mouseMoved', { x: points.from.x + step * 8, y: points.from.y + step * 2 });
-      ({ data } = await intercepted);
-      for (const type of ['dragEnter', 'dragOver', 'drop']) {
-        await cdp.send('Input.dispatchDragEvent', { type, x: points.to.x, y: points.to.y, data, modifiers });
-      }
-      dropped = true;
-    } finally {
-      // With no drag under way the pointer is still over the explorer item it pressed: let go there, not on the
-      // drawing, where a release would end a tool action or change the selection before the next drag reads it.
-      await mouse('mouseReleased', dropped ? points.to : points.from);
-      await cdp.send('Input.setInterceptDrags', { enabled: false });
-    }
+    const data = await dragPointer(cdp, points, modifiers);
     // The map is inserted a render or two after the drop (Mappy measures each label in Excalidraw first): poll
     // until the added elements stop changing, rather than guessing a sleep.
     let added = [];
