@@ -325,8 +325,11 @@ export class MapEmbed extends MarkdownRenderChild {
  * nothing behind. Nothing here polls: the documents' own changes drive `check`.
  */
 class PendingClaim extends MarkdownRenderChild {
-  /** The hold's timer, with the window it was set on: the anchor may be in another window's document by the time it is cleared. */
-  private timer: { win: Window; id: number } | undefined;
+  /**
+   * The hold's timer, on the main window's clock: the anchor can be built in a popout's document or move to one, and a
+   * popout's timers go with it (the hold would never end) and are not cleared by another window's `clearTimeout`.
+   */
+  private timer: number | undefined;
   /** The weak handle the watcher keeps once the hold is over; on the claim itself so it can be dropped without a strong reference. */
   ref: WeakRef<PendingClaim> | undefined;
 
@@ -345,16 +348,15 @@ class PendingClaim extends MarkdownRenderChild {
 
   /** Runs `release` after `ms` unless the wait has ended by then. */
   hold(ms: number, release: () => void): void {
-    const win = this.containerEl.win;
-    this.timer = { win, id: win.setTimeout(() => {
+    this.timer = window.setTimeout(() => {
       this.timer = undefined;
       release();
-    }, ms) };
+    }, ms);
   }
 
   /** Ends the wait; harmless once it has ended. */
   settle(attached: boolean): void {
-    if (this.timer) this.timer.win.clearTimeout(this.timer.id);
+    if (this.timer !== undefined) window.clearTimeout(this.timer);
     this.timer = undefined;
     const settled = this.settled;
     if (!settled) return;

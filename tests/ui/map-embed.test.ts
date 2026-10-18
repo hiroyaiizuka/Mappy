@@ -916,7 +916,36 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
     expect(embeds.size).toBe(2);
   });
 
-  it("keeps watching only while a section waits: a closed popout's observer goes at once, the rest and the window events with the last section, and the hold is cleared on the window it was set on", async () => {
+  it("holds a section built in a popout's document on the main window's clock, so closing that popout does not keep it held for good", async () => {
+    const app = new HarnessApp();
+    app.put('Map.md', MAP);
+    const popout = openPopout(app);
+    const embeds = new MapEmbeds(app.asApp<App>(), new DocumentStore(app.asApp<App>()), 'mappy-map');
+    const renderer = loadedRenderer();
+    const block = popout.doc.adoptNode(createDiv({ cls: 'cm-embed-block' }));
+    const { span } = await container(app, 'Map', 'Map.md', block);
+    const late = popout.doc.adoptNode(createDiv());
+    await MarkdownRenderer.render(app.asApp<App>(), '- 記録する', late, 'Map.md');
+    const timers = timerTracker();
+    try {
+      embeds.process(late, context(renderer, 'Map.md'));
+      span.querySelector('.markdown-preview-view')?.append(late);
+      expect(late.doc).toBe(popout.doc);
+      expect(embeds.pending).toBe(1);
+      // The popout goes, and its timers with it; Obsidian keeps the rendering (a discarded one is kept until collected).
+      popout.close();
+      expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(1);
+      timers.fire(EMBED_CLAIM_HOLD_MS);
+      expect(embeds.pending).toBe(0);
+      // Past the hold the section is Obsidian's to keep: once it joins a document it is still claimed.
+      document.body.append(block);
+      await settle();
+      expect(span.hasClass(EMBED_HOST_CLASS)).toBe(true);
+      expect(embeds.size).toBe(1);
+    } finally { timers.restore(); }
+  });
+
+  it("keeps watching only while a section waits: a closed popout's observer goes at once, the rest and the window events with the last section, and the hold is the main window's timer", async () => {
     const app = new HarnessApp();
     app.put('Map.md', MAP);
     const first = openPopout(app);
@@ -948,7 +977,7 @@ describe("MapEmbeds in live preview (the embedded note's own sections)", () => {
       expect(span.querySelectorAll(':scope > .mappy-embed')).toHaveLength(1);
       expect(embeds.size).toBe(1);
       expect(embeds.pending).toBe(0);
-      // The anchor is in the popout's document now; its hold was the main window's timer, and it is gone.
+      // The anchor is in the popout's document now; its hold is the main window's timer, and it is gone.
       expect(late.win).toBe(first.win);
       expect(timers.pending(EMBED_CLAIM_HOLD_MS)).toBe(0);
       expect(disconnect).toHaveBeenCalledTimes(3);

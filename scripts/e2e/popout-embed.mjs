@@ -7,7 +7,10 @@
  * LEV-359 watched only the document a section was built in: in a popout they claimed only once the main window's DOM
  * changed after the section joined the popout's, and with the main window quiet (an embed below the fold scrolled to in
  * the popout) the embed stayed Obsidian's note embed. The reading view replaces the placeholder before Obsidian loads
- * the note (no wait), and its rows are here to show that path stays as it was in a popout.
+ * the note (no wait), and its rows are here to show that path stays as it was in a popout. Neither the reading rows nor
+ * the `move` row fail on a build before LEV-359 (moving a tab out always changes the main window's DOM, and the maps
+ * drawn in the main tab go with the leaf): they pin that those paths keep their maps in a popout and leave nothing behind
+ * once it closes, not the fix. The live-preview rows are the ones that fail without it.
  *
  * Rows are the person's operations × the embed's shape: open the host note in a popout (with the same host open in a
  * main tab, and without), scroll to an embed below the fold in the popout, and move a tab of the host to a new window
@@ -186,7 +189,8 @@ try {
   await step('reading-alongside', () => popoutRow({ name: 'reading-alongside', host: HOST, state: READING, maps: 2, alongside: true }));
   await step('reading-scroll', () => popoutRow({ name: 'reading-scroll', host: LONG, state: READING, maps: 1, scroll: '.markdown-preview-view' }));
 
-  // 「新規ウィンドウに移動」: a second tab of the host moved to a new window (the main window loses a tab, so it changes).
+  // 「新規ウィンドウに移動」: a second tab of the host moved to a new window. Not a regression row (it passes before LEV-359:
+  // the main window loses a tab, so it changes, and the maps move with the leaf); it pins that they stay maps there.
   await step('move', async () => {
     try {
       await evaluate(`${NEW_TAB} await leaf.openFile(app.vault.getAbstractFileByPath(${JSON.stringify(HOST)}), { state: ${JSON.stringify(LIVE)}, active: true }); return true;`);

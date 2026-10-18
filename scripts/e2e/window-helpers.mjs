@@ -241,22 +241,23 @@ export const CLAIM_ORDER = `(() => { const order = window.__mappyE2EClaimOrder; 
   return order.events.map(event => ({ ...event, at: event.at - order.started })); })()`;
 
 /**
- * What `CLAIM_ORDER` tells: `waitedOnMain`, the claims (fewer sections waiting in the popout, or more frames) that came
- * after a main-window change made while a section waited there; `stillWaiting`, sections waiting at the end; and how many
- * main-window changes there were in all and while a section waited.
+ * What `CLAIM_ORDER` tells: `waitedOnMain`, the times of the claims (fewer sections waiting in the popout, or more frames)
+ * with a main-window change since the claim before while a section waited there (each claim is judged on its own: the
+ * count starts again at every claim); `stillWaiting`, sections waiting at the end; `mainChanges`, the main window's changes
+ * in all; `mainChangesWhileWaiting`, those made while a section waited.
  */
 export function claimWaitedOnMain(events) {
-  let waiting = 0; let frames = 0; let mainWhileWaiting = 0; let total = 0;
+  let waiting = 0; let frames = 0; let sinceClaim = 0; let whileWaiting = 0;
   const waitedOnMain = [];
   for (const event of events ?? []) {
     if (event.kind === 'main') {
-      if (waiting > 0) { mainWhileWaiting += 1; total += 1; }
+      if (waiting > 0) { sinceClaim += 1; whileWaiting += 1; }
       continue;
     }
-    const claimed = event.waiting < waiting || event.frames > frames;
-    if (claimed && mainWhileWaiting > 0 && waiting > 0) waitedOnMain.push(event.at);
+    const claimed = waiting > 0 && (event.waiting < waiting || event.frames > frames);
+    if (claimed && sinceClaim > 0) waitedOnMain.push(event.at);
+    if (claimed) sinceClaim = 0;
     waiting = event.waiting; frames = event.frames;
-    if (waiting === 0) mainWhileWaiting = 0;
   }
-  return { waitedOnMain, stillWaiting: waiting, mainChanges: (events ?? []).filter(event => event.kind === 'main').length, mainWhileWaiting: total };
+  return { waitedOnMain, stillWaiting: waiting, mainChanges: (events ?? []).filter(event => event.kind === 'main').length, mainChangesWhileWaiting: whileWaiting };
 }
