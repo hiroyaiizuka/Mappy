@@ -1,7 +1,8 @@
 import type { DataAdapter } from "obsidian";
 import type { FoldKey } from "../core/fold-keys";
+import type { FoldMoves } from "../core/fold-state";
 import {
-  FOLD_LIMITS, isRemoved, readFoldFile, renamedPaths, sameFolds, sortedKeys, writeFoldFile, type FoldEntry, type StoredFolds,
+  FOLD_LIMITS, isRemoved, readFoldFile, relinkedKey, renamedPaths, sameFolds, sortedKeys, writeFoldFile, type FoldEntry, type StoredFolds,
 } from "../core/fold-memory";
 
 /** The adapter's part the memory uses. */
@@ -40,8 +41,9 @@ type Probe = { state: "file"; file: NonNullable<ReturnType<typeof readFoldFile>>
  * though, so the load of a plugin enabled again right after its disable can find a file gone between its `stat` and its
  * `read` (the unload's write moving it, code review 1 of LEV-365): a read that fails is tried again (`FOLD_LOAD_TRIES`).
  * A file that is missing or not of this shape (broken, another version, too large) counts as none: the maps open with
- * nothing remembered, and the next write replaces it. One whose read keeps failing (no access, a sync service holding it)
- * is not known to be none: the folds of this session are kept in memory and nothing is written, so the file stays.
+ * nothing remembered, and the next write replaces it. When a read keeps failing (no access, a sync service holding it),
+ * the other file is taken if it read; when neither did, what the file holds is not known: the folds of this session are
+ * kept in memory and nothing is written, so the file stays (code reviews 1 and 3 of LEV-365).
  *
  * Read once: a change made to the file meanwhile by something else (a sync service bringing another device's) is not
  * read, and the next write puts this Obsidian's folds over it (provisional, LEV-365's PR). A failed write is tried again,
@@ -62,6 +64,9 @@ export class FoldStore {
   private loaded = false;
   /** The wait before a failed write is tried again; 0 after a write that went through. */
   private retry = 0;
+  /** Set as the plugin unloads (`close`): nothing changes or is written after its last write. */
+  private closed = false;
+  private closing: Promise<void> | undefined;
   readonly next: string;
 
   constructor(
@@ -89,8 +94,12 @@ export class FoldStore {
     return this.loading === undefined || this.loaded;
   }
 
-  /** `change` applied once the file is read, so the read does not put the notes back from before it. */
+  /**
+   * `change` applied once the file is read, so the read does not put the notes back from before it; true when it is put
+   * off, or when the memory is closed and the change is dropped.
+   */
   private later(change: () => void): boolean {
+    if (this.closed) return true;
     if (this.settled) return false;
     void this.ready.then(change);
     return true;
@@ -99,8 +108,9 @@ export class FoldStore {
   private async read(): Promise<void> {
     for (let attempt = 1; ; attempt += 1) {
       const probes = await Promise.all([this.probe(this.path), this.probe(this.next)]);
-      if (probes.every(probe => probe.state !== "failed")) {
-        const chosen = probes.flatMap(probe => (probe.state === "file" ? [probe.file] : [])).sort((a, b) => b.savedAt - a.savedAt)[0];
+      const failed = probes.some(probe => probe.state === "failed");
+      const chosen = probes.flatMap(probe => (probe.state === "file" ? [probe.file] : [])).sort((a, b) => b.savedAt - a.savedAt)[0];
+      if (!failed || (chosen && attempt >= FOLD_LOAD_TRIES)) {
         if (!chosen) return;
         this.notes = chosen.notes;
         this.savedAt = chosen.savedAt;
@@ -151,40 +161,70 @@ export class FoldStore {
   }
 
   /**
-   * A re-parse on a map moved or dropped keys of the note's nodes (`moves`, src/core/fold-state.ts): the kept folds follow
-   * them, whichever map changed the folds last, and nothing else of them changes (code review 2 of LEV-365: a map not
-   * touched no longer puts its own folds over another's).
+   * A re-parse on a map moved, dropped or brought back keys of the note's nodes (`moves`, src/core/fold-state.ts): the kept
+   * folds follow them, whichever map changed the folds last, and nothing else of them changes (code reviews 2 and 3 of
+   * LEV-365: a map not touched does not put its own folds over another's).
    */
-  move(path: string, moved: ReadonlyMap<string, FoldKey>, dropped: ReadonlySet<string>): void {
-    if (this.later(() => { this.move(path, moved, dropped); })) return;
+  move(path: string, change: FoldMoves): void {
+    if (this.later(() => { this.move(path, change); })) return;
+    const { moved, dropped, added } = change;
+    if (moved.size === 0 && dropped.size === 0 && added.length === 0) return;
     const stored = this.notes.get(path);
-    if (!stored || (moved.size === 0 && dropped.size === 0)) return;
+    if (!stored && (added.length === 0 || !this.exists(path))) return;
     let touched = false;
-    const follow = (keys: readonly FoldKey[]): FoldKey[] => sortedKeys(keys.flatMap(key => {
-      const text = JSON.stringify(key);
-      if (dropped.has(text)) { touched = true; return []; }
-      const to = moved.get(text);
-      if (!to) return [key];
-      touched = true;
-      return [to];
-    }));
-    const folds = follow(stored.folds);
-    const open = follow(stored.open);
+    const follow = (keys: readonly FoldKey[], opened: boolean): FoldKey[] => {
+      const next = keys.flatMap(key => {
+        const text = JSON.stringify(key);
+        if (dropped.has(text)) { touched = true; return []; }
+        const to = moved.get(text);
+        if (!to) return [key];
+        touched = true;
+        return [to];
+      });
+      const held = new Set(next.map(key => JSON.stringify(key)));
+      for (const item of added) {
+        if (item.open !== opened || held.has(JSON.stringify(item.key))) continue;
+        next.push(item.key);
+        touched = true;
+      }
+      return sortedKeys(next);
+    };
+    const folds = follow(stored?.folds ?? [], false);
+    const open = follow(stored?.open ?? [], true);
     if (!touched) return;
     if (folds.length === 0 && open.length === 0) this.notes.delete(path);
-    else this.notes.set(path, { at: stored.at, folds, open });
+    else this.notes.set(path, { at: stored?.at ?? Date.now(), folds, open });
     this.changed();
   }
 
-  /** A note or folder renamed or moved: its notes' folds go with it (`vault.on("rename")`). */
+  /**
+   * A note or folder renamed or moved (`vault.on("rename")`): its notes' folds go with it, and the keys of every note whose
+   * calling items link to it follow the link Obsidian rewrites in that note (`relinkedKey`, code review 3 of LEV-365).
+   */
   rename(from: string, to: string): void {
     if (this.later(() => { this.rename(from, to); })) return;
+    let touched = false;
     const moved = renamedPaths(this.notes.keys(), from, to);
-    if (moved.size === 0) return;
-    const entries = Array.from(moved, ([old, path]) => [path, this.notes.get(old)!] as const);
-    for (const old of moved.keys()) this.notes.delete(old);
-    for (const [path, stored] of entries) this.notes.set(path, stored);
-    this.changed();
+    if (moved.size > 0) {
+      const entries = Array.from(moved, ([old, path]) => [path, this.notes.get(old)!] as const);
+      for (const old of moved.keys()) this.notes.delete(old);
+      for (const [path, stored] of entries) this.notes.set(path, stored);
+      touched = true;
+    }
+    for (const [path, stored] of this.notes) {
+      let relinked = false;
+      const follow = (keys: readonly FoldKey[]): FoldKey[] => keys.map(key => {
+        const next = relinkedKey(key, from, to);
+        if (next) relinked = true;
+        return next ?? key;
+      });
+      const folds = follow(stored.folds);
+      const open = follow(stored.open);
+      if (!relinked) continue;
+      this.notes.set(path, { at: stored.at, folds: sortedKeys(folds), open: sortedKeys(open) });
+      touched = true;
+    }
+    if (touched) this.changed();
   }
 
   /** A note or folder deleted: its notes are forgotten (`vault.on("delete")`). */
@@ -212,11 +252,30 @@ export class FoldStore {
     this.timer = window.setTimeout(() => { this.timer = undefined; void this.flush(); }, wait);
   }
 
+  /**
+   * The plugin unloads: what is not written yet is written now, once, and nothing after it — a retry or a change from a
+   * view torn down later would otherwise write this memory over the one the plugin enabled again holds (code review 3).
+   */
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closed = true;
+    if (this.timer !== undefined) window.clearTimeout(this.timer);
+    this.timer = undefined;
+    this.closing = this.lastWrite();
+    return this.closing;
+  }
+
+  /** The write under way, if any, then one more for what is left (`close`). */
+  private async lastWrite(): Promise<void> {
+    if (this.writing) await this.writing;
+    if (this.dirty && !this.unread) await this.write();
+  }
+
   /** What is not written yet, written now; resolves when the file holds it (or the write failed and waits for the next). */
   flush(): Promise<void> {
     if (this.timer !== undefined) window.clearTimeout(this.timer);
     this.timer = undefined;
-    if (this.unread) return Promise.resolve();
+    if (this.unread || this.closed) return this.closing ?? this.writing ?? Promise.resolve();
     if (this.writing) return this.writing.then(() => (this.dirty ? this.flush() : undefined));
     if (!this.dirty) return Promise.resolve();
     const task = this.write().finally(() => { if (this.writing === task) this.writing = null; });
@@ -238,6 +297,7 @@ export class FoldStore {
       this.retry = 0;
     } catch {
       this.dirty = true;
+      if (this.closed) return;
       // Tried again later, unless a change or a flush comes first; the wait doubles while the writes keep failing.
       this.retry = Math.min(FOLD_WRITE_RETRY_MAX, this.retry === 0 ? this.delay * 2 : this.retry * 2);
       if (this.timer !== undefined) window.clearTimeout(this.timer);

@@ -51,7 +51,7 @@ export default class MappyPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => { folds.prune(); });
     this.registerEvent(this.app.workspace.on("quit", () => { void folds.flush(); }));
     this.registerDomEvent(window, "pagehide", () => { void folds.flush(); });
-    this.register(() => { void folds.flush(); });
+    this.register(() => { void folds.close(); });
     this.router = new ViewRouter({
       mapViewType: VIEW_TYPE,
       isMapFile: path => {

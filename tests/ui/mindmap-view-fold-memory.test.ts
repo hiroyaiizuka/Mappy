@@ -41,10 +41,9 @@ const SOURCE = [
 const CALLED_SOURCE = ['---', 'mappy: true', '---', '## 先', '- C1', '  - C1a', '- C2', '  - C2a', ''].join('\n');
 const OTHER_SOURCE = ['---', 'mappy: true', '---', '## ほか', '- 何か', ''].join('\n');
 
-function memoryFor(app: HarnessApp): FoldStore {
-  const files = new Map<string, string>();
+function memoryFor(app: HarnessApp, files = new Map<string, string>(), held?: Promise<void>): FoldStore {
   const adapter: FoldAdapter = {
-    read: path => files.has(path) ? Promise.resolve(files.get(path)!) : Promise.reject(new Error('ENOENT')),
+    read: async path => { await held; if (!files.has(path)) throw new Error('ENOENT'); return files.get(path)!; },
     write: (path, data) => { files.set(path, data); return Promise.resolve(); },
     remove: path => { files.delete(path); return Promise.resolve(); },
     rename: (from, to) => { files.set(to, files.get(from)!); files.delete(from); return Promise.resolve(); },
@@ -172,6 +171,34 @@ describe('the folds kept between openings of a note (LEV-365)', () => {
     const third = await mountMapView(PATH, SOURCE, 'mindmap', app, { store, memory });
     await third.settle();
     expect(folded(third)).toEqual(['C1#1', 'C2#1', '同名#2', '新しい枝#1']);
+  });
+
+  it('restores the kept folds when the note changes while the memory is still being read at startup (code review 3)', async () => {
+    const app = new HarnessApp();
+    // A first session folds 枝 and writes the memory's file.
+    const files = new Map<string, string>();
+    const earlier = memoryFor(app, files);
+    const first = await mount(earlier, app);
+    toggle(first, '枝');
+    await first.settle();
+    await earlier.flush();
+    await first.close();
+    expect(files.size).toBe(1);
+    // The next session: the file's read is held while the restored map loads its note and the note changes.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const memory = memoryFor(app, files, held);
+    void memory.load();
+    const opening = mountMapView(PATH, SOURCE, 'mindmap', app, { memory });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    app.put(PATH, SOURCE.replace('- 開いたまま', '- 開いたまま（外で変えた）'));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    release();
+    const mounted = await opening;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await mounted.settle();
+    expect(folded(mounted)).toEqual(['C1#1', 'C2#1', '枝#1']);
+    expect(memory.get(PATH)?.folds).toEqual([['根', '枝']]);
   });
 
   it('opens again as the map showed it after a change made outside the map, which drops a same-titled node’s fold as before (E05)', async () => {

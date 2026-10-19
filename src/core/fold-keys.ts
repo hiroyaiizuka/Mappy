@@ -34,7 +34,7 @@ export function isFoldKey(value: unknown): value is FoldKey {
 }
 
 /** The node under `siblings` that a key's step names, and how many items of the key the step took. */
-function step(key: FoldKey, at: number, siblings: readonly MindNode[]): { node: MindNode | undefined; used: number } {
+function resolveStep(key: FoldKey, at: number, siblings: readonly MindNode[]): { node: MindNode | undefined; used: number } {
   const title = key[at];
   if (typeof title !== 'string') return { node: undefined, used: 1 };
   const next = key[at + 1];
@@ -79,7 +79,7 @@ export function foldKeyMaker(document: MindDocument, calls: CallProjection | und
   const keys = new Map<string, FoldKey | null>();
   const numbers = new Map<string, Map<string, number>>();
   /** The step to `node` among `siblings` (the children of the parent `under` names): its title, and its number when another before it has that title. */
-  const step = (under: string, siblings: readonly MindNode[], node: MindNode): FoldKey => {
+  const stepTo = (under: string, siblings: readonly MindNode[], node: MindNode): FoldKey => {
     let table = numbers.get(under);
     if (!table) {
       table = new Map();
@@ -105,11 +105,11 @@ export function foldKeyMaker(document: MindDocument, calls: CallProjection | und
       const parentId = node.parentId;
       if (caller !== undefined && parentId === caller && calls) {
         const host = keyOf(caller);
-        if (host) key = [...host, null, ...step(`${caller}/`, calledChildren(calls, caller), node)];
+        if (host) key = [...host, null, ...stepTo(`${caller}/`, calledChildren(calls, caller), node)];
       } else {
         const siblings = caller === undefined ? nodes.get(parentId)?.children : calls?.byId.get(parentId)?.children;
         const parent = siblings ? keyOf(parentId) : undefined;
-        if (siblings && parent) key = [...parent, ...step(parentId, siblings, node)];
+        if (siblings && parent) key = [...parent, ...stepTo(parentId, siblings, node)];
       }
     }
     keys.set(id, key ?? null);
@@ -124,7 +124,7 @@ export function nodeOfFoldKey(document: MindDocument, calls: CallProjection | un
   const host = boundary === -1 ? key : key.slice(0, boundary);
   let node: MindNode | undefined = document.root;
   for (let at = 0; at < host.length && node;) {
-    const found = step(host, at, node.children);
+    const found = resolveStep(host, at, node.children);
     node = found.node;
     at += found.used;
   }
@@ -135,7 +135,7 @@ export function nodeOfFoldKey(document: MindDocument, calls: CallProjection | un
   let siblings = calledChildren(calls, callerId);
   let found: MindNode | undefined;
   for (let at = 0; at < called.length;) {
-    const taken = step(called, at, siblings);
+    const taken = resolveStep(called, at, siblings);
     found = taken.node;
     if (!found) return undefined;
     siblings = found.children;

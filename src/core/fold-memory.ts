@@ -57,16 +57,57 @@ export function readFoldFile(text: string): { savedAt: number; notes: Map<string
  * folded, as a note never folded does). `notes` is left as it is: the caller drops what `kept` does not name.
  */
 export function writeFoldFile(notes: ReadonlyMap<string, StoredFolds>, savedAt: number, limits: { notes: number; bytes: number } = FOLD_LIMITS): { text: string; kept: Set<string> } {
-  const newest = Array.from(notes.entries()).sort((a, b) => b[1].at - a[1].at).slice(0, limits.notes);
-  const sizes = newest.map(([path, stored]) => utf8Bytes(JSON.stringify(path)) + utf8Bytes(JSON.stringify(stored)) + 2);
-  let total = 64 + sizes.reduce((sum, size) => sum + size, 0);
+  // Each entry is serialized once: its text is both what is measured and what is written (code review 3 of LEV-365).
+  const entries = new Map(Array.from(notes, ([path, stored]) => [path, `${JSON.stringify(path)}:${JSON.stringify(stored)}`]));
+  const newest = Array.from(notes.entries()).sort((a, b) => b[1].at - a[1].at).slice(0, limits.notes).map(([path]) => path);
+  const sizes = newest.map(path => utf8Bytes(entries.get(path)!) + 1);
+  const head = `{"version":${FOLD_MEMORY_VERSION},"savedAt":${savedAt},"notes":{`;
+  let total = utf8Bytes(head) + 2 + sizes.reduce((sum, size) => sum + size, 0);
   while (newest.length > 0 && total > limits.bytes) {
     newest.pop();
     total -= sizes.pop() ?? 0;
   }
-  const kept = new Set(newest.map(([path]) => path));
-  const ordered = Object.fromEntries(Array.from(notes.entries()).filter(([path]) => kept.has(path)));
-  return { text: JSON.stringify({ version: FOLD_MEMORY_VERSION, savedAt, notes: ordered }), kept };
+  const kept = new Set(newest);
+  const body = Array.from(entries).filter(([path]) => kept.has(path)).map(([, text]) => text).join(',');
+  return { text: `${head}${body}}}`, kept };
+}
+
+/** The link target of a key's step that is one `![[…]]` (a calling item, §5 M12), with what stands around it; null for any other step. */
+const EMBED_STEP = /^(\s*!\[\[)([^\]|#\r\n]+)((?:#[^\]|\r\n]*)?(?:\|[^\]\r\n]*)?\]\]\s*)$/u;
+
+/**
+ * `key` with the calling items' links to a note renamed from `from` to `to` (or a note in a folder renamed) rewritten as
+ * Obsidian's link update rewrites them in the note: a link by the note's path, or by its name alone, gets the new one,
+ * its `#heading` and `|alias` kept (code review 3 of LEV-365: the item is keyed by its text, and a map closed while the
+ * note it calls is renamed would otherwise lose every fold under it). Null when no step changes. A link by a name that
+ * another note shares may be rewritten too: the key cannot tell which note it meant.
+ */
+export function relinkedKey(key: FoldKey, from: string, to: string): FoldKey | null {
+  const note = from.endsWith('.md');
+  const bare = (path: string): string => path.replace(/\.md$/u, '');
+  const name = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+  const was = bare(from);
+  const now = bare(to);
+  const rename = (link: string): string | null => {
+    for (const suffix of ['', '.md']) {
+      if (note && link === `${was}${suffix}`) return `${now}${suffix}`;
+      if (!note && link.startsWith(`${was}/`)) return `${now}${link.slice(was.length)}`;
+      // By its name alone: only a rename changes it (a move keeps the shortest link as it was).
+      if (note && name(was) !== name(now) && link === `${name(was)}${suffix}`) return `${name(now)}${suffix}`;
+    }
+    return null;
+  };
+  let changed = false;
+  const next = key.map(item => {
+    const match = typeof item === 'string' ? EMBED_STEP.exec(item) : null;
+    if (!match) return item;
+    const [, opening = '', target = '', rest = ''] = match;
+    const renamed = rename(target.trim());
+    if (renamed === null) return item;
+    changed = true;
+    return `${opening}${renamed}${rest}`;
+  });
+  return changed ? next : null;
 }
 
 /** The note paths that `from` stood for once it was renamed to `to`: the note itself, or every note in the folder. */

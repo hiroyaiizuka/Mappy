@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FoldKey } from '../../src/core/fold-keys';
 import {
-  FOLD_LIMITS, isRemoved, readFoldFile, renamedPaths, sameFolds, sortedKeys, writeFoldFile, type StoredFolds,
+  FOLD_LIMITS, isRemoved, readFoldFile, relinkedKey, renamedPaths, sameFolds, sortedKeys, writeFoldFile, type StoredFolds,
 } from '../../src/core/fold-memory';
 
 /**
@@ -90,5 +90,22 @@ describe('sortedKeys and sameFolds', () => {
     expect(sameFolds({ folds: one, open: [] }, { folds: two, open: [] })).toBe(true);
     expect(sameFolds({ folds: one, open: [] }, { folds: [], open: one })).toBe(false);
     expect(sameFolds(undefined, { folds: [], open: [] })).toBe(false);
+  });
+});
+
+describe('relinkedKey (code review 3)', () => {
+  it('rewrites a calling item’s link to a renamed note as Obsidian’s link update does, its heading and alias kept', () => {
+    expect(relinkedKey(['根', '![[Plan]]', null, 'C1'], 'Maps/Plan.md', 'Maps/Plan v2.md')).toEqual(['根', '![[Plan v2]]', null, 'C1']);
+    expect(relinkedKey(['根', '![[Maps/Plan#節|別名]]'], 'Maps/Plan.md', 'Maps/Plan v2.md')).toEqual(['根', '![[Maps/Plan v2#節|別名]]']);
+    expect(relinkedKey(['根', '![[Maps/Plan.md]]'], 'Maps/Plan.md', 'Archive/Plan.md')).toEqual(['根', '![[Archive/Plan.md]]']);
+    // A note moved keeps its shortest link; a folder renamed rewrites the links by path that pass through it.
+    expect(relinkedKey(['根', '![[Plan]]'], 'Maps/Plan.md', 'Archive/Plan.md')).toBeNull();
+    expect(relinkedKey(['根', '![[Maps/Sub/Plan]]'], 'Maps', 'Areas')).toEqual(['根', '![[Areas/Sub/Plan]]']);
+    expect(relinkedKey(['根', '![[Maps]]'], 'Maps', 'Areas')).toBeNull();
+  });
+
+  it('leaves every other step as it is: plain titles, links to other notes, a link inside a sentence', () => {
+    expect(relinkedKey(['Plan', '![[Other]]', null, 'Plan'], 'Plan.md', 'New.md')).toBeNull();
+    expect(relinkedKey(['文中の ![[Plan]] は呼び出しでない'], 'Plan.md', 'New.md')).toBeNull();
   });
 });

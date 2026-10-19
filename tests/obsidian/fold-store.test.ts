@@ -134,6 +134,20 @@ describe('load', () => {
     expect(disk.calls.some(call => call.startsWith('write'))).toBe(false);
   });
 
+  it('takes the file that read when the other keeps failing, and writes again (code review 3)', async () => {
+    disk.files.set(PATH, file(10, { 'a.md': [['main']] }));
+    disk.files.set(NEXT, 'held');
+    disk.fault = (step, path) => (step === 'read' && path === NEXT ? new Error('EBUSY') : null);
+    const loading = store.load();
+    await vi.runAllTimersAsync();
+    await loading;
+    expect(store.get('a.md')?.folds).toEqual([['main']]);
+    disk.fault = () => null;
+    store.set('b.md', { folds: [['b']], open: [] });
+    await store.flush();
+    expect(onDisk(disk)?.notes.get('b.md')?.folds).toEqual([['b']]);
+  });
+
   it('does not read a file larger than the limit', async () => {
     disk.files.set(PATH, JSON.stringify({ version: 1, savedAt: 10, notes: { 'a.md': { at: 10, folds: [['x'.repeat(FOLD_LIMITS.readBytes)]], open: [] } } }));
     await store.load();
@@ -274,10 +288,13 @@ describe('a re-parse moving keys', () => {
   it('moves and drops the keys a map names, and leaves the folds another map changed last as they are (code review 2)', async () => {
     disk.files.set(PATH, file(10, { 'a.md': [['根', '枝'], ['根', '同名', 2], ['根', '消える']] }));
     await store.load();
-    store.move('a.md', new Map([[JSON.stringify(['根', '枝']), ['根', '新しい枝']]]), new Set([JSON.stringify(['根', '消える'])]));
+    store.move('a.md', { moved: new Map([[JSON.stringify(['根', '枝']), ['根', '新しい枝']]]), dropped: new Set([JSON.stringify(['根', '消える'])]), added: [] });
     expect(store.get('a.md')?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
     // A key the note no longer keeps (another map opened it) is not put back by a move.
-    store.move('a.md', new Map([[JSON.stringify(['根', '開いた']), ['根', '開いた2']]]), new Set());
+    store.move('a.md', { moved: new Map([[JSON.stringify(['根', '開いた']), ['根', '開いた2']]]), dropped: new Set(), added: [] });
+    // A key brought back by a re-parse (a called branch drawn again) is added where it belongs.
+    store.move('a.md', { moved: new Map(), dropped: new Set(), added: [{ key: ['根', '![[先]]', null, 'C1'], open: true }] });
+    expect(store.get('a.md')?.open).toEqual([['根', '![[先]]', null, 'C1']]);
     expect(store.get('a.md')?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
     await store.flush();
     expect(onDisk(disk)?.notes.get('a.md')?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
@@ -303,10 +320,41 @@ describe('a change while the file is read', () => {
   });
 });
 
+describe('closing as the plugin unloads (code review 3)', () => {
+  it('writes what is left once, then takes no change and tries no failed write again', async () => {
+    await store.load();
+    store.set('a.md', { folds: [['a']], open: [] });
+    await store.close();
+    expect(onDisk(disk)?.notes.get('a.md')?.folds).toEqual([['a']]);
+    store.set('b.md', { folds: [['b']], open: [] });
+    store.rename('a.md', 'b.md');
+    await vi.advanceTimersByTimeAsync(FOLD_WRITE_RETRY_MAX * 2);
+    await store.flush();
+    expect(Array.from(onDisk(disk)!.notes.keys())).toEqual(['a.md']);
+  });
+
+  it('does not try again a last write that failed', async () => {
+    await store.load();
+    store.set('a.md', { folds: [['a']], open: [] });
+    disk.fault = step => (step === 'write' ? new Error('busy') : null);
+    await store.close();
+    disk.fault = () => null;
+    await vi.advanceTimersByTimeAsync(FOLD_WRITE_RETRY_MAX * 2);
+    expect(disk.calls.filter(call => call.startsWith('write'))).toHaveLength(1);
+  });
+});
+
 describe('notes renamed and deleted', () => {
   beforeEach(async () => {
     disk.files.set(PATH, file(10, { 'a.md': [['a']], 'Folder/c.md': [['c']], 'Folder/Sub/d.md': [['d']], 'Folderish/e.md': [['e']] }));
     await store.load();
+  });
+
+  it('follows a called note renamed in the keys of the notes that call it, which Obsidian rewrites (code review 3)', () => {
+    store.set('a.md', { folds: [['根', '![[c]]']], open: [['根', '![[c]]', null, 'C1']] });
+    store.rename('Folder/c.md', 'Folder/c2.md');
+    expect(store.get('a.md')).toEqual(expect.objectContaining({ folds: [['根', '![[c2]]']], open: [['根', '![[c2]]', null, 'C1']] }));
+    expect(store.get('Folder/c2.md')?.folds).toEqual([['c']]);
   });
 
   it('moves a renamed note’s folds, and a renamed folder’s notes’, and writes the move', async () => {

@@ -8,8 +8,7 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { sameFolds, type FoldEntry } from "../core/fold-memory";
-import type { FoldKey } from "../core/fold-keys";
-import { foldEntryOf, moves, rememberedFolds, rememberedIds, type RememberedFolds } from "../core/fold-state";
+import { foldEntryOf, moves, rememberedFolds, rememberedIds, type KeptKey, type RememberedFolds } from "../core/fold-state";
 import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
 import { standsForFileName } from "../core/list-commands";
@@ -235,7 +234,12 @@ export class MindmapView extends EditableFileView {
    * The note's first draw folds what it names (`adopt`); a called map drawn later in the same opening (its note read late)
    * leaves the nodes it keeps opened open when it is drawn.
    */
-  private kept: { entry: FoldEntry; keys: RememberedFolds; ids?: Map<string, FoldKey> } | undefined;
+  private kept: { entry: FoldEntry; keys: RememberedFolds; ids?: Map<string, KeptKey> } | undefined;
+  /**
+   * True while the note's load waits for the memory to finish reading its file (`onLoadFile`): a draw meanwhile neither
+   * folds what is kept nor hands anything over, and the first draw after the wait is the note's first (code review 3).
+   */
+  private foldsPending = false;
   /** Whether the note shown has been drawn since it loaded: the kept folds of its own nodes apply to that first draw alone. */
   private foldsRestored = false;
   private mode: LayoutMode = "mindmap";
@@ -566,10 +570,22 @@ export class MindmapView extends EditableFileView {
    * first draw applies them (`adopt`).
    */
   async onLoadFile(file: TFile): Promise<void> {
-    if (this.memory) await this.memory.ready;
+    this.kept = undefined;
+    this.foldsRestored = false;
+    if (this.memory) {
+      this.foldsPending = true;
+      try { await this.memory.ready; } catch { /* Read as none: the memory's load does not fail. */ } finally { this.foldsPending = false; }
+    }
     const entry = this.memory?.open(file.path);
     this.kept = entry ? { entry, keys: rememberedFolds(entry) } : undefined;
     this.foldsRestored = false;
+    // A draw of the note made while the memory read (a change of the note's then) took it as nothing kept: its folds go, and
+    // the next draw is the note's first.
+    if (this.projected && this.document && this.projected.document === this.document) {
+      this.projected = undefined;
+      this.collapsed = new Set();
+      this.knownCalled.clear();
+    }
     await super.onLoadFile(file);
   }
 
@@ -1483,7 +1499,7 @@ export class MindmapView extends EditableFileView {
     for (const id of fresh) if (!opened?.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
     this.knownCalled = new Set([...trees.calls.sources.keys(), ...Array.from(this.knownCalled).filter(kept)]);
-    this.foldsRestored = true;
+    if (!this.foldsPending) this.foldsRestored = true;
     this.rememberFolds(false);
   }
 
@@ -1507,15 +1523,14 @@ export class MindmapView extends EditableFileView {
     const file = this.file;
     const document = this.document;
     const projected = this.projected;
-    if (!memory || !file || !document || projected?.document !== document) return;
+    if (!memory || !file || !document || projected?.document !== document || this.foldsPending) return;
     const before = this.kept;
-    const { entry, ids } = foldEntryOf({ document, calls: projected.trees.calls }, this.collapsed, this.knownCalled, before?.keys);
+    const { entry, ids } = foldEntryOf({ document, calls: projected.trees.calls }, this.collapsed, this.knownCalled, before?.keys, before?.ids);
     const same = sameFolds(entry, before?.entry);
     this.kept = { entry, keys: same && before ? before.keys : rememberedFolds(entry), ids };
     if (same) return;
     if (byPerson || !before?.ids) { memory.set(file.path, entry); return; }
-    const { moved, dropped } = moves(before.ids, ids);
-    memory.move(file.path, moved, dropped);
+    memory.move(file.path, moves(before.ids, ids));
   }
 
   /**

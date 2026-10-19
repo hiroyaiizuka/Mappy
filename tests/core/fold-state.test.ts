@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { calledNodeId, projectShown, type CallTargets } from '../../src/core/calls';
-import { foldEntryOf, moves, rememberedFolds, rememberedIds, type FoldedMap } from '../../src/core/fold-state';
+import type { FoldKey } from '../../src/core/fold-keys';
+import { foldEntryOf, moves, rememberedFolds, rememberedIds, type FoldedMap, type KeptKey } from '../../src/core/fold-state';
 import { parseMarkdown, type MindDocument } from '../../src/core/markdown';
 
 /**
@@ -72,11 +73,28 @@ describe('rememberedIds', () => {
 });
 
 describe('moves', () => {
-  it('tells the keys a re-parse moved (a node renamed, a same-titled sibling put before it) and the ones it dropped', () => {
-    const before = new Map([['a', ['根', '枝']], ['b', ['根', '同名', 2]], ['c', ['根', '消える']], ['d', ['根', '同じ']]]);
-    const after = new Map([['a', ['根', '新しい名前']], ['b', ['根', '同名', 3]], ['d', ['根', '同じ']]]);
-    const { moved, dropped } = moves(before, after);
+  it('tells the keys a re-parse moved (a node renamed, a same-titled sibling put before it), dropped, and brought back', () => {
+    const fold = (...key: FoldKey): KeptKey => ({ key, open: false });
+    const before = new Map<string, KeptKey>([['a', fold('根', '枝')], ['b', fold('根', '同名', 2)], ['c', fold('根', '消える')], ['d', fold('根', '同じ')]]);
+    const after = new Map<string, KeptKey>([['a', fold('根', '新しい名前')], ['b', fold('根', '同名', 3)], ['d', fold('根', '同じ')], ['e', { key: ['根', '![[先]]', null, 'C1'], open: true }]]);
+    const { moved, dropped, added } = moves(before, after);
     expect(moved).toEqual(new Map([[JSON.stringify(['根', '枝']), ['根', '新しい名前']], [JSON.stringify(['根', '同名', 2]), ['根', '同名', 3]]]));
     expect(dropped).toEqual(new Set([JSON.stringify(['根', '消える'])]));
+    expect(added).toEqual([{ key: ['根', '![[先]]', null, 'C1'], open: true }]);
+  });
+});
+
+describe('a called branch whose link is broken for a while (code review 3)', () => {
+  it('keeps the key of a called node opened while the item draws no map, so the link typed again finds it kept', () => {
+    const shown = map();
+    const caller = id(shown.document, '![[先]]');
+    const c1 = calledNodeId(caller, id(shown.called!, 'C1'));
+    const first = foldEntryOf(shown, new Set(), new Set([caller, c1]));
+    expect(first.entry.open).toEqual([['根', '![[先]]', null, 'C1']]);
+    // The item's link mistyped: the view keeps the called ids (LEV-260), but no node of them is drawn.
+    const typo = map(HOST.replace('![[先]]', '![[さき]]'), null);
+    const during = foldEntryOf(typo, new Set(), new Set([caller, c1]), rememberedFolds(first.entry), first.ids);
+    expect(during.entry.open).toEqual([['根', '![[先]]', null, 'C1']]);
+    expect(moves(first.ids, during.ids)).toEqual({ moved: new Map(), dropped: new Set(), added: [] });
   });
 });
