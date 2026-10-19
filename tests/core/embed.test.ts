@@ -98,6 +98,9 @@ describe('findSection', () => {
     // A plain heading Obsidian resolves keeps the link, though a coloured one of the same text comes earlier.
     const both = parseMarkdown(`## ${yellow}同じ</mark>\n\n## 同じ\n`, 'Note');
     expect(findSection(both, '#同じ')?.title).toBe('同じ');
+    // The lenient reading tries the next `A` when the first has no `B` below (code review 2).
+    const later = parseMarkdown(`## ${yellow}A</mark>\n\n## A\n\n### ${yellow}B</mark>\n`, 'Note');
+    expect(findSection(later, '#A#B')?.title).toBe(`${yellow}B</mark>`);
     // A heading the colour is only part of is not read without it.
     expect(findSection(parseMarkdown('## 前半 <mark>後半</mark>\n', 'Note'), '#前半 後半')).toBeNull();
   });

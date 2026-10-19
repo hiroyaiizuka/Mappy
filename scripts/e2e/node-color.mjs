@@ -191,9 +191,11 @@ try {
       const result = await colorFromMenu(shape.title, LABEL[shape.color], shape.index ?? 0);
       check(JSON.stringify(result.menu.titles) === JSON.stringify(['色なし', ...Object.values(LABEL)]), `${shape.id}: colour menu ${JSON.stringify(result.menu.titles)}`);
       check(result.messages.length === 0, `${shape.id}: ${JSON.stringify(result.messages)}`);
-      // A topic's `mappy-topics` key is its heading without the colour: only the heading changes.
-      if (shape.topic) expected = expected.replace('## トピック', `## ${mark('yellow')}トピック</mark>`);
-      else expected = expected.replace(shape.line[0], shape.line[1]);
+      // A topic's `mappy-topics` key is its heading as written: it follows the colour in the same edit set.
+      if (shape.topic) {
+        expected = expected.replace('  トピック: { mindmap: [420, 60] }', `  "${mark('yellow').replace(/"/gu, '\\"')}トピック</mark>": { mindmap: [420, 60] }`)
+          .replace('## トピック', `## ${mark('yellow')}トピック</mark>`);
+      } else expected = expected.replace(shape.line[0], shape.line[1]);
       check(result.source === expected, `${shape.id}: source\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
       const fill = await nodeFill(shape.title, shape.index ?? 0);
       check(fill.color === shape.color, `${shape.id}: data-mappy-color ${fill.color}`);
@@ -210,9 +212,18 @@ try {
           return { dx: Math.round(b.left - a.left), dy: Math.round(b.top - a.top) };`);
         moved = { before: position, after: now, metadata };
         check(Math.abs(now.dx - position.dx) <= 1 && Math.abs(now.dy - position.dy) <= 1, `topic moved: ${JSON.stringify(moved)}`);
-        check(metadata?.['トピック']?.mindmap?.join() === '420,60' && Object.keys(metadata).length === 1, `metadataCache mappy-topics ${JSON.stringify(metadata)}`);
+        check(metadata?.[`${mark('yellow')}トピック</mark>`]?.mindmap?.join() === '420,60' && Object.keys(metadata).length === 1, `metadataCache mappy-topics ${JSON.stringify(metadata)}`);
       }
-      return { menu: result.menu, fill, moved };
+      // A link on a colour takes the text's colour (Obsidian's underline marks it), readable on every fill.
+      let link = null;
+      if (shape.id === 'link') {
+        link = await evaluate(`${VIEW} ${COLOR}
+          const node = nth(${JSON.stringify(shape.title)}, 0); const anchor = node.querySelector('.mappy-node-label a');
+          const back = backdrop(node);
+          return { ratio: contrast(onto(rgba(getComputedStyle(anchor).color), back), back), underline: getComputedStyle(anchor).textDecorationLine };`);
+        check(link.ratio >= 4.5, `link contrast ${JSON.stringify(link)}`);
+      }
+      return { menu: result.menu, fill, moved, link };
     });
   }
 

@@ -85,28 +85,30 @@ function* headingsBelow(scope: MindNode): Generator<MindNode> {
  * section. Same-named headings resolve to the first one. List items are never
  * headings, a block reference or a missing heading resolves to nothing.
  *
- * A path Obsidian finds no heading for is tried again with each heading read without its colour (LEV-364): a heading
- * the map coloured is `<mark …>A</mark>` to Obsidian, so `#A` no longer reaches it there, and the embed and the called
- * map (§5 M10, M12) keep showing the section the link meant. A path Obsidian resolves is answered as Obsidian does.
+ * A path Obsidian finds no heading for is tried again with each heading read without its colour as well (LEV-364): a
+ * heading the map coloured is `<mark …>A</mark>` to Obsidian, so `#A` no longer reaches it there, and the embed and the
+ * called map (§5 M10, M12) keep showing the section the link meant. That second reading goes on to the next heading
+ * that matches a segment when the one it took has nothing below for the rest of the path (code review 2: a coloured `A`
+ * without `B` before a plain `A` holding a coloured `B`). A path Obsidian resolves is answered as Obsidian does.
  */
 export function findSection(doc: MindDocument, subpath: string, normalize = normalizeHeading): MindNode | null {
   if (isBlockReference(subpath)) return null;
   const parts = subpath.split('#').map((part) => normalize(part)).filter((part) => part !== '');
   if (parts.length === 0) return null;
-  const walk = (matches: (heading: MindNode, part: string) => boolean): MindNode | null => {
-    let scope = doc.root;
-    for (const part of parts) {
-      let found: MindNode | null = null;
-      for (const heading of headingsBelow(scope)) {
-        if (matches(heading, part)) { found = heading; break; }
-      }
-      if (!found) return null;
-      scope = found;
+  const exact = (heading: MindNode, part: string): boolean => normalize(heading.title) === part;
+  const lenient = (heading: MindNode, part: string): boolean => exact(heading, part) || normalize(uncoloredTitle(heading.title)) === part;
+  // Obsidian's walk takes the first match of each segment; the lenient one tries the next match before giving up.
+  const walk = (scope: MindNode, index: number, matches: typeof exact, retry: boolean): MindNode | null => {
+    const part = parts[index];
+    if (part === undefined) return scope;
+    for (const heading of headingsBelow(scope)) {
+      if (!matches(heading, part)) continue;
+      const found = walk(heading, index + 1, matches, retry);
+      if (found || !retry) return found;
     }
-    return scope;
+    return null;
   };
-  return walk((heading, part) => normalize(heading.title) === part)
-    ?? walk((heading, part) => normalize(heading.title) === part || normalize(uncoloredTitle(heading.title)) === part);
+  return walk(doc.root, 0, exact, false) ?? walk(doc.root, 0, lenient, true);
 }
 
 /** The trees an embed draws: one body root and, for a whole-note embed, the free topics beside it. */

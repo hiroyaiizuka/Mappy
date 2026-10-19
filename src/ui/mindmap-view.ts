@@ -1016,7 +1016,7 @@ export class MindmapView extends EditableFileView {
   private colorMenu(event: MouseEvent): void {
     const node = this.selected();
     if (!node) return;
-    const current = titleColor(node.title)?.color ?? null;
+    const current = (node.kind === "root" ? null : titleColor(node.title))?.color ?? null;
     const menu = new Menu();
     for (const color of [null, ...NODE_COLORS]) {
       menu.addItem(item => item.setTitle(colorLabel(color)).setChecked(current === color).onClick(() => { this.setColor(color); }));

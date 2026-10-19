@@ -461,6 +461,13 @@
    note in its `title`. The dark root face keeps its own colour: a muted text on it would not read. */
 .mappy-view .mappy-node.is-called:not(.is-root) > .mappy-node-content > .mappy-node-label { color: var(--text-muted); }
 .mappy-view .mappy-node.is-called:not(.is-root) > .mappy-node-content > .mappy-node-label a { color: var(--link-color); }
+/* On a node's colour (LEV-364) everything in the box takes the text's own colour, which the fills are chosen to read
+   with: a called branch's stepped-back text (the muted text on the dark yellow read about 2.3, code review 2), the
+   attachments' row, and links, which keep Obsidian's underline (the accent on the light red read about 2). */
+.mappy-view .mappy-node.is-called[data-mappy-color]:not(.is-root) > .mappy-node-content > .mappy-node-label,
+.mappy-view .mappy-node[data-mappy-color] > .mappy-node-content > .mappy-node-attachments,
+.mappy-view .mappy-node[data-mappy-color] > .mappy-node-content a,
+.mappy-view .mappy-node.is-called[data-mappy-color]:not(.is-root) > .mappy-node-content > .mappy-node-label a { color: var(--text-normal); }
 .mappy-view .mappy-node-call-mark { display: inline-flex; vertical-align: -2px; margin-right: 4px; color: var(--text-muted); }
 .mappy-view .mappy-node-call-mark svg { width: 12px; height: 12px; }
 /* Live preview renders the map inside Obsidian's own embed container: its rendered note stays hidden while the map is shown. */

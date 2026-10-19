@@ -2,7 +2,6 @@ import type { TextEdit } from './commands';
 import type { LayoutMode } from './layout-mode';
 import { frontmatterLayout, projectMap, type MindDocument } from './markdown';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
-import { uncoloredTitle } from './node-color';
 import { t } from '../i18n';
 
 /**
@@ -28,20 +27,17 @@ export type TopicPositionMap = Map<string, TopicPositions>;
  * text is itself a top-level heading of the note (a topic or the body root) being skipped. The one
  * derivation both reading (the view, the embed) and writing (moves, renames, removals) go through, so
  * topics sharing a heading keep positions of their own; the first of a heading keeps the plain key, so
- * notes written before the ordinals read as before. The heading is read without its colour (LEV-364): colouring a
- * topic, on the map or in Markdown, leaves its key and its position as they were, and the key in Properties stays the
- * heading's words.
+ * notes written before the ordinals read as before.
  */
 export function topicKeys(doc: MindDocument): Map<string, string> {
   const { root, topics } = projectMap(doc);
-  const titles = new Set(topics.map((topic) => uncoloredTitle(topic.title)));
-  if (root.kind !== 'root') titles.add(uncoloredTitle(root.title));
+  const titles = new Set(topics.map((topic) => topic.title));
+  if (root.kind !== 'root') titles.add(root.title);
   const taken = new Set<string>();
   const keys = new Map<string, string>();
   for (const topic of topics) {
-    const heading = uncoloredTitle(topic.title);
-    let key = heading;
-    for (let ordinal = 2; taken.has(key) || (key !== heading && titles.has(key)); ordinal++) key = `${heading} (${ordinal})`;
+    let key = topic.title;
+    for (let ordinal = 2; taken.has(key) || (key !== topic.title && titles.has(key)); ordinal++) key = `${topic.title} (${ordinal})`;
     taken.add(key);
     keys.set(topic.id, key);
   }
@@ -50,16 +46,12 @@ export function topicKeys(doc: MindDocument): Map<string, string> {
 
 /**
  * The position `positions` holds for `topic` in `mode`, by its key (`keys`, from `topicKeys`; a topic missing there reads
- * the plain heading). The one read the view, the embed and the map drawn off screen place a topic by (LEV-248). A
- * coloured topic with no entry under its key reads one under its heading as written, colour included: the key a
- * Highlightr user's heading had before the key left the colour out (LEV-364).
+ * the plain heading). The one read the view and the embed both place a topic by (LEV-248).
  */
 export function storedTopicPosition(
   positions: TopicPositionMap, keys: ReadonlyMap<string, string>, topic: { id: string; title: string }, mode: LayoutMode,
 ): TopicPosition | undefined {
-  const key = keys.get(topic.id) ?? uncoloredTitle(topic.title);
-  const colored = uncoloredTitle(topic.title) !== topic.title;
-  return (positions.get(key) ?? (colored ? positions.get(topic.title) : undefined))?.[mode];
+  return positions.get(keys.get(topic.id) ?? topic.title)?.[mode];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

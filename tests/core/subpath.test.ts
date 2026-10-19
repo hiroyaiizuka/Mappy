@@ -79,5 +79,8 @@ describe('locateSubpath', () => {
     const both = SOURCE.replace('### 補足: 用語', '### <mark style="background: #ADCCFFA6;">補足: 用語</mark>');
     expect(locateSubpath(both, '#補足: 用語')).toBe(both.indexOf('## 補足: 用語\n\n二つ目'));
     expect(locateSubpath(both, '#講座の構成#補足: 用語')).toBe(both.indexOf('### <mark'));
+    // The next `A` is tried when the first leads nowhere (code review 2).
+    const later = '### <mark>A</mark>\n\n## A\n\n### <mark>B</mark>\n';
+    expect(locateSubpath(later, '#A#B')).toBe(later.indexOf('### <mark>B'));
   });
 });

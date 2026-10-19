@@ -49,6 +49,9 @@ describe('sceneContents', () => {
   it('fills a coloured node with its colour laid over white, and nothing else (LEV-364)', () => {
     const contents = sceneContents(parseMarkdown('## <mark style="background: #FF5582A6;">根</mark>\n- ==黄==\n- <mark style="background: #123456;">独自</mark>\n- 無色\n', 'Note'));
     expect(contents.nodes.map(node => [node.text, node.fill])).toEqual([['根', '#ff90ae'], ['黄', '#fff7c3'], ['独自', '#123456'], ['無色', null]]);
+    // The file name standing for a root has no colour, whatever it looks like (code review 2).
+    const fileRoot = sceneContents(parseMarkdown('## A\n## B\n', '==案=='));
+    expect(fileRoot.nodes[0]?.fill).toBeNull();
   });
 
   it('shows the file name root when several top-level nodes exist', () => {

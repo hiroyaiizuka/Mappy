@@ -128,11 +128,12 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
-      // The node's colour fills its box, and the label shows the text inside it (LEV-364); read again only when the title changes.
+      // The node's colour fills its box, and the label shows the text inside it (LEV-364); read again only when the title
+      // changes. The file name standing for a root is no text of the note's, and has no colour (code review 2: `==案==.md`).
       if (entry.colored !== node.title) {
         entry.colored = node.title;
-        const color = titleColor(node.title);
-        entry.shown = color?.inner ?? node.title;
+        const color = node.kind === "root" ? null : titleColor(node.title);
+        entry.shown = color ? color.inner + color.suffix : node.title;
         entry.element.toggleClass("has-color", color !== null);
         if (color) entry.element.dataset.mappyColor = color.color;
         else delete entry.element.dataset.mappyColor;

@@ -26,8 +26,9 @@ function lineStart(source: string, offset: number): number {
  * the offset is the start of that line, which is inside the block. Headings and ids inside code, HTML and
  * comments do not count. Footnotes (`#[^…]`) and a subpath nothing matches are null.
  *
- * A heading path Obsidian finds nothing for is tried again with each heading read without its colour (LEV-364, as
- * `findSection` does): a link to a heading made before the map coloured it still opens the map on that node.
+ * A heading path Obsidian finds nothing for is tried again with each heading read without its colour as well (LEV-364,
+ * as `findSection` does, the next match of a segment tried when the one taken leads nowhere): a link to a heading made
+ * before the map coloured it still opens the map on that node.
  */
 export function locateSubpath(source: string, subpath: string): number | null {
   const segments = subpath.split('#').filter(Boolean);
@@ -68,18 +69,18 @@ export function locateSubpath(source: string, subpath: string): number | null {
     }
     return null;
   }
-  const walk = (matches: (text: string, segment: string) => boolean): number | null => {
-    let index = 0;
-    let level = 0;
-    for (const heading of headings) {
-      if (heading.level <= level) continue;
-      if (!matches(heading.text, normalizeHeading(segments[index] ?? ''))) continue;
-      index += 1;
-      level = heading.level;
-      if (index === segments.length) return heading.from;
+  const wanted = segments.map(normalizeHeading);
+  const exact = (text: string, segment: string): boolean => normalizeHeading(text) === segment;
+  const lenient = (text: string, segment: string): boolean => exact(text, segment) || normalizeHeading(uncoloredTitle(text.trim())) === segment;
+  // Obsidian's walk takes the first deeper heading that matches each segment; the lenient one tries the next before giving up.
+  const walk = (start: number, index: number, level: number, matches: typeof exact, retry: boolean): number | null => {
+    for (let at = start; at < headings.length; at += 1) {
+      const heading = headings[at]!;
+      if (heading.level <= level || !matches(heading.text, wanted[index] ?? '')) continue;
+      const found = index + 1 === wanted.length ? heading.from : walk(at + 1, index + 1, heading.level, matches, retry);
+      if (found !== null || !retry) return found;
     }
     return null;
   };
-  return walk((text, segment) => normalizeHeading(text) === segment)
-    ?? walk((text, segment) => normalizeHeading(text) === segment || normalizeHeading(uncoloredTitle(text.trim())) === segment);
+  return walk(0, 0, 0, exact, false) ?? walk(0, 0, 0, lenient, true);
 }

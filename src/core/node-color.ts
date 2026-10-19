@@ -34,9 +34,15 @@ export function colorLabel(color: NodeColor | null): string {
 
 /** The colour a title shows its node in, and how the title writes it: `open + inner + close + suffix` is the title. */
 export interface TitleColor {
-  /** One of the six, or `custom` for a background outside them (`value` holds it). */
+  /**
+   * One of the six (Obsidian's own highlight, `==…==` or a `<mark>` naming no background, reads as yellow), or `custom`
+   * for any other background the mark names: none of the menu's colours is the node's, and choosing one writes it.
+   */
   color: NodeColor | 'custom';
-  /** The background to draw: the colour's own value, or the custom one as written (a colour, nothing else). */
+  /**
+   * The background to draw: the colour's own value, a custom one as written when it is a colour the map may hand to the
+   * style, else Obsidian's highlight yellow.
+   */
   value: string;
   /** The text before and after the node's text, as written: the opening and closing tags (`==` and `==` for Obsidian's highlight). */
   open: string;
@@ -55,7 +61,7 @@ const OPEN_MARK = /^<mark(?:[\s/][^>]*)?>$/iu;
  * Obsidian's block id at the end of a line (` ^id`, as `locateSubpath` reads it): kept after the colour, never inside
  * it, or `[[note#^id]]` would no longer find the line's end.
  */
-const BLOCK_ID = /\s\^[A-Za-z0-9-]+$/u;
+const BLOCK_ID = /\s+\^[A-Za-z0-9-]+$/u;
 
 /**
  * Obsidian's highlight over the whole text (`==text==`): the text neither starts nor ends with a space or `=`, holds no
@@ -94,13 +100,18 @@ function paletteColor(value: string): NodeColor | undefined {
   return hex === undefined ? undefined : NODE_COLORS.find((color) => NODE_COLOR_VALUES[color].slice(1, 7) === hex);
 }
 
-/** The colour a `<mark>` shows: the six by their value, another colour as written, and Obsidian's highlight (yellow) when the style names none the map can draw. */
+/**
+ * The colour a `<mark>` shows: the six by their value; Obsidian's highlight (yellow) when the style names no background;
+ * any other background `custom`, drawn as written when the map may hand it to the style and as the highlight's yellow
+ * when not (a word, `var(…)`, `url(…)`: code review 2 — the menu then marks none of its colours, so choosing one,
+ * yellow included, writes the map's own mark).
+ */
 function markColor(open: string): Pick<TitleColor, 'color' | 'value'> {
   const background = markBackground(open);
-  const palette = background === null ? undefined : paletteColor(background);
+  if (background === null) return { color: 'yellow', value: NODE_COLOR_VALUES.yellow };
+  const palette = paletteColor(background);
   if (palette) return { color: palette, value: NODE_COLOR_VALUES[palette] };
-  if (background !== null && COLOR_VALUE.test(background)) return { color: 'custom', value: background };
-  return { color: 'yellow', value: NODE_COLOR_VALUES.yellow };
+  return { color: 'custom', value: COLOR_VALUE.test(background) ? background : NODE_COLOR_VALUES.yellow };
 }
 
 /** `title` without a block id ending it (`body`), and that id with the space before it (`suffix`, '' when none). */
@@ -146,14 +157,23 @@ export function titleColor(title: string): TitleColor | null {
   return color ? { ...color, suffix } : null;
 }
 
-/** The node's text without the colour around it: what the map shows and what a link to a heading names (`#見出し`). */
+/**
+ * The node's text without the colour around it, a block id after the colour kept as an uncoloured title has it: what the
+ * map shows and the inline editor holds, and what a link to a heading names (`#見出し`).
+ */
 export function uncoloredTitle(title: string): string {
-  return titleColor(title)?.inner ?? title;
+  const color = titleColor(title);
+  return color ? color.inner + color.suffix : title;
 }
 
-/** The opening tag the map writes for a colour, as Highlightr's inline style writes it. */
+/** The opening tag the map writes for a background, as Highlightr's inline style writes it. */
+function markOpen(value: string): string {
+  return `<mark style="background: ${value};">`;
+}
+
+/** The opening tag the map writes for a colour. */
 export function colorMark(color: NodeColor): string {
-  return `<mark style="background: ${NODE_COLOR_VALUES[color]};">`;
+  return markOpen(NODE_COLOR_VALUES[color]);
 }
 
 /**
@@ -174,7 +194,7 @@ export function recoloredTitle(title: string, color: NodeColor | null): string {
  * `<mark>` for that colour, else as `text` alone. `text` holds no colour of its own here.
  */
 function wrapped(text: string, from: TitleColor): string | null {
-  for (const [open, close] of [[from.open, from.close], [`<mark style="background: ${from.value};">`, '</mark>']] as const) {
+  for (const [open, close] of [[from.open, from.close], [markOpen(from.value), '</mark>']] as const) {
     const title = `${open}${text}${close}`;
     const read = titleColor(title);
     if (read?.inner === text && read.suffix === '') return title;
@@ -188,30 +208,38 @@ function wrapped(text: string, from: TitleColor): string | null {
  * in that map).
  */
 export function withColorOf(title: string, from: string): string {
-  const text = uncoloredTitle(title);
+  const text = titleColor(title)?.inner ?? title;
   const color = titleColor(from);
   return (color && wrapped(text, color)) ?? text;
 }
 
-/** The text the inline editor holds for a node: its text without the colour, each `<br>` a line break (`displayTitle`). */
+/**
+ * The text the inline editor holds for a node: its text without the colour (a block id after it shown, as on an
+ * uncoloured node), each `<br>` a line break (`displayTitle`).
+ */
 export function editableTitle(title: string): string {
   return displayTitle(uncoloredTitle(title));
 }
 
 /**
  * The title to write for `draft`, the inline editor's text, over the node's `current` title (`storedTitle`), its colour
- * kept: the tags around the text and a block id after them stay as written, so renaming a coloured node neither drops
- * the colour nor wraps it twice. A highlight the draft cannot be written inside (emptied, ending in `=`, holding `==`) is
- * written as the map's own yellow `<mark>` instead. A draft that would close the colour's `<mark>` early or leave one of
- * its own open is refused: the node would lose its colour, or show it on part of its text only.
+ * kept: the tags around the text stay as written, and a block id the draft ends with goes after them, so renaming a
+ * coloured node neither drops the colour nor wraps it twice. A highlight the draft cannot be written inside (emptied,
+ * ending in `=`, holding `==`) is written as the map's own yellow `<mark>` instead. A draft that would close the
+ * colour's `<mark>` early or leave one of its own open is refused: the node would lose its colour, or show it on part
+ * of its text only.
  */
 export function storedColoredTitle(draft: string, current: string): string {
   const color = titleColor(current);
   if (!color) return storedTitle(draft, current);
-  const inner = storedTitle(draft, color.inner);
-  const stored = wrapped(inner, color);
+  const shown = color.inner + color.suffix;
+  const written = storedTitle(draft, shown);
+  // The draft as the node already reads: nothing to write, wherever a block id-like ending stands now.
+  if (written === shown) return current;
+  const { body, suffix } = splitBlockId(written);
+  const stored = wrapped(body, color);
   if (stored === null) throw new Error(t().colorMarkInText);
-  return stored + color.suffix;
+  return stored + suffix;
 }
 
 /** `hex` (`#RRGGBB` or `#RRGGBBAA`) laid over white, as an opaque `#rrggbb`: the colour as a highlight shows on a white page. */

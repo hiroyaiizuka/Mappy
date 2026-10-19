@@ -139,7 +139,7 @@ describe('the colour of a node, chosen on the map (LEV-364)', () => {
     await colorFromMenu(mounted, '空のノード', 'オレンジ');
     await colorFromMenu(mounted, 'トピック', '黄色');
     expect(mounted.source()).toBe([
-      '---', 'mappy: true', 'mappy-topics:', '  トピック: { mindmap: [400, 40] }', '---',
+      '---', 'mappy: true', 'mappy-topics:', `  "${YELLOW.replace(/"/gu, '\\"')}トピック</mark>": { mindmap: [400, 40] }`, '---',
       '## <mark style="background: #D2B3FFA6;">旅の計画</mark>', '', '- 温泉旅行', '  - [[宿]] を予約', '- 同じ',
       '- <mark style="background: #BBFABBA6;">同じ</mark>', '- <mark style="background: #FFB86CA6;"></mark>', '',
       `## ${YELLOW}トピック</mark>`, '',
@@ -201,6 +201,14 @@ describe('the colour of a node, chosen on the map (LEV-364)', () => {
     const updated = mounted.node('温泉旅行');
     expect(fill(updated)).toBe('yellow');
     expect(updated.style.getPropertyValue('--mappy-node-custom')).toBe('');
+  });
+
+  it('shows a file name that looks like a highlight as text, uncoloured, with 色なし checked (code review 2)', async () => {
+    const mounted = await mountMapView('Fixtures/==案==.md', '---\nmappy: true\n---\n- 項目\n');
+    const root = mounted.node('==案==');
+    expect(fill(root)).toBeUndefined();
+    expect((await openColorMenu(mounted, root)).checked).toEqual(['色なし']);
+    document.querySelector('.menu')?.remove();
   });
 
   it('colours the selected node from the commands, and only when the map has one of its own selected', async () => {

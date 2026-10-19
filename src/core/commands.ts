@@ -2,7 +2,7 @@ import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './m
 import { planFileRoot, planListEdit, standsForFileName } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
 import { storedTitle } from './title-breaks';
-import { recoloredTitle, storedColoredTitle, type NodeColor } from './node-color';
+import { colorMark, recoloredTitle, storedColoredTitle, type NodeColor } from './node-color';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 import { t } from '../i18n';
 
@@ -509,10 +509,11 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   if (node.kind === 'root' && standsForFileName(doc) && (command.type === 'rename' || command.type === 'add-child')) {
     return withTopicKeys(doc, planFileRootCommand(doc, command.type, command.title), undefined, 'adds');
   }
-  // A colour on the file name names it first: the heading LEV-301 writes for it, in that colour (no colour: nothing to take off).
+  // A colour on the file name names it first: the heading LEV-301 writes for it, in that colour (no colour: nothing to take
+  // off). The file name is text, whatever it looks like (`==案==.md` is no highlight to take as the colour).
   if (node.kind === 'root' && standsForFileName(doc) && command.type === 'color') {
     if (command.color === null) return { edits: [], selectionOffset: null };
-    return withTopicKeys(doc, planFileRoot(doc, recoloredTitle(doc.root.title.trim(), command.color), t().fileNameNotHeading), undefined, 'adds');
+    return withTopicKeys(doc, planFileRoot(doc, `${colorMark(command.color)}${doc.root.title.trim()}</mark>`, t().fileNameNotHeading), undefined, 'adds');
   }
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error(t().rootAddsChildOnly);
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);

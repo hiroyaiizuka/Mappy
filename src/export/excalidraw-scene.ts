@@ -116,7 +116,8 @@ export function sceneContents(document: MindDocument, collapsed: ReadonlySet<str
       text: title.text,
       ...chosenLink(title, body, source),
       images: entries.filter(entry => entry.kind === 'image').map(entry => entry.target),
-      fill: nodeFill(node.title),
+      // The file name standing for a root has no colour, as on the map.
+      fill: node.kind === 'root' ? null : nodeFill(node.title),
       ...(called ? { sourcePath: source.path } : {}),
     });
     if (!collapsed.has(node.id)) pending.push(...[...node.children].reverse());
