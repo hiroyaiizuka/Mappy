@@ -8,7 +8,7 @@ import {
 import { endsWithBlankLine, getNode, lineGap, paragraphGap, siblingOf } from './text-edits';
 import { t } from '../i18n';
 
-type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'add-topic' }>;
+type StructureCommand = Exclude<EditCommand, { type: 'rename' | 'color' | 'add-topic' }>;
 
 function branchSize(node: MindNode): number {
   const pending = [node];

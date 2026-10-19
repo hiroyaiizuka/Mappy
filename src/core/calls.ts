@@ -9,6 +9,7 @@
  */
 import { embedOnlyTitle, embedTrees } from './embed';
 import { projectMap, type MapProjection, type MindDocument, type MindNode } from './markdown';
+import { withColorOf } from './node-color';
 
 /** What a `![[…]]`-only item resolved to: the called note, parsed, and the heading path it asked for (`''` for the whole note). */
 export interface CallTarget {
@@ -87,7 +88,8 @@ export function projectCalls(roots: readonly MindNode[], targets: CallTargets): 
     let projected: MindNode;
     if (target && called) {
       const grafted = called.children.map((child) => projectCalled(child, target, node.id, node.id, node.level + 1));
-      projected = { ...node, parentId, title: called.title, children: [...grafted, ...own] };
+      // The calling item's colour, if it has one, goes on the called root's text it shows (LEV-364).
+      projected = { ...node, parentId, title: withColorOf(called.title, node.title), children: [...grafted, ...own] };
       sources.set(node.id, { callerId: node.id, path: target.path, subpath: target.subpath, document: target.document, node: called, root: true });
     } else {
       projected = { ...node, parentId, children: own };

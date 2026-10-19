@@ -1,5 +1,6 @@
 import { parser } from '@lezer/markdown';
 import { isMultilineSetext, parseableSource } from './markdown';
+import { uncoloredTitle } from './node-color';
 
 /** Blocks the parser reads as literal text: nothing inside them is a heading or carries a block id. */
 const LITERAL = new Set(['FencedCode', 'CodeBlock', 'HTMLBlock', 'Comment', 'CommentBlock']);
@@ -24,6 +25,9 @@ function lineStart(source: string, offset: number): number {
  * start of the last matched heading's line. `#^id` is the block whose line ends with ` ^id` (case-insensitive);
  * the offset is the start of that line, which is inside the block. Headings and ids inside code, HTML and
  * comments do not count. Footnotes (`#[^…]`) and a subpath nothing matches are null.
+ *
+ * A heading path Obsidian finds nothing for is tried again with each heading read without its colour (LEV-364, as
+ * `findSection` does): a link to a heading made before the map coloured it still opens the map on that node.
  */
 export function locateSubpath(source: string, subpath: string): number | null {
   const segments = subpath.split('#').filter(Boolean);
@@ -64,14 +68,18 @@ export function locateSubpath(source: string, subpath: string): number | null {
     }
     return null;
   }
-  let index = 0;
-  let level = 0;
-  for (const heading of headings) {
-    if (heading.level <= level) continue;
-    if (normalizeHeading(heading.text) !== normalizeHeading(segments[index] ?? '')) continue;
-    index += 1;
-    level = heading.level;
-    if (index === segments.length) return heading.from;
-  }
-  return null;
+  const walk = (matches: (text: string, segment: string) => boolean): number | null => {
+    let index = 0;
+    let level = 0;
+    for (const heading of headings) {
+      if (heading.level <= level) continue;
+      if (!matches(heading.text, normalizeHeading(segments[index] ?? ''))) continue;
+      index += 1;
+      level = heading.level;
+      if (index === segments.length) return heading.from;
+    }
+    return null;
+  };
+  return walk((text, segment) => normalizeHeading(text) === segment)
+    ?? walk((text, segment) => normalizeHeading(text) === segment || normalizeHeading(uncoloredTitle(text.trim())) === segment);
 }

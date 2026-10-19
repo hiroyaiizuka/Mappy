@@ -246,6 +246,32 @@
   border-radius: 7px;
   background: var(--background-primary);
 }
+/* A node's colour (LEV-364): its text wrapped whole in `<mark style="background: …;">` fills its box, as the highlight
+   shows in Markdown. The light theme draws the colour as written (Highlightr's six, their alpha over the page); the dark
+   theme draws each of the six darker, so the light text on it reads (WCAG AA, tests/core/node-color.test.ts), and a
+   colour of the note's own mixed into the page. Which theme is the element's `color-scheme` (`light-dark()`), which
+   Obsidian's `theme-light`／`theme-dark` set: the app's while the map follows it, the map's own class otherwise (M14),
+   so no rule here looks at the body's class. An engine without `light-dark()` draws the light colours. Inside the box
+   only, so the selection's outline outside it never meets the fill. Placed after the root's and the first level's
+   faces, which it replaces (same specificity). */
+.mappy-view .mappy-node[data-mappy-color="yellow"] { background: #FFF3A3A6; }
+.mappy-view .mappy-node[data-mappy-color="orange"] { background: #FFB86CA6; }
+.mappy-view .mappy-node[data-mappy-color="red"] { background: #FF5582A6; }
+.mappy-view .mappy-node[data-mappy-color="green"] { background: #BBFABBA6; }
+.mappy-view .mappy-node[data-mappy-color="blue"] { background: #ADCCFFA6; }
+.mappy-view .mappy-node[data-mappy-color="purple"] { background: #D2B3FFA6; }
+.mappy-view .mappy-node[data-mappy-color="custom"] { background: var(--mappy-node-custom); }
+@supports (color: light-dark(#000, #fff)) {
+  .mappy-view .mappy-node[data-mappy-color="yellow"] { background: light-dark(#FFF3A3A6, #6B5D12); }
+  .mappy-view .mappy-node[data-mappy-color="orange"] { background: light-dark(#FFB86CA6, #6E4319); }
+  .mappy-view .mappy-node[data-mappy-color="red"] { background: light-dark(#FF5582A6, #6C2636); }
+  .mappy-view .mappy-node[data-mappy-color="green"] { background: light-dark(#BBFABBA6, #24572A); }
+  .mappy-view .mappy-node[data-mappy-color="blue"] { background: light-dark(#ADCCFFA6, #243F6E); }
+  .mappy-view .mappy-node[data-mappy-color="purple"] { background: light-dark(#D2B3FFA6, #46306E); }
+  .mappy-view .mappy-node[data-mappy-color="custom"] {
+    background: light-dark(var(--mappy-node-custom), color-mix(in srgb, var(--mappy-node-custom) 40%, var(--background-primary)));
+  }
+}
 /* The inline editor draws the draft in the label's weight: a bolder label is wider, and would wrap sooner than the draft did (LEV-198). */
 .mappy-view .mappy-node.is-root > .mappy-node-content > .mappy-node-label, .mappy-view .mappy-node.is-root > .mappy-inline-input { font-weight: 700; }
 .mappy-view .mappy-node.is-stage > .mappy-node-content > .mappy-node-label, .mappy-view .mappy-node.is-stage > .mappy-inline-input { font-weight: 600; }

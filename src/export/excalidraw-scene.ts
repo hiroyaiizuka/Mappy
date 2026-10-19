@@ -3,6 +3,7 @@ import { nodeBody } from '../core/body';
 import { attachmentEntries, type AttachmentEntry } from '../core/attachments';
 import { projectCalls, type CallSource, type CallTargets } from '../core/calls';
 import { plainTitle, type PlainTitle } from '../core/plain-text';
+import { NODE_COLOR_VALUES, opaqueOverWhite, titleColor } from '../core/node-color';
 import type { LinkSyntax } from '../core/wiki-link';
 import { layoutTree, type LayoutBounds, type LayoutMode, type LayoutNode, type NodeSize } from '../layout/layout';
 import { pathToPoints, type Point } from '../layout/path-points';
@@ -20,6 +21,8 @@ export interface SceneNodeContent {
   linkSyntax: LinkSyntax | null;
   /** Image targets as written in the body, in order. */
   images: string[];
+  /** The node's colour as the drawing fills its box (opaque, as on a white page), or null for none (LEV-364). */
+  fill: string | null;
   /**
    * The note the node's link and images are written in when it is not the document's own: a node
    * drawn from a called map (§5 M12) resolves them from the called note. Absent for the host's nodes.
@@ -69,6 +72,16 @@ function chosenLink(
   return source?.root ? { link: source.path, linkSyntax: 'vault' } : { link: null, linkSyntax: null };
 }
 
+/**
+ * The fill a node's colour takes in a drawing (LEV-364): the highlight laid over white, since a drawing is light and
+ * Excalidraw's dark mode inverts it whole; a colour of the note's own outside the six, as written.
+ */
+function nodeFill(title: string): string | null {
+  const color = titleColor(title);
+  if (!color) return null;
+  return opaqueOverWhite(color.color === 'custom' ? color.value : NODE_COLOR_VALUES[color.color]);
+}
+
 function visualRoot(document: MindDocument): MindNode {
   const root = document.root;
   return root.children.length === 1 ? root.children[0] ?? root : root;
@@ -103,6 +116,7 @@ export function sceneContents(document: MindDocument, collapsed: ReadonlySet<str
       text: title.text,
       ...chosenLink(title, body, source),
       images: entries.filter(entry => entry.kind === 'image').map(entry => entry.target),
+      fill: nodeFill(node.title),
       ...(called ? { sourcePath: source.path } : {}),
     });
     if (!collapsed.has(node.id)) pending.push(...[...node.children].reverse());

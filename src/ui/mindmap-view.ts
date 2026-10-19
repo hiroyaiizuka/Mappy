@@ -9,7 +9,7 @@ import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type 
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { sameFolds, type FoldEntry } from "../core/fold-memory";
 import { foldEntryOf, moves, rememberedFolds, rememberedIds, type KeptKey, type RememberedFolds } from "../core/fold-state";
-import { displayTitle } from "../core/title-breaks";
+import { NODE_COLORS, colorLabel, editableTitle, titleColor, type NodeColor } from "../core/node-color";
 import { planListConversion } from "../core/list-conversion";
 import { standsForFileName } from "../core/list-commands";
 import { locateSubpath } from "../core/subpath";
@@ -842,6 +842,7 @@ export class MindmapView extends EditableFileView {
       }
       const entries = this.nodeEntries();
       for (const entry of [entries.edit, entries.body, entries.image]) this.menuItem(menu, entry);
+      menu.addItem(item => item.setTitle(t().color).setIcon("palette").onClick(() => { this.colorMenu(event); }));
       menu.addSeparator();
       for (const entry of [entries.child, entries.sibling]) this.menuItem(menu, entry);
       const remove = this.isTopic(id) ? t().deleteTopic : t().deleteBranch;
@@ -1004,6 +1005,35 @@ export class MindmapView extends EditableFileView {
       child: [t().addChild, "plus", () => { this.executeSelected("add-child"); }],
       sibling: [t().addSibling, "corner-down-right", () => { this.executeSelected("add-sibling"); }],
     };
+  }
+
+  /**
+   * The node's colour from the context menu (LEV-364): a second menu where the first was opened, 色なし and the six
+   * colours, the one the node shows checked (none for a colour of the note's own). Obsidian's API has no submenu, and
+   * a row of seven in the node's menu would bury its other items. Opened once the first menu's click is over, so that
+   * menu's closing cannot take this one with it; the node is read when a colour is chosen, as the keys read it.
+   */
+  private colorMenu(event: MouseEvent): void {
+    const node = this.selected();
+    if (!node) return;
+    const current = titleColor(node.title)?.color ?? null;
+    const menu = new Menu();
+    for (const color of [null, ...NODE_COLORS]) {
+      menu.addItem(item => item.setTitle(colorLabel(color)).setChecked(current === color).onClick(() => { this.setColor(color); }));
+    }
+    this.contentEl.win.setTimeout(() => { if (!this.closed) menu.showAtMouseEvent(event); }, 0);
+  }
+
+  /** Colour the selected node, or take its colour off (LEV-364): the route of the context menu and of the commands. */
+  setColor(color: NodeColor | null): void {
+    const node = this.selected();
+    if (node) this.run(() => this.execute({ type: "color", nodeId: node.id, color }));
+  }
+
+  /** Whether a colour command has a node to colour: one of this map's own, selected (a called map's is edited in its own note). */
+  canColor(): boolean {
+    const node = this.selected();
+    return this.file !== null && node !== undefined && !this.isCalled(node.id);
   }
 
   /**
@@ -2430,7 +2460,8 @@ export class MindmapView extends EditableFileView {
     this.inlineDraft = draft;
     const editor: InlineEditor = new InlineEditor(entry.element, {
       // Its `<br>` tags are line breaks in the draft; the rename writes them back (core/title-breaks, LEV-202).
-      initial: displayTitle(node.title),
+      // The text inside the node's colour (LEV-364): the rename keeps the colour around what is typed.
+      initial: editableTitle(node.title),
       suggest: input => new LinkSuggest(this.app, input, file.path),
       save: async text => {
         const { current, plan, pending } = this.planTitle(file, draft, text);
@@ -2635,7 +2666,7 @@ export class MindmapView extends EditableFileView {
         // on takes the step's title, so its save does not write back what was just undone. Text typed over it is the
         // user's, and is kept to be written over the step's title.
         const after = this.inlineDraft && title !== undefined ? findNode(rebased, this.inlineDraft.nodeId)?.title : undefined;
-        if (title !== undefined && after !== undefined && after !== title) this.inlineEditor?.retitle(displayTitle(title), displayTitle(after));
+        if (title !== undefined && after !== undefined && after !== title) this.inlineEditor?.retitle(editableTitle(title), editableTitle(after));
       }
       const shown = this.showOwnWrite(file, write.after);
       // ⌘Z／⌘⇧Z are not saves: a draft kept by a conflict learns the note moved on, whether or not a save is under way

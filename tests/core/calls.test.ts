@@ -111,6 +111,22 @@ describe('projectCalls', () => {
     expect(unresolved.byId.get(find(host, '![[Map]]').id)?.title).toBe('![[Map]]');
   });
 
+  it('still calls from a coloured item, which shows the called root\'s text in its own colour (LEV-364)', () => {
+    const blue = '<mark style="background: #ADCCFFA6;">';
+    const hostDoc = parseMarkdown(`## H\n- ${blue}![[Map]]</mark>\n- ![[Colored]]\n`, 'H');
+    const colored = parseMarkdown('---\nmappy: true\n---\n## ==色付きの根==\n- 子\n', 'Colored');
+    const caller = hostDoc.nodes.find(node => node.title.includes('![[Map]]'));
+    if (!caller) throw new Error('no caller');
+    const projected = projectCalls([projectMap(hostDoc).root], new Map([
+      [caller.id, { path: 'Map.md', subpath: '', document: map }],
+      [find(hostDoc, '![[Colored]]').id, { path: 'Colored.md', subpath: '', document: colored }],
+    ]));
+    expect(projected.byId.get(caller.id)?.title).toBe(`${blue}講座</mark>`);
+    expect(projected.sources.get(caller.id)?.root).toBe(true);
+    // An uncoloured item shows the called root as that map colours it.
+    expect(projected.byId.get(find(hostDoc, '![[Colored]]').id)?.title).toBe('==色付きの根==');
+  });
+
   it('projects one level only: a call inside a called map is copied as its text, never grafted', () => {
     const a = parseMarkdown(['---', 'mappy: true', '---', '## A', '- ![[B]]', '- ![[A]]', ''].join('\n'), 'A');
     const b = parseMarkdown(['---', 'mappy: true', '---', '## B', '- ![[A]]', '- 葉', ''].join('\n'), 'B');

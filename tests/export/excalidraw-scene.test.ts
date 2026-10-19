@@ -46,6 +46,11 @@ describe('sceneContents', () => {
     expect(contents.nodes.map(node => [node.text, node.link])).toEqual([['A', 'A'], ['B', 'B']]);
   });
 
+  it('fills a coloured node with its colour laid over white, and nothing else (LEV-364)', () => {
+    const contents = sceneContents(parseMarkdown('## <mark style="background: #FF5582A6;">根</mark>\n- ==黄==\n- <mark style="background: #123456;">独自</mark>\n- 無色\n', 'Note'));
+    expect(contents.nodes.map(node => [node.text, node.fill])).toEqual([['根', '#ff90ae'], ['黄', '#fff7c3'], ['独自', '#123456'], ['無色', null]]);
+  });
+
   it('shows the file name root when several top-level nodes exist', () => {
     const contents = sceneContents(parseMarkdown('## A\n## B\n', 'Note'));
     expect(contents.nodes[0]).toMatchObject({ id: 'root', role: 'root', text: 'Note' });

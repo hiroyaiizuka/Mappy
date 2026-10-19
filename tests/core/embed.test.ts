@@ -85,6 +85,22 @@ describe('findSection', () => {
     expect(findSection(list, '#一')).toBeNull();
     expect(findSection(list, '#本体#一')).toBeNull();
   });
+
+  // LEV-364: a heading the map coloured is `<mark …>見出し</mark>` to Obsidian, whose `#見出し` no longer reaches it.
+  it('finds a coloured heading by its text without the colour once Obsidian\'s rule finds nothing, and Obsidian\'s answer first', () => {
+    const yellow = '<mark style="background: #FFF3A3A6;">';
+    const colored = parseMarkdown(HEADINGS.replace('## 記録する', `## ${yellow}記録する</mark>`).replace('### 休息', '### ==休息=='), 'Note');
+    expect(findSection(colored, '#記録する')?.title).toBe(`${yellow}記録する</mark>`);
+    expect(findSection(colored, '#記録する#同じ名前')?.level).toBe(3);
+    expect(colored.source.slice(findSection(colored, '#記録する#同じ名前')?.bodyFrom, findSection(colored, '#記録する#同じ名前')?.to)).toContain('内容 B');
+    expect(findSection(colored, '#回復する#休息')?.title).toBe('==休息==');
+    expect(embedTrees(colored, '#記録する')?.root.title).toBe(`${yellow}記録する</mark>`);
+    // A plain heading Obsidian resolves keeps the link, though a coloured one of the same text comes earlier.
+    const both = parseMarkdown(`## ${yellow}同じ</mark>\n\n## 同じ\n`, 'Note');
+    expect(findSection(both, '#同じ')?.title).toBe('同じ');
+    // A heading the colour is only part of is not read without it.
+    expect(findSection(parseMarkdown('## 前半 <mark>後半</mark>\n', 'Note'), '#前半 後半')).toBeNull();
+  });
 });
 
 describe('embedTrees and the opening folds', () => {
@@ -157,6 +173,13 @@ describe('embedOnlyTitle (an item that is one embed, §5 M12)', () => {
     expect(embedOnlyTitle('')).toBeNull();
     expect(embedOnlyTitle('![[Map')).toBeNull();
     expect(embedOnlyTitle('![[Map]]]')).toBeNull();
+  });
+
+  it('reads a coloured item as the one embed it is, the colour going on the calling item\'s box (LEV-364)', () => {
+    expect(embedOnlyTitle('<mark style="background: #FFF3A3A6;">![[Map#見出し]]</mark>')).toBe('Map#見出し');
+    expect(embedOnlyTitle('==![[Map]]==')).toBe('Map');
+    expect(embedOnlyTitle('<mark style="background: #FFF3A3A6;">参考 ![[Map]]</mark>')).toBeNull();
+    expect(embedOnlyTitle('<mark>![[Map]]</mark> 文')).toBeNull();
   });
 });
 

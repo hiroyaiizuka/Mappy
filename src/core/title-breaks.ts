@@ -25,6 +25,26 @@ const INLINE_LEAD = 'x ';
 const OBSIDIAN_SPANS = /%%.*?%%|!?\[\[[^\]\r\n]*?\]\]|\$(?=\S)[^$\r\n]*?\S\$|\$[^\s$]\$/gu;
 
 /**
+ * The raw HTML tags of a title that `matches` accepts, in order, as the Markdown parser reads the title inside a heading
+ * or a list item: a tag in inline code, after a backslash, in a wiki link, a comment or math is text, not a tag. The
+ * one reading the line breaks (`<br>`, LEV-202) and the node colours (`<mark>`, LEV-364) share.
+ */
+export function inlineTags(title: string, matches: RegExp): { from: number; to: number }[] {
+  const spans = Array.from(title.matchAll(OBSIDIAN_SPANS), (match) => ({ from: match.index, to: match.index + match[0].length }));
+  const tags: { from: number; to: number }[] = [];
+  inlineParser.parse(INLINE_LEAD + title).iterate({
+    enter(node) {
+      const from = node.from - INLINE_LEAD.length;
+      const to = node.to - INLINE_LEAD.length;
+      if (node.name !== 'HTMLTag' || from < 0 || !matches.test(title.slice(from, to))) return true;
+      if (!spans.some((span) => span.from <= from && to <= span.to)) tags.push({ from, to });
+      return false;
+    },
+  });
+  return tags;
+}
+
+/**
  * The line breaks written into a node's title (LEV-202). A heading or a list item is one line of Markdown,
  * so a break inside a node is stored as a `<br>` tag in that line, which Obsidian's reading view, live
  * preview and other tools show as a break too. Only a tag the Markdown parser reads as raw HTML is one:
@@ -33,17 +53,7 @@ const OBSIDIAN_SPANS = /%%.*?%%|!?\[\[[^\]\r\n]*?\]\]|\$(?=\S)[^$\r\n]*?\S\$|\$[
  */
 export function breakRanges(title: string): { from: number; to: number }[] {
   if (!/<br/iu.test(title)) return [];
-  const spans = Array.from(title.matchAll(OBSIDIAN_SPANS), (match) => ({ from: match.index, to: match.index + match[0].length }));
-  const tags: { from: number; to: number }[] = [];
-  inlineParser.parse(INLINE_LEAD + title).iterate({
-    enter(node) {
-      const from = node.from - INLINE_LEAD.length;
-      const to = node.to - INLINE_LEAD.length;
-      if (node.name !== 'HTMLTag' || from < 0 || !BREAK_TAG.test(title.slice(from, to))) return true;
-      if (!spans.some((span) => span.from <= from && to <= span.to)) tags.push({ from, to });
-      return false;
-    },
-  });
+  const tags = inlineTags(title, BREAK_TAG);
   const ranges: { from: number; to: number }[] = [];
   tags.forEach((tag, index) => {
     let { from, to } = tag;

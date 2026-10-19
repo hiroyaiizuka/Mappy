@@ -10,6 +10,7 @@ import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from './map-keys';
 import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
 import { storedTopicPosition, topicKeys, type TopicPositionMap } from './topics';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
+import { uncoloredTitle } from './node-color';
 
 /**
  * The layout a note asks for, read from its own text: `mappy: true` (the YAML
@@ -54,7 +55,8 @@ export function normalizeHeading(text: string): string {
  * whether drawing it would recurse, is the caller's to decide.
  */
 export function embedOnlyTitle(title: string): string | null {
-  const match = /^!\[\[([^\]\r\n|]+)(?:\|[^\]\r\n]*)?\]\]$/u.exec(title.trim());
+  // A coloured item (LEV-364) is still the one embed: the colour goes on the box of the calling item.
+  const match = /^!\[\[([^\]\r\n|]+)(?:\|[^\]\r\n]*)?\]\]$/u.exec(uncoloredTitle(title.trim()).trim());
   const linktext = match?.[1]?.trim();
   return linktext ? linktext : null;
 }
@@ -82,21 +84,29 @@ function* headingsBelow(scope: MindNode): Generator<MindNode> {
  * first heading in the note whose text matches A, then the first B inside A's
  * section. Same-named headings resolve to the first one. List items are never
  * headings, a block reference or a missing heading resolves to nothing.
+ *
+ * A path Obsidian finds no heading for is tried again with each heading read without its colour (LEV-364): a heading
+ * the map coloured is `<mark …>A</mark>` to Obsidian, so `#A` no longer reaches it there, and the embed and the called
+ * map (§5 M10, M12) keep showing the section the link meant. A path Obsidian resolves is answered as Obsidian does.
  */
 export function findSection(doc: MindDocument, subpath: string, normalize = normalizeHeading): MindNode | null {
   if (isBlockReference(subpath)) return null;
   const parts = subpath.split('#').map((part) => normalize(part)).filter((part) => part !== '');
   if (parts.length === 0) return null;
-  let scope = doc.root;
-  for (const part of parts) {
-    let found: MindNode | null = null;
-    for (const heading of headingsBelow(scope)) {
-      if (normalize(heading.title) === part) { found = heading; break; }
+  const walk = (matches: (heading: MindNode, part: string) => boolean): MindNode | null => {
+    let scope = doc.root;
+    for (const part of parts) {
+      let found: MindNode | null = null;
+      for (const heading of headingsBelow(scope)) {
+        if (matches(heading, part)) { found = heading; break; }
+      }
+      if (!found) return null;
+      scope = found;
     }
-    if (!found) return null;
-    scope = found;
-  }
-  return scope;
+    return scope;
+  };
+  return walk((heading, part) => normalize(heading.title) === part)
+    ?? walk((heading, part) => normalize(heading.title) === part || normalize(uncoloredTitle(heading.title)) === part);
 }
 
 /** The trees an embed draws: one body root and, for a whole-note embed, the free topics beside it. */
