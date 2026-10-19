@@ -173,11 +173,11 @@ const CONTEXT_MARGIN = 8;
 const CONTEXT_MIN_WIDTH = 200;
 
 /**
- * The keys a context card shows beside a row (LEV-369): only ones the map answers with the node selected, the way
- * src/ui/map-events.ts reads them — Delete and Backspace delete, Space folds. A Mac's delete key is Backspace.
+ * The key a context card shows beside its deletion (LEV-369): Delete and Backspace delete the selected node on the map
+ * (src/ui/map-events.ts) and the row on the card. A Mac's delete key is Backspace. No other row shows one: the fold's
+ * Space is the map's, and runs the focused row on the card.
  */
 const deleteKey = (): NonNullable<MenuCardItem["key"]> => Platform.isMacOS ? { cap: "⌫", keys: "Backspace Delete" } : { cap: "Delete", keys: "Delete Backspace" };
-const SPACE_KEY: NonNullable<MenuCardItem["key"]> = { cap: "Space", keys: "Space" };
 
 /**
  * The map is a `FileView` (LEV-89), as the Markdown editor, Kanban or a PDF are: the note it shows is `file`, which
@@ -381,7 +381,11 @@ export class MindmapView extends EditableFileView {
   private popover: { card: MenuCard; anchor: HTMLButtonElement } | null = null;
   /** The context card while it is open (LEV-369): the card and the point it was opened at, from the pane's top left. */
   private contextCard: { card: MenuCard; x: number; y: number } | null = null;
-  /** Set by a right-click while an edit is open (its blur's save still to land): that edit's end leaves the selection to the card. */
+  /**
+   * Set by a right-click while an edit is open (its blur's save still to land): that edit's end leaves the selection to
+   * the card. Taken by that end; dropped when the person goes back into the edit (a save refused keeps it open), when
+   * another edit opens and when the note goes.
+   */
   private cardOverDraft = false;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
@@ -570,6 +574,7 @@ export class MindmapView extends EditableFileView {
     // A card is for a node of the note that goes (LEV-369): another note loading into the leaf (back, forward, a link)
     // would give its rows another node of the same id.
     this.closeContextCard(false);
+    this.cardOverDraft = false;
     await this.saveDraft(file);
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed = new Set(); this.needsFit = true; this.fitHeld = false;
@@ -833,6 +838,10 @@ export class MindmapView extends EditableFileView {
       if (id) this.select(id);
       this.openContextCard(event, id ? t().nodeMenu : t().mapMenu, id ? this.nodeRows(id) : this.canvasRows(event));
     });
+    // Back into an edit still open (its save refused): its end is the person's again, not the card's (`cardOverDraft`).
+    this.registerDomEvent(this.contentEl, "focusin", event => {
+      if (event.targetNode?.instanceOf(Element) && event.targetNode.matches("textarea.mappy-inline-input")) this.cardOverDraft = false;
+    });
     // A person scrolling or zooming the map under a context card (the wheel, a trackpad's pinch): the card is for where
     // the pointer was (LEV-369). Every other way to move the map starts with a press, which closes the card itself; the
     // view's own moves (a fit, a node brought on screen) leave it open.
@@ -996,13 +1005,12 @@ export class MindmapView extends EditableFileView {
       return [
         this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }),
         ...(node && node.children.length > 0
-          ? [this.row(folded ? t().expand : t().collapse, folded ? "chevrons-up-down" : "chevrons-down-up", () => { this.fold(id); }, SPACE_KEY)]
+          ? [this.row(folded ? t().expand : t().collapse, folded ? "chevrons-up-down" : "chevrons-down-up", () => { this.fold(id); })]
           : []),
       ];
     }
-    const title = this.selected()?.title ?? "";
     // Each edit acts on the node the card is for (`cardNode`), not on whatever is selected when the row is chosen.
-    const on = (act: () => void) => () => { if (this.cardNode(id, title)) act(); };
+    const on = (act: () => void) => () => { if (this.cardNode(id)) act(); };
     const rows: MenuCardRow[] = [];
     if (this.canColor()) rows.push(this.colorRow(color => on(() => { this.run(() => this.execute({ type: "color", nodeId: id, color })); })), { type: "separator" });
     if (this.calledSource(id)) rows.push(this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }));
@@ -1010,20 +1018,22 @@ export class MindmapView extends EditableFileView {
     if (this.document?.format === "headings") {
       rows.push({ type: "separator" }, this.row(t().toListFormat, "list-tree", () => { this.run(() => this.convertToList()); }));
     }
+    // The parse root is never deleted (core: `rootAddsChildOnly`), so its card offers no deletion.
+    if (this.selected()?.kind === "root") return rows;
     const remove = on(() => { this.run(() => this.execute({ type: "delete", nodeId: id })); });
     rows.push({ type: "separator" }, { ...this.row(this.isTopic(id) ? t().deleteTopic : t().deleteNode, "trash-2", remove, deleteKey()), danger: true });
     return rows;
   }
 
   /**
-   * The node a card's row acts on: the one the card was opened for, still on the map with the text it had then — a
-   * re-read gives the nodes their ids by position, so a change from outside could have put another node at that id.
-   * Selected, so the 本文・リンクを編集 modal and the image picker take it as the keys would. Gone or changed, nothing
-   * runs and the person is told.
+   * The node a card's row acts on: the one the card was opened for, by its id. The view's own writes carry the ids
+   * (LEV-146), and a change from anyone else closes the card (`refresh`, `refreshCalls`), so the id still names that
+   * node. Selected, so the 本文・リンクを編集 modal and the image picker take it as the keys would. Gone, nothing runs
+   * and the person is told.
    */
-  private cardNode(id: string, title: string): MindNode | undefined {
-    const node = id === "root" ? this.document?.root : this.document?.nodes.find(item => item.id === id);
-    if (!node || node.title !== title) { new Notice(t().nodeChanged); return undefined; }
+  private cardNode(id: string): MindNode | undefined {
+    const node = this.document ? findNode(this.document, id) : undefined;
+    if (!node) { new Notice(t().nodeChanged); return undefined; }
     if (this.selectedId !== id) this.select(id);
     return node;
   }
@@ -1048,7 +1058,7 @@ export class MindmapView extends EditableFileView {
     })) };
   }
 
-  /** Colour the selected node, or take its colour off (LEV-364): the route of the context menu and of the commands. */
+  /** Colour the selected node, or take its colour off (LEV-364): the commands' route (the context card colours its own node, `nodeRows`). */
   setColor(color: NodeColor | null): void {
     const node = this.selected();
     if (node) this.run(() => this.execute({ type: "color", nodeId: node.id, color }));
@@ -1407,6 +1417,9 @@ export class MindmapView extends EditableFileView {
     // nothing to draw: the draw would repeat that one over every node. Any other read draws, as before (a layout set by
     // `setState` is drawn by its read, the watcher's re-read of the write draws once more, as it always did).
     if (own && !changed && sameTargets(this.targets, targets)) return;
+    // Someone else's change (not the view's own writes, which carry the ids) or other called maps: a context card is for
+    // the nodes as they were, and the ids of the new parse may name others (LEV-369).
+    if ((changed && !replayed) || !sameTargets(this.targets, targets)) this.closeContextCard(true);
     this.publish(changed ? document : undefined, targets);
     // Someone else's change under a draft kept by a conflict; the re-read after this view's own write is not that. So is
     // any read of the note a refused save left owed (`owed`, LEV-252): a read under way when the save began may have
@@ -1509,6 +1522,7 @@ export class MindmapView extends EditableFileView {
     const targets = await this.reader.read(document, file.path, current);
     if (!current()) return;
     if (sameTargets(this.targets, targets)) return;
+    this.closeContextCard(true);
     this.adopt(targets);
     this.draw();
   }
@@ -2446,6 +2460,7 @@ export class MindmapView extends EditableFileView {
 
   /** `created`: the draft names a node just added (its provisional name selected); Escape then takes the node back. */
   private editTitle(created?: Created): void {
+    this.cardOverDraft = false;
     // The draft already open is confirmed before another opens (a double click on a node, F2 from the menu), as blur
     // would save it; one held with a reason (a refusal, a conflict: its error line up) is saved only by its own Enter,
     // so it stays where it is, instead of being dropped for the node's old text or written unasked (LEV-202).
@@ -2495,6 +2510,9 @@ export class MindmapView extends EditableFileView {
       },
       finish: (next, cancelled, text, byUndo) => {
         const blurredTo = editor.blurredTo as Node | null | undefined;
+        // A right-click that ended the edit opened a card (LEV-369): what it chose keeps the selection (below).
+        const carded = this.cardOverDraft;
+        this.cardOverDraft = false;
         this.inlineEditor = undefined;
         if (this.inlineDraft === draft) this.inlineDraft = undefined;
         this.renderer.editing(draft.nodeId, false);
@@ -2532,8 +2550,6 @@ export class MindmapView extends EditableFileView {
         const away = at !== null && at !== page.body && !this.contentEl.contains(at);
         // A right-click that ended the edit opened a card (LEV-369): what it chose is the selection and the card or the node
         // has the keyboard, open or closed by now, so the saved node is not selected and focused again over it.
-        const carded = this.cardOverDraft;
-        this.cardOverDraft = false;
         if (current && !this.deselected && !carded) this.select(current.id, !away, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },

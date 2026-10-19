@@ -190,7 +190,7 @@ export default class MappyPlugin extends Plugin {
         return true;
       },
     });
-    // The selected node's colour (LEV-364), one command per colour so each can take a hotkey; the context menu's 色 does the same.
+    // The selected node's colour (LEV-364), one command per colour so each can take a hotkey; the context card's colour circles do the same (LEV-369).
     for (const color of [...NODE_COLORS, null]) {
       this.addCommand({
         id: color === null ? "color-none" : `color-${color}`,

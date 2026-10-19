@@ -2,9 +2,9 @@ import { setIcon } from "obsidian";
 
 /**
  * A row of a menu card: an icon and a title, then one line of description (the gear's card) or, on the right, the key
- * that does the same on the map (the context card; only a key the map really answers, LEV-369). `keys` names that key
- * for assistive technology (`aria-keyshortcuts`), `cap` is how it is drawn. A disabled row is still reached with the
- * keys and does nothing, so it is found and read.
+ * that does the same on the map (the context card; only a key the map really answers, LEV-369), which the card answers
+ * too. `keys` names those keys (`aria-keyshortcuts`, `KeyboardEvent.key` values), `cap` is how they are drawn. A
+ * disabled row is still reached with the keys and does nothing, so it is found and read.
  */
 export interface MenuCardItem {
   type: "item";
@@ -58,7 +58,7 @@ export interface MenuCardOptions {
  * Its rows are stops, top to bottom: a row of items is one stop each, a row of colours is one stop whose circles are
  * cells. Keys, on the card: ↑↓ and Tab／Shift+Tab move between stops, wrapping (Home／End: the first and the last);
  * entering a row of colours lands on the checked one (the first when none is); ←→ move along that row, wrapping;
- * Enter／Space run the focused row or colour; Escape closes. The card goes, and says why (`MenuCardClose`), on any
+ * Enter／Space run the focused row or colour; a row's own key runs that row; Escape closes. The card goes, and says why (`MenuCardClose`), on any
  * of those, on a press outside it, when the focus leaves it (a known destination at once; a blur with no successor a
  * tick later, unless the focus came back), and when its window loses the focus. The keys live on the focus, so a card
  * left open without it would have no Escape.
@@ -67,6 +67,8 @@ export class MenuCard {
   readonly element: HTMLDivElement;
   /** The stops, top to bottom, each its focusable elements: one for an item, the circles for a row of colours. */
   private readonly stops: HTMLButtonElement[][] = [];
+  /** The rows by the keys they show (`MenuCardItem.key`): pressed on the card, a key runs its row. */
+  private readonly shortcuts = new Map<string, HTMLButtonElement>();
   private open = true;
   private readonly release: () => void;
 
@@ -137,6 +139,7 @@ export class MenuCard {
     if (row.description !== undefined) text.createSpan({ cls: "mappy-popover-description", text: row.description });
     if (row.key) {
       item.setAttribute("aria-keyshortcuts", row.key.keys);
+      for (const key of row.key.keys.split(" ")) this.shortcuts.set(key, item);
       item.createSpan({ cls: "mappy-popover-key", text: row.key.cap, attr: { "aria-hidden": "true" } });
     }
     if (!enabled) { item.addClass("is-disabled"); item.setAttribute("aria-disabled", "true"); }
@@ -207,7 +210,11 @@ export class MenuCard {
       }
       case "Enter": case " ": if (at) this.stops[at[0]]?.[at[1]]?.click(); return true;
       case "Escape": this.close("escape"); return true;
-      default: return false;
+      default: {
+        const row = event.metaKey || event.ctrlKey || event.altKey ? undefined : this.shortcuts.get(event.key);
+        row?.click();
+        return row !== undefined;
+      }
     }
   }
 }

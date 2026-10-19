@@ -375,7 +375,15 @@ try {
     check(deleted.source === SOURCE.replace('- 手書き\n', ''), `削除 ${JSON.stringify(deleted.source)}`);
     const undone = await history('undo');
     check(undone.source === SOURCE, `⌘Z ${JSON.stringify(undone.source)}`);
-    return { deleted: deleted.source !== before };
+    // The key the row shows, pressed on the card, runs it too.
+    await rightClick(onNode('手書き'));
+    const before2 = await source();
+    await cdp.realKey(DELETE_KEY.cap === '⌫' ? 'Backspace' : 'Delete');
+    const byKey = await after(before2);
+    check(byKey.source === SOURCE.replace('- 手書き\n', ''), `${DELETE_KEY.cap} on the card ${JSON.stringify(byKey.source)}`);
+    const undone2 = await history('undo');
+    check(undone2.source === SOURCE, `⌘Z ${JSON.stringify(undone2.source)}`);
+    return { deleted: deleted.source !== before, byKey: byKey.source !== before2 };
   });
 
   // A free topic, the calling item and a node of the called map.
@@ -389,7 +397,7 @@ try {
     check(same(topic.rows, ['本文・リンクを編集', '画像を追加', 'トピックを削除']) && same(topic.swatches, COLORS), `topic ${JSON.stringify(topic)}`);
     check(same(calling.rows, ['元のマップを開く', ...NODE_ROWS]) && same(calling.swatches, COLORS), `calling item ${JSON.stringify(calling)}`);
     // A called branch below the called root's children starts folded: its row expands it.
-    check(same(called.rows, ['元のマップを開く', '展開']) && same(called.keys, [null, 'Space']) && same(called.swatches, []), `called node ${JSON.stringify(called)}`);
+    check(same(called.rows, ['元のマップを開く', '展開']) && same(called.keys, [null, null]) && same(called.swatches, []), `called node ${JSON.stringify(called)}`);
     return { topic: topic.rows, calling: calling.rows, called: { rows: called.rows, keys: called.keys, swatches: called.swatches } };
   });
 

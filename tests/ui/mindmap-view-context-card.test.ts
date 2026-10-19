@@ -159,6 +159,28 @@ describe('the context card of a node (LEV-369)', () => {
     expect(byKey.source()).toBe(deleted);
   });
 
+  it('runs the deletion on its own key pressed on the card (⌫／Delete), as the key does on the map (review 3)', async () => {
+    const { node, source, settle, key } = await mount();
+    const original = source();
+    openContextCard(node('睡眠'));
+    expect(key(document.activeElement as HTMLElement, 'Backspace').defaultPrevented).toBe(true);
+    await settle();
+    expect(contextCard()).toBeNull();
+    expect(source()).toBe(original.replace('  - 睡眠\n', ''));
+    openContextCard(node('ふりかえる'));
+    key(document.activeElement as HTMLElement, 'Delete');
+    await settle();
+    expect(source()).toBe(original.replace('  - 睡眠\n', '').replace('  - ふりかえる\n', ''));
+  });
+
+  it('offers no deletion on the file name standing as the root, which is never deleted (review 3)', async () => {
+    const { node } = await mount('Fixtures/no-heading.md', '---\nmappy: true\n---\n- 項目\n');
+    const card = openContextCard(node('no-heading'));
+    expect(cardSwatches(card).labels).toHaveLength(7);
+    expect(cardTitles(card)).toEqual(['本文・リンクを編集', '画像を追加']);
+    expect(cardTitlesAt(node('項目'))).toEqual(['本文・リンクを編集', '画像を追加', '削除']);
+  });
+
   it('opens the 本文・リンクを編集 modal and writes nothing by opening or closing', async () => {
     const { node, source, settle } = await mount();
     const original = source();
@@ -383,26 +405,39 @@ describe('closing the context card (LEV-369)', () => {
     expect(document.activeElement).toBe(node('ふりかえる'));
   });
 
-  it('acts on the node it was opened for after a change from outside, and on nothing (said so) once that node changed (review 2)', async () => {
+  it('closes when someone else changes the note under it, the focus back on the node: its ids may name other nodes now (review 3)', async () => {
     const { node, source, settle, app, file } = await mount();
-    const wait = async (): Promise<void> => { await new Promise(resolve => setTimeout(resolve, 100)); await settle(); };
-    // An item put above it from another editor: the card's 削除 still takes 睡眠.
     openContextCard(node('睡眠'));
-    const inserted = source().replace('  - 休息の取り方\n', '  - 足した項目\n  - 休息の取り方\n');
-    app.put(file.path, inserted);
-    await wait();
-    cardRow('削除').click();
+    app.put(file.path, source().replace('  - 休息の取り方\n', '  - 足した項目\n  - 休息の取り方\n'));
+    await new Promise(resolve => setTimeout(resolve, 100));
     await settle();
-    expect(source()).toBe(inserted.replace('  - 睡眠\n', ''));
-    // The node renamed from outside while its card is open: the row no longer knows it, and does nothing.
-    openContextCard(node('ふりかえる'));
-    const renamed = source().replace('  - ふりかえる\n', '  - ふりかえり\n');
-    app.put(file.path, renamed);
-    await wait();
-    cardRow('削除').click();
+    expect(contextCard()).toBeNull();
+    expect(document.activeElement).toBe(node('睡眠'));
+  });
+
+  it('keeps a held edit\'s end the person\'s once they go back into it, after a right-click elsewhere (review 3)', async () => {
+    const { node, source, settle, editor, key } = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
+    node('第 1 章').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
     await settle();
-    expect(source()).toBe(renamed);
-    expect(Notice.log).toContain('対象のノードが変更されています。再選択してください。');
+    const input = editor();
+    if (!input) throw new Error('No draft on 第 1 章');
+    // A rename the note refuses (an ATX heading's closing sequence): Enter keeps the edit open with the reason.
+    input.value = '第 1 章 #';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    key(input, 'Enter');
+    await settle();
+    expect(editor()).toBe(input);
+    openContextCard(node('第 2 章'));
+    key(document.activeElement as HTMLElement, 'Escape');
+    input.focus();
+    input.value = '第一章';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    key(input, 'Enter');
+    await settle();
+    await settle();
+    expect(source()).toContain('### 第一章\n');
+    expect(node('第一章').classList.contains('is-selected')).toBe(true);
+    expect(document.activeElement).toBe(node('第一章'));
   });
 
   it('closes with the view and releases its listeners on the document and the window', async () => {
