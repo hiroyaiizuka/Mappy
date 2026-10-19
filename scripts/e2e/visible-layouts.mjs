@@ -15,8 +15,11 @@
  *
  * How the toggles sit (LEV-370), read in every row above: one layout per line under the row's name and description,
  * each toggle's right edge at the x where the other settings' controls end (within half a pixel), each name on one
- * line, and「いつも出ます」／`Always shown` beside exactly the locked ones. With the timeline locked, Obsidian's base
- * theme is set light and then dark (`app.changeTheme`) and the same is read in each before it is put back.
+ * line, no text of a line reaching its toggle, and「いつも出ます」／`Always shown` beside exactly the locked ones. Also
+ * read: the tab right after `update()` while it is open (1.13+ then draws the row again into the same Setting: still one
+ * set of four), and, with the timeline locked, Obsidian's base theme set light and then dark (`app.changeTheme`) before
+ * it is put back key and all, and the settings window narrowed to 460 px through CDP's viewport emulation of that
+ * window alone (no OS window is touched), where no toggle may end past the window either.
  *
  * The data file is the plugin's own (`.obsidian/plugins/mappy/data.json`), written and removed through the vault adapter
  * with the plugin then disabled and enabled, which is when it reads the file. The file as the run found it is copied to
@@ -61,8 +64,11 @@ const storedAtStart = await cdp.evaluate("localStorage.getItem('language')");
 let settingsAtStart = null;
 /** Whether this run wrote the backup, and so owns the data file until it has put it back. */
 let ownsData = false;
-/** Obsidian's base theme as this run found it ('system' when the vault never chose one, as E48 reads it), put back at the end. */
-const themeAtStart = await cdp.evaluate("app.vault.getConfig('theme') ?? 'system'");
+/**
+ * Obsidian's base theme as this run found it, put back at the end: the vault's own `theme` key (null when the vault never
+ * chose one, which Obsidian reads as 'system') and the scheme the window showed.
+ */
+const themeAtStart = await cdp.evaluate("({ key: app.vault.config.theme ?? null, scheme: document.body.classList.contains('theme-dark') ? 'dark' : 'light' })");
 /** Whether this run changed the base theme and has not put it back yet. */
 let themeChanged = false;
 
@@ -139,12 +145,15 @@ const READ = `${VIEW}
   };
   const toggles = Array.from(row?.querySelectorAll('.mappy-setting-layout') ?? [], item => {
     const toggle = item.querySelector('.checkbox-container');
-    const name = item.querySelector('span');
+    // Before LEV-370 the name was the line's only span.
+    const name = item.querySelector('.mappy-setting-layout-name') ?? item.querySelector('span');
+    const text = Array.from(item.querySelectorAll('span'), span => span.getBoundingClientRect().right);
     const always = item.querySelector('.mappy-setting-layout-always');
     const { left, right, top, bottom } = toggle.getBoundingClientRect();
     return {
       label: name?.textContent ?? '', on: toggle.classList.contains('is-enabled'), locked: toggle.classList.contains('is-disabled'),
       box: { left, right, top, bottom }, nameLines: name ? lines(name) : 0, always: shown(always) ? always.textContent : null,
+      textRight: text.length > 0 ? Math.max(...text) : null,
     };
   });
   const controls = items.filter(item => item !== row).map(item => {
@@ -158,6 +167,7 @@ const READ = `${VIEW}
   return {
     toggles,
     controls,
+    width: tab.ownerDocument.defaultView.innerWidth,
     theme: tab.ownerDocument.body.classList.contains('theme-dark') ? 'dark' : 'light',
     note: note ? { text: note.textContent, hidden: note.hidden || style(note).display === 'none' } : null,
     layout: ${LAYOUT_SELECT}?.value ?? null,
@@ -198,18 +208,22 @@ async function chooseDefault(layout) {
 const flags = state => state?.toggles?.map?.(toggle => [toggle.on, toggle.locked]);
 
 /**
- * How the toggles sit (LEV-370): one per line, stacked down the row at one x; every toggle's right edge where the
- * other rows' controls end; each name on one line; and「いつも出ます」beside exactly the locked toggles.
+ * How the toggles sit (LEV-370): one set of four, one per line, stacked down the row at one x; every toggle's right
+ * edge where each other row's control ends, inside the window; no text of a line reaching its toggle; each name on one
+ * line; and「いつも出ます」beside exactly the locked toggles. A step that failed has its own failure already.
  */
 function checkLines(name, state, always) {
-  const toggles = state?.toggles ?? [];
+  if (!state || state.error) return;
+  const toggles = state.toggles ?? [];
   if (toggles.length !== MODES.length) { check(false, `${name}: ${toggles.length} toggles drawn`); return; }
   const edges = [...toggles.map(toggle => toggle.box.right), ...(state.controls ?? [])];
-  const aligned = state.controls?.length === 3 && edges.every(edge => typeof edge === 'number') && Math.max(...edges) - Math.min(...edges) <= EDGE;
+  const aligned = state.controls?.length > 0 && edges.every(edge => typeof edge === 'number') && Math.max(...edges) - Math.min(...edges) <= EDGE;
   check(aligned, `${name}: the toggles end at ${JSON.stringify(toggles.map(toggle => toggle.box.right))}, the other controls at ${JSON.stringify(state.controls)}`);
   const stacked = toggles.every((toggle, index) => index === 0
     || (toggle.box.top >= toggles[index - 1].box.bottom && Math.abs(toggle.box.left - toggles[0].box.left) <= EDGE));
   check(stacked, `${name}: the toggles are not one per line: ${JSON.stringify(toggles.map(toggle => toggle.box))}`);
+  check(toggles.every(toggle => toggle.box.right <= state.width + EDGE), `${name}: a toggle ends past the window's ${state.width}: ${JSON.stringify(toggles.map(toggle => toggle.box.right))}`);
+  check(toggles.every(toggle => toggle.textRight === null || toggle.textRight <= toggle.box.left + EDGE), `${name}: a line's text runs under its toggle: ${JSON.stringify(toggles.map(toggle => [toggle.label, toggle.textRight, toggle.box.left]))}`);
   check(toggles.every(toggle => toggle.nameLines === 1), `${name}: a name wraps: ${JSON.stringify(toggles.map(toggle => [toggle.label, toggle.nameLines]))}`);
   check(toggles.every(toggle => (toggle.always === always) === toggle.locked), `${name}: 「${always}」 beside ${JSON.stringify(toggles.map(toggle => [toggle.label, toggle.always]))}`);
 }
@@ -222,6 +236,21 @@ async function setTheme(scheme) {
   themeChanged = true;
   return appTheme(scheme, [evaluate, inSettings]);
 }
+/**
+ * The base theme put back as the run found it, key and all (Obsidian's `setConfig` with undefined removes the key, so a
+ * vault that never chose a theme is left without one), checked against what the run found.
+ */
+async function restoreTheme(name) {
+  const back = await step(name, () => evaluate(`const start = ${JSON.stringify(themeAtStart)};
+    app.changeTheme(start.key ?? 'system');
+    if (start.key === null) app.vault.setConfig('theme', undefined);
+    for (const started = Date.now(); Date.now() - started < 5000 && !document.body.classList.contains('theme-' + start.scheme); await new Promise(resolve => setTimeout(resolve, 50)));
+    return { key: app.vault.config.theme ?? null, scheme: document.body.classList.contains('theme-dark') ? 'dark' : 'light' };`));
+  check(same(back, themeAtStart), `${name}: the base theme is ${JSON.stringify(back)}, not ${JSON.stringify(themeAtStart)} as the run found it`);
+  themeChanged = false;
+}
+/** A settings window narrower than the default, through CDP's viewport emulation of that window alone (no OS window is touched). */
+const NARROW = 460;
 
 async function rows(language, shot) {
   const { labels, locked, always } = TEXT[language];
@@ -237,6 +266,9 @@ async function rows(language, shot) {
   const fresh = required(record, row('fresh-load'), await step(row('fresh-load'), () => load(null)));
   check(same(fresh.settings.visibleLayouts, ['mindmap', 'timeline', 'hierarchy']), `${row('fresh')}: loaded ${JSON.stringify(fresh.settings.visibleLayouts)}`);
   const first = await look(row('fresh'), read);
+  // While the tab is open, 1.13+ draws a row again into the same Setting (its cleanup, `clear()`, render): still one set.
+  const redrawn = await look(row('redraw'), async () => { await evaluate('app.setting.activeTab.update(); await new Promise(resolve => setTimeout(resolve, 400)); return true;'); return read(); });
+  check(same(flags(redrawn), flags(first)), `${row('redraw')}: toggles ${JSON.stringify(redrawn?.toggles)}`);
   check(same(first?.bar, pick(['mindmap', 'timeline', 'hierarchy'])), `${row('fresh')}: the bar shows ${JSON.stringify(first?.bar)}`);
   check(same(first?.toggles?.map(toggle => toggle.label), labels), `${row('fresh')}: toggles named ${JSON.stringify(first?.toggles)}`);
   check(same(flags(first), [[true, true], [true, false], [true, false], [false, false]]), `${row('fresh')}: toggles ${JSON.stringify(first?.toggles)}`);
@@ -263,7 +295,15 @@ async function rows(language, shot) {
     // The evidence the run was asked for: a missing picture is a failure, not a silent skip.
     if (shot) await step(row(`shot-${scheme}`), () => { if (!settingsCdp || settingsCdp.closed) throw new Error('no settings window to take'); return settingsCdp.screenshot(`${shot}-${language}-${scheme}.png`); });
   }
-  await step(row('theme-back'), async () => { await evaluate(`app.changeTheme(${JSON.stringify(themeAtStart)}); return true;`); themeChanged = false; return themeAtStart; });
+  await restoreTheme(row('theme-back'));
+  // A narrow settings window: the lines shrink with the row, and nothing runs under a toggle or pushes it out.
+  const narrow = await look(row('narrow'), async () => {
+    await (await openSettings()).send('Emulation.setDeviceMetricsOverride', { width: NARROW, height: 700, deviceScaleFactor: 0, mobile: false });
+    await wait(500);
+    return read();
+  });
+  check(narrow?.width === NARROW, `${row('narrow')}: the settings window is ${narrow?.width} wide`);
+  await step(row('narrow-back'), async () => { await (await openSettings()).send('Emulation.clearDeviceMetricsOverride', {}); await wait(300); return true; });
   const lockedClick = await look(row('locked-clicks'), async () => { await clickToggle(1); return clickToggle(0); });
   check(same(lockedClick?.data, toTimeline?.data), `${row('locked-clicks')}: a locked toggle saved ${JSON.stringify(lockedClick?.data)}`);
   check(same(flags(lockedClick), flags(toTimeline)), `${row('locked-clicks')}: toggles ${JSON.stringify(lockedClick?.toggles)}`);
@@ -315,7 +355,7 @@ try {
   else {
     await closeSettings().catch(() => null);
     await detachMaps().catch(() => null);
-    if (themeChanged) await step('restore-theme', () => evaluate(`app.changeTheme(${JSON.stringify(themeAtStart)}); return app.vault.getConfig('theme') ?? 'system';`));
+    if (themeChanged) await restoreTheme('restore-theme');
     if (ownsData) {
       const restored = await step('restore-data', () => evaluate(`const adapter = app.vault.adapter;
         const { raw } = JSON.parse(await adapter.read(${JSON.stringify(BACKUP)}));

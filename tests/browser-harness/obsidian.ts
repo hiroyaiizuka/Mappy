@@ -965,6 +965,8 @@ export class Setting {
   addDropdown(callback: (dropdown: DropdownComponent) => unknown): this { callback(new DropdownComponent(this.controlEl)); return this; }
   addText(callback: (text: TextComponent) => unknown): this { callback(new TextComponent(this.controlEl)); return this; }
   addToggle(callback: (toggle: ToggleComponent) => unknown): this { callback(new ToggleComponent(this.controlEl)); this.settingEl.addClass("mod-toggle"); return this; }
+  /** As app.js 1.14.4's `Setting.clear`: only the control box is emptied; the row, its classes and anything else drawn into it stay. */
+  clear(): this { this.controlEl.empty(); this.settingEl.removeClass("is-invalid"); return this; }
 }
 
 /**
@@ -990,7 +992,8 @@ interface DeclaredSetting {
 export abstract class PluginSettingTab {
   readonly containerEl: HTMLElement;
   settingItems: unknown[] = [];
-  private cleanups: (() => void)[] = [];
+  /** The drawn declarative rows, each with the cleanup its `render` returned. */
+  private rows: { name: string; setting: Setting; cleanup: (() => void) | undefined }[] = [];
   constructor(readonly app: App, readonly plugin: unknown) {
     this.containerEl = document.createElement("div");
     this.containerEl.className = "vertical-tab-content";
@@ -1004,31 +1007,49 @@ export abstract class PluginSettingTab {
   getControlBinding(key: string): { value: unknown; onChange: (value: unknown) => Promise<void> } {
     return { value: this.getControlValue(key), onChange: async value => { await this.setControlValue(key, value); } };
   }
-  /** What Obsidian 1.13+ does when the tab is shown, and again on `update()` while it is open: the rows are torn down (cleanups first) and drawn afresh. */
+  /**
+   * What Obsidian 1.13+ does when the tab is shown, and again on `update()` while it is open. Shown, the rows are drawn
+   * afresh. Open, a row whose definition is in the same place under the same name keeps its `Setting`: its cleanup
+   * runs, `clear()` empties the control box only, and the name, description and control or `render` are drawn into
+   * the same row again (app.js 1.14.4's settings reconciler: `P4`, `setting.clear()`, `O4`). Other rows are torn down.
+   */
   renderTab(): void {
-    this.tearDown();
-    if (this.settingItems.length === 0) { this.display(); return; }
-    for (const item of this.settingItems as DeclaredSetting[]) {
-      const setting = new Setting(this.containerEl).setName(item.name ?? "").setDesc(item.desc ?? "");
+    const items = this.settingItems as DeclaredSetting[];
+    const kept = this.rows.length === items.length && this.rows.every((row, index) => row.name === (items[index]?.name ?? ""));
+    if (!kept) this.tearDown();
+    if (items.length === 0) { this.display(); return; }
+    items.forEach((item, index) => {
+      const name = item.name ?? "";
+      let row = kept ? this.rows[index] : undefined;
+      if (row) {
+        const { cleanup } = row;
+        row.cleanup = undefined;
+        cleanup?.();
+        row.setting.clear();
+      } else {
+        row = { name, setting: new Setting(this.containerEl), cleanup: undefined };
+        this.rows.push(row);
+      }
+      const setting = row.setting.setName(name).setDesc(item.desc ?? "");
       if (item.render) {
         const cleanup = item.render(setting);
-        if (cleanup) this.cleanups.push(cleanup);
-        continue;
+        if (cleanup) row.cleanup = cleanup;
+        return;
       }
       const control = item.control;
-      if (!control) continue;
+      if (!control) return;
       const binding = this.getControlBinding(control.key);
       const value = binding.value ?? control.defaultValue;
       const text = typeof value === "string" ? value : "";
       if (control.type === "dropdown") setting.addDropdown(dropdown => { dropdown.addOptions(control.options).setValue(text).onChange(next => { void binding.onChange(next); }); });
       else if (control.type === "text") setting.addText(input => { input.setPlaceholder(control.placeholder ?? "").setValue(text).onChange(next => { void binding.onChange(next); }); });
       else setting.addToggle(toggle => { toggle.setValue(value === true).onChange(next => { void binding.onChange(next); }); });
-    }
+    });
   }
   abstract display(): void;
   hide(): void { this.tearDown(); }
   private tearDown(): void {
-    for (const cleanup of this.cleanups.splice(0)) cleanup();
+    for (const row of this.rows.splice(0)) row.cleanup?.();
     this.containerEl.empty();
   }
 }

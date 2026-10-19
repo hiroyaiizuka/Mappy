@@ -14,7 +14,8 @@
  *   --case   run only the named case (see CASES below) instead of all of them; no `summary.json` then,
  *            since it would otherwise silently replace a previous full run's summary with one case's
  *   --json   directory to write <case>.json into (and, for a full run, a summary.json)
- *   --shot   directory to write <case>.png into, for cases that take one
+ *   --shot   directory to write <case>.png into, for cases that take one (passed to the case as --shot <dir>/<case>.png;
+ *            a case taking several pictures names them from that path, e.g. E72's <case>-<language>-<theme>.png)
  */
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';

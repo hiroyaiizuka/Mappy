@@ -287,6 +287,40 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(always(tab.containerEl)).toEqual(['いつも出ます', null, null, null]);
   });
 
+  it('keeps one set of lines when 1.13+ draws the row again into the same Setting, and those lines are the live ones (LEV-370 review)', async () => {
+    const { tab, save } = mount();
+    const runtime = tab as unknown as HarnessSettingTab;
+    runtime.update();
+    runtime.renderTab();
+    // While the tab is open: the row keeps its Setting, its control box is cleared, and render runs on it again.
+    runtime.update();
+    runtime.renderTab();
+    runtime.update();
+    runtime.renderTab();
+    expect(tab.containerEl.querySelectorAll('.mappy-setting-layouts')).toHaveLength(1);
+    expect(tab.containerEl.querySelectorAll('.mappy-setting-layout')).toHaveLength(LAYOUT_MODES.length);
+    expect(tab.containerEl.querySelectorAll('.mappy-setting-note')).toHaveLength(1);
+    const { toggles, layout } = controls(tab.containerEl);
+    click(toggles.balanced);
+    expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ALL_LAYOUTS });
+    change(layout, 'timeline');
+    await flush();
+    expect(LAYOUT_MODES.map(mode => locked(toggles[mode]))).toEqual([true, true, false, false]);
+    expect(always(tab.containerEl)).toEqual(['いつも出ます', 'いつも出ます', null, null]);
+  });
+
+  it('gives each locked toggle its「いつも出ます」as its description, for a screen reader (LEV-370 review)', async () => {
+    const { tab, toggles, layout } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' });
+    const described = () => LAYOUT_MODES.map(mode => {
+      const id = toggles[mode].getAttribute('aria-describedby');
+      return id === null ? null : tab.containerEl.querySelector(`[id="${id}"]`)?.textContent ?? 'missing';
+    });
+    expect(described()).toEqual(['いつも出ます', 'いつも出ます', null, null]);
+    change(layout, 'mindmap');
+    await flush();
+    expect(described()).toEqual(['いつも出ます', null, null, null]);
+  });
+
   it('says「いつも出ます」in the app\'s language (LEV-370)', () => {
     setLanguage('en');
     try {
