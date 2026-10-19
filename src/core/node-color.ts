@@ -158,6 +158,21 @@ export function titleColor(title: string): TitleColor | null {
 }
 
 /**
+ * The colour of a node: its title's, except for the file name standing for a root (`kind: 'root'`), which is no text of
+ * the note's and has none (`==案==.md` is no highlight). The one reading the map, the menu, the calls and the drawings
+ * colour a node by (code review 3).
+ */
+export function nodeColor(node: { kind: string; title: string }): TitleColor | null {
+  return node.kind === 'root' ? null : titleColor(node.title);
+}
+
+/** The text a node shows: its title without the colour (`uncoloredTitle`), the file name standing for a root as it is. */
+export function nodeText(node: { kind: string; title: string }): string {
+  const color = nodeColor(node);
+  return color ? color.inner + color.suffix : node.title;
+}
+
+/**
  * The node's text without the colour around it, a block id after the colour kept as an uncoloured title has it: what the
  * map shows and the inline editor holds, and what a link to a heading names (`#見出し`).
  */
@@ -180,13 +195,18 @@ export function colorMark(color: NodeColor): string {
  * `title` in `color`, or without a colour for null: the colour around it replaced by the map's own `<mark>` (an
  * `==highlight==` and a mark in another colour included), the text inside kept byte for byte and a block id ending the
  * line left after it. A title already showing that colour is returned as it is, so choosing the colour a node has
- * writes nothing.
+ * writes nothing. Null when the mark would not read back around the text (it ends in an odd run of backslashes, which
+ * escapes `</mark>`, or holds a `<mark>` or `</mark>` without its pair): writing it would leave broken markup in the
+ * note that the map could neither show nor take off (code review 3).
  */
-export function recoloredTitle(title: string, color: NodeColor | null): string {
+export function recoloredTitle(title: string, color: NodeColor | null): string | null {
   const current = titleColor(title);
   if ((current?.color ?? null) === color) return title;
   const { body, suffix } = current ? { body: current.inner, suffix: current.suffix } : splitBlockId(title);
-  return color === null ? body + suffix : `${colorMark(color)}${body}</mark>${suffix}`;
+  if (color === null) return body + suffix;
+  const colored = `${colorMark(color)}${body}</mark>`;
+  const read = titleColor(colored);
+  return read?.color === color && read.inner === body && read.suffix === '' ? colored + suffix : null;
 }
 
 /**
@@ -207,8 +227,8 @@ function wrapped(text: string, from: TitleColor): string | null {
  * shows the colour it has and the menu can change, and none when it has none (the called map's colour of its root stays
  * in that map).
  */
-export function withColorOf(title: string, from: string): string {
-  const text = titleColor(title)?.inner ?? title;
+export function withColorOf(called: { kind: string; title: string }, from: string): string {
+  const text = nodeColor(called)?.inner ?? called.title;
   const color = titleColor(from);
   return (color && wrapped(text, color)) ?? text;
 }
@@ -238,7 +258,7 @@ export function storedColoredTitle(draft: string, current: string): string {
   if (written === shown) return current;
   const { body, suffix } = splitBlockId(written);
   const stored = wrapped(body, color);
-  if (stored === null) throw new Error(t().colorMarkInText);
+  if (stored === null) throw new Error(t().colorCannotWrap);
   return stored + suffix;
 }
 

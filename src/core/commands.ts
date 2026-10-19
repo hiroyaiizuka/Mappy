@@ -263,6 +263,7 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
  */
 function recolor(doc: MindDocument, node: MindNode, color: NodeColor | null): EditPlan {
   const title = recoloredTitle(node.title, color);
+  if (title === null) throw new Error(t().colorCannotWrap);
   if (title === node.title) return { edits: [], selectionOffset: node.titleFrom };
   return retitle(doc, node, title, t().colorChangesHeading);
 }

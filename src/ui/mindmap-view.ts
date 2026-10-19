@@ -9,7 +9,7 @@ import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type 
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { sameFolds, type FoldEntry } from "../core/fold-memory";
 import { foldEntryOf, moves, rememberedFolds, rememberedIds, type KeptKey, type RememberedFolds } from "../core/fold-state";
-import { NODE_COLORS, colorLabel, editableTitle, titleColor, type NodeColor } from "../core/node-color";
+import { NODE_COLORS, colorLabel, editableTitle, nodeColor, type NodeColor } from "../core/node-color";
 import { planListConversion } from "../core/list-conversion";
 import { standsForFileName } from "../core/list-commands";
 import { locateSubpath } from "../core/subpath";
@@ -1016,7 +1016,7 @@ export class MindmapView extends EditableFileView {
   private colorMenu(event: MouseEvent): void {
     const node = this.selected();
     if (!node) return;
-    const current = (node.kind === "root" ? null : titleColor(node.title))?.color ?? null;
+    const current = nodeColor(node)?.color ?? null;
     const menu = new Menu();
     for (const color of [null, ...NODE_COLORS]) {
       menu.addItem(item => item.setTitle(colorLabel(color)).setChecked(current === color).onClick(() => { this.setColor(color); }));

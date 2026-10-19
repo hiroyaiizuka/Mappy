@@ -89,7 +89,7 @@ export function projectCalls(roots: readonly MindNode[], targets: CallTargets): 
     if (target && called) {
       const grafted = called.children.map((child) => projectCalled(child, target, node.id, node.id, node.level + 1));
       // The calling item's colour, if it has one, goes on the called root's text it shows (LEV-364).
-      projected = { ...node, parentId, title: withColorOf(called.title, node.title), children: [...grafted, ...own] };
+      projected = { ...node, parentId, title: withColorOf(called, node.title), children: [...grafted, ...own] };
       sources.set(node.id, { callerId: node.id, path: target.path, subpath: target.subpath, document: target.document, node: called, root: true });
     } else {
       projected = { ...node, parentId, children: own };

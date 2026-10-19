@@ -3,7 +3,7 @@ import { nodeBody } from '../core/body';
 import { attachmentEntries, type AttachmentEntry } from '../core/attachments';
 import { projectCalls, type CallSource, type CallTargets } from '../core/calls';
 import { plainTitle, type PlainTitle } from '../core/plain-text';
-import { NODE_COLOR_VALUES, opaqueOverWhite, titleColor } from '../core/node-color';
+import { nodeColor, opaqueOverWhite } from '../core/node-color';
 import type { LinkSyntax } from '../core/wiki-link';
 import { layoutTree, type LayoutBounds, type LayoutMode, type LayoutNode, type NodeSize } from '../layout/layout';
 import { pathToPoints, type Point } from '../layout/path-points';
@@ -73,13 +73,12 @@ function chosenLink(
 }
 
 /**
- * The fill a node's colour takes in a drawing (LEV-364): the highlight laid over white, since a drawing is light and
- * Excalidraw's dark mode inverts it whole; a colour of the note's own outside the six, as written.
+ * The fill a node's colour takes in a drawing (LEV-364): the colour it is drawn in laid over white, since a drawing is
+ * light and Excalidraw's dark mode inverts it whole.
  */
-function nodeFill(title: string): string | null {
-  const color = titleColor(title);
-  if (!color) return null;
-  return opaqueOverWhite(color.color === 'custom' ? color.value : NODE_COLOR_VALUES[color.color]);
+function nodeFill(node: MindNode): string | null {
+  const color = nodeColor(node);
+  return color ? opaqueOverWhite(color.value) : null;
 }
 
 function visualRoot(document: MindDocument): MindNode {
@@ -116,8 +115,7 @@ export function sceneContents(document: MindDocument, collapsed: ReadonlySet<str
       text: title.text,
       ...chosenLink(title, body, source),
       images: entries.filter(entry => entry.kind === 'image').map(entry => entry.target),
-      // The file name standing for a root has no colour, as on the map.
-      fill: node.kind === 'root' ? null : nodeFill(node.title),
+      fill: nodeFill(node),
       ...(called ? { sourcePath: source.path } : {}),
     });
     if (!collapsed.has(node.id)) pending.push(...[...node.children].reverse());

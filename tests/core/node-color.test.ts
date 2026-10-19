@@ -12,6 +12,9 @@ import { locateSubpath } from '../../src/core/subpath';
 const YELLOW = '<mark style="background: #FFF3A3A6;">';
 const BLUE = '<mark style="background: #ADCCFFA6;">';
 
+/** A called node as `projectCalls` hands it to `withColorOf`: a heading, unless said otherwise. */
+const heading = (title: string, kind = 'atx'): { kind: string; title: string } => ({ kind, title });
+
 function find(doc: MindDocument, title: string): MindNode {
   const node = doc.nodes.find((candidate) => uncoloredTitle(candidate.title) === title);
   if (!node) throw new Error(`Missing node: ${title}`);
@@ -99,7 +102,7 @@ describe('reading a node colour from its text (LEV-364)', () => {
 describe('writing a colour over a title (LEV-364)', () => {
   it('wraps, changes and takes off the colour, the text inside kept byte for byte', () => {
     const inner = '**太字** [[ノート#見出し|別名]] ![[図.png]] <br> `code`';
-    const yellow = recoloredTitle(inner, 'yellow');
+    const yellow = recoloredTitle(inner, 'yellow') ?? '';
     expect(yellow).toBe(`${YELLOW}${inner}</mark>`);
     expect(recoloredTitle(yellow, 'blue')).toBe(`${BLUE}${inner}</mark>`);
     expect(recoloredTitle(yellow, null)).toBe(inner);
@@ -116,20 +119,30 @@ describe('writing a colour over a title (LEV-364)', () => {
     expect(recoloredTitle('==x==', null)).toBe('x');
   });
 
+  it('writes no colour that would not read back: a text ending in a backslash, or holding a mark tag without its pair (code review 3)', () => {
+    for (const title of ['C:\\dir\\', 'x </mark> y', 'x <mark> y']) expect(recoloredTitle(title, 'red'), title).toBeNull();
+    expect(recoloredTitle('C:\\dir\\\\', 'red')).toBe('<mark style="background: #FF5582A6;">C:\\dir\\\\</mark>');
+    // Taking a colour off always reads.
+    expect(recoloredTitle(`${YELLOW}x</mark>`, null)).toBe('x');
+  });
+
   it('wraps the whole of a title that has a mark over part of it', () => {
     expect(recoloredTitle('前半 <mark>後半</mark>', 'red')).toBe('<mark style="background: #FF5582A6;">前半 <mark>後半</mark></mark>');
     expect(recoloredTitle('<mark style="background: #FF5582A6;">前半 <mark>後半</mark></mark>', null)).toBe('前半 <mark>後半</mark>');
   });
 
   it('gives the calling item\'s colour, and only that, to the called root\'s text it shows (§5 M12, code review 1)', () => {
-    expect(withColorOf('呼ばれた根', `${BLUE}![[map]]</mark>`)).toBe(`${BLUE}呼ばれた根</mark>`);
-    expect(withColorOf(`${YELLOW}呼ばれた根</mark>`, `${BLUE}![[map]]</mark>`)).toBe(`${BLUE}呼ばれた根</mark>`);
+    expect(withColorOf(heading('呼ばれた根'), `${BLUE}![[map]]</mark>`)).toBe(`${BLUE}呼ばれた根</mark>`);
+    expect(withColorOf(heading(`${YELLOW}呼ばれた根</mark>`), `${BLUE}![[map]]</mark>`)).toBe(`${BLUE}呼ばれた根</mark>`);
     // The item has no colour: the called map's colour of its root is not shown, so 色なし is what the menu shows and does.
-    expect(withColorOf(`${YELLOW}呼ばれた根</mark>`, '![[map]]')).toBe('呼ばれた根');
-    expect(withColorOf('呼ばれた根', '==![[map]]==')).toBe('==呼ばれた根==');
+    expect(withColorOf(heading(`${YELLOW}呼ばれた根</mark>`), '![[map]]')).toBe('呼ばれた根');
+    expect(withColorOf(heading('呼ばれた根'), '==![[map]]==')).toBe('==呼ばれた根==');
     // A text the item's `==` cannot hold is shown in the same colour as the map's own mark.
-    expect(withColorOf('x == y', '==![[map]]==')).toBe(`${YELLOW}x == y</mark>`);
-    expect(withColorOf('根', `${BLUE}![[map]]</mark> ^id`)).toBe(`${BLUE}根</mark>`);
+    expect(withColorOf(heading('x == y'), '==![[map]]==')).toBe(`${YELLOW}x == y</mark>`);
+    expect(withColorOf(heading('根'), `${BLUE}![[map]]</mark> ^id`)).toBe(`${BLUE}根</mark>`);
+    // A called whole note whose root is its file name: the name is text, never a colour to take off (code review 3).
+    expect(withColorOf(heading('==案==', 'root'), '![[==案==]]')).toBe('==案==');
+    expect(withColorOf(heading('==案==', 'root'), `${BLUE}![[==案==]]</mark>`)).toBe(`${BLUE}==案==</mark>`);
   });
 
   it('gives the inline editor the text inside the colour, and keeps the colour around what it saves', () => {
@@ -145,6 +158,8 @@ describe('writing a colour over a title (LEV-364)', () => {
   it('refuses a draft that would end the colour\'s mark early or leave one open, and writes a highlight it cannot hold as the yellow mark', () => {
     expect(() => storedColoredTitle('a</mark>b', `${YELLOW}x</mark>`)).toThrow('色の印');
     expect(() => storedColoredTitle('<mark>a', `${YELLOW}x</mark>`)).toThrow('色の印');
+    // A draft ending in a backslash would escape the closing tag: refused with that reason (code review 3).
+    expect(() => storedColoredTitle('C:\\dir\\', `${YELLOW}x</mark>`)).toThrow('末尾が \\');
     expect(storedColoredTitle('前半 <mark>後半</mark>', `${YELLOW}x</mark>`)).toBe(`${YELLOW}前半 <mark>後半</mark></mark>`);
     // Emptied, ending in `=` or holding `==`: no `==` can wrap it (code review 1), so the yellow mark does, never a refusal.
     expect(storedColoredTitle('', '==x==')).toBe(`${YELLOW}</mark>`);
@@ -271,6 +286,14 @@ describe('the colour command (LEV-364)', () => {
       { from: node.titleFrom, to: node.titleTo, text: node.title },
     ]);
     expect(() => planEdit(doc, { type: 'rename', nodeId: node.id, title: 'a</mark>b' })).toThrow('色の印');
+  });
+
+  it('refuses a colour that would leave broken markup in the note, the note unchanged (code review 3)', () => {
+    const source = '## 本体\n\n- C:\\dir\\\n- x </mark> y\n';
+    const doc = parseMarkdown(source, 'Note');
+    for (const node of doc.nodes.filter((candidate) => candidate.kind === 'list')) {
+      expect(() => planEdit(doc, { type: 'color', nodeId: node.id, color: 'red' }), node.title).toThrow('色の印');
+    }
   });
 
   it('refuses the root of a headings note like the other edits the root has none of', () => {

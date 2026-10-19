@@ -26,7 +26,7 @@ export const en = {
   setextEmpty: "A setext heading can't be empty. Change it to an ATX heading in Markdown.",
   nameChangesHeading: "This name would change the heading syntax. Edit it in Markdown.",
   colorChangesHeading: "Coloring this node would change the heading syntax. Edit it in Markdown.",
-  colorMarkInText: "This text would break the node's color: it has a <mark> or </mark> without its pair. Remove it, or edit it in Markdown.",
+  colorCannotWrap: "This text can't sit inside the color's mark: it has a <mark> or </mark> without its pair, or ends with a backslash. Change it, or edit it in Markdown.",
   headingDepth: "Headings can only go 6 levels deep.",
   topicAtEndUnsafe: "Can't add a topic at the end of the note. Check the Markdown syntax.",
   topicsKeyUnsafe: "Can't update mappy-topics in the frontmatter. Check it in Markdown.",

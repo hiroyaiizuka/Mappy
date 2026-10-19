@@ -82,5 +82,7 @@ describe('locateSubpath', () => {
     // The next `A` is tried when the first leads nowhere (code review 2).
     const later = '### <mark>A</mark>\n\n## A\n\n### <mark>B</mark>\n';
     expect(locateSubpath(later, '#A#B')).toBe(later.indexOf('### <mark>B'));
+    // With no coloured heading on the way, the second reading answers as Obsidian does (code review 3).
+    expect(locateSubpath('# R\n### A\n## A\n### B\n', '#A#B')).toBeNull();
   });
 });

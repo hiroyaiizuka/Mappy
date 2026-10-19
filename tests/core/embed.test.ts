@@ -101,6 +101,8 @@ describe('findSection', () => {
     // The lenient reading tries the next `A` when the first has no `B` below (code review 2).
     const later = parseMarkdown(`## ${yellow}A</mark>\n\n## A\n\n### ${yellow}B</mark>\n`, 'Note');
     expect(findSection(later, '#A#B')?.title).toBe(`${yellow}B</mark>`);
+    // With no coloured heading on the way, the second reading answers as Obsidian does (code review 3).
+    expect(findSection(parseMarkdown('# R\n### A\n## A\n### B\n', 'Note'), '#A#B')).toBeNull();
     // A heading the colour is only part of is not read without it.
     expect(findSection(parseMarkdown('## 前半 <mark>後半</mark>\n', 'Note'), '#前半 後半')).toBeNull();
   });

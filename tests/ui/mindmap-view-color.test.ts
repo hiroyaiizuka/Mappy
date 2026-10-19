@@ -85,7 +85,6 @@ describe('the colour of a node, chosen on the map (LEV-364)', () => {
     expect(mounted.source()).toBe(LIST.replace('- 温泉旅行', `- ${BLUE}温泉旅行</mark>`));
     const node = mounted.node('温泉旅行');
     expect(fill(node)).toBe('blue');
-    expect(node.classList.contains('has-color')).toBe(true);
     // The label shows the text inside the colour; the colour is the box's.
     expect(node.querySelector('.mappy-node-label')?.textContent).toBe('温泉旅行');
     expect(node.classList.contains('is-selected')).toBe(true);

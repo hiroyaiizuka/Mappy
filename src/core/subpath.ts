@@ -1,6 +1,6 @@
 import { parser } from '@lezer/markdown';
 import { isMultilineSetext, parseableSource } from './markdown';
-import { uncoloredTitle } from './node-color';
+import { titleColor, uncoloredTitle } from './node-color';
 
 /** Blocks the parser reads as literal text: nothing inside them is a heading or carries a block id. */
 const LITERAL = new Set(['FencedCode', 'CodeBlock', 'HTMLBlock', 'Comment', 'CommentBlock']);
@@ -27,8 +27,9 @@ function lineStart(source: string, offset: number): number {
  * comments do not count. Footnotes (`#[^…]`) and a subpath nothing matches are null.
  *
  * A heading path Obsidian finds nothing for is tried again with each heading read without its colour as well (LEV-364,
- * as `findSection` does, the next match of a segment tried when the one taken leads nowhere): a link to a heading made
- * before the map coloured it still opens the map on that node.
+ * as `findSection` does: the next match of a segment tried when the one taken leads nowhere, only a path through a
+ * coloured heading answered, a failed state not tried twice): a link to a heading made before the map coloured it still
+ * opens the map on that node.
  */
 export function locateSubpath(source: string, subpath: string): number | null {
   const segments = subpath.split('#').filter(Boolean);
@@ -71,16 +72,34 @@ export function locateSubpath(source: string, subpath: string): number | null {
   }
   const wanted = segments.map(normalizeHeading);
   const exact = (text: string, segment: string): boolean => normalizeHeading(text) === segment;
-  const lenient = (text: string, segment: string): boolean => exact(text, segment) || normalizeHeading(uncoloredTitle(text.trim())) === segment;
-  // Obsidian's walk takes the first deeper heading that matches each segment; the lenient one tries the next before giving up.
-  const walk = (start: number, index: number, level: number, matches: typeof exact, retry: boolean): number | null => {
-    for (let at = start; at < headings.length; at += 1) {
+  const throughColor = (text: string, segment: string): boolean => titleColor(text.trim()) !== null && normalizeHeading(uncoloredTitle(text.trim())) === segment;
+  // Obsidian's walk: the first deeper heading that matches each segment, in one pass.
+  let index = 0;
+  let level = 0;
+  for (const heading of headings) {
+    if (heading.level <= level || !exact(heading.text, wanted[index] ?? '')) continue;
+    index += 1;
+    level = heading.level;
+    if (index === wanted.length) return heading.from;
+  }
+  // The lenient walk after the heading at `after` (-1: the start), segment `next` on.
+  const failed = new Set<string>();
+  const lenient = (after: number, next: number, coloured: boolean): number | null => {
+    const state = `${after}\0${next}\0${coloured}`;
+    if (failed.has(state)) return null;
+    const floor = after < 0 ? 0 : headings[after]!.level;
+    for (let at = after + 1; at < headings.length; at += 1) {
       const heading = headings[at]!;
-      if (heading.level <= level || !matches(heading.text, wanted[index] ?? '')) continue;
-      const found = index + 1 === wanted.length ? heading.from : walk(at + 1, index + 1, heading.level, matches, retry);
-      if (found !== null || !retry) return found;
+      if (heading.level <= floor) continue;
+      const segment = wanted[next] ?? '';
+      const viaColor = !exact(heading.text, segment) && throughColor(heading.text, segment);
+      if (!viaColor && !exact(heading.text, segment)) continue;
+      const used = coloured || viaColor;
+      const found = next + 1 === wanted.length ? (used ? heading.from : null) : lenient(at, next + 1, used);
+      if (found !== null) return found;
     }
+    failed.add(state);
     return null;
   };
-  return walk(0, 0, 0, exact, false) ?? walk(0, 0, 0, lenient, true);
+  return lenient(-1, 0, false);
 }
