@@ -334,7 +334,7 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(note.textContent).toBe('「タイムライン」は新規マップの既定レイアウトなので外せません。');
     click(toggles.timeline);
     toggles.timeline.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
-    tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout-label')[1]?.click();
+    tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout-label')[1]!.click();
     expect(on(toggles.timeline)).toBe(true);
     expect(save).not.toHaveBeenCalled();
   });
