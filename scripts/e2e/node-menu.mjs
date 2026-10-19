@@ -13,9 +13,14 @@
  * - shapes: a list item, a free topic, the calling item and a node of the called map (M12), the empty canvas, a heading
  *   note's node, a point at the pane's corner, and the map in a popout window.
  *
- * Then: the rows taken off (テキストを編集, 子を追加, 兄弟を追加, 前へ移動, 後ろへ移動, 元に戻す, やり直す) are nowhere; a colour
+ * Then: the rows taken off (テキストを編集, 子を追加, 兄弟を追加, 前へ移動, 後ろへ移動, 元に戻す, やり直す) are nowhere, and the
+ * keys they went to (F2 and the double click, Tab, Enter, ⌥↓, ⌘Z／⌘⇧Z) do what they did; a colour
  * is one write and one ⌘Z; the circles look like the node fills in the light and the dark theme (Obsidian's, and the
  * map's own setting); the focus goes back to the node; opening and closing write nothing; no page error.
+ *
+ * Obsidian's 「OS のメニュー」 is off for the run (put back at the end) and turned on only in `native-menus`, and only once
+ * `own-node` has seen the build draw its own card: a build that still opens Obsidian's menu would put an OS menu on the
+ * screen of whoever uses the Mac, which no CDP key or click reaches (the first run on main's build left one open).
  *
  * Usage: npm run harness:e2e:node-menu -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
  *   --shot  the card in the light theme at <out>.png and in the dark one at <out>-dark.png
@@ -147,8 +152,9 @@ try {
     ${refuseOpenLeaves([NOTE, CALLED, HEADINGS_NOTE])}
     if (!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)})) await app.vault.createFolder(${JSON.stringify(FOLDER)});
     { ${writeNote(CALLED, CALLED_SOURCE)} }
+    app.vault.setConfig('nativeMenus', false);
     return { obsidian: require('electron').ipcRenderer.sendSync('version'), mappy: app.plugins.plugins.mappy.manifest.version,
-      platform: process.platform, nativeMenus: app.vault.getConfig('nativeMenus') ?? null };`)));
+      platform: process.platform, nativeMenusBefore: ${JSON.stringify(nativeMenusBefore)} };`)));
   await markSeen();
   await appTheme('light');
   required(record, 'open', await step('open', () => openMap(NOTE, SOURCE)));
@@ -163,10 +169,12 @@ try {
   });
 
   // The node's card: what is on it, and what is not.
+  let ownCard = false;
   await step('own-node', async () => {
     const { state, viaCdp } = await rightClick(onNode('温泉旅行'));
     check(state.open, 'no card opened on 温泉旅行');
     if (!state.open) return state;
+    ownCard = true;
     check(!state.obsidianMenu, 'Obsidian\'s menu is on the page as well');
     check(state.role === 'menu' && state.label === 'ノードのメニュー' && state.inView, `card ${JSON.stringify([state.role, state.label, state.inView])}`);
     check(same(state.swatches, COLORS) && same(state.checked, ['色なし']), `colours ${JSON.stringify([state.swatches, state.checked])}`);
@@ -182,9 +190,14 @@ try {
     return { viaCdp, state, closed };
   });
 
-  // Obsidian's 「OS のメニュー」 either way: the same card (the case puts the setting back).
+  // Obsidian's 「OS のメニュー」 either way: the same card (the case puts the setting back). On only for a build seen to
+  // draw its own card (see above).
   await step('native-menus', async () => {
     const rows = {};
+    if (!ownCard) {
+      check(false, 'not run with 「OS のメニュー」 on: the build opened no card of its own (an OS menu would be left on screen)');
+      return { notRun: true };
+    }
     for (const setting of [true, false]) {
       await evaluate(`app.vault.setConfig('nativeMenus', ${setting}); return true;`);
       const { state } = await rightClick(onNode('温泉旅行'));
@@ -192,7 +205,7 @@ try {
       check(state.open && same(state.rows, NODE_ROWS) && same(state.swatches, COLORS) && !state.obsidianMenu, `nativeMenus ${setting}: ${JSON.stringify(state)}`);
       await escape();
     }
-    await evaluate(`app.vault.setConfig('nativeMenus', ${JSON.stringify(nativeMenusBefore)}); return true;`);
+    await evaluate(`app.vault.setConfig('nativeMenus', false); return true;`);
     return rows;
   });
 
@@ -302,6 +315,50 @@ try {
         await escape();
       }
     }
+    return rows;
+  });
+
+  // Where the rows taken off went: each key (and the double click) does what its row did, on the real Obsidian.
+  await step('removed-rows-reach', async () => {
+    const rows = {};
+    const draftOpen = () => until(() => evaluate(`${VIEW} return !!input();`), 3000, 'no draft opened');
+    // テキストを編集 → F2 and the double click: the draft opens on the node; Escape closes it, nothing written.
+    await select('持ち物');
+    await cdp.realKey('F2');
+    rows.f2 = { draft: await draftOpen().catch(() => false), value: await evaluate(`${VIEW} return input()?.value ?? null;`) };
+    await cdp.realKey('Escape');
+    await wait(300);
+    const at = await makePress(cdp, evaluate)(onNode('持ち物'), { click: false });
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 });
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 2 });
+    rows.doubleClick = { draft: await draftOpen().catch(() => false), value: await evaluate(`${VIEW} return input()?.value ?? null;`) };
+    await cdp.realKey('Escape');
+    await wait(300);
+    // 子を追加 → Tab, 兄弟を追加 → Enter: the new node under its provisional name; Escape at once takes it back.
+    for (const [name, key, line] of [['tab', 'Tab', '- 持ち物\n  - サブトピック\n'], ['enter', 'Enter', '- 持ち物\n- メイントピック\n']]) {
+      await select('持ち物');
+      const before = await source();
+      await cdp.realKey(key);
+      const added = await after(before);
+      await cdp.realKey('Escape');
+      const back = await after(added.source);
+      rows[name] = { added: added.source.includes(line), editing: added.editing, back: back.source === SOURCE };
+    }
+    // 前へ移動・後ろへ移動 → ⌥↓ (and a drag, E02/E25); 元に戻す・やり直す → ⌘Z・⌘⇧Z.
+    await select('持ち物');
+    const before = await source();
+    await cdp.realKey('ArrowDown', 1);
+    const moved = await after(before);
+    const undone = await history('undo');
+    const redone = await history('redo');
+    const undoneAgain = await history('undo');
+    rows.move = { moved: moved.source === SOURCE.replace('- 持ち物\n- 手書き\n', '- 手書き\n- 持ち物\n'), undo: undone.source === SOURCE, redo: redone.source === moved.source, back: undoneAgain.source === SOURCE };
+    check(rows.f2.draft && rows.f2.value === '持ち物', `F2 ${JSON.stringify(rows.f2)}`);
+    check(rows.doubleClick.draft && rows.doubleClick.value === '持ち物', `double click ${JSON.stringify(rows.doubleClick)}`);
+    check(rows.tab.added && rows.tab.editing && rows.tab.back, `Tab ${JSON.stringify(rows.tab)}`);
+    check(rows.enter.added && rows.enter.editing && rows.enter.back, `Enter ${JSON.stringify(rows.enter)}`);
+    check(Object.values(rows.move).every(Boolean), `⌥↓ ⌘Z ⌘⇧Z ${JSON.stringify(rows.move)}`);
+    check(await source() === SOURCE, 'the note is not back as it was');
     return rows;
   });
 

@@ -19,7 +19,9 @@
  * painter and Mappy's own insert into a drawing (M6), and that reading never writes the note. Page errors are counted.
  *
  * The context card is the map's own element (LEV-369), the same whatever Obsidian's `nativeMenus` says; it opens on a
- * dispatched `contextmenu`, as E76 does. E92 checks the card itself, opened by CDP's right press.
+ * dispatched `contextmenu`, as E76 does. E92 checks the card itself, opened by CDP's right press. The vault's
+ * `nativeMenus` is still turned off for the run and put back: a build from before the card would open Obsidian's menu,
+ * which macOS draws on the screen, out of reach of CDP.
  *
  * Usage: npm run harness:e2e:node-color -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
  */
@@ -149,6 +151,7 @@ async function writeOutside(text) {
 const mtime = path => evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(path)}); return file ? { mtime: file.stat.mtime, text: await app.vault.read(file) } : null;`);
 
 let expected = SOURCE;
+const nativeMenusBefore = await evaluate(`return app.vault.getConfig('nativeMenus');`);
 const appThemeBefore = await evaluate(`return app.vault.getConfig('theme') ?? null;`);
 
 try {
@@ -161,6 +164,7 @@ try {
     if (!app.vault.getAbstractFileByPath('Fixtures/sample-image.svg')) throw new Error('Fixtures/sample-image.svg is missing (npm run harness:prepare)');
     return { obsidian: require('electron').ipcRenderer.sendSync('version'), mappy: app.plugins.plugins.mappy.manifest.version,
       excalidraw: app.plugins.plugins['obsidian-excalidraw-plugin']?.manifest?.version ?? null };`)));
+  await evaluate(`app.vault.setConfig('nativeMenus', false); return true;`);
   // The image item names `sample-image.svg`, which resolves to the fixture's by its name (shortest path). A notice left on
   // screen by whatever ran before is not this run's to report.
   await markSeen();
@@ -529,6 +533,7 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
+  await evaluate(`app.vault.setConfig('nativeMenus', ${JSON.stringify(nativeMenusBefore)}); return true;`).catch(() => undefined);
   await evaluate(`if (${JSON.stringify(appThemeBefore)} !== null) app.changeTheme(${JSON.stringify(appThemeBefore)}); return true;`).catch(() => undefined);
   cdp.close();
 }

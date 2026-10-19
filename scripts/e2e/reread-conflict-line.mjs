@@ -82,13 +82,16 @@ const reset = () => evaluate(`${VIEW} ${DRAFT}
 const openDraft = async row => {
   await select('学ぶこと', 0);
   if (row.id === 'modal') {
-    await evaluate(`${VIEW}
-      const node = nth('学ぶこと', 0); const rect = node.getBoundingClientRect();
-      node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
-      await new Promise(resolve => setTimeout(resolve, 300));
-      const item = Array.from(document.querySelectorAll('.mappy-context-card .mappy-popover-item')).find(entry => entry.querySelector('.mappy-popover-title')?.textContent === '本文・リンクを編集');
-      if (!item) throw new Error('the node card has no 本文・リンクを編集');
-      item.click();
+    // Obsidian's own menus off around it: a build from before LEV-369's card would open an OS menu on the screen.
+    await evaluate(`${VIEW} const before = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false);
+      try {
+        const node = nth('学ぶこと', 0); const rect = node.getBoundingClientRect();
+        node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const item = Array.from(document.querySelectorAll('.mappy-context-card .mappy-popover-item')).find(entry => entry.querySelector('.mappy-popover-title')?.textContent === '本文・リンクを編集');
+        if (!item) throw new Error('the node card has no 本文・リンクを編集');
+        item.click();
+      } finally { app.vault.setConfig('nativeMenus', before); }
       return true;`);
   } else await cdp.realKey('F2');
   for (let tries = 0; tries < 20; tries += 1) {

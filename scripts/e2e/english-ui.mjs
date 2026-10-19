@@ -112,13 +112,16 @@ try {
   const menu = await step('menu-en', async () => {
     await select('Packing');
     // The context card's words (LEV-369: the map's own card, in the page whatever Obsidian's native menus say): its
-    // name, its rows, and its colours' names.
-    const titles = await evaluate(`${VIEW}
-      const node = nth('Packing', 0); const rect = node.getBoundingClientRect();
-      node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
-      await new Promise(resolve => setTimeout(resolve, 300));
-      const card = document.querySelector('.mappy-context-card');
-      return [card?.getAttribute('aria-label') ?? '', ...Array.from(card?.querySelectorAll('.mappy-popover-title, .mappy-swatch') ?? [], item => item.getAttribute('aria-label') ?? item.textContent)];`);
+    // name, its rows, and its colours' names. Obsidian's own menus are off around it all the same: a build from before
+    // the card would open an OS menu on the screen.
+    const titles = await evaluate(`${VIEW} const before = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false);
+      try {
+        const node = nth('Packing', 0); const rect = node.getBoundingClientRect();
+        node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const card = document.querySelector('.mappy-context-card');
+        return [card?.getAttribute('aria-label') ?? '', ...Array.from(card?.querySelectorAll('.mappy-popover-title, .mappy-swatch') ?? [], item => item.getAttribute('aria-label') ?? item.textContent)];
+      } finally { app.vault.setConfig('nativeMenus', before); }`);
     await cdp.realKey('Escape');
     await wait(200);
     return titles;

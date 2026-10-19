@@ -116,6 +116,9 @@ const CANVAS_CORNER = `const node = el.querySelector('.mappy-canvas'); const r =
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
+  // Obsidian's own menus (not the OS's) for the run: a build from before LEV-369's card opens Obsidian's menu on a right
+  // press, which macOS would draw on the screen, out of reach of CDP. Put back in `finally`.
+  await evaluate(`window.__mappyE2ENativeMenus = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false); return true;`);
   // What the pasteboard held before the case, written back in `finally`.
   required(record, 'clipboard-saved', await step('clipboard-saved', () => evaluate(`const { clipboard } = require('electron');
     const image = clipboard.readImage();
@@ -278,6 +281,7 @@ try {
       delete window.__mappyE2EBefore;
       return { removed: attachments.map(file => file.path) };`)).catch(() => undefined);
   }
+  await evaluate(`if ('__mappyE2ENativeMenus' in window) { app.vault.setConfig('nativeMenus', window.__mappyE2ENativeMenus); delete window.__mappyE2ENativeMenus; } return true;`).catch(() => undefined);
   // The user's clipboard back as it was, whatever the steps did.
   await step('clipboard-restored', () => evaluate(`const saved = window.__mappyE2EClipboard;
     if (!saved) return { restored: false };
