@@ -1552,7 +1552,8 @@ export class MindmapView extends EditableFileView {
    * how it moved or dropped the keys of the nodes this view names (`moves`: a rename on the map carries the node's id and
    * gives it a new key; a deleted node's fold goes), so a map nobody touched does not put its own folds over the ones
    * another map of the note changed last (code review 2 of LEV-365). Two maps of one note keep their own folds while they
-   * are open (provisional, LEV-365's PR): the one a person changed last is what the next opening shows.
+   * are open (the person's decision of 2026-10-19 on LEV-365's question 2: A): the one a person changed last is what the
+   * next opening shows.
    */
   private rememberFolds(byPerson: boolean): void {
     const memory = this.memory;

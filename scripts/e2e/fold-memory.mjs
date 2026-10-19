@@ -15,11 +15,11 @@
  * 3 the same note in another tab, 4 Markdown and back (`mappy:toggle-mindmap`), 5 Markdown edits (a node added, one
  * deleted, two branches swapped, written from outside the map: the folds stay but the second 同名's, which goes with its
  * id as before, E05) and the map opened again as it showed, 6 the note renamed into another
- * folder (in place, then opened again; the memory names the new path only), 7 two tabs on one note (the provisional
- * answer: each tab keeps its own folds while it is open, and a map opened next takes the last change made), 8 the headings
+ * folder (in place, then opened again; the memory names the new path only), 7 two tabs on one note (the person's
+ * decision, A: each tab keeps its own folds while it is open, and a map opened next takes the last change made), 8 the headings
  * map and 9 the 2,000-node map opened again, 10 the plugin disabled and enabled with a change made just before (no wait
  * for the throttled write), 11 the window reloaded once the change has rested (a) and at once (b: the change is lost, the
- * file is not; provisional), 12 Obsidian quit at once after a change (`app.quit()`, then
+ * file is not; the person's decision, A), 12 Obsidian quit at once after a change (`app.quit()`, then
  * launched again with `MAPPY_E2E_PROFILE` on the same port: macOS only) — every map as it was, 13 a deleted note leaves
  * the memory. `--perf` also measures, on whatever build is installed: the 2,000-node map's opening (setViewState to the
  * first laid-out node), one fold's handler (the click's synchronous work) and frame on it and on a map calling it
@@ -417,8 +417,8 @@ try {
   // Row 11: the window reloaded (`app:reload`, Obsidian's "Reload app without saving": `location.reload()`, no quit event).
   // 11a: a change that has rested past the throttle is kept. 11b: a change made just before the reload is not on disk yet
   // and the page goes before a write started then can finish (it leaves `folds.next.json` cut, LEV-230's way): the map
-  // opens as it was before that change, and the file the change would have replaced still reads (provisional, LEV-365's
-  // PR: the person's decision).
+  // opens as it was before that change, and the file the change would have replaced still reads (the person's decision of
+  // 2026-10-19 on LEV-365's question 1: A).
   for (const [name, rest] of [['11a-reload-rested', SETTLED], ['11b-reload-at-once', 0]]) {
     await step(name, async () => {
       await wait(SETTLED);
