@@ -63,7 +63,7 @@ export const CASES = [
   { name: 'main-topic', file: 'main-topic.mjs', description: 'E69 新しいノードの仮の名前が追加先の深さで決まる（ルートの直下はメイントピック、その下はサブトピック）× リスト・見出し × タイムライン・通常マップ × 日本語・英語', shot: true },
   { name: 'file-root', file: 'file-root.mjs', description: 'E83 見出しの無いノートのファイル名の根: ダブルクリック・F2 で名前を変えると `## <名前>` が根になり、Tab で `## <ファイル名>` と右のメイントピックが 1 回で書かれる。⌘Z 1 回で戻る・Enter は書かない・変換中の Enter は確定しない × 4 つの形', shot: true },
   { name: 'central-topic', file: 'central-topic.mjs', description: 'E71 新しいマップのルートが中心トピック（ファイル名は無題のマインドマップのまま）、そこで Tab → メイントピック → サブトピック × 既定レイアウト 4 種 × 日本語・英語', shot: true },
-  { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語', shot: true },
+  { name: 'visible-layouts', file: 'visible-layouts.mjs', description: 'E72 左下に表示するレイアウトの既定（通常マップ・タイムライン・階層図）と既定レイアウトのトグルの固定 × データファイルなし・トグル・既定の変更・旧版の保存・4 つ保存 × 日本語・英語。トグルは 1 行に 1 つで右端がほかの項目の操作部品とそろい、名前は 1 行、「いつも出ます」は固定のものだけ（明色・暗色。LEV-370）', shot: true },
   { name: 'view-padding', file: 'view-padding.mjs', description: 'E70 マップの容器にペインの余白が付かない（!important なし）× 本体・別ウィンドウ・埋め込み × 明色・暗色', shot: true },
   { name: 'reread-conflict-line', file: 'reread-conflict-line.mjs', description: 'E76 再読込がノートを読んでいる最中に確定して衝突で拒否された下書き（本文モーダル・インライン編集）のエラー行が、拒否のあとのマップの再読込で「更新されました」に変わり、次の確定で適用される', shot: false },
   { name: 'draft-own-write', file: 'draft-own-write.mjs', description: 'E77 OS のクリップボードから下書きに貼る（画像・文字・画像と文字）、エラー行の無い下書きは右ボタンで閉じる、保持した下書きの上の右クリックの「元に戻す」は下書きを拒否させず、拒否される「子を追加」は何も書かない', shot: false },
