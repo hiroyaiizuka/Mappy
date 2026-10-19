@@ -20,32 +20,30 @@ export interface RememberedFolds {
   open: Map<string, FoldKey>;
 }
 
-export function rememberedFolds(entry: FoldEntry | undefined): RememberedFolds | undefined {
-  if (!entry) return undefined;
+export function rememberedFolds(entry: FoldEntry): RememberedFolds {
   const byText = (keys: readonly FoldKey[]): Map<string, FoldKey> => new Map(keys.map(key => [JSON.stringify(key), key]));
   return { folds: byText(entry.folds), open: byText(entry.open) };
 }
 
-/** Which nodes the kept keys name on `map`: those to fold, and the called nodes that start folded but were opened. */
-export function rememberedIds(map: FoldedMap, remembered: RememberedFolds): { folds: Set<string>; open: Set<string> } {
-  const ids = (keys: Map<string, FoldKey>): Set<string> => {
-    const found = new Set<string>();
-    for (const key of keys.values()) {
-      const id = nodeOfFoldKey(map.document, map.calls, key);
-      if (id !== undefined) found.add(id);
-    }
-    return found;
-  };
-  return { folds: ids(remembered.folds), open: ids(remembered.open) };
+/** The nodes `keys` name on `map` (the kept folds, or the kept opened called nodes); a key no node stands at names none. */
+export function rememberedIds(map: FoldedMap, keys: ReadonlyMap<string, FoldKey>): Set<string> {
+  const found = new Set<string>();
+  for (const key of keys.values()) {
+    const id = nodeOfFoldKey(map.document, map.calls, key);
+    if (id !== undefined) found.add(id);
+  }
+  return found;
 }
 
 /**
- * What a map keeps for its note: the keys of the nodes folded (`collapsed`), and of the called nodes it has shown
- * (`known`) that have children and are not folded — those start folded at every opening, so having opened them is kept
- * too. A kept key of a called map not drawn now (its note unread, not a map for a while, its link broken) stays as it was
- * kept while the item calling it is in the note, as the view keeps that branch's folds (LEV-246, LEV-260); one whose map
- * is drawn without that node, or whose item is gone, is dropped, and so is every key of the host's own nodes no longer
- * there. Sorted (`sortedKeys`), so the same folds make the same entry.
+ * What a map keeps for its note: what differs from how the note opens with nothing kept, so a map nobody folded keeps
+ * nothing and its opening writes nothing (code review 1 of LEV-365). The host's own nodes folded (`collapsed`); a called
+ * map's nodes with children start folded (`initialCallFolds`), so of those only the ones the map has shown (`known`) open
+ * are kept, and a called node folded is not (the calling item itself is the host's own node). A kept key of a called map
+ * not drawn now (its note unread, not a map for a while, its link broken) stays as it was kept while the item calling it is
+ * in the note, as the view keeps that branch's folds (LEV-246, LEV-260); one whose map is drawn without that node, or whose
+ * item is gone, is dropped, and so is every key of the host's own nodes no longer there. Sorted (`sortedKeys`), so the
+ * same folds make the same entry.
  */
 export function foldEntryOf(
   map: FoldedMap, collapsed: ReadonlySet<string>, known: ReadonlySet<string>, remembered?: RememberedFolds,
@@ -57,9 +55,9 @@ export function foldEntryOf(
     const key = foldKeyOf(document, calls, id);
     if (key) into.set(JSON.stringify(key), key);
   };
-  for (const id of collapsed) add(folds, id);
+  for (const id of collapsed) if (callerOfCalledNode(id) === undefined) add(folds, id);
   for (const id of known) {
-    if (!collapsed.has(id) && (calls.byId.get(id)?.children.length ?? 0) > 0) add(open, id);
+    if (callerOfCalledNode(id) !== undefined && !collapsed.has(id) && (calls.byId.get(id)?.children.length ?? 0) > 0) add(open, id);
   }
   if (remembered) {
     for (const [kept, into] of [[remembered.folds, folds], [remembered.open, open]] as const) {

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Stat } from 'obsidian';
 import { FOLD_LIMITS, readFoldFile, writeFoldFile } from '../../src/core/fold-memory';
-import { FOLD_WRITE_DELAY, FOLD_WRITE_MAX_DELAY, FoldStore, foldMemoryPath, type FoldAdapter } from '../../src/obsidian/fold-store';
+import { FOLD_LOAD_TRIES, FOLD_WRITE_DELAY, FOLD_WRITE_MAX_DELAY, FoldStore, foldMemoryPath, type FoldAdapter } from '../../src/obsidian/fold-store';
 
 /**
  * LEV-365: the folds kept between the openings of a note, in Mappy's own file in the plugin's folder. Read once at load;
@@ -93,6 +93,44 @@ describe('load', () => {
     const none = new FoldStore(broken.adapter, PATH, () => true);
     await none.load();
     expect(none.get('a.md')).toBeUndefined();
+  });
+
+  it('reads again when a file is moved between its stat and its read, as the write of a plugin just disabled does (code review 1)', async () => {
+    disk.files.set(NEXT, file(20, { 'a.md': [['moved']] }));
+    disk.files.set(PATH, file(10, { 'a.md': [['old']] }));
+    // The unload's write goes on during the load: once both stats are done, the old file goes and the next takes its name.
+    let moved = false;
+    disk.fault = step => {
+      if (step === 'read' && !moved) {
+        moved = true;
+        disk.files.delete(PATH);
+        disk.files.set(PATH, disk.files.get(NEXT)!);
+        disk.files.delete(NEXT);
+        return new Error('ENOENT: moved');
+      }
+      return null;
+    };
+    const loading = store.load();
+    await vi.runAllTimersAsync();
+    await loading;
+    expect(store.get('a.md')?.folds).toEqual([['moved']]);
+  });
+
+  it('writes nothing over a file it could not read, and keeps the folds of the session in memory', async () => {
+    disk.files.set(PATH, file(10, { 'b.md': [['kept']] }));
+    const before = disk.files.get(PATH);
+    disk.fault = step => (step === 'read' ? new Error('EACCES') : null);
+    const loading = store.load();
+    await vi.runAllTimersAsync();
+    await loading;
+    expect(disk.calls.filter(call => call === `read ${PATH}`)).toHaveLength(FOLD_LOAD_TRIES);
+    disk.fault = () => null;
+    store.set('a.md', { folds: [['a']], open: [] });
+    expect(store.get('a.md')?.folds).toEqual([['a']]);
+    await vi.advanceTimersByTimeAsync(FOLD_WRITE_DELAY * 2);
+    await store.flush();
+    expect(disk.files.get(PATH)).toBe(before);
+    expect(disk.calls.some(call => call.startsWith('write'))).toBe(false);
   });
 
   it('does not read a file larger than the limit', async () => {
@@ -189,6 +227,18 @@ describe('writes', () => {
     store.set('a.md', { folds: [], open: [] });
     await store.flush();
     expect(onDisk(disk)?.notes.size).toBe(0);
+  });
+
+  it('counts a map opening a note as a use, so the note open is not the first a write leaves out (code review 1)', async () => {
+    const many = new Map(Array.from({ length: FOLD_LIMITS.notes }, (_, index) => [`n${index}.md`, { at: index + 1, folds: [['x']], open: [] }]));
+    disk.files.set(PATH, writeFoldFile(many, 1).text);
+    const full = new FoldStore(disk.adapter, PATH, () => true);
+    await full.load();
+    expect(full.open('n0.md')?.folds).toEqual([['x']]);
+    full.set('new.md', { folds: [['y']], open: [] });
+    await full.flush();
+    expect(onDisk(disk)?.notes.has('n0.md')).toBe(true);
+    expect(onDisk(disk)?.notes.has('n1.md')).toBe(false);
   });
 
   it('drops from memory too the notes a write leaves out past the limits', async () => {

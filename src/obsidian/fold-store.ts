@@ -13,6 +13,12 @@ export const foldMemoryPath = (pluginFolder: string): string => `${pluginFolder}
 export const FOLD_WRITE_DELAY = 1000;
 /** The longest a change waits for its write while changes keep coming (ms). */
 export const FOLD_WRITE_MAX_DELAY = 10_000;
+/** How many times a load reads the two files when a read fails, and the wait before each next try (ms, times the try). */
+export const FOLD_LOAD_TRIES = 5;
+export const FOLD_LOAD_RETRY = 50;
+
+/** What one of the two files gave a load: a file, none (missing, or not a file of this shape), or a read that failed. */
+type Probe = { state: "file"; file: NonNullable<ReturnType<typeof readFoldFile>> } | { state: "none" } | { state: "failed" };
 
 /**
  * The folds of every note between its openings (LEV-365, the person's decision of 2026-10-19): Mappy's own file in the
@@ -25,8 +31,12 @@ export const FOLD_WRITE_MAX_DELAY = 10_000;
  * truncates first, LEV-230), so the new text goes to `folds.next.json` first, then the old file is removed and the new one
  * renamed into its place. Each text carries `savedAt`, and a load takes whichever of the two files reads and is newer: a
  * write cut anywhere leaves the last whole text. The vault's adapter runs reads and writes one at a time (Obsidian
- * 1.14.4's `FileSystemAdapter.queue`), so a read never sees half a write. A file that does not read (broken, another
- * version, too large) counts as none: the maps open with nothing remembered, and the next write replaces it.
+ * 1.14.4's `FileSystemAdapter.queue`), so a read never sees half a write; it does not keep a write's three steps together,
+ * though, so the load of a plugin enabled again right after its disable can find a file gone between its `stat` and its
+ * `read` (the unload's write moving it, code review 1 of LEV-365): a read that fails is tried again (`FOLD_LOAD_TRIES`).
+ * A file that is missing or not of this shape (broken, another version, too large) counts as none: the maps open with
+ * nothing remembered, and the next write replaces it. One whose read keeps failing (no access, a sync service holding it)
+ * is not known to be none: the folds of this session are kept in memory and nothing is written, so the file stays.
  *
  * Read once: a change made to the file meanwhile by something else (a sync service bringing another device's) is not
  * read, and the next write puts this Obsidian's folds over it (provisional, LEV-365's PR). A failed write is kept for the
@@ -40,6 +50,8 @@ export class FoldStore {
   /** When the oldest change not written yet was made. */
   private pendingSince: number | undefined;
   private writing: Promise<void> | null = null;
+  /** Set when a load could not read a file that is there: this session writes nothing over it. */
+  private unread = false;
   readonly next: string;
 
   constructor(
@@ -53,24 +65,44 @@ export class FoldStore {
 
   /** The file read into memory: the newer of the two that read (see the class). */
   async load(): Promise<void> {
-    const [current, next] = await Promise.all([this.readFile(this.path), this.readFile(this.next)]);
-    const chosen = [current, next].filter(file => file !== null).sort((a, b) => b.savedAt - a.savedAt)[0];
-    if (!chosen) return;
-    this.notes = chosen.notes;
-    this.savedAt = chosen.savedAt;
+    for (let attempt = 1; ; attempt += 1) {
+      const probes = await Promise.all([this.probe(this.path), this.probe(this.next)]);
+      if (probes.every(probe => probe.state !== "failed")) {
+        const chosen = probes.flatMap(probe => (probe.state === "file" ? [probe.file] : [])).sort((a, b) => b.savedAt - a.savedAt)[0];
+        if (!chosen) return;
+        this.notes = chosen.notes;
+        this.savedAt = chosen.savedAt;
+        return;
+      }
+      if (attempt >= FOLD_LOAD_TRIES) { this.unread = true; return; }
+      await new Promise<void>(resolve => { window.setTimeout(resolve, FOLD_LOAD_RETRY * attempt); });
+    }
   }
 
-  private async readFile(path: string): Promise<ReturnType<typeof readFoldFile>> {
-    try {
-      const stat = await this.adapter.stat(path);
-      if (!stat || stat.type !== "file" || stat.size > FOLD_LIMITS.readBytes) return null;
-      return readFoldFile(await this.adapter.read(path));
-    } catch { return null; }
+  private async probe(path: string): Promise<Probe> {
+    let stat: Awaited<ReturnType<FoldAdapter["stat"]>>;
+    try { stat = await this.adapter.stat(path); } catch { return { state: "failed" }; }
+    if (!stat) return { state: "none" };
+    if (stat.type !== "file" || stat.size > FOLD_LIMITS.readBytes) return { state: "none" };
+    let text: string;
+    try { text = await this.adapter.read(path); } catch { return { state: "failed" }; }
+    const file = readFoldFile(text);
+    return file ? { state: "file", file } : { state: "none" };
   }
 
   /** The folds kept for the note at `path`. */
   get(path: string): FoldEntry | undefined {
     return this.notes.get(path);
+  }
+
+  /**
+   * The folds kept for the note at `path`, for a map opening it. The opening counts as a use for the limits: a note open
+   * on a map is not the first left out (`at`), though nothing is written for it (code review 1 of LEV-365).
+   */
+  open(path: string): FoldEntry | undefined {
+    const stored = this.notes.get(path);
+    if (stored) stored.at = Math.max(stored.at, Date.now());
+    return stored;
   }
 
   /** The note's folds as a map shows them now; none forgets the note. Nothing is written when they are what is kept. */
@@ -122,6 +154,7 @@ export class FoldStore {
   flush(): Promise<void> {
     if (this.timer !== undefined) window.clearTimeout(this.timer);
     this.timer = undefined;
+    if (this.unread) return Promise.resolve();
     if (this.writing) return this.writing.then(() => (this.dirty ? this.flush() : undefined));
     if (!this.dirty) return Promise.resolve();
     const task = this.write().finally(() => { if (this.writing === task) this.writing = null; });

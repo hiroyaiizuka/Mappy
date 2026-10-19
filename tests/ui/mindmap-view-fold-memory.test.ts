@@ -106,10 +106,14 @@ async function foldSome(mounted: MountedMapView): Promise<string[]> {
 }
 
 describe('the folds kept between openings of a note (LEV-365)', () => {
-  it('starts a called map folded below its root’s children, as before', async () => {
+  it('starts a called map folded below its root’s children, as before, and keeps nothing for a map nobody folded', async () => {
     const app = new HarnessApp();
-    const mounted = await mount(memoryFor(app), app);
+    const memory = memoryFor(app);
+    const mounted = await mount(memory, app);
     expect(folded(mounted)).toEqual(['C1#1', 'C2#1']);
+    await awayAndBack(mounted);
+    // Opening a map writes nothing: the folds a call starts with are not the person's (code review 1).
+    expect(memory.get(PATH)).toBeUndefined();
   });
 
   it('shows the folds again once another note was opened in the tab and the map’s note came back', async () => {

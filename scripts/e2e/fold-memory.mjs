@@ -22,10 +22,11 @@
  * file is not; provisional), 12 Obsidian quit at once after a change (`app.quit()`, then
  * launched again with `MAPPY_E2E_PROFILE` on the same port: macOS only) — every map as it was, 13 a deleted note leaves
  * the memory. `--perf` also measures, on whatever build is installed: the 2,000-node map's opening (setViewState to the
- * first laid-out node) and one fold's handler (the click's synchronous work) and frame, and, when the build has the
- * memory, its file for 1,000 notes × 20 folds (size, write, read) in a file of its own beside it.
+ * first laid-out node), one fold's handler (the click's synchronous work) and frame on it and on a map calling it
+ * (`CALLS`, whose drawn called branches the memory goes over on every fold), and, when the build has the memory, its file
+ * for 1,000 notes × 20 folds (size, write, read) in a file of its own beside it. `--perf-only` measures without the rows.
  *
- * Usage: npm run harness:e2e:fold-memory -- [--json <out.json>] [--keep] [--perf] [--no-quit]
+ * Usage: npm run harness:e2e:fold-memory -- [--json <out.json>] [--keep] [--perf | --perf-only]
  */
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -46,6 +47,8 @@ const HEADINGS = `${FOLDER}/E2E-fold-headings.md`;
 const OTHER = `${FOLDER}/E2E-fold-other.md`;
 const BIG = `${FOLDER}/E2E-fold-2000.md`;
 const GONE = `${FOLDER}/E2E-fold-gone.md`;
+/** A map calling the 2,000-node one (§5 M12): its called branches are what the memory walks on every fold (code review 1). */
+const CALLS = `${FOLDER}/E2E-fold-calls-2000.md`;
 /** The memory's file (the person's decision of 2026-10-19: Mappy's own file in the plugin's folder, by note path). */
 const MEMORY = join(VAULT, '.obsidian', 'plugins', 'mappy', 'folds.json');
 
@@ -70,6 +73,7 @@ const HEADINGS_SOURCE = [
 ].join('\n');
 const OTHER_SOURCE = '# ほかのノード\n\n本文だけのノート。\n';
 const GONE_SOURCE = ['---', 'mappy: true', '---', '## 消すノート', '- 畳む', '  - 中', ''].join('\n');
+const CALLS_SOURCE = ['---', 'mappy: true', '---', '## 呼ぶマップ', '- 枝', '  - 葉', '- ![[E2E-fold-2000]]', ''].join('\n');
 
 /** What each map shows folded once `ensure` has run: `<name>#<n>`, the n-th node of that name from the top. */
 const LIST_FOLDS = ['C1a#1', 'C2#1', 'T1#1', '同名#2', '枝A#1', '深6#1', '空のノード#1'];
@@ -242,7 +246,7 @@ async function reconnect() {
 }
 
 /** Every map and Markdown leaf on the case's notes detached, so a row starts from tabs of its own. */
-const detachAll = () => evaluate(`const paths = ${JSON.stringify([LIST, MOVED, CALLED, HEADINGS, OTHER, BIG, GONE])};
+const detachAll = () => evaluate(`const paths = ${JSON.stringify([LIST, MOVED, CALLED, HEADINGS, OTHER, BIG, GONE, CALLS])};
   const leaves = [];
   app.workspace.iterateAllLeaves(leaf => { const state = leaf.getViewState(); if (['mappy-map', 'markdown'].includes(state.type) && paths.includes(leaf.view.file?.path ?? state.state?.file)) leaves.push(leaf); });
   for (const leaf of leaves) leaf.detach();
@@ -260,13 +264,15 @@ try {
     if (moved) await evaluate(`await app.fileManager.renameFile(app.vault.getAbstractFileByPath(${JSON.stringify(MOVED)}), ${JSON.stringify(LIST)}); return true;`);
     await evaluate(`if (!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)})) await app.vault.createFolder(${JSON.stringify(FOLDER)});
       { ${writeNote(CALLED, CALLED_SOURCE)} } { ${writeNote(OTHER, OTHER_SOURCE)} } { ${writeNote(HEADINGS, HEADINGS_SOURCE)} }
-      { ${writeNote(BIG, `---\nmappy: true\n---\n${big}`)} } { ${writeNote(LIST, LIST_SOURCE)} }
+      { ${writeNote(BIG, `---\nmappy: true\n---\n${big}`)} } { ${writeNote(LIST, LIST_SOURCE)} } { ${writeNote(CALLS, CALLS_SOURCE)} }
       ${ERRORS}
       await new Promise(resolve => setTimeout(resolve, 800)); return true;`);
     const obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version');`);
     return { obsidian, memoryBefore: await memoryOnDisk(0) };
   }));
 
+  // `--perf-only`: the measurements alone, on whatever build is installed (the rows are not run, and the record says so by its steps).
+  if (!flag('--perf-only')) {
   // Row 1: the file explorer — another note in the same tab, then the map again.
   await step('1-explorer', async () => {
     await openTab(list);
@@ -439,35 +445,33 @@ try {
   }
 
   // Row 12: a change, then Obsidian quit at once and launched again: every map as it was.
-  if (!flag('--no-quit')) {
-    await step('12-quit', async () => {
-      if (process.platform !== 'darwin') throw new Error('12-quit launches Obsidian again after the quit, which the case does only on macOS');
-      await wait(SETTLED);
-      await toggle('T1', 1, 'click');
-      const before = { list: await current() };
-      await evaluate(`window.__mappyE2E = null; setTimeout(() => require('electron').remote.app.quit(), 0); return true;`);
-      cdp.close();
-      let running = true;
-      for (let started = Date.now(); running && Date.now() - started < 20000; await wait(500)) {
-        running = await fetch(`http://127.0.0.1:${PORT}/json/version`).then(() => true, () => false);
-      }
-      if (running) throw new Error('Obsidian was still running 20 s after app.quit()');
-      quitDone = true;
-      const disk = await memoryOnDisk(0);
-      const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
-      if (launched.status !== 0) throw new Error(`open could not launch Obsidian again (${launched.status}): ${launched.stderr || launched.error}`);
-      quitDone = false;
-      await reconnect();
-      await wait(2000);
-      await detachAll();
-      const after = {};
-      for (const [key, path] of [['list', list], ['headings', HEADINGS], ['big', BIG]]) after[key] = await openTab(path);
-      check(same(after.list.folded, before.list.folded), `12-quit: the list map after the launch showed other folds: ${JSON.stringify(after.list.folded)} (was ${JSON.stringify(before.list.folded)})`);
-      check(same(after.headings.folded, HEADING_FOLDS), `12-quit: the headings map after the launch showed other folds: ${JSON.stringify(after.headings.folded)}`);
-      check(same(after.big.folded, BIG_FOLDS), `12-quit: the 2,000-node map after the launch showed other folds: ${JSON.stringify(after.big.folded)}`);
-      return { before, onDiskAtQuit: disk ? Object.keys(disk.notes ?? {}) : null, after };
-    });
-  }
+  await step('12-quit', async () => {
+    if (process.platform !== 'darwin') throw new Error('12-quit launches Obsidian again after the quit, which the case does only on macOS');
+    await wait(SETTLED);
+    await toggle('T1', 1, 'click');
+    const before = { list: await current() };
+    await evaluate(`window.__mappyE2E = null; setTimeout(() => require('electron').remote.app.quit(), 0); return true;`);
+    cdp.close();
+    let running = true;
+    for (let started = Date.now(); running && Date.now() - started < 20000; await wait(500)) {
+      running = await fetch(`http://127.0.0.1:${PORT}/json/version`).then(() => true, () => false);
+    }
+    if (running) throw new Error('Obsidian was still running 20 s after app.quit()');
+    quitDone = true;
+    const disk = await memoryOnDisk(0);
+    const launched = spawnSync('open', ['-na', OBSIDIAN_APP, '--args', `--user-data-dir=${PROFILE}`, `--remote-debugging-port=${PORT}`], { encoding: 'utf8' });
+    if (launched.status !== 0) throw new Error(`open could not launch Obsidian again (${launched.status}): ${launched.stderr || launched.error}`);
+    quitDone = false;
+    await reconnect();
+    await wait(2000);
+    await detachAll();
+    const after = {};
+    for (const [key, path] of [['list', list], ['headings', HEADINGS], ['big', BIG]]) after[key] = await openTab(path);
+    check(same(after.list.folded, before.list.folded), `12-quit: the list map after the launch showed other folds: ${JSON.stringify(after.list.folded)} (was ${JSON.stringify(before.list.folded)})`);
+    check(same(after.headings.folded, HEADING_FOLDS), `12-quit: the headings map after the launch showed other folds: ${JSON.stringify(after.headings.folded)}`);
+    check(same(after.big.folded, BIG_FOLDS), `12-quit: the 2,000-node map after the launch showed other folds: ${JSON.stringify(after.big.folded)}`);
+    return { before, onDiskAtQuit: disk ? Object.keys(disk.notes ?? {}) : null, after };
+  });
 
   // Row 13: a deleted note leaves the memory.
   await step('13-delete', async () => {
@@ -490,8 +494,9 @@ try {
     check(errors.length === 0, `errors: the page had errors: ${JSON.stringify(errors).slice(0, 1500)}`);
     return { errors };
   });
+  }
 
-  if (flag('--perf')) {
+  if (flag('--perf') || flag('--perf-only')) {
     // The 2,000-node map's opening and one fold's handler, on the build installed (run on the build before the fix too).
     await step('perf-open-2000', async () => {
       await detachAll();
@@ -524,6 +529,25 @@ try {
         }
         return { handler, frame };`);
       return { handler: stats(sample.handler.slice(4)), frame: stats(sample.frame.slice(4)) };
+    });
+    await step('perf-fold-handler-calling-2000', async () => {
+      await detachAll();
+      await openTab(CALLS);
+      const sample = await evaluate(`${PAGE} const leaf = window.__mappyE2E;
+        const called = leaf.view.contentEl.querySelectorAll('.mappy-node.is-called').length;
+        const handler = []; const frame = [];
+        for (let run = 0; run < 40; run += 1) {
+          const toggle = find(leaf, '枝', 1)?.querySelector('.mappy-node-toggle');
+          if (!toggle) throw new Error('no toggle on 枝');
+          const started = performance.now();
+          toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          handler.push(performance.now() - started);
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          frame.push(performance.now() - started);
+          await new Promise(resolve => setTimeout(resolve, 60));
+        }
+        return { called, handler, frame };`);
+      return { calledDrawn: sample.called, handler: stats(sample.handler.slice(4)), frame: stats(sample.frame.slice(4)) };
     });
     await step('perf-memory-file', async () => evaluate(`
       const store = app.workspace.getLeavesOfType('mappy-map').map(leaf => leaf.view.memory).find(Boolean);

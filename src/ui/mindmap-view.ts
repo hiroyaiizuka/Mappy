@@ -192,7 +192,7 @@ const POPOVER_MARGIN = 16;
  * only be renamed from Markdown or the explorer.
  */
 export class MindmapView extends EditableFileView {
-  /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` below (`onLoadFile` is FileView's own). */
+  /** The note shown; loaded and unloaded by `FileView.setState`, which calls `onUnloadFile` and `onLoadFile` below. */
   file: TFile | null = null;
   private document: MindDocument | undefined;
   /** The maps the document's items call (§5 M12), as last read; the trees are projected from the document and these. */
@@ -223,13 +223,12 @@ export class MindmapView extends EditableFileView {
   private prepared = 0;
   private collapsed = new Set<string>();
   /**
-   * The folds kept between the openings of the note shown (LEV-365, `memory`): what the memory held for it when it loaded,
-   * then what this view last handed it (`rememberFolds`). The note's first draw folds what they name (`adopt`); a called
-   * map drawn later in the same opening (its note read late) takes its part when it is drawn.
+   * The folds kept between the openings of the note shown (LEV-365, `memory`): the entry the memory held for it when it
+   * loaded, then the one this view last handed it (`rememberFolds`; a draw that changes no fold hands nothing), with its
+   * keys by text. The note's first draw folds what it names (`adopt`); a called map drawn later in the same opening (its
+   * note read late) leaves the nodes it keeps opened open when it is drawn.
    */
-  private remembered: RememberedFolds | undefined;
-  /** The entry this view last handed the memory for the note, or found there: a draw that changes no fold writes nothing. */
-  private keptFolds: FoldEntry | undefined;
+  private kept: { entry: FoldEntry; keys: RememberedFolds } | undefined;
   /** Whether the note shown has been drawn since it loaded: the kept folds of its own nodes apply to that first draw alone. */
   private foldsRestored = false;
   private mode: LayoutMode = "mindmap";
@@ -548,7 +547,7 @@ export class MindmapView extends EditableFileView {
     await this.saveDraft(file);
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
-    this.remembered = undefined; this.keptFolds = undefined; this.foldsRestored = false;
+    this.kept = undefined; this.foldsRestored = false;
     this.pendingTopic = null; this.topicDrag = null; this.writes.clear(); this.loads += 1; this.owed = false;
     this.targets = new Map(); this.knownCalled.clear(); void this.reader.clear();
     await super.onUnloadFile(file);
@@ -559,9 +558,8 @@ export class MindmapView extends EditableFileView {
    * memory, which read its file once when the plugin loaded (LEV-365), and its first draw applies them (`adopt`).
    */
   async onLoadFile(file: TFile): Promise<void> {
-    const kept = this.memory?.get(file.path);
-    this.remembered = rememberedFolds(kept);
-    this.keptFolds = kept;
+    const entry = this.memory?.open(file.path);
+    this.kept = entry ? { entry, keys: rememberedFolds(entry) } : undefined;
     this.foldsRestored = false;
     await super.onLoadFile(file);
   }
@@ -1446,9 +1444,9 @@ export class MindmapView extends EditableFileView {
    * (§5 M7; documents without headings keep the virtual root), with the called maps grafted in (§5 M12). The
    * folds are pruned to the nodes that exist, and a call new to the view starts folded below its root's children.
    * The only place `targets`, the projection and the fold set change together, so `projection()` stays a reader.
-   * The note's first draw folds what the memory kept for it (LEV-365): its own nodes then, a called map's whenever that
-   * map is new to the view; a called node kept opened does not start folded. Within an opening the folds go by id, as
-   * before: a change made outside the map that gives a same-titled node a new id drops its fold (E05, LEV-237).
+   * The note's first draw folds its own nodes the memory kept (LEV-365); a called node new to the view that the memory
+   * kept opened does not start folded, whenever its map is first drawn. Within an opening the folds go by id, as before:
+   * a change made outside the map that gives a same-titled node a new id drops its fold (E05, LEV-237).
    */
   private adopt(targets: CallTargets): void {
     const document = this.document;
@@ -1468,11 +1466,12 @@ export class MindmapView extends EditableFileView {
       return caller !== undefined && items.has(caller) && this.reader.keeps(id.slice(caller.length + 1));
     };
     const collapsed = new Set(Array.from(this.collapsed).filter(id => trees.calls.byId.has(id) || kept(id)));
-    const remembered = this.remembered ? rememberedIds({ document, calls: trees.calls }, this.remembered) : undefined;
-    for (const id of remembered?.folds ?? []) {
-      if (!this.foldsRestored || (callerOfCalledNode(id) !== undefined && !this.knownCalled.has(id))) collapsed.add(id);
-    }
-    for (const id of initialCallFolds(trees.calls)) if (!this.knownCalled.has(id) && !remembered?.open.has(id)) collapsed.add(id);
+    const keys = this.kept?.keys;
+    const shown = { document, calls: trees.calls };
+    if (keys && !this.foldsRestored) for (const id of rememberedIds(shown, keys.folds)) collapsed.add(id);
+    const fresh = Array.from(initialCallFolds(trees.calls)).filter(id => !this.knownCalled.has(id));
+    const opened = keys && fresh.length > 0 && keys.open.size > 0 ? rememberedIds(shown, keys.open) : undefined;
+    for (const id of fresh) if (!opened?.has(id)) collapsed.add(id);
     this.collapsed = collapsed;
     this.knownCalled = new Set([...trees.calls.sources.keys(), ...Array.from(this.knownCalled).filter(kept)]);
     this.foldsRestored = true;
@@ -1491,10 +1490,9 @@ export class MindmapView extends EditableFileView {
     const document = this.document;
     const projected = this.projected;
     if (!memory || !file || !document || projected?.document !== document) return;
-    const entry = foldEntryOf({ document, calls: projected.trees.calls }, this.collapsed, this.knownCalled, this.remembered);
-    if (sameFolds(entry, this.keptFolds)) return;
-    this.keptFolds = entry;
-    this.remembered = rememberedFolds(entry);
+    const entry = foldEntryOf({ document, calls: projected.trees.calls }, this.collapsed, this.knownCalled, this.kept?.keys);
+    if (sameFolds(entry, this.kept?.entry)) return;
+    this.kept = { entry, keys: rememberedFolds(entry) };
     memory.set(file.path, entry);
   }
 

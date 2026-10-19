@@ -9,8 +9,9 @@
  * ```
  *
  * `folds` are the nodes folded (`FoldKey`), `open` the called maps' nodes that start folded (§5 M12, `initialCallFolds`) and
- * were opened: without it they would fold again at every opening. `at` is when the note's folds last changed, which decides
- * the notes dropped first past the limits. A note with neither is not kept.
+ * were opened: without it they would fold again at every opening (a called node folded is as it starts, and is not kept).
+ * `at` is when the note's folds last changed or a map last opened it, which decides the notes dropped first past the
+ * limits. A note with neither is not kept.
  */
 import { isFoldKey, type FoldKey } from './fold-keys';
 
@@ -27,7 +28,7 @@ export interface StoredFolds extends FoldEntry {
 }
 
 /**
- * How much the file holds at most: the notes whose folds changed last, up to `notes` of them and `bytes` of the file
+ * How much the file holds at most: the notes whose folds changed (or were opened) last, up to `notes` of them and `bytes` of the file
  * (UTF-8). 1,000 notes of 20 folds each, three titles deep in Japanese, are 1.3 MB (artifacts/lev-365), well inside.
  * A file larger than `readBytes` is not read at all (the map opens with nothing folded, as with an unreadable one).
  */
