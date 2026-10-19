@@ -134,8 +134,8 @@ async function press(locate, { hover = false } = {}) {
     if (box.hit) break;
     // Off screen: brought into view by its node's selection (`ensureVisible` on Space's own select) is not ours to rely on.
     await evaluate(`${PAGE} const leaf = window.__mappyE2E; let target = null; ${locate}
-      const view = leaf.view; const node = target?.closest('.mappy-node');
-      if (node && view.layout) { const id = node.dataset.nodeId; view.select?.(id); view.ensureVisible?.(id); }
+      const view = leaf.view; const owner = target?.closest('.mappy-node');
+      if (owner && view.layout) { const id = owner.dataset.nodeId; view.select?.(id); view.ensureVisible?.(id); }
       return true;`);
     await wait(400);
   }
@@ -253,8 +253,8 @@ try {
     const moved = await evaluate(`return !!app.vault.getAbstractFileByPath(${JSON.stringify(MOVED)});`);
     if (moved) await evaluate(`await app.fileManager.renameFile(app.vault.getAbstractFileByPath(${JSON.stringify(MOVED)}), ${JSON.stringify(LIST)}); return true;`);
     await evaluate(`if (!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)})) await app.vault.createFolder(${JSON.stringify(FOLDER)});
-      ${writeNote(CALLED, CALLED_SOURCE)} ${writeNote(OTHER, OTHER_SOURCE)} ${writeNote(HEADINGS, HEADINGS_SOURCE)}
-      ${writeNote(BIG, `---\nmappy: true\n---\n${big}`)} ${writeNote(LIST, LIST_SOURCE)}
+      { ${writeNote(CALLED, CALLED_SOURCE)} } { ${writeNote(OTHER, OTHER_SOURCE)} } { ${writeNote(HEADINGS, HEADINGS_SOURCE)} }
+      { ${writeNote(BIG, `---\nmappy: true\n---\n${big}`)} } { ${writeNote(LIST, LIST_SOURCE)} }
       ${ERRORS}
       await new Promise(resolve => setTimeout(resolve, 800)); return true;`);
     const obsidian = await evaluate(`return require('electron').ipcRenderer.sendSync('version');`);
@@ -276,7 +276,7 @@ try {
   // Row 2: a link on the map, then back and forward.
   await step('2-link-history', async () => {
     const before = await ensure(LIST_FOLDS);
-    await press(`const node = find(leaf, 'E2E-fold-other', 1); target = node?.querySelector('a.internal-link');`);
+    await press(`target = Array.from(leaf.view.contentEl.querySelectorAll('.mappy-node a.internal-link')).find(link => link.getAttribute('data-href') === 'E2E-fold-other') ?? null;`);
     await wait(1200);
     const away = await evaluate(`const leaf = window.__mappyE2E; return { type: leaf.view.getViewType(), path: leaf.view.file?.path ?? null };`);
     if (away.path !== OTHER) throw new Error(`the link did not open the other note in the case's tab: ${JSON.stringify(away)}`);
