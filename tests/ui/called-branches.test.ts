@@ -21,6 +21,8 @@ import { accessibleDescription, accessibleName } from './accessible-name';
  * root and the called map's body tree is grafted under it as branches of this map, read-only. The
  * shipped view, renderer, reader and store run against the browser-harness stand-in for `obsidian`.
  */
+import { cardSwatches, cardTitlesAt, closeContextCard, openContextCard } from './context-card';
+
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
 beforeAll(() => { installObsidianDom(); });
@@ -179,12 +181,6 @@ function pointer(type: string, target: EventTarget, clientX: number, clientY: nu
   return event;
 }
 
-function contextMenu(target: EventTarget): string[] {
-  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-  const items = Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent ?? '');
-  document.querySelectorAll('.menu').forEach(menu => { menu.remove(); });
-  return items;
-}
 
 describe('a node whose title is one `![[map]]` (judgement and drawing)', () => {
   it('stands in for the called root and grafts the called body under it, marked as called, its deeper branches folded, nothing written', async () => {
@@ -394,15 +390,17 @@ describe('the called branches are read-only', () => {
     expect(editor()?.value).toBe('リンクのまま');
   });
 
-  it('offers only the note, the fold and the history in the context menu of a called node; the calling item keeps its edits', async () => {
+  it('offers only the note and the fold on the context card of a called node, no colours; the calling item keeps its edits and colours (LEV-369)', async () => {
     const { node } = await mount();
-    expect(contextMenu(node('回復する'))).toEqual(['元のマップを開く', '折りたたみ', '元に戻す', 'やり直す']);
-    expect(contextMenu(node('葉'))).toEqual(['元のマップを開く', '元に戻す', 'やり直す']);
+    expect(cardTitlesAt(node('回復する'))).toEqual(['元のマップを開く', '折りたたみ']);
+    expect(cardSwatches(openContextCard(node('回復する'))).labels).toEqual([]);
+    closeContextCard();
+    expect(cardTitlesAt(node('葉'))).toEqual(['元のマップを開く']);
     expect(node('葉').hasClass('is-selected')).toBe(true);
-    const calling = contextMenu(node('講座'));
-    expect(calling.slice(0, 2)).toEqual(['元のマップを開く', 'テキストを編集']);
-    expect(calling).toContain('枝を削除');
-    expect(contextMenu(node('リンクのまま'))).not.toContain('元のマップを開く');
+    expect(cardTitlesAt(node('講座'))).toEqual(['元のマップを開く', '本文・リンクを編集', '画像を追加', '削除']);
+    expect(cardSwatches(openContextCard(node('講座'))).labels).toHaveLength(7);
+    closeContextCard();
+    expect(cardTitlesAt(node('リンクのまま'))).not.toContain('元のマップを開く');
   });
 });
 

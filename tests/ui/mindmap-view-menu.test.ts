@@ -21,8 +21,6 @@ afterEach(async () => {
 });
 
 const PATH = 'Fixtures/free-topics.md';
-const HEADINGS_PATH = 'Fixtures/headings.md';
-const HEADINGS_SOURCE = '---\nmappy: true\n---\n## 講座\n\n### 第 1 章\n\n本文。\n\n### 第 2 章\n';
 
 function fixtureSource(): string {
   const fixture = findFixture('free-topics');
@@ -136,28 +134,6 @@ const ITEMS = [
   ['書き出す', 'SVG／PNG に保存', 'image-down'],
 ] as const;
 const TITLES = ITEMS.map(([title]) => title);
-
-/** The context menu of a node, as before the popover (LEV-77 shared its node items; the popover holds none of them), with 色 since LEV-364. */
-const NODE_CONTEXT_MENU = ['テキストを編集', '本文・リンクを編集', '画像を追加', '色', '子を追加', '兄弟を追加', '前へ移動', '後ろへ移動', '枝を削除', '元に戻す', 'やり直す'];
-
-function contextMenuItems(target: EventTarget): string[] {
-  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-  const titles = Array.from(document.querySelectorAll('.menu .menu-item-title'), title => title.textContent ?? '');
-  document.querySelector('.menu')?.remove();
-  return titles;
-}
-
-/** Open the context menu at a target and choose an entry; `disabled` reports the entry's state instead of choosing it. */
-function contextMenu(target: EventTarget, title: string, mode: 'choose' | 'disabled' = 'choose'): boolean {
-  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-  const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-  if (!item) throw new Error(`The context menu has no entry ${title}`);
-  const state = item.classList.contains('is-disabled') && item.getAttribute('aria-disabled') === 'true';
-  if (mode === 'choose') item.click();
-  document.querySelector('.menu')?.remove();
-  return state;
-}
 
 describe('the 操作 popover at the top right (§5 M3)', () => {
   it('has one button there, the settings gear named 操作 with the menu attributes, and no popover until it is pressed', async () => {
@@ -488,46 +464,5 @@ describe('the 操作 popover at the top right (§5 M3)', () => {
     await choose('Markdown に切り替え');
     expect(shown).not.toHaveBeenCalled();
     expect(plugin.ran).toEqual([]);
-  });
-
-  it('leaves the context menu as it was: the node items, the moves, the deletion and the history, and the list conversion on a headings note', async () => {
-    const { node, canvas } = await mount();
-    expect(contextMenuItems(node('睡眠'))).toEqual(NODE_CONTEXT_MENU);
-    expect(contextMenuItems(node('参考資料'))).toEqual(NODE_CONTEXT_MENU.map(title => title === '枝を削除' ? 'トピックを削除' : title));
-    expect(contextMenuItems(canvas)).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
-    const headings = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
-    expect(contextMenuItems(headings.node('第 1 章'))).toEqual([...NODE_CONTEXT_MENU, 'リスト形式に変更']);
-  });
-
-  it('still converts a headings note to the list form from the context menu, with the same result as the command', async () => {
-    const { node, source, view, settle } = await mount(HEADINGS_PATH, HEADINGS_SOURCE);
-    expect(contextMenu(node('第 1 章'), 'リスト形式に変更', 'disabled')).toBe(false);
-    contextMenu(node('第 1 章'), 'リスト形式に変更');
-    await settle();
-    expect(source()).toBe('---\nmappy: true\n---\n## 講座\n\n- 第 1 章\n\n  本文。\n\n- 第 2 章\n');
-    expect(Notice.log).toContain('H2 とリストの形式に変更しました。元に戻す操作で復元できます。');
-    expect(view.snapshot()?.document?.format).toBe('list');
-    // A list note offers no conversion.
-    expect(contextMenuItems(node('第 1 章'))).toEqual(NODE_CONTEXT_MENU);
-  });
-
-  it('still undoes and redoes from the context menu, enabled as the history allows', async () => {
-    const { node, select, key, settle, editor, source, canvas } = await mount();
-    const original = source();
-    expect(contextMenu(node('睡眠'), '元に戻す', 'disabled')).toBe(true);
-    expect(contextMenu(node('睡眠'), 'やり直す', 'disabled')).toBe(true);
-    key(select('睡眠'), 'Delete');
-    await settle();
-    expect(editor()).toBeNull();
-    const deleted = source();
-    expect(deleted).not.toBe(original);
-    expect(contextMenu(canvas, '元に戻す', 'disabled')).toBe(false);
-    contextMenu(canvas, '元に戻す');
-    await settle();
-    expect(source()).toBe(original);
-    expect(contextMenu(canvas, 'やり直す', 'disabled')).toBe(false);
-    contextMenu(canvas, 'やり直す');
-    await settle();
-    expect(source()).toBe(deleted);
   });
 });

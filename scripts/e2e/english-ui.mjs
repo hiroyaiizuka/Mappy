@@ -6,7 +6,7 @@
  *
  * In English:
  * - the commands (the palette's names), the layout, zoom and gear buttons, the gear popover's items, the settings tab's
- *   names, the right-click menu of a node: all English, no Japanese character anywhere in them;
+^ *   names, the right-click card of a node: all English, no Japanese character anywhere in them;
  * - the tab's title: the note's name and nothing else (LEV-340: no ` · map`, which is no longer a translated string);
  * - Tab on a node writes the English provisional name (`- Subtopic`) into the note, and Enter keeps it;
  * - a name the map refuses (a task marker) shows core's English reason on the draft's error line.
@@ -111,20 +111,19 @@ try {
   const select = makeSelect(cdp, evaluate);
   const menu = await step('menu-en', async () => {
     await select('Packing');
-    // The menu's words are what this reads. On macOS Obsidian shows a native menu, which is not in the page: the
-    // test vault's "native menus" setting is turned off for the one menu and put back (E63's second run read nothing).
-    const titles = await evaluate(`${VIEW} const before = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false);
-      try {
-        const node = nth('Packing', 0); const rect = node.getBoundingClientRect();
-        node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
-        await new Promise(resolve => setTimeout(resolve, 300));
-        return Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent);
-      } finally { app.vault.setConfig('nativeMenus', before); }`);
+    // The context card's words (LEV-369: the map's own card, in the page whatever Obsidian's native menus say): its
+    // name, its rows, and its colours' names.
+    const titles = await evaluate(`${VIEW}
+      const node = nth('Packing', 0); const rect = node.getBoundingClientRect();
+      node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const card = document.querySelector('.mappy-context-card');
+      return [card?.getAttribute('aria-label') ?? '', ...Array.from(card?.querySelectorAll('.mappy-popover-title, .mappy-swatch') ?? [], item => item.getAttribute('aria-label') ?? item.textContent)];`);
     await cdp.realKey('Escape');
     await wait(200);
     return titles;
   });
-  check(Array.isArray(menu) && menu.includes('Edit text') && menu.includes('Add child') && menu.includes('Delete branch'), `node menu: ${JSON.stringify(menu)}`);
+  check(Array.isArray(menu) && ['Node menu', 'Edit body and links', 'Add image', 'Delete', 'No color', 'Yellow'].every(title => menu.includes(title)), `node menu: ${JSON.stringify(menu)}`);
   check(!(menu ?? []).some(text => JAPANESE.test(text)), `Japanese in the node menu: ${JSON.stringify(menu)}`);
 
   const settings = await step('settings-en', () => evaluate(`app.setting.open(); app.setting.openTabById('mappy');

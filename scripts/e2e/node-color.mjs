@@ -2,7 +2,7 @@
  * E91 (docs/harness.md): the colour of a node (LEV-364, the person's decision of 2026-10-19: the node's text wrapped in
  * `<mark style="background: …;">`, Highlightr's six colours). Rows are the person's operations × the node's shape:
  *
- * - operations: the context menu's 色 (a real click on 色 and on the colour in the menu that opens), the commands
+ * - operations: the colour circles on the context card (LEV-369: a real click on the circle), the commands
  *   (`executeCommandById`, as the palette and a hotkey run them), changing a colour, 色なし, ⌘Z／⌘⇧Z (real keys), renaming a
  *   coloured node (real F2, `Input.insertText`, real Enter), the colour written by hand in Markdown (`vault.modify`:
  *   `<mark style>`, `==…==`, a mark over part of the text), and a colour chosen while the inline editor composes Japanese
@@ -18,8 +18,9 @@
  * heading and a coloured calling item (M12), a Canvas card (M10), the SVG export (M13), Excalidraw's "Insert image"
  * painter and Mappy's own insert into a drawing (M6), and that reading never writes the note. Page errors are counted.
  *
- * Menus: macOS shows Obsidian's menus natively, outside the page; the vault's `nativeMenus` is turned off for the run
- * and put back, and the context menu is a synthesized `contextmenu` (CDP's right button opens none), as E76 does.
+ * The context card is the map's own element (LEV-369), the same whatever Obsidian's `nativeMenus` says; it opens on a
+ * synthesized `contextmenu` (CDP's right button raises none in Obsidian's window on macOS), as E76 does. E92 checks the
+ * card itself.
  *
  * Usage: npm run harness:e2e:node-color -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
  */
@@ -95,17 +96,17 @@ const nodeFill = (title, index = 0) => evaluate(`${VIEW} ${COLOR} ${FILL}
 /** A colour channel triple within 2 of `want` (the page's own compositing rounds). */
 const near = (got, want) => Array.isArray(got) && got.every((channel, at) => Math.abs(channel - want[at]) <= 2);
 
-/** The titles of Obsidian's menu on screen now, and the checked one. */
-const menuState = () => evaluate(`const items = Array.from(document.querySelectorAll('.menu .menu-item'));
-  return { titles: items.map(item => item.querySelector('.menu-item-title')?.textContent ?? ''),
-    checked: items.filter(item => item.classList.contains('mod-checked') || item.classList.contains('is-checked') || item.querySelector('.menu-item-icon svg.lucide-check, .mod-checked')).map(item => item.querySelector('.menu-item-title')?.textContent ?? '') };`);
+/** The colour circles of the context card on screen now (their names), and the checked one. */
+const menuState = () => evaluate(`const circles = Array.from(document.querySelectorAll('.mappy-context-card .mappy-swatch'));
+  return { titles: circles.map(circle => circle.getAttribute('aria-label') ?? ''),
+    checked: circles.filter(circle => circle.getAttribute('aria-checked') === 'true').map(circle => circle.getAttribute('aria-label') ?? '') };`);
 
-/** A real click on the menu item titled `title` in the menu on screen. */
-const chooseMenu = title => press(`const node = Array.from(document.querySelectorAll('.menu .menu-item')).find(item => item.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});`);
+/** A real click on the card's colour circle named `label`. */
+const chooseMenu = label => press(`const node = Array.from(document.querySelectorAll('.mappy-context-card .mappy-swatch')).find(item => item.getAttribute('aria-label') === ${JSON.stringify(label)});`);
 
 /**
- * Right-click on node `title` (#index) → 色 → the colour (its label, or 色なし). Returns the colour menu's titles and
- * checked item as it opened, and what the map shows once the write has landed.
+ * Right-click on node `title` (#index) → the colour circle (its name, or 色なし). Returns the card's circles and the
+ * checked one as it opened, and what the map shows once the write has landed.
  */
 async function colorFromMenu(title, label, index = 0) {
   await select(title, index);
@@ -113,9 +114,7 @@ async function colorFromMenu(title, label, index = 0) {
     const node = nth(${JSON.stringify(title)}, ${index}); const rect = node.getBoundingClientRect();
     node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + 4, clientY: rect.top + 4 }));
     return true;`);
-  await until(async () => (await menuState()).titles.includes('色'), 3000, 'the context menu has no 色');
-  await chooseMenu('色');
-  const menu = await until(async () => { const state = await menuState(); return state.titles.includes('色なし') ? state : null; }, 3000, '色 opened no colour menu');
+  const menu = await until(async () => { const state = await menuState(); return state.titles.includes('色なし') ? state : null; }, 3000, 'the context card has no colours');
   const before = await source();
   await chooseMenu(label);
   const result = await after(before);
@@ -151,7 +150,6 @@ async function writeOutside(text) {
 const mtime = path => evaluate(`const file = app.vault.getAbstractFileByPath(${JSON.stringify(path)}); return file ? { mtime: file.stat.mtime, text: await app.vault.read(file) } : null;`);
 
 let expected = SOURCE;
-const nativeMenusBefore = await evaluate(`return app.vault.getConfig('nativeMenus');`);
 const appThemeBefore = await evaluate(`return app.vault.getConfig('theme') ?? null;`);
 
 try {
@@ -162,7 +160,6 @@ try {
     ${refuseOpenLeaves([NOTE, HEADINGS_NOTE, PLAIN, HOST, CALLER, CANVAS, DRAWING], ['markdown', 'mappy-map', 'canvas', 'excalidraw'])}
     if (!app.vault.getAbstractFileByPath(${JSON.stringify(FOLDER)})) await app.vault.createFolder(${JSON.stringify(FOLDER)});
     if (!app.vault.getAbstractFileByPath('Fixtures/sample-image.svg')) throw new Error('Fixtures/sample-image.svg is missing (npm run harness:prepare)');
-    app.vault.setConfig('nativeMenus', false);
     return { obsidian: require('electron').ipcRenderer.sendSync('version'), mappy: app.plugins.plugins.mappy.manifest.version,
       excalidraw: app.plugins.plugins['obsidian-excalidraw-plugin']?.manifest?.version ?? null };`)));
   // The image item names `sample-image.svg`, which resolves to the fixture's by its name (shortest path). A notice left on
@@ -533,7 +530,6 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
-  await evaluate(`app.vault.setConfig('nativeMenus', ${JSON.stringify(nativeMenusBefore)}); return true;`).catch(() => undefined);
   await evaluate(`if (${JSON.stringify(appThemeBefore)} !== null) app.changeTheme(${JSON.stringify(appThemeBefore)}); return true;`).catch(() => undefined);
   cdp.close();
 }

@@ -15,6 +15,7 @@ import { DocumentStore } from '../../src/obsidian/document-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView } from '../../src/ui/mindmap-view';
 import { closeOpenViews, closeView } from '../mocks/open-views';
+import { cardRow, cardTitles, closeContextCard, openContextCard } from './context-card';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer and store run against a real DOM.
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -134,8 +135,8 @@ async function mount(source: string, layout: LayoutMode = 'mindmap'): Promise<Mo
       return event;
     },
     contextmenu: (target, clientX, clientY) => {
-      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX, clientY }));
-      return Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent ?? '');
+      closeContextCard();
+      return cardTitles(openContextCard(target, clientX, clientY));
     },
     editor: () => view.containerEl.querySelector<HTMLTextAreaElement>('textarea.mappy-inline-input'),
     undo: async () => {
@@ -165,13 +166,6 @@ function screenOf(mounted: Mounted, id: string): { x: number; y: number } {
   const t = mounted.transform(id);
   const v = mounted.viewport();
   return { x: t.x * v.scale + v.x, y: t.y * v.scale + v.y };
-}
-
-function menuItem(title: string): HTMLElement {
-  const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-  if (!item) throw new Error(`Menu item ${title} is not open`);
-  return item;
 }
 
 describe('MindmapView with free topics', () => {
@@ -582,13 +576,13 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     shift(dragged.id, null);
   });
 
-  it('the context menu on empty canvas offers トピックを追加 and on a topic トピックを削除', async () => {
+  it('the context card on empty canvas offers トピックを追加 alone and on a topic トピックを削除 (LEV-369)', async () => {
     const source = fixtureSource();
     const { view, canvas, nodes, source: current, settle, contextmenu, editor, transform } = await mount(source);
     const viewport = view.getState().viewport as { x: number; y: number; scale: number };
     const items = contextmenu(canvas, CANVAS.left + 200, CANVAS.top + 300);
-    expect(items).toEqual(['トピックを追加', '元に戻す', 'やり直す']);
-    menuItem('トピックを追加').click();
+    expect(items).toEqual(['トピックを追加']);
+    cardRow('トピックを追加').click();
     await settle();
     expect(current()).toBe(`${source}\n## トピック\n`);
     expect(editor()).not.toBeNull();
@@ -602,9 +596,8 @@ describe('MindmapView adds, moves and deletes free topics (§5 M7)', () => {
     const child = documentOf(view).nodes.find(node => node.title === '回復する');
     if (!reference || !child) throw new Error('Missing nodes');
     expect(contextmenu(nodes().get(reference.id) ?? canvas, 300, 300)).toContain('トピックを削除');
-    document.querySelector('.menu')?.remove();
-    expect(contextmenu(nodes().get(child.id) ?? canvas, 300, 300)).toContain('枝を削除');
-    document.querySelector('.menu')?.remove();
+    expect(contextmenu(nodes().get(child.id) ?? canvas, 300, 300)).toContain('削除');
+    closeContextCard();
   });
 
   it.each(['mindmap', 'timeline'] as const)('dragging a topic in %s moves its whole tree live and stores only that layout\'s entry', async mode => {

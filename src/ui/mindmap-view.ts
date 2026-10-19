@@ -1,4 +1,4 @@
-import { EditableFileView, MarkdownView, Menu, Notice, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { EditableFileView, MarkdownView, Notice, Platform, Scope, TFile, setIcon, type TAbstractFile, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { parseMarkdown, projectMap, type MindDocument, type MindNode } from "../core/markdown";
 import { applyEdits, planEdit, resolveDrop, type EditCommand, type EditPlan, type MoveCommand, type TextEdit } from "../core/commands";
 import { EXIT_SOURCE_LIMIT, textFingerprint, type ExitDraft } from "../core/exit-drafts";
@@ -37,6 +37,7 @@ import { MapViewport } from "./map-viewport";
 import { MapEvents, nodeOf } from "./map-events";
 import { NodeDrag, type DragDelta } from "./node-drag";
 import { InlineEditor } from "./inline-editor";
+import { MenuCard, type MenuCardItem, type MenuCardRow } from "./menu-card";
 import { LinkSuggest } from "./link-suggest";
 import { t } from "../i18n";
 
@@ -163,13 +164,19 @@ export interface MapMenuAction {
   run: (view: MindmapView) => void;
 }
 
-/** An entry of the context menu: the title, the icon and what choosing it runs. */
-type MenuEntry = readonly [title: string, icon: string, run: () => void];
-
 /** The 操作 popover's card (§5 M3): its widest, the gap under the gear, and the least the pane keeps to its left. */
 const POPOVER_MAX_WIDTH = 320;
 const POPOVER_GAP = 6;
 const POPOVER_MARGIN = 16;
+/** The least a context card (LEV-369) keeps between itself and the pane's edges. */
+const CONTEXT_MARGIN = 8;
+
+/**
+ * The keys a context card shows beside a row (LEV-369): only ones the map answers with the node selected, the way
+ * src/ui/map-events.ts reads them — Delete and Backspace delete, Space folds. A Mac's delete key is Backspace.
+ */
+const deleteKey = (): NonNullable<MenuCardItem["key"]> => Platform.isMacOS ? { cap: "⌫", keys: "Backspace Delete" } : { cap: "Delete", keys: "Delete Backspace" };
+const SPACE_KEY: NonNullable<MenuCardItem["key"]> = { cap: "Space", keys: "Space" };
 
 /**
  * The map is a `FileView` (LEV-89), as the Markdown editor, Kanban or a PDF are: the note it shows is `file`, which
@@ -369,8 +376,10 @@ export class MindmapView extends EditableFileView {
   private readonly writes = new WriteRecord();
   /** How many times a note has left this view (`onUnloadFile`): a layout write started before the last one is not this record's. */
   private loads = 0;
-  /** The 操作 popover while it is open (§5 M3): its card, the gear it hangs under, and the release of the listeners outside it (the document's press, the window's blur). */
-  private popover: { element: HTMLDivElement; anchor: HTMLButtonElement; release: () => void } | null = null;
+  /** The 操作 popover while it is open (§5 M3): its card and the gear it hangs under. */
+  private popover: { card: MenuCard; anchor: HTMLButtonElement } | null = null;
+  /** The context card while it is open (LEV-369): the card and the point it was opened at, from the pane's top left. */
+  private contextCard: { card: MenuCard; x: number; y: number } | null = null;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
@@ -703,10 +712,7 @@ export class MindmapView extends EditableFileView {
       const node = candidates.find(item => item.from === from && item.title === title) ?? candidates.find(item => item.title === title);
       if (node) this.select(node.id);
     }
-    if (value.focus === true && this.ready && !this.inlineEditor) {
-      if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
-      else this.canvas.focus({ preventScroll: true });
-    }
+    if (value.focus === true && this.ready && !this.inlineEditor) this.focusSelection();
   }
 
   /** The innermost node whose section holds the offset: children lie inside their parent's range and follow it. */
@@ -775,6 +781,8 @@ export class MindmapView extends EditableFileView {
     this.viewport = this.addChild(new MapViewport(this.canvas, world, (view, previous, carried) => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
+      // The map scrolled or zoomed under a context card: the card is for where the pointer was (LEV-369).
+      this.closeContextCard(true);
       // A pan or zoom between a drop and the fit held through it is where the view is wanted now (LEV-182).
       if (this.fitHeld && !this.topicDrag) this.clearFit();
       if (!carried) this.viewportMoved(previous, view);
@@ -808,6 +816,7 @@ export class MindmapView extends EditableFileView {
       detach: (id, point) => { this.run(() => this.detachNode(id, point)); },
       snap: (id, root, current) => this.snapTarget(id, root, current),
     }));
+    // The context card (LEV-369) at the pointer: a node's, a called map's node's, or the empty canvas's.
     this.registerDomEvent(this.canvas, "contextmenu", event => {
       const target = event.targetNode;
       if (!target?.instanceOf(Element)) return;
@@ -815,49 +824,15 @@ export class MindmapView extends EditableFileView {
       const id = nodeOf(this.canvas, target)?.dataset.nodeId;
       if (!this.document || !this.file) return;
       event.preventDefault();
-      const menu = new Menu();
-      if (!id) {
-        // Empty canvas: the topic goes where the menu was opened.
-        const rect = this.canvas.getBoundingClientRect();
-        const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-        menu.addItem(item => item.setTitle(t().addTopic).setIcon("plus").onClick(() => { this.run(() => this.addTopic(point)); }));
-        menu.addSeparator();
-        this.historyItems(menu);
-        menu.showAtMouseEvent(event);
-        return;
-      }
-      this.select(id);
-      // A node drawn from a called map (§5 M12) is edited in its own note: the menu opens that note and folds, nothing more.
-      if (this.calledSource(id)) {
-        menu.addItem(item => item.setTitle(t().openOriginal).setIcon("git-fork").onClick(() => { this.openCalled(id, false); }));
-        if (this.isCalled(id)) {
-          const node = this.projection()?.calls.byId.get(id);
-          if (node && node.children.length > 0) menu.addItem(item => item.setTitle(t().collapse).setIcon("chevrons-down-up").onClick(() => { this.fold(id); }));
-          menu.addSeparator();
-          this.historyItems(menu);
-          menu.showAtMouseEvent(event);
-          return;
-        }
-        menu.addSeparator();
-      }
-      const entries = this.nodeEntries();
-      for (const entry of [entries.edit, entries.body, entries.image]) this.menuItem(menu, entry);
-      if (this.canColor()) menu.addItem(item => item.setTitle(t().color).setIcon("palette").onClick(() => { this.colorMenu(event); }));
-      menu.addSeparator();
-      for (const entry of [entries.child, entries.sibling]) this.menuItem(menu, entry);
-      const remove = this.isTopic(id) ? t().deleteTopic : t().deleteBranch;
-      for (const [type, title] of [["move-up", t().moveUp], ["move-down", t().moveDown], ["delete", remove]] as const) {
-        menu.addItem(item => item.setTitle(title).onClick(() => { this.executeSelected(type); }));
-      }
-      menu.addSeparator();
-      this.historyItems(menu);
-      if (this.document.format === "headings") {
-        menu.addSeparator();
-        menu.addItem(item => item.setTitle(t().toListFormat).setIcon("list-tree")
-          .onClick(() => { this.run(() => this.convertToList()); }));
-      }
-      menu.showAtMouseEvent(event);
+      if (id) this.select(id);
+      this.openContextCard(event, id ? t().nodeMenu : t().mapMenu, id ? this.nodeRows(id) : this.canvasRows(event));
     });
+    // A tab of this map no longer the active one (another tab chosen, by the keys too) takes its cards down.
+    this.registerEvent(this.app.workspace.on("active-leaf-change", leaf => {
+      if (leaf === this.leaf) return;
+      this.closePopover(false);
+      this.closeContextCard(false);
+    }));
     this.registerDomEvent(nodes, "load", () => { this.scheduleLayout(); }, true);
     this.registerEvent(this.app.workspace.on("editor-change", (_editor, info) => {
       if (info.file?.path === this.file?.path) this.scheduleRefresh();
@@ -915,6 +890,7 @@ export class MindmapView extends EditableFileView {
   async onClose(): Promise<void> {
     this.closing = true;
     this.closePopover(false);
+    this.closeContextCard(false);
     this.stopTimers();
     // A read already under way is not the closing view's to publish (the save's own re-read takes a newer epoch).
     this.epoch += 1;
@@ -972,8 +948,10 @@ export class MindmapView extends EditableFileView {
     if (this.ready) this.scheduleLayout();
     // A draft opened while the pane had no layout (hidden) has not been measured yet.
     this.inlineEditor?.fit(true);
-    // The gear keeps its corner; the card under it follows, and shrinks if the pane got too narrow for it.
+    // The gear keeps its corner; the card under it follows, and shrinks if the pane got too narrow for it. A context
+    // card keeps its point and stays inside the pane.
     this.placePopover();
+    this.placeContextCard();
   }
 
   private button(parent: HTMLElement, label: string, icon: string | undefined, action: () => void): HTMLButtonElement {
@@ -988,40 +966,56 @@ export class MindmapView extends EditableFileView {
     void action().catch(error => { new Notice(error instanceof Error ? error.message : t().actionFailed); });
   }
 
-  /** A context-menu entry: the title, the icon and the method it runs. */
-  private menuItem(menu: Menu, [title, icon, run]: MenuEntry): void {
-    menu.addItem(item => item.setTitle(title).setIcon(icon).onClick(run));
+  /** A row of a context card: the title, the icon, what choosing it runs, and the key that does the same, if any. */
+  private row(title: string, icon: string, run: () => void, key?: MenuCardItem["key"]): MenuCardItem {
+    return { type: "item", title, icon, run, ...(key ? { key } : {}) };
   }
 
   /**
-   * The node operations of the context menu, each running the method its key runs; the node is read
-   * when the item is chosen, as the keys do, not when the menu opened.
+   * The context card of a node (LEV-369, the person's decision of 2026-10-19「1=A」): the row of colours on top, the two
+   * edits that have no key, then the deletion below a line — what the keys, the double click and a drag do (adding,
+   * renaming, moving, Undo／Redo) is not repeated here. A node drawn from a called map (§5 M12) is edited in its own
+   * note: its card opens that note and folds, nothing more. The calling item is the host's own, and opens the note it
+   * calls besides. A heading note keeps the conversion to the list form, which no other press reaches. Each row reads
+   * the node when it is chosen, as the keys do.
    */
-  private nodeEntries(): Record<"edit" | "body" | "image" | "child" | "sibling", MenuEntry> {
-    return {
-      edit: [t().editText, "pencil", () => { this.editTitle(); }],
-      body: [t().editBody, "text", () => { this.editBody(); }],
-      image: [t().addImage, "image-plus", () => { this.chooseImage(); }],
-      child: [t().addChild, "plus", () => { this.executeSelected("add-child"); }],
-      sibling: [t().addSibling, "corner-down-right", () => { this.executeSelected("add-sibling"); }],
-    };
-  }
-
-  /**
-   * The node's colour from the context menu (LEV-364): a second menu where the first was opened, 色なし and the six
-   * colours, the one the node shows checked (none for a colour of the note's own). Obsidian's API has no submenu, and
-   * a row of seven in the node's menu would bury its other items. Opened once the first menu's click is over, so that
-   * menu's closing cannot take this one with it; the node is read when a colour is chosen, as the keys read it.
-   */
-  private colorMenu(event: MouseEvent): void {
-    const node = this.selected();
-    if (!node) return;
-    const current = nodeColor(node)?.color ?? null;
-    const menu = new Menu();
-    for (const color of [null, ...NODE_COLORS]) {
-      menu.addItem(item => item.setTitle(colorLabel(color)).setChecked(current === color).onClick(() => { this.setColor(color); }));
+  private nodeRows(id: string): MenuCardRow[] {
+    if (this.isCalled(id)) {
+      const node = this.projection()?.calls.byId.get(id);
+      return [
+        this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }),
+        ...(node && node.children.length > 0 ? [this.row(t().collapse, "chevrons-down-up", () => { this.fold(id); }, SPACE_KEY)] : []),
+      ];
     }
-    this.contentEl.win.setTimeout(() => { if (!this.closed) menu.showAtMouseEvent(event); }, 0);
+    const rows: MenuCardRow[] = [];
+    if (this.canColor()) rows.push(this.colorRow(), { type: "separator" });
+    if (this.calledSource(id)) rows.push(this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }));
+    rows.push(this.row(t().editBody, "text", () => { this.editBody(); }), this.row(t().addImage, "image-plus", () => { this.chooseImage(); }));
+    if (this.document?.format === "headings") {
+      rows.push({ type: "separator" }, this.row(t().toListFormat, "list-tree", () => { this.run(() => this.convertToList()); }));
+    }
+    rows.push({ type: "separator" }, { ...this.row(this.isTopic(id) ? t().deleteTopic : t().deleteNode, "trash-2", () => { this.deleteSelected(); }, deleteKey()), danger: true });
+    return rows;
+  }
+
+  /** The empty canvas's card: a topic where the card was opened. */
+  private canvasRows(event: MouseEvent): MenuCardRow[] {
+    const rect = this.canvas.getBoundingClientRect();
+    const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    return [this.row(t().addTopic, "plus", () => { this.run(() => this.addTopic(point)); })];
+  }
+
+  /**
+   * The node's colour (LEV-364) in one press: 色なし and the six as circles, filled as the map fills a node in the theme
+   * the map is drawn in, each named by its tooltip and for a screen reader; the one the node has is ringed (none for a
+   * colour of the note's own).
+   */
+  private colorRow(): MenuCardRow {
+    const node = this.selected();
+    const current = (node ? nodeColor(node)?.color : undefined) ?? null;
+    return { type: "swatches", label: t().color, swatches: [null, ...NODE_COLORS].map(color => ({
+      label: colorLabel(color), color, checked: current === color, run: () => { this.setColor(color); },
+    })) };
   }
 
   /** Colour the selected node, or take its colour off (LEV-364): the route of the context menu and of the commands. */
@@ -1045,97 +1039,36 @@ export class MindmapView extends EditableFileView {
   /**
    * The 操作 popover (§5 M3), opened under the gear: a card of three items — Markdown に切り替え, then the
    * plugin's routes (the map search, the export) in the order `src/main.ts` passes them — each an icon, a
-   * title and one line of description. Every other operation stays on the keys, the context menu and the
-   * command palette. The card is the view's own element inside `.mappy-view`, placed by `placePopover`, so
-   * it follows the pane (a popout window, a narrow one) and never leaves it, where Obsidian's `Menu` at the
-   * window's right edge did. Whether an item is enabled is judged as the card opens, as the menu did: the
-   * Markdown switch needs the note and its document, the plugin's items answer their own `check`. A
-   * disabled item is still reached with ↑↓ and Tab on the card and does nothing, so it is found and read.
+   * title and one line of description. Every other operation stays on the keys, the context card and the
+   * command palette. The card is the view's own element inside `.mappy-view` (`MenuCard`), placed by
+   * `placePopover`, so it follows the pane (a popout window, a narrow one) and never leaves it, where Obsidian's
+   * `Menu` at the window's right edge did. Whether an item is enabled is judged as the card opens: the Markdown
+   * switch needs the note and its document, the plugin's items answer their own `check`.
    *
-   * Keys, on the card: the first item takes the focus; ↑↓ (Home／End) move, Tab and Shift+Tab cycle,
-   * Enter／Space run the focused item, Escape closes. A press outside the card and the gear, the gear's
-   * next press, choosing an item and the view's closing close it too. Closing puts the focus back on the
-   * canvas, except on a press outside the view, whose target takes the focus itself.
-   *
-   * The keys live on the focus (Obsidian's `Menu` has the keymap instead), so the card goes whenever the
-   * focus is taken outside it — a node refocused by an inline edit that finished saving, the command
-   * palette, another tab, the window losing focus to another (a popout's card, the main window pressed) —
-   * and leaves the focus where it went; a card left open without its keys would have no Escape. The gear
-   * taking the focus on its press is not that: its click toggles.
+   * The card's keys and closing are `MenuCard`'s. The gear's press toggles it, and taking the focus does not close
+   * it. Closing on Escape, a choice or a press elsewhere on the map puts the focus back on the canvas; a press
+   * outside the view, the focus taken elsewhere (a node refocused by an inline edit that finished saving, the command
+   * palette, another tab) and the window losing the focus leave it where it went.
    */
   private openPopover(anchor: HTMLButtonElement): void {
     if (this.popover) return;
-    const doc = this.contentEl.doc;
-    const win = this.contentEl.win;
-    const element = this.contentEl.createDiv({ cls: "mappy-popover", attr: { role: "menu", "aria-label": t().actions } });
-    const items: HTMLButtonElement[] = [];
-    const add = (title: string, description: string, icon: string, enabled: boolean, run: () => void): void => {
-      const item = element.createEl("button", { cls: "mappy-popover-item", attr: { type: "button", role: "menuitem", tabindex: "-1" } });
-      setIcon(item.createSpan({ cls: "mappy-popover-icon" }), icon);
-      const text = item.createSpan({ cls: "mappy-popover-text" });
-      text.createSpan({ cls: "mappy-popover-title", text: title });
-      text.createSpan({ cls: "mappy-popover-description", text: description });
-      if (!enabled) { item.addClass("is-disabled"); item.setAttribute("aria-disabled", "true"); }
-      item.addEventListener("click", () => {
-        // Closing takes the card down; a second activation from the same press (Enter's native click) finds it gone and does nothing.
-        if (!enabled || this.popover?.element !== element) return;
-        this.closePopover(true);
-        run();
-      });
-      items.push(item);
-    };
+    this.closeContextCard(false);
     const ready = this.file !== null && this.document !== undefined;
-    add(t().toMarkdown, t().toMarkdownDesc, "file-text", ready, () => { this.run(() => this.showSource(false)); });
-    for (const action of this.menuActions) add(action.title, action.description, action.icon, action.check(this), () => { action.run(this); });
-    element.addEventListener("keydown", event => {
-      const focused = items.findIndex(item => item === doc.activeElement);
-      const move = (to: number): void => { items[(to + items.length) % items.length]?.focus({ preventScroll: true }); };
-      const previous = focused < 0 ? items.length - 1 : focused - 1;
-      switch (event.key) {
-        case "ArrowDown": move(focused + 1); break;
-        case "ArrowUp": move(previous); break;
-        case "Home": move(0); break;
-        case "End": move(items.length - 1); break;
-        case "Tab": move(event.shiftKey ? previous : focused + 1); break;
-        case "Enter": case " ": items[focused]?.click(); break;
-        case "Escape": this.closePopover(true); break;
-        default: return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-    });
-    // A press on the card's own padding would move the focus to the body and take the keys with it.
-    element.addEventListener("mousedown", event => {
-      const target = event.targetNode;
-      if (!target?.instanceOf(Element) || !target.closest("button")) event.preventDefault();
-    });
-    // The focus leaving the card (see above). A known destination decides at once; none (a blur with no successor: a
-    // touch on nothing focusable, the window) is judged a tick later, once a gear press has had its click and a
-    // focus that merely returned (the window's) has shown itself.
-    element.addEventListener("focusout", event => {
-      const next = event.relatedTarget as Node | null;
-      if (next && (element.contains(next) || anchor.contains(next))) return;
-      if (next) { this.closePopover(false); return; }
-      win.setTimeout(() => { if (this.popover?.element === element && !element.contains(doc.activeElement)) this.closePopover(false); }, 0);
-    });
-    // The press outside, at the capture phase so no pane can swallow it; a press on the gear is left to its click, which toggles.
-    const outside = (event: PointerEvent): void => {
-      const target = event.targetNode;
-      if (!target || element.contains(target) || anchor.contains(target)) return;
-      this.closePopover(this.contentEl.contains(target));
-    };
-    // The window losing the focus to another window (or app): the outside press of a popout's card lands in the main
-    // window, whose document has no listener, and the focus stays on the item as far as this document can tell.
-    const blurred = (): void => { this.closePopover(false); };
-    doc.addEventListener("pointerdown", outside, true);
-    win.addEventListener("blur", blurred);
-    this.popover = { element, anchor, release: () => {
-      doc.removeEventListener("pointerdown", outside, true);
-      win.removeEventListener("blur", blurred);
-    } };
+    const rows: MenuCardRow[] = [
+      { type: "item", title: t().toMarkdown, description: t().toMarkdownDesc, icon: "file-text", enabled: ready, run: () => { this.run(() => this.showSource(false)); } },
+      ...this.menuActions.map((action): MenuCardRow => ({
+        type: "item", title: action.title, description: action.description, icon: action.icon, enabled: action.check(this), run: () => { action.run(this); },
+      })),
+    ];
+    const card: MenuCard = new MenuCard(this.contentEl, { label: t().actions, rows, anchor, within: this.contentEl, closed: reason => {
+      if (this.popover?.card === card) this.popover = null;
+      anchor.setAttribute("aria-expanded", "false");
+      if (reason === "escape" || reason === "choose" || reason === "inside") this.canvas.focus({ preventScroll: true });
+    } });
+    this.popover = { card, anchor };
     anchor.setAttribute("aria-expanded", "true");
     this.placePopover();
-    items[0]?.focus({ preventScroll: true });
+    card.focusFirst();
   }
 
   /**
@@ -1149,7 +1082,7 @@ export class MindmapView extends EditableFileView {
    */
   private placePopover(): void {
     if (!this.popover) return;
-    const { element, anchor } = this.popover;
+    const { card: { element }, anchor } = this.popover;
     const pane = this.contentEl.getBoundingClientRect();
     const gear = anchor.getBoundingClientRect();
     const right = Math.max(0, pane.right - gear.right);
@@ -1169,18 +1102,68 @@ export class MindmapView extends EditableFileView {
   private closePopover(focus: boolean): void {
     const popover = this.popover;
     if (!popover) return;
-    this.popover = null;
-    popover.release();
-    popover.element.remove();
-    popover.anchor.setAttribute("aria-expanded", "false");
+    popover.card.close("owner");
     if (focus) this.canvas.focus({ preventScroll: true });
   }
 
-  private historyItems(menu: Menu): void {
-    menu.addItem(item => item.setTitle(t().undo).setIcon("undo-2")
-      .setDisabled(!this.file || !this.store.canUndo(this.file)).onClick(() => { this.history("undo"); }));
-    menu.addItem(item => item.setTitle(t().redo).setIcon("redo-2")
-      .setDisabled(!this.file || !this.store.canRedo(this.file)).onClick(() => { this.history("redo"); }));
+  /**
+   * The context card (LEV-369) at the pointer, in place of Obsidian's `Menu`: the view's own element, as the gear's
+   * card is, so it is the same card whatever Obsidian's 「OS のメニュー」 says, in the window the map is in (a popout's
+   * document for a popout's map), and it can draw the colours. A press on the map with the keyboard's menu key or
+   * Shift+F10, where Chromium sends a `contextmenu` for them (not on macOS), opens it at the focused node too. The keys
+   * and the closing are `MenuCard`'s; the map's scroll or zoom (`viewportMoved`'s caller) and another tab made active
+   * close it as well. The focus goes back to the node it was for, unless it went somewhere itself (another pane or tab).
+   */
+  private openContextCard(event: MouseEvent, label: string, rows: MenuCardRow[]): void {
+    this.closePopover(false);
+    this.closeContextCard(false);
+    const pane = this.contentEl.getBoundingClientRect();
+    const card: MenuCard = new MenuCard(this.contentEl, { label, className: "mappy-context-card", rows, within: this.contentEl, closed: reason => {
+      if (this.contextCard?.card === card) this.contextCard = null;
+      if (reason !== "focus" && reason !== "outside" && reason !== "owner") this.focusSelection();
+    } });
+    this.contextCard = { card, x: event.clientX - pane.left, y: event.clientY - pane.top };
+    this.placeContextCard();
+    card.focusFirst();
+  }
+
+  /**
+   * At the point it was opened, inside the pane: to the right of it and below it where the card fits, to its left or
+   * above it where that side has the room, against the pane's far edge when neither has (CONTEXT_MARGIN from it). A
+   * pane narrower or shorter than the card caps it, and the card scrolls. Offsets from the pane, as the gear's card's,
+   * so a popout window places it the same; a pane without a layout yet (empty rects) puts it at the point uncapped.
+   */
+  private placeContextCard(): void {
+    const open = this.contextCard;
+    if (!open) return;
+    const { card: { element }, x, y } = open;
+    const pane = this.contentEl.getBoundingClientRect();
+    const width = pane.width - 2 * CONTEXT_MARGIN;
+    const height = pane.height - 2 * CONTEXT_MARGIN;
+    element.style.maxWidth = width > 0 ? `${Math.min(POPOVER_MAX_WIDTH, width)}px` : "";
+    element.style.maxHeight = height > 0 ? `${height}px` : "";
+    const size = element.getBoundingClientRect();
+    const place = (at: number, length: number, extent: number): number => {
+      if (extent <= 0 || at + length <= extent - CONTEXT_MARGIN) return at;
+      if (at - length >= CONTEXT_MARGIN) return at - length;
+      return Math.max(CONTEXT_MARGIN, extent - CONTEXT_MARGIN - length);
+    };
+    element.style.left = `${place(x, size.width, pane.width)}px`;
+    element.style.top = `${place(y, size.height, pane.height)}px`;
+  }
+
+  /** Take the context card down; `focus` gives the keyboard back to the node (a scroll or a zoom of the map closed it). */
+  private closeContextCard(focus: boolean): void {
+    const open = this.contextCard;
+    if (!open) return;
+    open.card.close("owner");
+    if (focus) this.focusSelection();
+  }
+
+  /** The keyboard back on the map: the selected node, or the canvas when none is drawn. */
+  private focusSelection(): void {
+    if (this.selectedId !== null && this.renderer.entries.has(this.selectedId)) this.renderer.focus(this.selectedId);
+    else this.canvas.focus({ preventScroll: true });
   }
 
   /**
@@ -1874,9 +1857,10 @@ export class MindmapView extends EditableFileView {
     this.draw();
   }
 
-  private executeSelected(type: "add-child" | "add-sibling" | "delete" | "move-up" | "move-down"): void {
+  /** Delete the selected node as Delete／Backspace do, read when the card's row is chosen. */
+  private deleteSelected(): void {
     const node = this.selected();
-    if (node) this.run(() => this.execute({ type, nodeId: node.id }));
+    if (node) this.run(() => this.execute({ type: "delete", nodeId: node.id }));
   }
 
   private async execute(command: EditCommand): Promise<void> {

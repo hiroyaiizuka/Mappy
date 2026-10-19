@@ -11,6 +11,7 @@ import { t } from '../../src/i18n';
 import { MindmapView } from '../../src/ui/mindmap-view';
 import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
+import { cardRow } from './context-card';
 
 // The browser-harness stand-in for `obsidian`, so the shipped view, renderer, store and modals run against a real DOM.
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -162,13 +163,6 @@ function holdReads(app: HarnessApp): { held: () => boolean; release: () => void;
   return { held: () => waiting > 0, release: () => { release(); }, restore: () => { release(); slow.mockRestore(); } };
 }
 
-function menuItem(title: string): HTMLElement {
-  const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-  if (!item) throw new Error(`Menu item ${title} is not open`);
-  return item;
-}
-
 /** An external text the draft cannot be applied to: the note is not overwritten and the draft stays open until Escape. */
 async function refused(mounted: Mounted, input: HTMLTextAreaElement, text: string, message: string): Promise<void> {
   const { source, key, editor, error, refreshed } = mounted;
@@ -263,7 +257,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
   it('refuses a body draft when the external change wrote a body under the same node', async () => {
     const { source, key, refreshed, element, node, external, settle } = await mount(SOURCE);
     element(node('学ぶこと').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-    menuItem('本文・リンクを編集').click();
+    cardRow('本文・リンクを編集').click();
     await settle();
     const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
     if (!input) throw new Error('The body modal did not open');
@@ -293,7 +287,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     try {
       const target = element(node('学ぶこと').id);
       target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-      menuItem('本文・リンクを編集').click();
+      cardRow('本文・リンクを編集').click();
       await settle();
       const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
       if (!input) throw new Error('The body modal did not open');
@@ -325,7 +319,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
     let line: () => string;
     if (kind === 'body modal') {
       element(node('学ぶこと').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-      menuItem('本文・リンクを編集').click();
+      cardRow('本文・リンクを編集').click();
       await settle();
       const modal = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
       if (!modal) throw new Error('The body modal did not open');
@@ -382,7 +376,7 @@ describe('MindmapView drafts across an external change (E05 with E03 and E04)', 
       await vi.waitFor(() => { expect(reads.held()).toBe(true); }, { timeout: 2000, interval: 0 });
       expect(documentOf(view).source).toBe(SOURCE);
       element(node('全体の流れ').id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-      menuItem('本文・リンクを編集').click();
+      cardRow('本文・リンクを編集').click();
       await settle();
       modalInput = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
       if (!modalInput) throw new Error('The body modal did not open');

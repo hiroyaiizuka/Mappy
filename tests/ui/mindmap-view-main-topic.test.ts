@@ -81,15 +81,6 @@ function draftName(mounted: MountedMapView): string {
   return input.value;
 }
 
-/** Choose an item of the node's context menu, as the right click does. */
-function menu(mounted: MountedMapView, title: string, item: string): void {
-  mounted.select(title).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-  const entry = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === item);
-  if (!entry) throw new Error(`no ${item} in the menu`);
-  entry.click();
-}
-
 interface Row {
   id: string;
   source: string;
@@ -129,9 +120,6 @@ const ROWS: readonly Row[] = [
   { id: 'リスト: 第一階層で Tab', source: LIST, act: key('持ち物', 'Tab'), depth: 'sub', parent: '持ち物' },
   { id: 'リスト: 深い階層で Enter', source: LIST, act: key('予約', 'Enter'), depth: 'sub', parent: '温泉旅行' },
   { id: 'リスト: 深い階層で Tab', source: LIST, act: key('予約', 'Tab'), depth: 'sub', parent: '予約' },
-  { id: 'リスト: メニューの「子を追加」をルートで', source: LIST, act: m => { menu(m, '旅の計画', t().addChild); }, depth: 'main', parent: '旅の計画' },
-  { id: 'リスト: メニューの「兄弟を追加」を第一階層で', source: LIST, act: m => { menu(m, '温泉旅行', t().addSibling); }, depth: 'main', parent: '旅の計画' },
-  { id: 'リスト: メニューの「子を追加」を第一階層で', source: LIST, act: m => { menu(m, '持ち物', t().addChild); }, depth: 'sub', parent: '持ち物' },
   { id: 'リスト: 深い項目をルートの直下へドラッグしてから Enter', source: LIST, act: afterDrag('予約', '持ち物', 'after'), depth: 'main', parent: '旅の計画' },
   { id: 'リスト: 第一階層を枝の中へドラッグしてから Enter', source: LIST, act: afterDrag('持ち物', '温泉旅行', 'inside'), depth: 'sub', parent: '温泉旅行' },
   // 見出し形式: `# 旅の計画` が本文のルート、H2 区画が第一階層（新しい区画もメイントピック）。
