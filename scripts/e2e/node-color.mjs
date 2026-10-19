@@ -19,8 +19,7 @@
  * painter and Mappy's own insert into a drawing (M6), and that reading never writes the note. Page errors are counted.
  *
  * The context card is the map's own element (LEV-369), the same whatever Obsidian's `nativeMenus` says; it opens on a
- * synthesized `contextmenu` (CDP's right button raises none in Obsidian's window on macOS), as E76 does. E92 checks the
- * card itself.
+ * dispatched `contextmenu`, as E76 does. E92 checks the card itself, opened by CDP's right press.
  *
  * Usage: npm run harness:e2e:node-color -- [--reload] [--json <out.json>] [--shot <out.png>] [--keep]
  */

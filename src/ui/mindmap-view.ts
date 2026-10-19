@@ -1109,8 +1109,8 @@ export class MindmapView extends EditableFileView {
   /**
    * The context card (LEV-369) at the pointer, in place of Obsidian's `Menu`: the view's own element, as the gear's
    * card is, so it is the same card whatever Obsidian's 「OS のメニュー」 says, in the window the map is in (a popout's
-   * document for a popout's map), and it can draw the colours. A press on the map with the keyboard's menu key or
-   * Shift+F10, where Chromium sends a `contextmenu` for them (not on macOS), opens it at the focused node too. The keys
+   * document for a popout's map), and it can draw the colours. A `contextmenu` the keyboard raises opens it for the
+   * focused node too (1.14.4 on macOS raises one for the menu key, none for Shift+F10: E92). The keys
    * and the closing are `MenuCard`'s; the map's scroll or zoom (`viewportMoved`'s caller) and another tab made active
    * close it as well. The focus goes back to the node it was for, unless it went somewhere itself (another pane or tab).
    */

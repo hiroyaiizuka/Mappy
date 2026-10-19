@@ -83,6 +83,11 @@ const rightPress = async locate => {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'right', buttons: 2, clickCount: 1 });
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'right', buttons: 0, clickCount: 1 });
   await wait(500);
+  // The press opens the map's context card in 1.14.4 (LEV-369); Escape takes it down, the focus back on the map.
+  if (await evaluate(`return !!document.querySelector('.mappy-context-card');`)) {
+    await cdp.realKey('Escape');
+    await wait(300);
+  }
   return at;
 };
 /** Whether the focus is on the map's canvas or a node in it: where ⌘Z is the map's (elsewhere it reaches the OS's Edit menu). */

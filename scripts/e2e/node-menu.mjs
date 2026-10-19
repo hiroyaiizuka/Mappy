@@ -4,11 +4,12 @@
  * 削除 in the error colour — in place of Obsidian's menu, which 1.14.4 on macOS draws natively (a menu of colour names).
  * Rows are the person's operations × what the card is for:
  *
- * - operations: the right-click (CDP's right press, then the `contextmenu` it does not raise on macOS, as E76 and E77
- *   dispatch it; the real right press is recorded on its own), Obsidian's 「OS のメニュー」 on and off, a real click on a
- *   circle and on a row, the card's keys (real ←→↑↓, Tab, Home, End, Enter, Space, Escape), a real click outside, a real
- *   wheel and ⌘-wheel over the map, another tab made active, the window's blur (a dispatched `blur`: the case moves no OS
- *   window), and the menu key and Shift+F10 (recorded: Chromium sends no `contextmenu` for them on macOS);
+ * - operations: the right-click (CDP's right press, which raises the `contextmenu` in 1.14.4's window; the event is
+ *   dispatched at the same point only if it did not, and the record says which), Obsidian's 「OS のメニュー」 on and off,
+ *   a real click on a circle and on a row, the card's keys (real ←→↑↓, Tab, Home, End, Enter, Space, Escape), a real
+ *   click outside, a real wheel and ⌘-wheel over the map, another tab made active, the window's blur (a dispatched
+ *   `blur`: the case moves no OS window), and the menu key and Shift+F10 on a focused node (recorded: 1.14.4 on macOS
+ *   raised a `contextmenu` for the menu key, none for Shift+F10);
  * - shapes: a list item, a free topic, the calling item and a node of the called map (M12), the empty canvas, a heading
  *   note's node, a point at the pane's corner, and the map in a popout window.
  *
@@ -86,8 +87,9 @@ const cardState = (run = evaluate) => run(`${VIEW} ${CARD} return cardState();`)
 
 /**
  * The right-click at the point `locate` (script after VIEW, defining `node` and optionally `at`) aims at: CDP's right
- * press first, as a person's press moves the focus, then the `contextmenu` there, which CDP's right button does not raise
- * in Obsidian's window on macOS (E77's probe of 2026-09-30). `cdpOnly` stops after the press (the probe row).
+ * press, which moves the focus as a person's does and raises the `contextmenu`; only if no card opened is the event
+ * dispatched there (E77's probe of 2026-09-30 found none raised, with Obsidian's own menu). `viaCdp` says which.
+ * `cdpOnly` stops after the press (the probe row).
  */
 const makeRightClick = (connection, run) => {
   const aim = makePress(connection, run);
@@ -261,8 +263,9 @@ try {
     // A real wheel over the map (a scroll), then ⌘-wheel (a zoom).
     for (const [name, modifiers] of [['scroll', 0], ['zoom', 4]]) {
       await rightClick(onNode('温泉旅行'));
-      const centre = await evaluate(`${VIEW} const r = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 };`);
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: centre.x, y: centre.y, deltaX: 0, deltaY: 120, modifiers });
+      // Over the map, away from the card (a wheel over the card scrolls the card, not the map).
+      const over = await evaluate(`${VIEW} const r = el.querySelector('.mappy-canvas').getBoundingClientRect(); return { x: r.left + 60, y: r.top + 150 };`);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: over.x, y: over.y, deltaX: 0, deltaY: 120, modifiers });
       await wait(400);
       rows[name] = await cardState();
     }
@@ -284,7 +287,8 @@ try {
     return rows;
   });
 
-  // The menu key and Shift+F10 on the focused node: recorded. Chromium sends no `contextmenu` for them on macOS.
+  // The menu key and Shift+F10 on the focused node: recorded (what Chromium raises for them is the platform's); a card
+  // they open is the node's.
   await step('menu-key', async () => {
     await select('温泉旅行');
     const rows = {};
