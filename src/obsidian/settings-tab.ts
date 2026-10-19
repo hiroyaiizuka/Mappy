@@ -13,8 +13,8 @@ export function themeLabel(theme: MapTheme): string {
   return t()[THEME_LABEL_KEYS[theme]];
 }
 
-/** One layout's line in the「左下に表示するレイアウト」row: its toggle, and the「いつも出ます」shown while the toggle is locked. */
-interface LayoutLine { toggle: ToggleComponent; always: HTMLElement }
+/** One layout's line in the「左下に表示するレイアウト」row: the line, its toggle, and the「いつも出ます」shown while the toggle is locked. */
+interface LayoutLine { line: HTMLElement; toggle: ToggleComponent; always: HTMLElement }
 
 /** One drawn「左下に表示するレイアウト」row. */
 interface LayoutRow { lines: Map<LayoutMode, LayoutLine>; note: HTMLElement }
@@ -173,7 +173,7 @@ export class MappySettingTab extends PluginSettingTab {
       label.createSpan({ cls: 'mappy-setting-layout-name', text: name });
       const always = label.createSpan({ cls: 'mappy-setting-layout-always', text: t().setLayoutAlways, attr: { id: `mappy-setting-layout-always-${++alwaysCount}` } });
       const toggle = new ToggleComponent(item).setTooltip(name);
-      lines.set(mode, { toggle, always });
+      lines.set(mode, { line: item, toggle, always });
       label.addEventListener('click', () => { if (!toggle.disabled) toggle.setValue(!toggle.getValue()); });
       toggle.onChange(on => {
         const current = this.store.current().visibleLayouts;
@@ -194,17 +194,19 @@ export class MappySettingTab extends PluginSettingTab {
       this.layoutRows.delete(row);
       list.remove();
       row.note.remove();
+      setting.settingEl.removeClass('mappy-setting-layouts-row');
     };
   }
 
   /** Show the stored list and lock the regular map and the default layout; called on render and after each save. */
   private syncLayoutRow(row: LayoutRow): void {
     const { defaultLayout, visibleLayouts } = this.store.current();
-    for (const [mode, { toggle, always }] of row.lines) {
+    for (const [mode, { line, toggle, always }] of row.lines) {
       const locked = mode === 'mindmap' || mode === defaultLayout;
       toggle.setDisabled(locked);
       toggle.setValue(visibleLayouts.includes(mode));
       always.hidden = !locked;
+      line.toggleClass('is-locked', locked);
       // A screen reader hears why the toggle cannot be changed, as the eye reads it beside the name.
       if (locked) toggle.toggleEl.setAttribute('aria-describedby', always.id);
       else toggle.toggleEl.removeAttribute('aria-describedby');

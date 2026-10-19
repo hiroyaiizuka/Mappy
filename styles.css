@@ -500,6 +500,7 @@
 .mappy-setting-layout { display: flex; align-items: center; justify-content: space-between; gap: var(--size-4-4); padding: var(--size-4-2) 0; font-size: var(--font-ui-small); }
 .mappy-setting-layout + .mappy-setting-layout { border-top: 1px solid var(--background-modifier-border); }
 .mappy-setting-layout-label { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--size-4-2); min-width: 0; cursor: var(--cursor); }
+.mappy-setting-layout.is-locked > .mappy-setting-layout-label { cursor: default; }
 .mappy-setting-layout-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mappy-setting-layout-always { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: nowrap; }
 .mappy-setting-layout-always[hidden] { display: none; }

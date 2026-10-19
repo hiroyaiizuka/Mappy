@@ -309,6 +309,28 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(always(tab.containerEl)).toEqual(['いつも出ます', 'いつも出ます', null, null]);
   });
 
+  it('undoes everything its render added to the Setting when its cleanup runs, so a reused row is left as Obsidian drew it (LEV-370 review 2)', () => {
+    const { tab } = mount();
+    const layouts = tab.getSettingDefinitions()[3];
+    const shared = new Setting(document.body.createDiv());
+    const cleanup = layouts?.render?.(shared as unknown as Parameters<NonNullable<typeof layouts.render>>[0]);
+    expect(shared.settingEl.classList.contains('mappy-setting-layouts-row')).toBe(true);
+    expect(shared.settingEl.querySelectorAll('.mappy-setting-layouts, .mappy-setting-note')).toHaveLength(2);
+    expect(typeof cleanup).toBe('function');
+    if (typeof cleanup === 'function') cleanup();
+    expect(shared.settingEl.classList.contains('mappy-setting-layouts-row')).toBe(false);
+    expect(shared.settingEl.querySelectorAll('.mappy-setting-layouts, .mappy-setting-note')).toHaveLength(0);
+  });
+
+  it('marks the locked lines, whose names do nothing when clicked (LEV-370 review 2)', async () => {
+    const { tab, layout } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' });
+    const marked = () => Array.from(tab.containerEl.querySelectorAll('.mappy-setting-layout'), line => line.classList.contains('is-locked'));
+    expect(marked()).toEqual([true, true, false, false]);
+    change(layout, 'mindmap');
+    await flush();
+    expect(marked()).toEqual([true, false, false, false]);
+  });
+
   it('gives each locked toggle its「いつも出ます」as its description, for a screen reader (LEV-370 review)', async () => {
     const { tab, toggles, layout } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' });
     const described = () => LAYOUT_MODES.map(mode => {

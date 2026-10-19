@@ -238,16 +238,27 @@ async function setTheme(scheme) {
 }
 /**
  * The base theme put back as the run found it, key and all (Obsidian's `setConfig` with undefined removes the key, so a
- * vault that never chose a theme is left without one), checked against what the run found.
+ * vault that never chose a theme is left without one), checked against what the run found, and waited for in each of
+ * `windows` too (the settings window, while the run still reads it). Until it is back, the end of the run tries again.
  */
-async function restoreTheme(name) {
-  const back = await step(name, () => evaluate(`const start = ${JSON.stringify(themeAtStart)};
-    app.changeTheme(start.key ?? 'system');
-    if (start.key === null) app.vault.setConfig('theme', undefined);
-    for (const started = Date.now(); Date.now() - started < 5000 && !document.body.classList.contains('theme-' + start.scheme); await new Promise(resolve => setTimeout(resolve, 50)));
-    return { key: app.vault.config.theme ?? null, scheme: document.body.classList.contains('theme-dark') ? 'dark' : 'light' };`));
-  check(same(back, themeAtStart), `${name}: the base theme is ${JSON.stringify(back)}, not ${JSON.stringify(themeAtStart)} as the run found it`);
-  themeChanged = false;
+async function restoreTheme(name, windows = []) {
+  const back = await step(name, async () => {
+    const main = await evaluate(`const start = ${JSON.stringify(themeAtStart)};
+      app.changeTheme(start.key ?? 'system');
+      if (start.key === null) app.vault.setConfig('theme', undefined);
+      for (const started = Date.now(); Date.now() - started < 5000 && !document.body.classList.contains('theme-' + start.scheme); await new Promise(resolve => setTimeout(resolve, 50)));
+      return { key: app.vault.config.theme ?? null, scheme: document.body.classList.contains('theme-dark') ? 'dark' : 'light' };`);
+    const others = [];
+    for (const read of windows) {
+      others.push(await read(`for (const started = Date.now(); Date.now() - started < 5000 && !document.body.classList.contains(${JSON.stringify(`theme-${themeAtStart.scheme}`)}); await new Promise(resolve => setTimeout(resolve, 50)));
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return document.body.classList.contains('theme-dark') ? 'dark' : 'light';`));
+    }
+    return { ...main, others };
+  });
+  const restored = same({ key: back?.key, scheme: back?.scheme }, themeAtStart) && (back?.others ?? []).every(scheme => scheme === themeAtStart.scheme);
+  check(restored, `${name}: the base theme is ${JSON.stringify(back)}, not ${JSON.stringify(themeAtStart)} as the run found it`);
+  if (restored) themeChanged = false;
 }
 /** A settings window narrower than the default, through CDP's viewport emulation of that window alone (no OS window is touched). */
 const NARROW = 460;
@@ -295,7 +306,7 @@ async function rows(language, shot) {
     // The evidence the run was asked for: a missing picture is a failure, not a silent skip.
     if (shot) await step(row(`shot-${scheme}`), () => { if (!settingsCdp || settingsCdp.closed) throw new Error('no settings window to take'); return settingsCdp.screenshot(`${shot}-${language}-${scheme}.png`); });
   }
-  await restoreTheme(row('theme-back'));
+  await restoreTheme(row('theme-back'), [inSettings]);
   // A narrow settings window: the lines shrink with the row, and nothing runs under a toggle or pushes it out.
   const narrow = await look(row('narrow'), async () => {
     await (await openSettings()).send('Emulation.setDeviceMetricsOverride', { width: NARROW, height: 700, deviceScaleFactor: 0, mobile: false });
@@ -351,7 +362,7 @@ try {
 } finally {
   // The data file first (it does not depend on the language), then the language, as E71 does.
   if (cdp.closed) cdp = await connect({ language: null }).catch(() => cdp);
-  if (cdp.closed) record.failures.push('the window could not be reached to put its data file and language back: check them by hand');
+  if (cdp.closed) record.failures.push(`the window could not be reached to put its data file${themeChanged ? `, base theme (${JSON.stringify(themeAtStart)})` : ''} and language back: check them by hand`);
   else {
     await closeSettings().catch(() => null);
     await detachMaps().catch(() => null);

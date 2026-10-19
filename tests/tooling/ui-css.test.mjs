@@ -260,18 +260,25 @@ describe("the settings tab's layout toggles (LEV-370)", () => {
   it("puts one line per layout across the row, the name unwrapped on the left and its toggle at the right edge", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
     const rule = selector => css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.()[\]]/gu, "\\$&")} \\{(?<body>[^}]*)\\}`, "u"))?.groups?.body ?? "";
+    // Each declaration on its own, whatever order the rule lists them in (review 2).
+    const declares = (selector, ...declarations) => {
+      const body = rule(selector);
+      for (const declaration of declarations) expect(body, `${selector} { ${declaration} }`).toMatch(new RegExp(`(?:^|[{;\\s])${declaration.replace(/[.()]/gu, "\\$&").replace(/: /u, ":\\s*")};`, "u"));
+    };
     // The row wraps, and the lines take a whole line of it, below the name and description: the toggles then end where
     // the row's content ends, as every other row's control does (measured on Obsidian 1.14.4 by E72).
-    expect(rule(".setting-item.mappy-setting-layouts-row")).toMatch(/flex-wrap:\s*wrap;/u);
+    declares(".setting-item.mappy-setting-layouts-row", "flex-wrap: wrap");
     // The row's width as a width, not a flex basis: 1.14.4 lays a narrow row out down the window (review 1).
-    expect(rule(".mappy-setting-layouts")).toMatch(/flex:\s*none;\s*width:\s*100%;\s*min-width:\s*0;/u);
-    expect(rule(".mappy-setting-layout")).toMatch(/display:\s*flex;[\s\S]*justify-content:\s*space-between;/u);
+    declares(".mappy-setting-layouts", "flex: none", "width: 100%", "min-width: 0");
+    declares(".mappy-setting-layout", "display: flex", "justify-content: space-between");
     // A name never wraps; in a row too narrow for it, it is cut short rather than drawn under the toggle (review 1),
     // and「いつも出ます」goes under it.
-    expect(rule(".mappy-setting-layout-label")).toMatch(/flex-wrap:\s*wrap;[\s\S]*min-width:\s*0;/u);
-    expect(rule(".mappy-setting-layout-name")).toMatch(/overflow:\s*hidden;\s*text-overflow:\s*ellipsis;\s*white-space:\s*nowrap;/u);
-    expect(rule(".mappy-setting-layout-always")).toMatch(/white-space:\s*nowrap;/u);
-    expect(rule(".mappy-setting-layout > .checkbox-container")).toMatch(/flex:\s*none;/u);
-    expect(rule(".mappy-setting-layout-always[hidden]")).toMatch(/display:\s*none;/u);
+    declares(".mappy-setting-layout-label", "flex-wrap: wrap", "min-width: 0");
+    declares(".mappy-setting-layout-name", "overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap");
+    declares(".mappy-setting-layout-always", "white-space: nowrap");
+    declares(".mappy-setting-layout > .checkbox-container", "flex: none");
+    declares(".mappy-setting-layout-always[hidden]", "display: none");
+    // A locked line's name does nothing when clicked, and does not look as if it would (review 2).
+    declares(".mappy-setting-layout.is-locked > .mappy-setting-layout-label", "cursor: default");
   });
 });
