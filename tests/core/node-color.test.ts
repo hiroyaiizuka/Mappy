@@ -6,7 +6,8 @@ import {
   NODE_COLORS, NODE_COLOR_VALUES, colorMark, editableTitle, opaqueOverWhite, recoloredTitle, storedColoredTitle, titleColor,
   uncoloredTitle, withColorOf,
 } from '../../src/core/node-color';
-import { readTopicPositions, topicKeys } from '../../src/core/topics';
+import { readTopicPositions, storedTopicPosition, topicKeys } from '../../src/core/topics';
+import { locateSubpath } from '../../src/core/subpath';
 
 const YELLOW = '<mark style="background: #FFF3A3A6;">';
 const BLUE = '<mark style="background: #ADCCFFA6;">';
@@ -29,7 +30,7 @@ describe('reading a node colour from its text (LEV-364)', () => {
   it('reads each of the six from the mark the map writes, and Highlightr\'s value as written', () => {
     for (const name of NODE_COLORS) {
       const title = `${colorMark(name)}文字</mark>`;
-      expect(titleColor(title)).toEqual({ color: name, value: NODE_COLOR_VALUES[name], open: colorMark(name), close: '</mark>', inner: '文字' });
+      expect(titleColor(title)).toEqual({ color: name, value: NODE_COLOR_VALUES[name], open: colorMark(name), close: '</mark>', inner: '文字', suffix: '' });
     }
     expect(colorMark('yellow')).toBe(YELLOW);
   });
@@ -46,9 +47,11 @@ describe('reading a node colour from its text (LEV-364)', () => {
     expect(titleColor('<mark style="background: #123456;">x</mark>')).toMatchObject({ color: 'custom', value: '#123456' });
     expect(titleColor('<mark style="background: rgb(10, 20, 30);">x</mark>')).toMatchObject({ color: 'custom', value: 'rgb(10, 20, 30)' });
     expect(titleColor('<mark style="background: hsl(120deg 50% 50%);">x</mark>')).toMatchObject({ color: 'custom' });
-    expect(titleColor('<mark style="background: pink;">x</mark>')).toMatchObject({ color: 'custom', value: 'pink' });
-    // An address or a variable is never handed to the style: the node reads as Obsidian's highlight instead.
-    for (const value of ['url(https://example.com/a.png)', 'var(--text-normal)', 'inherit', 'none', 'red url(x)']) {
+    expect(titleColor('<mark style="background: rgba(10, 20, 30, 0.5);">x</mark>')).toMatchObject({ color: 'custom' });
+    expect(titleColor('<mark style="background: rgb(10 20 30 / 50%);">x</mark>')).toMatchObject({ color: 'custom' });
+    // An address, a variable or a word is never handed to the style (a word the browser does not know would leave the
+    // box with no fill at all, code review 1): the node reads as Obsidian's highlight instead.
+    for (const value of ['url(https://example.com/a.png)', 'var(--text-normal)', 'inherit', 'none', 'red url(x)', 'pink', 'foo', 'transparent', 'rgb(,,)', 'hsl(a, b, c)']) {
       expect(titleColor(`<mark style="background: ${value};">x</mark>`), value).toMatchObject({ color: 'yellow', value: NODE_COLOR_VALUES.yellow });
     }
   });
@@ -62,7 +65,18 @@ describe('reading a node colour from its text (LEV-364)', () => {
     for (const title of [
       '前半 <mark>後半</mark>', '<mark>前半</mark> 後半', `${YELLOW}a</mark> b ${BLUE}c</mark>`, '==a== b ==c==', '== a ==', '==a ==',
       '`<mark>`x`</mark>`', '\\<mark>x</mark>', '[[<mark>x</mark>]]', '', 'plain',
+      // The closing `==` escaped (code review 1): Markdown shows `==a==` as it is.
+      '==a\\==', '==a\\\\\\==',
     ]) expect(titleColor(title), title).toBeNull();
+    // An even run of backslashes escapes itself, and the highlight stands.
+    expect(titleColor('==a\\\\==')?.inner).toBe('a\\\\');
+  });
+
+  it('reads the colour before a block id ending the line, which stays outside it (code review 1)', () => {
+    expect(titleColor(`${YELLOW}買い物</mark> ^abc-1`)).toMatchObject({ color: 'yellow', inner: '買い物', close: '</mark>', suffix: ' ^abc-1' });
+    expect(titleColor('==買い物== ^abc')).toMatchObject({ color: 'yellow', inner: '買い物', suffix: ' ^abc' });
+    expect(titleColor(`${YELLOW}買い物 ^abc</mark>`)).toMatchObject({ inner: '買い物 ^abc', suffix: '' });
+    expect(uncoloredTitle(`${YELLOW}買い物</mark> ^abc`)).toBe('買い物');
   });
 
   it('finds the mark that closes the first one, a mark inside it included', () => {
@@ -85,6 +99,9 @@ describe('writing a colour over a title (LEV-364)', () => {
   });
 
   it('writes nothing for the colour the node already shows, a highlight included', () => {
+    expect(recoloredTitle('買い物 ^abc', 'blue')).toBe(`${BLUE}買い物</mark> ^abc`);
+    expect(recoloredTitle(`${BLUE}買い物</mark> ^abc`, 'yellow')).toBe(`${YELLOW}買い物</mark> ^abc`);
+    expect(recoloredTitle(`${BLUE}買い物</mark> ^abc`, null)).toBe('買い物 ^abc');
     expect(recoloredTitle(`${YELLOW}x</mark>`, 'yellow')).toBe(`${YELLOW}x</mark>`);
     expect(recoloredTitle('==x==', 'yellow')).toBe('==x==');
     expect(recoloredTitle('==x==', 'green')).toBe('<mark style="background: #BBFABBA6;">x</mark>');
@@ -96,10 +113,15 @@ describe('writing a colour over a title (LEV-364)', () => {
     expect(recoloredTitle('<mark style="background: #FF5582A6;">前半 <mark>後半</mark></mark>', null)).toBe('前半 <mark>後半</mark>');
   });
 
-  it('carries a colour onto another text (the calling item over the called root, §5 M12)', () => {
+  it('gives the calling item\'s colour, and only that, to the called root\'s text it shows (§5 M12, code review 1)', () => {
     expect(withColorOf('呼ばれた根', `${BLUE}![[map]]</mark>`)).toBe(`${BLUE}呼ばれた根</mark>`);
     expect(withColorOf(`${YELLOW}呼ばれた根</mark>`, `${BLUE}![[map]]</mark>`)).toBe(`${BLUE}呼ばれた根</mark>`);
-    expect(withColorOf(`${YELLOW}呼ばれた根</mark>`, '![[map]]')).toBe(`${YELLOW}呼ばれた根</mark>`);
+    // The item has no colour: the called map's colour of its root is not shown, so 色なし is what the menu shows and does.
+    expect(withColorOf(`${YELLOW}呼ばれた根</mark>`, '![[map]]')).toBe('呼ばれた根');
+    expect(withColorOf('呼ばれた根', '==![[map]]==')).toBe('==呼ばれた根==');
+    // A text the item's `==` cannot hold is shown in the same colour as the map's own mark.
+    expect(withColorOf('x == y', '==![[map]]==')).toBe(`${YELLOW}x == y</mark>`);
+    expect(withColorOf('根', `${BLUE}![[map]]</mark> ^id`)).toBe(`${BLUE}根</mark>`);
   });
 
   it('gives the inline editor the text inside the colour, and keeps the colour around what it saves', () => {
@@ -112,10 +134,17 @@ describe('writing a colour over a title (LEV-364)', () => {
     expect(storedColoredTitle('新しい名前', '古い')).toBe('新しい名前');
   });
 
-  it('refuses a draft that would end the colour early or break the highlight', () => {
+  it('refuses a draft that would end the colour\'s mark early or leave one open, and writes a highlight it cannot hold as the yellow mark', () => {
     expect(() => storedColoredTitle('a</mark>b', `${YELLOW}x</mark>`)).toThrow('色の印');
-    expect(() => storedColoredTitle('a==b', '==x==')).toThrow('色の印');
-    expect(() => storedColoredTitle(' a', '==x==')).not.toThrow();
+    expect(() => storedColoredTitle('<mark>a', `${YELLOW}x</mark>`)).toThrow('色の印');
+    expect(storedColoredTitle('前半 <mark>後半</mark>', `${YELLOW}x</mark>`)).toBe(`${YELLOW}前半 <mark>後半</mark></mark>`);
+    // Emptied, ending in `=` or holding `==`: no `==` can wrap it (code review 1), so the yellow mark does, never a refusal.
+    expect(storedColoredTitle('', '==x==')).toBe(`${YELLOW}</mark>`);
+    expect(storedColoredTitle('a=', '==x==')).toBe(`${YELLOW}a=</mark>`);
+    expect(storedColoredTitle('a==b', '==x==')).toBe(`${YELLOW}a==b</mark>`);
+    expect(storedColoredTitle(' a', '==x==')).toBe('==a==');
+    // A block id after the colour stays there.
+    expect(storedColoredTitle('新しい', `${YELLOW}古い</mark> ^abc`)).toBe(`${YELLOW}新しい</mark> ^abc`);
   });
 
   it('lays a colour over white for a drawing', () => {
@@ -188,20 +217,38 @@ describe('the colour command (LEV-364)', () => {
     expect(planEdit(doc, { type: 'color', nodeId: 'root', color: null }).edits).toEqual([]);
   });
 
-  it('keeps a free topic\'s position with it: the mappy-topics entry follows the new key in the same edit set', () => {
-    const source = '---\nmappy: true\nmappy-topics:\n  トピック: { mindmap: [120, 40] }\n---\n## 本体\n\n- a\n\n## トピック\n\n- 下\n';
+  it('keeps a free topic\'s key and position: the key is the heading without its colour, so only the heading changes (code review 1)', () => {
+    const source = '---\nmappy: true\nmappy-topics:\n  トピック: { mindmap: [120, 40] }\n---\n## 本体\n\n- a\n\n## トピック\n\n- 下\n\n## トピック\n';
     const doc = parseMarkdown(source, 'Note');
-    const topic = projectMap(doc).topics[0];
-    if (!topic) throw new Error('Missing topic');
+    const [topic, second] = projectMap(doc).topics;
+    if (!topic || !second) throw new Error('Missing topics');
     const plan = planEdit(doc, { type: 'color', nodeId: topic.id, color: 'yellow' });
+    expect(plan.edits).toEqual([{ from: topic.titleFrom, to: topic.titleTo, text: `${YELLOW}トピック</mark>` }]);
     const after = parseMarkdown(applyEdits(source, plan.edits), 'Note', doc, undefined, plan.edits);
-    const key = topicKeys(after).get(topic.id);
-    expect(key).toBe(`${YELLOW}トピック</mark>`);
-    expect(readTopicPositions(after.source).get(key ?? '')).toEqual({ mindmap: { x: 120, y: 40 } });
-    expect(readTopicPositions(after.source).has('トピック')).toBe(false);
-    // Taking the colour off brings the plain key back, and the note as it was.
-    const back = planEdit(after, { type: 'color', nodeId: topic.id, color: null });
-    expect(applyEdits(after.source, back.edits)).toBe(source);
+    expect(topicKeys(after)).toEqual(topicKeys(doc));
+    expect(topicKeys(after).get(second.id)).toBe('トピック (2)');
+    expect(storedTopicPosition(readTopicPositions(after.source), topicKeys(after), { id: topic.id, title: `${YELLOW}トピック</mark>` }, 'mindmap')).toEqual({ x: 120, y: 40 });
+    // Coloured in Markdown, the same: nothing to rekey.
+    const byHand = source.replace('## トピック\n\n- 下', '## ==トピック==\n\n- 下');
+    const hand = parseMarkdown(byHand, 'Note');
+    const handTopic = projectMap(hand).topics[0];
+    expect(storedTopicPosition(readTopicPositions(byHand), topicKeys(hand), handTopic ?? { id: '', title: '' }, 'mindmap')).toEqual({ x: 120, y: 40 });
+    // A key a Highlightr user's coloured heading had (the heading as written) is still read.
+    const legacy = `---\nmappy: true\nmappy-topics:\n  "${YELLOW.replace(/"/gu, '\\"')}古い</mark>": { mindmap: [7, 8] }\n---\n## 本体\n\n## ${YELLOW}古い</mark>\n`;
+    const old = parseMarkdown(legacy, 'Note');
+    const oldTopic = projectMap(old).topics[0];
+    expect(storedTopicPosition(readTopicPositions(legacy), topicKeys(old), oldTopic ?? { id: '', title: '' }, 'mindmap')).toEqual({ x: 7, y: 8 });
+  });
+
+  it('colours an item with a block id, the id left at the end of the line so links to it still find it (code review 1)', () => {
+    const source = '## 本体\n\n- 買い物 ^abc123\n- 次\n';
+    const { after } = color(source, '買い物 ^abc123', 'red');
+    expect(after).toBe('## 本体\n\n- <mark style="background: #FF5582A6;">買い物</mark> ^abc123\n- 次\n');
+    expect(locateSubpath(after, '#^abc123')).toBe(after.indexOf('- <mark'));
+    const doc = parseMarkdown(after, 'Note');
+    const node = find(doc, '買い物');
+    expect(applyEdits(after, planEdit(doc, { type: 'rename', nodeId: node.id, title: '買い出し' }).edits)).toBe(after.replace('>買い物<', '>買い出し<'));
+    expect(color(after, '買い物', null).after).toBe(source);
   });
 
   it('keeps the colour through a rename, never twice, and refuses a draft that would break it', () => {

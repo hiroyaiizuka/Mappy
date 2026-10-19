@@ -139,7 +139,7 @@ describe('the colour of a node, chosen on the map (LEV-364)', () => {
     await colorFromMenu(mounted, '空のノード', 'オレンジ');
     await colorFromMenu(mounted, 'トピック', '黄色');
     expect(mounted.source()).toBe([
-      '---', 'mappy: true', 'mappy-topics:', `  "${YELLOW.replace(/"/gu, '\\"')}トピック</mark>": { mindmap: [400, 40] }`, '---',
+      '---', 'mappy: true', 'mappy-topics:', '  トピック: { mindmap: [400, 40] }', '---',
       '## <mark style="background: #D2B3FFA6;">旅の計画</mark>', '', '- 温泉旅行', '  - [[宿]] を予約', '- 同じ',
       '- <mark style="background: #BBFABBA6;">同じ</mark>', '- <mark style="background: #FFB86CA6;"></mark>', '',
       `## ${YELLOW}トピック</mark>`, '',

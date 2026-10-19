@@ -842,7 +842,7 @@ export class MindmapView extends EditableFileView {
       }
       const entries = this.nodeEntries();
       for (const entry of [entries.edit, entries.body, entries.image]) this.menuItem(menu, entry);
-      menu.addItem(item => item.setTitle(t().color).setIcon("palette").onClick(() => { this.colorMenu(event); }));
+      if (this.canColor()) menu.addItem(item => item.setTitle(t().color).setIcon("palette").onClick(() => { this.colorMenu(event); }));
       menu.addSeparator();
       for (const entry of [entries.child, entries.sibling]) this.menuItem(menu, entry);
       const remove = this.isTopic(id) ? t().deleteTopic : t().deleteBranch;
@@ -1030,10 +1030,16 @@ export class MindmapView extends EditableFileView {
     if (node) this.run(() => this.execute({ type: "color", nodeId: node.id, color }));
   }
 
-  /** Whether a colour command has a node to colour: one of this map's own, selected (a called map's is edited in its own note). */
+  /**
+   * Whether a colour command has a node to colour: one of this map's own, selected (a called map's is edited in its own
+   * note). The parse root stands for a heading only while it is the file name of a list note (LEV-301); any other has
+   * no text to colour, and the edit would be refused.
+   */
   canColor(): boolean {
     const node = this.selected();
-    return this.file !== null && node !== undefined && !this.isCalled(node.id);
+    const document = this.document;
+    if (this.file === null || !node || !document || this.isCalled(node.id)) return false;
+    return node.kind !== "root" || standsForFileName(document);
   }
 
   /**

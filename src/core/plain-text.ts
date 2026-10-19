@@ -1,6 +1,6 @@
 import { autolinkUrl, type LinkSyntax } from './wiki-link';
 import { breakRanges, inlineParser } from './title-breaks';
-import { uncoloredTitle } from './node-color';
+import { MARK_TAG, uncoloredTitle } from './node-color';
 
 /** A `<br>` while the title is parsed: one character of text, so a break inside a link's label stays in its label. */
 const BREAK = '\uE000';
@@ -30,9 +30,6 @@ function wikiReplacement(match: RegExpMatchArray): Replacement {
   const label = isEmbed ? bare.split('/').pop() ?? bare : alias?.trim() || bare;
   return { from: match.index ?? 0, to: (match.index ?? 0) + whole.length, text: label, link: isEmbed ? null : bare, syntax: 'vault' };
 }
-
-/** A `<mark>` tag inside a title: a highlight over part of its text, which plain text cannot show (LEV-364). */
-const MARK_TAG = /^<\/?mark(?:[\s/][^>]*)?>$/iu;
 
 /**
  * Reduce a node title to plain text for renderers that cannot show Markdown; a `<br>` in it is a line break (LEV-202).

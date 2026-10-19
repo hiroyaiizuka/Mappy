@@ -19,7 +19,7 @@ export const ja: Messages = {
   setextEmpty: "Setext 見出しは空にできません。Markdown 側で ATX 見出しへ変更してください。",
   nameChangesHeading: "この名前は見出し構文を変えてしまいます。Markdown 側で編集してください。",
   colorChangesHeading: "このノードに色を付けると見出し構文が変わってしまいます。Markdown 側で編集してください。",
-  colorMarkInText: "この文字はノードの色の印を壊します（</mark> や == を含んでいます）。外すか、Markdown 側で編集してください。",
+  colorMarkInText: "この文字はノードの色の印を壊します（対になっていない <mark> か </mark> があります）。外すか、Markdown 側で編集してください。",
   headingDepth: "見出しは 6 階層までです。",
   topicAtEndUnsafe: "文書末尾にトピックを追加できません。Markdown の構文を確認してください。",
   topicsKeyUnsafe: "frontmatter の mappy-topics を更新できません。Markdown 側で確認してください。",

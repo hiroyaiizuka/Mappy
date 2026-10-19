@@ -191,10 +191,9 @@ try {
       const result = await colorFromMenu(shape.title, LABEL[shape.color], shape.index ?? 0);
       check(JSON.stringify(result.menu.titles) === JSON.stringify(['色なし', ...Object.values(LABEL)]), `${shape.id}: colour menu ${JSON.stringify(result.menu.titles)}`);
       check(result.messages.length === 0, `${shape.id}: ${JSON.stringify(result.messages)}`);
-      if (shape.topic) {
-        expected = expected.replace('  トピック: { mindmap: [420, 60] }', `  "${mark('yellow').replace(/"/gu, '\\"')}トピック</mark>": { mindmap: [420, 60] }`)
-          .replace('## トピック', `## ${mark('yellow')}トピック</mark>`);
-      } else expected = expected.replace(shape.line[0], shape.line[1]);
+      // A topic's `mappy-topics` key is its heading without the colour: only the heading changes.
+      if (shape.topic) expected = expected.replace('## トピック', `## ${mark('yellow')}トピック</mark>`);
+      else expected = expected.replace(shape.line[0], shape.line[1]);
       check(result.source === expected, `${shape.id}: source\nexpected: ${JSON.stringify(expected)}\nactual:   ${JSON.stringify(result.source)}`);
       const fill = await nodeFill(shape.title, shape.index ?? 0);
       check(fill.color === shape.color, `${shape.id}: data-mappy-color ${fill.color}`);
@@ -211,7 +210,7 @@ try {
           return { dx: Math.round(b.left - a.left), dy: Math.round(b.top - a.top) };`);
         moved = { before: position, after: now, metadata };
         check(Math.abs(now.dx - position.dx) <= 1 && Math.abs(now.dy - position.dy) <= 1, `topic moved: ${JSON.stringify(moved)}`);
-        check(metadata?.[`${mark('yellow')}トピック</mark>`]?.mindmap?.join() === '420,60', `metadataCache mappy-topics ${JSON.stringify(metadata)}`);
+        check(metadata?.['トピック']?.mindmap?.join() === '420,60' && Object.keys(metadata).length === 1, `metadataCache mappy-topics ${JSON.stringify(metadata)}`);
       }
       return { menu: result.menu, fill, moved };
     });
@@ -407,7 +406,8 @@ try {
     await wait(800);
     const shown = await evaluate(`${VIEW} ${COLOR} ${FILL}
       return nodes().map(node => ({ name: label(node), color: node.dataset.mappyColor ?? null, called: node.classList.contains('is-called'), callRoot: node.classList.contains('is-called-root') }));`);
-    const heading = shown.find(item => item.callRoot && item.color === 'purple');
+    // The uncoloured item shows the coloured heading it calls without its colour (the item's own, none); the coloured item its own.
+    const heading = shown.find(item => item.callRoot && item.name === '旅の計画' && item.color === null);
     const colored = shown.find(item => item.callRoot && item.color === 'blue');
     check(heading !== undefined, `the call of the coloured heading: ${JSON.stringify(shown)}`);
     check(colored !== undefined, `the coloured calling item: ${JSON.stringify(shown)}`);
