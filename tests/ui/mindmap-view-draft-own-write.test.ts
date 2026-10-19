@@ -7,12 +7,16 @@
  *    操作（子・兄弟・削除・上へ・下へ）× 形（一意・題名が空の項目・同名の 2 つ目・題名が空の見出し・空白に置いたトピック
  *    を命名中）。LEV-146 で自身の書き込みが id を引き継ぐようになってから再現しない。この行列は、その引き継ぎが
  *    `execute` の経路でも効いていることを固定する（引き継ぎを外すと落ちる: artifacts/lev-141-draft-own-write-rest/record.md）。
- * 2. 拒否されるコマンドが、先に下書きを書いてしまう（`execute`）。操作（メニューの子・兄弟・上へ・下へ、マップの呼び出し）×
+ * 2. 拒否されるコマンドが、先に下書きを書いてしまう（`execute`）。操作（キャンバスのキーの子・兄弟・上へ・下へ、マップの呼び出し）×
  *    拒否の形（H6 の子・兄弟、見出しの無いリストのノートでトピックを上へ）。
- * 3. ⌘Z／⌘⇧Z（メニューの「元に戻す」「やり直す」）が下書きを再ベースしない（`history`）。操作（Undo・Redo）× 手順の形
+ * 3. ⌘Z／⌘⇧Z（キャンバスのキー）が下書きを再ベースしない（`history`）。操作（Undo・Redo）× 手順の形
  *    （下書きのノードに貼った画像・下書きのノードの改名・別のノードへの追加・下書きのノードそのものの追加）。
  * 4. 実クリップボード: 貼り付けは入力欄（textarea）で起き、キャンバスまで上がってくる。形（画像だけ・文字だけ・画像と文字）。
  *    実機の OS クリップボードは scripts/e2e/draft-own-write.mjs（E77）。
+ *
+ * 1〜3 のコマンドと ⌘Z／⌘⇧Z は、下書きの入力欄ではなく選んだノード（⌘Z はキャンバス）で押すマップのキーで走らせる
+ * （src/ui/map-events.ts。キーが走らせるのは右クリックのメニューと同じ `execute`／`history`）。LEV-369 で右クリックから
+ * 子・兄弟・移動・元に戻す・やり直すを外すまでは、右クリックのメニューで走らせていた。
  */
 import type { App, TFile } from 'obsidian';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -37,9 +41,12 @@ afterEach(async () => {
 const PATH = 'Fixtures/draft-own-write.md';
 type Command = 'add-child' | 'add-sibling' | 'delete' | 'move-up' | 'move-down';
 interface Internals {
-  executeSelected(type: Command): void;
   callMap(target: TFile): Promise<void>;
 }
+/** The map's key for each command (src/ui/map-events.ts). */
+const COMMAND_KEYS: Record<Command, [string, KeyboardEventInit?]> = {
+  'add-child': ['Tab'], 'add-sibling': ['Enter'], delete: ['Delete'], 'move-up': ['ArrowUp', { altKey: true }], 'move-down': ['ArrowDown', { altKey: true }],
+};
 
 interface Mounted extends MountedMapView {
   store: DocumentStore;
@@ -48,8 +55,10 @@ interface Mounted extends MountedMapView {
   /** Click the node, double click it, and type `text` into the draft that opens, without confirming it. */
   draft: (node: MindNode, text: string) => Promise<HTMLTextAreaElement>;
   error: () => string;
-  /** Choose an item of the context menu opened on the canvas's empty space. */
-  menu: (title: string) => Promise<void>;
+  /** The command's key pressed on the selected node's element (not in its draft), as the map's keys run it. */
+  command: (type: Command) => void;
+  /** ⌘Z／⌘⇧Z pressed on the canvas, then the writes let run out. */
+  history: (direction: 'undo' | 'redo') => Promise<void>;
   /** Let the saves, the re-reads and the refresh debounce run out. */
   idle: () => Promise<void>;
 }
@@ -86,12 +95,14 @@ async function mount(source: string, others: Record<string, string> = {}): Promi
       input.dispatchEvent(new InputEvent('input', { bubbles: true }));
       return input;
     },
-    menu: async title => {
-      mounted.canvas.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 700, clientY: 700 }));
-      const item = Array.from(globalThis.document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-        .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-      if (!item) throw new Error(`Menu item ${title} is not open`);
-      item.click();
+    command: type => {
+      const selected = mounted.view.containerEl.querySelector<HTMLElement>('.mappy-node.is-selected');
+      if (!selected) throw new Error('No node is selected');
+      const [key, init] = COMMAND_KEYS[type];
+      mounted.key(selected, key, init);
+    },
+    history: async direction => {
+      mounted.key(mounted.canvas, 'z', { metaKey: true, shiftKey: direction === 'redo' });
       await idle();
     },
   };
@@ -132,7 +143,7 @@ describe('1. a command run over an open draft finds its node after the draft is 
         const mounted = await mount(shape.source);
         await shape.open(mounted);
         const before = mounted.source();
-        mounted.internals.executeSelected(command);
+        mounted.command(command);
         await mounted.idle();
         expect(Notice.log).toEqual([]);
         expect(mounted.error()).toBe('');
@@ -158,9 +169,9 @@ describe('2. a command the note refuses leaves the open draft unwritten, with th
     run: (mounted: Mounted) => Promise<void>;
   }[] = [
     {
-      id: 'H6 × メニューの「子を追加」', source: H6, refusal: t().headingDepth,
+      id: 'H6 × 子を追加（ノードで Tab）', source: H6, refusal: t().headingDepth,
       open: mounted => mounted.draft(find(mounted.document(), '六'), '六（編集）'),
-      run: async mounted => { mounted.internals.executeSelected('add-child'); await mounted.idle(); },
+      run: async mounted => { mounted.command('add-child'); await mounted.idle(); },
     },
     {
       id: 'H6 × マップを呼び出す', source: H6, refusal: t().headingDepth,
@@ -183,7 +194,7 @@ describe('2. a command the note refuses leaves the open draft unwritten, with th
         input.dispatchEvent(new InputEvent('input', { bubbles: true }));
         return input;
       },
-      run: async mounted => { mounted.internals.executeSelected('move-up'); await mounted.idle(); },
+      run: async mounted => { mounted.command('move-up'); await mounted.idle(); },
     },
   ];
   for (const row of ROWS) {
@@ -219,7 +230,7 @@ describe('2. a command the note refuses leaves the open draft unwritten, with th
       view.saving = true;
       return closed;
     });
-    mounted.internals.executeSelected('add-child');
+    mounted.command('add-child');
     await mounted.idle();
     spy.mockRestore();
     view.saving = false;
@@ -238,7 +249,7 @@ describe('2. a command the note refuses leaves the open draft unwritten, with th
       mounted.app.put(PATH, write.after.replace('- 学ぶこと（編集）\n', ''));
       return write;
     });
-    mounted.internals.executeSelected('add-child');
+    mounted.command('add-child');
     await mounted.idle();
     spy.mockRestore();
     expect(mounted.editor()).not.toBe(input);
@@ -263,7 +274,7 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     paste(mounted.canvas, [image()]);
     await mounted.idle();
     expect(mounted.source()).toContain('![[1-shot.png]]');
-    await mounted.menu(t().undo);
+    await mounted.history('undo');
     expect(mounted.source()).toBe(LIST);
     expect(mounted.editor()).toBe(input);
     mounted.key(input, 'Enter');
@@ -278,10 +289,10 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     mounted.select('学ぶこと');
     paste(mounted.canvas, [image()]);
     await mounted.idle();
-    await mounted.menu(t().undo);
+    await mounted.history('undo');
     expect(mounted.source()).toBe(LIST);
     const input = await mounted.draft(find(mounted.document(), '学ぶこと'), '学ぶこと（編集）');
-    await mounted.menu(t().redo);
+    await mounted.history('redo');
     expect(mounted.source()).toContain('![[1-shot.png]]');
     expect(mounted.editor()).toBe(input);
     mounted.key(input, 'Enter');
@@ -297,7 +308,7 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     mounted.key(input, 'Enter');
     await mounted.idle();
     input = await mounted.draft(find(mounted.document(), '学ぶ'), '学ぶこと（編集）');
-    await mounted.menu(t().undo);
+    await mounted.history('undo');
     expect(mounted.source()).toBe(LIST);
     mounted.key(input, 'Enter');
     await mounted.idle();
@@ -312,7 +323,7 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     await mounted.idle();
     // Opened again and left as it opened.
     input = await mounted.draft(find(mounted.document(), '学ぶ'), '学ぶ');
-    await mounted.menu(t().undo);
+    await mounted.history('undo');
     expect(mounted.source()).toBe(LIST);
     expect(mounted.editor()).toBe(input);
     expect(input.value).toBe('学ぶこと');
@@ -332,7 +343,7 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     mounted.key(mounted.editor() as HTMLTextAreaElement, 'Enter');
     await mounted.idle();
     const input = await mounted.draft(find(mounted.document(), '学ぶこと'), '学ぶこと（編集）');
-    await mounted.menu(t().undo);
+    await mounted.history('undo');
     expect(mounted.source()).toBe(LIST);
     mounted.key(input, 'Enter');
     await mounted.idle();
@@ -348,8 +359,8 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     mounted.key(mounted.editor() as HTMLTextAreaElement, 'Enter');
     await mounted.idle();
     const input = await mounted.draft(find(mounted.document(), t().newNodeTitle), '新しい項目');
-    await mounted.menu(t().undo);
-    await mounted.menu(t().undo);
+    await mounted.history('undo');
+    await mounted.history('undo');
     expect(mounted.source()).toBe(LIST);
     // What this row pins (it passes with the fix reverted too): the draft outlives its node's removal by Undo, and its
     // save is refused as the node is gone, not written somewhere else.
@@ -362,7 +373,7 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
 
   it('Undo chosen while an image pasted onto the node being edited is still being written: Enter writes the draft', async () => {
     const mounted = await mount(LIST);
-    // An earlier step, so the menu's Undo is enabled while the paste is still on its way.
+    // An earlier step, so there is something to undo while the paste is still on its way.
     let first = await mounted.draft(find(mounted.document(), '記録する'), '記録');
     mounted.key(first, 'Enter');
     await mounted.idle();
@@ -386,12 +397,8 @@ describe('3. ⌘Z／⌘⇧Z over an open draft are the map\'s own writes, not a 
     paste(mounted.canvas, [image()]);
     for (let round = 0; round < 20 && !held; round += 1) await mounted.settle();
     expect(held).toBe(true);
-    // Undo is chosen from the menu (the earlier step keeps it enabled); the store runs it after the paste, so it takes the paste back.
-    mounted.canvas.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 700, clientY: 700 }));
-    const undo = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === t().undo);
-    if (!undo) throw new Error('No Undo item');
-    undo.click();
+    // ⌘Z on the canvas while the paste is still being written; the store runs it after the paste, so it takes the paste back.
+    mounted.key(mounted.canvas, 'z', { metaKey: true });
     await mounted.settle();
     release();
     spy.mockRestore();

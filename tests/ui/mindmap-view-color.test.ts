@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installObsidianDom } from '../browser-harness/dom';
 import { Notice } from '../browser-harness/obsidian';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { cardSwatch, cardSwatches, closeContextCard, openContextCard } from './context-card';
 import { closeOpenViews } from '../mocks/open-views';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -32,32 +33,20 @@ async function mount(source = LIST): Promise<MountedMapView> {
   return mountMapView('Fixtures/color.md', source);
 }
 
-/** The menu's item titles, and which one is checked. */
-function menuState(): { titles: string[]; checked: string[] } {
-  const items = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'));
-  return {
-    titles: items.map(item => item.querySelector('.menu-item-title')?.textContent ?? ''),
-    checked: items.filter(item => item.classList.contains('is-checked')).map(item => item.querySelector('.menu-item-title')?.textContent ?? ''),
-  };
-}
-
-function chooseItem(title: string): void {
-  const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-    .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-  if (!item) throw new Error(`No menu item ${title}: ${JSON.stringify(menuState().titles)}`);
-  item.click();
-}
-
-/** Right-click the node, choose 色, and return the colour menu as it opens (a tick later, once the first menu has gone). */
+/** Right-click the node: the card's colour circles as it opens (their names, and the checked one), since LEV-369 on the card itself. */
 async function openColorMenu(mounted: MountedMapView, node: HTMLElement): Promise<{ titles: string[]; checked: string[] }> {
-  node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-  chooseItem('色');
+  const { labels, checked } = cardSwatches(openContextCard(node));
   expect(document.querySelector('.menu')).toBeNull();
   await mounted.settle();
-  return menuState();
+  return { titles: labels, checked };
 }
 
-/** Right-click → 色 → the colour, then let the write and the re-read land. */
+/** The colour circle named `label` on the open card. */
+function chooseItem(label: string): void {
+  cardSwatch(label).click();
+}
+
+/** Right-click → the colour on the card, then let the write and the re-read land. */
 async function colorFromMenu(mounted: MountedMapView, title: string, color: string, element = mounted.node(title)): Promise<void> {
   await openColorMenu(mounted, element);
   chooseItem(color);
@@ -75,7 +64,7 @@ function nodes(mounted: MountedMapView, title: string): HTMLElement[] {
 }
 
 describe('the colour of a node, chosen on the map (LEV-364)', () => {
-  it('opens 色 from the node\'s menu with 色なし and the six, the node\'s colour checked, and colours the item\'s text only', async () => {
+  it('opens the node\'s card with 色なし and the six, the node\'s colour checked, and colours the item\'s text only', async () => {
     const mounted = await mount();
     const menu = await openColorMenu(mounted, mounted.node('温泉旅行'));
     expect(menu).toEqual({ titles: COLORS, checked: ['色なし'] });
@@ -207,7 +196,7 @@ describe('the colour of a node, chosen on the map (LEV-364)', () => {
     const root = mounted.node('==案==');
     expect(fill(root)).toBeUndefined();
     expect((await openColorMenu(mounted, root)).checked).toEqual(['色なし']);
-    document.querySelector('.menu')?.remove();
+    closeContextCard();
   });
 
   it('colours the selected node from the commands, and only when the map has one of its own selected', async () => {

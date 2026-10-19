@@ -120,25 +120,30 @@ async function emptyCanvasPoint(page, margin = 24) {
   throw new Error('No empty canvas point found for panning.');
 }
 
-/**
- * Right-click at `point` and choose the context-menu item titled `title`. Undo and redo go through the
- * canvas menu in these captures: headless Chrome 153 stops responding after repeated modifier-key input
- * (⌘Z, ⌘⇧Z) over CDP, and the menu items run the same map history as the keys.
- */
-async function contextMenuAction(page, point, title) {
+/** Script: the map's context card (LEV-369) on the page — its row titles and its colour circles' names — or null. */
+const CONTEXT_CARD = `(() => {
+  const card = document.querySelector('.mappy-context-card');
+  if (!card) return null;
+  return { rows: Array.from(card.querySelectorAll('.mappy-popover-title'), item => item.textContent),
+    colors: Array.from(card.querySelectorAll('.mappy-swatch'), item => item.getAttribute('aria-label')) };
+})()`;
+
+/** Right-click at `point` (CDP's right button) and return the context card it opened, or null. */
+async function openContextCard(page, point) {
   await page.mouse('mouseMoved', point.x, point.y);
   await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
   await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-  const item = await page.evaluate(`(() => {
-    const found = Array.from(document.querySelectorAll('.menu .menu-item'))
-      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});
-    if (!found) return null;
-    const rect = found.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, disabled: found.classList.contains('is-disabled') };
-  })()`);
-  expect(item, `context menu has no item ${title}`);
-  expect(!item.disabled, `menu item ${title} is disabled`);
-  await page.click(center(item).x, center(item).y);
+  await page.settle();
+  return page.evaluate(CONTEXT_CARD);
+}
+
+/**
+ * ⌘Z／⌘⇧Z on the map, as a keydown dispatched on its canvas (`MapEvents` takes it there, as from the keyboard): headless
+ * Chrome 153 stops responding after repeated modifier-key input (⌘Z, ⌘⇧Z) over CDP. Until LEV-369 took them off, the
+ * captures chose 元に戻す／やり直す on the right-click menu instead, which ran the same history.
+ */
+async function historyKey(page, direction) {
+  await page.evaluate(`document.querySelector('.mappy-view .mappy-canvas').dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, shiftKey: ${direction === 'redo'}, bubbles: true, cancelable: true }))`);
   await page.settle();
 }
 
@@ -558,19 +563,17 @@ async function captureOperations(recorder, page) {
   await page.click(center(fitButton).x, center(fitButton).y);
   await page.settle();
 
-  await recorder.run('context-menu', `「${title}」を右クリック → Escape`, 'メニューが開き、Escape で閉じる', async () => {
+  await recorder.run('context-menu', `「${title}」を右クリック → Escape`, 'Mappy のカード（LEV-369）が開き、色の丸 7 つ・「本文・リンクを編集」「画像を追加」「削除」。Obsidian の .menu は出ない。Escape で閉じる', async () => {
     const node = await nodeRect(title);
-    const point = center(node.rect);
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const items = await page.evaluate(`Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent)`);
-    expect(items.length > 5, `menu has ${items.length} items`);
+    const card = await openContextCard(page, center(node.rect));
+    expect(card, 'no context card opened');
+    expect(JSON.stringify(card.rows) === JSON.stringify(['本文・リンクを編集', '画像を追加', '削除']), `rows: ${card.rows.join(' / ')}`);
+    expect(card.colors.length === 7, `colours: ${card.colors.join(' / ')}`);
+    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'an Obsidian menu opened as well');
     await page.screenshot(join(recorder.directory, 'context-menu-open.png'));
     await page.key('Escape', 'Escape', 27);
-    const open = await page.evaluate(`document.querySelectorAll('.menu').length`);
-    expect(open === 0, 'menu still open after Escape');
-    return `項目: ${items.join(' / ')}`;
+    expect((await page.evaluate(CONTEXT_CARD)) === null, 'card still open after Escape');
+    return `色: ${card.colors.join(' / ')}、行: ${card.rows.join(' / ')}`;
   });
 
   // The 操作 popover (§5 M3): the card's items as `title（description）`, a disabled one in brackets.
@@ -1429,24 +1432,14 @@ export async function captureNewNode(recorder, page) {
       return `変換中の入力欄 ${JSON.stringify(composing)}`;
     });
 
-  /** Whether the canvas menu's 元に戻す／やり直す are disabled; the menu is closed again. */
+  /** Whether the map's history has no step to undo and none to redo (the store's; the menu that showed it went in LEV-369). */
   const historyItems = async () => {
-    const point = await emptyCanvasPoint(page);
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const disabled = await page.evaluate(`(() => {
-      const item = title => Array.from(document.querySelectorAll('.menu .menu-item')).find(candidate => candidate.querySelector('.menu-item-title')?.textContent === title);
-      return { undo: item('元に戻す')?.classList.contains('is-disabled') ?? null, redo: item('やり直す')?.classList.contains('is-disabled') ?? null };
-    })()`);
-    // Closed without a key: the page's menu is DOM only (headless Chrome stopped answering after Escape on it).
-    await page.evaluate(`document.querySelectorAll('.menu').forEach(menu => menu.remove())`);
-    await page.settle();
-    return disabled;
+    const history = await page.harness('h.history()');
+    return { undo: !history?.canUndo, redo: !history?.canRedo };
   };
 
   await recorder.run('new-node-escape', '「記録する」で Tab → すぐ Escape（4 レイアウト）',
-    'ノードが消え、原文は元のまま。「記録する」が選択に戻り、右クリックの「元に戻す」「やり直す」とも無効', async () => {
+    'ノードが消え、原文は元のまま。「記録する」が選択に戻り、マップの履歴に元に戻す・やり直すの手順が無い', async () => {
       for (const mode of ['mindmap', 'timeline', 'hierarchy', 'balanced']) {
         await reset(mode);
         const node = await nodeInfo(page, '記録する');
@@ -1677,7 +1670,6 @@ async function captureTopicOperations(recorder, page) {
     expect(node, `Topic not found: ${name}`);
     return node;
   };
-  const menuAction = async title => contextMenuAction(page, await emptyCanvasPoint(page, 80), title);
   /** The slot preview as the DOM shows it: the placeholder, the blue connector, and whether the dragged topic's root looks like a plain node. */
   const snapPreview = (title = '位置のないトピック') => page.evaluate(`(() => { const host = document.querySelector('.mappy-view');
     const root = Array.from(host.querySelectorAll('.mappy-node.is-topic')).find(n => n.querySelector('.mappy-node-label')?.textContent?.trim() === ${JSON.stringify(title)});
@@ -1695,8 +1687,8 @@ async function captureTopicOperations(recorder, page) {
     }
     await page.settle();
   };
-  const undo = () => menuAction('元に戻す');
-  const redo = () => menuAction('やり直す');
+  const undo = () => historyKey(page, 'undo');
+  const redo = () => historyKey(page, 'redo');
   const title = '追加した話題';
   let added = null;
 
@@ -1734,7 +1726,7 @@ async function captureTopicOperations(recorder, page) {
     return `${entry}、ノード ${before} → ${count}`;
   });
 
-  await recorder.run('topic-add-undo', '右クリック「元に戻す」×2 → 「やり直す」×2', '1 回目で名前と位置（仮の名前の区画に戻る）、2 回目で区画が消え、やり直しで戻る', async () => {
+  await recorder.run('topic-add-undo', '⌘Z ×2 → ⌘⇧Z ×2', '1 回目で名前と位置（仮の名前の区画に戻る）、2 回目で区画が消え、やり直しで戻る', async () => {
     expect(added, 'the previous case did not add a topic');
     await undo();
     expect((await page.harness('h.source()')) === `${original}\n## トピック\n`, 'first undo did not remove title and position together');
@@ -1773,7 +1765,7 @@ async function captureTopicOperations(recorder, page) {
     return `mindmap: [-360, 200] → [${-360 + dx}, ${200 + dy}]（scale ${view.scale.toFixed(3)}）、timeline は不変`;
   });
 
-  await recorder.run('topic-drag-undo', '右クリック「元に戻す」→「やり直す」', '位置が戻り、やり直しで再び移動する', async () => {
+  await recorder.run('topic-drag-undo', '⌘Z → ⌘⇧Z', '位置が戻り、やり直しで再び移動する', async () => {
     expect(moved, 'the previous case did not move a topic');
     const movedRect = (await topicRect(reference)).rect;
     await undo();
@@ -2417,17 +2409,13 @@ async function captureTopicOperations(recorder, page) {
     return `${entry}、ノード ${count}`;
   });
 
-  await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」を含むメニューが開き、Escape で閉じる', async () => {
-    const point = await emptyCanvasPoint(page);
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const items = await page.evaluate(`Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent)`);
-    expect(items.includes('トピックを追加'), `menu items: ${items.join(' / ')}`);
+  await recorder.run('topic-context-menu', '空白を右クリック → Escape', '「トピックを追加」だけのカード（LEV-369）が開き、Escape で閉じる', async () => {
+    const card = await openContextCard(page, await emptyCanvasPoint(page));
+    expect(card && JSON.stringify(card.rows) === JSON.stringify(['トピックを追加']) && card.colors.length === 0, `card: ${JSON.stringify(card)}`);
     await page.screenshot(join(recorder.directory, 'topic-context-menu-open.png'));
     await page.key('Escape', 'Escape', 27);
-    expect((await page.evaluate(`document.querySelectorAll('.menu').length`)) === 0, 'menu still open');
-    return `項目: ${items.join(' / ')}`;
+    expect((await page.evaluate(CONTEXT_CARD)) === null, 'card still open');
+    return `項目: ${card.rows.join(' / ')}`;
   });
 }
 
@@ -2442,9 +2430,8 @@ async function captureCallAsTopic(recorder, page) {
   const original = await readFile(join(root, 'tests', 'fixtures', 'free-topics.md'), 'utf8');
   const frontmatterOf = source => source.slice(0, source.indexOf('\n---\n', 4));
   const selectedTitles = async () => (await page.harness('h.nodes()')).filter(node => node.selected).map(node => node.title);
-  const menuAction = (point, title) => contextMenuAction(page, point, title);
 
-  await recorder.run('call-map-topic', 'free-topics を fixture の原文に戻して開く → 「回復する」をクリック → 空白をクリック → h.callMap("Fixtures/embed-timeline.md")（「マップを検索して呼び出す」で embed-timeline を選んだのと同じ）→ 空白を右クリック「元に戻す」',
+  await recorder.run('call-map-topic', 'free-topics を fixture の原文に戻して開く → 「回復する」をクリック → 空白をクリック → h.callMap("Fixtures/embed-timeline.md")（「マップを検索して呼び出す」で embed-timeline を選んだのと同じ）→ ⌘Z',
     '空白のクリックで選択が外れる（is-selected のノードなし、フォーカスはキャンバス）。呼び出しで文末に `## ![[embed-timeline]]` の 1 区画だけが足され、frontmatter（mappy-topics）と本体は不変、位置は書かれない。呼び出し先のルート「講座の進行」が link の印付きのトピックのルート（is-topic、読み取り専用ではない）として本体のそばに現れ、その子 4 つが読み取り専用の枝として並び、重なりなし。新しいトピックが選択され、インライン入力は開かない。元に戻すで区画ごと消え、embed-timeline は変わらない', async () => {
     await page.harness(`h.putNote(${JSON.stringify(fixturePath)}, ${JSON.stringify(original)})`);
     await loadFixture(page, TOPIC_FIXTURE, 'mindmap');
@@ -2498,7 +2485,7 @@ async function captureCallAsTopic(recorder, page) {
     await page.click(center(fit).x, center(fit).y);
     await page.settle();
     await page.screenshot(join(recorder.directory, 'call-map-topic-called.png'));
-    await menuAction(await emptyCanvasPoint(page, 80), '元に戻す');
+    await historyKey(page, 'undo');
     expect((await page.harness('h.source()')) === original, 'undo did not remove the section');
     expect(!(await page.harness('h.node("講座の進行")')), 'the topic is still shown after undo');
     expect((await page.harness('h.nodes()')).length === before.length, `nodes after undo: ${(await page.harness('h.nodes()')).length}, expected ${before.length}`);
@@ -3029,9 +3016,7 @@ async function captureEmbedNodes(recorder, page) {
   for (const path of EMBED_NODE_NOTES) await page.harness(`h.putNote(${JSON.stringify(path)}, h.noteSource(${JSON.stringify(path)}))`);
   const sources = await embedNodeSources(page);
   const unchanged = async () => { const after = await embedNodeSources(page); for (const path of EMBED_NODE_NOTES) expect(after[path] === sources[path], `${path} changed`); };
-  const menuItems = () => page.evaluate(`Array.from(document.querySelectorAll('.menu .menu-item-title'), item => item.textContent)`);
   const closeMenu = async () => { await page.key('Escape', 'Escape', 27); await page.settle(); };
-  const menuAction = (point, title) => contextMenuAction(page, point, title);
   let listeners = null;
   let firstCount = 0;
 
@@ -3155,14 +3140,12 @@ async function captureEmbedNodes(recorder, page) {
     await page.settle();
     expect(!dragging.ghost && !dragging.source && !dragging.placeholder, `drag state: ${JSON.stringify(dragging)}`);
     await unchanged();
-    const point = center((await calledNode(page, '第 2 週: 回復', 0)).rect);
-    await page.mouse('mouseMoved', point.x, point.y);
-    await page.mouse('mousePressed', point.x, point.y, { button: 'right', clickCount: 1 });
-    await page.mouse('mouseReleased', point.x, point.y, { button: 'right', clickCount: 1 });
-    const items = await menuItems();
+    const card = await openContextCard(page, center((await calledNode(page, '第 2 週: 回復', 0)).rect));
+    const items = card?.rows ?? [];
     await page.screenshot(join(recorder.directory, 'embed-node-context-menu.png'));
     await closeMenu();
-    expect(JSON.stringify(items) === JSON.stringify(['元のマップを開く', '折りたたみ', '元に戻す', 'やり直す']), `menu items: ${items.join(' / ')}`);
+    // The fold row names what it does: 展開 on a folded branch, 折りたたみ on an open one (LEV-369).
+    expect(items.length === 2 && items[0] === '元のマップを開く' && ['折りたたみ', '展開'].includes(items[1] ?? '') && card.colors.length === 0, `card: ${JSON.stringify(card)}`);
     return `${notices.join('・')} で通知、ドラッグなし、メニュー ${items.join('・')}`;
   });
 
@@ -3177,7 +3160,7 @@ async function captureEmbedNodes(recorder, page) {
     return last.detail;
   });
 
-  await recorder.run('embed-node-caller-edit', '項目「講座の進行」（![[embed-timeline]]）をクリック → F2 → Escape → Delete → 右クリック「元に戻す」', 'F2 は原文 ![[embed-timeline]] をそのまま編集し、取り消すと枝が戻る。Delete で項目ごと呼び出した木が消え、元に戻すで戻る。呼び出したノートは変わらない', async () => {
+  await recorder.run('embed-node-caller-edit', '項目「講座の進行」（![[embed-timeline]]）をクリック → F2 → Escape → Delete → ⌘Z', 'F2 は原文 ![[embed-timeline]] をそのまま編集し、取り消すと枝が戻る。Delete で項目ごと呼び出した木が消え、元に戻すで戻る。呼び出したノートは変わらない', async () => {
     const calling = await calledNode(page, '講座の進行', 0);
     expect(calling.calledRoot, 'not the calling item');
     await page.click(center(calling.rect).x, center(calling.rect).y);
@@ -3200,8 +3183,7 @@ async function captureEmbedNodes(recorder, page) {
     expect(fewer.length === before.length - 5, `${before.length} → ${fewer.length} nodes after Delete`);
     expect(fewer.filter(node => node.title === '講座の進行').length === 1, 'the other copy went too');
     expect((await page.harness('h.noteSource("Fixtures/embed-timeline.md")')) === sources['Fixtures/embed-timeline.md'], 'the called note changed');
-    const blank = await emptyCanvasPoint(page, 80);
-    await menuAction(blank, '元に戻す');
+    await historyKey(page, 'undo');
     expect((await page.harness('h.noteSource("Fixtures/embed-nodes.md")')) === sources['Fixtures/embed-nodes.md'], 'Undo did not restore the note');
     expectCalledBranches(await page.harness('h.nodes()'));
     await unchanged();

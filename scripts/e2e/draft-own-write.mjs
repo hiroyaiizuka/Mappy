@@ -6,12 +6,14 @@
  *    system pasteboard), and the paste is the one ⌘V runs through Obsidian's Edit menu (`webContents.paste()`): the
  *    event starts in the draft's textarea, carries what the pasteboard gives, and reaches the canvas by bubbling.
  *    Shapes: an image only, text only, and an image with text (what a spreadsheet's cells put on the pasteboard).
- * A real right press closes a plain draft (its blur saves it), so on the real Obsidian the menu's commands and Undo run
+ * A real right press closes a plain draft (its blur saves it), so on the real Obsidian the map's commands and Undo run
  * over an open draft only when it is held with a reason on its error line. Steps 3 and 2 hold it first (`holdDraft`),
- * and `right-click-closes-plain-draft` pins the premise.
- * 3. Undo over a held draft: an image pasted onto its node, then right click on the empty canvas → 元に戻す, then Enter.
- * 2. A command the note refuses over a held draft: the draft on one sixth-level heading, a right click on another → 子を追加
- *    (the draft's own node cannot be right clicked: its textarea covers it and keeps the browser's menu).
+ * and `right-click-closes-plain-draft` pins the premise. The map's own keys run them there: the right-click card took
+ * 元に戻す and 子を追加 off in LEV-369 (⌘Z and Tab do the same; until then these steps chose them from the menu).
+ * 3. Undo over a held draft: an image pasted onto its node, then a right press on the empty canvas (the focus goes to
+ *    the canvas, the draft stays) → ⌘Z, then Enter.
+ * 2. A command the note refuses over a held draft: the draft on one sixth-level heading, a click on another → Tab
+ *    (子を追加 on that one).
  *
  * The clipboard is the user's: what it held is read before the case and written back after it (text, HTML, RTF and an
  * image), and is never logged.
@@ -81,20 +83,16 @@ const rightPress = async locate => {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'right', buttons: 2, clickCount: 1 });
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'right', buttons: 0, clickCount: 1 });
   await wait(500);
+  // The press opens the map's context card in 1.14.4 (LEV-369); Escape takes it down, the focus back on the map.
+  if (await evaluate(`return !!document.querySelector('.mappy-context-card');`)) {
+    await cdp.realKey('Escape');
+    await wait(300);
+  }
   return at;
 };
-/**
- * The context menu at the same point. CDP's right button does not raise `contextmenu` in Obsidian's window (probe
- * 2026-09-30, with and without `buttons`), so the event is dispatched there, as E76 does. True when the menu opened.
- */
-const openMenu = async locate => {
-  const at = await press(locate, { click: false });
-  return evaluate(`const target = document.elementFromPoint(${at.x}, ${at.y});
-    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: ${at.x}, clientY: ${at.y} }));
-    await new Promise(resolve => setTimeout(resolve, 300));
-    return !!document.querySelector('.menu');`);
-};
-const closeMenu = () => evaluate(`document.querySelectorAll('.menu').forEach(menu => menu.remove()); return true;`);
+/** Whether the focus is on the map's canvas or a node in it: where ⌘Z is the map's (elsewhere it reaches the OS's Edit menu). */
+const focusOnMap = () => evaluate(`${VIEW} const canvas = el.querySelector('.mappy-canvas'); const active = document.activeElement;
+  return !!active && canvas.contains(active) && !active.closest('textarea');`);
 /**
  * Hold the open draft: ` #` typed after its text makes the heading's rename one the note refuses (the closing sequence
  * of an ATX heading), so Enter keeps it with the reason on its error line; Backspace ×2 then takes the ` #` back. A
@@ -114,17 +112,14 @@ const holdDraft = async () => {
 /** A real click into the open draft's textarea, so the next key is the draft's. */
 const focusDraft = () => press(`const node = input();`);
 const CANVAS_CORNER = `const node = el.querySelector('.mappy-canvas'); const r = node.getBoundingClientRect(); at = { x: r.left + 40, y: r.top + 80 };`;
-/** A real click on the open menu's item titled `title`. */
-const menuItem = title => press(`const node = Array.from(document.querySelectorAll('.menu .menu-item'))
-  .find(item => item.querySelector('.menu-item-title')?.textContent === ${JSON.stringify(title)});`, { view: VIEW });
 
 try {
   await step('plugin', makePluginStep(cdp, evaluate, flag));
   required(record, 'open', await step('open', makeOpenStep(evaluate, { note: NOTE, source: SOURCE })));
-  // What the pasteboard held before the case, written back in `finally`.
-  // Obsidian's own menus (not the OS's) for the run, as E76 does: the case reads and clicks the menu in the page. Put back
-  // in `finally`.
+  // Obsidian's own menus (not the OS's) for the run: a build from before LEV-369's card opens Obsidian's menu on a right
+  // press, which macOS would draw on the screen, out of reach of CDP. Put back in `finally`.
   await evaluate(`window.__mappyE2ENativeMenus = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false); return true;`);
+  // What the pasteboard held before the case, written back in `finally`.
   required(record, 'clipboard-saved', await step('clipboard-saved', () => evaluate(`const { clipboard } = require('electron');
     const image = clipboard.readImage();
     window.__mappyE2EClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(),
@@ -186,21 +181,20 @@ try {
   });
 
   // A plain draft on a real right click: the press takes the focus from the textarea, and its blur saves and closes the
-  // draft before any menu (probe 2026-09-30: on the empty canvas and on another node alike). So Undo or a command from
-  // the context menu never runs over a plain draft on the real Obsidian; the drafts that stay open are those held with a
+  // draft before any menu (probe 2026-09-30: on the empty canvas and on another node alike). So Undo or a command run
+  // from the map never runs over a plain draft on the real Obsidian; the drafts that stay open are those held with a
   // reason on their error line, which a blur does not save. Pinned here, since steps 3 and 2 rest on it.
   await step('right-click-closes-plain-draft', async () => {
     await openDraft('記録する', '記録（右クリック）');
     await rightPress(CANVAS_CORNER);
     const after = await state();
-    await closeMenu();
     check(!after.editing, 'a real right press left a plain draft open: steps 3 and 2 no longer cover the open-draft case alone');
     check(after.source.includes('## 記録（右クリック）\n'), 'the right press did not save the plain draft');
     return { editing: after.editing, saved: after.source.includes('## 記録（右クリック）\n') };
   });
 
-  // 3. Undo over a held draft, from the canvas's context menu. The image pasted onto the node being edited is taken back;
-  // Enter then writes the draft (before LEV-141: 「編集中の内容が Markdown 側で変わりました…」).
+  // 3. Undo over a held draft, by ⌘Z on the canvas. The image pasted onto the node being edited is taken back; Enter then
+  // writes the draft (before LEV-141: 「編集中の内容が Markdown 側で変わりました…」).
   await step('undo-over-held-draft', async () => {
     await openDraft('三', '三（編集）');
     await clip({ image: true });
@@ -210,14 +204,13 @@ try {
     await markSeen();
     await rightPress(CANVAS_CORNER);
     const held = await evaluate(`${VIEW} return { editing: !!input(), draft: input()?.value ?? null };`);
-    const opened = await openMenu(CANVAS_CORNER);
-    if (!held.editing || !opened) {
+    const onMap = await focusOnMap();
+    if (!held.editing || !onMap) {
       check(held.editing, 'the right press closed the held draft');
-      check(opened, 'the context menu did not open');
-      await closeMenu();
-      return { pasted: pasted.source, reason, held, opened };
+      check(onMap, 'the right press left the focus off the map (⌘Z would not be the map\'s)');
+      return { pasted: pasted.source, reason, held, onMap };
     }
-    await menuItem('元に戻す');
+    await cdp.realKey('z', 4);
     await wait(1500);
     const undone = await state();
     const typed = await draftValue();
@@ -234,8 +227,8 @@ try {
     return { reason, held, undone: { ...undone, draft: typed }, settled };
   });
 
-  // 2. A command the note refuses, over a held draft: 子を追加 on another sixth-level heading. Nothing is written, the draft
-  // stays with what was typed (before LEV-141: the draft was written, then the command refused).
+  // 2. A command the note refuses, over a held draft: Tab (子を追加) on another sixth-level heading. Nothing is written, the
+  // draft stays with what was typed (before LEV-141: the draft was written, then the command refused).
   await step('refused-command-over-held-draft', async () => {
     // The whole map in view: the sixth-level headings sit far right of the body root.
     await evaluate(`${VIEW} if (view.layout) view.viewport.fit(view.layout.bounds); await new Promise(resolve => setTimeout(resolve, 500)); return true;`);
@@ -246,16 +239,15 @@ try {
     const on七 = `const node = nth('七', 0);`;
     // Fit again: the held draft's error line can widen the map.
     await evaluate(`${VIEW} if (view.layout) view.viewport.fit(view.layout.bounds); await new Promise(resolve => setTimeout(resolve, 500)); return true;`);
-    await rightPress(on七);
-    const held = await evaluate(`${VIEW} return { editing: !!input() };`);
-    const opened = await openMenu(on七);
-    if (!held.editing || !opened) {
-      check(held.editing, 'the right press on 七 closed the held draft');
-      check(opened, 'the context menu on 七 did not open');
-      await closeMenu();
-      return { reason, held, opened };
+    await press(on七);
+    const held = await evaluate(`${VIEW} return { editing: !!input(), selected: nth('七', 0)?.classList.contains('is-selected') ?? false };`);
+    const onMap = await focusOnMap();
+    if (!held.editing || !held.selected || !onMap) {
+      check(held.editing, 'the click on 七 closed the held draft');
+      check(held.selected && onMap, `the click did not select 七 with the focus on the map: ${JSON.stringify({ held, onMap })}`);
+      return { reason, held, onMap };
     }
-    await menuItem('子を追加');
+    await cdp.realKey('Tab');
     await wait(1500);
     const after = await state();
     const typed = await draftValue();

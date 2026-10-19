@@ -50,6 +50,9 @@ const KEYS = {
   Delete: { code: 'Delete', keyCode: 46 }, Backspace: { code: 'Backspace', keyCode: 8 },
   ' ': { code: 'Space', keyCode: 32 }, ArrowUp: { code: 'ArrowUp', keyCode: 38 }, ArrowDown: { code: 'ArrowDown', keyCode: 40 },
   z: { code: 'KeyZ', keyCode: 90 },
+  ArrowLeft: { code: 'ArrowLeft', keyCode: 37 }, ArrowRight: { code: 'ArrowRight', keyCode: 39 },
+  Home: { code: 'Home', keyCode: 36 }, End: { code: 'End', keyCode: 35 },
+  F10: { code: 'F10', keyCode: 121 }, ContextMenu: { code: 'ContextMenu', keyCode: 93 },
 };
 
 /**

@@ -78,17 +78,18 @@ const reset = () => evaluate(`${VIEW} ${DRAFT}
   }
   throw new Error('the map did not re-read the case source');`);
 
-/** Opens the row's draft on 学ぶこと and types into it, through the menu (modal) or F2 (inline), with real keys. */
+/** Opens the row's draft on 学ぶこと and types into it, through the context card (modal) or F2 (inline), with real keys. */
 const openDraft = async row => {
   await select('学ぶこと', 0);
   if (row.id === 'modal') {
+    // Obsidian's own menus off around it: a build from before LEV-369's card would open an OS menu on the screen.
     await evaluate(`${VIEW} const before = app.vault.getConfig('nativeMenus'); app.vault.setConfig('nativeMenus', false);
       try {
         const node = nth('学ぶこと', 0); const rect = node.getBoundingClientRect();
         node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
         await new Promise(resolve => setTimeout(resolve, 300));
-        const item = Array.from(document.querySelectorAll('.menu .menu-item')).find(entry => entry.querySelector('.menu-item-title')?.textContent === '本文・リンクを編集');
-        if (!item) throw new Error('the node menu has no 本文・リンクを編集');
+        const item = Array.from(document.querySelectorAll('.mappy-context-card .mappy-popover-item')).find(entry => entry.querySelector('.mappy-popover-title')?.textContent === '本文・リンクを編集');
+        if (!item) throw new Error('the node card has no 本文・リンクを編集');
         item.click();
       } finally { app.vault.setConfig('nativeMenus', before); }
       return true;`);

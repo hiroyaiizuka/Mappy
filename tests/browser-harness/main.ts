@@ -642,6 +642,11 @@ const api = {
   get view() { return view; },
   get openCount() { return openCount; },
   viewport: () => view?.getState().viewport ?? null,
+  /** Whether the map's history has a step to undo and to redo (the store's): the capture reads it since LEV-369 took 元に戻す／やり直す off the right-click. */
+  history: () => {
+    const file = view?.file;
+    return file ? { canUndo: store.canUndo(file), canRedo: store.canRedo(file) } : null;
+  },
   canvasRect: () => plainRect(pane.querySelector(".mappy-canvas")),
   /** The view's nodes, the called maps' branches among them (§5 M12), in DOM order. */
   nodes: () => ownNodes().map(nodeInfo),

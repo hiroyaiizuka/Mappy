@@ -29,6 +29,7 @@ import { ExitBackupStore, exitBackupFolder, type BackupAdapter } from '../../src
 import { rescueExitDrafts } from '../../src/ui/exit-draft-recovery';
 import type { MindmapView } from '../../src/ui/mindmap-view';
 import { mountMapView, type MountedMapView } from './map-view-mount';
+import { chooseFromCard } from './context-card';
 import { closeOpenViews } from '../mocks/open-views';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -434,11 +435,7 @@ describe('a title draft open when the window reloads (LEV-230)', () => {
   it('leaves the body modal open at pagehide', async () => {
     const mounted = await mountMapView(PATH, SOURCE);
     install(mounted.app, (mounted.view as unknown as { store: DocumentStore }).store, () => [mounted.view]);
-    mounted.node('子ノード').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-    const item = Array.from(document.querySelectorAll<HTMLElement>('.menu .menu-item'))
-      .find(candidate => candidate.querySelector('.menu-item-title')?.textContent === t().editBody);
-    if (!item) throw new Error('no 本文・リンクを編集 in the menu');
-    item.click();
+    chooseFromCard(mounted.node('子ノード'), t().editBody);
     await mounted.settle();
     const input = document.querySelector<HTMLTextAreaElement>('.modal .mappy-edit-input');
     if (!input) throw new Error('The body modal did not open');

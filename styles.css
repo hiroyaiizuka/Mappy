@@ -185,6 +185,43 @@
 /* One line: the card takes the width of the longest description, and a narrow pane cuts it with an ellipsis. */
 .mappy-view .mappy-popover-description { overflow: hidden; color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 400; white-space: nowrap; text-overflow: ellipsis; }
 .mappy-view .mappy-popover-item.is-disabled .mappy-popover-description { color: inherit; }
+/* The context card (LEV-369): the gear's card opened at the pointer (the view sets left, top and the caps), its rows a
+   line each with the key that does the same on the right, the deletion in the error colour, and on a node a row of
+   colour circles on top. A circle is the page's background under the colour (`.mappy-swatch-fill`, filled by the node
+   colour rules below), so it shows the colour as a node on the canvas does in the theme the map is drawn in. */
+.mappy-view .mappy-context-card .mappy-popover-item { align-items: center; padding: 6px 10px; }
+.mappy-view .mappy-context-card .mappy-popover-icon { margin-top: 0; }
+.mappy-view .mappy-popover-key { margin-left: auto; padding-left: 16px; color: var(--text-faint); font-size: var(--font-ui-smaller); font-weight: 400; white-space: nowrap; }
+.mappy-view .mappy-popover-item.mod-warning, .mappy-view .mappy-popover-item.mod-warning .mappy-popover-icon { color: var(--text-error); }
+.mappy-view .mappy-popover-separator { flex: none; height: 1px; margin: 4px 6px; background: var(--background-modifier-border); }
+.mappy-view .mappy-swatches { display: flex; flex-direction: column; gap: 6px; padding: 4px 8px 6px; }
+.mappy-view .mappy-swatches-label { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.mappy-view .mappy-swatches-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.mappy-view .mappy-swatch {
+  display: block;
+  flex: none;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+  background: var(--background-primary);
+  box-shadow: none;
+  cursor: var(--cursor);
+}
+.mappy-view .mappy-swatch:hover { border-color: var(--text-muted); }
+.mappy-view .mappy-swatch.is-checked { box-shadow: 0 0 0 2px var(--background-secondary), 0 0 0 4px var(--text-normal); }
+.mappy-view .mappy-swatch:focus-visible { outline: 2px solid var(--mappy-accent); outline-offset: 5px; }
+.mappy-view .mappy-swatch-fill { display: block; width: 100%; height: 100%; }
+/* 色なし: the page's background crossed out. */
+.mappy-view .mappy-swatch-fill[data-mappy-none] {
+  background: linear-gradient(to top right, transparent calc(50% - 1px), var(--text-error) calc(50% - 1px), var(--text-error) calc(50% + 1px), transparent calc(50% + 1px));
+}
 .mappy-view .mappy-canvas {
   position: absolute;
   inset: 0;
@@ -253,21 +290,21 @@
    Obsidian's `theme-light`／`theme-dark` set: the app's while the map follows it, the map's own class otherwise (M14),
    so no rule here looks at the body's class. An engine without `light-dark()` draws the light colours. Inside the box
    only, so the selection's outline outside it never meets the fill. Placed after the root's and the first level's
-   faces, which it replaces (same specificity). */
-.mappy-view .mappy-node[data-mappy-color="yellow"] { background: #FFF3A3A6; }
-.mappy-view .mappy-node[data-mappy-color="orange"] { background: #FFB86CA6; }
-.mappy-view .mappy-node[data-mappy-color="red"] { background: #FF5582A6; }
-.mappy-view .mappy-node[data-mappy-color="green"] { background: #BBFABBA6; }
-.mappy-view .mappy-node[data-mappy-color="blue"] { background: #ADCCFFA6; }
-.mappy-view .mappy-node[data-mappy-color="purple"] { background: #D2B3FFA6; }
+   faces, which it replaces (same specificity). The context card's circles (LEV-369) take the same fills. */
+.mappy-view .mappy-node[data-mappy-color="yellow"], .mappy-view .mappy-swatch-fill[data-mappy-color="yellow"] { background: #FFF3A3A6; }
+.mappy-view .mappy-node[data-mappy-color="orange"], .mappy-view .mappy-swatch-fill[data-mappy-color="orange"] { background: #FFB86CA6; }
+.mappy-view .mappy-node[data-mappy-color="red"], .mappy-view .mappy-swatch-fill[data-mappy-color="red"] { background: #FF5582A6; }
+.mappy-view .mappy-node[data-mappy-color="green"], .mappy-view .mappy-swatch-fill[data-mappy-color="green"] { background: #BBFABBA6; }
+.mappy-view .mappy-node[data-mappy-color="blue"], .mappy-view .mappy-swatch-fill[data-mappy-color="blue"] { background: #ADCCFFA6; }
+.mappy-view .mappy-node[data-mappy-color="purple"], .mappy-view .mappy-swatch-fill[data-mappy-color="purple"] { background: #D2B3FFA6; }
 .mappy-view .mappy-node[data-mappy-color="custom"] { background: var(--mappy-node-custom); }
 @supports (color: light-dark(#000, #fff)) {
-  .mappy-view .mappy-node[data-mappy-color="yellow"] { background: light-dark(#FFF3A3A6, #6B5D12); }
-  .mappy-view .mappy-node[data-mappy-color="orange"] { background: light-dark(#FFB86CA6, #6E4319); }
-  .mappy-view .mappy-node[data-mappy-color="red"] { background: light-dark(#FF5582A6, #6C2636); }
-  .mappy-view .mappy-node[data-mappy-color="green"] { background: light-dark(#BBFABBA6, #24572A); }
-  .mappy-view .mappy-node[data-mappy-color="blue"] { background: light-dark(#ADCCFFA6, #243F6E); }
-  .mappy-view .mappy-node[data-mappy-color="purple"] { background: light-dark(#D2B3FFA6, #46306E); }
+  .mappy-view .mappy-node[data-mappy-color="yellow"], .mappy-view .mappy-swatch-fill[data-mappy-color="yellow"] { background: light-dark(#FFF3A3A6, #6B5D12); }
+  .mappy-view .mappy-node[data-mappy-color="orange"], .mappy-view .mappy-swatch-fill[data-mappy-color="orange"] { background: light-dark(#FFB86CA6, #6E4319); }
+  .mappy-view .mappy-node[data-mappy-color="red"], .mappy-view .mappy-swatch-fill[data-mappy-color="red"] { background: light-dark(#FF5582A6, #6C2636); }
+  .mappy-view .mappy-node[data-mappy-color="green"], .mappy-view .mappy-swatch-fill[data-mappy-color="green"] { background: light-dark(#BBFABBA6, #24572A); }
+  .mappy-view .mappy-node[data-mappy-color="blue"], .mappy-view .mappy-swatch-fill[data-mappy-color="blue"] { background: light-dark(#ADCCFFA6, #243F6E); }
+  .mappy-view .mappy-node[data-mappy-color="purple"], .mappy-view .mappy-swatch-fill[data-mappy-color="purple"] { background: light-dark(#D2B3FFA6, #46306E); }
   .mappy-view .mappy-node[data-mappy-color="custom"] {
     background: light-dark(var(--mappy-node-custom), color-mix(in srgb, var(--mappy-node-custom) 40%, var(--background-primary)));
   }

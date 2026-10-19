@@ -163,6 +163,32 @@ describe("the 操作 popover CSS (§5 M3)", () => {
   });
 });
 
+describe("the context card CSS (LEV-369)", () => {
+  it("fills each colour circle with the rule that fills a node of that colour, in both themes, over the page's own background", async () => {
+    const css = (await readFile(new URL("../../styles.css", import.meta.url), "utf8")).replace(/\/\*[\s\S]*?\*\//gu, "");
+    for (const name of ["yellow", "orange", "red", "green", "blue", "purple"]) {
+      // The fallback and the light-dark() rule alike: one selector list, so the circle cannot drift from the node.
+      const rules = [...css.matchAll(new RegExp(`([^{}]*)\\[data-mappy-color="${name}"\\] \\{ background: [^}]*\\}`, "gu"))].map(match => match[0]);
+      expect(rules, name).toHaveLength(2);
+      for (const rule of rules) {
+        expect(rule, name).toContain(`.mappy-view .mappy-node[data-mappy-color="${name}"]`);
+        expect(rule, name).toContain(`.mappy-view .mappy-swatch-fill[data-mappy-color="${name}"]`);
+      }
+    }
+    // The circle is the canvas's background under the fill, so the six's alpha composites as on the map.
+    const circle = css.match(/\.mappy-view \.mappy-swatch \{(?<body>[^}]*)\}/u)?.groups?.body ?? "";
+    expect(circle).toMatch(/background:\s*var\(--background-primary\);/u);
+    expect(circle).toMatch(/border-radius:\s*50%;/u);
+    // The deletion in the error colour; the checked circle ringed.
+    expect(css).toMatch(/\.mappy-view \.mappy-popover-item\.mod-warning, \.mappy-view \.mappy-popover-item\.mod-warning \.mappy-popover-icon \{ color: var\(--text-error\); \}/u);
+    expect(css).toMatch(/\.mappy-view \.mappy-swatch\.is-checked \{ box-shadow:[^}]*var\(--text-normal\)[^}]*\}/u);
+    // Scoped to the view, as the gear's card is.
+    const selectors = (css.match(/[^{}]+(?=\{)/gu) ?? []).map(selector => selector.trim()).filter(selector => /mappy-(?:swatch|context-card)/u.test(selector));
+    expect(selectors.length).toBeGreaterThan(5);
+    for (const selector of selectors) for (const part of selector.split(",")) expect(part.trim()).toMatch(/^\.mappy-view /u);
+  });
+});
+
 describe("map theme CSS (settings, M14)", () => {
   it("re-derives the semantic variables from the palette on the themed container only, at zero specificity", async () => {
     const css = await readFile(new URL("../../styles.css", import.meta.url), "utf8");
