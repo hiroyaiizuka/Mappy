@@ -488,10 +488,23 @@
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }
 .mappy-edit-modal .mappy-edit-error { color: var(--text-error); }
 .mappy-export-modal .mappy-export-note { color: var(--text-muted); font-size: var(--font-ui-small); }
-/* The settings tab's「左下に表示するレイアウト」: four labelled toggles on one row, wrapping when the row is narrow. */
-.mappy-setting-layouts { display: flex; flex-wrap: wrap; gap: var(--size-4-2) var(--size-4-4); }
-.mappy-setting-layout { display: inline-flex; align-items: center; gap: var(--size-4-2); font-size: var(--font-ui-small); }
-.mappy-setting-layout > span { cursor: var(--cursor); }
+/* The settings tab's「左下に表示するレイアウト」(LEV-370): one line per layout across the row, under its name and
+   description; each name on one line at the left, its toggle at the right edge, where the other rows' controls end.
+   In a narrow window the lines shrink with the row:「いつも出ます」goes under the name, and a name longer than the row
+   is cut short, so neither runs under the toggle nor pushes it past the edge. The width is the row's whether Obsidian
+   lays the row out across (wide) or down (narrow: `flex-direction: column` in 1.14.4, where a wrapping line would
+   take the width of the description's longest word instead). */
+.setting-item.mappy-setting-layouts-row { flex-wrap: wrap; }
+.mappy-setting-layouts-row > .setting-item-control:empty { display: none; }
+.mappy-setting-layouts { flex: none; width: 100%; min-width: 0; margin-top: var(--size-4-3); padding-inline-start: var(--size-4-4); border-inline-start: 2px solid var(--background-modifier-border); }
+.mappy-setting-layout { display: flex; align-items: center; justify-content: space-between; gap: var(--size-4-4); padding: var(--size-4-2) 0; font-size: var(--font-ui-small); }
+.mappy-setting-layout + .mappy-setting-layout { border-top: 1px solid var(--background-modifier-border); }
+.mappy-setting-layout-label { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--size-4-2); min-width: 0; cursor: var(--cursor); }
+.mappy-setting-layout.is-locked > .mappy-setting-layout-label { cursor: default; }
+.mappy-setting-layout-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mappy-setting-layout-always { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: nowrap; }
+.mappy-setting-layout-always[hidden] { display: none; }
+.mappy-setting-layout > .checkbox-container { flex: none; }
 .mappy-setting-note { padding-top: var(--size-4-1); }
 .mappy-setting-note[hidden] { display: none; }
 .mappy-link-suggest {

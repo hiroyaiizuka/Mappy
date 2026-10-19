@@ -80,6 +80,7 @@ export const ja: Messages = {
   setLayouts: "左下に表示するレイアウト",
   setLayoutsDesc: "マップの左下に並ぶレイアウトのボタンです。通常マップと新規マップの既定レイアウトは外せません。開いているノートの mappy-layout が非表示のレイアウトなら、そのノートではそのボタンも出ます。非表示にしても mappy-layout の保存・復元、コマンド、埋め込み表示、Excalidraw への挿入は変わりません。",
   setLockedDefault: (layout: string) => `「${layout}」は新規マップの既定レイアウトなので外せません。`,
+  setLayoutAlways: "いつも出ます",
   setSaveFailed: "設定を保存できませんでした。",
 
   dropStalled: "描画が終わらないノードがあるため、描けたところまでのマップに合わせます。",
