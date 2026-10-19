@@ -386,11 +386,14 @@ try {
 
   await step('link-to-colored-heading', async () => {
     const result = await evaluate(`
-      window.__mappyE2E?.detach();
-      delete window.__mappyE2E;
+      // The case's own map stays open meanwhile: with no tab left, Obsidian 1.14.4 finds no tab group to open a tab in.
+      const before = new Set();
+      app.workspace.iterateAllLeaves(item => { before.add(item); });
       await app.workspace.openLinkText('色のマップ#トピック', ${JSON.stringify(HOST)}, 'tab');
       await new Promise(resolve => setTimeout(resolve, 1500));
-      const leaf = app.workspace.getMostRecentLeaf();
+      let leaf = null;
+      app.workspace.iterateAllLeaves(item => { if (!before.has(item) && item.view?.file?.path === ${JSON.stringify(NOTE)}) leaf = item; });
+      if (!leaf) throw new Error('the link opened no new tab on the map note');
       const view = leaf.view;
       const selected = view.contentEl.querySelector('.mappy-node.is-selected .mappy-node-name')?.textContent ?? null;
       const type = view.getViewType();
