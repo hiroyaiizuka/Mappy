@@ -3,6 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import { installObsidianDom } from '../browser-harness/dom';
 import { HarnessApp } from '../browser-harness/app';
+import { DocumentStore } from '../../src/obsidian/document-store';
 import { FoldStore, type FoldAdapter } from '../../src/obsidian/fold-store';
 import { closeOpenViews } from '../mocks/open-views';
 import { accessibleName } from './accessible-name';
@@ -140,6 +141,37 @@ describe('the folds kept between openings of a note (LEV-365)', () => {
     const third = await mountMapView(PATH, SOURCE, 'mindmap', app, { memory });
     await third.settle();
     expect(folded(third)).toEqual(['C2#1', '同名#2']);
+  });
+
+  it('keeps the folds of the tab changed last when a write renames a node both tabs fold: a re-parse moves keys, it does not put a tab’s folds over (code review 2)', async () => {
+    const app = new HarnessApp();
+    const memory = memoryFor(app);
+    app.put(CALLED, CALLED_SOURCE);
+    app.put(OTHER, OTHER_SOURCE);
+    app.put(PATH, SOURCE);
+    const store = new DocumentStore(app.asApp<App>());
+    const first = await mountMapView(PATH, SOURCE, 'mindmap', app, { store, memory });
+    await first.settle();
+    toggle(first, '枝');
+    await first.settle();
+    const second = await mountMapView(PATH, SOURCE, 'mindmap', app, { store, memory });
+    await second.settle();
+    expect(folded(second)).toEqual(['C1#1', 'C2#1', '枝#1']);
+    // The first tab changes the folds last: the second 同名 folded there only.
+    toggle(first, '同名', 2);
+    await first.settle();
+    // 枝, which both tabs show folded, renamed by a write through the store the maps share (as another map's rename is):
+    // both carry its id to the new title, and neither puts its own folds over the other's.
+    const at = SOURCE.indexOf('- 枝\n') + 2;
+    await store.applyLatest(first.file, () => [{ from: at, to: at + 1, text: '新しい枝' }]);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    await first.settle();
+    await second.settle();
+    expect(folded(second)).toEqual(['C1#1', 'C2#1', '新しい枝#1']);
+    expect(memory.get(PATH)?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
+    const third = await mountMapView(PATH, SOURCE, 'mindmap', app, { store, memory });
+    await third.settle();
+    expect(folded(third)).toEqual(['C1#1', 'C2#1', '同名#2', '新しい枝#1']);
   });
 
   it('opens again as the map showed it after a change made outside the map, which drops a same-titled node’s fold as before (E05)', async () => {

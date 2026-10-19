@@ -40,11 +40,12 @@ export default class MappyPlugin extends Plugin {
     }));
     const store = new DocumentStore(this.app);
     const pluginFolder = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
-    // The folds kept between the openings of a note (LEV-365), in the plugin's own folder: read once here, so a map opening
-    // reads no file. A change waits for the folds to rest before it is written; the plugin's unload, Obsidian's quit and the
-    // page going write what is left at once (Obsidian waits for none of them, and none is added to the quit's tasks).
+    // The folds kept between the openings of a note (LEV-365), in the plugin's own folder: read once, beside the load (a
+    // map opening before the read is done waits for it), so a map opening reads no file. A change waits for the folds to
+    // rest before it is written; the plugin's unload, Obsidian's quit and the page going write what is left at once
+    // (Obsidian waits for none of them, and none is added to the quit's tasks).
     const folds = new FoldStore(this.app.vault.adapter, foldMemoryPath(pluginFolder), path => this.app.vault.getFileByPath(path) !== null);
-    await folds.load();
+    void folds.load();
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => { folds.rename(oldPath, file.path); }));
     this.registerEvent(this.app.vault.on("delete", file => { folds.delete(file.path); }));
     this.app.workspace.onLayoutReady(() => { folds.prune(); });

@@ -1,6 +1,7 @@
 import type { DataAdapter } from "obsidian";
+import type { FoldKey } from "../core/fold-keys";
 import {
-  FOLD_LIMITS, isRemoved, readFoldFile, renamedPaths, sameFolds, writeFoldFile, type FoldEntry, type StoredFolds,
+  FOLD_LIMITS, isRemoved, readFoldFile, renamedPaths, sameFolds, sortedKeys, writeFoldFile, type FoldEntry, type StoredFolds,
 } from "../core/fold-memory";
 
 /** The adapter's part the memory uses. */
@@ -16,6 +17,8 @@ export const FOLD_WRITE_MAX_DELAY = 10_000;
 /** How many times a load reads the two files when a read fails, and the wait before each next try (ms, times the try). */
 export const FOLD_LOAD_TRIES = 5;
 export const FOLD_LOAD_RETRY = 50;
+/** The longest wait before a failed write is tried again (ms): it doubles from twice `FOLD_WRITE_DELAY` up to this. */
+export const FOLD_WRITE_RETRY_MAX = 60_000;
 
 /** What one of the two files gave a load: a file, none (missing, or not a file of this shape), or a read that failed. */
 type Probe = { state: "file"; file: NonNullable<ReturnType<typeof readFoldFile>> } | { state: "none" } | { state: "failed" };
@@ -23,7 +26,9 @@ type Probe = { state: "file"; file: NonNullable<ReturnType<typeof readFoldFile>>
 /**
  * The folds of every note between its openings (LEV-365, the person's decision of 2026-10-19): Mappy's own file in the
  * plugin's folder (`folds.json`, shape and limits in `src/core/fold-memory.ts`), read once when the plugin loads and held
- * in memory, so a map opening reads no file. A change is written once the folds have rested `FOLD_WRITE_DELAY` (at most
+ * in memory, so a map opening reads no file. The read goes on beside the plugin's load (`load`, not awaited there): a map
+ * opening before it is done waits for it (`ready`), and a rename or deletion meanwhile is applied once it is (code review
+ * 2 of LEV-365). A change is written once the folds have rested `FOLD_WRITE_DELAY` (at most
  * `FOLD_WRITE_MAX_DELAY` after the first change not written), and at once when the plugin unloads, Obsidian quits and the
  * page goes (`flush`, from src/main.ts).
  *
@@ -39,8 +44,9 @@ type Probe = { state: "file"; file: NonNullable<ReturnType<typeof readFoldFile>>
  * is not known to be none: the folds of this session are kept in memory and nothing is written, so the file stays.
  *
  * Read once: a change made to the file meanwhile by something else (a sync service bringing another device's) is not
- * read, and the next write puts this Obsidian's folds over it (provisional, LEV-365's PR). A failed write is kept for the
- * next change or flush, without a word: the folds are how the map looks, never the note.
+ * read, and the next write puts this Obsidian's folds over it (provisional, LEV-365's PR). A failed write is tried again,
+ * after twice `FOLD_WRITE_DELAY` and then twice as long each time up to `FOLD_WRITE_RETRY_MAX`, or at the next change or
+ * flush, without a word: the folds are how the map looks, never the note.
  */
 export class FoldStore {
   private notes = new Map<string, StoredFolds>();
@@ -52,6 +58,10 @@ export class FoldStore {
   private writing: Promise<void> | null = null;
   /** Set when a load could not read a file that is there: this session writes nothing over it. */
   private unread = false;
+  private loading: Promise<void> | undefined;
+  private loaded = false;
+  /** The wait before a failed write is tried again; 0 after a write that went through. */
+  private retry = 0;
   readonly next: string;
 
   constructor(
@@ -63,8 +73,30 @@ export class FoldStore {
     this.next = `${path.replace(/\.json$/u, "")}.next.json`;
   }
 
-  /** The file read into memory: the newer of the two that read (see the class). */
-  async load(): Promise<void> {
+  /** The file read into memory, once: the newer of the two that read (see the class). */
+  load(): Promise<void> {
+    this.loading ??= this.read().finally(() => { this.loaded = true; });
+    return this.loading;
+  }
+
+  /** Resolves once the file is read (at once when no load was started: the memory is then empty and usable). */
+  get ready(): Promise<void> {
+    return this.loading ?? Promise.resolve();
+  }
+
+  /** False while the file is being read: what changes the notes kept then waits for it (`later`). */
+  private get settled(): boolean {
+    return this.loading === undefined || this.loaded;
+  }
+
+  /** `change` applied once the file is read, so the read does not put the notes back from before it. */
+  private later(change: () => void): boolean {
+    if (this.settled) return false;
+    void this.ready.then(change);
+    return true;
+  }
+
+  private async read(): Promise<void> {
     for (let attempt = 1; ; attempt += 1) {
       const probes = await Promise.all([this.probe(this.path), this.probe(this.next)]);
       if (probes.every(probe => probe.state !== "failed")) {
@@ -107,6 +139,7 @@ export class FoldStore {
 
   /** The note's folds as a map shows them now; none forgets the note. Nothing is written when they are what is kept. */
   set(path: string, entry: FoldEntry): void {
+    if (this.later(() => { this.set(path, entry); })) return;
     const stored = this.notes.get(path);
     if (entry.folds.length === 0 && entry.open.length === 0) {
       if (stored && this.notes.delete(path)) this.changed();
@@ -117,8 +150,35 @@ export class FoldStore {
     this.changed();
   }
 
+  /**
+   * A re-parse on a map moved or dropped keys of the note's nodes (`moves`, src/core/fold-state.ts): the kept folds follow
+   * them, whichever map changed the folds last, and nothing else of them changes (code review 2 of LEV-365: a map not
+   * touched no longer puts its own folds over another's).
+   */
+  move(path: string, moved: ReadonlyMap<string, FoldKey>, dropped: ReadonlySet<string>): void {
+    if (this.later(() => { this.move(path, moved, dropped); })) return;
+    const stored = this.notes.get(path);
+    if (!stored || (moved.size === 0 && dropped.size === 0)) return;
+    let touched = false;
+    const follow = (keys: readonly FoldKey[]): FoldKey[] => sortedKeys(keys.flatMap(key => {
+      const text = JSON.stringify(key);
+      if (dropped.has(text)) { touched = true; return []; }
+      const to = moved.get(text);
+      if (!to) return [key];
+      touched = true;
+      return [to];
+    }));
+    const folds = follow(stored.folds);
+    const open = follow(stored.open);
+    if (!touched) return;
+    if (folds.length === 0 && open.length === 0) this.notes.delete(path);
+    else this.notes.set(path, { at: stored.at, folds, open });
+    this.changed();
+  }
+
   /** A note or folder renamed or moved: its notes' folds go with it (`vault.on("rename")`). */
   rename(from: string, to: string): void {
+    if (this.later(() => { this.rename(from, to); })) return;
     const moved = renamedPaths(this.notes.keys(), from, to);
     if (moved.size === 0) return;
     const entries = Array.from(moved, ([old, path]) => [path, this.notes.get(old)!] as const);
@@ -129,6 +189,7 @@ export class FoldStore {
 
   /** A note or folder deleted: its notes are forgotten (`vault.on("delete")`). */
   delete(path: string): void {
+    if (this.later(() => { this.delete(path); })) return;
     let removed = false;
     for (const kept of Array.from(this.notes.keys())) if (isRemoved(kept, path)) removed = this.notes.delete(kept) || removed;
     if (removed) this.changed();
@@ -136,6 +197,7 @@ export class FoldStore {
 
   /** The notes no longer in the vault forgotten: deleted or moved while Obsidian was closed (once the layout is ready). */
   prune(): void {
+    if (this.later(() => { this.prune(); })) return;
     let removed = false;
     for (const path of Array.from(this.notes.keys())) if (!this.exists(path)) removed = this.notes.delete(path) || removed;
     if (removed) this.changed();
@@ -173,8 +235,13 @@ export class FoldStore {
       if (await this.adapter.exists(this.path)) await this.adapter.remove(this.path);
       await this.adapter.rename(this.next, this.path);
       this.savedAt = savedAt;
+      this.retry = 0;
     } catch {
       this.dirty = true;
+      // Tried again later, unless a change or a flush comes first; the wait doubles while the writes keep failing.
+      this.retry = Math.min(FOLD_WRITE_RETRY_MAX, this.retry === 0 ? this.delay * 2 : this.retry * 2);
+      if (this.timer !== undefined) window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(() => { this.timer = undefined; void this.flush(); }, this.retry);
     }
   }
 }

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Stat } from 'obsidian';
+import type { FoldKey } from '../../src/core/fold-keys';
 import { FOLD_LIMITS, readFoldFile, writeFoldFile } from '../../src/core/fold-memory';
-import { FOLD_LOAD_TRIES, FOLD_WRITE_DELAY, FOLD_WRITE_MAX_DELAY, FoldStore, foldMemoryPath, type FoldAdapter } from '../../src/obsidian/fold-store';
+import { FOLD_LOAD_TRIES, FOLD_WRITE_DELAY, FOLD_WRITE_MAX_DELAY, FOLD_WRITE_RETRY_MAX, FoldStore, foldMemoryPath, type FoldAdapter } from '../../src/obsidian/fold-store';
 
 /**
  * LEV-365: the folds kept between the openings of a note, in Mappy's own file in the plugin's folder. Read once at load;
@@ -50,7 +51,7 @@ class Disk {
   }
 }
 
-const file = (savedAt: number, notes: Record<string, string[][]>): string =>
+const file = (savedAt: number, notes: Record<string, FoldKey[]>): string =>
   writeFoldFile(new Map(Object.entries(notes).map(([path, folds]) => [path, { at: savedAt, folds, open: [] }])), savedAt).text;
 const onDisk = (disk: Disk, path = PATH) => readFoldFile(disk.files.get(path) ?? '');
 
@@ -197,6 +198,21 @@ describe('writes', () => {
     }
   });
 
+  it('tries a failed write again by itself, waiting longer each time it fails (code review 2)', async () => {
+    await store.load();
+    store.set('a.md', { folds: [['a']], open: [] });
+    let failures = 3;
+    disk.fault = step => (step === 'write' && failures-- > 0 ? new Error('busy') : null);
+    await vi.advanceTimersByTimeAsync(FOLD_WRITE_DELAY);
+    expect(disk.files.has(PATH)).toBe(false);
+    // 2 s, then 4 s, then 8 s: the fourth try goes through.
+    await vi.advanceTimersByTimeAsync(FOLD_WRITE_DELAY * 2 + FOLD_WRITE_DELAY * 4);
+    expect(disk.files.has(PATH)).toBe(false);
+    await vi.advanceTimersByTimeAsync(FOLD_WRITE_DELAY * 8);
+    expect(onDisk(disk)?.notes.get('a.md')?.folds).toEqual([['a']]);
+    expect(FOLD_WRITE_RETRY_MAX).toBeGreaterThan(FOLD_WRITE_DELAY * 8);
+  });
+
   it('keeps a failed write for the next flush', async () => {
     await store.load();
     store.set('a.md', { folds: [['a']], open: [] });
@@ -251,6 +267,39 @@ describe('writes', () => {
     expect(onDisk(disk)?.notes.size).toBe(FOLD_LIMITS.notes);
     expect(big.get('n0.md')?.folds).toEqual([['changed']]);
     expect(big.get('n1.md')).toBeUndefined();
+  });
+});
+
+describe('a re-parse moving keys', () => {
+  it('moves and drops the keys a map names, and leaves the folds another map changed last as they are (code review 2)', async () => {
+    disk.files.set(PATH, file(10, { 'a.md': [['根', '枝'], ['根', '同名', 2], ['根', '消える']] }));
+    await store.load();
+    store.move('a.md', new Map([[JSON.stringify(['根', '枝']), ['根', '新しい枝']]]), new Set([JSON.stringify(['根', '消える'])]));
+    expect(store.get('a.md')?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
+    // A key the note no longer keeps (another map opened it) is not put back by a move.
+    store.move('a.md', new Map([[JSON.stringify(['根', '開いた']), ['根', '開いた2']]]), new Set());
+    expect(store.get('a.md')?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
+    await store.flush();
+    expect(onDisk(disk)?.notes.get('a.md')?.folds).toEqual([['根', '同名', 2], ['根', '新しい枝']]);
+  });
+});
+
+describe('a change while the file is read', () => {
+  it('applies a rename made during the read once the read is done, instead of losing it under the read', async () => {
+    disk.files.set(PATH, file(10, { 'a.md': [['a']] }));
+    let release: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const read = disk.adapter.read;
+    disk.adapter.read = async path => { await held; return read(path); };
+    const loading = store.load();
+    store.rename('a.md', 'b.md');
+    expect(store.get('b.md')).toBeUndefined();
+    release();
+    await loading;
+    await store.ready;
+    await Promise.resolve();
+    expect(store.get('a.md')).toBeUndefined();
+    expect(store.get('b.md')?.folds).toEqual([['a']]);
   });
 });
 

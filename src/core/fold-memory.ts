@@ -13,6 +13,7 @@
  * `at` is when the note's folds last changed or a map last opened it, which decides the notes dropped first past the
  * limits. A note with neither is not kept.
  */
+import { utf8Bytes } from './exit-backup';
 import { isFoldKey, type FoldKey } from './fold-keys';
 
 export const FOLD_MEMORY_VERSION = 1;
@@ -57,7 +58,7 @@ export function readFoldFile(text: string): { savedAt: number; notes: Map<string
  */
 export function writeFoldFile(notes: ReadonlyMap<string, StoredFolds>, savedAt: number, limits: { notes: number; bytes: number } = FOLD_LIMITS): { text: string; kept: Set<string> } {
   const newest = Array.from(notes.entries()).sort((a, b) => b[1].at - a[1].at).slice(0, limits.notes);
-  const sizes = newest.map(([path, stored]) => utf8Length(JSON.stringify(path)) + utf8Length(JSON.stringify(stored)) + 2);
+  const sizes = newest.map(([path, stored]) => utf8Bytes(JSON.stringify(path)) + utf8Bytes(JSON.stringify(stored)) + 2);
   let total = 64 + sizes.reduce((sum, size) => sum + size, 0);
   while (newest.length > 0 && total > limits.bytes) {
     newest.pop();
@@ -101,17 +102,4 @@ function keys(value: unknown): FoldKey[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** UTF-8 bytes of `text` without encoding it: a title is mostly Japanese, three bytes a character. */
-function utf8Length(text: string): number {
-  let bytes = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    if (code < 0x80) bytes += 1;
-    else if (code < 0x800) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff) { bytes += 4; index += 1; }
-    else bytes += 3;
-  }
-  return bytes;
 }

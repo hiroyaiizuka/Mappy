@@ -33,16 +33,6 @@ export function isFoldKey(value: unknown): value is FoldKey {
   return previous !== null;
 }
 
-/** The step to `node` among `siblings`: its title, and its number when another sibling before it has that title. */
-function segment(node: MindNode, siblings: readonly MindNode[]): FoldKey {
-  let ordinal = 1;
-  for (const sibling of siblings) {
-    if (sibling === node) break;
-    if (sibling.title === node.title) ordinal += 1;
-  }
-  return ordinal > 1 ? [node.title, ordinal] : [node.title];
-}
-
 /** The node under `siblings` that a key's step names, and how many items of the key the step took. */
 function step(key: FoldKey, at: number, siblings: readonly MindNode[]): { node: MindNode | undefined; used: number } {
   const title = key[at];
@@ -76,31 +66,56 @@ function calledChildren(calls: CallProjection, callerId: string): MindNode[] {
  * called root's title it shows), a called node by its titles in the called note.
  */
 export function foldKeyOf(document: MindDocument, calls: CallProjection | undefined, id: string): FoldKey | undefined {
-  const caller = callerOfCalledNode(id);
-  if (caller !== undefined) {
-    const host = calls ? foldKeyOf(document, calls, caller) : undefined;
-    if (!calls || !host) return undefined;
-    const steps: FoldKey[] = [];
-    for (let node = calls.byId.get(id); node && node.id !== caller;) {
-      const parentId = node.parentId;
-      if (parentId === null) return undefined;
-      const siblings = parentId === caller ? calledChildren(calls, caller) : calls.byId.get(parentId)?.children ?? [];
-      steps.push(segment(node, siblings));
-      node = calls.byId.get(parentId);
-    }
-    if (steps.length === 0) return undefined;
-    return [...host, null, ...steps.reverse().flat()];
-  }
+  return foldKeyMaker(document, calls)(id);
+}
+
+/**
+ * `foldKeyOf` for many nodes of one map: a node's key is its parent's and one step, each made once, and the numbers of a
+ * parent's same-titled children are counted once — so keying every node of a large called map is one pass over it, not
+ * a walk up from each with the siblings scanned at every step (code review 2 of LEV-365). For one document and projection.
+ */
+export function foldKeyMaker(document: MindDocument, calls: CallProjection | undefined): (id: string) => FoldKey | undefined {
   const nodes = byId(document);
-  if (!nodes.has(id)) return undefined;
-  const steps: FoldKey[] = [];
-  for (let node = nodes.get(id); node && node.kind !== 'root';) {
-    const parent = node.parentId === null ? undefined : nodes.get(node.parentId);
-    if (!parent) return undefined;
-    steps.push(segment(node, parent.children));
-    node = parent;
-  }
-  return steps.reverse().flat();
+  const keys = new Map<string, FoldKey | null>();
+  const numbers = new Map<string, Map<string, number>>();
+  /** The step to `node` among `siblings` (the children of the parent `under` names): its title, and its number when another before it has that title. */
+  const step = (under: string, siblings: readonly MindNode[], node: MindNode): FoldKey => {
+    let table = numbers.get(under);
+    if (!table) {
+      table = new Map();
+      const seen = new Map<string, number>();
+      for (const sibling of siblings) {
+        const number = (seen.get(sibling.title) ?? 0) + 1;
+        seen.set(sibling.title, number);
+        table.set(sibling.id, number);
+      }
+      numbers.set(under, table);
+    }
+    const number = table.get(node.id) ?? 1;
+    return number > 1 ? [node.title, number] : [node.title];
+  };
+  const keyOf = (id: string): FoldKey | undefined => {
+    const known = keys.get(id);
+    if (known !== undefined) return known ?? undefined;
+    let key: FoldKey | undefined;
+    const caller = callerOfCalledNode(id);
+    const node = caller === undefined ? nodes.get(id) : calls?.byId.get(id);
+    if (node?.kind === 'root' && caller === undefined) key = [];
+    else if (node && node.parentId !== null) {
+      const parentId = node.parentId;
+      if (caller !== undefined && parentId === caller && calls) {
+        const host = keyOf(caller);
+        if (host) key = [...host, null, ...step(`${caller}/`, calledChildren(calls, caller), node)];
+      } else {
+        const siblings = caller === undefined ? nodes.get(parentId)?.children : calls?.byId.get(parentId)?.children;
+        const parent = siblings ? keyOf(parentId) : undefined;
+        if (siblings && parent) key = [...parent, ...step(parentId, siblings, node)];
+      }
+    }
+    keys.set(id, key ?? null);
+    return key;
+  };
+  return keyOf;
 }
 
 /** The id of the node `key` names in `document` and its called maps, or undefined when no node stands there now. */

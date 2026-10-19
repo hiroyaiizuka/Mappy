@@ -8,7 +8,8 @@ import { nodeBody, planBodyEdit, planAppendBody } from "../core/body";
 import { callerOfCalledNode, initialCallFolds, isCalledNode, projectShown, type CallSource, type CallTargets, type ShownTrees } from "../core/calls";
 import { embedOnlyTitle, visibleNodes } from "../core/embed";
 import { sameFolds, type FoldEntry } from "../core/fold-memory";
-import { foldEntryOf, rememberedFolds, rememberedIds, type RememberedFolds } from "../core/fold-state";
+import type { FoldKey } from "../core/fold-keys";
+import { foldEntryOf, moves, rememberedFolds, rememberedIds, type RememberedFolds } from "../core/fold-state";
 import { displayTitle } from "../core/title-breaks";
 import { planListConversion } from "../core/list-conversion";
 import { standsForFileName } from "../core/list-commands";
@@ -221,14 +222,20 @@ export class MindmapView extends EditableFileView {
    * write that awaits anything before `commit` counts itself here through `preparing`.
    */
   private prepared = 0;
-  private collapsed = new Set<string>();
+  /**
+   * The nodes folded on the map. Read-only on purpose: it is replaced, by `refold` for a person's fold (the control, Space,
+   * a node revealed, an addition taken back) and by `adopt` for a parse, and each hands the memory the folds (LEV-365), so
+   * a change that skipped them would show on screen and be lost at the next opening (code review 2 of LEV-365).
+   */
+  private collapsed: ReadonlySet<string> = new Set<string>();
   /**
    * The folds kept between the openings of the note shown (LEV-365, `memory`): the entry the memory held for it when it
-   * loaded, then the one this view last handed it (`rememberFolds`; a draw that changes no fold hands nothing), with its
-   * keys by text. The note's first draw folds what it names (`adopt`); a called map drawn later in the same opening (its
-   * note read late) leaves the nodes it keeps opened open when it is drawn.
+   * loaded, then the one this view last made (`rememberFolds`; a draw that changes no fold hands nothing), with its keys by
+   * text and, once the view has drawn the note, the key of each node it names by id (what a re-parse is measured against).
+   * The note's first draw folds what it names (`adopt`); a called map drawn later in the same opening (its note read late)
+   * leaves the nodes it keeps opened open when it is drawn.
    */
-  private kept: { entry: FoldEntry; keys: RememberedFolds } | undefined;
+  private kept: { entry: FoldEntry; keys: RememberedFolds; ids?: Map<string, FoldKey> } | undefined;
   /** Whether the note shown has been drawn since it loaded: the kept folds of its own nodes apply to that first draw alone. */
   private foldsRestored = false;
   private mode: LayoutMode = "mindmap";
@@ -546,7 +553,7 @@ export class MindmapView extends EditableFileView {
   async onUnloadFile(file: TFile): Promise<void> {
     await this.saveDraft(file);
     this.dropDraft();
-    this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed.clear(); this.needsFit = true; this.fitHeld = false;
+    this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed = new Set(); this.needsFit = true; this.fitHeld = false;
     this.kept = undefined; this.foldsRestored = false;
     this.pendingTopic = null; this.topicDrag = null; this.writes.clear(); this.loads += 1; this.owed = false;
     this.targets = new Map(); this.knownCalled.clear(); void this.reader.clear();
@@ -555,9 +562,11 @@ export class MindmapView extends EditableFileView {
 
   /**
    * The note coming in (`FileView.loadFile`, after `onUnloadFile` of the one before): its kept folds are taken from the
-   * memory, which read its file once when the plugin loaded (LEV-365), and its first draw applies them (`adopt`).
+   * memory, which reads its file once as the plugin loads (LEV-365; a map opening while it reads waits for it), and its
+   * first draw applies them (`adopt`).
    */
   async onLoadFile(file: TFile): Promise<void> {
+    if (this.memory) await this.memory.ready;
     const entry = this.memory?.open(file.path);
     this.kept = entry ? { entry, keys: rememberedFolds(entry) } : undefined;
     this.foldsRestored = false;
@@ -1475,25 +1484,38 @@ export class MindmapView extends EditableFileView {
     this.collapsed = collapsed;
     this.knownCalled = new Set([...trees.calls.sources.keys(), ...Array.from(this.knownCalled).filter(kept)]);
     this.foldsRestored = true;
-    this.rememberFolds();
+    this.rememberFolds(false);
+  }
+
+  /** A person's change of the folds (`collapsed`): shown by the caller's draw, and handed to the memory as it is. */
+  private refold(next: ReadonlySet<string>): void {
+    this.collapsed = next;
+    this.rememberFolds(true);
   }
 
   /**
-   * The folds as the map shows them now, handed to the memory for the next opening of the note (LEV-365) when they differ
-   * from what this view last handed it: a fold or an open, a node revealed under a fold, a re-parse that moved or dropped
-   * a folded node (a rename on the map carries its id; a deleted node's fold goes). Two maps of one note keep their own
-   * folds while they are open (provisional, LEV-365's PR): the one changed last is what the next opening shows.
+   * The folds as the map shows them now, for the next opening of the note (LEV-365), when they differ from what this view
+   * last made. A person's change (`byPerson`: a fold or an open, a node revealed under a fold, an addition taken back) and
+   * the note's first draw (which drops the kept keys no node stands at) hand the memory the whole entry. A parse hands only
+   * how it moved or dropped the keys of the nodes this view names (`moves`: a rename on the map carries the node's id and
+   * gives it a new key; a deleted node's fold goes), so a map nobody touched does not put its own folds over the ones
+   * another map of the note changed last (code review 2 of LEV-365). Two maps of one note keep their own folds while they
+   * are open (provisional, LEV-365's PR): the one a person changed last is what the next opening shows.
    */
-  private rememberFolds(): void {
+  private rememberFolds(byPerson: boolean): void {
     const memory = this.memory;
     const file = this.file;
     const document = this.document;
     const projected = this.projected;
     if (!memory || !file || !document || projected?.document !== document) return;
-    const entry = foldEntryOf({ document, calls: projected.trees.calls }, this.collapsed, this.knownCalled, this.kept?.keys);
-    if (sameFolds(entry, this.kept?.entry)) return;
-    this.kept = { entry, keys: rememberedFolds(entry) };
-    memory.set(file.path, entry);
+    const before = this.kept;
+    const { entry, ids } = foldEntryOf({ document, calls: projected.trees.calls }, this.collapsed, this.knownCalled, before?.keys);
+    const same = sameFolds(entry, before?.entry);
+    this.kept = { entry, keys: same && before ? before.keys : rememberedFolds(entry), ids };
+    if (same) return;
+    if (byPerson || !before?.ids) { memory.set(file.path, entry); return; }
+    const { moved, dropped } = moves(before.ids, ids);
+    memory.move(file.path, moved, dropped);
   }
 
   /**
@@ -1795,8 +1817,9 @@ export class MindmapView extends EditableFileView {
   }
 
   private fold(id: string): void {
-    if (this.collapsed.has(id)) this.collapsed.delete(id); else this.collapsed.add(id);
-    this.rememberFolds();
+    const next = new Set(this.collapsed);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    this.refold(next);
     this.draw();
   }
 
@@ -1946,7 +1969,8 @@ export class MindmapView extends EditableFileView {
   private reveal(offset: number | null): MindNode | undefined {
     const selected = this.document ? nodeAt(this.document, offset) : undefined;
     if (!selected) return undefined;
-    if (selected.parentId && this.collapsed.delete(selected.parentId)) this.rememberFolds();
+    const parentId = selected.parentId;
+    if (parentId && this.collapsed.has(parentId)) this.refold(new Set(Array.from(this.collapsed).filter(id => id !== parentId)));
     this.draw(); this.select(selected.id, true);
     return selected;
   }
@@ -2330,7 +2354,7 @@ export class MindmapView extends EditableFileView {
         if (!created.previous) this.deselect();
         // The folds the addition opened close again (the ids are carried over the re-read). Not after ⌘Z: ⌘⇧Z brings the
         // node back where it is still in sight, instead of inside a closed fold (review 4 of LEV-331).
-        if (!redoable) { this.collapsed = new Set(created.collapsed); this.rememberFolds(); }
+        if (!redoable) this.refold(new Set(created.collapsed));
         return { ...write, carried: [] };
       });
     } catch (error) {

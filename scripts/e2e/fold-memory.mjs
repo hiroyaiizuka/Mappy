@@ -24,9 +24,10 @@
  * the memory. `--perf` also measures, on whatever build is installed: the 2,000-node map's opening (setViewState to the
  * first laid-out node), one fold's handler (the click's synchronous work) and frame on it and on a map calling it
  * (`CALLS`, whose drawn called branches the memory goes over on every fold), and, when the build has the memory, its file
- * for 1,000 notes × 20 folds (size, write, read) in a file of its own beside it. `--perf-only` measures without the rows.
+ * for 1,000 notes × 20 folds (size, write, read) in a file of its own beside it. The rows always run: a record of
+ * measurements alone would read as an E90 PASS (code review 2 of LEV-365).
  *
- * Usage: npm run harness:e2e:fold-memory -- [--json <out.json>] [--keep] [--perf | --perf-only]
+ * Usage: npm run harness:e2e:fold-memory -- [--json <out.json>] [--keep] [--perf]
  */
 import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -271,8 +272,6 @@ try {
     return { obsidian, memoryBefore: await memoryOnDisk(0) };
   }));
 
-  // `--perf-only`: the measurements alone, on whatever build is installed (the rows are not run, and the record says so by its steps).
-  if (!flag('--perf-only')) {
   // Row 1: the file explorer — another note in the same tab, then the map again.
   await step('1-explorer', async () => {
     await openTab(list);
@@ -494,9 +493,8 @@ try {
     check(errors.length === 0, `errors: the page had errors: ${JSON.stringify(errors).slice(0, 1500)}`);
     return { errors };
   });
-  }
 
-  if (flag('--perf') || flag('--perf-only')) {
+  if (flag('--perf')) {
     // The 2,000-node map's opening and one fold's handler, on the build installed (run on the build before the fix too).
     await step('perf-open-2000', async () => {
       await detachAll();
