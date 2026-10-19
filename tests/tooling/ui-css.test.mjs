@@ -263,7 +263,8 @@ describe("the settings tab's layout toggles (LEV-370)", () => {
     // The row wraps, and the lines take a whole line of it, below the name and description: the toggles then end where
     // the row's content ends, as every other row's control does (measured on Obsidian 1.14.4 by E72).
     expect(rule(".setting-item.mappy-setting-layouts-row")).toMatch(/flex-wrap:\s*wrap;/u);
-    expect(rule(".mappy-setting-layouts")).toMatch(/flex:\s*1 0 100%;\s*min-width:\s*0;/u);
+    // The row's width as a width, not a flex basis: 1.14.4 lays a narrow row out down the window (review 1).
+    expect(rule(".mappy-setting-layouts")).toMatch(/flex:\s*none;\s*width:\s*100%;\s*min-width:\s*0;/u);
     expect(rule(".mappy-setting-layout")).toMatch(/display:\s*flex;[\s\S]*justify-content:\s*space-between;/u);
     // A name never wraps; in a row too narrow for it, it is cut short rather than drawn under the toggle (review 1),
     // and「いつも出ます」goes under it.
