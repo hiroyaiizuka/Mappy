@@ -488,10 +488,17 @@
 .mappy-edit-modal textarea.mappy-edit-input { min-height: 220px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-smaller); line-height: 1.6; }
 .mappy-edit-modal .mappy-edit-error { color: var(--text-error); }
 .mappy-export-modal .mappy-export-note { color: var(--text-muted); font-size: var(--font-ui-small); }
-/* The settings tab's「左下に表示するレイアウト」: four labelled toggles on one row, wrapping when the row is narrow. */
-.mappy-setting-layouts { display: flex; flex-wrap: wrap; gap: var(--size-4-2) var(--size-4-4); }
-.mappy-setting-layout { display: inline-flex; align-items: center; gap: var(--size-4-2); font-size: var(--font-ui-small); }
-.mappy-setting-layout > span { cursor: var(--cursor); }
+/* The settings tab's「左下に表示するレイアウト」(LEV-370): one line per layout across the row, under its name and
+   description; each name on one line at the left, its toggle at the right edge, where the other rows' controls end. */
+.setting-item.mappy-setting-layouts-row { flex-wrap: wrap; }
+.mappy-setting-layouts-row > .setting-item-control:empty { display: none; }
+.mappy-setting-layouts { flex: 1 0 100%; margin-top: var(--size-4-3); padding-inline-start: var(--size-4-4); border-inline-start: 2px solid var(--background-modifier-border); }
+.mappy-setting-layout { display: flex; align-items: center; justify-content: space-between; gap: var(--size-4-4); padding: var(--size-4-2) 0; font-size: var(--font-ui-small); }
+.mappy-setting-layout + .mappy-setting-layout { border-top: 1px solid var(--background-modifier-border); }
+.mappy-setting-layout-label { display: flex; align-items: baseline; gap: var(--size-4-2); min-width: 0; white-space: nowrap; cursor: var(--cursor); }
+.mappy-setting-layout-always { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.mappy-setting-layout-always[hidden] { display: none; }
+.mappy-setting-layout > .checkbox-container { flex: none; }
 .mappy-setting-note { padding-top: var(--size-4-1); }
 .mappy-setting-note[hidden] { display: none; }
 .mappy-link-suggest {

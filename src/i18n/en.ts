@@ -95,6 +95,7 @@ export const en = {
   setLayouts: "Layouts in the bottom-left corner",
   setLayoutsDesc: "The layout buttons in the map's bottom-left corner. The mind map and the default layout for new maps can't be hidden. When an open note's mappy-layout is a hidden layout, that note still shows its button. Hiding a layout doesn't change how mappy-layout is saved and restored, the commands, embeds or inserting into Excalidraw.",
   setLockedDefault: (layout: string) => `${layout} is the default layout for new maps, so it can't be hidden.`,
+  setLayoutAlways: "Always shown",
   setSaveFailed: "Couldn't save the settings.",
 
   // Excalidraw (src/obsidian/excalidraw-bridge.ts).

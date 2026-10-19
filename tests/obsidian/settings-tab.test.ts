@@ -6,6 +6,7 @@ import { Notice, PluginSettingTab as MockSettingTab, Setting, type PluginSetting
 import { LAYOUT_MODES, layoutLabel } from '../../src/core/layout-mode';
 import { DEFAULT_SETTINGS, MAP_THEMES, type MappySettings } from '../../src/obsidian/settings';
 import { MappySettingTab, themeLabel } from '../../src/obsidian/settings-tab';
+import { setLanguage } from '../../src/i18n';
 
 // The browser-harness stand-in for `obsidian`: Setting, DropdownComponent, TextComponent, ToggleComponent and PluginSettingTab on a real DOM.
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
@@ -97,7 +98,7 @@ describe('MappySettingTab', () => {
     expect(layout.value).toBe('mindmap');
     // The toggles carry the same names, in the same order, each next to its label text.
     const row = Array.from(tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout'));
-    expect(row.map(item => item.querySelector('span')?.textContent)).toEqual(LAYOUT_MODES.map(layoutLabel));
+    expect(row.map(item => item.querySelector('.mappy-setting-layout-name')?.textContent)).toEqual(LAYOUT_MODES.map(layoutLabel));
     expect(row.map(item => item.querySelector('.checkbox-container')?.getAttribute('aria-label'))).toEqual(LAYOUT_MODES.map(layoutLabel));
   });
 
@@ -243,7 +244,57 @@ describe('MappySettingTab', () => {
   });
 });
 
+/** The「いつも出ます」beside each layout's name, in LAYOUT_MODES order: its text where shown, null where hidden. */
+function always(container: HTMLElement): (string | null)[] {
+  return Array.from(container.querySelectorAll<HTMLElement>('.mappy-setting-layout-always'), note => note.hidden ? null : note.textContent);
+}
+
 describe('MappySettingTab: 左下に表示するレイアウト', () => {
+  it('puts one line per layout under the name and description, across the row: the name, then its toggle (LEV-370)', () => {
+    const { tab, items } = mount();
+    const row = items[3]!;
+    const list = row.querySelector<HTMLElement>('.mappy-setting-layouts');
+    // Beside the name and description sits the row's own control box; the lines go below both, so it stays empty.
+    expect(list?.parentElement).toBe(row);
+    expect(row.classList.contains('mappy-setting-layouts-row')).toBe(true);
+    expect(row.querySelector('.setting-item-control')?.childElementCount).toBe(0);
+    const lines = Array.from(list?.children ?? []);
+    expect(lines).toHaveLength(LAYOUT_MODES.length);
+    for (const [index, line] of lines.entries()) {
+      expect(line.classList.contains('mappy-setting-layout')).toBe(true);
+      // The name (and its「いつも出ます」) first, the toggle last, so the toggle ends the line on the right.
+      expect(Array.from(line.children, child => child.className.split(' ')[0])).toEqual(['mappy-setting-layout-label', 'checkbox-container']);
+      expect(line.querySelector('.mappy-setting-layout-name')?.textContent).toBe(layoutLabel(LAYOUT_MODES[index]!));
+    }
+    expect(tab.containerEl.querySelectorAll('.mappy-setting-layouts')).toHaveLength(1);
+  });
+
+  it('says「いつも出ます」beside exactly the locked layouts, following the default layout and a failed save (LEV-370)', async () => {
+    let fail = false;
+    const { tab, layout } = mount({ ...DEFAULT_SETTINGS, defaultLayout: 'timeline' }, () => fail ? Promise.reject(new Error('data.json は書き込めません')) : Promise.resolve());
+    expect(always(tab.containerEl)).toEqual(['いつも出ます', 'いつも出ます', null, null]);
+    change(layout, 'balanced');
+    await flush();
+    expect(always(tab.containerEl)).toEqual(['いつも出ます', null, null, 'いつも出ます']);
+    // A save that fails draws the lines from what is still stored.
+    fail = true;
+    change(layout, 'hierarchy');
+    await flush();
+    expect(always(tab.containerEl)).toEqual(['いつも出ます', null, null, 'いつも出ます']);
+    fail = false;
+    change(layout, 'mindmap');
+    await flush();
+    expect(always(tab.containerEl)).toEqual(['いつも出ます', null, null, null]);
+  });
+
+  it('says「いつも出ます」in the app\'s language (LEV-370)', () => {
+    setLanguage('en');
+    try {
+      const { tab } = mount();
+      expect(always(tab.containerEl)).toEqual(['Always shown', null, null, null]);
+    } finally { setLanguage('ja'); }
+  });
+
   it('shows one toggle per layout, the balanced map off by default (LEV-257), with the regular map on and locked', () => {
     const { toggles, note } = mount();
     expect(LAYOUT_MODES.map(mode => on(toggles[mode]))).toEqual([true, true, true, false]);
@@ -283,7 +334,7 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     expect(note.textContent).toBe('「タイムライン」は新規マップの既定レイアウトなので外せません。');
     click(toggles.timeline);
     toggles.timeline.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
-    tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout > span')[1]?.click();
+    tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout-label')[1]?.click();
     expect(on(toggles.timeline)).toBe(true);
     expect(save).not.toHaveBeenCalled();
   });
@@ -324,7 +375,7 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
 
   it('flips a toggle from its text too, except the locked regular map', () => {
     const { tab, toggles, save } = mount();
-    const labels = Array.from(tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout > span'));
+    const labels = Array.from(tab.containerEl.querySelectorAll<HTMLElement>('.mappy-setting-layout-label'));
     labels[1]?.click();
     expect(on(toggles.timeline)).toBe(false);
     expect(save).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, visibleLayouts: ['mindmap', 'hierarchy'] });
@@ -388,7 +439,7 @@ describe('MappySettingTab: 左下に表示するレイアウト', () => {
     const search = new Setting(document.body.createDiv());
     layouts?.render?.(search as unknown as Parameters<NonNullable<typeof layouts.render>>[0]);
     await tab.setControlValue('defaultLayout', 'balanced');
-    for (const shown of [toggles, Object.fromEntries(LAYOUT_MODES.map(mode => [mode, search.controlEl.querySelector<HTMLElement>(`.checkbox-container[aria-label="${layoutLabel(mode)}"]`)!])) as typeof toggles]) {
+    for (const shown of [toggles, Object.fromEntries(LAYOUT_MODES.map(mode => [mode, search.settingEl.querySelector<HTMLElement>(`.checkbox-container[aria-label="${layoutLabel(mode)}"]`)!])) as typeof toggles]) {
       expect(LAYOUT_MODES.map(mode => on(shown[mode]))).toEqual([true, true, true, true]);
       expect(LAYOUT_MODES.map(mode => locked(shown[mode]))).toEqual([true, false, false, true]);
     }

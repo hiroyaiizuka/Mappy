@@ -13,8 +13,11 @@ export function themeLabel(theme: MapTheme): string {
   return t()[THEME_LABEL_KEYS[theme]];
 }
 
+/** One layout's line in the「左下に表示するレイアウト」row: its toggle, and the「いつも出ます」shown while the toggle is locked. */
+interface LayoutLine { toggle: ToggleComponent; always: HTMLElement }
+
 /** One drawn「左下に表示するレイアウト」row. */
-interface LayoutRow { toggles: Map<LayoutMode, ToggleComponent>; note: HTMLElement }
+interface LayoutRow { lines: Map<LayoutMode, LayoutLine>; note: HTMLElement }
 
 /** The plugin owns the settings object and `saveData`; the tab only reads and asks for a save. */
 export interface SettingsStore {
@@ -82,7 +85,7 @@ export function mapSettingDefinitions(renderLayouts: (setting: Setting) => void 
 
 export class MappySettingTab extends PluginSettingTab {
   /**
-   * Each drawn layout row: its toggles and the line under them naming the locked default layout.
+   * Each drawn layout row: its toggles and the line under its description naming the locked default layout.
    * More than one can be drawn at once (1.13+ draws the row for the tab and again for a settings
    * search result). Added by the row's render, dropped by its cleanup (1.13+) or the next
    * `display()`; a save that resolves after the tab was hidden finds a row detached and leaves it alone.
@@ -149,20 +152,25 @@ export class MappySettingTab extends PluginSettingTab {
   }
 
   /**
-   * The bottom-left bar's buttons as four toggles on one row: the regular map and the default layout
-   * are on and cannot be changed (the line under them names the default), the others save through
-   * the same reader as the data file, so the stored list stays normalized. Each toggle's text flips
-   * it too, as a setting row's name does.
+   * The bottom-left bar's buttons as one line per layout under the row's name and description (LEV-370):
+   * the name on the left, the toggle on the right, where the other settings' controls end. The regular
+   * map and the default layout are on and cannot be changed (each says「いつも出ます」, and the line under
+   * the description names the default); the others save through the same reader as the data file, so
+   * the stored list stays normalized. Each toggle's text flips it too, as a setting row's name does.
    */
   private renderLayoutToggles(setting: Setting): () => void {
-    const list = setting.controlEl.createDiv({ cls: 'mappy-setting-layouts' });
-    const toggles = new Map<LayoutMode, ToggleComponent>();
+    // Below the name and the description, across the whole row: the row's own control box sits beside them.
+    setting.setClass('mappy-setting-layouts-row');
+    const list = setting.settingEl.createDiv({ cls: 'mappy-setting-layouts' });
+    const lines = new Map<LayoutMode, LayoutLine>();
     for (const mode of LAYOUT_MODES) {
       const item = list.createDiv({ cls: 'mappy-setting-layout' });
       const name = layoutLabel(mode);
-      const label = item.createSpan({ text: name });
+      const label = item.createDiv({ cls: 'mappy-setting-layout-label' });
+      label.createSpan({ cls: 'mappy-setting-layout-name', text: name });
+      const always = label.createSpan({ cls: 'mappy-setting-layout-always', text: t().setLayoutAlways });
       const toggle = new ToggleComponent(item).setTooltip(name);
-      toggles.set(mode, toggle);
+      lines.set(mode, { toggle, always });
       label.addEventListener('click', () => { if (!toggle.disabled) toggle.setValue(!toggle.getValue()); });
       toggle.onChange(on => {
         const current = this.store.current().visibleLayouts;
@@ -173,7 +181,7 @@ export class MappySettingTab extends PluginSettingTab {
         this.commit('visibleLayouts', on ? [...others, mode] : others);
       });
     }
-    const row: LayoutRow = { toggles, note: setting.descEl.createDiv({ cls: 'mappy-setting-note' }) };
+    const row: LayoutRow = { lines, note: setting.descEl.createDiv({ cls: 'mappy-setting-note' }) };
     this.layoutRows.add(row);
     // Drawn whether or not the row is in the document yet: a row built before it is attached still starts right.
     this.syncLayoutRow(row);
@@ -183,9 +191,11 @@ export class MappySettingTab extends PluginSettingTab {
   /** Show the stored list and lock the regular map and the default layout; called on render and after each save. */
   private syncLayoutRow(row: LayoutRow): void {
     const { defaultLayout, visibleLayouts } = this.store.current();
-    for (const [mode, toggle] of row.toggles) {
-      toggle.setDisabled(mode === 'mindmap' || mode === defaultLayout);
+    for (const [mode, { toggle, always }] of row.lines) {
+      const locked = mode === 'mindmap' || mode === defaultLayout;
+      toggle.setDisabled(locked);
       toggle.setValue(visibleLayouts.includes(mode));
+      always.hidden = !locked;
     }
     const named = defaultLayout !== 'mindmap';
     row.note.setText(named ? t().setLockedDefault(layoutLabel(defaultLayout)) : '');
