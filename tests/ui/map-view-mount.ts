@@ -6,6 +6,7 @@ import { HarnessApp } from '../browser-harness/app';
 import { WorkspaceLeaf } from '../browser-harness/obsidian';
 import type { LayoutMode } from '../../src/layout/layout';
 import { DocumentStore } from '../../src/obsidian/document-store';
+import type { FoldStore } from '../../src/obsidian/fold-store';
 import type { ViewRouter } from '../../src/obsidian/view-routing';
 import { MindmapView, type MapMenuAction } from '../../src/ui/mindmap-view';
 import { closeView } from '../mocks/open-views';
@@ -39,6 +40,8 @@ export interface MountOptions {
   menuActions?: readonly MapMenuAction[];
   /** The store of another view mounted on the same app: the plugin gives every view one store (src/main.ts). The note is then left as it is. */
   store?: DocumentStore;
+  /** The folds kept between the openings of a note (LEV-365), as src/main.ts gives every view one. */
+  memory?: FoldStore;
 }
 
 /** `layout: null` leaves the layout out of the view state, so the note's `mappy-layout` decides. */
@@ -48,7 +51,7 @@ export async function mountMapView(
   if (!options.store) app.put(path, source);
   const leaf = new WorkspaceLeaf(app.asApp<App>());
   const store = options.store ?? new DocumentStore(app.asApp<App>());
-  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, options.menuActions ?? []);
+  const view = new MindmapView(leaf as unknown as ObsidianLeaf, store, {} as ViewRouter, options.menuActions ?? [], options.memory);
   leaf.view = view as unknown as WorkspaceLeaf['view'];
   document.body.append(view.containerEl);
   options.prepare?.(view);

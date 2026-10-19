@@ -3,6 +3,7 @@ import { setLanguage, t } from "./i18n";
 import { DocumentStore } from "./obsidian/document-store";
 import { ExcalidrawBridge, type ImportRequest } from "./obsidian/excalidraw-bridge";
 import { ExitBackupStore, exitBackupFolder } from "./obsidian/exit-backup-store";
+import { FoldStore, foldMemoryPath } from "./obsidian/fold-store";
 import {
   isMappyCandidate, readMapLayout, readPreferredMapLayout, writeMapLayout,
 } from "./obsidian/frontmatter";
@@ -38,6 +39,19 @@ export default class MappyPlugin extends Plugin {
       save: next => this.saveSettings(next),
     }));
     const store = new DocumentStore(this.app);
+    const pluginFolder = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    // The folds kept between the openings of a note (LEV-365), in the plugin's own folder: read once, beside the load (a
+    // map opening before the read is done waits for it), so a map opening reads no file. A change waits for the folds to
+    // rest before it is written; the plugin's unload, Obsidian's quit and the page going write what is left at once
+    // (Obsidian waits for none of them, and none is added to the quit's tasks).
+    const folds = new FoldStore(this.app.vault.adapter, foldMemoryPath(pluginFolder), path => this.app.vault.getFileByPath(path) !== null);
+    void folds.load();
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => { folds.rename(oldPath, file.path); }));
+    this.registerEvent(this.app.vault.on("delete", file => { folds.delete(file.path); }));
+    this.app.workspace.onLayoutReady(() => { folds.prune(); });
+    this.registerEvent(this.app.workspace.on("quit", () => { void folds.flush(); }));
+    this.registerDomEvent(window, "pagehide", () => { void folds.flush(); });
+    this.register(() => { void folds.close(); });
     this.router = new ViewRouter({
       mapViewType: VIEW_TYPE,
       isMapFile: path => {
@@ -66,14 +80,13 @@ export default class MappyPlugin extends Plugin {
     // the pointer across a map does not open a popover at every link it passes.
     this.registerHoverLinkSource(HOVER_SOURCE, { display: "Mappy", defaultMod: true });
     this.registerView(VIEW_TYPE, leaf => {
-      const view = new MindmapView(leaf, store, this.router, menuActions);
+      const view = new MindmapView(leaf, store, this.router, menuActions, folds);
       view.setTheme(this.settings.theme);
       view.setVisibleLayouts(this.settings.visibleLayouts);
       return view;
     });
     // A title draft open when the window reloads or Obsidian quits, neither of which closes the view (LEV-230); each
     // write of one leaves a backup of the note first, in the plugin's own folder (LEV-309).
-    const pluginFolder = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     const backups = new ExitBackupStore(this.app.vault.adapter, exitBackupFolder(pluginFolder), this.manifest.version);
     installExitDrafts(this, this.app, store, backups, () => this.app.workspace.getLeavesOfType(VIEW_TYPE)
       .map(leaf => leaf.view).filter((view): view is MindmapView => view instanceof MindmapView));

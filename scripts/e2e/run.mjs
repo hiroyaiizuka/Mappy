@@ -74,6 +74,7 @@ export const CASES = [
   { name: 'map-title-rename', file: 'map-title-rename.mjs', description: 'E87 マップの表札（view header のノート名）からの改名: 表札の実クリック → Enter／空白のクリック／Escape、コマンド（直接・パレット）、ノードの上と表札の上の F2、変換中の Enter × フォルダ・Vault の直下・同名がある・空・使えない文字・Markdown の別タブ・ファイル名の根・ノードの入力欄を開いたまま・リンクされている。タブと表札はノート名だけ（LEV-340）', shot: true },
   { name: 'canvas-card', file: 'canvas-card.mjs', description: 'E88 Canvas の付箋のマップ: 置く・実ダブルクリック（2 回・見出し・通常ノート）・横のマップで直す・⌘ホイールで中身が外れる縮小と戻す・付箋の移動と大きさの変更・読み取り専用・明暗テーマ・別ウィンドウ（メインの窓に同じボードを開いたまま、メインの窓の DOM の変化に頼らない。LEV-359）・Canvas を閉じる・Mappy を無効化 × マップ・#見出し・mappy: true のないノート・存在しないノート（LEV-348）', shot: true },
   { name: 'popout-embed', file: 'popout-embed.mjs', description: 'E89 別ウィンドウの埋め込み: 別ウィンドウに開く（メインの窓に同じノートを開いたまま・開かずに）・別ウィンドウで画面の下の埋め込みまで実ホイールでスクロール・タブを新規ウィンドウに移動 × ライブプレビュー・閲覧、`![[マップ]]`・`![[マップ#見出し]]`。メインの窓の DOM が変わるのを待たずにマップになる（LEV-359）。閉じたあとハンドラも要素も残らず、ノートは書き換わらない', shot: false },
+  { name: 'fold-memory', file: 'fold-memory.mjs', description: 'E90 畳んだ枝を覚える: ファイル一覧・マップのリンクと戻る／進む・別のタブ・Markdown と戻る・Markdown の編集・改名と移動・同じノートの 2 つのタブ・プラグインの無効化・ウィンドウの再読込・Obsidian の終了と起動 × リストのマップ（同名・空題名・深い枝・フリートピック・呼び出しの枝）・見出しのマップ・2,000 ノード。削除したノートは忘れる（LEV-365）', shot: false },
 ];
 
 const args = process.argv.slice(2);

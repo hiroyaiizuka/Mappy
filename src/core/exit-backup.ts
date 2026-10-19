@@ -61,7 +61,8 @@ export async function sha256Hex(text: string): Promise<string> {
 export const backupId = (draft: ExitDraft): Promise<string> => sha256Hex(draftKey(draft));
 
 /** How many bytes `text` takes as UTF-8: what a backup's JSON adds to the folder. */
-export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
+const encoder = new TextEncoder();
+export const utf8Bytes = (text: string): number => encoder.encode(text).length;
 
 /**
  * Whether a file of `adding` bytes fits beside the `held` ones: the folder holds at most `limit` once it is written. A
