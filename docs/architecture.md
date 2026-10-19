@@ -51,6 +51,8 @@ TypeScript＋esbuild と標準 DOM を使う。ノードの表示には Obsidian
 | `src/ui/inline-editor.ts` / `link-suggest.ts` | インライン入力とノート候補 | DOM、候補取得時の Obsidian API |
 | `src/core/embed.ts` / `map-keys.ts` | 埋め込み（M10）の純粋な部分: 原文からのマップ識別と `mappy-layout`（キーは `map-keys.ts` で cache 側と共有）、`#見出し` の区画解決（Obsidian の `stripHeading` に準じた正規化と最初の一致）、埋め込みが描く木、開いた時点の折りたたみ、可視ノード。項目が埋め込み 1 つだけかの判定（`embedOnlyTitle`、M12） | 純粋 TypeScript |
 | `src/core/calls.ts` | マップの中の呼び出し（M12）の投影: 呼び出し先の木を現在の木に継ぎ足す `projectCalls`（`callerId/nodeId` の id、各ノードの出所 `CallSource`）、開いた時点の折りたたみ `initialCallFolds` | 純粋 TypeScript |
+| `src/core/fold-keys.ts` / `fold-memory.ts` / `fold-state.ts` | 畳んだ枝の記憶（LEV-365、§6b）の純粋な部分: ノードの鍵（題名の道筋と同名の兄弟の順番。呼び出し先は `null` の後ろ）、ファイルの形・上限・改名と削除の追従、view の折りたたみと鍵の行き来 | 純粋 TypeScript |
+| `src/obsidian/fold-store.ts` | 畳んだ枝の記憶のファイル（プラグインのフォルダの `folds.json`、§6b）: プラグインの読み込みで 1 回読み、間引いて書き、次の版を先に書いてから入れ替える | `app.vault.adapter` |
 | `src/obsidian/embed-target.ts` | マップノートの判定 `isMapNote`（metadataCache の `mappy: true`。埋め込みと検索で共有）と、`.internal-embed` の `src` からのマップノートと見出しパスの解決（`parseLinktext`、`getFirstLinkpathDest`） | Obsidian の公開 API |
 | `src/obsidian/canvas-card.ts` | Canvas の付箋（M10、LEV-348）: 付箋の容器から、開いている Canvas のデータ（`getViewData`）と付箋の位置で見出しパスを読む `canvasCard`（§5b の 3）と、ノートをマップで Canvas の横に開く `openMapBeside`（開いている途中の 2 回目は同じ 1 回） | Obsidian の公開 API（`TextFileView.getViewData`・`getLeavesOfType`・`createLeafBySplit`・`revealLeaf`・`openFile`）と Canvas の DOM（`.canvas-node` の inline style） |
 | `src/obsidian/map-search.ts` | コマンド「マップを検索して呼び出す」の検索 UI（M12 の入力側）: 他のマップノートを候補にした `FuzzySuggestModal`。候補の列挙 `listMapNotes`、検索文字列 `searchText`、選んだファイルを返すだけで書き込みは持たない | Obsidian の FuzzySuggestModal、Vault、metadataCache |
@@ -246,6 +248,32 @@ draw():        visible()（投影の木を preorder、閉じた枝の下は省�
 追加した空のノードはモーダルを出さず、そのノード内で編集する。リスト形式の下位には箇条書き、ルートには H2、従来の見出し形式には ATX 見出しを追加する。プレースホルダーを付けない。インライン入力中は Enter で保存、Tab で保存して子を追加、Escape で編集前のテキストに戻る。新しい空ノードを追加済みの場合、Escape は追加そのものを取り消さない。追加操作の取消は Undo で行う。
 
 `[[` の候補は専用 textarea に対する独自 UI とし、Vault のノート・パス・別名と PNG・SVG・PDF 等の添付ファイルを候補にする。`![[` で開始したリンクは埋め込みの `!` を保つ。候補がある間は Enter/Tab を候補選択に使い、同じキーで保存や子追加まで行わない。選択箇所以外の入力を保持し、入力を閉じたら候補 DOM とイベントを解放する。見出し・ブロック候補を含む標準エディタの全補完機能を再現したものではない。
+
+## 6b. 畳んだ枝の記憶（LEV-365）
+
+マップのタブで手で畳んだ・開いた枝を、ノートを開き直しても（同じタブで別のノートを開いて戻る・別のタブ・Markdown に切り替えて戻る・Obsidian の再起動）同じ形で出す。LEV-365 より前は折りたたみが view の `collapsed` だけにあり、`onUnloadFile` で消えていた。
+
+**置き場（2026-10-19 の本人の判断「1=A」）:** Mappy 専用のファイル、Vault の `.obsidian/plugins/mappy/folds.json`（`manifest.dir` の下）にノートのパスごとに書く。ノートも `localStorage` も使わない（本人は `localStorage` を避けたい）。Obsidian の Markdown の折りたたみ（非公開の `foldManager`、`localStorage` に行番号）との共有は入れない。ファイルに `version` を持たせ、あとから項目を足せる形にしてある。閲覧で `.md` は書き換えない。
+
+**形:** `{ "version": 1, "savedAt": <ms>, "notes": { "<ノートのパス>": { "at": <ms>, "folds": [鍵…], "open": [鍵…] } } }`。`folds` は畳んだノード、`open` は呼び出し（M12）の枝のうち開いたときに閉じて始まる（`initialCallFolds`）ものを開いたノード。`at` はそのノートの折りたたみが最後に変わった時刻。どちらも空のノートは持たない（`src/core/fold-memory.ts`）。
+
+**ノードの見分け方（鍵、`src/core/fold-keys.ts`）:** ノートの上からそのノードまでの題名の並び（ファイル名の根は入れない: 改名で変わるため。根そのものは `[]`）。同じ親の下に同じ題名の兄弟があるときは、題名の後ろにノートの中で何番目か（2 以上。1 番目は付けない）を置く（`topicKeys` が同じ見出しのトピックを見分けるのと同じ考え方）。空の題名も題名の 1 つとして数える。呼び出しの枝のノードは、呼び出し元の項目の鍵（項目は自分の文 `![[…]]` で、描いている呼び出し先のルートの文ではない）・`null`・呼び出し先のノートでのルートの子からの題名の並び。鍵は JSON の配列のままファイルに入る。
+
+- 開いている間は今までどおり id で持つ。マップの上での改名・移動・追加・削除は自分の書き込みとして id が引き継がれる（LEV-146）ので、覚える鍵も新しい題名・位置になる。Markdown の編集・外部ツールの書き換えでは、同名・空題名のノードは一意な題名でしか照合されず新しい id になり、その折りたたみは外れる（E05、LEV-237 の「畳んだ方の双子を消しても、残った双子に折りたたみを移さない」を含め、前から同じ）。覚える形はマップが見せている形に従う。
+- 開き直すときだけ鍵で探す（`nodeOfFoldKey`）。ほかのノードの追加・削除・並べ替え・本文の変更をまたいでも同じ枝を指す。畳んだノードやその上の題名を Markdown 側で書き換えたときは開いて出る（判断ページでそう書いた）。マップを閉じている間に同名の兄弟を消す・並べ替えると、順番で見分けるので別の同名の兄弟に付くことがある（id の無い開き直しでは見分ける手がかりが順番しかない）。
+
+**戻すところ（`MindmapView`）:** `onLoadFile` で記憶からそのノートの分を受け取り（ファイルは読まない）、最初の `adopt` で自分のノードを畳む。呼び出しの枝はその枝が view に初めて描かれたとき（呼び出し先が遅れて読めたときも）に畳み、`open` にあるノードは `initialCallFolds` から外す。記憶の無いノート・初めて描く呼び出しの枝の初めの形（呼び出しの「ルートの子より下を閉じる」）は今のまま。埋め込み（M10）・Canvas の付箋（`MapEmbed`）・Excalidraw への挿入（`OffscreenMap`）は記憶を読まず、初めの開き方は今のまま。書き出し（M13）は表示中の折りたたみをそのまま使う。
+
+**覚え直し（`rememberFolds`）:** 開閉（クリック・Space・呼び出しの枝の右クリック）、追加したノードを見せるために親を開いたとき（`reveal`）、追加の取り消しで折りたたみを戻したとき（`retract`）、`adopt`（再解析・呼び出し先の読み直し）のたびに、今の形を鍵にして（`foldEntryOf`）、その view が前に渡した形と違うときだけ記憶に渡す。描いていない呼び出しの枝（呼び出し先が読めない・一時的にマップでない・リンクが壊れている）の鍵は、呼び出し元の項目がノートにある間は前の形のまま残す（LEV-246・LEV-260 の折りたたみの扱いと同じ）。同じノートのマップのタブが 2 つあるとき（仮・本人の判断待ち）: 開いている間はタブごとに自分の折りたたみを持ち、片方で畳んでももう片方は変わらない。次に開くマップは最後に変えたタブの形で出る（Obsidian の Markdown の見出しの折りたたみも開いている間はタブごと）。
+
+**読み書き（`FoldStore`、`src/obsidian/fold-store.ts`）:** プラグインの `onload` で 1 回だけ読み（view の登録の前に待つ。1,000 ノート × 20 の 1.3 MB で 7〜8 ms、artifacts/lev-365）、以後はメモリだけを見る。変更は 1 秒止まってから 1 回書く（変更が続いても最初の変更から 10 秒で書く）。プラグインの無効化（`onunload`）・Obsidian の終了（`workspace.on("quit")`。`Tasks` には足さない: 足すと macOS で窓の無い Obsidian が残る、§4 の LEV-230）・ページが閉じるとき（`pagehide`）は待たずにすぐ書く。
+
+- **切れても壊さない:** 書き込みは `folds.next.json` に全文を書き、`folds.json` を消して `folds.next.json` を `folds.json` へ rename する（Obsidian の adapter の rename は行き先があると止めるので、上書きの rename に頼らない）。どの段で切れても、読み込みは 2 つのうち読めて `savedAt` が新しい方を取る。`fs.promises.writeFile` は切り詰めてから書くので、ページの終わりに始めた書き込みは 0 バイトのファイルを残しうる（LEV-230。この実装でも `folds.next.json` が 0 バイトで残ることを実機で見た）が、`folds.json` には触らない。Obsidian 1.14.4 の `FileSystemAdapter` は read・write・remove・rename を 1 本の `queue` で順に走らせるので、読み込みが書きかけを読むことはない（プラグインの無効化の直後の有効化でも）。
+- **再読込（仮・本人の判断待ち）:** コマンド「保存せずに再読み込み」（`app:reload`、英語名 "Reload app without saving"）は `location.reload()` だけで `quit` を出さず、`pagehide` で始めた書き込みは終わらない（実機で 0 バイトの `folds.next.json`）。そのため再読込の直前 1 秒（間引きの待ち）の変更は残らない。ファイルは壊れず、その前の形で開く。終了（`app.quit()` の直前の変更、9 回中 9 回残った）とプラグインの無効化は書き終わる。
+- **読めないとき:** 無い・JSON として読めない・`version` が違う・8 MiB を超えるファイルは「何も覚えていない」として扱い、マップは開ける。次の書き込みで置き換わる。
+- **外からの書き換え（仮・本人の判断待ち）:** 読むのは起動時の 1 回だけで、iCloud などの同期が別の端末の `folds.json` を持ってきても読み直さない。次の書き込みでこの Obsidian の形を上書きする（最後に書いた端末の形が残る）。
+
+**大きさ（`FOLD_LIMITS`）:** 折りたたみが最後に変わったノートから 1,000 ノートまで、かつ 4 MiB（UTF-8）まで。超えた分は古いノートから書かない（そのノートは何も覚えていない状態で開く）。掃除: ノートの改名・移動（フォルダの改名を含む `vault.on("rename")`）で鍵を移し、削除（フォルダを含む）で忘れ、Obsidian を閉じている間に消えたノートは `onLayoutReady` で忘れる（`prune`）。ノートの中で消えたノードの鍵は、そのノートの折りたたみが次に変わったときに落ちる（開いただけでは書かない。ただし覚えた鍵のうち今のノートに無いものがあれば、最初の描画で 1 回書き直す）。
 
 ## 7. 添付画像のタイムライン
 

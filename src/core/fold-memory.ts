@@ -28,7 +28,7 @@ export interface StoredFolds extends FoldEntry {
 
 /**
  * How much the file holds at most: the notes whose folds changed last, up to `notes` of them and `bytes` of the file
- * (UTF-8). 1,000 notes of 20 folds each, deep in long Japanese titles, are about 1.6 MB (artifacts/lev-365), well inside.
+ * (UTF-8). 1,000 notes of 20 folds each, three titles deep in Japanese, are 1.3 MB (artifacts/lev-365), well inside.
  * A file larger than `readBytes` is not read at all (the map opens with nothing folded, as with an unreadable one).
  */
 export const FOLD_LIMITS = { notes: 1000, bytes: 4 * 1024 * 1024, readBytes: 8 * 1024 * 1024 } as const;

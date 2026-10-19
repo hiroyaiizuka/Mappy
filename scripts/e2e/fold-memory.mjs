@@ -112,7 +112,8 @@ const PAGE = `const label = node => (node.getAttribute('aria-labelledby') ?? '')
 
 /** The note as a map in a new tab, active; remembered as `__mappyE2E`. */
 const openTab = path => evaluate(`${PAGE}
-  const leaf = app.workspace.getLeaf('tab');
+  // A main area left with one empty leaf that was never active has no tab group to add a tab to (1.14.4): that leaf, then.
+  let leaf; try { leaf = app.workspace.getLeaf('tab'); } catch { leaf = app.workspace.getLeaf(false); }
   await leaf.setViewState({ type: 'mappy-map', state: { file: ${JSON.stringify(path)} }, active: true });
   await laidOut(leaf);
   app.workspace.setActiveLeaf(leaf, { focus: true });
@@ -484,6 +485,12 @@ try {
     return { had, after: Object.keys(after?.notes ?? {}) };
   });
 
+  await step('errors', async () => {
+    const errors = await evaluate(`return [...(window.__mappyE2EErrors ?? [])];`);
+    check(errors.length === 0, `errors: the page had errors: ${JSON.stringify(errors).slice(0, 1500)}`);
+    return { errors };
+  });
+
   if (flag('--perf')) {
     // The 2,000-node map's opening and one fold's handler, on the build installed (run on the build before the fix too).
     await step('perf-open-2000', async () => {
@@ -544,7 +551,7 @@ try {
         const started = performance.now(); await again.load(); reads.push(performance.now() - started);
       }
       for (const name of await app.vault.adapter.list(folder).then(listed => listed.files)) await app.vault.adapter.remove(name);
-      await app.vault.adapter.rmdir(folder, false);
+      await app.vault.adapter.rmdir(folder, true);
       return { notes: 1000, foldsPerNote: 20, bytes, setMs, writes, reads };`));
   }
 } catch (error) {
