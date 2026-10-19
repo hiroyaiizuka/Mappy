@@ -13,11 +13,13 @@
  *
  * Rows: 1 the file explorer (another note in the same tab, then the map again), 2 a link on the map and back／forward,
  * 3 the same note in another tab, 4 Markdown and back (`mappy:toggle-mindmap`), 5 Markdown edits (a node added, one
- * deleted, two branches swapped, written from outside the map) and the map opened again, 6 the note renamed into another
+ * deleted, two branches swapped, written from outside the map: the folds stay but the second 同名's, which goes with its
+ * id as before, E05) and the map opened again as it showed, 6 the note renamed into another
  * folder (in place, then opened again; the memory names the new path only), 7 two tabs on one note (the provisional
  * answer: each tab keeps its own folds while it is open, and a map opened next takes the last change made), 8 the headings
  * map and 9 the 2,000-node map opened again, 10 the plugin disabled and enabled with a change made just before (no wait
- * for the throttled write), 11 the window reloaded the same way, 12 Obsidian quit the same way (`app.quit()`, then
+ * for the throttled write), 11 the window reloaded once the change has rested (a) and at once (b: the change is lost, the
+ * file is not; provisional), 12 Obsidian quit at once after a change (`app.quit()`, then
  * launched again with `MAPPY_E2E_PROFILE` on the same port: macOS only) — every map as it was, 13 a deleted note leaves
  * the memory. `--perf` also measures, on whatever build is installed: the 2,000-node map's opening (setViewState to the
  * first laid-out node) and one fold's handler (the click's synchronous work) and frame, and, when the build has the
@@ -132,10 +134,13 @@ async function press(locate, { hover = false } = {}) {
       if (top && !target.contains(top)) top.closest('.notice')?.click();
       return { x, y, hit: !!top && target.contains(top), cover: top ? String(top.className?.baseVal ?? top.className ?? top.tagName) : 'nothing' };`);
     if (box.hit) break;
-    // Off screen: brought into view by its node's selection (`ensureVisible` on Space's own select) is not ours to rely on.
+    // Off screen, or too small to press (a 2,000-node map fitted to the pane): the view centres its node at 100 %, as a
+    // person zooms in to reach it. Only the viewport moves; the folds are not touched.
     await evaluate(`${PAGE} const leaf = window.__mappyE2E; let target = null; ${locate}
       const view = leaf.view; const owner = target?.closest('.mappy-node');
-      if (owner && view.layout) { const id = owner.dataset.nodeId; view.select?.(id); view.ensureVisible?.(id); }
+      const placed = owner && view.layout?.nodes.find(item => item.id === owner.dataset.nodeId);
+      const canvas = view.contentEl.querySelector('.mappy-canvas');
+      if (placed && canvas) view.viewport.set({ scale: 1, x: canvas.clientWidth / 2 - placed.x - placed.width / 2, y: canvas.clientHeight / 2 - placed.y - placed.height / 2 });
       return true;`);
     await wait(400);
   }
@@ -322,11 +327,14 @@ try {
       .replace('- [[E2E-fold-other]]\n', '- [[E2E-fold-other]]\n- 枝A\n  - A1\n    - A1a\n- 足した枝\n  - 足した子\n');
     await evaluate(`await app.vault.adapter.write(${JSON.stringify(list)}, ${JSON.stringify(edited)}); await new Promise(resolve => setTimeout(resolve, 1500)); return true;`);
     const live = await current();
-    check(same(live.folded, before.folded), `5-edits: the map lost folds on the edit: ${JSON.stringify(live.folded)}`);
+    // A change made outside the map matches nodes by unique titles only: the second 同名 gets a new id and its fold goes
+    // with the old one, as before (E05, LEV-237); every other fold stays.
+    const kept = before.folded.filter(item => item !== '同名#2');
+    check(same(live.folded, kept), `5-edits: the edit left other folds than the rule keeps: ${JSON.stringify(live.folded)} (expected ${JSON.stringify(kept)})`);
     await explorerOpen(OTHER);
     await explorerOpen(list);
     const after = await current();
-    check(same(after.folded, before.folded), `5-edits: the map opened again with other folds: ${JSON.stringify(after.folded)}`);
+    check(same(after.folded, live.folded), `5-edits: the map opened again with other folds than it showed: ${JSON.stringify(after.folded)} (showed ${JSON.stringify(live.folded)})`);
     await evaluate(`await app.vault.adapter.write(${JSON.stringify(list)}, ${JSON.stringify(LIST_SOURCE)}); await new Promise(resolve => setTimeout(resolve, 1500)); return true;`);
     return { before, live, after };
   });
@@ -400,22 +408,34 @@ try {
     return { before, after };
   });
 
-  // Row 11: a change, then the window reloaded at once.
-  await step('11-reload', async () => {
-    await wait(SETTLED);
-    await toggle('T1', 1, 'space');
-    const before = await current();
-    await evaluate(`setTimeout(() => app.commands.executeCommandById('app:reload'), 0); return true;`);
-    cdp.close();
-    await wait(3000);
-    await reconnect();
-    await wait(1500);
-    await detachAll();
-    const after = await openTab(list);
-    check(same(after.folded, before.folded), `11-reload: the map after the reload showed other folds: ${JSON.stringify(after.folded)} (was ${JSON.stringify(before.folded)})`);
-    await ensure(LIST_FOLDS);
-    return { before, after };
-  });
+  // Row 11: the window reloaded (`app:reload`, Obsidian's "Reload app without saving": `location.reload()`, no quit event).
+  // 11a: a change that has rested past the throttle is kept. 11b: a change made just before the reload is not on disk yet
+  // and the page goes before a write started then can finish (it leaves `folds.next.json` cut, LEV-230's way): the map
+  // opens as it was before that change, and the file the change would have replaced still reads (provisional, LEV-365's
+  // PR: the person's decision).
+  for (const [name, rest] of [['11a-reload-rested', SETTLED], ['11b-reload-at-once', 0]]) {
+    await step(name, async () => {
+      await wait(SETTLED);
+      const settled = await current();
+      await toggle('T1', 1, 'space');
+      const changed = await current();
+      await wait(rest);
+      await evaluate(`setTimeout(() => app.commands.executeCommandById('app:reload'), 0); return true;`);
+      cdp.close();
+      await wait(3000);
+      await reconnect();
+      await wait(1500);
+      const disk = await memoryOnDisk(0);
+      await detachAll();
+      const after = await openTab(list);
+      const expected = rest > 0 ? changed : settled;
+      check(same(after.folded, expected.folded), `${name}: the map after the reload showed other folds: ${JSON.stringify(after.folded)} (expected ${JSON.stringify(expected.folded)})`);
+      check(disk && !('unreadable' in disk) && list in (disk.notes ?? {}), `${name}: the memory's file did not read after the reload: ${JSON.stringify(disk).slice(0, 300)}`);
+      await ensure(LIST_FOLDS);
+      return { settled, changed, after, files: await evaluate(`const dir = app.plugins.manifests.mappy.dir; const listed = await app.vault.adapter.list(dir);
+        return await Promise.all(listed.files.filter(path => path.includes('folds')).map(async path => ({ path, size: (await app.vault.adapter.stat(path))?.size ?? null })));`) };
+    });
+  }
 
   // Row 12: a change, then Obsidian quit at once and launched again: every map as it was.
   if (!flag('--no-quit')) {
@@ -499,7 +519,7 @@ try {
       return { handler: stats(sample.handler.slice(4)), frame: stats(sample.frame.slice(4)) };
     });
     await step('perf-memory-file', async () => evaluate(`
-      const store = app.plugins.plugins.mappy?.folds;
+      const store = app.workspace.getLeavesOfType('mappy-map').map(leaf => leaf.view.memory).find(Boolean);
       if (!store) return { skipped: 'this build has no fold memory' };
       const folder = app.plugins.plugins.mappy.manifest.dir + '/perf-measure';
       const Store = store.constructor;
