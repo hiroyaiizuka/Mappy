@@ -298,26 +298,33 @@ describe('closing the context card (LEV-369)', () => {
     expect(document.activeElement).toBe(elsewhere);
   });
 
-  it('closes when its window loses the focus, and the node takes it when the window comes back (review 1: not before)', async () => {
+  it('closes when its window loses the focus, leaving the focus on the node for the window\'s return', async () => {
     const { node } = await mount();
     openContextCard(node('睡眠'));
     window.dispatchEvent(new Event('blur'));
     expect(contextCard()).toBeNull();
-    // Nothing is focused while the window is away: a focus taken now would pull the keyboard from a web view or a frame
-    // of the same window, or reach into a window that is not the person's.
-    expect(document.activeElement).toBe(document.body);
-    window.dispatchEvent(new Event('focus'));
     expect(document.activeElement).toBe(node('睡眠'));
   });
 
-  it('leaves the focus where it went when the window comes back to something else (a web view, a frame)', async () => {
+  it('leaves the focus alone when the window lost it to a frame or web view of its own (review 1)', async () => {
     const { node } = await mount();
     openContextCard(node('睡眠'));
+    // The page's focus is in the frame by the time the window's blur arrives (Chromium: the frame element is active).
+    const frame = document.body.createEl('iframe');
+    vi.spyOn(document, 'activeElement', 'get').mockReturnValue(frame);
     window.dispatchEvent(new Event('blur'));
-    const frame = document.body.createEl('input');
-    frame.focus();
-    window.dispatchEvent(new Event('focus'));
-    expect(document.activeElement).toBe(frame);
+    vi.restoreAllMocks();
+    expect(contextCard()).toBeNull();
+    expect(document.activeElement).not.toBe(node('睡眠'));
+  });
+
+  it('closes when another note loads into the leaf (back, forward, a link): its rows were for the note that went (review 2)', async () => {
+    const mounted = await mount();
+    mounted.app.put(HEADINGS_PATH, HEADINGS_SOURCE);
+    openContextCard(mounted.node('睡眠'));
+    await mounted.view.setState({ file: HEADINGS_PATH }, { history: false });
+    await mounted.settle();
+    expect(contextCard()).toBeNull();
   });
 
   it('stays open while the view moves the map itself (a fit, a node brought on screen), and closes on a person\'s wheel (review 1)', async () => {
@@ -353,6 +360,49 @@ describe('closing the context card (LEV-369)', () => {
     cardRow('削除').click();
     await settle();
     expect(source()).toBe(original.replace('  - 睡眠\n', '  - 睡眠（改）\n').replace('  - ふりかえる\n', ''));
+  });
+
+  it('keeps the right-clicked node when the card is closed before the edit\'s save lands (review 2)', async () => {
+    const { node, source, settle, editor, key } = await mount();
+    const original = source();
+    node('睡眠').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No draft on 睡眠');
+    input.value = '睡眠（改）';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    const other = node('ふりかえる');
+    other.focus();
+    openContextCard(other);
+    key(document.activeElement as HTMLElement, 'Escape');
+    expect(contextCard()).toBeNull();
+    await settle();
+    await settle();
+    expect(source()).toBe(original.replace('  - 睡眠\n', '  - 睡眠（改）\n'));
+    expect(node('ふりかえる').classList.contains('is-selected')).toBe(true);
+    expect(document.activeElement).toBe(node('ふりかえる'));
+  });
+
+  it('acts on the node it was opened for after a change from outside, and on nothing (said so) once that node changed (review 2)', async () => {
+    const { node, source, settle, app, file } = await mount();
+    const wait = async (): Promise<void> => { await new Promise(resolve => setTimeout(resolve, 100)); await settle(); };
+    // An item put above it from another editor: the card's 削除 still takes 睡眠.
+    openContextCard(node('睡眠'));
+    const inserted = source().replace('  - 休息の取り方\n', '  - 足した項目\n  - 休息の取り方\n');
+    app.put(file.path, inserted);
+    await wait();
+    cardRow('削除').click();
+    await settle();
+    expect(source()).toBe(inserted.replace('  - 睡眠\n', ''));
+    // The node renamed from outside while its card is open: the row no longer knows it, and does nothing.
+    openContextCard(node('ふりかえる'));
+    const renamed = source().replace('  - ふりかえる\n', '  - ふりかえり\n');
+    app.put(file.path, renamed);
+    await wait();
+    cardRow('削除').click();
+    await settle();
+    expect(source()).toBe(renamed);
+    expect(Notice.log).toContain('対象のノードが変更されています。再選択してください。');
   });
 
   it('closes with the view and releases its listeners on the document and the window', async () => {

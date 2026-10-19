@@ -381,6 +381,8 @@ export class MindmapView extends EditableFileView {
   private popover: { card: MenuCard; anchor: HTMLButtonElement } | null = null;
   /** The context card while it is open (LEV-369): the card and the point it was opened at, from the pane's top left. */
   private contextCard: { card: MenuCard; x: number; y: number } | null = null;
+  /** Set by a right-click while an edit is open (its blur's save still to land): that edit's end leaves the selection to the card. */
+  private cardOverDraft = false;
   /** Whether any node of `document` calls a map (§5 M12), read once per parse. */
   private calls: { document: MindDocument; any: boolean } | undefined;
   private layoutWrite: Promise<void> = Promise.resolve();
@@ -565,6 +567,9 @@ export class MindmapView extends EditableFileView {
    * closing view has saved its draft already (`onClose`).
    */
   async onUnloadFile(file: TFile): Promise<void> {
+    // A card is for a node of the note that goes (LEV-369): another note loading into the leaf (back, forward, a link)
+    // would give its rows another node of the same id.
+    this.closeContextCard(false);
     await this.saveDraft(file);
     this.dropDraft();
     this.document = undefined; this.selectedId = null; this.deselected = false; this.collapsed = new Set(); this.needsFit = true; this.fitHeld = false;
@@ -823,8 +828,10 @@ export class MindmapView extends EditableFileView {
       const id = nodeOf(this.canvas, target)?.dataset.nodeId;
       if (!this.document || !this.file) return;
       event.preventDefault();
+      // A right-click that ends an edit (its blur saves it) keeps what it chose when that save lands (`finish`).
+      if (this.inlineEditor) this.cardOverDraft = true;
       if (id) this.select(id);
-      this.openContextCard(event, id ? t().nodeMenu : t().mapMenu, id ? this.forNode(id, this.nodeRows(id)) : this.canvasRows(event));
+      this.openContextCard(event, id ? t().nodeMenu : t().mapMenu, id ? this.nodeRows(id) : this.canvasRows(event));
     });
     // A person scrolling or zooming the map under a context card (the wheel, a trackpad's pinch): the card is for where
     // the pointer was (LEV-369). Every other way to move the map starts with a press, which closes the card itself; the
@@ -985,39 +992,40 @@ export class MindmapView extends EditableFileView {
   private nodeRows(id: string): MenuCardRow[] {
     if (this.isCalled(id)) {
       const node = this.projection()?.calls.byId.get(id);
+      const folded = this.collapsed.has(id);
       return [
         this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }),
         ...(node && node.children.length > 0
-          ? [this.collapsed.has(id) ? this.row(t().expand, "chevrons-up-down", () => { this.fold(id); }, SPACE_KEY)
-            : this.row(t().collapse, "chevrons-down-up", () => { this.fold(id); }, SPACE_KEY)]
+          ? [this.row(folded ? t().expand : t().collapse, folded ? "chevrons-up-down" : "chevrons-down-up", () => { this.fold(id); }, SPACE_KEY)]
           : []),
       ];
     }
+    const title = this.selected()?.title ?? "";
+    // Each edit acts on the node the card is for (`cardNode`), not on whatever is selected when the row is chosen.
+    const on = (act: () => void) => () => { if (this.cardNode(id, title)) act(); };
     const rows: MenuCardRow[] = [];
-    if (this.canColor()) rows.push(this.colorRow(), { type: "separator" });
+    if (this.canColor()) rows.push(this.colorRow(color => on(() => { this.run(() => this.execute({ type: "color", nodeId: id, color })); })), { type: "separator" });
     if (this.calledSource(id)) rows.push(this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }));
-    rows.push(this.row(t().editBody, "text", () => { this.editBody(); }), this.row(t().addImage, "image-plus", () => { this.chooseImage(); }));
+    rows.push(this.row(t().editBody, "text", on(() => { this.editBody(); })), this.row(t().addImage, "image-plus", on(() => { this.chooseImage(); })));
     if (this.document?.format === "headings") {
       rows.push({ type: "separator" }, this.row(t().toListFormat, "list-tree", () => { this.run(() => this.convertToList()); }));
     }
-    rows.push({ type: "separator" }, { ...this.row(this.isTopic(id) ? t().deleteTopic : t().deleteNode, "trash-2", () => { this.deleteSelected(); }, deleteKey()), danger: true });
+    const remove = on(() => { this.run(() => this.execute({ type: "delete", nodeId: id })); });
+    rows.push({ type: "separator" }, { ...this.row(this.isTopic(id) ? t().deleteTopic : t().deleteNode, "trash-2", remove, deleteKey()), danger: true });
     return rows;
   }
 
   /**
-   * The node's rows act on that node: chosen while another is selected (an edit's save that ended under the card), each
-   * selects it again first. A node gone meanwhile leaves nothing selected for the row to act on.
+   * The node a card's row acts on: the one the card was opened for, still on the map with the text it had then — a
+   * re-read gives the nodes their ids by position, so a change from outside could have put another node at that id.
+   * Selected, so the 本文・リンクを編集 modal and the image picker take it as the keys would. Gone or changed, nothing
+   * runs and the person is told.
    */
-  private forNode(id: string, rows: MenuCardRow[]): MenuCardRow[] {
-    return rows.map(row => {
-      if (row.type === "item") return { ...row, run: () => { this.reselect(id); row.run(); } };
-      if (row.type === "swatches") return { ...row, swatches: row.swatches.map(swatch => ({ ...swatch, run: () => { this.reselect(id); swatch.run(); } })) };
-      return row;
-    });
-  }
-
-  private reselect(id: string): void {
+  private cardNode(id: string, title: string): MindNode | undefined {
+    const node = id === "root" ? this.document?.root : this.document?.nodes.find(item => item.id === id);
+    if (!node || node.title !== title) { new Notice(t().nodeChanged); return undefined; }
     if (this.selectedId !== id) this.select(id);
+    return node;
   }
 
   /** The empty canvas's card: a topic where the card was opened. */
@@ -1032,11 +1040,11 @@ export class MindmapView extends EditableFileView {
    * the map is drawn in, each named by its tooltip and for a screen reader; the one the node has is ringed (none for a
    * colour of the note's own).
    */
-  private colorRow(): MenuCardRow {
+  private colorRow(choose: (color: NodeColor | null) => () => void): MenuCardRow {
     const node = this.selected();
     const current = (node ? nodeColor(node)?.color : undefined) ?? null;
     return { type: "swatches", label: t().color, swatches: [null, ...NODE_COLORS].map(color => ({
-      label: colorLabel(color), color, checked: current === color, run: () => { this.setColor(color); },
+      label: colorLabel(color), color, checked: current === color, run: choose(color),
     })) };
   }
 
@@ -1135,16 +1143,19 @@ export class MindmapView extends EditableFileView {
    * focused node too (1.14.4 on macOS raises one for the menu key, none for Shift+F10: E92). The keys
    * and the closing are `MenuCard`'s; a person's scroll or zoom of the map (the canvas's wheel) and another tab made
    * active close it as well. The focus goes back to the node it was for, unless it went somewhere itself (another pane
-   * or tab); closed by its window losing the focus, it goes back when the window has the focus again (`focusOnReturn`).
+   * or tab); closed by its window losing the focus, it is left on the node for the window's return.
    */
   private openContextCard(event: MouseEvent, label: string, rows: MenuCardRow[]): void {
     this.closePopover(false);
     this.closeContextCard(false);
     const pane = this.contentEl.getBoundingClientRect();
+    const doc = this.contentEl.doc;
     const card: MenuCard = new MenuCard(this.contentEl, { label, className: "mappy-context-card", rows, within: this.contentEl, closed: reason => {
       if (this.contextCard?.card === card) this.contextCard = null;
-      if (reason === "window") this.focusOnReturn();
-      else if (reason !== "focus" && reason !== "outside" && reason !== "owner") this.focusSelection();
+      // The window losing the focus leaves it on the node for the window's return, as it was on the card — unless it went
+      // into a frame or web view of this window, which has it now (a focus taken there would pull it back out).
+      const back = reason === "window" ? doc.activeElement === null || doc.activeElement === doc.body : reason === "escape" || reason === "choose" || reason === "inside";
+      if (back) this.focusSelection();
     } });
     this.contextCard = { card, x: event.clientX - pane.left, y: event.clientY - pane.top };
     this.placeContextCard();
@@ -1185,20 +1196,6 @@ export class MindmapView extends EditableFileView {
     if (!open) return;
     open.card.close("owner");
     if (focus) this.focusSelection();
-  }
-
-  /**
-   * A card closed as its window lost the focus: the node takes the keyboard when the window has it again, unless
-   * something took it meanwhile (a web view or a frame of the same window, which blurs the window too) — taking it now
-   * would pull it back from there, or reach into a window that is not the person's.
-   */
-  private focusOnReturn(): void {
-    const win = this.contentEl.win;
-    const doc = this.contentEl.doc;
-    win.addEventListener("focus", () => {
-      if (this.closed || !(doc.activeElement === null || doc.activeElement === doc.body)) return;
-      this.focusSelection();
-    }, { once: true });
   }
 
   /** The keyboard back on the map: the selected node, or the canvas when none is drawn. */
@@ -1898,12 +1895,6 @@ export class MindmapView extends EditableFileView {
     this.draw();
   }
 
-  /** Delete the selected node as Delete／Backspace do, read when the card's row is chosen. */
-  private deleteSelected(): void {
-    const node = this.selected();
-    if (node) this.run(() => this.execute({ type: "delete", nodeId: node.id }));
-  }
-
   private async execute(command: EditCommand): Promise<void> {
     if (this.saving) return;
     if ("nodeId" in command) this.assertEditable(command.nodeId);
@@ -2539,9 +2530,11 @@ export class MindmapView extends EditableFileView {
         const page = this.contentEl.ownerDocument;
         const at = blurredTo?.instanceOf(Element) ? blurredTo : page.activeElement;
         const away = at !== null && at !== page.body && !this.contentEl.contains(at);
-        // A right-click that ended the edit opened a card for the node it was on (LEV-369): that node is the selection and
-        // the card has the keyboard, so the saved node is not selected and focused again under it.
-        if (current && !this.deselected && !this.contextCard) this.select(current.id, !away, true);
+        // A right-click that ended the edit opened a card (LEV-369): what it chose is the selection and the card or the node
+        // has the keyboard, open or closed by now, so the saved node is not selected and focused again over it.
+        const carded = this.cardOverDraft;
+        this.cardOverDraft = false;
+        if (current && !this.deselected && !carded) this.select(current.id, !away, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },

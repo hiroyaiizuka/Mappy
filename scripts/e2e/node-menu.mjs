@@ -140,7 +140,9 @@ const openMap = (note, text, extra = '') => evaluate(`window.__mappyE2E?.detach(
   ${VIEW}
   return { labels: nodes().map(label) };`);
 
-const nativeMenusBefore = await evaluate(`return app.vault.getConfig('nativeMenus') ?? null;`);
+/** The vault's own value (undefined when unset, which Obsidian reads as its default): put back as it was, unset included. */
+const nativeMenusBefore = await evaluate(`return app.vault.config?.nativeMenus;`);
+const nativeMenusBack = nativeMenusBefore === undefined ? 'undefined' : JSON.stringify(nativeMenusBefore);
 /** The delete key the card names: a Mac's delete key is Backspace (src/ui/mindmap-view.ts `deleteKey`). */
 const DELETE_KEY = await evaluate(`return process.platform === 'darwin';`) ? { cap: '⌫', keys: 'Backspace Delete' } : { cap: 'Delete', keys: 'Delete Backspace' };
 const appThemeBefore = await evaluate(`return app.vault.getConfig('theme') ?? null;`);
@@ -156,7 +158,7 @@ try {
     { ${writeNote(CALLED, CALLED_SOURCE)} }
     app.vault.setConfig('nativeMenus', false);
     return { obsidian: require('electron').ipcRenderer.sendSync('version'), mappy: app.plugins.plugins.mappy.manifest.version,
-      platform: process.platform, nativeMenusBefore: ${JSON.stringify(nativeMenusBefore)} };`)));
+      platform: process.platform, nativeMenusBefore: ${JSON.stringify(nativeMenusBefore === undefined ? 'unset' : nativeMenusBefore)} };`)));
   await markSeen();
   await appTheme('light');
   required(record, 'open', await step('open', () => openMap(NOTE, SOURCE)));
@@ -289,20 +291,16 @@ try {
     await evaluate(`const other = app.workspace.getLeaf('tab'); window.__mappyE2EOther = other; app.workspace.setActiveLeaf(other, { focus: true }); await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
     rows.tab = await cardState();
     await evaluate(`window.__mappyE2EOther?.detach(); delete window.__mappyE2EOther; app.workspace.setActiveLeaf(window.__mappyE2E, { focus: true }); await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
-    // The window's blur, dispatched (the case moves no OS window); the node takes the focus when the window's focus is back.
+    // The window's blur, dispatched (the case moves no OS window): the focus is left on the node for the window's return.
     await rightClick(onNode('温泉旅行'));
     await evaluate(`window.dispatchEvent(new Event('blur')); return true;`);
     await wait(200);
     rows.blur = await cardState();
-    await evaluate(`window.dispatchEvent(new Event('focus')); return true;`);
-    await wait(200);
-    rows.back = await cardState();
     check(!rows.outside.open, `outside click left it open ${JSON.stringify(rows.outside)}`);
     check(!rows.scroll.open && rows.scroll.focus.node === '温泉旅行', `scroll ${JSON.stringify(rows.scroll)}`);
     check(!rows.zoom.open && rows.zoom.focus.node === '温泉旅行', `zoom ${JSON.stringify(rows.zoom)}`);
     check(!rows.tab.open, `another tab ${JSON.stringify(rows.tab)}`);
-    check(!rows.blur.open && rows.blur.focus.node === null, `window blur ${JSON.stringify(rows.blur)}`);
-    check(rows.back.focus.node === '温泉旅行', `window back ${JSON.stringify(rows.back)}`);
+    check(!rows.blur.open && rows.blur.focus.node === '温泉旅行', `window blur ${JSON.stringify(rows.blur)}`);
     return rows;
   });
 
@@ -543,7 +541,7 @@ try {
 } catch (error) {
   if (!(error instanceof StopCase)) throw error;
 } finally {
-  await evaluate(`app.vault.setConfig('nativeMenus', ${JSON.stringify(nativeMenusBefore)}); return true;`).catch(() => undefined);
+  await evaluate(`app.vault.setConfig('nativeMenus', ${nativeMenusBack}); return true;`).catch(() => undefined);
   await evaluate(`if (${JSON.stringify(appThemeBefore)} !== null) app.changeTheme(${JSON.stringify(appThemeBefore)}); return true;`).catch(() => undefined);
   cdp.close();
 }
