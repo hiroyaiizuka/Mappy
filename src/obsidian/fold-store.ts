@@ -46,10 +46,9 @@ type Probe = { state: "file"; file: NonNullable<ReturnType<typeof readFoldFile>>
  * kept in memory and nothing is written, so the file stays (code reviews 1 and 3 of LEV-365).
  *
  * Read once: a change made to the file meanwhile by something else (a sync service bringing another device's) is not
- * read, and the next write puts this Obsidian's folds over it (the person's decision of 2026-10-19 on LEV-365's question
- * 3: A). A failed write is tried again,
- * after twice `FOLD_WRITE_DELAY` and then twice as long each time up to `FOLD_WRITE_RETRY_MAX`, or at the next change or
- * flush, without a word: the folds are how the map looks, never the note.
+ * read, and the next write puts this Obsidian's folds over it (LEV-365's question 3, decided A). A failed write is tried
+ * again, after twice `FOLD_WRITE_DELAY` and then twice as long each time up to `FOLD_WRITE_RETRY_MAX`, or at the next
+ * change or flush, without a word: the folds are how the map looks, never the note.
  */
 export class FoldStore {
   private notes = new Map<string, StoredFolds>();
