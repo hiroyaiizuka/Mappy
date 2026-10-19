@@ -1,5 +1,5 @@
 /**
- * E90 (docs/harness.md): the colour of a node (LEV-364, the person's decision of 2026-10-19: the node's text wrapped in
+ * E91 (docs/harness.md): the colour of a node (LEV-364, the person's decision of 2026-10-19: the node's text wrapped in
  * `<mark style="background: …;">`, Highlightr's six colours). Rows are the person's operations × the node's shape:
  *
  * - operations: the context menu's 色 (a real click on 色 and on the colour in the menu that opens), the commands
