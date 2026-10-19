@@ -273,6 +273,7 @@ export const ja: Messages = {
   addTopic: "トピックを追加",
   openOriginal: "元のマップを開く",
   collapse: "折りたたみ",
+  expand: "展開",
   deleteTopic: "トピックを削除",
   deleteNode: "削除",
   toListFormat: "リスト形式に変更",

@@ -141,6 +141,8 @@ const openMap = (note, text, extra = '') => evaluate(`window.__mappyE2E?.detach(
   return { labels: nodes().map(label) };`);
 
 const nativeMenusBefore = await evaluate(`return app.vault.getConfig('nativeMenus') ?? null;`);
+/** The delete key the card names: a Mac's delete key is Backspace (src/ui/mindmap-view.ts `deleteKey`). */
+const DELETE_KEY = await evaluate(`return process.platform === 'darwin';`) ? { cap: '⌫', keys: 'Backspace Delete' } : { cap: 'Delete', keys: 'Delete Backspace' };
 const appThemeBefore = await evaluate(`return app.vault.getConfig('theme') ?? null;`);
 const popoutMark = `node-menu-${Date.now()}`;
 
@@ -180,7 +182,7 @@ try {
     check(same(state.swatches, COLORS) && same(state.checked, ['色なし']), `colours ${JSON.stringify([state.swatches, state.checked])}`);
     check(same(state.swatchRoles, ['menuitemradio']), `colour roles ${JSON.stringify(state.swatchRoles)}`);
     check(same(state.rows, NODE_ROWS), `rows ${JSON.stringify(state.rows)}`);
-    check(same(state.keys, [null, null, '⌫']) && state.shortcuts[2] === 'Backspace Delete', `keys ${JSON.stringify([state.keys, state.shortcuts])}`);
+    check(same(state.keys, [null, null, DELETE_KEY.cap]) && state.shortcuts[2] === DELETE_KEY.keys, `keys ${JSON.stringify([state.keys, state.shortcuts])}`);
     check(same(state.danger, ['削除']), `danger ${JSON.stringify(state.danger)}`);
     const removed = REMOVED.filter(title => state.text.includes(title));
     check(removed.length === 0, `rows taken off are on the card: ${JSON.stringify(removed)}`);
@@ -287,16 +289,20 @@ try {
     await evaluate(`const other = app.workspace.getLeaf('tab'); window.__mappyE2EOther = other; app.workspace.setActiveLeaf(other, { focus: true }); await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
     rows.tab = await cardState();
     await evaluate(`window.__mappyE2EOther?.detach(); delete window.__mappyE2EOther; app.workspace.setActiveLeaf(window.__mappyE2E, { focus: true }); await new Promise(resolve => setTimeout(resolve, 300)); return true;`);
-    // The window's blur, dispatched (the case moves no OS window).
+    // The window's blur, dispatched (the case moves no OS window); the node takes the focus when the window's focus is back.
     await rightClick(onNode('温泉旅行'));
     await evaluate(`window.dispatchEvent(new Event('blur')); return true;`);
     await wait(200);
     rows.blur = await cardState();
+    await evaluate(`window.dispatchEvent(new Event('focus')); return true;`);
+    await wait(200);
+    rows.back = await cardState();
     check(!rows.outside.open, `outside click left it open ${JSON.stringify(rows.outside)}`);
     check(!rows.scroll.open && rows.scroll.focus.node === '温泉旅行', `scroll ${JSON.stringify(rows.scroll)}`);
     check(!rows.zoom.open && rows.zoom.focus.node === '温泉旅行', `zoom ${JSON.stringify(rows.zoom)}`);
     check(!rows.tab.open, `another tab ${JSON.stringify(rows.tab)}`);
-    check(!rows.blur.open && rows.blur.focus.node === '温泉旅行', `window blur ${JSON.stringify(rows.blur)}`);
+    check(!rows.blur.open && rows.blur.focus.node === null, `window blur ${JSON.stringify(rows.blur)}`);
+    check(rows.back.focus.node === '温泉旅行', `window back ${JSON.stringify(rows.back)}`);
     return rows;
   });
 
@@ -384,7 +390,8 @@ try {
     await escape();
     check(same(topic.rows, ['本文・リンクを編集', '画像を追加', 'トピックを削除']) && same(topic.swatches, COLORS), `topic ${JSON.stringify(topic)}`);
     check(same(calling.rows, ['元のマップを開く', ...NODE_ROWS]) && same(calling.swatches, COLORS), `calling item ${JSON.stringify(calling)}`);
-    check(same(called.rows, ['元のマップを開く', '折りたたみ']) && same(called.keys, [null, 'Space']) && same(called.swatches, []), `called node ${JSON.stringify(called)}`);
+    // A called branch below the called root's children starts folded: its row expands it.
+    check(same(called.rows, ['元のマップを開く', '展開']) && same(called.keys, [null, 'Space']) && same(called.swatches, []), `called node ${JSON.stringify(called)}`);
     return { topic: topic.rows, calling: calling.rows, called: { rows: called.rows, keys: called.keys, swatches: called.swatches } };
   });
 

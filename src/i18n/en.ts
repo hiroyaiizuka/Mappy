@@ -301,6 +301,7 @@ export const en = {
   addTopic: "Add topic",
   openOriginal: "Open original map",
   collapse: "Collapse",
+  expand: "Expand",
   deleteTopic: "Delete topic",
   deleteNode: "Delete",
   toListFormat: "Change to list format",

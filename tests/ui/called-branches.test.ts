@@ -21,7 +21,7 @@ import { accessibleDescription, accessibleName } from './accessible-name';
  * root and the called map's body tree is grafted under it as branches of this map, read-only. The
  * shipped view, renderer, reader and store run against the browser-harness stand-in for `obsidian`.
  */
-import { cardSwatches, cardTitlesAt, closeContextCard, openContextCard } from './context-card';
+import { cardRow, cardSwatches, cardTitlesAt, closeContextCard, openContextCard } from './context-card';
 
 vi.mock('obsidian', () => import('../browser-harness/obsidian'));
 
@@ -392,7 +392,15 @@ describe('the called branches are read-only', () => {
 
   it('offers only the note and the fold on the context card of a called node, no colours; the calling item keeps its edits and colours (LEV-369)', async () => {
     const { node } = await mount();
+    // The fold row says what choosing it does: a called branch below the root's children starts folded (review 1).
+    expect(node('回復する').hasClass('is-collapsed')).toBe(true);
+    expect(cardTitlesAt(node('回復する'))).toEqual(['元のマップを開く', '展開']);
+    openContextCard(node('回復する'));
+    cardRow('展開').click();
+    expect(node('回復する').hasClass('is-collapsed')).toBe(false);
     expect(cardTitlesAt(node('回復する'))).toEqual(['元のマップを開く', '折りたたみ']);
+    key(node('回復する'), ' ');
+    expect(node('回復する').hasClass('is-collapsed')).toBe(true);
     expect(cardSwatches(openContextCard(node('回復する'))).labels).toEqual([]);
     closeContextCard();
     expect(cardTitlesAt(node('葉'))).toEqual(['元のマップを開く']);

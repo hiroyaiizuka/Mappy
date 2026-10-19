@@ -6,7 +6,7 @@
  *
  * In English:
  * - the commands (the palette's names), the layout, zoom and gear buttons, the gear popover's items, the settings tab's
-^ *   names, the right-click card of a node: all English, no Japanese character anywhere in them;
+ *   names, the right-click card of a node: all English, no Japanese character anywhere in them;
  * - the tab's title: the note's name and nothing else (LEV-340: no ` · map`, which is no longer a translated string);
  * - Tab on a node writes the English provisional name (`- Subtopic`) into the note, and Enter keeps it;
  * - a name the map refuses (a task marker) shows core's English reason on the draft's error line.

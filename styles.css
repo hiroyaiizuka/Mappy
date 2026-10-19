@@ -189,7 +189,6 @@
    line each with the key that does the same on the right, the deletion in the error colour, and on a node a row of
    colour circles on top. A circle is the page's background under the colour (`.mappy-swatch-fill`, filled by the node
    colour rules below), so it shows the colour as a node on the canvas does in the theme the map is drawn in. */
-.mappy-view .mappy-context-card { min-width: 200px; }
 .mappy-view .mappy-context-card .mappy-popover-item { align-items: center; padding: 6px 10px; }
 .mappy-view .mappy-context-card .mappy-popover-icon { margin-top: 0; }
 .mappy-view .mappy-popover-key { margin-left: auto; padding-left: 16px; color: var(--text-faint); font-size: var(--font-ui-smaller); font-weight: 400; white-space: nowrap; }

@@ -298,12 +298,61 @@ describe('closing the context card (LEV-369)', () => {
     expect(document.activeElement).toBe(elsewhere);
   });
 
-  it('closes when its window loses the focus, the node holding it for when the window comes back', async () => {
+  it('closes when its window loses the focus, and the node takes it when the window comes back (review 1: not before)', async () => {
     const { node } = await mount();
     openContextCard(node('睡眠'));
     window.dispatchEvent(new Event('blur'));
     expect(contextCard()).toBeNull();
+    // Nothing is focused while the window is away: a focus taken now would pull the keyboard from a web view or a frame
+    // of the same window, or reach into a window that is not the person's.
+    expect(document.activeElement).toBe(document.body);
+    window.dispatchEvent(new Event('focus'));
     expect(document.activeElement).toBe(node('睡眠'));
+  });
+
+  it('leaves the focus where it went when the window comes back to something else (a web view, a frame)', async () => {
+    const { node } = await mount();
+    openContextCard(node('睡眠'));
+    window.dispatchEvent(new Event('blur'));
+    const frame = document.body.createEl('input');
+    frame.focus();
+    window.dispatchEvent(new Event('focus'));
+    expect(document.activeElement).toBe(frame);
+  });
+
+  it('stays open while the view moves the map itself (a fit, a node brought on screen), and closes on a person\'s wheel (review 1)', async () => {
+    const mounted = await mount();
+    const card = openContextCard(mounted.node('睡眠'));
+    const viewport = (mounted.view as unknown as { viewport: { value: { x: number; y: number; scale: number }; set: (value: { x: number; y: number; scale: number }) => void } }).viewport;
+    viewport.set({ ...viewport.value, x: viewport.value.x + 50 });
+    await mounted.settle();
+    expect(contextCard()).toBe(card);
+    mounted.canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 30, bubbles: true, cancelable: true }));
+    expect(contextCard()).toBeNull();
+  });
+
+  it('keeps the card and its node when a renamed draft\'s save lands under it, and its rows act on that node (review 1)', async () => {
+    const { node, source, settle, editor } = await mount();
+    const original = source();
+    node('睡眠').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    await settle();
+    const input = editor();
+    if (!input) throw new Error('No draft on 睡眠');
+    input.value = '睡眠（改）';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    // The right press on another node takes the focus from the draft (its blur saves it), then its card opens.
+    const other = node('ふりかえる');
+    other.focus();
+    const card = openContextCard(other);
+    await settle();
+    await settle();
+    expect(source()).toBe(original.replace('  - 睡眠\n', '  - 睡眠（改）\n'));
+    expect(contextCard()).toBe(card);
+    expect(node('ふりかえる').classList.contains('is-selected')).toBe(true);
+    expect(card.contains(document.activeElement)).toBe(true);
+    cardRow('削除').click();
+    await settle();
+    expect(source()).toBe(original.replace('  - 睡眠\n', '  - 睡眠（改）\n').replace('  - ふりかえる\n', ''));
   });
 
   it('closes with the view and releases its listeners on the document and the window', async () => {
@@ -355,11 +404,19 @@ describe('where the context card opens (LEV-369)', () => {
     expect([middle.style.left, middle.style.top]).toEqual(['100px', '112px']);
   });
 
-  it('caps itself to a pane smaller than it, so it scrolls inside the pane instead of leaving it', async () => {
+  it('caps itself to a pane smaller than it, its least width too, so it scrolls inside the pane instead of leaving it (review 1)', async () => {
     const mounted = await mount();
     layOut(mounted, rect(0, 0, 200, 150), { width: 184, height: 134 });
     const card = openContextCard(mounted.node('睡眠'), 50, 50);
-    expect([card.style.maxWidth, card.style.maxHeight]).toEqual(['184px', '134px']);
+    expect([card.style.minWidth, card.style.maxWidth, card.style.maxHeight]).toEqual(['184px', '184px', '134px']);
+    expect([card.style.left, card.style.top]).toEqual(['8px', '8px']);
+  });
+
+  it('keeps 200px as its least width where the pane has the room, and never starts before the pane (a point outside it) (review 1)', async () => {
+    const mounted = await mount();
+    layOut(mounted, rect(300, 100, 1000, 700), { width: 220, height: 180 });
+    const card = openContextCard(mounted.node('睡眠'), 0, 0);
+    expect(card.style.minWidth).toBe('200px');
     expect([card.style.left, card.style.top]).toEqual(['8px', '8px']);
   });
 });

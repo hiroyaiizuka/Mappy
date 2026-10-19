@@ -168,8 +168,9 @@ export interface MapMenuAction {
 const POPOVER_MAX_WIDTH = 320;
 const POPOVER_GAP = 6;
 const POPOVER_MARGIN = 16;
-/** The least a context card (LEV-369) keeps between itself and the pane's edges. */
+/** The least a context card (LEV-369) keeps between itself and the pane's edges, and its narrowest where the pane has the room (the row of colours). */
 const CONTEXT_MARGIN = 8;
+const CONTEXT_MIN_WIDTH = 200;
 
 /**
  * The keys a context card shows beside a row (LEV-369): only ones the map answers with the node selected, the way
@@ -781,8 +782,6 @@ export class MindmapView extends EditableFileView {
     this.viewport = this.addChild(new MapViewport(this.canvas, world, (view, previous, carried) => {
       this.zoomLabel.setText(`${view.scale < 0.1 ? (view.scale * 100).toFixed(1) : Math.round(view.scale * 100)}%`);
       this.app.workspace.requestSaveLayout();
-      // The map scrolled or zoomed under a context card: the card is for where the pointer was (LEV-369).
-      this.closeContextCard(true);
       // A pan or zoom between a drop and the fit held through it is where the view is wanted now (LEV-182).
       if (this.fitHeld && !this.topicDrag) this.clearFit();
       if (!carried) this.viewportMoved(previous, view);
@@ -825,8 +824,12 @@ export class MindmapView extends EditableFileView {
       if (!this.document || !this.file) return;
       event.preventDefault();
       if (id) this.select(id);
-      this.openContextCard(event, id ? t().nodeMenu : t().mapMenu, id ? this.nodeRows(id) : this.canvasRows(event));
+      this.openContextCard(event, id ? t().nodeMenu : t().mapMenu, id ? this.forNode(id, this.nodeRows(id)) : this.canvasRows(event));
     });
+    // A person scrolling or zooming the map under a context card (the wheel, a trackpad's pinch): the card is for where
+    // the pointer was (LEV-369). Every other way to move the map starts with a press, which closes the card itself; the
+    // view's own moves (a fit, a node brought on screen) leave it open.
+    this.registerDomEvent(this.canvas, "wheel", () => { this.closeContextCard(true); }, { passive: true });
     // A tab of this map no longer the active one (another tab chosen, by the keys too) takes its cards down.
     this.registerEvent(this.app.workspace.on("active-leaf-change", leaf => {
       if (leaf === this.leaf) return;
@@ -984,7 +987,10 @@ export class MindmapView extends EditableFileView {
       const node = this.projection()?.calls.byId.get(id);
       return [
         this.row(t().openOriginal, "git-fork", () => { this.openCalled(id, false); }),
-        ...(node && node.children.length > 0 ? [this.row(t().collapse, "chevrons-down-up", () => { this.fold(id); }, SPACE_KEY)] : []),
+        ...(node && node.children.length > 0
+          ? [this.collapsed.has(id) ? this.row(t().expand, "chevrons-up-down", () => { this.fold(id); }, SPACE_KEY)
+            : this.row(t().collapse, "chevrons-down-up", () => { this.fold(id); }, SPACE_KEY)]
+          : []),
       ];
     }
     const rows: MenuCardRow[] = [];
@@ -996,6 +1002,22 @@ export class MindmapView extends EditableFileView {
     }
     rows.push({ type: "separator" }, { ...this.row(this.isTopic(id) ? t().deleteTopic : t().deleteNode, "trash-2", () => { this.deleteSelected(); }, deleteKey()), danger: true });
     return rows;
+  }
+
+  /**
+   * The node's rows act on that node: chosen while another is selected (an edit's save that ended under the card), each
+   * selects it again first. A node gone meanwhile leaves nothing selected for the row to act on.
+   */
+  private forNode(id: string, rows: MenuCardRow[]): MenuCardRow[] {
+    return rows.map(row => {
+      if (row.type === "item") return { ...row, run: () => { this.reselect(id); row.run(); } };
+      if (row.type === "swatches") return { ...row, swatches: row.swatches.map(swatch => ({ ...swatch, run: () => { this.reselect(id); swatch.run(); } })) };
+      return row;
+    });
+  }
+
+  private reselect(id: string): void {
+    if (this.selectedId !== id) this.select(id);
   }
 
   /** The empty canvas's card: a topic where the card was opened. */
@@ -1111,8 +1133,9 @@ export class MindmapView extends EditableFileView {
    * card is, so it is the same card whatever Obsidian's 「OS のメニュー」 says, in the window the map is in (a popout's
    * document for a popout's map), and it can draw the colours. A `contextmenu` the keyboard raises opens it for the
    * focused node too (1.14.4 on macOS raises one for the menu key, none for Shift+F10: E92). The keys
-   * and the closing are `MenuCard`'s; the map's scroll or zoom (`viewportMoved`'s caller) and another tab made active
-   * close it as well. The focus goes back to the node it was for, unless it went somewhere itself (another pane or tab).
+   * and the closing are `MenuCard`'s; a person's scroll or zoom of the map (the canvas's wheel) and another tab made
+   * active close it as well. The focus goes back to the node it was for, unless it went somewhere itself (another pane
+   * or tab); closed by its window losing the focus, it goes back when the window has the focus again (`focusOnReturn`).
    */
   private openContextCard(event: MouseEvent, label: string, rows: MenuCardRow[]): void {
     this.closePopover(false);
@@ -1120,7 +1143,8 @@ export class MindmapView extends EditableFileView {
     const pane = this.contentEl.getBoundingClientRect();
     const card: MenuCard = new MenuCard(this.contentEl, { label, className: "mappy-context-card", rows, within: this.contentEl, closed: reason => {
       if (this.contextCard?.card === card) this.contextCard = null;
-      if (reason !== "focus" && reason !== "outside" && reason !== "owner") this.focusSelection();
+      if (reason === "window") this.focusOnReturn();
+      else if (reason !== "focus" && reason !== "outside" && reason !== "owner") this.focusSelection();
     } });
     this.contextCard = { card, x: event.clientX - pane.left, y: event.clientY - pane.top };
     this.placeContextCard();
@@ -1129,8 +1153,8 @@ export class MindmapView extends EditableFileView {
 
   /**
    * At the point it was opened, inside the pane: to the right of it and below it where the card fits, to its left or
-   * above it where that side has the room, against the pane's far edge when neither has (CONTEXT_MARGIN from it). A
-   * pane narrower or shorter than the card caps it, and the card scrolls. Offsets from the pane, as the gear's card's,
+   * above it where that side has the room, against the pane's far edge when neither has (CONTEXT_MARGIN from it), and
+   * never before its near edge. A pane narrower or shorter than the card caps it (its least width too), and the card scrolls. Offsets from the pane, as the gear's card's,
    * so a popout window places it the same; a pane without a layout yet (empty rects) puts it at the point uncapped.
    */
   private placeContextCard(): void {
@@ -1140,13 +1164,16 @@ export class MindmapView extends EditableFileView {
     const pane = this.contentEl.getBoundingClientRect();
     const width = pane.width - 2 * CONTEXT_MARGIN;
     const height = pane.height - 2 * CONTEXT_MARGIN;
+    element.style.minWidth = width > 0 ? `${Math.min(CONTEXT_MIN_WIDTH, width)}px` : "";
     element.style.maxWidth = width > 0 ? `${Math.min(POPOVER_MAX_WIDTH, width)}px` : "";
     element.style.maxHeight = height > 0 ? `${height}px` : "";
     const size = element.getBoundingClientRect();
+    // After the point where it fits, else before it, else against the far edge; never past the pane's near edge either
+    // (a point outside the pane: a keyboard's `contextmenu` at the window's corner).
     const place = (at: number, length: number, extent: number): number => {
-      if (extent <= 0 || at + length <= extent - CONTEXT_MARGIN) return at;
-      if (at - length >= CONTEXT_MARGIN) return at - length;
-      return Math.max(CONTEXT_MARGIN, extent - CONTEXT_MARGIN - length);
+      if (extent <= 0) return at;
+      const start = at + length <= extent - CONTEXT_MARGIN ? at : at - length >= CONTEXT_MARGIN ? at - length : extent - CONTEXT_MARGIN - length;
+      return Math.max(CONTEXT_MARGIN, Math.min(start, extent - CONTEXT_MARGIN - length));
     };
     element.style.left = `${place(x, size.width, pane.width)}px`;
     element.style.top = `${place(y, size.height, pane.height)}px`;
@@ -1158,6 +1185,20 @@ export class MindmapView extends EditableFileView {
     if (!open) return;
     open.card.close("owner");
     if (focus) this.focusSelection();
+  }
+
+  /**
+   * A card closed as its window lost the focus: the node takes the keyboard when the window has it again, unless
+   * something took it meanwhile (a web view or a frame of the same window, which blurs the window too) — taking it now
+   * would pull it back from there, or reach into a window that is not the person's.
+   */
+  private focusOnReturn(): void {
+    const win = this.contentEl.win;
+    const doc = this.contentEl.doc;
+    win.addEventListener("focus", () => {
+      if (this.closed || !(doc.activeElement === null || doc.activeElement === doc.body)) return;
+      this.focusSelection();
+    }, { once: true });
   }
 
   /** The keyboard back on the map: the selected node, or the canvas when none is drawn. */
@@ -2498,7 +2539,9 @@ export class MindmapView extends EditableFileView {
         const page = this.contentEl.ownerDocument;
         const at = blurredTo?.instanceOf(Element) ? blurredTo : page.activeElement;
         const away = at !== null && at !== page.body && !this.contentEl.contains(at);
-        if (current && !this.deselected) this.select(current.id, !away, true);
+        // A right-click that ended the edit opened a card for the node it was on (LEV-369): that node is the selection and
+        // the card has the keyboard, so the saved node is not selected and focused again under it.
+        if (current && !this.deselected && !this.contextCard) this.select(current.id, !away, true);
         if (!cancelled && next === "child" && current) this.run(() => this.execute({ type: "add-child", nodeId: current.id }));
       },
       resize: () => { this.scheduleLayout(); },
