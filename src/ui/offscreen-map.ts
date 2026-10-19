@@ -2,7 +2,7 @@ import { Component, type App, type TFile } from "obsidian";
 import { initialCallFolds, projectShown } from "../core/calls";
 import { readMapFromSource, visibleNodes } from "../core/embed";
 import { parseMarkdown } from "../core/markdown";
-import { readTopicPositions, topicKeys } from "../core/topics";
+import { readTopicPositions, storedTopicPosition, topicKeys } from "../core/topics";
 import type { CaptureSource } from "../export/svg-capture";
 import type { ExportTheme } from "../export/svg-document";
 import { layoutTree, type FreeTopicLayout } from "../layout/layout";
@@ -102,7 +102,7 @@ export class OffscreenMap extends Component {
     const positions = readTopicPositions(text);
     const keys = topicKeys(document);
     const layouts: FreeTopicLayout[] = trees.split.topics.map((topic, index) => {
-      const stored = positions.get(keys.get(topic.id) ?? topic.title)?.[mode];
+      const stored = storedTopicPosition(positions, keys, topic, mode);
       return { tree: trees.calls.roots[index + 1] ?? topic, position: stored ? { x: stored.x, y: stored.y } : null };
     });
     const layout = layoutTree(root, this.renderer.sizes(), collapsed, mode, layouts);

@@ -1,5 +1,6 @@
 import { autolinkUrl, type LinkSyntax } from './wiki-link';
 import { breakRanges, inlineParser } from './title-breaks';
+import { MARK_TAG, uncoloredTitle } from './node-color';
 
 /** A `<br>` while the title is parsed: one character of text, so a break inside a link's label stays in its label. */
 const BREAK = '\uE000';
@@ -30,11 +31,15 @@ function wikiReplacement(match: RegExpMatchArray): Replacement {
   return { from: match.index ?? 0, to: (match.index ?? 0) + whole.length, text: label, link: isEmbed ? null : bare, syntax: 'vault' };
 }
 
-/** Reduce a node title to plain text for renderers that cannot show Markdown; a `<br>` in it is a line break (LEV-202). */
+/**
+ * Reduce a node title to plain text for renderers that cannot show Markdown; a `<br>` in it is a line break (LEV-202).
+ * The node's colour around it is left out (the renderer draws it on the box, LEV-364), and so are `<mark>` tags over part of it.
+ */
 export function plainTitle(written: string): PlainTitle {
+  const uncolored = uncoloredTitle(written);
   // The breaks the map shows (core/title-breaks), each read as text here and made a line break at the end.
-  let title = written;
-  for (const range of breakRanges(written).reverse()) title = title.slice(0, range.from) + BREAK + title.slice(range.to);
+  let title = uncolored;
+  for (const range of breakRanges(uncolored).reverse()) title = title.slice(0, range.from) + BREAK + title.slice(range.to);
   const replacements: Replacement[] = [];
   for (const match of title.matchAll(/(!?)\[\[([^\]\r\n]+?)\]\]/gu)) replacements.push(wikiReplacement(match));
   const tree = inlineParser.parse(title);
@@ -59,7 +64,9 @@ export function plainTitle(written: string): PlainTitle {
         replacements.push({ from: node.from, to: node.to, text: url, link: autolinkUrl(url), syntax: 'autolink' });
         return false;
       }
-      if (MARKER_NODES.has(node.name)) removed.push({ from: node.from, to: node.to });
+      if (MARKER_NODES.has(node.name) || (node.name === 'HTMLTag' && MARK_TAG.test(title.slice(node.from, node.to)))) {
+        removed.push({ from: node.from, to: node.to });
+      }
       return true;
     },
   });

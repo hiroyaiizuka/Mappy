@@ -67,6 +67,21 @@ const ROLE_STYLE: Record<NodeRole, { fontSize: number; box: boolean; padding: nu
   branch: { fontSize: 16, box: false, padding: 0, fill: 'transparent', text: '#1e1e1e' },
 };
 
+/** A branch's coloured box (LEV-364): the fill alone, no frame, padded as the map pads a branch's text. */
+const COLORED_BRANCH_PADDING = 6;
+
+/**
+ * A role's style with the node's colour (LEV-364): the colour fills the box, a branch getting one without a frame, and
+ * the text is dark on it, the root's included (white was for the root's dark face).
+ */
+function colored(role: (typeof ROLE_STYLE)[NodeRole], fill: string | null): (typeof ROLE_STYLE)[NodeRole] & { stroke: string } {
+  const stroke = BASE_STYLE.strokeColor ?? '#1e1e1e';
+  if (fill === null) return { ...role, stroke };
+  return role.box
+    ? { ...role, fill, text: stroke, stroke }
+    : { ...role, box: true, padding: COLORED_BRANCH_PADDING, fill, text: stroke, stroke: 'transparent' };
+}
+
 interface CreatedBlock { ids: string[]; origin: Point; size: NodeSize }
 interface CreatedNode { label: CreatedBlock; images: CreatedBlock[] }
 
@@ -472,13 +487,13 @@ export class ExcalidrawBridge {
   private addLabel(
     ea: ExcalidrawAutomate, node: SceneNodeContent, fontFamily: number, drawingPath: string, source: TFile, refused: string[],
   ): CreatedBlock {
-    const role = ROLE_STYLE[node.role];
+    const role = colored(ROLE_STYLE[node.role], node.fill);
     this.applyStyle(ea, {
       ...BASE_STYLE, fontFamily, fontSize: role.fontSize, strokeColor: role.text, backgroundColor: role.fill, roundness: ROUNDED,
     });
     const text = node.text || ' ';
     const id = ea.addText(0, 0, text, role.box
-      ? { box: 'box', boxPadding: role.padding, boxStrokeColor: BASE_STYLE.strokeColor ?? '#1e1e1e', textVerticalAlign: 'middle' }
+      ? { box: 'box', boxPadding: role.padding, boxStrokeColor: role.stroke, textVerticalAlign: 'middle' }
       : undefined);
     const outer = ea.getElement(id);
     const ids = [id];

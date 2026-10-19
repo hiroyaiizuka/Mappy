@@ -14,6 +14,7 @@ import { runRibbon } from "./obsidian/ribbon";
 import { DEFAULT_SETTINGS, normalizeSettings, showDefaultLayout, type MappySettings } from "./obsidian/settings";
 import { MappySettingTab } from "./obsidian/settings-tab";
 import type { LayoutMode } from "./layout/layout";
+import { NODE_COLORS, colorLabel } from "./core/node-color";
 import { ViewRouter } from "./obsidian/view-routing";
 import { canRasterizeForeignObject } from "./export/svg-capture";
 import { ExportModal } from "./ui/export-modal";
@@ -189,6 +190,19 @@ export default class MappyPlugin extends Plugin {
         return true;
       },
     });
+    // The selected node's colour (LEV-364), one command per colour so each can take a hotkey; the context menu's 色 does the same.
+    for (const color of [...NODE_COLORS, null]) {
+      this.addCommand({
+        id: color === null ? "color-none" : `color-${color}`,
+        name: color === null ? t().cmdColorNone : t().cmdColor(colorLabel(color)),
+        checkCallback: checking => {
+          const map = this.app.workspace.getActiveViewOfType(MindmapView);
+          if (!map?.canColor()) return false;
+          if (!checking) map.setColor(color);
+          return true;
+        },
+      });
+    }
     // A draft kept at a reload or quit that could not be written stays kept; this saves it, or a backup a write of one
     // left (LEV-309), to a separate file (LEV-240).
     this.addCommand({

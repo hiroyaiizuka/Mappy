@@ -67,4 +67,22 @@ describe('locateSubpath', () => {
     expect(locateSubpath(crlf, '#補足: 用語')).toBe(crlf.indexOf('### 補足: 用語'));
     expect(locateSubpath(crlf, '#^intro')).toBe(crlf.indexOf('- はじめに ^intro'));
   });
+
+  it('opens a link on a heading the map coloured since (LEV-364), Obsidian\'s match first', () => {
+    const colored = SOURCE.replace('## 講座の構成', '## <mark style="background: #ADCCFFA6;">講座の構成</mark>');
+    expect(locateSubpath(colored, '#講座の構成')).toBe(colored.indexOf('## <mark'));
+    expect(locateSubpath(colored, '#講座の構成#補足: 用語')).toBe(colored.indexOf('### 補足: 用語'));
+    // Obsidian reads `=` as punctuation, so its own rule already reaches a highlighted heading.
+    const highlighted = SOURCE.replace('### 補足: 用語', '### ==補足: 用語==');
+    expect(locateSubpath(highlighted, '#補足: 用語')).toBe(highlighted.indexOf('### ==補足'));
+    // A plain heading Obsidian finds keeps the link, though a coloured one of the same text comes earlier.
+    const both = SOURCE.replace('### 補足: 用語', '### <mark style="background: #ADCCFFA6;">補足: 用語</mark>');
+    expect(locateSubpath(both, '#補足: 用語')).toBe(both.indexOf('## 補足: 用語\n\n二つ目'));
+    expect(locateSubpath(both, '#講座の構成#補足: 用語')).toBe(both.indexOf('### <mark'));
+    // The next `A` is tried when the first leads nowhere (code review 2).
+    const later = '### <mark>A</mark>\n\n## A\n\n### <mark>B</mark>\n';
+    expect(locateSubpath(later, '#A#B')).toBe(later.indexOf('### <mark>B'));
+    // With no coloured heading on the way, the second reading answers as Obsidian does (code review 3).
+    expect(locateSubpath('# R\n### A\n## A\n### B\n', '#A#B')).toBeNull();
+  });
 });

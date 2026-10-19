@@ -137,8 +137,8 @@ const ITEMS = [
 ] as const;
 const TITLES = ITEMS.map(([title]) => title);
 
-/** The context menu of a node, as before the popover (LEV-77 shared its node items; the popover holds none of them). */
-const NODE_CONTEXT_MENU = ['テキストを編集', '本文・リンクを編集', '画像を追加', '子を追加', '兄弟を追加', '前へ移動', '後ろへ移動', '枝を削除', '元に戻す', 'やり直す'];
+/** The context menu of a node, as before the popover (LEV-77 shared its node items; the popover holds none of them), with 色 since LEV-364. */
+const NODE_CONTEXT_MENU = ['テキストを編集', '本文・リンクを編集', '画像を追加', '色', '子を追加', '兄弟を追加', '前へ移動', '後ろへ移動', '枝を削除', '元に戻す', 'やり直す'];
 
 function contextMenuItems(target: EventTarget): string[] {
   target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));

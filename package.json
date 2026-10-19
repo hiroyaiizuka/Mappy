@@ -82,6 +82,7 @@
     "harness:e2e:canvas-card": "node scripts/e2e/canvas-card.mjs",
     "harness:e2e:popout-embed": "node scripts/e2e/popout-embed.mjs",
     "harness:e2e:fold-memory": "node scripts/e2e/fold-memory.mjs",
+    "harness:e2e:node-color": "node scripts/e2e/node-color.mjs",
     "harness:e2e:memory-procedure": "node scripts/e2e/memory-procedure.mjs",
     "harness:browser": "node scripts/browser-harness.mjs --serve",
     "harness:browser:build": "node scripts/browser-harness.mjs",

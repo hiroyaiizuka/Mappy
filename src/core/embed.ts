@@ -10,6 +10,7 @@ import { EXCALIDRAW_KEY, LAYOUT_KEY, MAPPY_KEY } from './map-keys';
 import { frontmatterLayout, projectMap, type MindDocument, type MindNode } from './markdown';
 import { storedTopicPosition, topicKeys, type TopicPositionMap } from './topics';
 import { locateFrontmatterKey, parseYamlValue } from './yaml-lite';
+import { titleColor, uncoloredTitle } from './node-color';
 
 /**
  * The layout a note asks for, read from its own text: `mappy: true` (the YAML
@@ -54,7 +55,8 @@ export function normalizeHeading(text: string): string {
  * whether drawing it would recurse, is the caller's to decide.
  */
 export function embedOnlyTitle(title: string): string | null {
-  const match = /^!\[\[([^\]\r\n|]+)(?:\|[^\]\r\n]*)?\]\]$/u.exec(title.trim());
+  // A coloured item (LEV-364) is still the one embed: the colour goes on the box of the calling item.
+  const match = /^!\[\[([^\]\r\n|]+)(?:\|[^\]\r\n]*)?\]\]$/u.exec(uncoloredTitle(title.trim()).trim());
   const linktext = match?.[1]?.trim();
   return linktext ? linktext : null;
 }
@@ -82,21 +84,44 @@ function* headingsBelow(scope: MindNode): Generator<MindNode> {
  * first heading in the note whose text matches A, then the first B inside A's
  * section. Same-named headings resolve to the first one. List items are never
  * headings, a block reference or a missing heading resolves to nothing.
+ *
+ * A path Obsidian finds no heading for is tried again with each heading read without its colour as well (LEV-364): a
+ * heading the map coloured is `<mark …>A</mark>` to Obsidian, so `#A` no longer reaches it there, and the embed and the
+ * called map (§5 M10, M12) keep showing the section the link meant. That second reading goes on to the next heading
+ * that matches a segment when the one it took has nothing below for the rest of the path (code review 2: a coloured `A`
+ * without `B` before a plain `A` holding a coloured `B`), and answers only a path that went through a coloured heading
+ * (code review 3: in a note with no colour it answers as Obsidian does, nothing). A path Obsidian resolves is answered
+ * as Obsidian does. A failed (heading, segment) is not tried twice, so the search stays polynomial.
  */
 export function findSection(doc: MindDocument, subpath: string, normalize = normalizeHeading): MindNode | null {
   if (isBlockReference(subpath)) return null;
   const parts = subpath.split('#').map((part) => normalize(part)).filter((part) => part !== '');
   if (parts.length === 0) return null;
-  let scope = doc.root;
-  for (const part of parts) {
-    let found: MindNode | null = null;
+  const exact = (heading: MindNode, part: string): boolean => normalize(heading.title) === part;
+  const throughColor = (heading: MindNode, part: string): boolean => titleColor(heading.title) !== null && normalize(uncoloredTitle(heading.title)) === part;
+  // Obsidian's walk: the first match of each segment.
+  const obsidian = (scope: MindNode, index: number): MindNode | null => {
+    const part = parts[index];
+    if (part === undefined) return scope;
+    for (const heading of headingsBelow(scope)) if (exact(heading, part)) return obsidian(heading, index + 1);
+    return null;
+  };
+  const failed = new Set<string>();
+  const lenient = (scope: MindNode, index: number, coloured: boolean): MindNode | null => {
+    const part = parts[index];
+    if (part === undefined) return coloured ? scope : null;
+    const state = `${scope.id}\0${index}\0${coloured}`;
+    if (failed.has(state)) return null;
     for (const heading of headingsBelow(scope)) {
-      if (normalize(heading.title) === part) { found = heading; break; }
+      const viaColor = !exact(heading, part) && throughColor(heading, part);
+      if (!viaColor && !exact(heading, part)) continue;
+      const found = lenient(heading, index + 1, coloured || viaColor);
+      if (found) return found;
     }
-    if (!found) return null;
-    scope = found;
-  }
-  return scope;
+    failed.add(state);
+    return null;
+  };
+  return obsidian(doc.root, 0) ?? lenient(doc.root, 0, false);
 }
 
 /** The trees an embed draws: one body root and, for a whole-note embed, the free topics beside it. */

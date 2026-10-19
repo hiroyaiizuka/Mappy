@@ -973,6 +973,24 @@ describe('ExcalidrawBridge.insertIntoActiveDrawing', () => {
     expect(ea?.calls.at(-1)).toBe('destroy');
   });
 
+  it('fills a coloured node\'s box with its colour, a branch getting a box of its own, and leaves the others as they were (LEV-364)', async () => {
+    const colored = '## <mark style="background: #ADCCFFA6;">講座</mark>\n- ==はじめに==\n  - <mark style="background: #FF5582A6;">学ぶこと</mark>\n  - 無色\n';
+    const { bridge, automate } = harness({ active: { file: file('Board.excalidraw.md') }, sources: { 'Note.md': colored } });
+    await bridge.insertIntoActiveDrawing({ ...request(), document: parseMarkdown(colored, 'Note') });
+    const elements = automate?.instances[0]?.added[0]?.elements ?? [];
+    const box = (text: string) => {
+      const label = elements.find(element => element.type === 'text' && element.text === text);
+      return elements.find(element => element.id === label?.containerId) ?? null;
+    };
+    expect(elements.filter(element => element.type === 'text').map(element => element.text)).toEqual(['講座', 'はじめに', '学ぶこと', '無色']);
+    expect(box('講座')?.style.backgroundColor).toBe('#cadeff');
+    expect(box('はじめに')?.style.backgroundColor).toBe('#fff7c3');
+    expect(box('学ぶこと')?.style.backgroundColor).toBe('#ff90ae');
+    // The dark text on every colour, the root's too (white was for the root's dark face).
+    expect(elements.find(element => element.type === 'text' && element.text === '講座')?.style.strokeColor).toBe('#1e1e1e');
+    expect(box('無色')).toBeNull();
+  });
+
   const CALLED = '---\nmappy: true\n---\n## 呼ばれた\n- 一\n  ![[絵.png]] と [[別ノート]]\n  - 深い\n- 二\n';
   const CALLER = '## 講座\n- ![[Called]]\n- 葉\n';
 

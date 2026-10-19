@@ -1,5 +1,6 @@
 import { parser } from '@lezer/markdown';
 import { isMultilineSetext, parseableSource } from './markdown';
+import { titleColor, uncoloredTitle } from './node-color';
 
 /** Blocks the parser reads as literal text: nothing inside them is a heading or carries a block id. */
 const LITERAL = new Set(['FencedCode', 'CodeBlock', 'HTMLBlock', 'Comment', 'CommentBlock']);
@@ -24,6 +25,11 @@ function lineStart(source: string, offset: number): number {
  * start of the last matched heading's line. `#^id` is the block whose line ends with ` ^id` (case-insensitive);
  * the offset is the start of that line, which is inside the block. Headings and ids inside code, HTML and
  * comments do not count. Footnotes (`#[^…]`) and a subpath nothing matches are null.
+ *
+ * A heading path Obsidian finds nothing for is tried again with each heading read without its colour as well (LEV-364,
+ * as `findSection` does: the next match of a segment tried when the one taken leads nowhere, only a path through a
+ * coloured heading answered, a failed state not tried twice): a link to a heading made before the map coloured it still
+ * opens the map on that node.
  */
 export function locateSubpath(source: string, subpath: string): number | null {
   const segments = subpath.split('#').filter(Boolean);
@@ -64,14 +70,36 @@ export function locateSubpath(source: string, subpath: string): number | null {
     }
     return null;
   }
+  const wanted = segments.map(normalizeHeading);
+  const exact = (text: string, segment: string): boolean => normalizeHeading(text) === segment;
+  const throughColor = (text: string, segment: string): boolean => titleColor(text.trim()) !== null && normalizeHeading(uncoloredTitle(text.trim())) === segment;
+  // Obsidian's walk: the first deeper heading that matches each segment, in one pass.
   let index = 0;
   let level = 0;
   for (const heading of headings) {
-    if (heading.level <= level) continue;
-    if (normalizeHeading(heading.text) !== normalizeHeading(segments[index] ?? '')) continue;
+    if (heading.level <= level || !exact(heading.text, wanted[index] ?? '')) continue;
     index += 1;
     level = heading.level;
-    if (index === segments.length) return heading.from;
+    if (index === wanted.length) return heading.from;
   }
-  return null;
+  // The lenient walk after the heading at `after` (-1: the start), segment `next` on.
+  const failed = new Set<string>();
+  const lenient = (after: number, next: number, coloured: boolean): number | null => {
+    const state = `${after}\0${next}\0${coloured}`;
+    if (failed.has(state)) return null;
+    const floor = after < 0 ? 0 : headings[after]!.level;
+    for (let at = after + 1; at < headings.length; at += 1) {
+      const heading = headings[at]!;
+      if (heading.level <= floor) continue;
+      const segment = wanted[next] ?? '';
+      const viaColor = !exact(heading.text, segment) && throughColor(heading.text, segment);
+      if (!viaColor && !exact(heading.text, segment)) continue;
+      const used = coloured || viaColor;
+      const found = next + 1 === wanted.length ? (used ? heading.from : null) : lenient(at, next + 1, used);
+      if (found !== null) return found;
+    }
+    failed.add(state);
+    return null;
+  };
+  return lenient(-1, 0, false);
 }

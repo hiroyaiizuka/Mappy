@@ -2,6 +2,7 @@ import { Component, MarkdownRenderer, setIcon, type App } from "obsidian";
 import type { MindDocument, MindNode } from "../core/markdown";
 import { nodeBody } from "../core/body";
 import { displayTitle } from "../core/title-breaks";
+import { nodeColor } from "../core/node-color";
 import { attachmentMarkdown, transclusionsAsLinks } from "../core/attachments";
 import type { CallSource } from "../core/calls";
 import { foldBadgeWidth, foldControlSize, type FoldPosition, type LayoutMode, type PositionedNode } from "../layout/layout";
@@ -20,8 +21,13 @@ interface NodeEntry {
   key: string;
   /** Whether the inline editor stands in for this node's text; see `editing()`. */
   editing: boolean;
-  /** The title `name` was read from: a `<br>` in it takes a parse to read (LEV-202), done again only when it changes. */
+  /**
+   * The title `name`, the colour and `shown` were read from: a `<br>` and a colour in it take a parse to read (LEV-202,
+   * LEV-364), done again only when it changes.
+   */
   named?: string;
+  /** The text inside the node's colour, which the label shows (`nodeText`). */
+  shown: string;
 }
 
 interface NodeAppearance {
@@ -102,7 +108,7 @@ export class NodeRenderer extends Component {
         const toggleMark = toggle.createSpan({ cls: "mappy-node-toggle-mark", attr: { "aria-hidden": "true" } });
         const name = nameElement(element, "name");
         element.setAttribute("aria-labelledby", name.id);
-        entry = { element, content, toggle, toggleMark, name, description: null, component: this.addChild(new Component()), key: "", editing: false };
+        entry = { element, content, toggle, toggleMark, name, description: null, component: this.addChild(new Component()), key: "", editing: false, shown: "" };
         this.entries.set(node.id, entry);
       }
       const isCollapsed = collapsed.has(node.id) && node.children.length > 0;
@@ -124,16 +130,25 @@ export class NodeRenderer extends Component {
       entry.element.toggleClass("is-hierarchy", appearance.mode === "hierarchy");
       entry.element.toggleClass("is-balanced", appearance.mode === "balanced");
       entry.element.toggleClass("is-collapsed", isCollapsed);
-      // The empty node's box, which the inline editor keeps while its draft is empty too (styles.css, LEV-203).
-      entry.element.toggleClass("is-empty", node.title.trim() === "");
-      entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
-      // Written only when it changes: a text node replaced on every refresh of a large map is a mutation each.
-      // A `<br>` in the title is a break on screen and a space when read out (LEV-202).
+      // Written only when the title changes: a text node replaced on every refresh of a large map is a mutation each.
+      // A `<br>` in the title is a break on screen and a space when read out (LEV-202). The node's colour fills its box
+      // and the label shows the text inside it (LEV-364).
       if (entry.named !== node.title) {
         entry.named = node.title;
-        const name = displayTitle(node.title).replace(/\s*\n\s*/gu, " ").trim() || t().emptyNode;
+        const color = nodeColor(node);
+        entry.shown = color ? color.inner + color.suffix : node.title;
+        if (color) entry.element.dataset.mappyColor = color.color;
+        else delete entry.element.dataset.mappyColor;
+        // A colour of the note's own outside the six is drawn as written (core/node-color admits colours only).
+        if (color?.color === "custom") entry.element.style.setProperty("--mappy-node-custom", color.value);
+        else entry.element.style.removeProperty("--mappy-node-custom");
+        const name = displayTitle(entry.shown).replace(/\s*\n\s*/gu, " ").trim() || t().emptyNode;
         if (entry.name.textContent !== name) entry.name.setText(name);
       }
+      const shown = entry.shown;
+      // The empty node's box, which the inline editor keeps while its draft is empty too (styles.css, LEV-203).
+      entry.element.toggleClass("is-empty", shown.trim() === "");
+      entry.element.setAttribute("aria-level", String(Math.max(1, node.level)));
       // The branches of a called map are read-only on this map (the calling item itself is not); every node of them
       // names its note after its name. Not on hover: a tooltip there covers the node below as the name's did (LEV-199).
       if (source && !source.root) entry.element.setAttribute("aria-readonly", "true");
@@ -178,8 +193,8 @@ export class NodeRenderer extends Component {
       if (source?.root) setIcon(entry.content.createSpan({ cls: "mappy-node-call-mark", attr: { "aria-hidden": "true" } }), "link");
       const label = entry.content.createDiv({ cls: "mappy-node-label" });
       // A note transclusion in a title renders as a link (as in the body), so a node never nests another note's rendering.
-      const labelTask = node.title
-        ? MarkdownRenderer.render(this.app, transclusionsAsLinks(node.title), label, path, entry.component)
+      const labelTask = shown
+        ? MarkdownRenderer.render(this.app, transclusionsAsLinks(shown), label, path, entry.component)
         : Promise.resolve();
       const attachmentsEl = entry.content.createDiv({ cls: "mappy-node-attachments" });
       // A re-render while the node is being edited makes these elements again (an image pasted onto the node
@@ -210,7 +225,7 @@ export class NodeRenderer extends Component {
         if (this.entries.get(node.id) === current && current.key === key) {
           // The text as it reads, its breaks (`<br>`) kept as breaks: the label's white-space folds a newline.
           label.empty();
-          displayTitle(node.title).split("\n").forEach((line, index) => {
+          displayTitle(shown).split("\n").forEach((line, index) => {
             if (index > 0) label.createEl("br");
             label.append(line);
           });

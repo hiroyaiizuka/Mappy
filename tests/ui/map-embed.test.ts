@@ -234,6 +234,18 @@ describe('MapEmbeds in the reading view (host sections)', () => {
     expect(second.querySelector<HTMLElement>('.mappy-canvas')?.hidden).toBe(true);
   });
 
+  it('fills coloured nodes, and keeps drawing a `#heading` the map coloured since (LEV-364)', async () => {
+    const colored = HEADINGS.replace('## 記録する', '## <mark style="background: #ADCCFFA6;">記録する</mark>').replace('### 休息', '### ==休息==');
+    const { section } = await render({ 'Host.md': '![[Map]]\n\n![[Map#記録する]]', 'Map.md': colored }, 'Host.md');
+    const [whole, branch] = Array.from(section.querySelectorAll<HTMLElement>('.mappy-embed'));
+    if (!whole || !branch) throw new Error('two frames expected');
+    expect(nodeByTitle(whole, '記録する').dataset.mappyColor).toBe('blue');
+    expect(nodeByTitle(whole, '記録する').querySelector('.mappy-node-label')?.textContent).toBe('記録する');
+    expect(titles(branch)).toEqual(['記録する', '同じ名前']);
+    expect(nodeByTitle(branch, '記録する').dataset.mappyColor).toBe('blue');
+    expect(branch.querySelector<HTMLElement>('.mappy-embed-message')?.hidden).not.toBe(false);
+  });
+
   it("follows the note's own mappy-layout and shows its free topics", async () => {
     const timeline = ['---', 'mappy: true', 'mappy-layout: timeline', 'mappy-topics:', '  補足: { timeline: [40, 200] }', '---',
       '## 本体', '- 一', '', '## 補足', '- 二', ''].join('\n');

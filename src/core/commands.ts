@@ -2,6 +2,7 @@ import { parseMarkdown, projectMap, type MindDocument, type MindNode } from './m
 import { planFileRoot, planListEdit, standsForFileName } from './list-commands';
 import { endsWithBlankLine, findNode, getNode, nodeAt, offsetAfter, paragraphGap, siblingOf } from './text-edits';
 import { storedTitle } from './title-breaks';
+import { colorMark, recoloredTitle, storedColoredTitle, type NodeColor } from './node-color';
 import { planTopicRekey, readTopicPositions, topicKeys, type TopicPlacement } from './topics';
 import { t } from '../i18n';
 
@@ -17,6 +18,11 @@ export type EditCommand =
    * topic added on the map).
    */
   | { type: 'rename'; nodeId: string; title: string; position?: TopicPlacement }
+  /**
+   * The node's colour (LEV-364): its text wrapped in the map's `<mark>` for `color`, or unwrapped for null, in the one
+   * range of its text, as a rename writes it (a free topic's `mappy-topics` entry follows its key in the same edit set).
+   */
+  | { type: 'color'; nodeId: string; color: NodeColor | null }
   /**
    * A new last child, or a sibling right after the node's branch. Empty by default; `title` writes the item's
    * text in the same edit, so `![[map]]` called from the search (§5 M12) is one step, as Tab is, and so is a
@@ -245,17 +251,36 @@ function rename(doc: MindDocument, node: MindNode, draft: string, place?: TopicP
   if (node.kind === 'setext' && draft.trim().length === 0) {
     throw new Error(t().setextEmpty);
   }
+  // A break is a `<br>` in the one line of the title, a Setext heading's included (LEV-202): its text over two
+  // lines would be a paragraph to Obsidian, and to the parse below, which refuses the edit (LEV-208). The draft is the
+  // text inside the node's colour, which stays around it as written (LEV-364).
+  return retitle(doc, node, storedColoredTitle(draft, node.title), t().nameChangesHeading, place);
+}
+
+/**
+ * The node's colour set or taken off (LEV-364): only its title's range changes, its text inside the colour byte for
+ * byte. Choosing the colour it shows writes nothing.
+ */
+function recolor(doc: MindDocument, node: MindNode, color: NodeColor | null): EditPlan {
+  const title = recoloredTitle(node.title, color);
+  if (title === null) throw new Error(t().colorCannotWrap);
+  if (title === node.title) return { edits: [], selectionOffset: node.titleFrom };
+  return retitle(doc, node, title, t().colorChangesHeading);
+}
+
+/**
+ * Write `title` over the node's title range (a rename, a colour), or throw `refusal` when the note would read another
+ * tree for it: a node more or fewer, another kind or depth, or the title read otherwise.
+ */
+function retitle(doc: MindDocument, node: MindNode, title: string, refusal: string, place?: TopicPlacement): EditPlan {
   const before = (node.kind === 'atx' || node.kind === 'list') && !/[ \t]/u.test(doc.source.charAt(node.titleFrom - 1)) ? ' ' : '';
   const after = node.kind === 'atx' && node.titleFrom === node.titleTo && doc.source.charAt(node.titleTo) === '#' ? ' ' : '';
-  // A break is a `<br>` in the one line of the title, a Setext heading's included (LEV-202): its text over two
-  // lines would be a paragraph to Obsidian, and to the parse below, which refuses the edit (LEV-208).
-  const title = storedTitle(draft, node.title);
   const edit = { from: node.titleFrom, to: node.titleTo, text: before + title + after };
   const parsed = parseMarkdown(applyEdits(doc.source, [edit]), doc.root.title, undefined, doc.format);
   const updated = parsed.nodes.find((candidate) => candidate.from === node.from);
   if (parsed.nodes.length !== doc.nodes.length || updated?.kind !== node.kind
     || updated.level !== node.level || updated.title !== title.trim()) {
-    throw new Error(t().nameChangesHeading);
+    throw new Error(refusal);
   }
   // A free topic's stored position follows its key within the same edit set (another topic of the old heading
   // may become its first, and take the plain key). Only topics carry entries: a list item or the body root
@@ -439,7 +464,7 @@ function withTopicKeys(doc: MindDocument, plan: EditPlan, node: MindNode | undef
  * Whether a structural command can change which sections are topics, or their order: only then can keys
  * move. A list item never does (items before the first H2 sit on the virtual root, but are not sections).
  */
-function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): boolean {
+function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'color' | 'add-topic' }>): boolean {
   const section = node.kind !== 'list' && node.parentId === 'root';
   switch (command.type) {
     case 'add-child': return node.kind === 'root';
@@ -449,7 +474,7 @@ function touchesTopLevel(doc: MindDocument, node: MindNode, command: Exclude<Edi
   }
 }
 
-function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'add-topic' }>): EditPlan {
+function planHeadingEdit(doc: MindDocument, node: MindNode, command: Exclude<EditCommand, { type: 'rename' | 'color' | 'add-topic' }>): EditPlan {
   switch (command.type) {
     case 'add-child': return add(doc, node, false, command.title);
     case 'add-sibling': return add(doc, node, true, command.title);
@@ -485,8 +510,15 @@ export function planEdit(doc: MindDocument, command: EditCommand): EditPlan {
   if (node.kind === 'root' && standsForFileName(doc) && (command.type === 'rename' || command.type === 'add-child')) {
     return withTopicKeys(doc, planFileRootCommand(doc, command.type, command.title), undefined, 'adds');
   }
+  // A colour on the file name names it first: the heading LEV-301 writes for it, in that colour (no colour: nothing to take
+  // off). The file name is text, whatever it looks like (`==案==.md` is no highlight to take as the colour).
+  if (node.kind === 'root' && standsForFileName(doc) && command.type === 'color') {
+    if (command.color === null) return { edits: [], selectionOffset: null };
+    return withTopicKeys(doc, planFileRoot(doc, `${colorMark(command.color)}${doc.root.title.trim()}</mark>`, t().fileNameNotHeading), undefined, 'adds');
+  }
   if (node.kind === 'root' && command.type !== 'add-child') throw new Error(t().rootAddsChildOnly);
   if (command.type === 'rename') return rename(doc, node, command.title, command.position);
+  if (command.type === 'color') return recolor(doc, node, command.color);
   const plan = doc.format === 'list' ? planListEdit(doc, node, command) : planHeadingEdit(doc, node, command);
   if (!touchesTopLevel(doc, node, command)) return plan;
   if (command.type === 'detach') return withTopicKeys(doc, plan, node, 'lands', command.position);

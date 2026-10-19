@@ -10,6 +10,13 @@ describe('plainTitle', () => {
     expect(plainTitle('**太字** と _斜体_ と `code` と ~~消し~~').text).toBe('太字 と 斜体 と code と 消し');
   });
 
+  it('leaves out the node\'s colour and the marks over part of its text (LEV-364)', () => {
+    expect(plainTitle('<mark style="background: #FFF3A3A6;">**色** [[ノート|別名]]</mark>')).toEqual({ text: '色 別名', link: 'ノート', linkSyntax: 'vault' });
+    expect(plainTitle('==強調==').text).toBe('強調');
+    expect(plainTitle('前半 <mark>後半</mark>').text).toBe('前半 後半');
+    expect(plainTitle('`<mark>` はコード').text).toBe('<mark> はコード');
+  });
+
   it('uses the alias of a wiki link and records the first link target', () => {
     expect(plainTitle('参考: [[睡眠ノート#見出し|睡眠]] と [[別ノート]]')).toEqual({ text: '参考: 睡眠 と 別ノート', link: '睡眠ノート', linkSyntax: 'vault' });
   });
